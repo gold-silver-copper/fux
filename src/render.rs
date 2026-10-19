@@ -918,9 +918,12 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         match copy.filter(|(c, _)| c.pane == focus) {
             Some((_, at)) => {
                 // Within the rows shown, which a smaller client can make
-                // fewer than the rect.
+                // fewer than the rect; on a row drawn twice as wide, at its
+                // glyph's first half, as the normal cursor.
                 if let Some((y, x)) = at.cursor_in_view(rect.h().min(screen.size().rows()))
-                    && let Some(at) = rect.at(y, x)
+                    && let doubled =
+                        (at.top.window().row(y)).is_some_and(|r| r.rendition().is_double())
+                    && let Some(at) = rect.at(y, if doubled { x.saturating_mul(2) } else { x })
                 {
                     grid.cursor = Some(at);
                     // The copy cursor is a block.
@@ -1041,14 +1044,18 @@ fn put_panes(
             let (Some(at), Some(row)) = (at, row) else {
                 continue;
             };
+            // A row drawn twice as wide shows each cell in two columns.
+            let doubled = row.rendition().is_double();
             for x in 0..width {
                 // A wide glyph is selected if either half is, as `y`
                 // copies it whole.
+                let col = if doubled { x / 2 } else { x };
                 if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
                     && let Some(cell) = grid.cells.get(i)
                     && !cell.is_wide_continuation()
-                    && (at.selected(&row, x)
-                        || cell.is_wide() && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
+                    && (at.selected(&row, col)
+                        || cell.is_wide()
+                            && col.checked_add(1).is_some_and(|col| at.selected(&row, col)))
                 {
                     let attrs = cell.attributes().with_inverse(!cell.inverse());
                     grid.cells.set_attributes(i, attrs);
@@ -2328,6 +2335,30 @@ mod tests {
             fit(&format!("{heart}{heart}{heart}"), 4),
             format!("{heart}…")
         );
+    }
+
+    /// On a line drawn twice as wide (DECDWL, DEC STD 070 5.6.1), copy
+    /// mode's cursor and selection take each cell's two columns, as the
+    /// normal cursor does: a cell at column 1 shows at columns 2 and 3.
+    #[test]
+    fn copy_mode_on_a_double_width_line_takes_two_columns_a_cell() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        s.output(PaneId::of(1), b"\x1b[2J\x1b[H\x1b#6ABCD\x1b[H");
+        s.input(c, b"\x02cl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        assert_eq!(grid.cursor, Some((0, 2)), "on B's first column");
+        s.input(c, b"vl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        assert_eq!(grid.cursor, Some((0, 4)), "on C's first column");
+        let inverse: Vec<bool> = (0..8)
+            .map(|x| grid.get(0, x).is_some_and(|cell| cell.inverse()))
+            .collect();
+        assert_eq!(
+            inverse,
+            [false, false, true, true, true, true, false, false],
+            "B and C selected"
+        );
+        Ok(())
     }
 
     /// At the widest a terminal can be, the last column is u16::MAX - 1:
