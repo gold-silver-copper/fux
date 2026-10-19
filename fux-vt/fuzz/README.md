@@ -44,13 +44,18 @@ the parser and everything else.
 ### `terminal`'s input
 
 Three header bytes, r, c and h, give 1 + r mod 16 rows, 1 + c mod 24
-columns and h mod 16 history rows, and their high bits turn options on:
+columns and h mod 16 history rows, and their high bits turn options on;
+c's 0x10 makes the next byte a fourth header byte, f, for the rest:
 
 | Byte | 0x10 | 0x20 | 0x40 | 0x80 |
 | --- | --- | --- | --- | --- |
 | history | `Events` | `ExtendedReplies` | `Hyperlinks` | `PromptMarks` |
 | rows | `Reflow` | `KittyKeyboard` | `identity` | `ColorSchemeUpdates` |
-| columns | | | `SettingReports` | `RectangleChecksums` |
+| columns | (f follows) | `Pictures` | `SettingReports` | `RectangleChecksums` |
+
+| Byte | 0x01 | 0x02 | 0x04 | 0x08 |
+| --- | --- | --- | --- | --- |
+| f | `ModeReports` | `InBandResize` | `SizeReports` | `Palette` |
 
 Then operations:
 
@@ -90,8 +95,10 @@ and what the safety reproducers send (frames, reports, requests, OSC 4,
 `fixture-*`, each ending with a resize and a copy, for short fixtures,
 the terminal-edge streams, tiny grids, a history copy, long clusters
 (narrow, wide and through reflows), the `fd` operation, the keyboard
-protocol with an identity, the newer SGR and cursor sequences, and a row's
-text budget. They are kept as they were written; nothing regenerates them.
+protocol with an identity, the newer SGR and cursor sequences, a row's
+text budget, and every `Feature` on (`fixture-every-feature`, through the
+fourth header byte). They are kept as they were written; nothing
+regenerates them.
 
 What a run adds, and the `graphemes` and `cells` corpora, stay local (git
 ignores them); a crash becomes a named regression test.
@@ -109,6 +116,13 @@ the targets' lengths: give `seeds/TARGET` to a run as a second corpus
 directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
 the inputs that target found (FA-SB-2), replayed by
 `properties::a_cell_full_of_its_cluster_drops_no_cluster_after_a_control`.
+
+What the `terminal` and `deep` targets reach, each `Feature` on and each
+host call made (`process_until_stop`, `FrameScan`, `set_history_bytes`,
+`record_prints`, `resize`, `full_refresh_since`, window text, and deep's
+others), on their corpus and frozen seeds: `fux-vt/fuzz/reach.sh` builds
+them with the `reach` feature, replays every input, and fails naming each
+input that fails its checks and anything not reached.
 
 Coverage, as text:
 
