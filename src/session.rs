@@ -3831,9 +3831,8 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
     (units, sent)
 }
 
-/// `bytes` in hex, as `bytes` takes them.
-/// The longest pause before a piece: one `pause`'s most (10,000 ms).
-const PAUSE_MOST: Duration = Duration::from_secs(10);
+/// The longest pause before a piece: one `pause`'s most.
+const PAUSE_MOST: Duration = Duration::from_millis(crate::command::PAUSE_MOST_MS.unsigned_abs());
 
 /// What bytes given as they are are to a program reading them: an edit if
 /// printable (a character's, or part of one), or if each key they are
@@ -3858,6 +3857,7 @@ fn bytes_unit(given: &[u8]) -> Unit {
     }
 }
 
+/// `bytes` in hex, as `bytes` takes them.
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

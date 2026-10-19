@@ -542,7 +542,7 @@ fn modify(
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
         "pause" => {
-            let ms: u64 = within(&next()?, 1..=10_000)?;
+            let ms: u64 = within(&next()?, 1..=crate::command::PAUSE_MOST_MS)?;
             if built.inputs.is_empty() {
                 return Err(fail(Code::NoKeys, PAUSE));
             }

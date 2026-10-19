@@ -2003,10 +2003,6 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
-/// A capture with `styles` keeps blanks at a line's end that are painted,
-/// in JSON's lines and runs as in its text; plain lines trim them. The
-/// cursor is the screen's row and column in JSON as in answers, and an
-/// answer on a line wrapped at the pane's width names the rows it takes.
 /// An exit is told by the first answer that tells it, not by a capture,
 /// which reads the screen and tells no exit: a wait after a capture still
 /// tells the exit, with what came.
@@ -2040,6 +2036,10 @@ fn a_capture_tells_no_exit() -> Outcome {
     Ok(())
 }
 
+/// A capture with `styles` keeps blanks at a line's end that are painted,
+/// in JSON's lines and runs as in its text; plain lines trim them. The
+/// cursor is the screen's row and column in JSON as in answers, and an
+/// answer on a line wrapped at the pane's width names the rows it takes.
 /// An exit is told once: a later wait says so, not its output again.
 #[test]
 fn captures_and_answers_agree_on_the_screen() -> Outcome {

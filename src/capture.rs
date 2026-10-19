@@ -617,10 +617,10 @@ mod tests {
             Some(true),
             "{lines:?}"
         );
-        assert!(
-            lines
-                .get(1)
-                .is_some_and(|l| l.contains("cd\x1b[41m  ") || l.contains("  ")),
+        // The red blanks are painted, kept; the blue past them, trimmed.
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("\x1b[0;44mcd\x1b[0;41m  \x1b[0m"),
             "{lines:?}"
         );
         Ok(())
