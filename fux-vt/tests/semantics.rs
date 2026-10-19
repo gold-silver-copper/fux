@@ -253,6 +253,22 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
     Ok(())
 }
 
+/// A row erased whole no longer goes on the line above: bash, resized,
+/// erases the row its prompt wrapped onto and draws the prompt there again.
+#[test]
+fn a_row_erased_whole_ends_the_line_above() -> Result {
+    let mut p = Parser::new(Size::new(3, 10)?, 0)?;
+    p.process(b"bench:~/quill$ ")?;
+    assert!(p.screen().row_wrapped(0));
+    p.process(b"\r\x1b[K\rbench:~/quill$ ")?;
+    assert!(!p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(1));
+    // An erase that leaves the row's start leaves the line whole.
+    p.process(b"\x1b[3;3H\x1b[K")?;
+    assert!(p.screen().row_wrapped(1));
+    Ok(())
+}
+
 /// A rejected resize changes nothing, synchronized output included (the
 /// API's "failing size changes leave the old screen intact"); one that is
 /// taken, or to the same size, ends it, as in Ghostty (threats.md B37).

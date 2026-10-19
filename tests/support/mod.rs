@@ -44,7 +44,7 @@ pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
 /// quiet: busy, with how to wait on.
 pub fn asleep(pane: &str) -> String {
     match PROBED {
-        true => format!("busy · `{pane} wait` waits on"),
+        true => format!("busy · `{pane} wait` waits for it to settle"),
         false => ASLEEP.to_owned(),
     }
 }
@@ -920,6 +920,10 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        // The terminal closed first: on macOS a session leader's exit
+        // waits for its terminal's output to be read (xnu's `proc_exit`
+        // calls `ttywait`), and nothing reads it here.
+        self.master = None;
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

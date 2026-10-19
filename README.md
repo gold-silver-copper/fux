@@ -64,15 +64,17 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   full-screen program that redraws by itself (a clock, `top`) is never
   quiet: it settles once it read the keys and drew after them, `%3 waiting ·
   redraws on its own` (a later capture may differ; `str TEXT wait-text`
-  waits for a text). A pane `waiting` that is no full-screen program (a
-  build over `koh exec`, a download) says it may be at work, and names
+  waits for a text). A pane `waiting` that is no full-screen program says it
+  may be at work, or, blocked off its terminal (a build over `koh exec`, a
+  download), that fux cannot tell when it waits for input, and names
   `%3 wait-exit wait` (`wait-done` for a marked command) to wait for its end. After keys, the state line names what plain text
   hides: a selection they highlighted anew (`· highlight 6,16-25
-  "1761.5"`), and the cursor when text goes on right of it (`· cursor
-  3,7`). A relay
+  "1761.5"`), and the cursor when text goes on under or right of it, or
+  the keys moved it alone (`· cursor 3,7`). A relay
   (`koh connect`) says what the remote program does with a state report,
   `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
-  probe while no mark came after it and it came after the last input: a
+  probe while no mark came after it and it came after the last input, once
+  the screen is quiet a moment after it: a
   remote pager or REPL answers `reading` as a local one does. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
@@ -297,8 +299,10 @@ and Helix do, copies the same way. fux never reads the clipboard.
 
 **Key names**, for `key`, `bind` and `prefix`, are tmux's (`C-x`, `M-x`,
 `S-Left`, `Enter`, `BTab`, `BSpace`, `PageUp`, `F1`–`F35`, …) and any
-single character, which carries its own shift (`T`, not `S-t`).
-`fux key-names` prints them all.
+single character, which carries its own shift (`T`, not `S-t`); common
+spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
+taken too, and a name refused is told the closest one. `fux key-names`
+prints them all.
 
 **Inside a pane**, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
 `TERM_PROGRAM_VERSION` is fux's version. XTVERSION (`CSI > q`) answers

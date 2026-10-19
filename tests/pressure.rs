@@ -313,27 +313,22 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
 /// pane when the program exits.
 ///
 /// On Linux, closing the last descriptor on the terminal is enough. On
-/// macOS the session's controlling terminal keeps it open after a plain
-/// shell's `exec`, but not after zsh's, the login shell there, so the pane
-/// runs zsh where there is one.
+/// macOS the server holds the terminal open itself (`fuxix::pty::Master`),
+/// so it never hangs up there: the pane still closes when the program
+/// exits.
 #[test]
 fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
     let _alone = alone();
-    let zsh = std::path::Path::new("/bin/zsh").exists();
-    let server = Server::start(if zsh {
-        "str shell str /bin/zsh set"
-    } else {
-        ""
-    })?;
+    let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
     eventually("a prompt", || {
         let screen = screen(&server, "%1")?;
-        Ok(screen.contains('$') || screen.contains('%'))
+        Ok(screen.contains('$'))
     })?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     eventually("a prompt in %2", || {
         let screen = screen(&server, "%2")?;
-        Ok(screen.contains('$') || screen.contains('%'))
+        Ok(screen.contains('$'))
     })?;
     // At once: settling would wait out the sleep, past the second measured.
     send_now(

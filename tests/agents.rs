@@ -613,12 +613,13 @@ fn shell_marks_and_bells_are_heard() -> Outcome {
 /// status 1. Its marks carry `FUX_MARK_NONCE` if it was given one. Like
 /// `koh connect`, it reports what the remote program does (`OSC 133 ; S`):
 /// `less` reports `reading` after its `C`, as a remote pager would, and
-/// `unsigned` the same with no nonce, each ending with status 6 once the
+/// `unsigned` the same with no nonce, and `early` before it draws, each
+/// ending with status 6 once the
 /// FIFO answers, taking keys meanwhile while it polls the terminal and
 /// FIFO with a time limit; `busy` reports `busy` and waits on both with no
 /// limit, which fux's own probe takes as reading, and ends with status 7.
 const RELAY: &str = r#"
-import os, select, sys
+import os, select, sys, time
 nonce = os.environ.get("FUX_MARK_NONCE")
 out = sys.stdout
 def mark(m, signed=True):
@@ -651,6 +652,10 @@ while True:
         out.write(os.read(far, 100).decode()); mark("D;4")
     elif line in ("less", "unsigned"):
         out.write("pager\n"); mark("S;activity=reading", line == "less"); out.flush()
+        out.write(held(0.2)); mark("D;6")
+    elif line == "early":
+        time.sleep(0.1); mark("S;activity=reading"); out.flush()
+        time.sleep(0.03); out.write("pager drawn\n"); out.flush()
         out.write(held(0.2)); mark("D;6")
     elif line == "busy":
         mark("S;activity=busy"); out.flush()
@@ -724,11 +729,13 @@ fn keys_into_a_marked_command_settle_once_quiet() -> Outcome {
         server.ok(&typed(pane, "hang", &hanging))?;
         let began = std::time::Instant::now();
         let typed = server.ok(&["str", pane, "pane", "str", "x", "type"])?;
-        // On the main screen (ssh's), it may be at work, to end alone.
+        // On the main screen (ssh's), blocked off its terminal (on the
+        // FIFO): it may be at work, or wait for input fux cannot see.
         let state = match pane == full {
             true => " waiting · command running".to_owned(),
             false => format!(
-                " waiting · command running · may be at work: `{} wait-done wait` waits for its end",
+                " waiting · command running · not reading its terminal, so fux cannot tell \
+                 when it waits for input: `{} wait-done wait` waits for its end",
                 id(&typed)
             ),
         };
@@ -770,7 +777,8 @@ fn a_command_that_takes_the_full_screen_is_not_waited_for() -> Outcome {
 /// polls the network meanwhile: the answer is `reading · command running`,
 /// the pager shown.
 /// Keys sent after it are not answered by that report, from before them:
-/// they settle on quiet, as with no report.
+/// they settle on quiet, as with no report. A report that comes before
+/// what was drawn ahead of it waits for that.
 #[test]
 fn a_relayed_report_of_reading_ends_a_lines_wait() -> Outcome {
     if !PROBED {
@@ -780,6 +788,14 @@ fn a_relayed_report_of_reading_ends_a_lines_wait() -> Outcome {
     let (relay, fifo) = relay(&server)?;
     let far = fifo.to_string_lossy().into_owned();
     let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
+    // A report that overtakes what the program drew before it (a relay
+    // holds output a moment) answers once that is in too.
+    let drawn = line(&server, &pane, "early")?;
+    assert_eq!(head(&drawn), format!("{pane} reading · command running"));
+    assert!(body(&drawn).contains("pager drawn\n"), "{drawn}");
+    std::fs::write(&fifo, "back\n").map_err(e)?;
+    let ended = server.ok(&["str", &pane, "pane", "wait"])?;
+    assert_eq!(done(&ended), Some("done 6"), "{ended}");
     let began = std::time::Instant::now();
     let shown = line(&server, &pane, "less")?;
     assert!(began.elapsed() < PATIENCE, "{shown}");
@@ -1398,6 +1414,14 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
             .status,
         1,
         "a name taken"
+    );
+    // A common spelling is a key's name too; a typo is told the closest.
+    server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
+    let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
+    assert!(
+        typo.stderr.contains("the closest is `C-BSpace`"),
+        "{}",
+        typo.stderr
     );
     server.ok(&["str", "ed", "tab", "40", "12", "resize"])?;
     assert!(
@@ -4394,6 +4418,31 @@ fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome
         head(&again),
         format!("{pane} {READING} · cursor 4,3"),
         "{again}"
+    );
+    Ok(())
+}
+
+/// Keys that move the cursor alone say where it went, at the end of the
+/// line too; one on the line's last glyph is within the line.
+#[test]
+fn keys_that_move_only_the_cursor_say_where_it_went() -> Outcome {
+    let server = Server::start("")?;
+    let code = "import os, tty\ntty.setraw(0); os.write(1, b'abc')\n\
+                while True:\n\
+                \x20   k = os.read(0, 1)\n\
+                \x20   os.write(1, b'\\x1b[D' if k == b'h' else b'\\x1b[C')\n";
+    let pane = id(&server.ok(&run(&["str", "abc", "wait-text"], &["python3", "-c", code]))?);
+    let left = server.ok(&["str", &pane, "pane", "str", "h", "type"])?;
+    assert_eq!(
+        head(&left),
+        format!("{pane} {READING} · cursor 0,2"),
+        "{left}"
+    );
+    let back = server.ok(&["str", &pane, "pane", "str", "l", "type"])?;
+    assert_eq!(
+        head(&back),
+        format!("{pane} {READING} · cursor 0,3"),
+        "{back}"
     );
     Ok(())
 }

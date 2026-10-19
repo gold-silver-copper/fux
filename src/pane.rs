@@ -555,8 +555,8 @@ pub struct Start {
     pub started: u64,
     pub finished: u64,
     pub on_full: bool,
-    /// The row the cursor was on.
-    pub row: u16,
+    /// Where the cursor was: its row and column.
+    pub cursor: (u16, u16),
     /// It is an action's input, not the program's start: a command marked
     /// after it may be one that input began, which a wait waits for.
     pub input: bool,
@@ -570,7 +570,7 @@ impl Start {
             started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
-            row: screen.cursor_position().0,
+            cursor: screen.cursor_position(),
             input,
         }
     }
@@ -1118,9 +1118,7 @@ impl Pane {
             // Output the program wrote before now came before this piece:
             // it is read first (unless it pours on for a while), so that
             // nothing it printed is told as following the piece.
-            let unread = !exact
-                && (self.process.child())
-                    .is_some_and(|c| fuxix::io::unread(&c.master).unwrap_or(0) > 0);
+            let unread = !exact && (self.process.child()).is_some_and(|c| c.master.output_unread());
             let draining =
                 !held && unread && now < *(self.pace.drained_by).get_or_insert(after(now, TAKE));
             if held || draining {
@@ -1194,7 +1192,7 @@ impl Pane {
         let taking = || crate::ready::taking(self, child, now);
         self.input.is_empty()
             && drawn
-            && fuxix::io::unread(&child.master).unwrap_or(0) == 0
+            && !child.master.output_unread()
             && match taking() {
                 Some(Activity::Reading) => true,
                 Some(Activity::Idle) => !escape,

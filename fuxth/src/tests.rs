@@ -1135,6 +1135,12 @@ fn the_applications_kinds_are_checked_before_it_is_called() {
             0
         )
     );
+    // A word that changed the kind is no pass: the value's maker is not
+    // named.
+    assert_eq!(
+        said("ticket mark stamp").0,
+        Some("type: t:1: stamp: takes a ticket, not a draft".to_owned())
+    );
     // Through a definition, and a kind passed through a word.
     assert_eq!(said("define go ticket issue end go").1, 0);
     assert_eq!(said("define go mark mark end ticket go issue").0, None);

@@ -272,6 +272,10 @@ const ALIASES: &[(&str, Key)] = &[
     ("IC", Key::Insert),
     ("DC", Key::Delete),
     ("Esc", Key::Escape),
+    ("Backspace", Key::Backspace),
+    ("Return", Key::Enter),
+    ("Del", Key::Delete),
+    ("Ins", Key::Insert),
 ];
 
 fn key_name(key: Key) -> String {
@@ -375,6 +379,12 @@ impl std::str::FromStr for KeyPress {
         };
         Ok(KeyPress::new(key, mods))
     }
+}
+
+/// The other spellings a key name may take (`Esc`, `Backspace`), which
+/// the names above print as.
+pub fn aliases() -> impl Iterator<Item = &'static str> {
+    ALIASES.iter().map(|(n, _)| *n)
 }
 
 /// Every key name, as a host lists them.

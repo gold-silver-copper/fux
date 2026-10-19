@@ -513,9 +513,11 @@ fn a_server_of_another_protocol_is_named_by_the_client() -> Outcome {
             role: Role::Command,
         });
         let exit = Greeting::Exit("whatever the server says");
-        for frame in [hello, exit] {
-            std::io::Write::write_all(&mut stream, &frame.encode().map_err(e)?).map_err(e)?;
-        }
+        // In one write: the client may hang up once it has read the Hello,
+        // which is all it needs, and a second write would then fail.
+        let mut said = hello.encode().map_err(e)?;
+        said.extend(exit.encode().map_err(e)?);
+        std::io::Write::write_all(&mut stream, &said).map_err(e)?;
         Ok(())
     });
     let out = std::process::Command::new(FUX)
