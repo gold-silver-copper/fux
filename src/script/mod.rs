@@ -476,7 +476,89 @@ fn listing(tokens: &[Token], mut error: fuxth::Error) -> Failed {
             .message
             .push_str("; to list panes, tabs and workspaces: `fux ls`");
     }
-    Failed::from(error)
+    let order = reordered(tokens, &error);
+    let mut failed = Failed::from(error);
+    if let Some(line) = order {
+        failed
+            .message
+            .push_str(&format!("; in this order: `{line}`"));
+    }
+    failed
+}
+
+/// A command line's words in the order that works, for one refused as
+/// written out of order: a word that acts written before what it takes
+/// (`run opts …`, `%2 json capture`, `%2 send-keys str y text`), or
+/// before options of its own (`%2 capture wrapped`). The failing word, or
+/// one that acts before it, is moved last, else `opts` first; said only
+/// if the line then compiles.
+fn reordered(tokens: &[Token], error: &fuxth::Error) -> Option<String> {
+    let order = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Unused);
+    let arguments = (tokens.iter()).all(|t| matches!(t.place, token::Place::Argument(_)));
+    let failing = (tokens.iter()).position(|t| Some(&t.place) == error.place.as_ref())?;
+    // Each word, unless it is `str`'s text; a line of the language's own
+    // shapes (`if`, `define`) is left as written.
+    let words: Vec<Option<&str>> = (0..tokens.len())
+        .map(|i| {
+            let text = i.checked_sub(1).and_then(|p| tokens.get(p));
+            let literal = text.is_some_and(|t| &*t.text == "str");
+            (!literal)
+                .then(|| tokens.get(i).map(|t| &*t.text))
+                .flatten()
+        })
+        .collect();
+    let shaped =
+        (words.iter().flatten()).any(|w| *w != "str" && fuxth::Parsing::named(w).is_some());
+    if !order || !arguments || shaped {
+        return None;
+    }
+    let word = |i: usize| words.get(i).copied().flatten();
+    // A word that acts, or turns a value: not one that adds to a request.
+    let acts = |i: usize| {
+        (WORDS.iter()).any(|w| Some(w.name) == word(i) && !w.effect.starts_with(['x', 'w']))
+    };
+    // The line with the word at `from` moved last, or first.
+    let moved = |from: usize, last: bool| {
+        let word = tokens.get(from)?;
+        let rest = (tokens.iter().enumerate())
+            .filter(|(i, _)| *i != from)
+            .map(|(_, t)| t);
+        let moved: Vec<Token> = match last {
+            true => rest.chain([word]).cloned().collect(),
+            false => [word].into_iter().chain(rest).cloned().collect(),
+        };
+        Some(moved)
+    };
+    // Moved last, it must take every option word after it: the line
+    // compiles though a word refuses options it would not use (`unused`).
+    let request = |i: usize| {
+        (WORDS.iter()).any(|w| Some(w.name) == word(i) && w.effect.starts_with(['x', 'w']))
+    };
+    let takes_after = |i: usize| {
+        let Some(taken) = word(i).and_then(crate::help::options) else {
+            return true;
+        };
+        let taken: Vec<&str> = taken.collect();
+        (i..tokens.len())
+            .filter(|&j| request(j))
+            .all(|j| word(j).is_some_and(|w| taken.contains(&w)))
+    };
+    let last = tokens.len().saturating_sub(1);
+    let failing_last = (acts(failing) && failing < last).then_some(failing);
+    let before = (0..failing).rev().filter(|&i| acts(i));
+    let (failing_last, before) = (
+        failing_last.filter(|&i| takes_after(i)),
+        before.filter(|&i| takes_after(i)),
+    );
+    let opts = (0..tokens.len())
+        .find(|&i| word(i) == Some("opts"))
+        .filter(|&i| i > 0);
+    let tries = (failing_last.into_iter().chain(before))
+        .filter_map(|i| moved(i, true))
+        .chain(opts.and_then(|i| moved(i, false)));
+    let works = tries.into_iter().find(|t| compiled(None, t).is_ok())?;
+    let said: Vec<String> = works.iter().map(|t| crate::words::quote(&t.text)).collect();
+    Some(format!("fux {}", said.join(" ")))
 }
 
 thread_local! {

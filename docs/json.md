@@ -62,9 +62,13 @@ prints `null` (`string` makes it the text).
 ```
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
-(each screen row a line). `cursor` is where it is among `lines`, past them
-on a blank row trimmed away: `null` while hidden, outside `rows` or
-`cols`, or on the screen not captured. `wrap_pending` (after `lines`):
+(each screen row a line). Blanks at a line's end are trimmed, but with
+`styles` those painted (a background, reverse video, underline or
+strikeout) stay, in `lines` and `styles` alike: a painted surface shows
+whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event, a
+state line's `· cursor ROW,COL` and `wrapped` count them, whatever
+`lines` join or `rows` and `cols` take: `null` while hidden or on the
+screen not captured (`main-screen` under a full-screen program). `wrap_pending` (after `lines`):
 a glyph went into the last column, autowrap on, and the next goes on the
 next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
@@ -119,7 +123,16 @@ itself read the keys and drew after them; what it draws later may
 differ), `wait_with` (`"wait-exit"` or `"wait-done"`: a pane `waiting`
 that is no full-screen program, maybe at work, blocked off its
 terminal, or a relay that said nothing since the input, and the wait word
-that waits for its end), `cursor` (`[ROW,COL]` of the screen
+that waits for its end; with `remote`, `"wait-exit"` or `"wait-text"`),
+`remote` (the name of a remote client in front, `"ssh"`, that reports
+nothing of what it runs: its state is the client's, not that program's;
+`wait_with` says how to wait for it: `"wait-exit"` for a command run on
+a pipe there, which the client ends with, `"wait-text"` for a terminal
+there), `cursor_rows` (with `cursor`, on a line wrapped at the pane's width,
+which the answer prints joined: `{"from":ROW,"text":["…","…"]}`, the
+screen rows the line takes, four at most), `told_before` (`true`: an
+earlier answer told the program's exit, with what it printed, which is
+not said again), `cursor` (`[ROW,COL]` of the screen
 after keys or a mouse event: after a line edited where a program reads
 it, when text shows under or right of the cursor on its row, or when the
 input moved the cursor alone; never while it is hidden or its program

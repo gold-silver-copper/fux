@@ -430,6 +430,33 @@ const SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
 ];
 
+/// Programs that run what they are given on another machine and show it
+/// here (remote clients). What runs there is not theirs to probe, nor
+/// fux's: unless the client reports it (`OSC 133 ; S`, as `koh connect`
+/// does), whether they read their terminal says nothing of it.
+const REMOTE: &[&str] = &[
+    "ssh",
+    "slogin",
+    "autossh",
+    "mosh",
+    "mosh-client",
+    "et",
+    "telnet",
+    "rlogin",
+    "rsh",
+];
+
+/// A remote client in a pane's foreground that reports nothing of what it
+/// runs, and how: a command on a plain pipe, or a terminal there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remote {
+    /// Its program's name (`ssh`).
+    pub name: String,
+    /// It shows a terminal there (the local one raw, as for a session or
+    /// `ssh -t`), not one command's output on a pipe.
+    pub terminal: bool,
+}
+
 /// Whether `argv` runs a shell taking commands typed at it: no -c and no
 /// script (`bash`, `bash --norc -i`).
 fn takes_commands(argv: &[String]) -> bool {
@@ -522,6 +549,14 @@ pub struct Pane {
     /// The last input typed ended a line (Enter, or text ending in a line
     /// end): what came of it is a command's, if its program marks them.
     pub line_ended: bool,
+    /// The last piece of input written ended in an escape sequence begun
+    /// and not finished (a lone Escape, `ESC [`): a program telling a lone
+    /// Escape from a sequence may wait a moment for the rest, on a timer
+    /// fux need not see (`ready::ESCAPE`).
+    pub escape_open: bool,
+    /// An answer told its program's exit: later ones say so, not its
+    /// output again.
+    pub exit_told: std::cell::Cell<bool>,
     /// The last action's input ended in an edit of the line (text, a cursor
     /// key): where the cursor is next matters.
     pub edited: bool,
@@ -632,6 +667,40 @@ impl Start {
     }
 }
 
+/// Whether `bytes` end in an escape sequence begun and not finished: an
+/// Escape alone, or a CSI (`ESC [`) or SS3 (`ESC O`) with no final byte.
+fn escape_open(bytes: &[u8]) -> bool {
+    let Some(at) = bytes.iter().rposition(|b| *b == 0x1b) else {
+        return false;
+    };
+    match bytes.get(at.saturating_add(1)..).unwrap_or_default() {
+        [] | [b'O'] => true,
+        [b'[', rest @ ..] => rest.iter().all(|b| (0x20..=0x3f).contains(b)),
+        _ => false,
+    }
+}
+
+/// A piece of input: its bytes, what it is to the program that reads it,
+/// and, after a pause, how long after the piece before it is written,
+/// whatever the program did meanwhile (`gap`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub bytes: Vec<u8>,
+    pub unit: log::Unit,
+    pub gap: Option<Duration>,
+}
+
+impl Piece {
+    /// A piece written once the program took the one before.
+    pub fn new(bytes: Vec<u8>, unit: log::Unit) -> Piece {
+        Piece {
+            bytes,
+            unit,
+            gap: None,
+        }
+    }
+}
+
 /// Input written a piece at a time (`log::Unit`), each once the
 /// program took the one before (it reads its terminal again, every key
 /// read and its output read by fux), or once its time is up: so each
@@ -639,7 +708,7 @@ impl Start {
 #[derive(Default)]
 pub struct Pace {
     /// Pieces waiting to be written.
-    waiting: VecDeque<(Vec<u8>, log::Unit)>,
+    waiting: VecDeque<Piece>,
     /// When the last piece was written, until when it is given, and
     /// whether it was a lone Escape, which a program must surely have
     /// taken alone before the next piece.
@@ -736,6 +805,8 @@ impl Pane {
             changed_at: Instant::now(),
             written_at: None,
             line_ended: false,
+            escape_open: false,
+            exit_told: std::cell::Cell::new(false),
             edited: false,
             sent: Vec::new(),
             written: (0, 0),
@@ -1212,11 +1283,9 @@ impl Pane {
     /// the one before (`Pace`): the first at once if none is waiting, the
     /// rest as the program takes them ([`Pane::pace_due`]). Refused whole,
     /// as `InputQueue::push` refuses, if they would not fit.
-    pub fn send(&mut self, units: Vec<(Vec<u8>, log::Unit)>, now: Instant) -> Result<(), Error> {
+    pub fn send(&mut self, units: Vec<Piece>, now: Instant) -> Result<(), Error> {
         self.room_for(&units)?;
-        self.edited = units
-            .last()
-            .is_some_and(|(_, unit)| *unit == log::Unit::Edit);
+        self.edited = units.last().is_some_and(|p| p.unit == log::Unit::Edit);
         self.pace.waiting.extend(units);
         self.release_paced(now);
         Ok(())
@@ -1224,11 +1293,11 @@ impl Pane {
 
     /// Whether it takes `units` now, as `send` would: refused whole if
     /// they and what waits to be paced are more than its queue's room.
-    pub fn room_for(&self, units: &[(Vec<u8>, log::Unit)]) -> Result<(), Error> {
-        let held: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
+    pub fn room_for(&self, units: &[Piece]) -> Result<(), Error> {
+        let held: usize = self.pace.waiting.iter().map(|p| p.bytes.len()).sum();
         let total = units
             .iter()
-            .map(|(b, _)| b.len())
+            .map(|p| p.bytes.len())
             .fold(held, usize::saturating_add);
         match total > self.input.room() {
             true => Err(Error::NotReading),
@@ -1247,7 +1316,22 @@ impl Pane {
         if self.pace.until.is_some_and(|until| until > now) {
             return;
         }
-        while !self.pace.waiting.is_empty() {
+        while let Some(next) = self.pace.waiting.front() {
+            // After a pause, written once it is up, whatever the program
+            // did meanwhile: the gap is the agent's to time.
+            if let Some(gap) = next.gap {
+                let from = self.pace.written.map_or(now, |(at, ..)| at);
+                if now < after(from, gap) {
+                    self.pace.until = Some(after(from, gap));
+                    return;
+                }
+                if let Some(Piece { bytes, unit, .. }) = self.pace.waiting.pop_front()
+                    && !self.write_unit(bytes, unit, now)
+                {
+                    return;
+                }
+                continue;
+            }
             let exact = self.pace.written.is_some_and(|(_, _, _, exact)| exact);
             // A lone Escape is taken alone, wherever: one with keys after it
             // reads as another key.
@@ -1265,7 +1349,7 @@ impl Pane {
                 return;
             }
             self.pace.drained_by = None;
-            let Some((bytes, unit)) = self.pace.waiting.pop_front() else {
+            let Some(Piece { bytes, unit, .. }) = self.pace.waiting.pop_front() else {
                 return;
             };
             // Paced where nothing exact tells what follows the piece. (A
@@ -1329,17 +1413,43 @@ impl Pane {
         let drawn = self.changed_at > at || now >= after(at, FLOOR);
         // The program asked last, after the checks that read no `/proc`.
         let taking = || crate::ready::taking(self, child, now);
+        // A lone Escape the program drew nothing for may wait on a timer
+        // fux does not see (an alarm): given its moment first.
+        let alone = !escape || self.changed_at > at || now >= after(at, crate::ready::ESCAPE);
         self.input.is_empty()
             && drawn
             && !child.master.output_unread()
             && match taking() {
-                Some(Activity::Reading) => true,
+                Some(Activity::Reading) => alone,
                 Some(Activity::Idle) => !escape,
                 Some(
                     Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
                 )
                 | None => false,
             }
+    }
+
+    /// The remote client in the terminal's foreground, if one is and it
+    /// reports nothing of what it runs.
+    pub fn remote(&self) -> Option<Remote> {
+        let child = self.process.child()?;
+        if self.screen().commands().report.is_some() {
+            return None;
+        }
+        let argv = match (self.process.job(), &self.runs) {
+            (Some(job), _) => fuxix::process::argv(job).unwrap_or_default(),
+            (None, Runs::Program(launch)) => launch.argv.clone(),
+            (None, Runs::Shell) => return None,
+        };
+        let name = basename(argv.first()?);
+        if !REMOTE.contains(&name.as_str()) {
+            return None;
+        }
+        let modes = fuxix::terminal::attributes(&child.master).ok()?.modes();
+        Some(Remote {
+            name,
+            terminal: !modes.canonical,
+        })
     }
 
     /// Whether it runs a shell taking commands typed at it: its own, or one
@@ -1411,6 +1521,7 @@ impl Pane {
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
+        self.escape_open = escape_open(&bytes);
         self.written.0 = self.written.0.saturating_add(bytes.len());
         let _ = self.input.push(&bytes);
         let gap = if reading { TAKE } else { PACE };
@@ -1493,7 +1604,7 @@ impl Pane {
 
     /// How many bytes of input sent the program has not read yet.
     pub fn input_queued(&self) -> usize {
-        let paced: usize = self.pace.waiting.iter().map(|(b, _)| b.len()).sum();
+        let paced: usize = self.pace.waiting.iter().map(|p| p.bytes.len()).sum();
         paced.saturating_add(self.input.len())
     }
 

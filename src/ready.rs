@@ -20,6 +20,7 @@
 //! until the report owed comes, the relay itself is probed, and is taken
 //! as waiting only once quiet longer (`OWED`), as its program may have
 //! ended there and the relay be on its way out, closing its link.
+use crate::after;
 use crate::pane::{Pane, Process};
 use crate::process::{Child, Ended, told};
 use fux_vt::Reported;
@@ -38,6 +39,12 @@ pub const GUESS: Duration = Duration::from_millis(300);
 /// taken as waiting: longer than `koh connect` takes to close its link once
 /// the program it runs ended (2s on loopback), so that its end is told.
 pub const OWED: Duration = Duration::from_secs(5);
+/// How long a program is given after input that ends in an escape
+/// sequence not finished (a lone Escape) before it is taken to have drawn
+/// all it will for it, unless it drew something since: past the time
+/// programs wait for the rest of a sequence (25 to 500ms: vim's 100,
+/// readline's and tmux's 500), on a timer fux may not see (an alarm).
+pub const ESCAPE: Duration = Duration::from_millis(750);
 /// How long a program that redraws on its own may leave the screen as it
 /// is between frames and still be taken to: longer than `QUIET`, so that a
 /// frame each second (a select timed so) counts.
@@ -96,6 +103,13 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     if !pane.input_written() || child.master.output_unread() {
         return State::Busy;
     }
+    // An Escape alone (or a sequence begun) it drew nothing for yet: it
+    // may be waiting for the rest on a timer, to take it as Escape then.
+    let escape = pane.escape_open
+        && (pane.written_at).is_some_and(|at| pane.changed_at <= at && now < after(at, ESCAPE));
+    if escape {
+        return State::Busy;
+    }
     // Quiet since the screen last changed and input last went in; and
     // since a relay's report that stands for the probe came: what the
     // program drew before the report says it reads may come just after it
@@ -132,15 +146,34 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     // command typed or not), or on the full screen however it waits (macOS
     // says only idle): not a build printing as it goes, nor a pause that
     // watches for keys and draws nothing.
+    let remote = || report.is_none().then(|| pane.remote()).flatten();
     let redraws = |activity| {
         (activity == Activity::Polling || (!command && screen.mode(fux_vt::Mode::AlternateScreen)))
             && !owed
             && pane.redraws()
+            && remote().is_none()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
             && quiet >= SETTLE
             && !child.master.keys_unread()
     };
+    // A remote client reporting nothing of what it runs reads its
+    // terminal whatever runs there: it may go on alone. (What comes from
+    // there comes late, drawn alone as it reads: no redrawing of its own.)
     match report.unwrap_or_else(|| activity(pane, child, now)) {
+        // A command typed that runs one there (`ssh HOST make`) is at
+        // work until it ends; a terminal there, or the client run alone,
+        // waits once quiet as long as one blocked elsewhere.
+        Activity::Reading | Activity::Polling | Activity::Waiting
+            if let Some(remote) = remote() =>
+        {
+            match (
+                command && !remote.terminal,
+                quiet >= QUIET && !child.master.keys_unread(),
+            ) {
+                (false, true) => State::Waiting,
+                (true, _) | (false, false) => State::Busy,
+            }
+        }
         Activity::Reading if quiet >= SETTLE && !child.master.keys_unread() => State::Reading,
         // A program that redraws on its own (a clock, `top`) is never
         // quiet: it took the keys once it read them all and the

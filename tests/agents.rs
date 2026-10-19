@@ -67,17 +67,22 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         format!("{pane} exited 3\n10 40\nstarted\n"),
         "run answers once it settles: here, once it exits"
     );
-    // A met wait for the exit is 0: the program's status is its state's.
+    // A met wait for the exit is 0: the program's status is its state's;
+    // its exit told already, its output is not said again.
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (ended.status, ended.stdout.as_str()),
-        (0, format!("{pane} exited 3\n10 40\nstarted\n").as_str()),
-        "its state, and what came since it started"
+        (
+            0,
+            format!("{pane} exited 3 · told before: `{pane} capture` reads its last screen\n")
+                .as_str()
+        ),
+        "its state, said once"
     );
     let json = server.ok(&["str", &pane, "pane", "wait-exit", "wait", "json"])?;
     assert!(
         json.starts_with(&format!(
-            r#"{{"pane":"{pane}","state":"exited 3","status":0,"#
+            r#"{{"pane":"{pane}","state":"exited 3","told_before":true,"status":0}}"#
         )),
         "{json}"
     );
@@ -310,6 +315,14 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
         sent(&["str", "a b", "paste"])?,
         "1b5b3230307e6120621b5b3230317e"
     );
+    // Bytes as they are, in pieces a pause apart: half a character, then
+    // the rest, each read alone, the second written once the pause is up.
+    let began = std::time::Instant::now();
+    assert_eq!(
+        sent(&["str", "c3", "bytes", "300", "pause", "str", "a9", "bytes"])?,
+        "c3 a9"
+    );
+    assert!(began.elapsed() >= std::time::Duration::from_millis(300));
     let repeated = sent(&["str", "BSpace", "key", "3", "times", "str", "x", "text"])?;
     assert_eq!(repeated.replace(' ', ""), "7f7f7f78", "x once");
     let menu = sent(&["str", "Down", "key", "2", "times", "str", "Enter", "key"])?;
@@ -332,7 +345,10 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
             .ok(&["str", &pane, "pane", "wait-exit", "wait"])?
             .lines()
             .next(),
-        Some(format!("{pane} exited 0").as_str())
+        Some(
+            format!("{pane} exited 0 · told before: `{pane} capture` reads its last screen")
+                .as_str()
+        )
     );
     Ok(())
 }
@@ -506,7 +522,9 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(ended.status, 0);
     assert!(
-        ended.stdout.starts_with(&format!("{pane} exited 2\n")),
+        ended
+            .stdout
+            .starts_with(&format!("{pane} exited 2 · told before")),
         "{}",
         ended.stdout
     );
@@ -564,7 +582,7 @@ fn answers_say_what_the_program_does() -> Outcome {
         (at_work.status, at_work.stdout.as_str()),
         (
             if PROBED { 124 } else { 0 },
-            format!("{pane} {}\nlater\n", asleep(&pane)).as_str()
+            format!("{pane} {}\nlater\n", asleep(&pane, 1)).as_str()
         )
     );
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
@@ -572,7 +590,7 @@ fn answers_say_what_the_program_does() -> Outcome {
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
     assert_eq!(
         (now.status, now.stdout.as_str()),
-        (0, format!("{pane} {}\nlater\n", asleep(&pane)).as_str()),
+        (0, format!("{pane} {}\nlater\n", asleep(&pane, 0)).as_str()),
         "what came since the keys"
     );
     assert_eq!(
@@ -1318,7 +1336,10 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let kill = server.fux(&["str", "stub", "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (kill.status, kill.stdout.lines().next()),
-        (0, Some("%4 killed by SIGKILL"))
+        (
+            0,
+            Some("%4 killed by SIGKILL · told before: `%4 capture` reads its last screen")
+        )
     );
     // A program that exits first: its last words come with its answer.
     let crash = server.fux(&run(
@@ -1715,7 +1736,9 @@ fn the_rechecks_hold() -> Outcome {
         // A marked command at work: `wait-done` waits as long as it runs.
         true => (
             124,
-            "busy · `%2 wait-done wait` waits for its command to end".to_owned(),
+            "busy · still at work at the 1s limit, not failed: `%2 wait-done wait` waits for its \
+             command to end"
+                .to_owned(),
         ),
         false => (0, format!("{ASLEEP} · command running")),
     };
@@ -1974,9 +1997,58 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     assert_eq!(cut("2", "4")?, " BC\n");
     assert_eq!(cut("0", "1")?, "A\n");
     assert_eq!(cut("19", "19")?, "Z\n");
-    // The cursor, on the empty row after the last line, is past the lines.
+    // The cursor is the screen's: on the empty row after the last line.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""cursor":[2,0],"#), "{json}");
+    assert!(json.contains(r#""cursor":[4,0],"#), "{json}");
+    Ok(())
+}
+
+/// A capture with `styles` keeps blanks at a line's end that are painted,
+/// in JSON's lines and runs as in its text; plain lines trim them. The
+/// cursor is the screen's row and column in JSON as in answers, and an
+/// answer on a line wrapped at the pane's width names the rows it takes.
+/// An exit is told once: a later wait says so, not its output again.
+#[test]
+fn captures_and_answers_agree_on_the_screen() -> Outcome {
+    let server = Server::start("")?;
+    let painted = id(&server.ok(&run(
+        &[],
+        &[
+            "sh",
+            "-c",
+            "printf '\\033[48;2;55;55;55mab     \\033[0m'; exec cat",
+        ],
+    ))?);
+    let styled = server.ok(&["str", &painted, "pane", "styles", "capture", "json"])?;
+    assert!(styled.contains(r#""lines":["ab     "]"#), "{styled}");
+    assert!(
+        styled.contains(r##""styles":[[{"col":0,"len":7,"bg":"#373737"}]]"##),
+        "{styled}"
+    );
+    let plain = server.ok(&["str", &painted, "pane", "capture", "json"])?;
+    assert!(plain.contains(r#""lines":["ab"]"#), "{plain}");
+    let wraps = id(&server.ok(&run(
+        &["10", "4", "size"],
+        &["sh", "-c", "printf abcdefghijklmno; exec cat"],
+    ))?);
+    let json = server.ok(&["str", &wraps, "pane", "capture", "json"])?;
+    assert!(json.contains(r#""cursor":[1,5],"#), "{json}");
+    let typed = server.ok(&["str", &wraps, "pane", "str", "xy", "text", "send-keys"])?;
+    assert!(
+        head(&typed).ends_with(r#" · cursor 1,7 on rows 0-1 "abcdefghij" "klmnoxy""#),
+        "{typed}"
+    );
+    let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
+    let keys = server.ok(&["str", &ends, "pane", "str", "Enter", "key", "send-keys"])?;
+    assert!(
+        keys.starts_with(&format!("{ends} exited 0\n")) && keys.contains("BYE"),
+        "{keys}"
+    );
+    let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert_eq!(
+        again,
+        format!("{ends} exited 0 · told before: `{ends} capture` reads its last screen\n")
+    );
     Ok(())
 }
 
@@ -2049,6 +2121,86 @@ fn escape_alone_and_full_screens() -> Outcome {
         saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
         "{saved}"
     );
+    Ok(())
+}
+
+/// A program that tells a lone Escape from a key's sequence on a timer fux
+/// cannot see (an alarm, 250ms), drawing only once it runs out, has its
+/// Escape answered by what it drew then, not taken as having drawn nothing;
+/// the key after it waits for that too, not read with it as Alt.
+#[test]
+fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
+    let server = Server::start("")?;
+    let modes = "import os, signal, tty\n\
+                 tty.setraw(0); mode = ['normal']\n\
+                 def draw(): os.write(1, ('\\x1b[H\\x1b[2Jmode: ' + mode[0] + '\\r\\n').encode())\n\
+                 def alone(*_): mode[0] = 'normal'; draw()\n\
+                 signal.signal(signal.SIGALRM, alone); draw()\n\
+                 while True:\n\
+                 \x20   try: b = os.read(0, 64)\n\
+                 \x20   except InterruptedError: continue\n\
+                 \x20   if b == b'\\x1b': signal.setitimer(signal.ITIMER_REAL, 0.25); continue\n\
+                 \x20   signal.setitimer(signal.ITIMER_REAL, 0)\n\
+                 \x20   mode[0] = 'insert' if b == b'i' else 'read ' + b.hex(); draw()\n";
+    let pane = id(&server.ok(&run(
+        &["str", "mode:", "wait-text"],
+        &["python3", "-c", modes],
+    ))?);
+    let keys = |keys: &[&str]| {
+        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
+        server.ok(&send.concat())
+    };
+    assert!(keys(&["str", "i", "text"])?.ends_with("mode: insert\n"));
+    let escape = keys(&["str", "Escape", "key"])?;
+    assert_eq!(escape, format!("{pane} {READING}\nmode: normal\n"));
+    let then = keys(&[
+        "str", "i", "text", "str", "Escape", "key", "str", "x", "text",
+    ])?;
+    assert!(then.ends_with("mode: read 78\n"), "{then}");
+    Ok(())
+}
+
+/// A remote client that reports nothing of what it runs (here a stand-in
+/// named `ssh`, reading its terminal as ssh does while its command runs
+/// there) is no program waiting for keys: once quiet it is `waiting`, the
+/// answer says fux cannot tell and how to wait, and a text wait runs to
+/// its limit, never told it cannot come (7).
+#[test]
+fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let ssh = server.dir.join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\necho connected\nread line\n").map_err(e)?;
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
+    let ssh = ssh.to_string_lossy().into_owned();
+    let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;
+    let pane = id(&started);
+    if PROBED {
+        assert_eq!(
+            head(&started),
+            format!(
+                "{pane} waiting · ssh runs its command on another machine, so fux cannot tell \
+                 whether it waits or works: `{pane} wait-exit wait` waits for its end"
+            )
+        );
+        let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
+        assert!(
+            json.contains(r#""remote":"ssh","wait_with":"wait-exit""#),
+            "{json}"
+        );
+    }
+    let built = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "built",
+        "wait-text",
+        "1",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(built.status, 124, "{}", built.stderr);
     Ok(())
 }
 
@@ -2977,7 +3129,8 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
     assert_eq!(out.status, 3, "{}", out.stderr);
-    let answer = format!("{pane} exited 2\nLAST");
+    // Its exit told by run, it is not told again with its output.
+    let answer = format!("{pane} exited 2 · told before: `{pane} capture` reads its last screen");
     assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
@@ -4538,7 +4691,10 @@ fn an_exited_program_runs_no_command() -> Outcome {
     let marked = "printf '\\033]133;A\\007$ \\033]133;C\\007'; sleep 0.3; echo bye";
     let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", marked]))?);
     let ended = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
+    assert!(
+        head(&ended).starts_with(&format!("{pane} exited 0 · told before")),
+        "{ended}"
+    );
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
     assert!(json.contains(r#""command_running":false"#), "{json}");
     Ok(())

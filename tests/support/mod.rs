@@ -41,10 +41,15 @@ pub const UNCHANGED: &str = if PROBED {
 pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
 
 /// The state line of pane `pane`'s program asleep, or still at work, once
-/// quiet: busy, with how to wait on.
-pub fn asleep(pane: &str) -> String {
+/// quiet: busy, with how to wait on; at a limit of `secs`, said not to
+/// have failed (`0 timeout` has none).
+pub fn asleep(pane: &str, secs: u64) -> String {
+    let at = match secs {
+        0 => String::new(),
+        secs => format!("still at work at the {secs}s limit, not failed: "),
+    };
     match PROBED {
-        true => format!("busy · `{pane} wait` waits for it to settle"),
+        true => format!("busy · {at}`{pane} wait` waits for it to settle"),
         false => ASLEEP.to_owned(),
     }
 }

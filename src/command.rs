@@ -203,6 +203,11 @@ wire! {
         Text(text: String),
         /// Text as a paste: bracketed if the program asked for bracketed paste.
         Paste(text: String),
+        /// Bytes as they are: part of a key's sequence or of a character.
+        Bytes(bytes: Vec<u8>),
+        /// A pause between two inputs: the one after it is written this long
+        /// after the one before, whatever the program did meanwhile.
+        Pause(gap: Duration),
     }
 }
 
