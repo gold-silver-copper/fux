@@ -386,6 +386,12 @@ schedule = "nightly"
 command = "fux-vt/compare/mutants.sh guards"
 needs = ["cargo-mutants 27.1.0", "cargo-nextest", "fux-vt/compare/mutants-guards.txt"]
 
+[[check]]
+name = "nightly-mosh-corpus"
+schedule = "nightly"
+command = "cargo test -p fux-vt --features checks --release --locked --test external_corpora moshs_fuzz_corpus -- --ignored"
+needs = ["the network at run time (mosh's seeds are fetched at their pin)"]
+
 # --- every PR (ci.yml), not wired yet ---------------------------------------
 
 [[check]]

@@ -196,3 +196,25 @@ jobs:
           name: mutants-${{ matrix.shard }}
           path: ${{ runner.temp }}/mutants/mutants.out/*.txt
           if-no-files-found: ignore
+
+  mosh-corpus:
+    name: mosh's fuzz corpus, fetched at its pin and replayed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # mosh is GPL-3.0, so its 27 seeds are not vendored: the ignored test
+      # fetches them at decd9b70, checks external/mosh.sha256, and fails if
+      # it cannot fetch (no FUX_VT_CORPORA_OFFLINE here).
+      - name: mosh's corpus
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
+          cargo test -p fux-vt --features checks --release --locked --test external_corpora moshs_fuzz_corpus -- --ignored
