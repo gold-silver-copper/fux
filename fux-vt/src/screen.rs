@@ -746,7 +746,9 @@ impl Screen {
         })
     }
 
-    /// 36: tab stops are kept for no more columns than a grid has.
+    /// 36: tab stops are kept for no more columns than any grid has, a
+    /// column being a `u16`: for every column the screen has had, so that
+    /// a narrower screen keeps more than its own (`TabStops`).
     fn check_tabs(&self) -> Result<(), String> {
         let kept = self.terminal.tabs.stops.len();
         crate::check::ensure(kept <= usize::from(u16::MAX).saturating_add(1), || {
