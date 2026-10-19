@@ -6,7 +6,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
 | DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
-| ctlseqs | 107 | 16 | 2 | 28 | 92 | 245 |
+| ctlseqs | 108 | 16 | 2 | 27 | 92 | 245 |
 | fux-vt | 42 | 1 | 0 | 5 | 2 | 50 |
 
 ## ECMA-48
@@ -484,7 +484,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v | CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v (Copy Rectangular Area (DECCRA), VT400 and up.) | implemented | `rectangles::deccra_copies_a_rectangle` |  |
 | CSI Ps $ w | CSI Ps $ w (Request presentation state report (DECRQPSR), VT320 and up.) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give |
 | CSI Pt ; Pl ; Pb ; Pr ' w | CSI Pt ; Pl ; Pb ; Pr ' w (Enable Filter Rectangle (DECEFR), VT420 and up.) | not applicable |  | fux-vt has no locator (DEC STD 070, chapter 13): mouse reports are xterm's (CSI ? 1000 h and the others) |
-| CSI Ps x | CSI Ps x (Request Terminal Parameters (DECREQTPARM).) | not implemented |  | DECREQTPARM is not implemented |
+| CSI Ps x | CSI Ps x (Request Terminal Parameters (DECREQTPARM).) | implemented | `conformance::decreqtparm_is_answered_as_a_vt100_answers_it` | without an identity, as the VT100 DA claims; with one, unanswered, as xterm's VT220 |
 | CSI Ps * x | CSI Ps * x (Select Attribute Change Extent (DECSACE), VT420 and up.) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` |  |
 | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x (Fill Rectangular Area (DECFRA), VT420 and up.) | implemented | `rectangles::decfra_fills_a_rectangle` |  |
 | CSI Ps # y | CSI Ps # y (Select checksum extension (XTCHECKSUM), xterm.) | not implemented |  | the checksum is xterm's default, the VT520's; it cannot be changed |

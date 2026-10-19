@@ -279,7 +279,8 @@ fn bytes(text: &str) -> Vec<u8> {
 }
 
 /// The context every probe runs in: a 6 by 12 screen, every feature on
-/// but the one `without` names (`without Pictures: BYTES`) and an identity, four lines of text and the cursor on the third line's
+/// but the one `without` names (`without Pictures: BYTES`) and an identity
+/// (but `without Identity`), four lines of text and the cursor on the third line's
 /// fifth column, an SGR last so no character is the last printed.
 fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
     let options = fux_vt::Feature::ALL
@@ -287,7 +288,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
         .fold(Options::new(), |o, f| {
             o.set(*f, format!("{f:?}") != without)
         })
-        .with_identity(Some(Identity {
+        .with_identity((without != "Identity").then_some(Identity {
             name: "fux",
             version: "1.2.3",
         }));
