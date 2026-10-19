@@ -196,8 +196,17 @@ pub fn chunk_of(name: &str) -> usize {
     chunked(name).map_or(CHUNK, |(_, n)| n)
 }
 
+// The workloads made on this thread, for the tests: a run makes the ones
+// it times and no other.
+#[cfg(test)]
+thread_local! {
+    static MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// [`load`] of a name without `@N`.
 fn unchunked(name: &str, total: usize) -> Result<Load, String> {
+    #[cfg(test)]
+    MADE.with(|made| made.set(made.get().saturating_add(1)));
     if let Some(((_, about, _), bytes)) =
         (WORKLOADS.iter().find(|(n, _, _)| *n == name)).zip(synthetic::make(name, total))
     {
@@ -594,8 +603,6 @@ pub fn run_to(
         .chain(engines.iter().filter_map(|&i| ENGINES.get(i)))
         .collect();
     let cpus = cpu_set();
-    // Each table's cells, by workload: (column, measured).
-    type Cells = Vec<(String, Option<Result<Measured, String>>)>;
     let tables: Vec<(Retention, bool)> = Retention::ALL
         .into_iter()
         .flat_map(|r| [(r, true), (r, false)])
@@ -638,9 +645,26 @@ pub fn run_to(
             out.push((name.clone(), cells));
         }
     }
+    report(&tables, &results, &inputs, mb, &cpus, json)
+}
+
+/// Each table's cells, by workload: (column, measured).
+type Cells = Vec<(String, Option<Result<Measured, String>>)>;
+
+/// Prints [`run_to`]'s tables of `results` (and writes their JSON to
+/// `json`, if given): whether every measure was made, a failed one failing
+/// the run after its table and JSON.
+fn report(
+    tables: &[(Retention, bool)],
+    results: &[Vec<(String, Cells)>],
+    inputs: &[serde_json::Value],
+    mb: usize,
+    cpus: &str,
+    json: Option<&str>,
+) -> Result<bool, String> {
     let mut doc_tables = Vec::new();
     let mut errors = 0usize;
-    for ((retention, in_process), rows) in tables.iter().zip(&results) {
+    for ((retention, in_process), rows) in tables.iter().zip(results) {
         let Some((_, first)) = rows.first() else {
             continue;
         };
@@ -746,7 +770,7 @@ pub fn run_to(
         }));
     }
     println!();
-    for input in &inputs {
+    for input in inputs {
         println!(
             "{:<34} {} sha256 {}",
             input
@@ -925,6 +949,94 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// A run makes the workloads it times and no other: two named, two
+    /// made, where making every one before choosing took gigabytes (HAR-75).
+    #[test]
+    fn choosing_a_workload_makes_no_other() -> Result<(), String> {
+        super::MADE.with(|made| made.set(0));
+        let names = ["ascii".to_owned(), "corpus:bash-small".to_owned()];
+        // No bytes: what is counted is the workloads made, not their size.
+        assert!(super::run_to(&[], &names, 0, None)?);
+        assert_eq!(super::MADE.with(std::cell::Cell::get), names.len());
+        Ok(())
+    }
+
+    /// An engine that can't be made for a table is an error with its
+    /// reason, not "unavailable", which says the harness has no setup.
+    #[test]
+    fn an_engine_that_cannot_be_made_is_an_error_not_unavailable() {
+        let load = super::Load {
+            name: "no rows".into(),
+            about: String::new(),
+            rows: 0,
+            cols: 80,
+            bytes: b"x".to_vec(),
+            resizes: Vec::new(),
+            chunk: super::CHUNK,
+        };
+        let made = super::measure(&SUBJECT, &load, Retention::Budget);
+        assert!(
+            matches!(&made, Some(Err(e)) if e.starts_with("made: ")),
+            "{:?}",
+            made.map(|m| m.map(|m| m.fed))
+        );
+    }
+
+    /// A run with a failed measure fails, after its table; one with none
+    /// (an engine with no setup is no failure) does not.
+    #[test]
+    fn a_run_with_an_error_cell_fails() -> Result<(), String> {
+        let measured = || super::Measured {
+            fed: 1,
+            feed: std::time::Duration::from_millis(1),
+            read: std::time::Duration::ZERO,
+            rows_held: Some(0),
+            reply_bytes: 0,
+            prints: None,
+        };
+        let report = |cell: Option<Result<super::Measured, String>>| {
+            let cells = vec![
+                ("fux-vt+prints".to_owned(), Some(Ok(measured()))),
+                ("fux-vt".to_owned(), cell),
+            ];
+            super::report(
+                &[(Retention::Budget, true)],
+                &[vec![("ascii".to_owned(), cells)]],
+                &[],
+                1,
+                "0",
+                None,
+            )
+        };
+        assert!(!report(Some(Err("x".into())))?);
+        assert!(report(Some(Ok(measured())))?);
+        assert!(report(None)?);
+        Ok(())
+    }
+
+    /// fux-vt+prints keeps the history fux-vt's adapter keeps under equal
+    /// budget: 20,000 full lines on 10 rows of 10, the same rows held.
+    #[test]
+    fn fux_vt_and_prints_keep_one_history_budget() -> Result<(), String> {
+        let mut line = vec![b'x'; 10];
+        line.extend_from_slice(b"\r\n");
+        let load = super::Load {
+            name: "lines".into(),
+            about: String::new(),
+            rows: 10,
+            cols: 10,
+            bytes: super::repeated(&line, 20_000 * line.len()),
+            resizes: Vec::new(),
+            chunk: super::CHUNK,
+        };
+        let prints = super::measure_prints(&load, Retention::Budget)?.rows_held;
+        let adapter = super::measure(&SUBJECT, &load, Retention::Budget)
+            .ok_or("no setup")??
+            .rows_held;
+        assert_eq!(prints, adapter);
         Ok(())
     }
 }
