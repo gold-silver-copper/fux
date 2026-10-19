@@ -447,7 +447,8 @@ fux-vt's work counters and a counting allocator against it.
   one column (the coeng takes none and each letter one: two, as glibc's
   widths summed); and a cluster holding such a spacing mark takes the
   columns of its form composed (each pair of a character and such a mark
-  with a canonical decomposition made one, `tables::COMPOSITIONS`), such
+  with a canonical decomposition made one, composition exclusions
+  included, `tables::COMPOSITIONS`), such
   a mark right after another spacing mark taking none, so canonical
   equivalents take the same columns (U+09CB and U+09C7 U+09BE). Its
   ligatures between clusters (Arabic Lam-Alef and the like) take no
