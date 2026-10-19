@@ -242,7 +242,9 @@ impl Eq for Grid {}
 /// identity and version of each pane row put in it. A row of a fux-vt
 /// screen keeps its identity while it is retained, no later row takes it,
 /// and its version changes with every edit of its cells, soft wrap or
-/// links; pane ids are never reused. So a grid composed again for its
+/// links; pane ids are never reused, and a pane's program started again
+/// (`respawn`), whose new screen numbers its rows from the start again,
+/// makes another frame. So a grid composed again for its
 /// memo's frame needs only the pane rows whose keys changed put again
 /// (`Memo::update`), and two grids of one frame show the same cells on a
 /// row of the pane area whose pane rows have the same keys in both
@@ -259,7 +261,8 @@ struct Memo {
 type RowKey = Option<(fux_vt::RowId, u64)>;
 
 /// Everything about a grid composed in normal mode but its panes' rows: its
-/// size, where each pane and separator is and its window's size, and the
+/// size, where each pane and separator is, each pane's screen
+/// (`Pane::starts`, which program's) and its window's size, and the
 /// focused pane, which colours the separators. Only for a tab with panes
 /// (one without shows a hint, and focuses none) none of which is in
 /// colours of its own (`recolour`), whose rows depend on more than their
@@ -268,7 +271,7 @@ type RowKey = Option<(fux_vt::RowId, u64)>;
 struct Frame {
     rows: u16,
     cols: u16,
-    panes: Vec<(PaneId, Rect, (u16, u16))>,
+    panes: Vec<(PaneId, u64, Rect, (u16, u16))>,
     separators: Vec<crate::layout::Separator>,
     focus: PaneId,
 }
@@ -285,11 +288,12 @@ impl Frame {
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
         for (id, rect) in &placement.panes {
-            let screen = session.panes.get(id)?.screen();
+            let pane = session.panes.get(id)?;
+            let screen = pane.screen();
             if own_colours(screen) {
                 return None;
             }
-            panes.push((*id, *rect, screen.size().into()));
+            panes.push((*id, pane.starts, *rect, screen.size().into()));
         }
         Some(Frame {
             rows: view.rows,
@@ -305,7 +309,7 @@ impl Memo {
     /// Puts again on `grid`, which this memo's frame composed and composes
     /// now, the pane rows that changed since: the grid's memo then.
     fn update(mut self, grid: &mut Grid, session: &Session) -> Memo {
-        for ((id, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
+        for ((id, _, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
             let Some(pane) = session.panes.get(id) else {
                 continue;
             };
@@ -346,7 +350,7 @@ impl<'a> SameFrame<'a> {
         y < self.frame.rows.saturating_sub(1)
             && (self.frame.panes.iter())
                 .zip(self.keys.0.iter().zip(self.keys.1))
-                .all(|((_, rect, _), (a, b))| {
+                .all(|((_, _, rect, _), (a, b))| {
                     let i = y.checked_sub(rect.y()).filter(|i| *i < rect.h());
                     i.is_none_or(|i| a.get(usize::from(i)) == b.get(usize::from(i)))
                 })
@@ -2362,6 +2366,32 @@ mod tests {
             [false, false, true, true, true, true, false, false],
             "B and C selected"
         );
+        Ok(())
+    }
+
+    /// A pane's program started again (`respawn`) draws on a new screen,
+    /// whose rows are numbered from the start again: a grid composed
+    /// again from its memo shows the new screen, not the rows of the old
+    /// one that had the same numbers and versions.
+    #[test]
+    fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(6, 30)?;
+        let id = PaneId::of(1);
+        s.output(id, b"A");
+        let mut grid = Grid::new(0, 0);
+        let mut placement = Placement::default();
+        assert!(compose_into(&s, c, &mut grid, &mut placement));
+        let launch = crate::pane::Launch {
+            argv: vec!["x".into()],
+            cwd: "/".into(),
+            env: Vec::new(),
+        };
+        let pane = s.panes.get_mut(&id).ok_or("the pane")?;
+        pane.respawned(launch, crate::pane::Process::Absent, 1 << 10)
+            .map_err(|e| e.to_string())?;
+        s.output(id, b"B");
+        assert!(compose_into(&s, c, &mut grid, &mut placement));
+        assert_eq!(grid.row_text(0), "B");
         Ok(())
     }
 
