@@ -98,9 +98,9 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
         Process::HungUp(_) => return State::Busy,
         Process::Reading(child) => child,
     };
-    // Keys not yet written, or output written that fux has not read: at
-    // work still.
-    if !pane.input_written() || child.master.output_unread() {
+    // Keys not yet written, or output written that fux has not read, or
+    // read and not yet given to the screen: at work still.
+    if !pane.input_written() || child.master.output_unread() || pane.has_unread() {
         return State::Busy;
     }
     // An Escape alone (or a sequence begun) it drew nothing for yet: it

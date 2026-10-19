@@ -1435,6 +1435,7 @@ impl Pane {
         self.input.is_empty()
             && drawn
             && !child.master.output_unread()
+            && !self.has_unread()
             && match taking() {
                 Some(Activity::Reading) => alone,
                 Some(Activity::Idle) => !escape,

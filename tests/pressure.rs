@@ -434,13 +434,15 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
 /// Output that spends a parser call's work budget (threats.md P24) is read
 /// on the pane's next turns, the rest of it and what came after: the pane
 /// goes on to its end, and the server, with nothing more to read, rests.
-/// Each REP is spent as 65,535 copies: 2,000 of them spend a budget.
+/// Each REP is spent as 65,535 copies: 2,000 of them spend a budget. The
+/// wait is asked first: an unoptimized build spends seconds on a budget,
+/// past a client's patience for the server's greeting.
 #[test]
 fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
     let _alone = alone();
     let server = Server::start("")?;
     let pid = server.pid().ok_or("the server's pid")?;
-    let code = "printf 'X\\033[65535b%.0s' $(seq 2000); echo; echo DO''NE; sleep 30";
+    let code = "sleep 1; printf 'X\\033[65535b%.0s' $(seq 2000); echo; echo DO''NE; sleep 30";
     let pane = server
         .ok(&[
             "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "0", "timeout",
@@ -457,7 +459,7 @@ fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
         "str",
         "DONE",
         "wait-text",
-        "10",
+        "60",
         "timeout",
         "wait",
     ])?;
