@@ -1,0 +1,59 @@
+# vttest 2.7's self-checks that do not pass against fux-vt in a fux pane,
+# each with why: read by release/vttest.sh fux (release/vttest.py check).
+# The run fails on a self-check that fails and is not listed here, on one
+# listed that passes or is not run, and on a count other than the listed
+# one, so the list never goes stale: when a change makes one pass, remove
+# its line.
+#
+# vttest runs at 24x80.80 through release/vttest.keys, at the operating
+# level the terminal's DA claims (fux-vt: 2, a VT220; xterm 411: 4). A
+# self-check is named by its menu choice and its place under it
+# (release/vttest.py). A line is `fux-vt CHECK OUTCOME KIND: why`, KIND one
+# of esctest-expected.txt's (departure, spec, not-implemented, xterm-too,
+# bug) or:
+#
+#   fux-policy:  fux-vt answers it with Feature::ExtendedReplies, which a
+#                fux pane leaves off (src/pane.rs); fux-vt's README lists
+#                each answer (`ExtendedReplies`)
+#   level:       vttest asks it only of a terminal at a higher level than
+#                the one fux-vt's DA claims
+#
+# Not reached (release/vttest.keys says why): DECBKM, the keyboard and
+# mouse menus, VT52's level-3 check, xterm's DECRQSS menu; and at level 2,
+# DECCIR (11.2.5.3.1) and DECRQUPSS (11.2.5.5), which vttest offers from
+# level 3. Real xterm 411 at level 4 passes 70 of its 83
+# (results/final/f/vttest-xterm.txt).
+
+fux-vt count 54
+
+fux-vt 6.6#1 n/a level: DA3 (CSI = c), asked from level 4 (VT420); fux-vt claims level 2 (DA 62)
+fux-vt 11.1.1.1.1#1 failed fux-policy: DSR keyboard status (CSI ? 26 n), answered `CSI ? 27 ; 0 n` with ExtendedReplies
+fux-vt 11.1.1.1.3#1 failed fux-policy: DSR printer status (CSI ? 15 n), answered `CSI ? 13 n` (no printer)
+fux-vt 11.1.1.1.4#1 failed fux-policy: DSR UDK status (CSI ? 25 n), answered `CSI ? 23 n`
+fux-vt 11.1.3#1 failed departure: S8C1T: the replies stay 7-bit, as UTF-8 (ECMA-35 15.4) has no C1 bytes (CONFORMANCE.md, 3-72 S8C1T); xterm, run here without UTF-8, sends 8-bit replies
+fux-vt 11.2.5.2.5#1 failed fux-policy: DSR locator status (CSI ? 55 n), answered `CSI ? 53 n` (no locator)
+fux-vt 11.2.5.2.6#1 failed fux-policy: DSR identify locator (CSI ? 56 n), answered `CSI ? 57 ; 0 n`
+fux-vt 11.2.5.2.7#1 failed fux-policy: DECXCPR (CSI ? 6 n), answered `CSI ? row ; col R`
+fux-vt 11.2.5.3.2.3#1 failed not-implemented: DECTABSR (DECRQPSR 2), a TSI-extension report (CONFORMANCE.md, 5-204)
+fux-vt 11.2.5.3.6.1#1 failed xterm-too: DECRQSS for DECPRO, which neither has
+fux-vt 11.2.5.3.6.2#1 failed xterm-too: DECRQSS for DECSASD (status display), which neither has
+fux-vt 11.2.5.3.6.5#1 failed not-implemented: DECRQSS for DECSCPP, a windowing extension (DEC STD 070 5.4.7; CONFORMANCE.md, 5-73); xterm answers its columns
+fux-vt 11.2.5.3.6.7#1 failed not-implemented: DECRQSS for DECSLPP: the host sets the height (CONFORMANCE.md, 5-75); xterm answers its lines
+fux-vt 11.2.5.3.6.8#1 failed xterm-too: DECRQSS for DECSSDT (status line type)
+fux-vt 11.2.5.3.6.10#1 failed xterm-too: DECRQSS for DECTTC (transmit termination)
+fux-vt 11.2.5.3.6.11#1 failed xterm-too: DECRQSS for DECTLTC (line termination)
+fux-vt 11.2.5.4.2#1 failed xterm-too: DECRQTSR, a terminal state report
+fux-vt 11.2.5.6#1 failed not-implemented: DECRQDE (CSI " v), a windowing extension (DEC STD 070 5.4.7; CONFORMANCE.md, 5-88); xterm answers its extent
+fux-vt 11.3.7.2.3.2#1 failed xterm-too: DECRQSS for DECELF (local functions)
+fux-vt 11.3.7.2.3.3#1 failed xterm-too: DECRQSS for DECLFKC (local function keys)
+fux-vt 11.3.7.2.3.5#1 failed xterm-too: DECRQSS for DECSMKR (modifier key reporting)
+fux-vt 11.3.7.2.3.7#1 failed not-implemented: DECRQSS for DECSNLS, a windowing extension (DEC STD 070 5.4.7; CONFORMANCE.md, 5-89); xterm answers its lines
+fux-vt 11.3.7.3.5#1 failed fux-policy: DSR macro space (CSI ? 62 n), answered `CSI 0 * {` (no macro space)
+fux-vt 11.3.7.3.6#1 failed fux-policy: DSR memory checksum (CSI ? 63 ; Pid n), answered `DCS Pid ! ~ 0000 ST` (no macros)
+fux-vt 11.3.7.3.7#1 failed fux-policy: DSR data integrity (CSI ? 75 n), answered `CSI ? 73 n`, then `CSI ? 70 n`
+fux-vt 11.3.7.3.8#1 failed fux-policy: DSR multiple sessions (CSI ? 85 n), answered `CSI ? 83 n` (no sessions)
+fux-vt 11.3.7.3.9#1 failed xterm-too: DECRQCRA (GL) is not answered by default, as xterm 411's is not (decision 870; `Feature::RectangleChecksums`)
+fux-vt 11.3.7.3.10#1 failed xterm-too: DECRQCRA (GR), as 11.3.7.3.9
+fux-vt 11.4.5.2.3.2#1 failed xterm-too: DECRQSS for DECATC (alternate text colour)
+fux-vt 11.4.5.2.3.3#1 failed xterm-too: DECRQSS for DECAC (assign colour)
+fux-vt 11.8.2.5#1 failed departure: the title stack (CSI 22 t, CSI 23 t) is refused (README, "Deliberate boundary"); xterm passes its 18
