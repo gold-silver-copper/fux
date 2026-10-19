@@ -691,27 +691,20 @@ fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
     Ok(())
 }
 
-/// A scroll down to the screen's last row leaves that row going on in no
-/// row: its soft wrap ends, as xterm 411 ends it (with Ghostty, libvterm,
-/// avt, vt100 and tmux: `fux-vt-compare replay --engines all --size 5x1
-/// '67' '\e[4T'`); a region's last row above it keeps its own, as xterm
-/// keeps it (`--size 6x1 '~!@#\e[1;5r\e[10H\e[3T'`).
+/// A row scrolled down to the screen's last row keeps its soft wrap, as
+/// xterm 411 keeps it, with alacritty and WezTerm: scrolled up again, it
+/// is still soft-wrapped (`fux-vt-compare replay --engines all --size 5x1
+/// --history 0 'll' '\e[4T' '\e[2S'`: row 2). A report that xterm ended
+/// it read xterm's printout, whose last row ends with no line feed, as
+/// unwrapped (agent A, HAR-47).
 #[test]
-fn a_scroll_down_ends_the_soft_wrap_of_the_screens_last_row() -> Result {
-    let wrapped = |input: &[u8], rows: u16| -> Result<Vec<bool>> {
-        let mut p = Parser::new(Size::new(rows, 1)?, 0)?;
-        p.process(input)?;
-        Ok(p.screen().rows().map(|r| r.wrapped()).collect())
-    };
-    assert_eq!(wrapped(b"67\x1b[4T", 5)?, [false; 5]);
-    assert_eq!(
-        wrapped(b"~!@#\x1b[3T", 6)?,
-        [false, false, false, true, true, false]
-    );
-    assert_eq!(
-        wrapped(b"~!@#\x1b[1;5r\x1b[10H\x1b[3T", 6)?,
-        [false, false, false, true, true, false]
-    );
+fn a_row_scrolled_down_to_the_last_keeps_its_soft_wrap() -> Result {
+    let mut p = Parser::new(Size::new(5, 1)?, 0)?;
+    p.process(b"ll\x1b[4T")?;
+    assert!(p.screen().row_wrapped(4));
+    p.process(b"\x1b[2S")?;
+    let wrapped: Vec<bool> = (0..5).map(|y| p.screen().row_wrapped(y)).collect();
+    assert_eq!(wrapped, [false, false, true, false, false]);
     Ok(())
 }
 
