@@ -145,7 +145,11 @@ decoded, and what a program asked for, encoded. It needs no option.
   parameters is dropped, and the byte begins the next key. A
   lone Escape is a key once
   `ESCAPE_DELAY` (35 ms) passes without more, which the host learns from
-  `Decoder::deadline` and tells with `Decoder::timeout`. Every buffer is
+  `Decoder::deadline` and tells with `Decoder::timeout`. A character
+  begun, a UTF-8 lead byte without its continuation bytes, after an
+  Escape or not, has no deadline: it waits for its bytes, at most 4, as a
+  terminal sends a character's bytes together, and a byte that can't
+  continue it ends it, one U+FFFD for what came (Unicode 3.9's maximal subparts). Every buffer is
   bounded (threats.md B23 to B27): a paste keeps at most its limit and 5
   bytes, however many come in one read; an unfinished sequence at most
   258 bytes, a long read giving it only what decides it; an answer past
