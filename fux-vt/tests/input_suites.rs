@@ -16,7 +16,7 @@
 //! `\e` for ESC, `\xHH` for a byte, `\\` for a backslash.
 
 use fux_vt::keys::decode::{Decoder, Input};
-use fux_vt::keys::encode::{KeyMode, OtherKeys, Report, key_bytes};
+use fux_vt::keys::encode::{KeyMode, OtherKeys, OtherKeysLevel, Report, factored_mask, key_bytes};
 use fux_vt::keys::{KeyPress, Keystroke, Kitty};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -52,13 +52,19 @@ fn mode(spec: &str) -> Result<KeyMode> {
             backarrow,
         });
     }
-    let other_keys = match words.iter().find_map(|w| w.strip_prefix("mok=")) {
-        Some("1") => Some(OtherKeys::Usual),
-        Some("2") => Some(OtherKeys::All),
-        Some("3") => Some(OtherKeys::Unmodified),
+    let level = match words.iter().find_map(|w| w.strip_prefix("mok=")) {
+        Some("1") => Some(OtherKeysLevel::Usual),
+        Some("2") => Some(OtherKeysLevel::All),
+        Some("3") => Some(OtherKeysLevel::Unmodified),
         Some(level) => return Err(format!("no modifyOtherKeys level {level}").into()),
         None => None,
     };
+    // `factor=N`: XTMODKEYS's mask of modifiers to factor out.
+    let mask = match words.iter().find_map(|w| w.strip_prefix("factor=")) {
+        Some(mask) => mask.parse()?,
+        None => 0,
+    };
+    let other_keys = level.map(|level| OtherKeys::new(level, factored_mask(mask)));
     Ok(KeyMode::Legacy {
         application: has("app"),
         keypad: has("keypad"),
@@ -204,6 +210,21 @@ fn xterm_keys() -> Result {
     let counts = encoder_suite("xterm", include_str!("data/keys/xterm-keys.txt"))?;
     // Agree, differ as recorded, not applicable.
     assert_eq!(counts, (2312, 0, 112));
+    Ok(())
+}
+
+/// Real xterm 411's bytes with modifyOtherKeys's mask of modifiers to factor
+/// out (`CSI > 4 ; level : mask m`, KEY-24), recorded through XTest as
+/// `xterm_keys`'s are: a key whose only modifier is factored out is sent as
+/// with modifyOtherKeys off (at level 2 Ctrl making a control of `@` to DEL
+/// alone; at level 3 `CSI 27 ; 1 ; code ~`), and with Shift factored out a
+/// key escaped with more modifiers names its unshifted code.
+#[test]
+fn xterm_keys_factored() -> Result {
+    let text = include_str!("data/keys/xterm-keys-factored.txt");
+    let counts = encoder_suite("xterm factored", text)?;
+    // Agree, differ as recorded, not applicable.
+    assert_eq!(counts, (420, 0, 28));
     Ok(())
 }
 

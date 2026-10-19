@@ -1,6 +1,6 @@
 use crate::compact::{Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS_KEPT;
-use crate::keys::encode::OtherKeys;
+use crate::keys::encode::{OtherKeys, OtherKeysLevel, factored_mask};
 use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, Switch};
 use crate::parser::Chars;
@@ -3822,25 +3822,38 @@ impl Screen {
             // modifyOtherKeys too (ctlseqs); 0 alone is modifyKeyboard's.
             (b">", b'm') if !p.given => self.terminal.modify_other_keys = None,
             // Only resource 4 is modifyOtherKeys; other resources are unhandled.
+            // A subparameter of the level is a mask of modifiers to factor
+            // out (`CSI > 4 ; 2 : 1 m`), as xterm 411 reads it (charproc.c,
+            // CASE_SET_MOD_FKEYS); one of the resource (ctlseqs' example,
+            // `CSI > 4 : 1 m`) xterm 411 ignores, and so does this arm.
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
-                self.terminal.modify_other_keys = match p.first(1, 0) {
-                    1 => Some(OtherKeys::Usual),
-                    2 => Some(OtherKeys::All),
-                    3 => Some(OtherKeys::Unmodified),
+                let level = match p.first(1, 0) {
+                    1 => Some(OtherKeysLevel::Usual),
+                    2 => Some(OtherKeysLevel::All),
+                    3 => Some(OtherKeysLevel::Unmodified),
                     // 0 or none is off; ctlseqs knows no level past 3.
                     _ => None,
                 };
+                let mask = p
+                    .groups()
+                    .nth(1)
+                    .and_then(|g| g.get(1))
+                    .copied()
+                    .unwrap_or(0);
+                self.terminal.modify_other_keys =
+                    level.map(|level| OtherKeys::new(level, factored_mask(mask)));
             }
             // XTQMODKEYS (ctlseqs, `CSI ? Pp m`): "XTerm's response ... is
             // formatted as an XTMODKEYS control, i.e., CSI > Pp m", its
             // value 0 when off. Only modifyOtherKeys (4) is kept, so only
             // it is answered.
             (b"?", b'm') if p.groups().next() == Some(&[4][..]) => {
-                let level = match self.terminal.modify_other_keys {
+                // Without the mask, as xterm 411's report_mod_fkeys.
+                let level = match self.terminal.modify_other_keys.map(OtherKeys::level) {
                     None => 0,
-                    Some(OtherKeys::Usual) => 1,
-                    Some(OtherKeys::All) => 2,
-                    Some(OtherKeys::Unmodified) => 3,
+                    Some(OtherKeysLevel::Usual) => 1,
+                    Some(OtherKeysLevel::All) => 2,
+                    Some(OtherKeysLevel::Unmodified) => 3,
                 };
                 return Some(Dispatch::Reply(reply!("\x1b[>4;{level}m")));
             }

@@ -448,7 +448,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI Pm l | CSI Pm l (Reset Mode (RM).) | implemented | `conformance::insert_mode_moves_what_is_there` | IRM and LNM |
 | CSI ? Pm l | CSI ? Pm l (DEC Private Mode Reset (DECRST).) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | the modes the README lists; the rest are dropped unreported |
 | CSI Pm m | CSI Pm m (Character Attributes (SGR).) | implemented | `conformance::sgr_colours_take_the_colon_forms_with_a_colour_space`, `semantics::sgr_defaults_resets_and_colour_parameter_forms` |  |
-| CSI > Pp ; Pv m | CSI > Pp ; Pv m | partial | `extended::modify_other_keys_levels_survive_split_sequences` | modifyOtherKeys (4) alone, with `Feature::KittyKeyboard` |
+| CSI > Pp ; Pv m | CSI > Pp ; Pv m | partial | `extended::modify_other_keys_levels_survive_split_sequences`, `extended::modify_other_keys_takes_a_mask_to_factor_out`, `input_suites::xterm_keys_factored` | modifyOtherKeys (4) alone, with `Feature::KittyKeyboard`; a subparameter of Pv is the mask of modifiers to factor out, as xterm 411 reads and sends it (`CSI > 4 ; 2 : 1 m`); one of Pp, ctlseqs' example `CSI > 4 : 1 m`, xterm 411 and fux-vt ignore |
 | CSI > Pp m | CSI > Pp m (Set/reset key modifier options (XTMODKEYS), xterm.) | partial | `extended::modify_other_keys_levels_survive_split_sequences` | turns modifyOtherKeys off; fux-vt keeps no other resource |
 | CSI ? Pp m | CSI ? Pp m (Query key modifier options (XTQMODKEYS), xterm.) | partial | `extended::xtqmodkeys_answers_the_modify_other_keys_level` | modifyOtherKeys (4) alone |
 | CSI Ps n | CSI Ps n (Device Status Report (DSR).) | implemented | `conformance::cursor_reports_count_lines_from_the_top_margin_in_origin_mode` | 5 and 6 |

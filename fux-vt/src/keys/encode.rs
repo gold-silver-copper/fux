@@ -5,6 +5,8 @@
 //! [`crate::Screen::key_mode`] and [`crate::Screen::mode`] read them from
 //! the program's screen, and [`crate::Screen::focus_report`] reads its
 //! own. Mouse reports are [`crate::keys::mouse`]'s.
+use std::num::NonZeroU8;
+
 use crate::keys::{
     CAPS_LOCK_BIT, Direction, Function, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT,
     SHIFT_BIT,
@@ -40,10 +42,87 @@ pub enum KeyMode {
     },
 }
 
+/// xterm's modifyOtherKeys, as `CSI > 4 ; level m` sets it: its level
+/// ([`Self::level`]), and the modifiers a mask factors out
+/// ([`Self::factored`], `CSI > 4 ; level : mask m`). One byte, so a
+/// `KeyMode` stays as small as without the mask.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OtherKeys(NonZeroU8);
+
+impl OtherKeys {
+    /// `level` with the modifiers `factored` factored out.
+    pub const fn new(level: OtherKeysLevel, factored: Modifiers) -> Self {
+        let level = match level {
+            OtherKeysLevel::Usual => 1,
+            OtherKeysLevel::All => 2,
+            OtherKeysLevel::Unmodified => 3,
+        };
+        let bits = level
+            | (factored.shift as u8) << 2
+            | (factored.ctrl as u8) << 3
+            | (factored.alt as u8) << 4;
+        match NonZeroU8::new(bits) {
+            Some(bits) => Self(bits),
+            None => Self(NonZeroU8::MIN),
+        }
+    }
+
+    /// The level.
+    pub const fn level(self) -> OtherKeysLevel {
+        match self.0.get() & 3 {
+            1 => OtherKeysLevel::Usual,
+            2 => OtherKeysLevel::All,
+            _ => OtherKeysLevel::Unmodified,
+        }
+    }
+
+    /// The modifiers factored out (ctlseqs, "Alt and Meta Keys": "a mask
+    /// of modifier bits to factor out of the parameter encoding"), as
+    /// xterm 411 does it (`ignore_now.other_keys`, `input.c`): a key with
+    /// one of them its only modifier is sent as with modifyOtherKeys off,
+    /// at level 2 Ctrl making a control of `@` to DEL alone, and at level 3
+    /// as `CSI 27 ; 1 ; code ~`; and with Shift among them, a key escaped
+    /// with more modifiers names its unshifted code.
+    pub const fn factored(self) -> Modifiers {
+        let bits = self.0.get();
+        Modifiers {
+            shift: bits & 4 != 0,
+            ctrl: bits & 8 != 0,
+            alt: bits & 16 != 0,
+        }
+    }
+}
+
+impl std::fmt::Debug for OtherKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtherKeys")
+            .field("level", &self.level())
+            .field("factored", &self.factored())
+            .finish()
+    }
+}
+
+impl From<OtherKeysLevel> for OtherKeys {
+    fn from(level: OtherKeysLevel) -> Self {
+        Self::new(level, Modifiers::NONE)
+    }
+}
+
+/// The modifiers an XTMODKEYS mask names, X's modifier state bits as xterm
+/// 411 reads them: Shift 1, Control 4, Mod1 (the Alt key, as Meta) 8. The
+/// other bits (Lock, Mod2 to Mod5) name no modifier fux sends.
+pub fn factored_mask(mask: u16) -> Modifiers {
+    Modifiers {
+        shift: mask & 1 != 0,
+        ctrl: mask & 4 != 0,
+        alt: mask & 8 != 0,
+    }
+}
+
 /// xterm's modifyOtherKeys levels (`CSI > 4 ; level m`; ctlseqs, "Alt and
 /// Meta Keys").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OtherKeys {
+pub enum OtherKeysLevel {
     /// Level 1: "the usual shift- and control-modifiers work as expected".
     Usual,
     /// Level 2: "all of the modifiers apply".
@@ -180,7 +259,7 @@ pub fn key_bytes(stroke: Keystroke, mode: KeyMode, out: &mut Vec<u8>) {
             if keypad && application_keypad(stroke, out) {
                 return;
             }
-            if !level.is_some_and(|level| other_keys(stroke, level, backarrow, out)) {
+            if !level.is_some_and(|keys| other_keys(stroke, keys, backarrow, out)) {
                 legacy(stroke.press, application, backarrow, out);
             }
         }
@@ -528,7 +607,8 @@ const F_CODES: [u8; 8] = [15, 17, 18, 19, 20, 21, 23, 24];
 /// The code is the key's character, Shift applied (Ctrl-Shift-a is 65), as
 /// xterm sends the keysym; Backspace's is 127, or 8 with Ctrl, which the
 /// backarrow toggle leaves BS (the reverse with DECBKM set).
-fn other_keys(stroke: Keystroke, level: OtherKeys, backarrow: bool, out: &mut Vec<u8>) -> bool {
+fn other_keys(stroke: Keystroke, keys: OtherKeys, backarrow: bool, out: &mut Vec<u8>) -> bool {
+    let level = keys.level();
     let KeyPress { key, mods } = stroke.press;
     let kitty_shift = stroke.kitty.is_some_and(|k| k.mods & SHIFT_BIT != 0);
     let shift = mods.shift || kitty_shift || matches!(key, Key::Char(c) if c.is_ascii_uppercase());
@@ -549,12 +629,51 @@ fn other_keys(stroke: Keystroke, level: OtherKeys, backarrow: bool, out: &mut Ve
         }
         Form::Numbered(..) | Form::Unnumbered(_) => return false,
     };
+    // With Shift factored out, the code is the key's unshifted: the
+    // terminal's base key (kitty), else a letter's small form (xterm 411
+    // looks the key up again without the modifiers factored out).
+    let f = keys.factored();
+    let unshifted = match (sym, stroke.kitty.and_then(|k| k.code)) {
+        _ if !(f.shift && state.shift) => code,
+        (Sym::Char(_), Some(base)) => base,
+        (Sym::Char(c), None) => u32::from(c.to_ascii_lowercase()),
+        _ => code,
+    };
+    // A key whose only modifier is factored out (allowedCharModifiers):
+    // Backspace, and Tab with Shift (ISO_Left_Tab), are not ordinary keys.
+    let only = [state.shift, state.ctrl, state.alt]
+        .iter()
+        .filter(|&&m| m)
+        .count()
+        == 1;
+    let factored = state.shift && f.shift || state.ctrl && f.ctrl || state.alt && f.alt;
+    let exempt = matches!(sym, Sym::BackSpace | Sym::Control(Control::Backspace))
+        || sym == Sym::Control(Control::Tab) && state.shift;
+    if only && factored && !exempt {
+        return match (level, sym) {
+            (OtherKeysLevel::Unmodified, _) => {
+                out.extend_from_slice(b"\x1b[27;1;");
+                decimal(out, unshifted);
+                out.push(b'~');
+                true
+            }
+            // At level 2 Ctrl makes a control of `@` to DEL alone (xterm
+            // 411: Ctrl-a is `^A`, Ctrl-/ `/`, Ctrl-Space a space).
+            (OtherKeysLevel::All, Sym::Char(c)) if state.ctrl && !sym.control_input() => {
+                let mut utf8 = [0; 4];
+                out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+                true
+            }
+            _ => false,
+        };
+    }
     if !modified(sym, state, level) {
         return false;
     }
+    let code = unshifted;
     let sent = match level {
-        OtherKeys::Usual => allowed(sym, state),
-        OtherKeys::All | OtherKeys::Unmodified => state,
+        OtherKeysLevel::Usual => allowed(sym, state),
+        OtherKeysLevel::All | OtherKeysLevel::Unmodified => state,
     };
     // Level 1 may leave the key no modifier to send: it is legacy then.
     if sent.is_empty() && !state.is_empty() {
@@ -612,25 +731,25 @@ impl Sym {
 /// which at level 1 becomes `ISO_Left_Tab`, a function key, `CSI Z`. At
 /// level 2, Shift alone on a character other than Space types its text;
 /// level 3 sends an unmodified key too.
-fn modified(sym: Sym, state: Modifiers, level: OtherKeys) -> bool {
+fn modified(sym: Sym, state: Modifiers, level: OtherKeysLevel) -> bool {
     // At level 1, a key with no modifier ends `false` below: `allowed`
     // leaves none.
     match level {
-        OtherKeys::Usual => {}
-        OtherKeys::All if state.is_empty() => return false,
-        OtherKeys::Unmodified if state.is_empty() => return true,
+        OtherKeysLevel::Usual => {}
+        OtherKeysLevel::All if state.is_empty() => return false,
+        OtherKeysLevel::Unmodified if state.is_empty() => return true,
         // At level 2 Shift-Tab alone is still CSI Z, as real xterm 411 sends it.
-        OtherKeys::All if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT => {
+        OtherKeysLevel::All if sym == Sym::Control(Control::Tab) && state == Modifiers::SHIFT => {
             return false;
         }
-        OtherKeys::All | OtherKeys::Unmodified => {
+        OtherKeysLevel::All | OtherKeysLevel::Unmodified => {
             // Every modifier; at level 2 Shift alone on a character types
             // its text unless the character is one Ctrl makes a control of
             // (`@` to DEL, capitals among them) or Space, which real xterm
             // 411 sends as `CSI 27 ; 2 ; code ~`, the shifted character's
             // code. Level 3 sends every key so, and Ctrl alone on
             // Backspace too (tests/data/keys/xterm-keys.txt).
-            let unmodified = level == OtherKeys::Unmodified;
+            let unmodified = level == OtherKeysLevel::Unmodified;
             return match sym {
                 Sym::BackSpace => state != Modifiers::CTRL || unmodified,
                 Sym::Control(_) => true,
@@ -927,17 +1046,17 @@ mod tests {
         }
     }
 
-    const fn other_keys_level(level: OtherKeys) -> KeyMode {
+    const fn other_keys_level(level: OtherKeysLevel) -> KeyMode {
         KeyMode::Legacy {
             application: false,
             keypad: false,
-            other_keys: Some(level),
+            other_keys: Some(OtherKeys::new(level, Modifiers::NONE)),
             backarrow: false,
         }
     }
-    const USUAL: KeyMode = other_keys_level(OtherKeys::Usual);
-    const ALL_MODIFIERS: KeyMode = other_keys_level(OtherKeys::All);
-    const UNMODIFIED: KeyMode = other_keys_level(OtherKeys::Unmodified);
+    const USUAL: KeyMode = other_keys_level(OtherKeysLevel::Usual);
+    const ALL_MODIFIERS: KeyMode = other_keys_level(OtherKeysLevel::All);
+    const UNMODIFIED: KeyMode = other_keys_level(OtherKeysLevel::Unmodified);
 
     /// modifyOtherKeys level 1, as xterm's input.c (patch 412) sends it with
     /// the Alt key as its Meta modifier. Alone, Alt leaves a key its legacy
@@ -1104,7 +1223,7 @@ mod tests {
         const BS_ALL: KeyMode = KeyMode::Legacy {
             application: false,
             keypad: false,
-            other_keys: Some(OtherKeys::All),
+            other_keys: Some(OtherKeys::new(OtherKeysLevel::All, Modifiers::NONE)),
             backarrow: true,
         };
         let kitty_bs = KeyMode::Kitty {

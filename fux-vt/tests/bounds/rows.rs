@@ -2113,7 +2113,7 @@ fn refusing(n: u32) -> Result<Parser, String> {
 // modifier bit, in every key mode; every mouse event at the edges of each
 // encoding's positions, in every mode and encoding.
 pub fn b45(_: Scale, _: usize) -> Found {
-    use fux_vt::keys::encode::{KeyMode, OtherKeys, Report, key_bytes};
+    use fux_vt::keys::encode::{KeyMode, OtherKeys, OtherKeysLevel, Report, key_bytes};
     use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
     use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
     use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
@@ -2146,9 +2146,9 @@ pub fn b45(_: Scale, _: usize) -> Found {
     for (application, backarrow) in [(false, false), (false, true), (true, false), (true, true)] {
         for other_keys in [
             None,
-            Some(OtherKeys::Usual),
-            Some(OtherKeys::All),
-            Some(OtherKeys::Unmodified),
+            Some(OtherKeys::from(OtherKeysLevel::Usual)),
+            Some(OtherKeys::from(OtherKeysLevel::All)),
+            Some(OtherKeys::from(OtherKeysLevel::Unmodified)),
         ] {
             modes.push(KeyMode::Legacy {
                 application,
