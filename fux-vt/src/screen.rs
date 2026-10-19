@@ -3995,7 +3995,7 @@ impl Screen {
                 let bottom = p.first(1, lines.end()).saturating_sub(1);
                 if let Some(lines) = lines.margins(n.saturating_sub(1), bottom) {
                     let g = self.grid_mut();
-                    g.lines = lines;
+                    g.set_lines(lines);
                     g.position(0, 0);
                 }
             }

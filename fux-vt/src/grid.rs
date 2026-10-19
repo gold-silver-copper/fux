@@ -413,27 +413,14 @@ pub(crate) struct Grid {
     unmade: bool,
     /// The kitty keyboard flags the program on this screen pushed.
     pub keyboard: KeyboardStack,
-    /// Which rows are known to carry `BEHIND` (`flag_behind`).
-    flagged: Flagged,
+    /// After a scroll down from row `.0` of the region down to `.1`, every
+    /// row below `.0` carries `BEHIND` while no row is made (the next
+    /// identity is still `.2`: rows move only as rows are made) and the
+    /// margins stay (`flag_under`).
+    under: Option<(u16, u16, u64)>,
     /// The largest identity of the rows a resize has kept so far
     /// (`keep_row`).
     kept_max: u64,
-}
-
-/// What a scroll of the region down to row `bottom` knows of the rows
-/// that carry `BEHIND`, so that scrolling the same region again flags
-/// none anew. A scroll of a region with another bottom forgets it.
-#[derive(Clone, Copy, Debug, Default)]
-struct Flagged {
-    bottom: u16,
-    /// Every row below `bottom` carries it, while the screen's last row is
-    /// this one: rows below the region change only with a scroll of the
-    /// whole screen, which makes a new last row.
-    below: Option<RowId>,
-    /// Every row below row `.0` carries it, while rows `.0` and `bottom`
-    /// are `.1` and `.2`: a scroll up makes a new row at `bottom`, and one
-    /// down another at `.0`.
-    under: Option<(u16, RowId, RowId)>,
 }
 
 /// Which way a scroll moves rows: up, the rows leaving the top going into
@@ -466,7 +453,11 @@ impl Grid {
     }
 
     pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
+        let none = self.history_bytes() == 0;
         self.history.set_budget(bytes);
+        if none && bytes > 0 {
+            self.flag_all();
+        }
     }
 
     /// Whether a screen of `size` is more than a grid holds.
@@ -551,7 +542,7 @@ impl Grid {
             narrow: 0,
             unmade: false,
             keyboard: KeyboardStack::default(),
-            flagged: Flagged::default(),
+            under: None,
             kept_max: 0,
         }
     }
@@ -2006,14 +1997,10 @@ impl Grid {
         if count == 0 {
             return;
         }
-        if self.flagged.bottom != bottom {
-            self.flagged = Flagged {
-                bottom,
-                ..Flagged::default()
-            };
-        }
-        // Down, the rows at the region's top and bottom before it moves.
-        let ends = (!up).then(|| (self.screen_id(top), self.screen_id(bottom)));
+        // Up, the rows below the region came behind those it makes, which
+        // the margins' change flags (`set_lines`): none of them goes into
+        // history before. Down, `flag_under`, from the next identity before.
+        let made = *next;
         if count == 1 {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
@@ -2055,19 +2042,14 @@ impl Grid {
         if !self.links.none() {
             self.unlink_rows(region, count, up);
         }
-        match ends {
-            None => self.flag_below(bottom),
-            Some(ends) => self.flag_under(top, count, ends),
+        if !up {
+            self.flag_under((top, bottom), count, (made, *next));
         }
     }
 
-    /// The identity of the screen's row `row`.
-    fn screen_id(&self, row: u16) -> Option<RowId> {
-        self.slot(row)
-            .and_then(|slot| self.meta.get(slot))
-            .map(|m| m.id)
-    }
     /// Flags `BEHIND` on rows `from` to the screen's last.
+    #[cold]
+    #[inline(never)]
     fn flag_behind(&mut self, from: u16) {
         let rows = self.size.rows();
         work!(rows, rows.saturating_sub(from));
@@ -2077,38 +2059,52 @@ impl Grid {
             }
         }
     }
-    /// After a scroll up of the region down to `bottom`, which made new
-    /// rows in it: the rows below it came behind them.
-    #[inline]
-    fn flag_below(&mut self, bottom: u16) {
+    /// Sets the top and bottom margins. Rows a scroll up made above the
+    /// rows below the old bottom made those come behind them: they are
+    /// flagged now, before a scroll of the whole screen can take them
+    /// into history, which none can while the margins stay.
+    pub fn set_lines(&mut self, lines: Span) {
         let last = self.size.rows().saturating_sub(1);
-        if bottom >= last {
-            return;
+        if self.lines.last() < last && self.history_bytes() > 0 {
+            self.flag_behind(self.lines.last().saturating_add(1));
         }
-        let at_last = self.screen_id(last);
-        if self.flagged.below != at_last {
-            self.flag_behind(bottom.saturating_add(1));
-            self.flagged.below = at_last;
+        self.under = None;
+        self.lines = lines;
+    }
+    /// Flags every row with an identity smaller than one above it, history
+    /// included: once history may keep rows again, as none was flagged
+    /// while it could not.
+    fn flag_all(&mut self) {
+        let history = (0..self.history.len()).filter_map(|i| self.history.kept(i));
+        let mut most = history.map(|kept| kept.id.0).max();
+        work!(rows, self.size.rows());
+        for row in 0..self.size.rows() {
+            if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
+                if most.is_some_and(|most| m.id.0 < most) {
+                    m.flags |= BEHIND;
+                }
+                most = most.max(Some(m.id.0));
+            }
         }
+        self.under = None;
     }
     /// After a scroll down of `count` rows from `top`, which made them
-    /// anew: every row below the top came behind a row above it. Scrolled
-    /// down by one from the same top again, only the row the last made is
-    /// not flagged yet. `ends` are the rows at `top` and the region's bottom before.
-    #[cold]
-    #[inline(never)]
-    fn flag_under(&mut self, top: u16, count: u16, ends: (Option<RowId>, Option<RowId>)) {
-        let bottom = self.flagged.bottom;
-        let again = match (self.flagged.under, ends) {
-            (Some((under, at_top, at_bottom)), (Some(t), Some(b))) => {
-                count == 1 && under == top && at_top == t && at_bottom == b
-            }
-            _ => false,
-        };
+    /// anew, the next identity `before` it and `after`: every row below
+    /// the top came behind a row above it. Scrolled down by one from the
+    /// same top again, with no row made between, only the row the last
+    /// made is not flagged yet.
+    #[inline]
+    fn flag_under(&mut self, (top, bottom): (u16, u16), count: u16, (before, after): (u64, u64)) {
+        // No row goes into history, so none needs it: `flag_all` flags
+        // them if history may keep rows again.
+        if self.history_bytes() == 0 {
+            self.under = None;
+            return;
+        }
         // Rows made down from the top are made bottom first: each but the
         // top one is behind the one above it.
         let from = top.saturating_add(1);
-        if again {
+        if count == 1 && self.under == Some((top, bottom, before)) {
             work!(rows, 1);
             if let Some(m) = self.slot(from).and_then(|slot| self.meta.get_mut(slot)) {
                 m.flags |= BEHIND;
@@ -2116,10 +2112,7 @@ impl Grid {
         } else {
             self.flag_behind(from);
         }
-        self.flagged.under = self
-            .screen_id(top)
-            .zip(self.screen_id(bottom))
-            .map(|(t, b)| (top, t, b));
+        self.under = Some((top, bottom, after));
     }
 
     /// Moves the screen's top row into history, the oldest row there going
@@ -2465,7 +2458,7 @@ impl Grid {
     }
     /// The margins at the screen's edges, as resets put them.
     pub fn reset_margins(&mut self) {
-        self.lines = self.size.lines();
+        self.set_lines(self.size.lines());
         self.set_columns(self.size.columns());
     }
     /// Whether the cursor is between the left and right margins.
@@ -2926,7 +2919,14 @@ impl Grid {
         self.check_permutation()?;
         let history = (0..self.history.len()).filter_map(|i| self.history.kept(i));
         let mut most = history.map(|kept| kept.id.0).max();
-        for row in 0..self.size.rows() {
+        // Rows below the margins' bottom are flagged when the margins
+        // change (`set_lines`), and none goes into history before; nor
+        // does any row of a grid that keeps no history (`flag_all`).
+        let checked = match self.history_bytes() {
+            0 => 0,
+            _ => self.lines.last().saturating_add(1),
+        };
+        for row in 0..checked {
             let Some(m) = self.slot(row).and_then(|slot| self.meta.get(slot)) else {
                 continue;
             };
