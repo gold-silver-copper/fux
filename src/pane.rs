@@ -2025,6 +2025,37 @@ mod tests {
             .to_owned()
     }
 
+    /// Output that spends more than a parser call's budget on a screen of
+    /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
+    /// cell and ED clears them all, the pair repeated twice as often as
+    /// the fewest that a parser call stops at its budget in.
+    fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
+        struct Discard;
+        impl fux_vt::Sink for Discard {}
+        let output = |n| -> Vec<u8> {
+            std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], n)
+                .flatten()
+                .copied()
+                .collect()
+        };
+        let mut n = 1usize;
+        while n < 1 << 24 {
+            let stops = fux_vt::Parser::with_options(size(rows, cols), 1 << 10, OPTIONS).is_ok_and(
+                |mut parser| {
+                    matches!(
+                        parser.process_until_stop(&output(n), &mut Discard),
+                        Ok(Some((_, fux_vt::Stop::Budget)))
+                    )
+                },
+            );
+            if stops {
+                break;
+            }
+            n = n.saturating_mul(2);
+        }
+        output(n.saturating_mul(2))
+    }
+
     fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
         Pane::new(
             PaneId::of(1),
@@ -2059,13 +2090,8 @@ mod tests {
     /// as one read of it all leaves it.
     #[test]
     fn a_read_that_spends_its_budget_goes_on_at_the_next_turn() -> Result<(), Error> {
-        // Each REP is spent as 65,535 copies, a little of the budget: 2,000
-        // of them, 20 KiB, spend it once.
-        let reps: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
-        let mut pane = pane(2, 10)?;
+        let reps = spends_the_budget(50, 200);
+        let mut pane = pane(50, 200)?;
         pane.output(&reps);
         assert!(pane.has_unread(), "the budget stopped no call");
         pane.output(b"\x1b[HZ");
@@ -2080,9 +2106,9 @@ mod tests {
         }
         assert!(!pane.has_unread(), "{turns} turns");
         let mut whole =
-            fux_vt::Parser::with_options(size(2, 10), 1 << 10, OPTIONS).map_err(|source| {
+            fux_vt::Parser::with_options(size(50, 200), 1 << 10, OPTIONS).map_err(|source| {
                 Error::Terminal {
-                    size: size(2, 10),
+                    size: size(50, 200),
                     source,
                 }
             })?;
@@ -2093,7 +2119,7 @@ mod tests {
         );
         let rows = |p: &fux_vt::Screen| p.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
         assert_eq!(rows(pane.screen()), rows(whole.screen()));
-        assert_eq!(first_row(&pane), "ZXXXXXXXXX");
+        assert_eq!(first_row(&pane), "Z");
         Ok(())
     }
 
@@ -2102,9 +2128,9 @@ mod tests {
     /// through one till it ends; what came after it is read after.
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(2, 8), 0)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(50, 200), 0)?;
         let mut frame = b"\x1b[?2026h".to_vec();
-        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
         pane.output(&frame);
         assert!(pane.mid_frame(), "the budget stopped no call in the frame");
@@ -2211,12 +2237,9 @@ mod tests {
     /// timeout from when it is read, not from when the output came.
     #[test]
     fn a_frame_begun_in_output_read_later_is_held_its_timeout() -> Result<(), Error> {
-        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
-            .flatten()
-            .copied()
-            .collect();
+        let mut out = spends_the_budget(50, 200);
         out.extend_from_slice(b"\x1b[?2026hY");
-        let mut pane = pane(2, 10)?;
+        let mut pane = pane(50, 200)?;
         pane.output(&out);
         assert!(pane.has_unread(), "the budget stopped no call");
         std::thread::sleep(FRAME_TIMEOUT.saturating_add(Duration::from_millis(100)));
