@@ -737,8 +737,9 @@ the pipe, so its figure is end to end and marked `*`.
 because load doesn't move them, for every engine in this process. Each
 engine and workload runs in a child process (`bench/src/count.rs`, fux-bench's counter, built here too: `/usr/bin/time
 -l` on macOS, `perf` or cachegrind on Linux), less a baseline child that
-does everything but the feeding. The figure is the fewest of `--repeats`
-runs (3); the spread is its noise. With no workloads named it counts the
+does everything but the feeding. The figure is the median of `--repeats`
+(3) paired rounds, each run less its round's baseline, and a round at or
+below its baseline fails it; the widest round's deviation is its noise. With no workloads named it counts the
 synthetic ones and the corpus. `--jobs N` and `--json FILE` work as in
 `footprint`.
 

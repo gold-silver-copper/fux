@@ -102,7 +102,7 @@ bench    each engine's speed on the same workloads, in MB/s (default: the
          recording alone). --instructions: instructions retired per
          byte instead, each engine in this process and workload in a
          child process of its own, less the same child without the
-         feeding, the fewest of --repeats (3) runs each, --jobs
+         feeding, the median of --repeats (3) paired rounds, --jobs
          (CARGO_BUILD_JOBS, else 4) at once; --json writes them to FILE.
 footprint
          the memory each engine in this process holds (default: all of

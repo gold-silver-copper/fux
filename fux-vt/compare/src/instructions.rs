@@ -9,8 +9,8 @@
 //! retention, no history), and feeds it in 4 KiB chunks; it prints the rows
 //! its engine held, read back. Its baseline is the same child without the
 //! feeding: making the bytes and the engine. An engine's count is the
-//! fewest instructions of its runs less the fewest of its baseline's, per
-//! byte fed; its noise, the spread of its runs over that count. The engine
+//! median of its paired rounds (each run less its round's baseline), per
+//! byte fed; its noise, the widest round's deviation from it (`side`). The engine
 //! is never dropped, in either, so freeing its memory is not counted.
 //!
 //! Only the engines in this process are counted: an engine behind a
@@ -87,11 +87,11 @@ struct Task {
     baseline: bool,
 }
 
-/// An engine's count of one workload: the fewest instructions of its
-/// runs less the fewest of its baseline's, and the spread of its runs
-/// over that count. The two minima are of independent runs, so a workload
-/// that costs next to nothing can come out at or below its baseline:
-/// that is no count (`side` says none).
+/// An engine's count of one workload, by paired rounds, as fux-bench
+/// counts (speed-method.md): each round's run less that round's baseline,
+/// the count their median, and the spread the widest deviation of a
+/// round from it, over the count. A round at or below its baseline counts
+/// nothing: then there is no count (`side` says none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Side {
     count: i64,
@@ -99,11 +99,29 @@ struct Side {
 }
 
 fn side(full: &[i64], baseline: &[i64]) -> Option<Side> {
-    let (low, high) = (full.iter().copied().min()?, full.iter().copied().max()?);
-    let count = low.saturating_sub(baseline.iter().copied().min()?);
+    let mut rounds: Vec<i64> = full
+        .iter()
+        .zip(baseline)
+        .map(|(f, b)| f.saturating_sub(*b))
+        .collect();
+    if rounds.is_empty() || full.len() != baseline.len() || rounds.iter().any(|r| *r <= 0) {
+        return None;
+    }
+    rounds.sort_unstable();
+    let mid = rounds.len() / 2;
+    let count = match rounds.len() % 2 {
+        1 => *rounds.get(mid)?,
+        _ => {
+            rounds
+                .get(mid.checked_sub(1)?)?
+                .saturating_add(*rounds.get(mid)?)
+                / 2
+        }
+    };
+    let widest = rounds.iter().map(|r| r.abs_diff(count)).max()?;
     (count > 0).then(|| Side {
         count,
-        noise: (high.saturating_sub(low) as f64) / (count as f64),
+        noise: (widest as f64) / (count as f64),
     })
 }
 
@@ -215,9 +233,11 @@ pub fn run(
         }
     });
     eprintln!();
-    let results = results
+    let mut results = results
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // In the tasks' order, so each round's run and baseline pair up.
+    results.sort_by_key(|(i, _)| *i);
 
     // Each engine's and workload's counts, runs and baselines.
     let mut counts = vec![vec![[Vec::new(), Vec::new()]; workloads.len()]; columns.len()];
@@ -283,8 +303,9 @@ pub fn run(
         }
         let _ = write!(
             text,
-            "\n{} ({}), in process: instructions per byte, the fewest of {} runs less the \
-             fewest of their baseline (making the bytes and the engine), no read counted; \
+            "\n{} ({}), in process: instructions per byte, the median of {} paired \
+             rounds, each run less its round's baseline (making the bytes and the engine), no \
+             read counted; \
              {mb} MiB per workload, {CHUNK}-byte chunks, {ROWS}x{COLS} (recordings at their \
              size); fux-vt reflow on, print recording off; counted by {} on CPUs {cpus} \
              (the counter's own set is in the JSON)\n{:<34}",
@@ -412,10 +433,11 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_count_is_its_fewest_less_its_baselines_fewest() {
+    fn a_count_is_the_median_of_paired_rounds() {
+        // Rounds of 1002, 1000, 999: the median 1000, the widest 2 off.
         let side = super::side(&[1103, 1100, 1101], &[101, 100, 102]);
-        assert!(side.is_some_and(|s| s.count == 1000 && (s.noise - 3.0 / 1000.0).abs() < 1e-9));
-        // At or below its baseline, or with no runs: no count.
+        assert!(side.is_some_and(|s| s.count == 1000 && (s.noise - 2.0 / 1000.0).abs() < 1e-9));
+        // A round at or below its baseline, or none: no count.
         assert_eq!(super::side(&[100, 104], &[100, 101]), None);
         assert_eq!(super::side(&[90], &[100]), None);
         assert_eq!(super::side(&[], &[100]), None);
