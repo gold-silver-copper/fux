@@ -747,15 +747,9 @@ impl Grid {
         x
     }
 
-    /// Shows `area` as `shown`, a grid of the same size, shows it, with
-    /// the cursor if it is in `area` in either: a pane part way through a
-    /// frame (`Pane::mid_frame`) shows as the client was last painted it,
-    /// while the rest of the screen is painted. What composed the grid can
-    /// then no longer say what it shows (`Memo`).
-    pub fn keep_area(&mut self, shown: &Grid, area: Rect) {
-        if (self.rows, self.cols) != (shown.rows, shown.cols) {
-            return;
-        }
+    /// Shows `area` as `shown`, a grid of the same size, shows it
+    /// (`compose_held`).
+    fn keep_area(&mut self, shown: &Grid, area: Rect) {
         let len = self.cells.len();
         for y in area.rows() {
             for x in area.cols() {
@@ -767,12 +761,6 @@ impl Grid {
                 }
             }
         }
-        let inside = |at: Option<(u16, u16)>| at.is_some_and(|(y, x)| area.contains(y, x));
-        if inside(self.cursor) || inside(shown.cursor) {
-            self.cursor = shown.cursor;
-            self.modes.cursor_shape = shown.modes.cursor_shape;
-        }
-        self.memo = None;
     }
 
     fn fill(&mut self, area: Rect, style: Attributes) {
@@ -948,6 +936,37 @@ pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
 /// placement are reused, not made again; the frame's memo, the bar's text
 /// and the like are made each time.
 pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
+    compose_held(session, view, grid, placement, None);
+}
+
+/// What a client was last painted: the grid, and where each pane was on
+/// it. A pane part way through a frame (`Pane::mid_frame`) shows as it was
+/// there.
+#[derive(Clone, Copy)]
+pub struct Painted<'a> {
+    pub grid: &'a Grid,
+    pub panes: &'a [(PaneId, Rect)],
+}
+
+impl Painted<'_> {
+    /// Whether pane `id` was painted at `rect` on a grid of this size.
+    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16) -> bool {
+        (self.grid.rows, self.grid.cols) == (rows, cols) && self.panes.contains(&(id, rect))
+    }
+}
+
+/// [`compose_view`], each pane part way through a frame shown as `painted`
+/// showed it where it is still in the same place, else blank, so a client
+/// is never painted half a frame; the rest of the screen, fux's bar and
+/// panels over it too, as it is, so one pane holds up no other (threats.md
+/// P24). Its cursor, if focused, is the one painted there, if any.
+pub fn compose_held(
+    session: &Session,
+    view: &View,
+    grid: &mut Grid,
+    placement: &mut Placement,
+    painted: Option<Painted<'_>>,
+) {
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
@@ -964,6 +983,15 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         None
     };
     put_panes(grid, session, view, placement, focus, copy);
+    let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
+    let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
+    for &(id, rect) in placement.panes.iter().filter(|(id, _)| held(id)) {
+        match kept(id, rect) {
+            Some(painted) => grid.keep_area(painted.grid, rect),
+            None => grid.blank(rect),
+        }
+        grid.memo = None;
+    }
     if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
         // Its keys are the client's: the server names what to do.
         let hint = "empty tab: split it or close it";
@@ -1012,6 +1040,14 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                     grid.cursor = Some(at);
                     grid.modes.cursor_shape = screen.cursor_shape();
                 }
+            }
+        }
+        if held(&focus) {
+            let painted = kept(focus, rect);
+            let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
+            grid.cursor = at;
+            if let Some(painted) = painted.filter(|_| at.is_some()) {
+                grid.modes.cursor_shape = painted.grid.modes.cursor_shape;
             }
         }
     }
@@ -2454,6 +2490,115 @@ mod tests {
         s.output(id, b"B");
         assert!(compose_into(&s, c, &mut grid, &mut placement));
         assert_eq!(grid.row_text(0), "B");
+        Ok(())
+    }
+
+    /// While a pane is part way through a frame, its cursor is the one the
+    /// client was last painted there, if any: focus moved away from it
+    /// takes the cursor to the pane focused, and focus moved onto it shows
+    /// none there till the frame is whole.
+    #[test]
+    fn a_held_pane_keeps_only_its_own_cursor() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        s.output(PaneId::of(1), &frame_past_a_budget());
+        assert!(
+            s.panes
+                .get(&PaneId::of(1))
+                .is_some_and(crate::pane::Pane::mid_frame)
+        );
+        let (held, other) = (place(&s, c, 1)?, place(&s, c, 2)?);
+        let panes = [(PaneId::of(1), held), (PaneId::of(2), other)];
+        let compose = |s: &Session, painted: &Grid| {
+            let mut grid = Grid::new(0, 0);
+            let painted = Some(Painted {
+                grid: painted,
+                panes: &panes,
+            });
+            if let Some(view) = s.views.get(&c) {
+                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+            }
+            grid
+        };
+        // Focus on %2, the cursor last painted in %1: %2's own.
+        let mut painted = compose(&s, &Grid::new(0, 0));
+        painted.cursor = Some((held.y(), held.x()));
+        let fresh = compose(&s, &painted);
+        assert!(
+            fresh.cursor.is_some_and(|(y, x)| other.contains(y, x)),
+            "{:?}",
+            fresh.cursor
+        );
+        // Focus on %1, the cursor last painted in %2: none.
+        crate::session::testing::run(&mut s, "str c1 client str next focus")?;
+        painted.cursor = Some((other.y(), other.x()));
+        assert_eq!(compose(&s, &painted).cursor, None);
+        // And its own, as painted.
+        painted.cursor = Some((held.y(), held.x().saturating_add(1)));
+        assert_eq!(compose(&s, &painted).cursor, painted.cursor);
+        Ok(())
+    }
+
+    /// A frame whose reading spends more than a parser call's budget.
+    fn frame_past_a_budget() -> Vec<u8> {
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        frame
+    }
+
+    /// Where client `c` shows pane `%id`.
+    fn place(s: &Session, c: ClientId, id: u32) -> Result<Rect, String> {
+        let mut placement = Placement::default();
+        if let Some(view) = s.views.get(&c) {
+            s.placement_into(view, &mut placement);
+        }
+        placement
+            .rect(PaneId::of(id))
+            .ok_or_else(|| format!("%{id}'s place"))
+    }
+
+    /// A pane part way through a frame that the client was never painted
+    /// where it is (a client attached mid-frame, a layout changed) shows
+    /// blank, never half the frame; fux's own panels show over it.
+    #[test]
+    fn a_held_pane_not_painted_before_is_blank_under_fux_s_panels() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        s.output(PaneId::of(1), &frame_past_a_budget());
+        assert!(
+            s.panes
+                .get(&PaneId::of(1))
+                .is_some_and(crate::pane::Pane::mid_frame)
+        );
+        let compose = |s: &Session, painted: Option<Painted<'_>>| {
+            let mut grid = Grid::new(0, 0);
+            if let Some(view) = s.views.get(&c) {
+                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+            }
+            (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>()
+        };
+        let rows = compose(&s, None);
+        assert!(rows.iter().all(|r| !r.contains('X')), "{rows:#?}");
+        // A confirmation over it, painted as it was before (all X): shown.
+        let mut before = Grid::new(10, 40);
+        let xs: String = std::iter::repeat_n('X', 40).collect();
+        for y in 0..9 {
+            before.text(y, 0, &xs, Attributes::default(), 40);
+        }
+        s.input(c, b"\x02x");
+        let panes = [(PaneId::of(1), place(&s, c, 1)?)];
+        let rows = compose(
+            &s,
+            Some(Painted {
+                grid: &before,
+                panes: &panes,
+            }),
+        );
+        assert!(rows.iter().any(|r| r.contains("close")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|r| r.contains("XXXX")),
+            "the pane as painted: {rows:#?}"
+        );
         Ok(())
     }
 
