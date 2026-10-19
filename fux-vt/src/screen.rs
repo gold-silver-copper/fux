@@ -1729,6 +1729,11 @@ impl Screen {
             {
                 self.mark_joined(at.0, at.1, false, c);
             }
+            // A Prepend character of no width joins nothing after it,
+            // joined to a cluster as when a cell of its own (README).
+            if width == 0 && properties.is_prepend() {
+                self.break_cluster();
+            }
             return Ok(());
         }
         if width == 0 {
