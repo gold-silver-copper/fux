@@ -530,7 +530,7 @@ fn seeds() -> Vec<Seed> {
                 let held = row.map_or(0, |row| row.text_len());
                 ensure(held >= 6_500, || format!("{held} bytes of text"))
             },
-            fuzz: Fuzz::None,
+            fuzz: Fuzz::Terminal,
         },
         Seed {
             name: "b32-u17d8",
@@ -609,7 +609,7 @@ fn seeds() -> Vec<Seed> {
                     "the cluster went".into()
                 })
             },
-            fuzz: Fuzz::None,
+            fuzz: Fuzz::Terminal,
         },
         Seed {
             name: "b35-decaln",
@@ -1310,6 +1310,114 @@ fn deep_output(input: &[u8]) -> Vec<u8> {
         rest = rest.get(taken..).unwrap_or_default();
     }
     out
+}
+
+/// The seeds written as no fuzz input, and why; every other seed is one
+/// (`every_seed_is_a_fuzz_input_unless_listed`).
+const NO_FUZZ_INPUT: &[(&str, &str)] = &[
+    (
+        "b03-width-ladder",
+        "4,096 rasters, each its own: 56 KiB, past terminal's 4 KiB, and 233 operations of deep's, past its 128",
+    ),
+    (
+        "b09-pictures-over-history",
+        "after 349,600 line feeds: 15 s a run of deep without a sanitizer, 37 s with ASAN",
+    ),
+    (
+        "b11-every-cell-a-colour",
+        "5,000 colours, each its own: 80 KiB, past terminal's 4 KiB and deep's 128 operations",
+    ),
+    (
+        "b12-colliding-styles",
+        "2,000 styles, each its own: 86 KiB, past terminal's 4 KiB and deep's 128 operations",
+    ),
+    (
+        "b13-style-sweep",
+        "5,000 styles, each its own: 95 KiB, past terminal's 4 KiB and deep's 128 operations",
+    ),
+    (
+        "b14-short-id-links",
+        "4,000 links, each its own id: 83 KiB, past terminal's 4 KiB and deep's 128 operations",
+    ),
+    (
+        "b15-link-runs-in-history",
+        "141 KiB whose repeated row is 2,402 bytes, past deep's 256-byte pattern: past terminal's 4 KiB and deep's 128 operations",
+    ),
+    (
+        "b16-links-past-the-held",
+        "after 4 MiB of links: past deep's 1 MiB of output a run",
+    ),
+    (
+        "b17-wide-rows",
+        "rows of 2,049 cells: past deep's 511 and terminal's 24",
+    ),
+    (
+        "b17-empty-then-full-rows",
+        "after 349,600 line feeds: 106 s a run of deep without a sanitizer, past its 60 s timeout with ASAN",
+    ),
+    (
+        "b29-late-command-marks",
+        "after 349,600 line feeds: 50 s a run of deep without a sanitizer, past its 60 s timeout with ASAN",
+    ),
+    (
+        "b37-rejected-resize",
+        "after 6,000 full rows, 1.2 MB: past deep's 1 MiB of output a run",
+    ),
+    (
+        "b40-lookup-over-history",
+        "after 349,600 line feeds: 15 s a run of deep without a sanitizer, 54 s with ASAN",
+    ),
+    (
+        "b07-picture-sizes",
+        "host calls only: no target builds a Picture",
+    ),
+    (
+        "b38-largest-screen",
+        "host calls only: deep's sides are at most 511",
+    ),
+    (
+        "b39-cells-past-the-most",
+        "host calls only: no target makes Cells past its screen",
+    ),
+    (
+        "b41-push-with-clear",
+        "host calls only: no target calls ByteQueue",
+    ),
+    (
+        "b44-refused-mark",
+        "a refused allocation: no target refuses one",
+    ),
+    (
+        "b45-longest-key",
+        "host calls only: the key and mouse encoders",
+    ),
+];
+
+/// Every seed is written as a fuzz input, unless it is listed with why it
+/// is not; and every name listed is a seed's.
+#[test]
+fn every_seed_is_a_fuzz_input_unless_listed() {
+    let seeds = seeds();
+    for seed in &seeds {
+        let fuzzed = files(seed).len() > 1;
+        let listed = NO_FUZZ_INPUT.iter().any(|(name, _)| *name == seed.name);
+        assert!(
+            fuzzed != listed,
+            "{}: {}",
+            seed.name,
+            if fuzzed {
+                "a fuzz input, but listed as none"
+            } else {
+                "no fuzz input, and not listed with why"
+            }
+        );
+    }
+    for (name, why) in NO_FUZZ_INPUT {
+        assert!(
+            !why.is_empty() && seeds.iter().any(|seed| seed.name == *name),
+            "{name}"
+        );
+    }
 }
 
 /// The files a seed is written as: its bytes, and its fuzz target's input:

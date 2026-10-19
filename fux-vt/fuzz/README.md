@@ -108,16 +108,15 @@ ignores them); a crash becomes a named regression test.
 each safety reproducer of `threats.md` (`b01-raster-pictures`,
 `b20-long-osc`, …) in the target's format, written from its definition
 in `tests/seeds.rs`: a `terminal` one past that target's 4,096 bytes in
-`deep`'s (64 KiB, 128 operations, a repeated pattern as `f2`), and none
-for those no run of either holds (`b03-width-ladder`,
-`b11-every-cell-a-colour`, `b13-style-sweep`, kept as `tests/seeds/*.bin`),
-which also replays each at its row's screen size and checks that it reaches
+`deep`'s (64 KiB, 128 operations, a repeated pattern as `f2`); `tests/seeds.rs`
+also replays each at its row's screen size and checks that it reaches
 the limit it is for. A reproducer of host calls is in `deep`'s format with
 the host's operations after its output (`b06-clone-mid-picture`,
-`b08-encode-colours`) where `deep` makes those calls; the rest (a
-`Picture` built, a size past 64 Mi cells, `Cells` past it, `ByteQueue`,
-a refused allocation, the key encoders, a prefix of 4 MiB of links) only
-in `tests/seeds.rs`. They are kept apart from `corpus/`, which is cut to
+`b08-encode-colours`) where `deep` makes those calls. A seed that is no
+fuzz input (one no run of either holds, one fed after a prefix a run
+can't hold or takes too long on, one of host calls no target makes) is on
+`tests/seeds.rs`'s `NO_FUZZ_INPUT` with why, which a test holds to; it is
+kept as `tests/seeds/*.bin`. They are kept apart from `corpus/`, which is cut to
 the targets' lengths: give `seeds/TARGET` to a run as a second corpus
 directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
 the inputs that target found (FA-SB-2), replayed by
