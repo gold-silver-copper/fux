@@ -2056,17 +2056,22 @@ impl Screen {
         // Within the right margin, while the cursor is not past it.
         let fits = col < g.line_end();
         // Whether the text is narrow, summed, before `c`: a character
-        // printed alone in a narrow cell takes one column.
+        // printed alone in a narrow cell takes one column. And whether it
+        // is a regional indicator alone, which a second makes a flag,
+        // two columns wide.
+        let first = matches!(known, Kept::Alone).then(|| cell.first()).flatten();
         let one = match known {
             Kept::Alone => {
                 narrow
-                    && cell.first().is_some_and(|first| {
+                    && first.is_some_and(|first| {
                         first.is_ascii() || !Properties::of(first).in_context()
                     })
             }
             Kept::One => true,
             Kept::Unknown | Kept::Full => false,
         };
+        let flag = properties.regional_indicator()
+            && first.is_some_and(|first| Properties::of(first).regional_indicator());
         // And after: summed still if `c` too is none the rule looks at.
         let summed = one && !properties.in_context();
         let still_one = summed && properties.width() == Some(0);
@@ -2082,7 +2087,7 @@ impl Screen {
                     && if summed {
                         !still_one
                     } else {
-                        crate::str_width(line.text(at)) >= 2
+                        flag || crate::str_width(line.text(at)) >= 2
                     };
                 kept
             });

@@ -146,6 +146,12 @@ impl Properties {
         width::of_bits(self.bits)
     }
 
+    /// Whether it is a regional indicator.
+    #[inline]
+    pub(crate) fn regional_indicator(self) -> bool {
+        self.kind() == Break::RegionalIndicator
+    }
+
     /// Whether the cluster width rule looks at the character, before or
     /// after it: text with none such takes its characters' columns summed
     /// (`str_width`).

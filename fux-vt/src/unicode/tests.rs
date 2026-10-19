@@ -355,3 +355,16 @@ fn the_width_rule_looks_at_the_characters_its_arms_name() {
         );
     }
 }
+
+/// A flag, two regional indicators, is two columns wide by the cluster
+/// rule, as `Screen::join` takes it without measuring: every pair.
+#[test]
+fn every_pair_of_regional_indicators_is_two_columns() {
+    for a in '\u{1f1e6}'..='\u{1f1ff}' {
+        for b in '\u{1f1e6}'..='\u{1f1ff}' {
+            let flag: String = [a, b].into_iter().collect();
+            assert_eq!(str_width(&flag), 2, "{flag}");
+            assert!(Properties::of(a).regional_indicator());
+        }
+    }
+}
