@@ -242,7 +242,7 @@ fn count_all(
     let payloads = crate::census::data(&root());
     let payloads = payloads.to_string_lossy();
     let done = AtomicUsize::new(0);
-    let mut results: Vec<(usize, Counted)> = std::thread::scope(|scope| {
+    let results: Vec<(usize, Counted)> = std::thread::scope(|scope| {
         let workers: Vec<_> = (0..jobs.max(1))
             .map(|_| {
                 scope.spawn(|| {
@@ -278,8 +278,17 @@ fn count_all(
             .collect()
     });
     eprintln!();
-    results.sort_by_key(|(i, _)| *i);
-    results.into_iter().map(|(_, r)| r).collect()
+    // Each result in its task's place: a worker that panicked leaves its
+    // tasks uncounted, never another task's result in their place.
+    let mut slots: Vec<Counted> = (tasks.iter())
+        .map(|_| Err("not counted: its worker stopped".to_owned()))
+        .collect();
+    for (i, result) in results {
+        if let Some(slot) = slots.get_mut(i) {
+            *slot = result;
+        }
+    }
+    slots
 }
 
 /// The floor no workload's goes under, and the floor past which the tool
@@ -329,7 +338,11 @@ fn paired(old: [&[i64]; 2], new: [&[i64]; 2]) -> Paired {
         .zip(&new_full)
         .map(|(o, n)| (n - new_base) / (o - old_base) - 1.0)
         .collect();
-    let change = median(&rounds);
+    // A run at or below its side's baseline counts nothing that can be
+    // compared: the workload's change is none, and it is judged broken.
+    let counted =
+        (old_full.iter()).all(|o| *o > old_base) && new_full.iter().all(|n| *n > new_base);
+    let change = if counted { median(&rounds) } else { f64::NAN };
     let deviations: Vec<f64> = rounds.iter().map(|r| (r - change).abs()).collect();
     Paired {
         old: median(&old_full) - old_base,
@@ -990,6 +1003,16 @@ mod tests {
         assert_eq!(verdict(&p, floor, calibrated), Verdict::Slower);
         assert_eq!(floor_of(&p, Some(0.03), false), (0.03, true));
         assert!((floor_of(&p, None, true).0 - 0.02).abs() < 1e-12);
+    }
+
+    /// A run that counts no more than its baseline is no count: the
+    /// workload is broken, never a change.
+    #[test]
+    fn a_count_at_its_baseline_is_broken() {
+        let p = paired([&[100; 3], &[100; 3]], [&[200; 3], &[100; 3]]);
+        assert_eq!(verdict(&p, FLOOR_MIN, false), Verdict::Broken);
+        let q = paired([&[1000; 3], &[100; 3]], [&[90, 1000, 1000], &[100; 3]]);
+        assert_eq!(verdict(&q, FLOOR_MIN, false), Verdict::Broken);
     }
 
     #[test]

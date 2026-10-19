@@ -108,6 +108,23 @@ fn number<T: std::str::FromStr>(text: &str, flag: &str) -> Result<T, String> {
         .map_err(|_| format!("{flag}: {text:?} is not a number"))
 }
 
+/// A count of at least one: rounds or threads, which a run records as it
+/// runs them.
+fn count(text: &str, flag: &str) -> Result<usize, String> {
+    number(text, flag)
+        .ok()
+        .filter(|&n: &usize| n > 0)
+        .ok_or_else(|| format!("{flag}: {text:?} is not a count of one or more"))
+}
+
+#[cfg(test)]
+#[test]
+fn rounds_and_threads_are_one_or_more() {
+    assert_eq!(count("15", "--repeats"), Ok(15));
+    assert!(count("0", "--repeats").is_err());
+    assert!(count("x", "--jobs").is_err());
+}
+
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
         Ok(true) => ExitCode::SUCCESS,
@@ -166,12 +183,16 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
     };
     let list = |text: String| text.split(',').map(str::to_owned).collect::<Vec<_>>();
     let mut baseline = false;
+    let mut against = false;
     let mut names = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--against" => options.reference = value(&mut args, &arg)?,
-            "--repeats" => options.repeats = number(&value(&mut args, &arg)?, &arg)?,
-            "--jobs" => options.jobs = number(&value(&mut args, &arg)?, &arg)?,
+            "--against" => {
+                options.reference = value(&mut args, &arg)?;
+                against = true;
+            }
+            "--repeats" => options.repeats = count(&value(&mut args, &arg)?, &arg)?,
+            "--jobs" => options.jobs = count(&value(&mut args, &arg)?, &arg)?,
             "--floors" => options.floors = Some(value(&mut args, &arg)?.into()),
             "--calibrate" => options.calibrate = true,
             "--only" => options.only.push(value(&mut args, &arg)?),
@@ -214,6 +235,13 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         _ => {
             if !names.is_empty() {
                 return Err(format!("unexpected {names:?}\n{USAGE}"));
+            }
+            // A calibration is the working tree against itself: it takes
+            // no REF and makes the floors, so it is judged by none.
+            if options.calibrate && (against || options.floors.is_some()) {
+                return Err(format!(
+                    "--calibrate takes neither --against nor --floors\n{USAGE}"
+                ));
             }
             against::run(&options)
         }
