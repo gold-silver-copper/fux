@@ -32,6 +32,55 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
     Ok(())
 }
 
+/// The run path for text past ASCII (`Screen::text`) writes glyphs a row
+/// at a time without asking what `print` asks of each. It must do what
+/// `print` does, character by character, in every context that changes
+/// a glyph's printing: margins, origin mode, double-width rows, wide
+/// glyphs overwritten at either half, a pending wrap, autowrap off,
+/// protection, both screens, insert mode, an open link, a Prepend left by
+/// the call before, recorded prints, DEC Special Graphics, and glyphs
+/// already there between ones that change.
+#[test]
+fn the_text_run_path_equals_scalar_dispatch_in_context() -> Result<(), Error> {
+    let text = "界全角─│ЖéﾊШ한";
+    let contexts: &[&str] = &[
+        "",
+        "\x1b[?69h\x1b[3;8s\x1b[1;5H",
+        "\x1b[?69h\x1b[3;8s\x1b[?6h",
+        "\x1b#6",
+        "\x1b[2;3H界界界界\x1b[2;4H",
+        "\x1b[2;3H界界界界\x1b[2;3Hx",
+        "\x1b[1;11Hx",
+        "\x1b[?7l\x1b[1;9H",
+        "\x1b[1\"q",
+        "\x1b[?1049h",
+        "abcdefghij\r\x1b[4h",
+        "\x1b]8;id=1;http://x\x1b\\",
+        "\u{600}",
+        "\x1b(0",
+        "\x1b[2;3r\x1b[3;1H",
+        "AAШA\r",
+        "\x1b]8;id=1;http://x\x1b\\AAШA\r",
+    ];
+    let long = format!("{text}{text}\u{301}{text}");
+    for (n, context) in contexts.iter().enumerate() {
+        let inputs = [long.as_str(), "ЖШ界", "Ж界", "ЖШШШ"];
+        for (input, record) in inputs.iter().flat_map(|i| [(i, false), (i, true)]) {
+            let every = Feature::ALL.into_iter().collect::<Options>();
+            let mut fast = Parser::with_options(Size::of(4, 12), 8, every)?;
+            fast.record_prints(record);
+            let mut slow = fast.clone();
+            for piece in [context.as_bytes(), input.as_bytes()] {
+                fast.process(piece)?;
+                scalar(&mut slow, piece, false, &mut Log::default())?;
+            }
+            let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
+            assert_eq!(difference, None, "context {n}, {input}, recording {record}");
+        }
+    }
+    Ok(())
+}
+
 /// Each of `rows` rows of `cols` columns with a wide glyph before its last
 /// column, then a run of ASCII over the whole row.
 fn wide_glyph_rows(rows: u16, cols: u16) -> Vec<u8> {
@@ -186,11 +235,19 @@ fn sequences(r: &mut Rng, fragments: usize, long: bool) -> Vec<u8> {
                     out.push(r.byte_in(0x20, 0x7e));
                 }
             }
-            16 => out.extend_from_slice(
-                r.pick(&["é", "界", "\u{301}", "👍", "🇺🇸", "\u{fe0f}"])
-                    .unwrap_or_default()
-                    .as_bytes(),
-            ),
+            // Text past ASCII, alone or a run of it (`Screen::text`'s):
+            // narrow and wide glyphs, box drawing, marks, joiners, a
+            // Prepend, Hangul jamo, emoji and their modifiers and flags.
+            16 => {
+                for _ in 0..=r.below(3).saturating_mul(r.below(8)) {
+                    let text = r.pick(&[
+                        "é", "界", "\u{301}", "👍", "🇺🇸", "\u{fe0f}", "Ж", "─", "│", "全",
+                        "\u{600}", "\u{1100}", "\u{1161}", "한", "ष", "\u{94d}", "\u{200d}", "🏽",
+                        "\u{17d8}", "ﾊ",
+                    ]);
+                    out.extend_from_slice(text.unwrap_or_default().as_bytes());
+                }
+            }
             17 | 18 => out.push(
                 r.pick(b"\r\n\x08\t\x07\x18\x1a\x00\x0e\x0f\x0b")
                     .unwrap_or(b'\n'),

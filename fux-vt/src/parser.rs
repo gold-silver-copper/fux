@@ -174,6 +174,37 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     Some((char::from_u32(code)?, length))
 }
 
+/// The characters of the valid UTF-8 `bytes` begins with, decoded one by
+/// one, and how many bytes they took: decoding stops at the first byte
+/// that is not valid or complete UTF-8, or not past ASCII.
+pub(crate) struct Chars<'a> {
+    bytes: &'a [u8],
+    taken: usize,
+}
+
+impl<'a> Chars<'a> {
+    /// How many bytes the characters decoded so far took.
+    #[inline]
+    pub(crate) fn taken(&self) -> usize {
+        self.taken
+    }
+    /// The text of bytes `range`, decoded already.
+    pub(crate) fn text(&self, range: std::ops::Range<usize>) -> &'a str {
+        let bytes = self.bytes.get(range).unwrap_or_default();
+        str::from_utf8(bytes).unwrap_or_default()
+    }
+}
+
+impl Iterator for Chars<'_> {
+    type Item = char;
+    #[inline]
+    fn next(&mut self) -> Option<char> {
+        let (c, length) = self.bytes.get(self.taken..).and_then(decode)?;
+        self.taken = self.taken.saturating_add(length);
+        Some(c)
+    }
+}
+
 /// Whether an OSC's payload keeps `byte`, one that does not end it: a
 /// command string holds 00/08 to 00/13 and 02/00 to 07/14 (ECMA-48 8.3.89,
 /// 5.6), and here the bytes of UTF-8 too; the other controls are left out,
@@ -1442,7 +1473,13 @@ impl Parser {
     #[cold]
     #[inline(never)]
     fn refuse(&mut self) {
-        self.refused = self.refused.saturating_add(1);
+        self.refuse_many(1);
+    }
+    /// `refuse`, `count` times.
+    #[cold]
+    #[inline(never)]
+    fn refuse_many(&mut self, count: u64) {
+        self.refused = self.refused.saturating_add(count);
     }
     /// [`Stop::Budget`] if the call under way stops at its budget
     /// (`UNTIL_STOP`) and spent it.
@@ -1457,14 +1494,12 @@ impl Parser {
     /// character whose printing is refused is counted (`kept`), and the
     /// rest printed.
     fn text(&mut self, bytes: &[u8]) -> Option<usize> {
-        let mut taken = 0usize;
-        while let Some((c, length)) = bytes.get(taken..).and_then(decode) {
-            if self.screen.print(c).is_err() {
-                self.refuse();
-            }
-            taken = taken.saturating_add(length);
+        let mut chars = Chars { bytes, taken: 0 };
+        let refused = self.screen.text(&mut chars);
+        if refused > 0 {
+            self.refuse_many(refused);
         }
-        (taken > 0).then_some(taken)
+        (chars.taken > 0).then_some(chars.taken)
     }
     /// Reads the escape sequence `bytes` begins with (its ESC read in
     /// ground state) as far as it is one programs send most: an escape

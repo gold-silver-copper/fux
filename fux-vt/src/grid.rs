@@ -772,8 +772,19 @@ impl Grid {
         end: u16,
         f: impl FnOnce(&mut [Compact]) -> bool,
     ) {
+        self.mutate_row_to(row, version, |cells| f(cells).then_some(end));
+    }
+    /// `mutate_row` for an edit that finds as it goes where the cells it
+    /// makes end: `f` says so, or `None` if it changed none.
+    #[inline]
+    pub fn mutate_row_to(
+        &mut self,
+        row: u16,
+        version: u64,
+        f: impl FnOnce(&mut [Compact]) -> Option<u16>,
+    ) {
         if let Some(slot) = self.slot(row)
-            && f(self.slice_mut(slot))
+            && let Some(end) = f(self.slice_mut(slot))
         {
             self.changed(slot, end.into(), version);
         }

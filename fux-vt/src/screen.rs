@@ -3,6 +3,7 @@ use crate::keys::KITTY_FLAGS_KEPT;
 use crate::keys::encode::OtherKeys;
 use crate::link::Held;
 use crate::mode::{Kind, Mode, ModeStatus, Modes, RESET_FOR_GOOD, SET_FOR_GOOD, Switch};
+use crate::parser::Chars;
 use crate::unicode::{Cluster, Properties};
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
@@ -840,6 +841,21 @@ fn latest<T: Copy + Default + PartialEq>(slot: &mut T, value: T, on: bool) {
     }
 }
 
+/// The columns a glyph whose properties are `properties` takes in
+/// `Screen::text`'s run, printed at column `col` of a line ending at `end`
+/// after a cluster whose state is `cluster`, if the run may write it: one
+/// or two, before the line's end, joining no cluster by the shortcut
+/// (`Cluster::never_joins`; a cluster of no Prepend, as after a glyph the
+/// run wrote, is the default's).
+#[inline]
+fn run_width(properties: Properties, col: u16, end: u16, cluster: Cluster) -> Option<u16> {
+    let width = match properties.width() {
+        Some(width @ 1..=2) => u16::try_from(width).ok()?,
+        _ => return None,
+    };
+    (cluster.never_joins(properties) && col.checked_add(width)? <= end).then_some(width)
+}
+
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
 /// needs one. Kept out of line, as `unchanged` is (grid.rs), so that the
 /// print that usually follows compiles as if it were not there.
@@ -924,6 +940,10 @@ impl Screen {
             &mut self.primary
         }
     }
+    /// The grid shown, with the next row id and the version, for `f`;
+    /// always inline, so that no edit's closure is left a call of its own
+    /// as `print`'s callers grow.
+    #[inline(always)]
     fn with_grid<T>(&mut self, f: impl FnOnce(&mut Grid, &mut u64, u64) -> T) -> T {
         let grid = if self.alternate_active {
             &mut self.alternate
@@ -1625,6 +1645,7 @@ impl Screen {
         Ok(())
     }
 
+    #[inline(never)]
     pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
         let c = if self.charsets.graphics() {
             self.charsets.map(raw)
@@ -1632,7 +1653,12 @@ impl Screen {
             raw
         };
         // One look in the table, for its width and its segmentation.
-        let properties = Properties::of(c);
+        self.print_as(c, Properties::of(c))
+    }
+
+    /// `print` of `c`, already in the character set's mapping, whose
+    /// properties are `properties`.
+    fn print_as(&mut self, c: char, properties: Properties) -> Result<(), Error> {
         // A control character (C0, DEL or C1, the only ones of no width)
         // is not printed.
         let Some(width) = properties.width().and_then(|w| u16::try_from(w).ok()) else {
@@ -1780,6 +1806,157 @@ impl Screen {
             );
         }
         Ok(())
+    }
+
+    /// Prints the characters `chars` yields, as `print` prints each, and
+    /// says how many of them were refused (`print`'s errors). A glyph one
+    /// or two columns wide that joins no cluster, fits before the line's
+    /// end without a wrap and lands on no half of a wide glyph is written
+    /// straight into its row, a row's worth at a time, with one borrow of
+    /// the row, its links and its print recorded once; anything else, and
+    /// every character under IRM, takes `print`. The first takes `print`
+    /// too, which spends a single shift; no character set maps what is not
+    /// ASCII.
+    pub(crate) fn text(&mut self, chars: &mut Chars<'_>) -> u64 {
+        let mut refused = 0u64;
+        let general = self.mode(Mode::Insert);
+        let recording = self.prints.is_some();
+        let Some(first) = chars.next() else {
+            return refused;
+        };
+        if self.print(first).is_err() {
+            refused = refused.saturating_add(1);
+        }
+        while let Some(next) = chars.next() {
+            // A glyph begins a run; a mark, and what the run stops at, take
+            // the general path, looked up once.
+            let (mut c, mut properties) = (next, Properties::of(next));
+            if !general && matches!(properties.width(), Some(1 | 2)) {
+                let stopped = if recording {
+                    self.run::<true>(c, properties, chars)
+                } else {
+                    self.run::<false>(c, properties, chars)
+                };
+                match stopped {
+                    Some(stopped) => (c, properties) = stopped,
+                    None => continue,
+                }
+            }
+            if self.print_as(c, properties).is_err() {
+                refused = refused.saturating_add(1);
+            }
+        }
+        refused
+    }
+
+    /// `text`'s run: writes `first`, whose properties are `properties`,
+    /// and the glyphs `chars` yields after
+    /// it, while each fits and joins nothing, and says which it stopped at,
+    /// unwritten, if any.
+    /// `RECORDING` while the host records prints, a constant so that the
+    /// run without carries none of it.
+    fn run<const RECORDING: bool>(
+        &mut self,
+        first: char,
+        properties: Properties,
+        chars: &mut Chars<'_>,
+    ) -> Option<(char, Properties)> {
+        // Where `first` is in the text.
+        let mut bytes = chars.taken().saturating_sub(first.len_utf8())..chars.taken();
+        let g = self.grid();
+        let (row, start) = g.cursor.at();
+        let end = g.line_end();
+        let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
+        let fits = (!g.cursor.pending_wrap)
+            .then(|| run_width(properties, start, end, cluster))
+            .flatten();
+        let Some(width) = fits else {
+            return Some((first, properties));
+        };
+        // `print` takes the pen's style for a glyph that fits too.
+        let style = self.pen_style() | self.protect;
+        // The last glyph written, and where; the character the run
+        // stopped at; and the glyphs it changed, as columns and text, which
+        // a host that records prints is given as `print` gives each: one
+        // span of them, so the run stops before a glyph changed past one
+        // left as it was.
+        let mut last = None;
+        let mut stopped = None;
+        let mut col = start;
+        let mut span: Option<(Range<u16>, Range<usize>)> = None;
+        self.with_grid(|g, _, version| {
+            g.mutate_row_to(row, version, |cells| {
+                let mut changed = None;
+                let mut glyph = Some((first, properties, width));
+                while let Some((c, properties, width)) = glyph {
+                    let i = usize::from(col);
+                    let wide = width == 2;
+                    let halves = |cell: Option<&Compact>| {
+                        cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
+                    };
+                    if halves(cells.get(i)) || (wide && halves(cells.get(i + 1))) {
+                        stopped = Some((c, properties));
+                        break;
+                    }
+                    let cell = Compact::glyph(c, usize::from(width), style);
+                    // Already this glyph, whole, as a redraw finds it.
+                    if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
+                        let next = col.saturating_add(width);
+                        match &mut span {
+                            _ if !RECORDING => {}
+                            None => span = Some((col..next, bytes.clone())),
+                            Some((cols, text)) if cols.end == col => {
+                                (cols.end, text.end) = (next, bytes.end);
+                            }
+                            Some(_) => {
+                                stopped = Some((c, properties));
+                                break;
+                            }
+                        }
+                        if let Some(slot) = cells.get_mut(i) {
+                            *slot = cell;
+                        }
+                        if wide && let Some(slot) = cells.get_mut(i + 1) {
+                            *slot = Compact::continuation();
+                        }
+                        changed = col.checked_add(width);
+                    }
+                    last = Some((col, c, properties));
+                    col = col.saturating_add(width);
+                    let at = chars.taken();
+                    glyph = chars.next().and_then(|c| {
+                        if RECORDING {
+                            bytes = at..chars.taken();
+                        }
+                        let properties = Properties::of(c);
+                        match run_width(properties, col, end, Cluster::default()) {
+                            Some(width) => Some((c, properties, width)),
+                            None => {
+                                stopped = Some((c, properties));
+                                None
+                            }
+                        }
+                    });
+                }
+                changed
+            });
+            // Past the glyphs; in the last column the cursor waits
+            // there to wrap.
+            g.advance_within(col, end);
+        });
+        work!(cells, col.saturating_sub(start));
+        // The cells' links, after the cells, as `ascii` does them.
+        if self.links_seen {
+            self.link_cells(row, usize::from(start)..usize::from(col), true);
+        }
+        if let Some((at, c, properties)) = last {
+            self.repeat = Some(c);
+            self.last_print = Some(Printed::of((row, at), properties));
+        }
+        if RECORDING && let Some((cols, text)) = span {
+            self.printed(row, cols, chars.text(text));
+        }
+        stopped
     }
 
     /// The cell before the cursor, which a mark joins: the one left of it,
