@@ -1,13 +1,14 @@
 External fuzz corpora replayed by tests/external_corpora.rs (HAR-71), each
-file as its fuzzer reads it: bytes of terminal output, verbatim.
+file as the terminal output its fuzzer makes of it.
 
 ghostty/  vendored, MIT (ghostty/LICENSE)
   https://github.com/ghostty-org/ghostty
   commit e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110 (2026-10-16)
   test/fuzz-libghostty/corpus/{osc,parser,stream}-{initial,cmin}/: 4,001
   AFL++ inputs, as `git archive` gives them (sanitize-filenames.sh left
-  out). The osc and stream targets' first byte picks a mode; it is fed as
-  output too.
+  out). The stream target's first byte picks a path and is
+  dropped; an osc input is wrapped as its fuzzer reads it, ESC ] then
+  the rest, ended by BEL, ST or nothing as the first byte mod 3 picks.
   SHA-256s: ghostty/SHA256SUMS.
 
 vt100-rust/  vendored, MIT (vt100-rust/LICENSE)
