@@ -562,6 +562,25 @@ mod faults {
         })
     }
 
+    /// A placement found whole at the newest version, whose cell holds no
+    /// placeholder: `shown` reads none of its rows, and check 32 reads
+    /// them all (guard mutants, `check_pictures_shown`).
+    #[test]
+    fn a_picture_shown_without_its_cells_is_a_fault() -> Result<(), Error> {
+        let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
+        let mut screen = Screen::new(size, 0)?;
+        let top = screen.primary.live_row(0).map_or(RowId(0), |r| r.id());
+        assert!(screen.check_pictures_shown().is_ok());
+        let stale = placed(1, 4, top).map(|p| Placement {
+            whole_at: u64::MAX,
+            ..p
+        });
+        screen.pictures.extend(stale);
+        assert_eq!(screen.pictures().count(), 1);
+        assert!(screen.check_pictures_shown().is_err());
+        Ok(())
+    }
+
     #[test]
     fn too_many_pictures_out_of_order_or_too_large_are_faults() -> Result<(), Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;

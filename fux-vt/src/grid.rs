@@ -3101,6 +3101,22 @@ mod faults {
             }
         })?;
         shows("grid.charged", |g| g.history.charge(1))?;
+        // A run past the row's 4 cells, and a link the links held never
+        // counted (guard mutants: the grid's calls to each check).
+        shows("links.runs", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(3..5, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
+        shows("links.held", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(0..1, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
         shows("grid.versions", |g| {
             g.meta.iter_mut().for_each(|m| m.version = 2);
         })?;
