@@ -1440,9 +1440,13 @@ impl Screen {
         self.structural = version;
         // History is made anew: the pictures are found in it again.
         self.retrack_pictures();
-        // What was printed before it is on rows and columns that changed.
-        if let Some(prints) = self.prints.as_mut().filter(|p| !p.is_empty()) {
-            prints.lose();
+        // What was printed before it is on rows and columns that changed;
+        // with nothing yet, what is printed next may hold the new size's.
+        if let Some(prints) = self.prints.as_mut() {
+            match prints.is_empty() {
+                true => *prints = Prints::new(size.cells()),
+                false => prints.lose(),
+            }
         }
         Ok(())
     }
