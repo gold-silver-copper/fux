@@ -3991,7 +3991,8 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "opts str /bin/true program run")?;
         let id = PaneId::of(2);
-        let argv = ["/bin/true".to_owned()];
+        // /bin/sh, which macOS has where it has no /bin/true.
+        let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
         (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
         let exited = |s: &Session| {
