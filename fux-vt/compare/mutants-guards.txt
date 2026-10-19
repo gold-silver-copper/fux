@@ -3,7 +3,7 @@
 # one of which must be generated and caught (`mutants.sh guards`).
 # Frozen at vt-best d6cbde3c from threats.md 5.2's rows (frozen at
 # faf8bf00, moved at 9a38df95, decision 8), and its names regenerated at
-# final-fix (last on 2b1cd587), each by its file, function and operator (decision
+# final-fix (last on 9d9f3995), each by its file, function and operator (decision
 # 893): each `#` line names the row and the guard, and where the frozen code
 # is gone or the [new] function was written otherwise, it says what
 # replaced it, and the replacement's mutants follow. Line numbers in the `#`
@@ -293,16 +293,16 @@ fux-vt/src/style.rs:257:5: replace screen_share -> usize with 0
 fux-vt/src/style.rs:257:5: replace screen_share -> usize with 1
 fux-vt/src/style.rs:258:52: replace / with % in screen_share
 fux-vt/src/style.rs:258:52: replace / with * in screen_share
-fux-vt/src/grid.rs:1036:9: replace Grid::make_style_room -> bool with true
-fux-vt/src/grid.rs:1036:9: replace Grid::make_style_room -> bool with false
-fux-vt/src/grid.rs:1039:9: delete ! in Grid::make_style_room
-fux-vt/src/grid.rs:1039:17: replace > with == in Grid::make_style_room
-fux-vt/src/grid.rs:1039:17: replace > with < in Grid::make_style_room
-fux-vt/src/grid.rs:1039:17: replace > with >= in Grid::make_style_room
-fux-vt/src/grid.rs:1003:26: replace && with || in Grid::find_table_style
-fux-vt/src/grid.rs:1003:29: delete ! in Grid::find_table_style
-fux-vt/src/grid.rs:1012:26: replace || with && in Grid::find_table_style
-fux-vt/src/history.rs:405:9: replace History::charge with ()
+fux-vt/src/grid.rs:1043:9: replace Grid::make_style_room -> bool with true
+fux-vt/src/grid.rs:1043:9: replace Grid::make_style_room -> bool with false
+fux-vt/src/grid.rs:1046:9: delete ! in Grid::make_style_room
+fux-vt/src/grid.rs:1046:17: replace > with == in Grid::make_style_room
+fux-vt/src/grid.rs:1046:17: replace > with < in Grid::make_style_room
+fux-vt/src/grid.rs:1046:17: replace > with >= in Grid::make_style_room
+fux-vt/src/grid.rs:1010:26: replace && with || in Grid::find_table_style
+fux-vt/src/grid.rs:1010:29: delete ! in Grid::find_table_style
+fux-vt/src/grid.rs:1019:26: replace || with && in Grid::find_table_style
+fux-vt/src/history.rs:414:9: replace History::charge with ()
 # B11 and B13 [new] P22's memo(place, op): not written (decision 826: no per-grid memo); replaced by a 16-entry memo local to the call in Screen::change_attributes (screen.rs:3135-3154): its reset on a sweep, its hit test and its slot
 fux-vt/src/screen.rs:3523:23: replace != with == in Screen::change_attributes
 fux-vt/src/screen.rs:3527:73: replace == with != in Screen::change_attributes
@@ -337,7 +337,7 @@ fux-vt/src/link.rs:689:55: delete ! in parse
 fux-vt/src/link.rs:573:9: replace Links::may_make_room -> bool with true
 fux-vt/src/link.rs:573:9: replace Links::may_make_room -> bool with false
 fux-vt/src/link.rs:583:9: replace Links::stall with ()
-fux-vt/src/grid.rs:1100:12: delete ! in Grid::intern
+fux-vt/src/grid.rs:1107:12: delete ! in Grid::intern
 # B14 [new] P8's heap_cost (strings + headers + ids buckets): not written; a link's cost is Hyperlink::cost (link.rs:99: URI + id + LINK_COST, a bare literal 64 with no mutant); the ids map's buckets and the Arc headers are not counted (threats.md:176, "not reached in round 6", B14 on known-failing.txt)
 fux-vt/src/link.rs:101:9: replace Hyperlink::cost -> usize with 0
 fux-vt/src/link.rs:101:9: replace Hyperlink::cost -> usize with 1
@@ -345,72 +345,72 @@ fux-vt/src/link.rs:101:9: replace Hyperlink::cost -> usize with 1
 fux-vt/src/link.rs:196:9: replace KeptLinks::heap -> usize with 0
 fux-vt/src/link.rs:196:9: replace KeptLinks::heap -> usize with 1
 # B17 [now] History::trim (history.rs:225-226 -> :350-371): split into trim, over (the > against room) and trim_over (the loop and the empty case)
-fux-vt/src/history.rs:415:9: replace History::trim with ()
-fux-vt/src/history.rs:422:9: replace History::over -> bool with true
-fux-vt/src/history.rs:422:9: replace History::over -> bool with false
-fux-vt/src/history.rs:422:27: replace > with == in History::over
-fux-vt/src/history.rs:422:27: replace > with < in History::over
-fux-vt/src/history.rs:422:27: replace > with >= in History::over
-fux-vt/src/history.rs:429:9: replace History::trim_over with ()
-fux-vt/src/history.rs:429:15: delete ! in History::trim_over
-fux-vt/src/history.rs:429:37: replace && with || in History::trim_over
-fux-vt/src/history.rs:432:33: replace && with || in History::trim_over
+fux-vt/src/history.rs:424:9: replace History::trim with ()
+fux-vt/src/history.rs:431:9: replace History::over -> bool with true
+fux-vt/src/history.rs:431:9: replace History::over -> bool with false
+fux-vt/src/history.rs:431:27: replace > with == in History::over
+fux-vt/src/history.rs:431:27: replace > with < in History::over
+fux-vt/src/history.rs:431:27: replace > with >= in History::over
+fux-vt/src/history.rs:438:9: replace History::trim_over with ()
+fux-vt/src/history.rs:438:15: delete ! in History::trim_over
+fux-vt/src/history.rs:438:37: replace && with || in History::trim_over
+fux-vt/src/history.rs:441:33: replace && with || in History::trim_over
 # B17 [now] History::most_rows (history.rs:216): gone with the chunked ring (decision 33); the MAX_ROWS case is now make_room's loop to MAX_ROWS less a chunk (history.rs:559-562), and a lowered budget makes storage anew in set_budget (history.rs:389)
-fux-vt/src/history.rs:629:35: replace > with == in History::make_room
-fux-vt/src/history.rs:629:35: replace > with < in History::make_room
-fux-vt/src/history.rs:629:35: replace > with >= in History::make_room
-fux-vt/src/history.rs:455:9: replace History::set_budget with ()
+fux-vt/src/history.rs:634:35: replace > with == in History::make_room
+fux-vt/src/history.rs:634:35: replace > with < in History::make_room
+fux-vt/src/history.rs:634:35: replace > with >= in History::make_room
+fux-vt/src/history.rs:465:9: replace History::set_budget with ()
 # B17 [now] BLOCK and BLOCKS (history.rs:33, :37 -> :42, :46)
-fux-vt/src/history.rs:43:24: replace << with >>
-fux-vt/src/history.rs:47:25: replace << with >>
+fux-vt/src/history.rs:45:24: replace << with >>
+fux-vt/src/history.rs:49:25: replace << with >>
 # B17 [now] History::block_at (history.rs:261 -> :458): never rewritten as past_older; still <=
-fux-vt/src/history.rs:523:13: replace <= with > in History::block_at
+fux-vt/src/history.rs:536:13: replace <= with > in History::block_at
 # B17 [now] History::fits (history.rs:326 -> :541-542): never rewritten as overflows; still the <= pair, with the fits body as the named guard
-fux-vt/src/history.rs:609:9: replace History::fits -> bool with true
-fux-vt/src/history.rs:609:9: replace History::fits -> bool with false
-fux-vt/src/history.rs:610:13: replace == with != in History::fits
-fux-vt/src/history.rs:610:18: replace || with && in History::fits
-fux-vt/src/history.rs:610:34: replace && with || in History::fits
-fux-vt/src/history.rs:610:25: replace <= with > in History::fits
-fux-vt/src/history.rs:610:41: replace <= with > in History::fits
+fux-vt/src/history.rs:614:9: replace History::fits -> bool with true
+fux-vt/src/history.rs:614:9: replace History::fits -> bool with false
+fux-vt/src/history.rs:615:13: replace == with != in History::fits
+fux-vt/src/history.rs:615:18: replace || with && in History::fits
+fux-vt/src/history.rs:615:34: replace && with || in History::fits
+fux-vt/src/history.rs:615:25: replace <= with > in History::fits
+fux-vt/src/history.rs:615:41: replace <= with > in History::fits
 # B17 [now] History::make_room's newest-block growth (history.rs:355 -> :578)
-fux-vt/src/history.rs:647:35: replace > with == in History::make_room
-fux-vt/src/history.rs:647:35: replace > with < in History::make_room
-fux-vt/src/history.rs:647:35: replace > with >= in History::make_room
-fux-vt/src/history.rs:647:39: replace && with || in History::make_room
-fux-vt/src/history.rs:647:46: replace <= with > in History::make_room
+fux-vt/src/history.rs:652:35: replace > with == in History::make_room
+fux-vt/src/history.rs:652:35: replace > with < in History::make_room
+fux-vt/src/history.rs:652:35: replace > with >= in History::make_room
+fux-vt/src/history.rs:652:39: replace && with || in History::make_room
+fux-vt/src/history.rs:652:46: replace <= with > in History::make_room
 # B17 [now] History::make_room's block limit (history.rs:359:29 -> :573 and :590): never rewritten as out_of_blocks/BLOCKS_MOST; now older.len() >= BLOCKS - 2 in the loop that lets rows go (with the MAX_CELLS test beside it) and before a block starts
-fux-vt/src/history.rs:641:15: delete ! in History::make_room
-fux-vt/src/history.rs:642:13: replace && with || in History::make_room
-fux-vt/src/history.rs:642:34: replace >= with < in History::make_room
-fux-vt/src/history.rs:642:62: replace || with && in History::make_room
-fux-vt/src/history.rs:642:81: replace > with == in History::make_room
-fux-vt/src/history.rs:642:81: replace > with < in History::make_room
-fux-vt/src/history.rs:642:81: replace > with >= in History::make_room
-fux-vt/src/history.rs:659:29: replace >= with < in History::make_room
+fux-vt/src/history.rs:646:15: delete ! in History::make_room
+fux-vt/src/history.rs:647:13: replace && with || in History::make_room
+fux-vt/src/history.rs:647:34: replace >= with < in History::make_room
+fux-vt/src/history.rs:647:62: replace || with && in History::make_room
+fux-vt/src/history.rs:647:81: replace > with == in History::make_room
+fux-vt/src/history.rs:647:81: replace > with < in History::make_room
+fux-vt/src/history.rs:647:81: replace > with >= in History::make_room
+fux-vt/src/history.rs:664:29: replace >= with < in History::make_room
 # B17 [new] block_bytes (older + newest + spare): not written; no spare block is kept (decision 33); blocks are counted as room_cells in History::recount (history.rs:320, held with the ring, maps and runs) and read by rows_bytes; a row past half a block gets a block of its own (history.rs:589), the block size from block_cells (:336)
-fux-vt/src/history.rs:378:9: replace History::recount with ()
-fux-vt/src/history.rs:373:9: replace History::rows_bytes -> usize with 0
-fux-vt/src/history.rs:373:9: replace History::rows_bytes -> usize with 1
-fux-vt/src/history.rs:386:9: replace History::maps_bytes -> usize with 0
-fux-vt/src/history.rs:386:9: replace History::maps_bytes -> usize with 1
-fux-vt/src/history.rs:395:9: replace History::block_cells -> usize with 0
-fux-vt/src/history.rs:395:9: replace History::block_cells -> usize with 1
-fux-vt/src/history.rs:395:22: replace / with % in History::block_cells
-fux-vt/src/history.rs:395:22: replace / with * in History::block_cells
-fux-vt/src/history.rs:658:33: replace || with && in History::make_room
-fux-vt/src/history.rs:658:40: replace > with == in History::make_room
-fux-vt/src/history.rs:658:40: replace > with < in History::make_room
-fux-vt/src/history.rs:658:40: replace > with >= in History::make_room
-fux-vt/src/history.rs:658:48: replace / with % in History::make_room
-fux-vt/src/history.rs:658:48: replace / with * in History::make_room
+fux-vt/src/history.rs:387:9: replace History::recount with ()
+fux-vt/src/history.rs:382:9: replace History::rows_bytes -> usize with 0
+fux-vt/src/history.rs:382:9: replace History::rows_bytes -> usize with 1
+fux-vt/src/history.rs:395:9: replace History::maps_bytes -> usize with 0
+fux-vt/src/history.rs:395:9: replace History::maps_bytes -> usize with 1
+fux-vt/src/history.rs:404:9: replace History::block_cells -> usize with 0
+fux-vt/src/history.rs:404:9: replace History::block_cells -> usize with 1
+fux-vt/src/history.rs:404:22: replace / with % in History::block_cells
+fux-vt/src/history.rs:404:22: replace / with * in History::block_cells
+fux-vt/src/history.rs:663:33: replace || with && in History::make_room
+fux-vt/src/history.rs:663:40: replace > with == in History::make_room
+fux-vt/src/history.rs:663:40: replace > with < in History::make_room
+fux-vt/src/history.rs:663:40: replace > with >= in History::make_room
+fux-vt/src/history.rs:663:48: replace / with % in History::make_room
+fux-vt/src/history.rs:663:48: replace / with * in History::make_room
 # B17 [new] wants_shrink(cap, len) (2 x len + 64): not written; the ring is chunked and gives chunks back as they empty, so it has no shrink rule (decision 33, history/ring.rs advance and let_first_go); the maps give back room past 4 x len + 64 (decision 33: twice made the texts map thrash), the shrink closure in History::maps_changed (history.rs:793) over most_room (:160, saturating, no operator mutants)
-fux-vt/src/history.rs:884:9: replace History::maps_changed with ()
-fux-vt/src/history.rs:884:61: replace > with == in History::maps_changed
-fux-vt/src/history.rs:884:61: replace > with < in History::maps_changed
-fux-vt/src/history.rs:884:61: replace > with >= in History::maps_changed
-fux-vt/src/history.rs:166:5: replace most_room -> usize with 0
-fux-vt/src/history.rs:166:5: replace most_room -> usize with 1
+fux-vt/src/history.rs:914:9: replace History::maps_changed with ()
+fux-vt/src/history.rs:914:61: replace > with == in History::maps_changed
+fux-vt/src/history.rs:914:61: replace > with < in History::maps_changed
+fux-vt/src/history.rs:914:61: replace > with >= in History::maps_changed
+fux-vt/src/history.rs:168:5: replace most_room -> usize with 0
+fux-vt/src/history.rs:168:5: replace most_room -> usize with 1
 fux-vt/src/history/ring.rs:115:9: replace Ring::advance -> bool with true
 fux-vt/src/history/ring.rs:115:9: replace Ring::advance -> bool with false
 fux-vt/src/history/ring.rs:117:31: replace >= with < in Ring::advance
@@ -681,9 +681,9 @@ fux-vt/src/screen.rs:163:19: replace == with != in Printed::full
 # Grid::scroll_region (grid.rs:1806, no mutant), and SCR-8's one turn of the region's slots is Order::rotate
 # (grid.rs:240, decision 36); its guards are scroll_region's count==0 / count==1 branches and rotate's range
 # and `by > len` checks, below. Killed by bounds/rows.rs b36 (`slots` bound).
-fux-vt/src/grid.rs:1902:9: replace Grid::scroll_region with ()
-fux-vt/src/grid.rs:1905:18: replace == with != in Grid::scroll_region
-fux-vt/src/grid.rs:1908:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:1909:9: replace Grid::scroll_region with ()
+fux-vt/src/grid.rs:1912:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:1915:18: replace == with != in Grid::scroll_region
 fux-vt/src/grid.rs:249:9: replace Order::rotate with ()
 # equivalent: rotate's one caller, Grid::scroll_region (grid.rs:1825), calls it only when count >= 2 after count = count.min(region.len()), so last > first: high > low, where high < low, high == low and high <= low are all false (mutants-equivalent.txt)
 fux-vt/src/grid.rs:250:17: replace < with == in Order::rotate
@@ -752,17 +752,17 @@ fux-vt/src/cell.rs:854:16: replace < with > in Cells::resize
 fux-vt/src/cell.rs:854:16: replace < with <= in Cells::resize
 # B40 [now] Grid::index_of (faf8bf00 grid.rs:613 -> now :687). Its `==` (:616:76) moved into Grid::screen_index_of
 # (the screen's rows, :694:91) and History::position (history's, :503:71).
-fux-vt/src/grid.rs:715:9: replace Grid::index_of -> Option<usize> with None
-fux-vt/src/grid.rs:715:9: replace Grid::index_of -> Option<usize> with Some(0)
-fux-vt/src/grid.rs:715:9: replace Grid::index_of -> Option<usize> with Some(1)
-fux-vt/src/grid.rs:721:9: replace Grid::screen_index_of -> Option<usize> with None
-fux-vt/src/grid.rs:721:9: replace Grid::screen_index_of -> Option<usize> with Some(0)
-fux-vt/src/grid.rs:721:9: replace Grid::screen_index_of -> Option<usize> with Some(1)
-fux-vt/src/grid.rs:722:91: replace == with != in Grid::screen_index_of
-fux-vt/src/history.rs:568:9: replace History::position -> Option<usize> with None
-fux-vt/src/history.rs:568:9: replace History::position -> Option<usize> with Some(0)
-fux-vt/src/history.rs:568:9: replace History::position -> Option<usize> with Some(1)
-fux-vt/src/history.rs:571:71: replace == with != in History::position
+fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with None
+fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with Some(0)
+fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with Some(1)
+fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with None
+fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with Some(0)
+fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with Some(1)
+fux-vt/src/grid.rs:729:91: replace == with != in Grid::screen_index_of
+fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with None
+fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with Some(0)
+fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with Some(1)
+fux-vt/src/history.rs:583:35: replace == with != in History::position
 # B40 [new] search() (SCR-34's binary search): not written (decision 32: kept as tries/six7-binary-search.patch,
 # history stays a scan, B40's history row on the known-failing list); its key comparison has no mutant. The scan's
 # guards are the History::position names above.
@@ -784,12 +784,12 @@ fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 0
 fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 1
 fux-vt/src/parser.rs:1517:9: replace Parser::count_degrades with ()
 # B44 [new] let_row_go: written as Grid::scroll_past_history (grid.rs:1646, a row history has no room for goes as with no history)
-fux-vt/src/grid.rs:1715:9: replace Grid::scroll_past_history with ()
+fux-vt/src/grid.rs:1722:9: replace Grid::scroll_past_history with ()
 # B44 [new] blank_in_place: inline in Grid::clear's refused arm (grid.rs:2098-2103), behind Grid::holds_its_rows;
 # RIS's refused fresh grids fall back to Grid::clear (screen.rs:2614-2636)
-fux-vt/src/grid.rs:2212:24: delete ! in Grid::clear
-fux-vt/src/grid.rs:2229:9: replace Grid::holds_its_rows -> bool with true
-fux-vt/src/grid.rs:2229:9: replace Grid::holds_its_rows -> bool with false
+fux-vt/src/grid.rs:2220:24: delete ! in Grid::clear
+fux-vt/src/grid.rs:2237:9: replace Grid::holds_its_rows -> bool with true
+fux-vt/src/grid.rs:2237:9: replace Grid::holds_its_rows -> bool with false
 # B44 [new] stay_primary: not a function; the alternate screen is made before the switch (`self.alternate.make()?`,
 # screen.rs:3304), so a refusal leaves the primary shown (decision 37). Its guard is Grid::make.
 fux-vt/src/grid.rs:480:9: replace Grid::make -> Result<(), Error> with Ok(())
@@ -809,26 +809,26 @@ fux-vt/src/check.rs:120:5: replace ensure -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:727:9: replace Prints::check_cap -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:742:9: replace Prints::check -> Result<(), String> with Ok(())
 fux-vt/src/compact.rs:433:9: replace Text::check -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2713:9: replace Grid::check with ()
-fux-vt/src/grid.rs:2762:9: replace Grid::check_order -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2783:9: replace Grid::check_slots -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2806:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2846:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2870:9: replace Grid::check_text -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2880:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2896:9: replace Grid::check_recent -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2921:9: replace Grid::check_versions -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2932:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2950:9: replace Grid::check_margins -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2984:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2991:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3002:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
-fux-vt/src/history.rs:1036:9: replace History::check with ()
-fux-vt/src/history.rs:1046:9: replace History::check_counts -> Result<(), String> with Ok(())
-fux-vt/src/history.rs:1070:9: replace History::check_blocks -> Result<(), String> with Ok(())
-fux-vt/src/history.rs:1089:9: replace History::check_flags -> Result<(), String> with Ok(())
-fux-vt/src/history.rs:1142:9: replace History::check_budget -> Result<(), String> with Ok(())
-fux-vt/src/history.rs:1160:9: replace History::check_capacities -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2721:9: replace Grid::check with ()
+fux-vt/src/grid.rs:2770:9: replace Grid::check_order -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2791:9: replace Grid::check_slots -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2814:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2854:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2878:9: replace Grid::check_text -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2888:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2904:9: replace Grid::check_recent -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2929:9: replace Grid::check_versions -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2940:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2958:9: replace Grid::check_margins -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2992:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2999:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3010:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
+fux-vt/src/history.rs:1066:9: replace History::check with ()
+fux-vt/src/history.rs:1076:9: replace History::check_counts -> Result<(), String> with Ok(())
+fux-vt/src/history.rs:1100:9: replace History::check_blocks -> Result<(), String> with Ok(())
+fux-vt/src/history.rs:1119:9: replace History::check_flags -> Result<(), String> with Ok(())
+fux-vt/src/history.rs:1179:9: replace History::check_budget -> Result<(), String> with Ok(())
+fux-vt/src/history.rs:1197:9: replace History::check_capacities -> Result<(), String> with Ok(())
 fux-vt/src/link.rs:601:9: replace Runs<'_>::check -> Result<(), String> with Ok(())
 fux-vt/src/link.rs:628:9: replace Links::check -> Result<(), String> with Ok(())
 fux-vt/src/parser.rs:1133:9: replace Parser::check_osc -> Result<(), String> with Ok(())
