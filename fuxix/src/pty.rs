@@ -90,6 +90,11 @@ impl Master {
     /// them. Where the slave is not held, it is opened only to ask, so
     /// that its program's end still closes it.
     pub fn keys_unread(&self) -> bool {
+        self.keys_waiting() > 0
+    }
+
+    /// How many bytes of keys wait in the terminal for its program to read.
+    pub fn keys_waiting(&self) -> usize {
         #[cfg(target_os = "macos")]
         let unread = crate::io::unread(&self.2);
         #[cfg(not(target_os = "macos"))]
@@ -99,7 +104,7 @@ impl Master {
             .open(&self.1)
             .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
             .and_then(crate::io::unread);
-        unread.is_ok_and(|n| n > 0)
+        unread.unwrap_or(0)
     }
 }
 

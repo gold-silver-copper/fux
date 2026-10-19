@@ -39,15 +39,17 @@ fux ls                                                  # what there is: workspa
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 reading · no status: …      a line read again where nothing marks commands (a plain `sh`): no `done` comes
+%2 reading · no status: …      a shell in front that marks no commands (a plain `sh`) read a line again: no `done` comes
 %2 waiting                     quiet 1s, but it may go on alone (`· redraws on its own`: a clock, `top`)
 %2 waiting · not reading its terminal, so fux cannot tell when it waits for input: `%2 wait-exit wait` waits for its end
                                not a full-screen program, blocked on the network or a pipe (`koh exec`, a download)
 %2 busy · `%2 wait` waits for it to settle
                                still at work at the time limit (status 124); a shell command: `wait-done`
 %2 exited 3                    the program ended; what it printed since your input follows
+%2 exited 0 · it exited before reading C-q, which went nowhere
+                               keys it never read (sent on after the one that quit it)
 · highlight 6,16-25 "1761.5"   what your keys highlighted anew (a selection, reverse video), row,cols from 0
-· cursor 3,7                   the cursor, when text goes on under or right of it (an editor, a line edited), or the keys moved it alone
+· cursor 3,7                   the cursor: after a line edited (typed, Left, Up), in an editor, or moved alone; a capture says it too
 ```
 
 - **Wait longer:** `%2 300 timeout wait`; a shell command of unknown length
@@ -85,7 +87,7 @@ or the whole screen of a full-screen program (an editor, a menu, a form; one tha
 %2 reading                     it waits for you: blocked reading its terminal, every key read
 %2 reading · done 0            a shell command ended with status 0, and the shell reads again
 %2 reading · no change         it read your keys and drew nothing: do not send them again
-%2 reading · no status: …      a line read again where nothing marks commands (a plain `sh`): no `done` comes
+%2 reading · no status: …      a shell in front that marks no commands (a plain `sh`) read a line again: no `done` comes
 %2 waiting                     quiet 1s, but it may go on alone: `PANE wait` waits up to 5s for more, then answers so (status 0); `· redraws on its own` (a clock, `top`): it read your keys and drew after them, a later capture may differ, `str TEXT wait-text` waits for a text
 %2 busy · 12 bytes unread      still running, printing or asleep on a timer (a sleep loop) at the time limit (status 124); unread: input fux holds yet
 %2 exited 3                    the program ended; what it printed since your input follows
@@ -104,10 +106,19 @@ ended: …` for a relay (`koh connect`) that owes a report of its program
 to three runs the input highlighted anew (reverse video, or a background
 other than the screen's: a selection, a menu's choice), as a mouse event
 counts cells; one that stays where it was is not said again. `· cursor
-ROW,COL` gives the cursor when text shows under or right of it on its row
-(a line editor after Left or Home, an editor), or the keys moved the cursor
-and nothing else (End): at the end of what was typed it is not said. A program that exited runs no command: its state is `exited N`
-alone.
+ROW,COL` gives the cursor, from 0 as a mouse event counts cells, wherever it
+matters: after keys that edited a line a program reads (text typed, Left,
+Up, Backspace; at its end too), when text shows under or right of it on its
+row (an editor), or when the keys moved it and nothing else (End). It is
+not said on a blank row, where output left it, nor while the cursor is
+hidden. A capture's state line says it too, whenever it shows on a row
+with text (`%2 reading · cursor 4,7`), as JSON's `cursor` does. A program that exited runs no command: its state is `exited N`
+alone. Keys it never read go nowhere, and are named: `%2 exited 0 · it
+exited before reading C-q, "ab", which went nowhere` (sent on after the
+key that quit it); through a relay (`koh connect`), which reads them all,
+the keys sent on after the first key or line its program did not say it
+read: `· it ended before its relay said its program read C-q, which
+likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
 
 ## start: Starting programs
 
@@ -195,7 +206,7 @@ alone.
   it, a path or a word never split, and `rows` takes each line it touches
   whole), `marks`, `styles`,
   `json` (screen and state: `cursor` among the lines, past them on a blank
-  row; `wrap_pending` when a glyph went into the last column and the next
+  row, where the state line of text says `· cursor ROW,COL` of the screen; `wrap_pending` when a glyph went into the last column and the next
   goes on the next line, though the cursor shows on that last cell). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in
   whole rows: old text on the row it starts on too), else that full screen if they changed it, else the screen as it is.
@@ -306,9 +317,12 @@ command never ends: `line` answers `reading` with no `done`, and
 `str shell-marks str off set` turns marks off for shells started after.
 A shell that marks no commands (one fux did not start, as `str sh
 program` or `koh connect SERVER -- sh` runs one) gives no status: a line
-it, or a relay's program, reads again after answers `reading · no
-status: nothing here marks its commands` (`"marked":false`); `CMD; echo
-"status $?"` prints it.
+it reads again after answers `reading · no status: nothing here marks
+its commands` (`"marked":false`); `CMD; echo "status $?"` prints it.
+That is said only while a shell is in front: not of a line a program
+it runs reads (a REPL, `cat`, gdb), nor of a relay's program that is no
+shell (`koh connect SERVER -- ./calc`): through a relay fux knows the
+shell only from the words it was started with (`-- bash -i`).
 
 A shell's marks carry a nonce, so output (`cat file`) cannot pass for
 them. A program you run in it on purpose that marks commands of its own
