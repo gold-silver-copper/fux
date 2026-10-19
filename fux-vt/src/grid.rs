@@ -597,6 +597,15 @@ impl Grid {
         Ok(())
     }
 
+    /// Keeps a row in history as it is, `cells` of `width`, their blank
+    /// tail left: a row with no text or links, as another history or the
+    /// screen kept it.
+    fn keep_history_row(&mut self, meta: Meta, cells: &[Compact], width: u16) -> Result<(), Error> {
+        self.history.push(meta.arriving(trimmed(cells), width))?;
+        self.history.trim();
+        Ok(())
+    }
+
     /// Puts a row under the screen's rows, in a slot of its own: `meta`,
     /// `cells` from its first (the rest blank), its text and its links.
     /// Room was made for it (`reserve_screen`).
@@ -2147,9 +2156,6 @@ impl Grid {
                 Some(r) if is_history => u16::try_from(r.width).map_err(|_| Error::Capacity)?,
                 Some(_) | None => cols,
             };
-            row.clear();
-            row.resize(usize::from(width), BLANK);
-            work!(cells, width);
             // A row cut or padded to a new width no longer continues on
             // the next; at the same width it does, as it did.
             let wrapped = old.is_some_and(|r| r.wrapped()) && (is_history || same_width);
@@ -2158,6 +2164,27 @@ impl Grid {
             } else {
                 version
             };
+            let mut meta = Meta::new(id, row_version, wrapped, width)
+                .with_rendition(old.map_or(LineRendition::Single, |r| r.rendition()));
+            meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
+            if wrapped && old.is_some_and(|r| !r.continues()) {
+                meta.flags |= ENDS;
+            }
+            // A row of history keeps its width, so its cells go into the
+            // new history as they are, unless it has text or links to store
+            // again or a rendition to cut it to: no row to lay out.
+            if let Some(old) = old.filter(|r| {
+                is_history
+                    && r.text.is_empty()
+                    && r.links.is_none()
+                    && r.rendition() == LineRendition::Single
+            }) {
+                replacement.keep_history_row(meta, old.cells, width)?;
+                continue;
+            }
+            row.clear();
+            row.resize(usize::from(width), BLANK);
+            work!(cells, width);
             // As much of the old row's links as fits, as of its cells: on a
             // row half as long, to its end at the new width.
             let fits = match old.is_some_and(|r| r.rendition().is_double()) {
@@ -2186,12 +2213,6 @@ impl Grid {
                 // The row's text comes along, stored again within the
                 // budget of the row's new width.
                 text = Some(Line::rebuilt(&mut row, old.text));
-            }
-            let mut meta = Meta::new(id, row_version, wrapped, width)
-                .with_rendition(old.map_or(LineRendition::Single, |r| r.rendition()));
-            meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
-            if wrapped && old.is_some_and(|r| !r.continues()) {
-                meta.flags |= ENDS;
             }
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
