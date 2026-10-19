@@ -747,6 +747,34 @@ impl Grid {
         x
     }
 
+    /// Shows `area` as `shown`, a grid of the same size, shows it, with
+    /// the cursor if it is in `area` in either: a pane part way through a
+    /// frame (`Pane::mid_frame`) shows as the client was last painted it,
+    /// while the rest of the screen is painted. What composed the grid can
+    /// then no longer say what it shows (`Memo`).
+    pub fn keep_area(&mut self, shown: &Grid, area: Rect) {
+        if (self.rows, self.cols) != (shown.rows, shown.cols) {
+            return;
+        }
+        let len = self.cells.len();
+        for y in area.rows() {
+            for x in area.cols() {
+                if let Some(i) = self.index(y, x)
+                    && let Some(cell) = shown.cells.get(i)
+                {
+                    self.cells.set(i, cell);
+                    self.links.set(i, shown.links.get(i), len);
+                }
+            }
+        }
+        let inside = |at: Option<(u16, u16)>| at.is_some_and(|(y, x)| area.contains(y, x));
+        if inside(self.cursor) || inside(shown.cursor) {
+            self.cursor = shown.cursor;
+            self.modes.cursor_shape = shown.modes.cursor_shape;
+        }
+        self.memo = None;
+    }
+
     fn fill(&mut self, area: Rect, style: Attributes) {
         let blank = CellRef::new(" ", false, style);
         for y in area.rows() {

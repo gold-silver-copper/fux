@@ -415,10 +415,8 @@ impl Conn {
         let dirty = session.views.get(&attached.client)?.dirty;
         let sent = self.out.is_empty() && attached.tty.as_ref().is_none_or(|t| t.out.is_empty());
         // A screen not known is painted whole, whether or not the view
-        // changed: forgetting it is asking for that paint. None is painted
-        // half of a frame.
-        let ready = sent && !session.mid_frame(attached.client);
-        ((dirty || !attached.known) && ready).then_some(attached.clock.due)
+        // changed: forgetting it is asking for that paint.
+        ((dirty || !attached.known) && sent).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -1235,7 +1233,19 @@ impl Server {
         let Some(view) = session.views.get(&client) else {
             return;
         };
+        let placed = attached.placement.panes.clone();
         render::compose_view(session, view, &mut attached.spare, &mut attached.placement);
+        // A pane part way through a frame shows as it was last painted,
+        // where it still is; the rest of the screen is painted, so one
+        // pane holds up no other (threats.md P24).
+        for &(id, rect) in &attached.placement.panes {
+            if attached.known
+                && placed.contains(&(id, rect))
+                && session.panes.get(&id).is_some_and(Pane::mid_frame)
+            {
+                attached.spare.keep_area(&attached.shown, rect);
+            }
+        }
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }

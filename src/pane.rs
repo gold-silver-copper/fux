@@ -882,9 +882,10 @@ impl Pane {
 
     /// Whether the screen is part way through a frame drawn in
     /// synchronized output, the rest of it waiting for the pane's next
-    /// turns: a client is not painted it till it is whole, and keeps the
-    /// last frame painted ("keep rendering the last rendered state",
-    /// `references/modern/mode_2026_synchronized_output.md`).
+    /// turns: till it is whole, a client is painted the pane as it last
+    /// painted it ("keep rendering the last rendered state",
+    /// `references/modern/mode_2026_synchronized_output.md`), and the rest
+    /// of its screen as it is (`render::Grid::keep_area`).
     pub fn mid_frame(&self) -> bool {
         self.frame_left > 0
     }
