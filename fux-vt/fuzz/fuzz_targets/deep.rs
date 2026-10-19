@@ -65,6 +65,11 @@ const MOST: usize = 1 << 20;
 const SPLIT: usize = 64 << 10;
 const SPLIT_ROWS: usize = 2048;
 
+/// The most cells the byte-at-a-time checks hash in one run: at 2,048
+/// rows of 81 cells, 64 KiB of bytes hashed 10^10 cells, a minute without
+/// a sanitizer, past `-timeout`. About a second's worth.
+const SPLIT_CELLS: usize = 1 << 27;
+
 /// The most operations a run makes, and the most host reads (`f6`) among
 /// them: each checks screens of up to 261,121 cells and 8 MiB of history,
 /// and a read encodes every picture shown, so a run stays within seconds.
@@ -109,6 +114,7 @@ struct Run {
     split: Parser,
     fed: usize,
     split_fed: usize,
+    hashed: usize,
 }
 
 impl Run {
@@ -148,7 +154,13 @@ impl Run {
         // The rows after a byte are those before the next.
         let mut kept = None;
         for byte in bytes {
-            let few = self.split.screen().rows().len() <= SPLIT_ROWS;
+            let screen = self.split.screen();
+            let cells = (screen.rows().len()).saturating_mul(usize::from(screen.size().cols()));
+            let few = screen.rows().len() <= SPLIT_ROWS
+                && self.hashed.saturating_add(cells) <= SPLIT_CELLS;
+            if few {
+                self.hashed = self.hashed.saturating_add(cells);
+            }
             let before = few.then(|| kept.take().unwrap_or_else(|| Rows::of(&self.split)));
             assert!(
                 (self.split)
@@ -249,6 +261,7 @@ fuzz_target!(|data: &[u8]| {
         split,
         fed: 0,
         split_fed: 0,
+        hashed: 0,
     };
     let (mut ops, mut reads) = (0usize, 0usize);
     while let Some((&operation, tail)) = input.split_first() {
