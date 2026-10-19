@@ -997,6 +997,29 @@ fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
     Ok(())
 }
 
+/// Graphics new lines after a picture's last band take the cursor down
+/// as far as they went (DEC STD 070-9, 11.3), but at most 8 rows below
+/// the picture's last row: a new line goes down as many rows as the
+/// aspect ratio makes six pixel rows, so a few bytes could ask for any
+/// number of line feeds (B05). With 8-pixel cells, one band (row 0), then
+/// 3 new lines end on pixel row 23, row 2; 20 would end on row 15, and
+/// stop at 8 (FA-SIX-5).
+#[test]
+fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
+    for (lines, row) in [(3, 2), (20, 8)] {
+        let mut p = Parser::with_options(Size::new(20, 10)?, 10, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let dashes: String = std::iter::repeat_n('-', lines).collect();
+        let data = format!("\x1bPq\"1;1#1;2;100;0;0~{dashes}\x1b\\");
+        p.process(data.as_bytes())?;
+        assert_eq!(p.screen().cursor_position(), (row, 0), "{lines} new lines");
+    }
+    Ok(())
+}
+
 /// A picture shows while every cell it covers, row by row down from its
 /// top, holds the placeholder: a region scroll that moves part of it past
 /// the rest, or an edit in the call that placed it, takes it away, as
