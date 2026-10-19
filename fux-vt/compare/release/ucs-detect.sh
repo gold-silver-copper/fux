@@ -5,12 +5,13 @@
 # category, 1,000 errors). Writes OUT/ucs-detect-NAME.json (NAME: fux) and
 # its summary, OUT/ucs-detect-NAME.txt: each category's score beside the
 # authority that decides it, and the languages that fail. Exit 1 if fewer
-# than MIN languages (default 0) pass. About 5 minutes.
+# than MIN languages (default 81, as many as pass at release) pass, or
+# ucs-detect measured other than its 85. About 5 minutes.
 #
 # ucs-detect is installed user-locally, never system-wide: UCS_DETECT_PY
 # names a folder made by `pip install --target DIR ucs-detect==2.3.8`.
 set -euo pipefail
-out=${1:?usage: ucs-detect.sh OUT [NAME [MIN]]} name=${2:-fux} min=${3:-0}
+out=${1:?usage: ucs-detect.sh OUT [NAME [MIN]]} name=${2:-fux} min=${3:-81}
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/lib.sh"
 trap stop EXIT

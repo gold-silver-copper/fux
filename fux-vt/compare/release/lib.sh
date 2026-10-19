@@ -9,7 +9,11 @@
 # Xvfb and every xterm are stopped by their PIDs alone.
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-work=$(mktemp -d "${TMPDIR:?set TMPDIR off /tmp}/fux-release.XXXXXX")
+# Never under /tmp, which may be memory (a RAM-backed tmpfs).
+case ${TMPDIR:?set TMPDIR, off /tmp} in
+  /tmp | /tmp/*) echo "release: TMPDIR is under /tmp; set it elsewhere" >&2; exit 2 ;;
+esac
+work=$(mktemp -d "$TMPDIR/fux-release.XXXXXX")
 fux_bin=${FUX:-${CARGO_TARGET_DIR:-$repo/target}/release/fux}
 xvfb_pid=
 fux_started=
@@ -41,8 +45,8 @@ fux_server() {
 # `run` and `str state get`, which fux has had since before BASE, so a
 # BASE build runs too.
 fux_run() {
-  pane=$("$fux_bin" opts "$1" "$2" size str "$work" cwd str "$4" command run 2>/dev/null | head -n1 | cut -d' ' -f1) || true
-  [[ $pane == %* ]] || { echo "release: fux did not start $4" >&2; return 1; }
+  pane=$("$fux_bin" opts "$1" "$2" size str "$work" cwd str "$4" command run 2>"$work/run.err" | head -n1 | cut -d' ' -f1) || true
+  [[ $pane == %* ]] || { echo "release: fux did not start $4" >&2; cat "$work/run.err" >&2; return 1; }
   local end=$((SECONDS + $3))
   until [[ $("$fux_bin" "$pane" str state get 2>/dev/null) == exited* ]]; do
     (( SECONDS < end )) || { echo "release: $4 still runs after $3 s" >&2; return 1; }

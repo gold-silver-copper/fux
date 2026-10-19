@@ -5,7 +5,9 @@
     refs.py score DIR EXPECTED                      each engine's screens beside the suite's
                                                     own and real xterm's; exit 1 if fux-vt
                                                     differs from xterm otherwise than
-                                                    EXPECTED lists
+                                                    EXPECTED lists, if fux-vt's or xterm's
+                                                    screen of a case is missing, or if the
+                                                    suites are not their 45 and 24 cases
 
 A case is a screen size, the bytes a terminal of that size reads, and the
 suite's own expected screen:
@@ -27,6 +29,10 @@ or xterm's printout of its screen (MC, `CSI i`).
 import json
 import os
 import sys
+
+# The cases each suite has at the commits refs.sh fetches: fewer means a
+# case was lost on the way, and is no pass.
+CASES = {"alacritty": 45, "jediterm": 24}
 
 # Sizes JediTerm's tests give (columns, rows), and its one inline screen.
 JEDITERM_SIZES = {
@@ -144,11 +150,18 @@ def score(out, expected):
                 t[2] += s == xterm
                 t[3] += 1
         fux = got.get("fux")
+        for engine, s in (("fux", fux), ("xterm", xterm)):
+            if s is None:
+                problems.append(f"{name}: no screen from {engine}")
         if fux is not None and xterm is not None:
             if fux != xterm and name not in known:
                 problems.append(f"{name}: fux-vt's screen is not xterm's, and not listed")
             if fux == xterm and name in known:
                 problems.append(f"{name}: listed, but fux-vt's screen is xterm's")
+    for suite, want in CASES.items():
+        n = sum(c["name"].startswith(suite + "/") for c in listed)
+        if n != want:
+            problems.append(f"{suite}: {n} cases, not {want}")
     print(f"{'suite':10} {'engine':8} {'= its own':>10} {'= xterm':>9}")
     for (suite, e), (a, n, x, m) in sorted(table.items()):
         print(f"{suite:10} {e:8} {a:>5}/{n:<4} {x:>5}/{m}")

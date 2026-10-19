@@ -3,10 +3,14 @@ category scored beside the authority that decides it, then the languages:
 how many pass (no grapheme measured otherwise than wcwidth measures it),
 and for each that fails, its count and the kinds of grapheme it fails on,
 with their general categories, so the width rule behind each shows. Exit 1
-if fewer than MIN languages pass."""
+if fewer than MIN languages (default 81) pass, or if ucs-detect measured
+other than its LANGUAGES."""
 import json
 import sys
 import unicodedata
+
+# The languages ucs-detect 2.3.8 measures: fewer means some went unmeasured.
+LANGUAGES = 85
 
 # What decides each category, for fux-vt: ucs-detect's expectation is
 # wcwidth's, which is not itself an authority (README, "Widths").
@@ -36,7 +40,7 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
     d = json.load(open(sys.argv[1], encoding="utf-8"))
-    least = int(sys.argv[2]) if len(sys.argv) == 3 else 0
+    least = int(sys.argv[2]) if len(sys.argv) == 3 else 81
     t = d["test_results"]
     print(f"ucs-detect {d['ucs_detect_version']}, wcwidth {d['wcwidth_version']} "
           f"(Unicode {d['unicode_version']}), {d['software_name']} at "
@@ -63,6 +67,9 @@ def main():
             shapes.setdefault(s, f["wchars"])
         how = "; ".join(f"{a} for {b}, as {kind(w)}" for (a, b), w in sorted(shapes.items()))
         print(f"    {lang}: {v['n_errors']} of {v['n_total']} (measured for wcwidth's: {how})")
+    if len(langs) != LANGUAGES:
+        print(f"  ucs-summary: {len(langs)} languages measured, not {LANGUAGES}")
+        return 1
     return 1 if len(passed) < least else 0
 
 
