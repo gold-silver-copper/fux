@@ -1,8 +1,9 @@
 //! The safety reproducers as frozen seeds (HAR-28, `threats.md` section 2's
 //! "Seeds"): each defined here once, written as a file (`seeds/*.bin`, and
 //! in the `terminal` and `keys` fuzz targets' formats under
-//! `fuzz/seeds/`), and replayed to check that it reaches the limit it is
-//! for. That holds at BASE and after the fix alike: the seed exercises the
+//! `fuzz/seeds/`; a `terminal` seed past that target's 4 KiB runs in
+//! `deep`'s, if one of its runs holds it), and replayed to check that it
+//! reaches the limit it is for. That holds at BASE and after the fix alike: the seed exercises the
 //! limit. Whether fux-vt stays within it is the bounds suite's row
 //! (`tests/bounds.rs`), which fails at BASE for every seed here and is on
 //! its known-failing list.
@@ -757,7 +758,91 @@ fn terminal_input(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The files a seed is written as: its bytes, and its fuzz target's input.
+/// The most bytes of input the `terminal` target is run with (`-max_len`,
+/// fuzz.yml); a longer seed goes to `deep`, whose is 64 KiB.
+const TERMINAL_MAX: usize = 4096;
+
+/// The `deep` fuzz target's input for `output` at `size` (rows, columns,
+/// history bytes): a header for the nearest screen it makes (1 + 2h a
+/// side) and the history budget at least `size`'s, every option on, prints
+/// recorded; then `output` as its operations: a run of a pattern of up to
+/// 256 bytes repeated 16 times or more as `f2 n k`, the rest as plain
+/// output of up to 241 bytes an operation. `None` past what one run takes:
+/// 128 operations, 1 MiB of output, 64 KiB of input (fuzz/README.md).
+fn deep_input((rows, cols, history): (u16, u16, usize), output: &[u8]) -> Option<Vec<u8>> {
+    const BUDGETS: [usize; 5] = [0, 1 << 10, 64 << 10, 1 << 20, 8 << 20];
+    let half = |n: u16| u8::try_from(n.saturating_sub(1) / 2).ok();
+    let budget = BUDGETS.iter().position(|b| *b >= history).unwrap_or(4);
+    let mut out = vec![
+        half(rows)?,
+        half(cols)?,
+        u8::try_from(budget).ok()?,
+        0xff,
+        0xff,
+        0,
+    ];
+    let (mut rest, mut ops) = (output, 0usize);
+    while !rest.is_empty() {
+        ops = ops.saturating_add(1);
+        // The pattern at the start repeated most, if 16 times or more.
+        let repeats = |p: usize| {
+            let unit = rest.get(..p)?;
+            let copy =
+                |i: &usize| rest.get(i.saturating_mul(p)..i.saturating_add(1).saturating_mul(p));
+            let n = (0..).take_while(|i| copy(i) == Some(unit)).count();
+            (n >= 16).then_some((p, n))
+        };
+        let most = 256.min(rest.len() / 16);
+        let pattern = (1..=most)
+            .filter_map(repeats)
+            .max_by_key(|&(p, n)| p.saturating_mul(n));
+        if let Some((p, n)) = pattern {
+            let times = (n / 16).min(256);
+            let (n, k) = (times.saturating_sub(1), p.saturating_sub(1));
+            out.extend([0xf2, u8::try_from(n).ok()?, u8::try_from(k).ok()?]);
+            out.extend_from_slice(rest.get(..p)?);
+            rest = rest.get(p.saturating_mul(times).saturating_mul(16)..)?;
+        } else {
+            let (piece, after) = rest.split_at_checked(241).unwrap_or((rest, &[]));
+            out.push(u8::try_from(piece.len().saturating_sub(1)).ok()?);
+            out.extend_from_slice(piece);
+            rest = after;
+        }
+    }
+    (ops <= 128 && output.len() <= 1 << 20 && out.len() <= 64 << 10).then_some(out)
+}
+
+/// The output a `deep` input feeds after its header, as the target reads
+/// its operations: for checking that a seed's file holds its bytes.
+fn deep_output(input: &[u8]) -> Vec<u8> {
+    let (mut rest, mut out) = (input.get(6..).unwrap_or_default(), Vec::new());
+    while let Some((&op, tail)) = rest.split_first() {
+        rest = tail;
+        let (once, times, taken) = match op {
+            0xf2 => {
+                let n = usize::from(rest.first().copied().unwrap_or(0));
+                let k = usize::from(rest.get(1).copied().unwrap_or(0));
+                let end = k.saturating_add(3);
+                (
+                    rest.get(2..end),
+                    n.saturating_add(1).saturating_mul(16),
+                    end,
+                )
+            }
+            k => {
+                let end = usize::from(k).saturating_add(1);
+                (rest.get(..end), 1, end)
+            }
+        };
+        out.extend(repeat(once.unwrap_or_default(), times));
+        rest = rest.get(taken..).unwrap_or_default();
+    }
+    out
+}
+
+/// The files a seed is written as: its bytes, and its fuzz target's input:
+/// a `terminal` seed too long for that target's runs in `deep`'s, if one
+/// of its runs takes it.
 fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let bytes = (seed.bytes)();
@@ -767,10 +852,14 @@ fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
     )];
     match seed.fuzz {
         Fuzz::None => {}
-        Fuzz::Terminal => files.push((
-            root.join("fuzz/seeds/terminal").join(seed.name),
-            terminal_input(&bytes),
-        )),
+        Fuzz::Terminal => {
+            let input = terminal_input(&bytes);
+            if input.len() <= TERMINAL_MAX {
+                files.push((root.join("fuzz/seeds/terminal").join(seed.name), input));
+            } else if let Some(input) = deep_input(seed.size, &bytes) {
+                files.push((root.join("fuzz/seeds/deep").join(seed.name), input));
+            }
+        }
         // The keys target's first byte is the piece size (0, each read
         // whole), its second the options (none); a byte 0xff is `ff ff`.
         Fuzz::Keys => files.push((
@@ -785,6 +874,19 @@ fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
         )),
     }
     files
+}
+
+/// A seed in `deep`'s format feeds its bytes, whole: its file is the
+/// reproducer that reaches its limit (`every_seed_reaches_its_limit`).
+#[test]
+fn deep_seeds_feed_their_bytes() {
+    for seed in seeds() {
+        for (path, input) in files(&seed) {
+            if path.parent().and_then(Path::file_name) == Some("deep".as_ref()) {
+                assert_eq!(deep_output(&input), (seed.bytes)(), "{}", seed.name);
+            }
+        }
+    }
 }
 
 /// Each seed reaches the limit it is for.
