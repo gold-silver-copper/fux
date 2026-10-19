@@ -383,7 +383,9 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
-/// above the screen), first column, the cells it covers, and its size in
+/// above the screen), first column, the cells it covers, its first rows
+/// that are gone (`cropped`: scrolled off a region's top or a screen's
+/// that keeps no history, the rest shown below them), and its size in
 /// pixels.
 fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
     Json::Object(vec![

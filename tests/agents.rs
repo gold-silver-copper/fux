@@ -482,7 +482,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     })?;
     let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
     assert!(
-        json.contains(r#""col":0,"rows":1,"cols":2,"width":20,"height":12}]"#),
+        json.contains(r#""col":0,"rows":1,"cropped":0,"cols":2,"width":20,"height":12}]"#),
         "{json}"
     );
     Ok(())
