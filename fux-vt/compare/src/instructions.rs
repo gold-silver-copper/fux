@@ -70,7 +70,7 @@ pub fn child(args: &[String]) -> Result<(), String> {
         .ok_or(format!("{engine}: no {} setup", retention.name()))??;
     let vt = Box::leak(made);
     if !baseline {
-        vt.feed(&load.bytes, CHUNK)?;
+        load.feed(vt, CHUNK)?;
     }
     let rows = vt
         .history_len()

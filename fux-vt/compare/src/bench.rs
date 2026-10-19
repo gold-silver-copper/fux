@@ -224,9 +224,62 @@ pub struct Load {
     pub rows: u16,
     pub cols: u16,
     pub bytes: Vec<u8>,
+    /// Where in `bytes` the terminal is resized, and to what: a recording's
+    /// resizes, and each recording's own size in the corpus all in turn.
+    pub resizes: Vec<(usize, u16, u16)>,
+}
+
+/// A part of a load's bytes, and the size, rows and columns, the terminal
+/// is resized to before it, if it is.
+pub type Part<'a> = (Option<(u16, u16)>, &'a [u8]);
+
+impl Load {
+    /// Its bytes in parts, each with the size the terminal is resized to
+    /// before it, if it is.
+    pub fn parts(&self) -> Vec<Part<'_>> {
+        let mut out = Vec::new();
+        let (mut from, mut size) = (0usize, None);
+        for &(at, rows, cols) in &self.resizes {
+            out.push((size, self.bytes.get(from..at).unwrap_or_default()));
+            (from, size) = (at, Some((rows, cols)));
+        }
+        out.push((size, self.bytes.get(from..).unwrap_or_default()));
+        out
+    }
+
+    /// Feeds it to `engine` `chunk` bytes at a time, resized where it is.
+    pub fn feed(&self, engine: &mut dyn crate::engine::Engine, chunk: usize) -> Result<(), String> {
+        for (size, bytes) in self.parts() {
+            if let Some((rows, cols)) = size {
+                engine.resize(rows, cols)?;
+            }
+            engine.feed(bytes, chunk)?;
+        }
+        Ok(())
+    }
+}
+
+/// `segments` (a size and the bytes written at it) over and over, whole,
+/// until there are at least `total` bytes: the bytes, and where the size
+/// changes (`Load::resizes`), the first segment's size the load's own.
+fn sized(segments: &[(u16, u16, Vec<u8>)], total: usize) -> (Vec<u8>, Vec<(usize, u16, u16)>) {
+    let (mut bytes, mut resizes) = (Vec::new(), Vec::new());
+    let mut size = segments.first().map(|(r, c, _)| (*r, *c));
+    let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
+    while recorded > 0 && bytes.len() < total {
+        for (rows, cols, part) in segments {
+            if size != Some((*rows, *cols)) {
+                resizes.push((bytes.len(), *rows, *cols));
+                size = Some((*rows, *cols));
+            }
+            bytes.extend_from_slice(part);
+        }
+    }
+    (bytes, resizes)
 }
 
 /// `bytes` over and over, whole, until there are at least `total`.
+#[cfg(test)]
 pub fn repeated(bytes: &[u8], total: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(total.saturating_add(bytes.len()));
     while !bytes.is_empty() && out.len() < total {
@@ -277,8 +330,8 @@ pub fn names() -> Result<Vec<(String, String)>, String> {
 
 /// The named workload, `total` bytes of it or a little more, alone: a
 /// synthetic one at 50x200, a census payload at its size, `corpus`
-/// (every recording in turn, at the first's size, 40x120 as most are,
-/// without resizes) or `corpus:NAME` (one recording at its size, without
+/// (every recording in turn, each at its own size, with its resizes, as
+/// fux-bench feeds it) or `corpus:NAME` (one recording at its size, with
 /// its resizes).
 pub fn load(name: &str, total: usize) -> Result<Load, String> {
     if let Some((_, about, make)) = WORKLOADS.iter().find(|(n, _, _)| *n == name) {
@@ -288,6 +341,7 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
             rows: ROWS,
             cols: COLS,
             bytes: make(&mut Rng::new(1), total),
+            resizes: Vec::new(),
         });
     }
     if let Some(bytes) = census::make(name, &payloads(), total) {
@@ -302,36 +356,44 @@ pub fn load(name: &str, total: usize) -> Result<Load, String> {
             rows: census::ROWS,
             cols: census::COLS,
             bytes: bytes?,
+            resizes: Vec::new(),
         });
     }
     let recordings = crate::corpus::recordings(&[])?;
     if name == "corpus" {
         let first = recordings.first().ok_or("the corpus is empty")?;
-        let all: Vec<u8> = recordings.iter().flat_map(|r| r.bytes()).collect();
+        let segments: Vec<_> = recordings
+            .iter()
+            .flat_map(crate::corpus::Recording::segments)
+            .collect();
+        let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
+        let (bytes, resizes) = sized(&segments, total);
         return Ok(Load {
             name: name.to_owned(),
             about: format!(
-                "every recording in turn, {} bytes recorded, at {}x{}",
-                all.len(),
-                first.rows,
-                first.cols
+                "every recording in turn, {recorded} bytes recorded, each at its size with its \
+                 resizes, from {}x{}",
+                first.rows, first.cols
             ),
             rows: first.rows,
             cols: first.cols,
-            bytes: repeated(&all, total),
+            bytes,
+            resizes,
         });
     }
     let one = name
         .strip_prefix("corpus:")
         .and_then(|n| recordings.iter().find(|r| r.name == n))
         .ok_or(format!("no workload {name:?}"))?;
-    let bytes = one.bytes();
+    let recorded = one.bytes().len();
+    let (bytes, resizes) = sized(&one.segments(), total);
     Ok(Load {
         name: name.to_owned(),
-        about: format!("{}, {} bytes recorded", one.version, bytes.len()),
+        about: format!("{}, {recorded} bytes recorded", one.version),
         rows: one.rows,
         cols: one.cols,
-        bytes: repeated(&bytes, total),
+        bytes,
+        resizes,
     })
 }
 
@@ -470,7 +532,7 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
         for _ in 0..RUNS {
             let mut engine = retention.make(kind, &setup).ok_or("no setup")??;
             let started = Instant::now();
-            engine.feed(bytes, CHUNK)?;
+            load.feed(engine.as_mut(), CHUNK)?;
             let feed = started.elapsed();
             let started = Instant::now();
             std::hint::black_box(engine.snapshot(0)?);
@@ -509,19 +571,26 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
         parser.record_prints(true);
         let mut recorded = 0usize;
         let started = Instant::now();
-        let mut rest = load.bytes.as_slice();
-        while !rest.is_empty() {
-            let (now, later) = rest
-                .split_at_checked(CHUNK.min(rest.len()))
-                .unwrap_or((rest, &[]));
-            parser
-                .process_with_replies(now, |r| {
-                    std::hint::black_box(r);
-                })
-                .map_err(|e| format!("fux-vt: {e}"))?;
-            let prints = parser.take_prints();
-            recorded = recorded.saturating_add(std::hint::black_box(prints).iter().count());
-            rest = later;
+        for (size, part) in load.parts() {
+            if let Some((rows, cols)) = size {
+                parser
+                    .resize(crate::vt_size(rows, cols)?)
+                    .map_err(|e| format!("fux-vt: {e}"))?;
+            }
+            let mut rest = part;
+            while !rest.is_empty() {
+                let (now, later) = rest
+                    .split_at_checked(CHUNK.min(rest.len()))
+                    .unwrap_or((rest, &[]));
+                parser
+                    .process_with_replies(now, |r| {
+                        std::hint::black_box(r);
+                    })
+                    .map_err(|e| format!("fux-vt: {e}"))?;
+                let prints = parser.take_prints();
+                recorded = recorded.saturating_add(std::hint::black_box(prints).iter().count());
+                rest = later;
+            }
         }
         let feed = started.elapsed();
         let run = Measured {
@@ -823,6 +892,45 @@ pub fn run_to(
 mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// A recording that resizes is fed at each size it was written at, as
+    /// fux-bench feeds it: zsh-resize's parts are its size, then each
+    /// resize's, its bytes whole; the corpus all in turn resizes to each
+    /// recording's own size (HAR-78).
+    #[test]
+    fn a_recording_is_fed_at_each_size_it_was_written_at() -> Result<(), String> {
+        let recordings = crate::corpus::recordings(&[])?;
+        let zsh = recordings
+            .iter()
+            .find(|r| r.name == "zsh-resize")
+            .ok_or("no zsh-resize")?;
+        let load = super::load("corpus:zsh-resize", zsh.bytes().len())?;
+        let sizes: Vec<(u16, u16)> = std::iter::once((zsh.rows, zsh.cols))
+            .chain(zsh.resizes.iter().map(|&(_, r, c)| (r, c)))
+            .collect();
+        assert!(sizes.len() > 1, "zsh-resize resizes");
+        let parts = load.parts();
+        let made: Vec<(u16, u16)> = (parts.iter())
+            .scan((load.rows, load.cols), |at, (size, _)| {
+                *at = size.unwrap_or(*at);
+                Some(*at)
+            })
+            .collect();
+        assert_eq!(made, sizes);
+        let fed: Vec<u8> = parts.iter().flat_map(|(_, b)| b.iter().copied()).collect();
+        assert_eq!(fed, zsh.bytes());
+        let all = super::load("corpus", 1)?;
+        let differ = recordings
+            .iter()
+            .filter(|r| (r.rows, r.cols) != (all.rows, all.cols))
+            .count();
+        assert!(
+            all.resizes.len() >= differ,
+            "{} resizes, {differ} recordings of another size",
+            all.resizes.len()
+        );
+        Ok(())
+    }
 
     /// A hash is the input's, by whichever of shasum and sha256sum there
     /// is (FIPS 180-2's example "abc"), never a placeholder.
