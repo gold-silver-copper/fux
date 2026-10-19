@@ -151,7 +151,7 @@ decoded, and what a program asked for, encoded. It needs no option.
   terminal sends a character's bytes together, and a byte that can't
   continue it ends it, one U+FFFD for what came (Unicode 3.9's maximal subparts). Every buffer is
   bounded (threats.md B23 to B27): a paste keeps at most its limit and 5
-  bytes, however many come in one read; an unfinished sequence at most
+  bytes (65,541 at its 64 KiB default), however many come in one read; an unfinished sequence at most
   258 bytes, a long read giving it only what decides it; an answer past
   its window (OSC 128, DCS 256, each with the BEL or the ESC that begins
   its end; `CSI ?` 64 and then 256), and a key's CSI past 32 parameter
@@ -216,7 +216,7 @@ replaces the 8-bit controls: raw C1 bytes are invalid UTF-8, and 0x9c in a
 string is a byte of a character, not ST (ECMA-35, 15.4: with a coding
 system other than ISO 2022's designated with DOCS, as UTF-8 is, the C1
 controls of ECMA-48 are not used; CONFORMANCE.md lists the parser's rows). Parameters saturate at
-`u16::MAX`. At most 32 fields are kept: the rest are ignored and the
+`u16::MAX`. At most 32 fields are kept (B22): the rest are ignored and the
 sequence runs with the 32, as DEC STD 070 (3.5.3.1) lets parameters
 "beyond the maximum number supported" be (xterm 411 differs: `1x4
 '\e[0;…;0;1;4;7mX'` with 30 zeros is plain there). More than two
@@ -287,7 +287,8 @@ row's slot, and history.
   the blocks of cells as their room (8 bytes a cell), the rows' text, and
   the maps of the rows with text or links, by their room, and the links'
   runs (B15): none for a row with one link, which keeps its run in its
-  place in the map, and 32 bytes a run for a row with more. A row
+  place in the map, and 32 bytes a run for a row with more (a screen
+  row's runs take at most 8,192 bytes at 200 columns). A row
   scrolled
   off keeps its cells up to its last that is not a default blank, packed
   after the rows before it in blocks of 4,096 cells, or one of its own
@@ -303,7 +304,8 @@ row's slot, and history.
   changes its cells, links, soft wrap or prompt mark, and nothing else: erasing blanks,
   or rewriting a glyph as it was, keeps it; ICH and DCH always change it.
 - **Limits.** A `Size` has no zero to refuse: `Size::new` refuses one.
-  A screen of more than 64 Mi cells is refused (`Error::Capacity`); history
+  A screen of more than 64 Mi (67,108,864) cells is refused
+  (`Error::Capacity`; B38); history
   keeps at most 1,048,576 rows and 64 Mi cells, whatever its budget; text
   budgets and link bounds cover the rest.
   Arithmetic is checked. After an error the terminal stays usable: input
@@ -368,6 +370,8 @@ fux-vt's work counters and a counting allocator against it.
   picture being drawn and its growth included. Past it, pictures no longer
   shown go first (covered, scrolled away, or on the other screen), then the
   oldest.
+- **Pictures, by count** (B02): at most 64 on both screens together
+  (`MAX_PICTURES`); the 65th lets one go, those no longer shown first.
 - **A host's pictures** (B06): a picture the host keeps, as its
   `Arc<Picture>` from `Screen::pictures`, keeps its memory, outside the
   budget, until the host lets it go; fux keeps a paint's worth a client.
@@ -375,8 +379,10 @@ fux-vt's work counters and a counting allocator against it.
   own.
 - **A sixel picture** (B03, B04) keeps at most 4096 by 2160 positions of
   its grid, 4096 a side, and is shown at its aspect, at most 4096 pixels a
-  side; what is past that is not painted. Its room grows by doubling each
-  side, so decoding paints and copies at most 4,096 pixels a byte.
+  side; what is past that is not painted: its pixels take at most
+  35,389,440 bytes, and 53,084,160 while they grow. Its room grows by
+  doubling each side, so decoding paints and copies at most 4,096 pixels
+  a byte.
 - **A picture's declared size** (B05) costs nothing until it is drawn:
   the raster attributes' extent and the background are kept as numbers,
   and read as the picture is shown. Placing a picture fills its cells, at
@@ -385,7 +391,8 @@ fux-vt's work counters and a counting allocator against it.
 - **History** (B17) takes at most `history_bytes` of memory, its rows'
   records, blocks and maps included, and at most half as much again
   while its storage grows; a lowered budget keeps the newest rows that
-  fit, in storage made for it.
+  fit, in storage made for it. A map gives its room back once its
+  capacity passes 4 × its length + 64.
 - **Prompt marks** (B29) read a fixed number of rows: a late `C` looks
   for its prompt and the line submitted on the screen alone, at most
   four times its rows, and starts the output at the cursor if they
@@ -396,7 +403,7 @@ fux-vt's work counters and a counting allocator against it.
   sent, synchronously, so fux-vt queues none.
 - **A resize** (B37) builds the new screens and history before it lets
   the old go, so while it runs it needs up to history's memory again and
-  the new screens' (about 12 MiB more at 50 by 200 with 8 MiB of
+  the new screens' (12.1 MiB more at 50 by 200 with 8 MiB of
   history), and reads, copies and clears each cell about three times; a
   refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
@@ -413,9 +420,54 @@ fux-vt's work counters and a counting allocator against it.
 - **The style table** (B11): its bytes past what the screen alone may
   need (twice its cells' styles) count in `history_bytes`, so the oldest
   history rows go as it grows, and when they all have, the styles no cell
-  shows go.
+  shows go. The screen's share is 1,146,880 bytes a grid at 50 by 200.
+- **The style sweep** (B13): the table is swept once it holds twice the
+  styles in use at the last sweep, and at least max(4096, cells / 8); a
+  sweep visits at most twice the screen's and history's cells (2,117,152
+  at fux's defaults), so it costs at most 32 cell visits for each new
+  style, amortized, and at most 7 a byte.
+- **Hyperlinks** (B14, B16): each screen holds at most 4 MiB of URIs and
+  ids (`LINK_BYTES`, real heap), a URI at most 2,083 bytes and an id 250.
+  Making room for links costs at most 256 steps a byte, amortized: after
+  a sweep that frees too little, the next 256 links are refused untried,
+  their text printed unlinked.
+- **Strings fux-vt doesn't keep** (B21): APC, PM, SOS, a DCS it doesn't
+  answer and an OSC no option asks for cost nothing to hold and a step a
+  byte to read; a DECRQSS request keeps its first 4 bytes, and a longer
+  one is answered as not known.
+- **REP** (B33, B34, B34a): copies past a screen and history's worth are
+  skipped, with the same result, and so are copies that only join a full
+  cluster, so REP writes at most 14,564 cells a byte for an ASCII
+  character and 23,832 for another.
+- **Functions that touch the whole screen** (B35, B36): ED, the
+  rectangle fills, erases, copies and checksums, DECALN, 1049's clear,
+  DECIC, DECDC, SL and SR touch at most N / 2 cells a byte, N the
+  screen's cells (5,000 at fux's defaults), uniform fills and clears a
+  row's worth; DECCRA and a scroll inside left and right margins copy at
+  most 124,100 text bytes a byte at the defaults, each row they write
+  compacted once (decision 831). A scroll inside a region (IL, DL, SU,
+  SD, and IND and RI at its margins) turns the region's rows once
+  whatever the count, which is clamped to the region's rows: it moves at
+  most twice the region's rows and clears at most its cells.
+- **Finding a row by its `RowId`** (B40) looks through the screen's rows,
+  then history. Meant to cost a binary search, a history row's lookup
+  scans history: the bounds suite lists it as failing at 1x, 10x and
+  100x (`tests/bounds/known-failing.txt`).
+- **`ByteQueue::push_with`** (B41): its closure may only add bytes; one
+  that takes them away leaves a queue that still takes what is pushed
+  next.
+- **Small fixed state** (B42): tab stops take a byte a column, the colours
+  about 1.3 KB and the kitty keyboard stacks 32 entries each.
+- **Events** (B43) go to the host's `Sink` as they happen, each at most an
+  OSC payload (64 KiB); fux-vt queues none.
+- **A colour's arithmetic** (B46): reading an OSC 4, 5 or 10 to 19
+  colour given device-independently spends from the call's work, and one
+  OSC at most a quarter of it (`palette::ALLOWANCE`); past it, a
+  specification that needs more is not read (and ends OSC 4 and 5), where
+  xterm reads them all (decision 912).
 - **`Prints`** (B10) keeps at most 4 bytes of text a screen cell (16 KiB
-  at least) and 4,096 runs between takes. Past that, or after a resize
+  at least) and 4,096 runs between takes, 171,072 bytes at fux's
+  defaults. Past that, or after a resize
   while it holds something, it records nothing more and says so
   (`Prints::lost`); a resize while it holds nothing gives it the new
   size's room.
@@ -468,7 +520,7 @@ fux-vt's work counters and a counting allocator against it.
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.
-- **The work of one call** (P24, B02): `Parser::process_until_stop`
+- **The work of one call** (P24): `Parser::process_until_stop`
   stops after a sequence, as `Stop::Budget`, once 25 M weighted units of
   work (threats.md 4.4) are spent since its last such stop, over as many
   calls as that took. What is spent is the work one sequence can multiply:
