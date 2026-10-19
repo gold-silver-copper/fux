@@ -3,10 +3,11 @@
 //! in the `terminal` and `keys` fuzz targets' formats under
 //! `fuzz/seeds/`; a `terminal` seed past that target's 4 KiB runs in
 //! `deep`'s, if one of its runs holds it), and replayed to check that it
-//! reaches the limit it is for. That holds at BASE and after the fix alike: the seed exercises the
-//! limit. Whether fux-vt stays within it is the bounds suite's row
-//! (`tests/bounds.rs`), which fails at BASE for every seed here and is on
-//! its known-failing list.
+//! reaches the limit it is for. That holds at BASE and after the fix
+//! alike: the seed exercises the limit. Whether fux-vt stays within it is
+//! the bounds suite's row (`tests/bounds.rs`), which failed at BASE for
+//! every seed here; `bounds/known-failing.txt` names the rows that still
+//! fail.
 //!
 //! `cargo test -p fux-vt --features checks --test seeds -- --ignored
 //! write_the_seeds` writes the files from these definitions; a test fails
