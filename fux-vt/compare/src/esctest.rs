@@ -105,7 +105,7 @@ a pane of a real fux server (building fux), --xterm in a real xterm under Xvfb,
 --tmux in a real tmux (held to no list, as xterm is), and each lists where it
 differs from fux-vt alone. --timeout is esctest's: how
 long a read waits for its reply (default 1); --limit how long a test may run
-(default 60). Every test runs on a terminal made for it alone. --logs keeps
+(default 60); --jobs how many tests run at once (CARGO_BUILD_JOBS, else 4). Every test runs on a terminal made for it alone. --logs keeps
 esctest's logs (TEST.log, TEST.NAME.log, TEST.fux.log, TEST.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
 (without its queries) as a run.sh replay. --show prints each failure's message.
 --json writes every result, as fux-vt/compare's README says. --terminal runs
@@ -219,7 +219,7 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         in_fux: false,
         xterm: false,
         tmux: false,
-        jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
+        jobs: crate::few_jobs(),
         timeout: 1.0,
         limit: Duration::from_secs(60),
         expected: PathBuf::new(),
@@ -2429,6 +2429,8 @@ fn build_fux() -> Result<PathBuf, String> {
             "build",
             "--release",
             "--quiet",
+            "-j",
+            &crate::few_jobs().to_string(),
             "--bin",
             "fux",
             "--manifest-path",
