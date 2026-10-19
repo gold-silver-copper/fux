@@ -1110,6 +1110,35 @@ fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
     Ok(())
 }
 
+/// A picture taller than the screen and the history kept, its top gone
+/// above the oldest row history keeps, is cropped there, and the checker
+/// counts it so: its crop counted from the oldest row kept, not the
+/// screen's top (the terminal fuzz target on seed b01-raster-pictures,
+/// "shown with 88 rows cropped, 92 noted").
+#[test]
+fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
+    let mut p = Parser::with_options(Size::new(2, 4)?, 120, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~-~-~-~-~\x1b\\")?;
+    let kept = p.screen().history_len();
+    let shown: Vec<_> = (p.screen().pictures())
+        .map(|s| (s.row, s.rows, s.cropped))
+        .collect();
+    let first = 2 - 6;
+    let cropped = u16::try_from(-(first + i64::try_from(kept)?))?;
+    assert_eq!(shown, [(first, 6, cropped)]);
+    assert!(kept > 0 && cropped > 0);
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
 /// A picture being drawn lets another go only for the room it takes: a
 /// doubling of its pixels that could not fit even with every picture gone
 /// lets none go, and the exact growth that fits beside them is taken

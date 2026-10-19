@@ -579,7 +579,11 @@ impl Screen {
             .filter(|p| p.alternate == self.alternate_active)
             .filter_map(|p| Some((p, self.shown(p)?)))
         {
-            let above = u16::try_from(shown.row.saturating_neg().max(0)).unwrap_or(u16::MAX);
+            // Above the oldest row kept: `row` counts from the screen's top,
+            // history's rows above it.
+            let history = i64::try_from(grid.history_len()).unwrap_or(i64::MAX);
+            let above = shown.row.saturating_add(history).saturating_neg().max(0);
+            let above = u16::try_from(above).unwrap_or(u16::MAX);
             let noted = match self.top_index(p) {
                 Some(_) => 0,
                 None => p.cropped.max(above.min(p.rows)),
