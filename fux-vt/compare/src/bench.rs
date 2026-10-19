@@ -459,7 +459,11 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
         history: 10_000,
         reflow: true,
     };
-    retention.make(kind, &setup)?.ok()?;
+    // No setup for this retention: unavailable; one that fails to be
+    // made: an error, said.
+    if let Err(e) = retention.make(kind, &setup)? {
+        return Some(Err(format!("made: {e}")));
+    }
     let bytes = load.bytes.as_slice();
     Some(crate::case::guarded(|| {
         let mut best: Option<Measured> = None;
@@ -675,6 +679,7 @@ pub fn run_to(
         }
     }
     let mut doc_tables = Vec::new();
+    let mut errors = 0usize;
     for ((retention, in_process), rows) in tables.iter().zip(&results) {
         let Some((_, first)) = rows.first() else {
             continue;
@@ -709,6 +714,7 @@ pub fn run_to(
                     None => "unavailable".to_owned(),
                     Some(Err(e)) => {
                         eprintln!("{column}: {name}: {e}");
+                        errors = errors.saturating_add(1);
                         "error".to_owned()
                     }
                     Some(Ok(m)) => {
@@ -806,7 +812,11 @@ pub fn run_to(
         std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
         eprintln!("wrote {path}");
     }
-    Ok(true)
+    // A measure that failed fails the run, after its table and JSON.
+    if errors > 0 {
+        eprintln!("bench: {errors} measures failed (error above)");
+    }
+    Ok(errors == 0)
 }
 
 #[cfg(test)]
