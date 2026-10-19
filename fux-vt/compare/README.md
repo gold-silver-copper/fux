@@ -892,6 +892,7 @@ The axes:
 | --- | --- |
 | `run.sh` | fetches and pins Zig, Ghostty and libvterm, installs node deps, builds, runs |
 | `harness.sh` | `quick`, `full`, `deep`, `fuzz` and `scoreboard`, run by `run.sh` |
+| `lib.sh` | the harness's step, spec and together, which `harness.sh` sources |
 | `build.rs` | compiles libvterm and its shim |
 | `src/main.rs` | the commands |
 | `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, `Blanks`, the engine list |
