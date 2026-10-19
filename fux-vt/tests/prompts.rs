@@ -346,6 +346,19 @@ fn prints_are_recorded_though_drawn_over() -> Result {
     Ok(())
 }
 
+/// What is recorded may hold 4 bytes a cell of the screen it is printed
+/// on: a resize with nothing recorded yet makes room for the new size, as
+/// taking the prints does, and loses nothing (FA-PAR-5).
+#[test]
+fn a_resize_with_nothing_recorded_keeps_room_for_the_new_size() -> Result {
+    let mut p = Parser::with_options(Size::new(10, 10)?, 10, Options::new())?;
+    p.record_prints(true);
+    p.resize(Size::new(200, 100)?)?;
+    let prints = p.take_prints();
+    assert_eq!((prints.cap(), prints.lost()), (4 * 200 * 100, false));
+    Ok(())
+}
+
 /// `tick` numbers something between pieces of output: after every row's
 /// number so far, before the next piece's.
 #[test]
