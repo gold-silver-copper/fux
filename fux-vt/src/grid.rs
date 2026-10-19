@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
-use crate::history::{Arriving, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
+use crate::history::{Arriving, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
 use crate::screen::Saved;
 use crate::style::Styles;
@@ -172,13 +172,20 @@ impl Meta {
     fn rendition(&self) -> LineRendition {
         LineRendition::from_bits(self.flags >> RENDITION_SHIFT)
     }
-    /// The row with `flag` on or off.
+    /// The row with `flag` on or off. Its soft wrap set or ended anew, its
+    /// line no longer ends early (`ENDS`).
     fn set(&mut self, flag: u8, on: bool) {
-        self.flags = (self.flags & !flag) | if on { flag } else { 0 };
+        let ends = if flag & WRAPPED != 0 { ENDS } else { 0 };
+        self.flags = (self.flags & !flag & !ends) | if on { flag } else { 0 };
+    }
+    /// Whether its line goes on in the row below: soft-wrapped, and that
+    /// row not erased whole since (`ENDS`).
+    fn continues(&self) -> bool {
+        self.flags & (WRAPPED | ENDS) == WRAPPED
     }
     /// The row with rendition `rendition`, its other flags kept.
     fn with_rendition(mut self, rendition: LineRendition) -> Self {
-        self.flags = (self.flags & (WRAPPED | PROMPT)) | rendition.bits() << RENDITION_SHIFT;
+        self.flags = (self.flags & (WRAPPED | PROMPT | ENDS)) | rendition.bits() << RENDITION_SHIFT;
         self
     }
 }
@@ -1210,6 +1217,31 @@ impl Grid {
         }
     }
 
+    /// Live row `row`'s line ends with it though it stays soft-wrapped
+    /// (`ENDS`), and the row takes `version` if that is news.
+    fn end_line(&mut self, row: u16, version: u64) {
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+            && m.continues()
+        {
+            m.version = version;
+            m.flags |= ENDS;
+        }
+    }
+
+    /// `wrap`, as a glyph wrapping off live row `row` does: its line goes
+    /// on, though it had ended there (`ENDS`).
+    pub(crate) fn wrap_onto(&mut self, row: u16, wrapped: bool, version: u64) {
+        self.wrap(row, wrapped, version);
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+            && m.flags & ENDS != 0
+        {
+            m.version = version;
+            m.flags &= !ENDS;
+        }
+    }
+
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
@@ -1308,10 +1340,13 @@ impl Grid {
         // its text is gone: a line editor that erases it to draw its prompt
         // again (bash after a resize) starts a line of its own there. Above
         // the top row is history's newest: a screen cleared after a resize
-        // that pushed a line's start into history begins anew too.
+        // that pushed a line's start into history begins anew too. The row
+        // above keeps its soft wrap, as xterm keeps it (`ClearRight`,
+        // `ScrnClearLines` clear only the rows they erase): its line ends
+        // with it (`ENDS`, `Row::continues`).
         if start == 0 && end >= cols {
             match row.checked_sub(1) {
-                Some(above) if changed => self.wrap(above, false, version),
+                Some(above) if changed => self.end_line(above, version),
                 None if changed => self.history.end_newest_line(version),
                 Some(_) | None => {}
             }
@@ -2209,6 +2244,9 @@ impl Grid {
             let mut meta = Meta::new(id, row_version, wrapped, width)
                 .with_rendition(old.map_or(LineRendition::Single, |r| r.rendition()));
             meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
+            if wrapped && old.is_some_and(|r| !r.continues()) {
+                meta.flags |= ENDS;
+            }
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
         replacement.fit_cursor();

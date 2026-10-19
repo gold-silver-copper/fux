@@ -460,7 +460,7 @@ pub fn text(
         for (_, glyph) in row.copied(usize::from(from), usize::from(to)) {
             line.push_str(glyph);
         }
-        let joined = kind != Select::Block && row.wrapped() && index < last;
+        let joined = kind != Select::Block && row.continues() && index < last;
         if joined {
             out.push_str(&line);
         } else {
