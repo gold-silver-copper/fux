@@ -2352,9 +2352,9 @@ impl Grid {
     /// CUP: moves the cursor, within the margins in origin mode, where
     /// lines count from the top margin and columns from the left. Like
     /// every cursor movement, it ends a pending wrap.
-    /// Always inlined: as a call, CUP counts 1.5% more instructions
-    /// (vt/cursor-motion, fux-bench).
-    #[inline(always)]
+    /// Inlined where the compiler finds it pays: forced into every caller
+    /// it cost every program's recordings 0.2% on x86 (fux-bench).
+    #[inline]
     pub fn position(&mut self, row: u16, col: u16) {
         self.cursor.pending_wrap = false;
         let (lines, columns) = self.addressed();
