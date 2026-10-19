@@ -23,6 +23,12 @@ pub type Found = Result<(), String>;
 /// A row's probe at one scale and chunking.
 pub type Row = fn(Scale, usize) -> Found;
 
+/// The heap of a row whose input keeps nothing: the few bytes the parser
+/// makes on its first use of a sequence, a row's text or a reply, at most
+/// 769 measured (B32's cluster of U+17D8), in a KiB. B21, B22, B27, B28 and
+/// B32 hold to it (measured 24, 1, 48, 229 and 769 bytes at 1x).
+const NOTHING: usize = 1 << 10;
+
 /// A link run's bytes: its columns and its link (`link.rs` asserts it).
 /// A row of 200 columns, the probes' width, holds at most 200 runs, in a
 /// list with room for 256: hence `256 * RUN` a row, twice for both grids.
@@ -65,8 +71,9 @@ pub fn b01(scale: Scale, chunk: usize) -> Found {
     let input = repeat(&one, scale.times());
     // First with a host cell as large as the largest picture: each takes
     // one cell, so nothing scrolls or prints, and the heap is the
-    // pictures' and little more.
-    let bound = heap(PICTURE_BYTES.saturating_add(1 << 20));
+    // pictures' and their placements', 64 KiB at most beside P (measured
+    // 1,288 bytes at 1x: nothing is drawn).
+    let bound = heap(PICTURE_BYTES.saturating_add(64 << 10));
     let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
     probe.parser.set_host_graphics(Graphics {
         cell: Some((4096, 2160)),
@@ -252,6 +259,11 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
 // heap's peak at most twice B03's.
 pub fn b06(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
+    // B03's stated peak is a picture's final buffer, 4096 × 2160 × 4 =
+    // 35,389,440 bytes, and half that growing: 53,084,160 (threats.md B03;
+    // decision 14 measured up to 2 × the buffer at the clamp). A clone
+    // copies the picture drawn, so twice that; this one is a sixel drawn,
+    // its copy small (measured 111,112 bytes at 1x).
     let bound = heap(steady(&setup).saturating_add(2 * 53_084_160));
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
     probe.feed(b"\x1bPq\"1;1;4096;2160~")?;
@@ -431,7 +443,9 @@ pub fn b09(scale: Scale, chunk: usize) -> Found {
 // runs between takes: 171,072 bytes at the defaults.
 pub fn b10(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    let bound = heap(171_072usize.saturating_add(history_peak(setup.history)));
+    // What `Prints` may keep, and the history the copies scroll into with
+    // its transients: nothing else grows.
+    let bound = heap(prints(&setup).saturating_add(history_peak(setup.history)));
     let input = repeat(b"X\x1b[65535b", scale.times());
     let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
     probe.feed(&input)?;
@@ -439,13 +453,14 @@ pub fn b10(scale: Scale, chunk: usize) -> Found {
     probe.finish()?;
     // What `Prints` kept, untaken: at most 4 bytes a cell of text, and
     // 171,072 bytes in all.
+    let kept = prints(&setup);
     let prints = probe.parser.take_prints();
     let text = prints
         .iter()
         .map(|p| p.text.len())
         .fold(0, usize::saturating_add);
     let most = setup.cells().saturating_mul(4).max(16 << 10);
-    if text > most || prints.heap() > 171_072 {
+    if text > most || prints.heap() > kept {
         return Err(format!(
             "Prints kept {text} bytes of text, {} bytes in all, between takes",
             prints.heap()
@@ -718,7 +733,7 @@ pub fn b17(scale: Scale, chunk: usize) -> Found {
     )?;
     // 349,525 empty rows, then full ones: the ring keeps its room.
     let setup = Setup::defaults();
-    let bound = heap(history_peak(setup.history).saturating_add(171_072));
+    let bound = heap(history_peak(setup.history).saturating_add(prints(&setup)));
     let mut input = empty_history();
     let full = [[b'x'; 200].as_slice(), b"\r\n"].concat();
     input.extend(repeat(&full, 6000));
@@ -763,11 +778,16 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
         work: &[("scanned", 2, 16, 0)],
         heap: 0,
     };
+    let n = (64usize << 10).saturating_mul(scale.times());
+    // The heap: the host's copies of the input made after the probe began,
+    // the frame's bytes, and the long DECRST below with the run of zeros
+    // it is built from, at most 3n and the few bytes around them; and the
+    // parser's, which keeps nothing a scan reads (measured 131,089 bytes at
+    // 1x, 17 past 2n; 1,703,952 at 10x, 2.6n).
     let bound = Bound {
-        heap: (8usize << 20).saturating_add(steady(&setup)),
+        heap: n.saturating_mul(3).saturating_add(NOTHING),
         ..BOUND
     };
-    let n = (64usize << 10).saturating_mul(scale.times());
     let digits = repeat(b"1", n);
     // The host's frame buffer, its own: room made before the probe.
     let mut held = Vec::with_capacity(n.saturating_add(2));
@@ -819,6 +839,8 @@ pub fn b20(scale: Scale, chunk: usize) -> Found {
     let mut one = b("\x1b]52;c;");
     one.extend(repeat(b"A", 65_537));
     one.extend(b"\x07");
+    // The buffer's room, 65,537 bytes, beside the 16 KiB one it grows from
+    // as `grow_osc` moves it (parser.rs): exactly the peak measured.
     let bound = heap(65_537 + (16 << 10));
     fed(
         &setup,
@@ -835,7 +857,7 @@ pub fn b21(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
         work: &[("bytes", 1, 0, 0)],
-        heap: 4 << 10,
+        heap: NOTHING,
     };
     let mut one = b("\x1b_");
     one.extend(repeat(b"a", 64 << 10));
@@ -882,7 +904,7 @@ pub fn b22(scale: Scale, chunk: usize) -> Found {
     one.extend(b"m");
     fed(
         &setup,
-        heap(4 << 10),
+        heap(NOTHING),
         chunk,
         scale.times(),
         &repeat(&one, scale.times()),
@@ -1182,7 +1204,7 @@ pub fn b26(scale: Scale, chunk: usize) -> Found {
 pub fn b27(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let input = repeat(b"\x1b[>1u", 33usize.saturating_mul(scale.times()));
-    fed(&setup, heap(4 << 10), chunk, scale.times(), &input, |_| {
+    fed(&setup, heap(NOTHING), chunk, scale.times(), &input, |_| {
         Ok(())
     })
 }
@@ -1192,7 +1214,7 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
         work: &[("replies", 16, 0, 0)],
-        heap: 64 << 10,
+        heap: NOTHING,
     };
     let mut input = b("\x1b[1;2;3;4:3;5;7;8;9;38;2;1;2;3;48;2;4;5;6;58;2;7;8;9m");
     input.extend(repeat(
@@ -1341,7 +1363,7 @@ pub fn b31(scale: Scale, chunk: usize) -> Found {
 // 2 columns on.
 pub fn b32(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 10).history(0);
-    let mut probe = Probe::new(&setup, heap(64 << 10), chunk, scale.times())?;
+    let mut probe = Probe::new(&setup, heap(NOTHING), chunk, scale.times())?;
     probe.feed(b"XYZW")?;
     for _ in 0..scale.times() {
         probe.feed("\r\u{17d8}".as_bytes())?;
@@ -1623,7 +1645,10 @@ pub fn b36(scale: Scale, chunk: usize) -> Found {
 // rejected one changes nothing, synchronized output included.
 pub fn b37(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    let bound = heap(steady(&setup).saturating_add(12_700_000));
+    // Beside the formula's steady state, the history being made anew while
+    // the old is held: another history term (measured 16,913,032 bytes in
+    // all at 1x, against 38.1 MB).
+    let bound = heap(steady(&setup).saturating_add(history_term(setup.history)));
     let rows = repeat(&[[b'x'; 200].as_slice(), b"\r\n"].concat(), 6000);
     let mut probe = Probe::new(&setup, bound, chunk.max(4096), 1)?;
     probe.feed(&rows)?;
@@ -1782,9 +1807,17 @@ pub fn b41(scale: Scale, _: usize) -> Found {
 pub fn b42(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let input = repeat(b"\x1bH\x1b[C", 200usize.saturating_mul(scale.times()));
-    fed(&setup, heap(4 << 10), chunk, scale.times(), &input, |_| {
-        Ok(())
-    })
+    // The stops, a byte a column, in room doubled as they grow, beside the
+    // half they grew from: 384 bytes at 200 columns, the peak measured.
+    let stops = usize::from(setup.cols).next_power_of_two();
+    fed(
+        &setup,
+        heap(stops.saturating_add(stops / 2)),
+        chunk,
+        scale.times(),
+        &input,
+        |_| Ok(()),
+    )
 }
 
 // B43: events go straight to the host: fux-vt keeps none.
@@ -1793,7 +1826,9 @@ pub fn b43(scale: Scale, chunk: usize) -> Found {
     let input = repeat(b"\x1b]9;hello\x07", 400usize.saturating_mul(scale.times()));
     fed(
         &setup,
-        heap(65_537 + (4 << 10)),
+        // The OSC buffer, at most 65,537 bytes (B20), and nothing kept
+        // (measured 12 bytes).
+        heap(65_537 + NOTHING),
         chunk,
         scale.times(),
         &input,
