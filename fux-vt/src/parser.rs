@@ -779,14 +779,19 @@ closed! {
         RectangleChecksums,
         /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
         /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
-        /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
-        /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
-        /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
-        /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
-        /// request's first bytes are kept to tell it, nothing more. Programs
-        /// learn from the pen what the terminal draws: neovim sets a curly
-        /// underline and asks, and draws its diagnostics curly only if `4:3`
-        /// comes back. Off, DECRQSS is ignored, as every other DCS.
+        /// DECSCUSR), the margins (`r`, DECSTBM; `s`, DECSLRM), protection
+        /// (`"q`, DECSCA), the conformance level (`"p`, DECSCL) and the
+        /// attribute change extent (`*x`, DECSACE), as xterm 411 answers:
+        /// `DCS 1 $ r Pt ST`, `Pt` the sequence that sets it, such as
+        /// `0;1;4:3m`. Another request, or one over 4 bytes, is answered as
+        /// invalid, `DCS 0 $ r ST`, and a cursor shape left to the terminal
+        /// (DECSCUSR 0, the default) not at all. A request's first bytes are
+        /// kept to tell it, nothing more. XTGETTCAP (`DCS + q Pt ST`) is
+        /// answered as an invalid request, `DCS 0 + r ST`: fux-vt names no
+        /// capability. Programs learn from the pen what the terminal draws:
+        /// neovim sets a curly underline and asks, and draws its diagnostics
+        /// curly only if `4:3` comes back. Off, both are ignored, as every
+        /// other DCS.
         SettingReports,
         /// Keep the colours a program sets and answer its queries of them, as
         /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
