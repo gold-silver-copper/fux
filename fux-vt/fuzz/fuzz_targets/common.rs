@@ -258,8 +258,10 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
     }
 }
 
-/// What `Prints` kept since the last take is within its caps: 4 bytes a
-/// screen cell of text (16 KiB at least) and 4,096 runs (threats.md B10).
+/// What `Prints` kept since the last take is within its caps: its text cap,
+/// 4 bytes a cell of the screen it was made for (16 KiB at least), which a
+/// resize since, losing what follows, does not make smaller, and 4,096
+/// runs (threats.md B10).
 pub fn prints_bounded(p: &mut Parser) {
     let (rows, cols) = p.screen().size().into();
     let cells = usize::from(rows).saturating_mul(usize::from(cols));
@@ -267,8 +269,13 @@ pub fn prints_bounded(p: &mut Parser) {
     let prints = p.take_prints();
     let text = prints.iter().map(|print| print.text.len()).sum::<usize>();
     assert!(
-        text <= cells.saturating_mul(4).max(16 << 10),
-        "{text} bytes of prints"
+        text <= prints.cap(),
+        "{text} bytes of prints, past {}",
+        prints.cap()
+    );
+    assert!(
+        prints.lost() || text <= cells.saturating_mul(4).max(16 << 10),
+        "{text} bytes of prints at {cells} cells"
     );
     assert!(prints.iter().count() <= 4096);
 }
