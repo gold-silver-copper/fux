@@ -1,0 +1,3 @@
+# xterm.js's fixtures are bytes as a program wrote them and screens as xterm
+# showed them, trailing blanks and all: never converted or tidied.
+* -text -whitespace
