@@ -1733,19 +1733,20 @@ impl Grid {
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let mut changed = false;
         if let Some(mut line) = self.line(target) {
-            for (i, cell) in cells.iter().enumerate() {
-                let at = span.start.saturating_add(i);
-                let Some(&old) = line.cells.get(at) else {
-                    continue;
-                };
-                if old.same_as(line.text, cell, &text) {
-                    continue;
-                }
-                changed = true;
-                if cell.is_spilled() {
-                    line.set(at, *cell, text.of(cell));
-                } else if let Some(slot) = line.cells.get_mut(at) {
-                    *slot = *cell;
+            let olds = line.cells.get(span.clone()).unwrap_or_default();
+            changed =
+                (cells.iter().zip(olds)).any(|(cell, old)| !old.same_as(line.text, cell, &text));
+            if changed {
+                // Written a cell at a time into a row whose text is full,
+                // each spilled cell would compact the row (B35): the span
+                // is blanked and the row compacted once first, as DECCRA's.
+                line.clear_for(span.clone());
+                for (at, cell) in span.clone().zip(&cells) {
+                    if cell.is_spilled() {
+                        line.set(at, *cell, text.of(cell));
+                    } else if let Some(slot) = line.cells.get_mut(at) {
+                        *slot = *cell;
+                    }
                 }
             }
         }

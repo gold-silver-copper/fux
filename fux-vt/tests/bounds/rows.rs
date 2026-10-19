@@ -1334,6 +1334,20 @@ fn screen_wide(rows: u16, cols: u16) -> Vec<(&'static str, Vec<u8>)> {
         ("DECDC", b("\x1b['~")),
         ("SL", b("\x1b[ @")),
         ("SR", b("\x1b[ A")),
+        // Scrolls inside left and right margins move cells, not rows:
+        // an LF at the bottom margin, and SU.
+        (
+            "DECLRMM LF",
+            format!(
+                "\x1b[?69h\x1b[1;{}s\x1b[{rows};2H\n",
+                cols.saturating_sub(1)
+            )
+            .into_bytes(),
+        ),
+        (
+            "DECLRMM SU",
+            format!("\x1b[?69h\x1b[1;{}s\x1b[S", cols.saturating_sub(1)).into_bytes(),
+        ),
     ]
 }
 
@@ -1358,10 +1372,17 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             work,
             heap: steady(&setup).saturating_mul(2),
         };
-        // A screen of text, its cells holding clusters, to copy and edit.
+        // A screen of text, its cells holding clusters, to copy and edit:
+        // whole rows of 17-byte clusters, which fill a row's short text,
+        // their base letters differing from row to row so that a copy
+        // changes every cell.
         let mut prefix = Vec::new();
-        for _ in 0..rows.min(200) {
-            prefix.extend(repeat(&cluster(8), usize::from(cols.min(200))));
+        for y in 0..rows.min(200) {
+            let mut each = cluster(8);
+            if let Some(base) = each.first_mut() {
+                *base = if y % 2 == 0 { b'e' } else { b'a' };
+            }
+            prefix.extend(repeat(&each, usize::from(cols.min(500))));
             prefix.extend(b"\r\n");
         }
         // At fux's largest pane the row checks each call's ceiling, U: one
