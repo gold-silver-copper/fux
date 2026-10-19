@@ -531,6 +531,9 @@ pub struct Pane {
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
+    /// How its program exited, once told, while what it wrote is still
+    /// being read (`Session::exited`).
+    pub exiting: Option<Ended>,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -802,6 +805,7 @@ impl Pane {
             frame: None,
             unread: (Vec::new(), Instant::now()),
             frame_left: 0,
+            exiting: None,
             colours: Colours::default(),
             bell: false,
             copied: None,

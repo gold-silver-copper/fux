@@ -1792,15 +1792,27 @@ impl Session {
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
         let status = process::shell_status(ended);
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
-        let (program, left) = (program.is_some(), program.map(|p| unread(&p.process)));
-        if let Some(left) = left.filter(|left| !left.is_empty()) {
-            self.output(id, &left);
+        let program = program.map(|p| p.exiting.is_none());
+        // Once, at the first word of the exit: its terminal drained (what
+        // a program left writing there is not waited for), a frame it held
+        // read, and the status kept till the last of it is read.
+        if program == Some(true) {
+            let left = (self.panes.get(&id))
+                .map(|p| unread(&p.process))
+                .unwrap_or_default();
+            if !left.is_empty() {
+                self.output(id, &left);
+            }
+            self.read_with(id, Pane::release_frame);
         }
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
-        if program && pane.has_unread() {
-            return;
+        if program.is_some() {
+            pane.exiting = Some(ended);
+            if pane.has_unread() {
+                return;
+            }
         }
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
@@ -1850,7 +1862,7 @@ impl Session {
                 // A program that exited with output unread exits now, if
                 // the last of it is read.
                 let pane = self.panes.get(&id).filter(|p| !p.has_unread());
-                if let Some(ended) = pane.and_then(|p| p.process.child()?.leader.exited()) {
+                if let Some(ended) = pane.and_then(|p| p.exiting) {
                     self.exited(id, ended);
                 }
             }
@@ -3987,6 +3999,74 @@ mod tests {
             .map(|r| r.cells_text())
             .collect::<String>();
         assert!(text.contains("DONE"), "{text:?}");
+        Ok(())
+    }
+
+    /// A program that exits while what it left behind writes on (a
+    /// background loop) is told exited once what was on its terminal as it
+    /// exited is read: its terminal is drained once, not again at each
+    /// later reap, so its exit is not put off for ever.
+    #[test]
+    fn a_program_whose_terminal_is_written_on_still_exits() -> Result<(), String> {
+        // A large screen, where each ED is spent as 40,000 cells.
+        let (mut s, _) = super::testing::attached(201, 200)?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
+        let rows = s.panes.get(&id).map(|p| p.screen().size().rows());
+        assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");
+        std::thread::sleep(Duration::from_millis(200));
+        let exited = |s: &Session| {
+            s.panes
+                .get(&id)
+                .is_some_and(|p| p.process.exit_status().is_some())
+        };
+        let mut turns = 0u32;
+        s.exited(id, Ended::Exited(0));
+        while !exited(&s) && turns < 100 {
+            s.fire(crate::session::Timer::Unread(id));
+            // As each reap of another child does.
+            s.exited(id, Ended::Exited(0));
+            turns = turns.saturating_add(1);
+        }
+        let told = exited(&s);
+        for (_, dying) in std::mem::take(&mut s.dying) {
+            if let Some(leader) = dying.kill() {
+                let _ = leader.finish();
+            }
+        }
+        if let Some(child) = s.panes.get_mut(&id).and_then(|p| {
+            match std::mem::replace(&mut p.process, Process::Absent) {
+                Process::Reading(child) | Process::HungUp(child) => Some(child),
+                Process::Absent | Process::Exited(_) => None,
+            }
+        }) {
+            drop(child.master);
+            let _ = child.leader.finish();
+        }
+        assert!(told, "not told exited in {turns} turns");
+        Ok(())
+    }
+
+    /// A frame of synchronized output held as its program exits is read
+    /// before the exit is told: its last screen is whole.
+    #[test]
+    fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        s.output(id, b"\x1b[?2026hHELD");
+        s.exited(id, Ended::Exited(0));
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(pane.process.exit_status(), Some(Ended::Exited(0)));
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(text.contains("HELD"), "{text:?}");
         Ok(())
     }
 
