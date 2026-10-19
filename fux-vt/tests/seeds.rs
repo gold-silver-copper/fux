@@ -9,6 +9,12 @@
 //! every seed here; `bounds/known-failing.txt` names the rows that still
 //! fail.
 //!
+//! A row whose reproducer is a host call (a clone, a picture built or
+//! encoded, a size, a refused allocation, an encoder) has its seed's host
+//! calls in `reaches`, and in `deep`'s format where that target makes the
+//! call. A row with no defect at BASE (a new bound, kept by a guard) says
+//! so, "no defect at BASE: a guard", beside its seed.
+//!
 //! `cargo test -p fux-vt --features checks --test seeds -- --ignored
 //! write_the_seeds` writes the files from these definitions; a test fails
 //! when a file and its definition differ.
@@ -16,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use fux_vt::keys::decode::{Decoder, Input};
+use fux_vt::sixel::Picture;
 use fux_vt::{Event, Feature, Options, Parser, Sink, Size, Work};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -34,6 +41,11 @@ enum Prefix {
     EmptyHistory,
     /// This many full rows of `x`, as wide as the screen.
     FullRows(usize),
+    /// 2,000 links of 2,083-byte URIs, 4 MiB of links held (B16).
+    HeldLinks,
+    /// An `x`, then this many of the allocations fux-vt makes room for
+    /// refused (`refuse_next`); a call refused is no failure of the replay.
+    Refused(u32),
 }
 
 /// Which fuzz target's format the seed is also written in.
@@ -42,6 +54,9 @@ enum Fuzz {
     None,
     Terminal,
     Keys,
+    /// `deep`'s format, with these host operations after the output (the
+    /// bytes in deep's operations), for a reproducer of host calls.
+    Deep(&'static [u8]),
 }
 
 /// What a replay of a seed did: the parser after it, its work, the
@@ -50,6 +65,7 @@ struct Replayed {
     parser: Parser,
     work: Work,
     events: usize,
+    replies: Vec<Vec<u8>>,
     inputs: Vec<Input>,
 }
 
@@ -653,6 +669,439 @@ fn seeds() -> Vec<Seed> {
             },
             fuzz: Fuzz::None,
         },
+        Seed {
+            name: "b02-65-placements",
+            row: "B02",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = Vec::new();
+                // Rows 1 and 3, every other column.
+                let cells = [1u16, 3].into_iter().flat_map(|row| {
+                    (0..50u16).map(move |c| (row, c.saturating_mul(2).saturating_add(1)))
+                });
+                for (row, col) in cells.take(65) {
+                    out.extend(format!("\x1b[{row};{col}H\x1bPq@\x1b\\").bytes());
+                }
+                out
+            },
+            // 65 placements, each in a cell of its own: the 65th lets the
+            // oldest go, 64 shown. At BASE
+            // past its bound at 10x: placing checked every kept picture
+            // through history (SIX-7).
+            reaches: |r| {
+                let (_, _, count) = shown(r);
+                ensure(count == 64, || format!("{count} of 65 shown"))
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b06-clone-mid-picture",
+            row: "B06",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || b"\x1bPq\"1;1;4096;2160~".to_vec(),
+            // A parser cloned mid-picture draws the same picture as the
+            // original; a host's copy of a picture outlives its eviction,
+            // which a lowered budget makes. No defect at BASE: a guard.
+            reaches: |r| {
+                let (mut a, mut b) = (r.parser.clone(), r.parser.clone());
+                for p in [&mut a, &mut b] {
+                    p.process(b"\x1b\\").map_err(|e| e.to_string())?;
+                }
+                let size = |p: &Parser| {
+                    let shown = p.screen().pictures().next();
+                    shown.map(|s| (s.picture.width(), s.picture.height()))
+                };
+                ensure(
+                    size(&a) == Some((4096, 2160)) && size(&a) == size(&b),
+                    || format!("pictures {:?} and {:?}", size(&a), size(&b)),
+                )?;
+                let kept = a.screen().pictures().next().map(|s| s.picture.clone());
+                a.set_picture_bytes(0);
+                ensure(
+                    a.screen().pictures().count() == 0 && kept.is_some_and(|p| p.width() == 4096),
+                    || "the budget kept the picture, or the host's copy went".into(),
+                )
+            },
+            // Drawn, encoded by the host, let go by a budget of none, read
+            // again (deep's `01 ESC \`, `f6`, `f4 00`, `f6`).
+            fuzz: Fuzz::Deep(&[0x01, 0x1b, b'\\', 0xf6, 0xf4, 0x00, 0xf6]),
+        },
+        Seed {
+            name: "b07-picture-sizes",
+            row: "B07",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: Vec::new,
+            // `Picture::new` takes exactly w × h × 4 bytes and sides up to
+            // 4,096; an empty u32::MAX square, whose crop `encode` never
+            // finished at BASE (SIX-5), is refused. Host calls only: `deep`
+            // makes no picture of its own.
+            reaches: |_| {
+                let made = |w: u32, h: u32, len: usize| Picture::new(w, h, vec![0; len]).is_some();
+                let all = [
+                    !made(u32::MAX, u32::MAX, 0),
+                    !made(5, 3, 59),
+                    made(5, 3, 60),
+                    !made(5, 3, 61),
+                    made(4096, 1, 4096 * 4),
+                    !made(4097, 1, 4097 * 4),
+                ];
+                ensure(all.iter().all(|ok| *ok), || format!("{all:?}"))
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b08-encode-colours",
+            row: "B08",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                // 256 colours, a column each, two bands: a band of 256
+                // colours.
+                let mut out = b"\x1bPq".to_vec();
+                for c in 0..256u32 {
+                    let [g, ..] = c.to_le_bytes();
+                    out.extend(format!("#{c};2;{};{};{}", g % 101, (g / 3) % 101, 100).bytes());
+                }
+                for _ in 0..2 {
+                    for c in 0..256u32 {
+                        out.extend(format!("#{c}~").bytes());
+                    }
+                    out.extend(b"-");
+                }
+                out.extend(b"\x1b\\");
+                out
+            },
+            // Encoded whole within its bound: 12 bytes a pixel and 6 a
+            // colour a band, besides the colours' definitions, and C_ENC
+            // = 3 units of work a pixel. No defect at BASE: a guard.
+            reaches: |r| {
+                let shown = r.parser.screen().pictures().next().ok_or("no picture")?;
+                let (w, h) = (shown.picture.width(), shown.picture.height());
+                let mut out = Vec::new();
+                let before = Work::now();
+                fux_vt::sixel::encode(shown.picture, (0, 0, w, h), &mut out);
+                let done = Work::now().since(before);
+                let pixels = u64::from(w).saturating_mul(u64::from(h));
+                let bands = u64::from(h.div_ceil(6));
+                let most = (pixels.saturating_mul(12))
+                    .saturating_add(bands.saturating_mul(256 * 6))
+                    .saturating_add(256 * 20 + 64);
+                let len = u64::try_from(out.len()).unwrap_or(u64::MAX);
+                ensure(
+                    w >= 256 && len > 0 && len <= most && done.pixels <= pixels.saturating_mul(3),
+                    || format!("{w}x{h}: {len} bytes, {} units", done.pixels),
+                )
+            },
+            fuzz: Fuzz::Deep(&[0xf6]),
+        },
+        Seed {
+            name: "b13-style-sweep",
+            row: "B13",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b[H".to_vec();
+                for i in 1..=5000u32 {
+                    let [r, g, b, _] = i.to_le_bytes();
+                    out.extend(format!("\x1b[48;2;{r};{g};{b}mx\x1b[D").bytes());
+                }
+                out
+            },
+            // Past the table's floor with one cell live: a sweep came. At
+            // BASE past its heap bound at 10x (SCR-5).
+            reaches: |r| {
+                ensure(r.work.inserts > 4096 && r.work.styles > 0, || {
+                    format!("{} styles, {} swept", r.work.inserts, r.work.styles)
+                })
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b16-links-past-the-held",
+            row: "B16",
+            size: (50, 200, 0),
+            prefix: Prefix::HeldLinks,
+            bytes: || repeat(b"\x1b]8;;x\x07y\x1b]8;;\x07", 1000),
+            // With 4 MiB of links held, new links make room by a sweep.
+            // No defect at BASE: a guard. The prefix is no fuzz input.
+            reaches: |r| {
+                ensure(r.work.links >= 1000, || {
+                    format!("{} link steps", r.work.links)
+                })
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b18-line-feeds-into-history",
+            row: "B18",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || repeat(b"\n", 5_000),
+            // Each line feed at the bottom a row into history. No defect
+            // at BASE: a guard.
+            reaches: |r| ensure(r.work.rows >= 4_950, || format!("{} rows", r.work.rows)),
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b22-many-parameters",
+            row: "B22",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b[".to_vec();
+                out.extend(repeat(b"1;", 1000));
+                out.extend(b"m");
+                out
+            },
+            // Past the parameters kept, the sequence still carried out
+            // with those it kept (DEC STD 070: extra parameters are
+            // ignored): bold. No defect at BASE: a guard.
+            reaches: |r| {
+                ensure(r.parser.screen().attributes().bold(), || {
+                    "the SGR was not carried out".into()
+                })
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b26-single-keys",
+            row: "B26",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || repeat(b"a", 64 << 10),
+            // A key an input byte, every one. No defect at BASE: a guard.
+            reaches: |r| {
+                let keys = r
+                    .inputs
+                    .iter()
+                    .filter(|i| matches!(i, Input::Key(_)))
+                    .count();
+                ensure(keys == 64 << 10, || format!("{keys} keys typed"))
+            },
+            fuzz: Fuzz::Keys,
+        },
+        Seed {
+            name: "b27-kitty-stack",
+            row: "B27",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b[>1u".to_vec();
+                out.extend(repeat(b"\x1b[>2u", 32));
+                out.extend(b"\x1b[<32u");
+                out
+            },
+            // 33 pushes into a stack of 32 evict the oldest, so 32 pops
+            // empty it and reset the flags (the kitty keyboard protocol).
+            // No defect at BASE: a guard.
+            reaches: |r| {
+                let flags = r.parser.screen().kitty_keyboard_flags();
+                ensure(flags == 0, || format!("flags {flags} after the pops"))
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b28-setting-replies",
+            row: "B28",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b[1;2;3;4:3;5;7;8;9;38;2;1;2;3;48;2;4;5;6;58;2;7;8;9m".to_vec();
+                out.extend(repeat(b"\x1bP$qm\x1b\\", 585));
+                out
+            },
+            // Every request answered with the longest pen, each answer
+            // within 16 bytes a byte that asked. No defect at BASE: a
+            // guard.
+            reaches: |r| {
+                let longest = r.replies.iter().map(Vec::len).max().unwrap_or(0);
+                ensure(
+                    r.replies.len() == 585 && longest > 20 && longest <= 7 * 16,
+                    || format!("{} replies, the longest {longest}", r.replies.len()),
+                )
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b30-long-cluster",
+            row: "B30",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || cluster(64),
+            // A cell keeps 128 bytes at most: e and 63 of the 64 marks,
+            // 127 bytes. No defect at BASE: a guard.
+            reaches: |r| {
+                let cell = r.parser.screen().cell(0, 0);
+                let held = cell.map_or(0, |c| c.contents().len());
+                ensure(held == 127, || format!("a cluster of {held} bytes"))
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b38-largest-screen",
+            row: "B38",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: Vec::new,
+            // 64 Mi cells fit, one row more does not, and a 65535 by 65535
+            // parser is refused. Host calls only: `deep`'s sides are at
+            // most 511. No defect at BASE: a guard.
+            reaches: |_| {
+                let fits = |rows, cols| Size::new(rows, cols).is_ok_and(fux_vt::fits);
+                let refused =
+                    Size::new(u16::MAX, u16::MAX).is_ok_and(|s| Parser::new(s, 0).is_err());
+                ensure(fits(8192, 8192) && !fits(8192, 8193) && refused, || {
+                    "a size past 64 Mi cells was taken".into()
+                })
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b39-cells-past-the-most",
+            row: "B39",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: Vec::new,
+            // `Cells::new` and `resize` past 64 Mi cells are refused, and
+            // `resize` leaves the cells as they were; `Cells::new(usize::
+            // MAX)` panicked at BASE (SCR-11). Host calls only.
+            reaches: |_| {
+                let past = [(64 << 20) + 1, usize::MAX];
+                let refused = past.iter().all(|&len| {
+                    let new = fux_vt::Cells::new(len).is_err();
+                    let resized = fux_vt::Cells::new(4).is_ok_and(|mut cells| {
+                        cells.resize(len, fux_vt::CellRef::default()).is_err() && cells.len() == 4
+                    });
+                    new && resized
+                });
+                ensure(refused, || "Cells past 64 Mi made".into())
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b41-push-with-clear",
+            row: "B41",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: Vec::new,
+            // A `push_with` closure that clears the queue under what was
+            // taken, then a push: the queue holds the push. At BASE it
+            // held nothing (PAR-8). Host calls only.
+            reaches: |_| {
+                let mut queue = fux_vt::bytes::ByteQueue::default();
+                queue.push(b"abcdef");
+                queue.take(2);
+                queue.push_with(Vec::clear);
+                queue.push(b"xy");
+                ensure(queue.as_slice() == b"xy", || {
+                    format!("the queue holds {:?}", queue.as_slice())
+                })
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b42-tab-stops",
+            row: "B42",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || {
+                let mut out = b"\x1b[H".to_vec();
+                out.extend(repeat(b"\x1bH\x1b[C", 200));
+                out.extend(b"\r\tX");
+                out
+            },
+            // A tab stop at every column: a tab from the first goes to
+            // the second. No defect at BASE: a guard.
+            reaches: |r| {
+                let cell = r.parser.screen().cell(0, 1);
+                ensure(cell.is_some_and(|c| c.contents() == "X"), || {
+                    "the tab went past the second column".into()
+                })
+            },
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b43-notifications",
+            row: "B43",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: || repeat(b"\x1b]9;hello\x07", 400),
+            // Each notification an event, none kept. No defect at BASE:
+            // a guard.
+            reaches: |r| ensure(r.events == 400, || format!("{} events", r.events)),
+            fuzz: Fuzz::Terminal,
+        },
+        Seed {
+            name: "b44-refused-mark",
+            row: "B44",
+            size: (1, 10, 1 << 20),
+            prefix: Prefix::Refused(1),
+            bytes: || b"\x1b]133;A\x07hello".to_vec(),
+            // A prompt mark's fresh line scrolls into history, whose first
+            // block is refused: one refusal, and the text after it shown.
+            // At BASE `hello` went into the OSC (PAR-3). `deep` refuses
+            // nothing.
+            reaches: |r| {
+                text_shows(r, "hello")?;
+                let refused = r.parser.refused();
+                ensure(refused == 1, || format!("{refused} refusals"))
+            },
+            fuzz: Fuzz::None,
+        },
+        Seed {
+            name: "b45-longest-key",
+            row: "B45",
+            size: defaults,
+            prefix: Prefix::None,
+            bytes: Vec::new,
+            // The longest keys: a kitty report of the largest code points
+            // with every modifier bit, and an SGR mouse report at the
+            // largest position, each within 64 bytes. BASE stated no
+            // maximum (KEY-4). Host calls only.
+            reaches: |_| {
+                use fux_vt::keys::encode::{KeyMode, Report, key_bytes};
+                use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
+                use fux_vt::keys::{Key, KeyPress, Keystroke, Kitty, Modifiers};
+                use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
+                let mods = Modifiers {
+                    shift: true,
+                    alt: true,
+                    ctrl: true,
+                };
+                let stroke = Keystroke {
+                    press: KeyPress::new(Key::Char('\u{10ffff}'), mods),
+                    kitty: Some(Kitty {
+                        code: Some(0x10_ffff),
+                        shifted: Some(0x10_ffff),
+                        base: Some(0x10_ffff),
+                        mods: u8::MAX,
+                    }),
+                };
+                let mode = KeyMode::Kitty {
+                    alternate: true,
+                    report: Report::AllKeysWithText,
+                    backarrow: false,
+                };
+                let (mut key, mut mouse) = (Vec::new(), Vec::new());
+                key_bytes(stroke, mode, &mut key);
+                let event = MouseEvent {
+                    action: MouseAction::Motion(Some(MouseButton::ALL[0])),
+                    mods,
+                    row: u16::MAX,
+                    col: u16::MAX,
+                };
+                let (any, sgr) = (MouseProtocolMode::AnyMotion, MouseProtocolEncoding::Sgr);
+                mouse_bytes(event, any, sgr, &mut mouse);
+                let within = |out: &Vec<u8>| (1..=64).contains(&out.len());
+                ensure(within(&key) && within(&mouse), || {
+                    format!("{} and {} bytes", key.len(), mouse.len())
+                })
+            },
+            fuzz: Fuzz::None,
+        },
     ]
 }
 
@@ -681,13 +1130,25 @@ fn colliding(count: usize) -> Vec<u8> {
     out
 }
 
-/// Counts the events a parser sends.
+/// Counts the events a parser sends, and keeps its replies.
 #[derive(Default)]
-struct Events(usize);
+struct Events(usize, Vec<Vec<u8>>);
 impl Sink for Events {
     fn event(&mut self, _: Event<'_>) {
         self.0 = self.0.saturating_add(1);
     }
+    fn reply(&mut self, bytes: &[u8]) {
+        self.1.push(bytes.to_vec());
+    }
+}
+
+/// A link of a 2,083-byte URI over one `x`, then closed: 2,000 of them
+/// hold 4 MiB of links (B16).
+fn held_link() -> Vec<u8> {
+    let mut out = b"\x1b]8;;".to_vec();
+    out.extend(repeat(b"u", 2083));
+    out.extend(b"\x07x\x1b]8;;\x07");
+    out
 }
 
 /// `bytes` in pieces of 4 KiB, as fux feeds a pane.
@@ -714,9 +1175,14 @@ fn replay(seed: &Seed) -> Result<Replayed> {
             let row = [repeat(b"x", usize::from(cols)).as_slice(), b"\r\n"].concat();
             repeat(&row, n)
         }
+        Prefix::HeldLinks => repeat(&held_link(), 2000),
+        Prefix::Refused(_) => b"x".to_vec(),
     };
     for piece in pieces(&prefix) {
         parser.process(piece)?;
+    }
+    if let Prefix::Refused(n) = seed.prefix {
+        fux_vt::refuse_next(n);
     }
     let bytes = (seed.bytes)();
     let (before, mut events, mut inputs) = (Work::now(), Events::default(), Vec::new());
@@ -728,13 +1194,18 @@ fn replay(seed: &Seed) -> Result<Replayed> {
         decoder.timeout(&mut inputs);
     } else {
         for piece in pieces(&bytes) {
-            parser.process_with(piece, &mut events)?;
+            let fed = parser.process_with(piece, &mut events);
+            if !matches!(seed.prefix, Prefix::Refused(_)) {
+                fed?;
+            }
         }
     }
+    fux_vt::refuse_next(0);
     Ok(Replayed {
         parser,
         work: Work::now().since(before),
         events: events.0,
+        replies: events.1,
         inputs,
     })
 }
@@ -861,6 +1332,12 @@ fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
                 files.push((root.join("fuzz/seeds/deep").join(seed.name), input));
             }
         }
+        Fuzz::Deep(host) => {
+            if let Some(mut input) = deep_input(seed.size, &bytes) {
+                input.extend_from_slice(host);
+                files.push((root.join("fuzz/seeds/deep").join(seed.name), input));
+            }
+        }
         // The keys target's first byte is the piece size (0, each read
         // whole), its second the options (none); a byte 0xff is `ff ff`.
         Fuzz::Keys => files.push((
@@ -884,7 +1361,17 @@ fn deep_seeds_feed_their_bytes() {
     for seed in seeds() {
         for (path, input) in files(&seed) {
             if path.parent().and_then(Path::file_name) == Some("deep".as_ref()) {
-                assert_eq!(deep_output(&input), (seed.bytes)(), "{}", seed.name);
+                let host = match seed.fuzz {
+                    Fuzz::Deep(host) => host.len(),
+                    Fuzz::None | Fuzz::Terminal | Fuzz::Keys => 0,
+                };
+                let output = input.get(..input.len().saturating_sub(host));
+                assert_eq!(
+                    deep_output(output.unwrap_or_default()),
+                    (seed.bytes)(),
+                    "{}",
+                    seed.name
+                );
             }
         }
     }
