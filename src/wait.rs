@@ -37,10 +37,11 @@ const CUT: &str = "… earlier lines not kept (past history-bytes)\n";
 const MORE_THAN_KEPT: &str =
     "… more came than the pane's journal keeps (journal-bytes): text may have passed unseen\n";
 /// Said first instead when a piece of output printed more than fux
-/// records of one (`fux_vt::Prints::lost`). The caps are said where they
-/// are kept, fux-vt's README (B10), not again here.
-const PRINTS_LOST: &str = "… a piece of output printed more than fux records of one (past \
-     fux-vt's caps on what it records, its README's B10): text may have passed unseen\n";
+/// records of one (`fux_vt::Prints::lost`): its caps are fux-vt's, said
+/// in its README (`Prints`), not again here.
+const PRINTS_LOST: &str = "… a piece of output printed more than fux records of one (fux-vt keeps \
+     a few bytes of printed text a screen cell between reads, and past that records nothing): \
+     text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -974,8 +975,9 @@ impl Watch {
         }
         if self.lost {
             return Some(
-                "a piece of output printed more than fux records of one (past fux-vt's caps \
-                 on what it records, its README's B10): the text may have come unseen",
+                "a piece of output printed more than fux records of one (fux-vt keeps a few \
+                 bytes of printed text a screen cell between reads, and past that records \
+                 nothing): the text may have come unseen",
             );
         }
         self.echo_skipped.then_some(

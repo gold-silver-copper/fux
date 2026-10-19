@@ -843,8 +843,10 @@ impl Pane {
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU, or whatever else resets the mode, found
     /// as the parser reads it: `fux_vt::FrameScan`) is held, unread, until
-    /// it ends, then read whole, as alacritty does: the screen is always at
-    /// the end of a frame, so a client is never painted half of one. A
+    /// it ends, then read whole, as alacritty does, so a client is never
+    /// painted half of one: a frame whose reading takes several turns (a
+    /// parser call's budget) is painted as the client last saw the pane
+    /// till it is whole (`Pane::mid_frame`). A
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
