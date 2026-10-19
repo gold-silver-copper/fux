@@ -1059,10 +1059,12 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
         let unended = [b(head), repeat(b"1", 300)].concat();
         decoded(&repeat(&unended, scale.times()), chunk, 258, 4 << 10, false)?;
     }
-    // Each window one past its limit (KEY-5): an OSC answer of 129 bytes,
-    // a DCS of 257 while answers are expected, a key CSI of 33, a `CSI ?`
-    // of 257, each then `x`: decoded alike whole and in pieces, and of it
-    // only the `x` typed.
+    // Each window one past its limit (KEY-5), counted as the decoder counts
+    // it, after the opening (FA-KEY-5): an OSC answer of 129 bytes with its
+    // BEL, a DCS of 257 with its ST's ESC while answers are expected, a key
+    // CSI of 33 parameter bytes, a `CSI ?` of 257, each then `x`: decoded
+    // alike whole and in pieces, and of it only the `x` typed. `n` counts
+    // the opening too.
     let past = |head: &str, n: usize, end: &str| {
         let mut one = b(head);
         one.extend(repeat(b"1", n.saturating_sub(head.len())));
@@ -1071,10 +1073,10 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
         repeat(&one, scale.times())
     };
     for (input, expect) in [
-        (past("\x1b]11;", 129, "\x07"), false),
-        (past("\x1bP1+r", 257, "\x1b\\"), true),
-        (past("\x1b[", 33, "u"), false),
-        (past("\x1b[?", 257, "c"), false),
+        (past("\x1b]11;", 2 + 128, "\x07"), false),
+        (past("\x1bP1+r", 2 + 256, "\x1b\\"), true),
+        (past("\x1b[", 2 + 33, "u"), false),
+        (past("\x1b[?", 2 + 257, "c"), false),
     ] {
         let decode = |size: usize| {
             let mut decoder = Decoder::default();

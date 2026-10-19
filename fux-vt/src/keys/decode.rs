@@ -264,7 +264,7 @@ fn drop_to_end(
     // Every byte is looked at, at most: those after the end are decoded
     // again, and counted again there.
     work!(keys, bytes.len());
-    // A `CSI ?` answer ends with its final byte, as one read whole does
+    // A CSI past its window ends with its final byte, as one read whole does
     // (`long_answer`).
     if csi {
         let end = bytes
@@ -382,7 +382,7 @@ enum Step {
     PasteStart(usize),
     /// The bytes are an answer's string past its limit, all of it: the rest
     /// of it is dropped as it comes, to its end (BEL too if `bel`, or ST).
-    /// A `CSI ?` answer past its limit (`csi`) ends at its final byte.
+    /// A CSI past its window (`csi`) ends at its final byte.
     /// `escape` if the bytes end with an ESC, which may begin the ST.
     Overlong { bel: bool, csi: bool, escape: bool },
     /// The bytes are a prefix of something longer.
@@ -1005,9 +1005,10 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
     mouse::event(code, x, y, release)
 }
 
-/// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
-/// dropped through its final byte once that is here, as an over-long OSC
-/// or DCS answer is dropped to its end; held until then, up to
+/// A CSI longer than its window (a key's, or a `CSI ?` answer's), `body`
+/// its bytes after `ESC [`: no key nor answer, dropped through its final
+/// byte once that is here, as an over-long OSC or DCS answer is dropped
+/// to its end, none of it typed (B25); held until then, up to
 /// `DCS_LIMIT` bytes, past which the rest is dropped as it comes, to its
 /// final byte, and at a timeout what is held is dropped.
 #[cold]
@@ -1064,12 +1065,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     }
     let Some(end) = first else {
         if window.len() > limit {
-            return if answer {
-                long_answer(body, flush)
-            } else {
-                // Not a sequence fux can use: garbage.
-                Step::Done(window.len().saturating_add(2), None)
-            };
+            return long_answer(body, flush);
         }
         if !flush {
             return Step::Incomplete;
