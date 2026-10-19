@@ -1333,10 +1333,21 @@ fn record(args: &Args) -> Result<bool, String> {
 /// as a shared machine's limit sets it, else 4, as fux-bench takes
 /// (speed-method.md: a count beside other work takes few cores).
 pub fn few_jobs() -> usize {
-    (std::env::var("CARGO_BUILD_JOBS").ok())
+    few_jobs_from(std::env::var("CARGO_BUILD_JOBS").ok().as_deref())
+}
+
+/// [`few_jobs`] of CARGO_BUILD_JOBS's value: a count of at least 1, else 4.
+fn few_jobs_from(cargo_build_jobs: Option<&str>) -> usize {
+    cargo_build_jobs
         .and_then(|v| v.parse().ok())
         .filter(|&n: &usize| n > 0)
         .unwrap_or(4)
+}
+
+/// The children `bench --instructions` and `footprint` run at once:
+/// `--jobs`, else [`few_jobs`].
+fn children(jobs: Option<usize>) -> usize {
+    jobs.unwrap_or_else(few_jobs)
 }
 
 /// The most data compare may hold, in bytes, unless
@@ -1528,7 +1539,7 @@ fn main() -> ExitCode {
             &args.rest,
             args.mb,
             args.repeats,
-            args.jobs.unwrap_or_else(few_jobs),
+            children(args.jobs),
             args.json.as_deref(),
         ),
         "bench" if args.json.is_some() => bench::run_to(
@@ -1541,7 +1552,7 @@ fn main() -> ExitCode {
         "footprint" => footprint::run(
             &panel(&args, "in-process")?,
             args.json.as_deref(),
-            args.jobs.unwrap_or_else(few_jobs),
+            children(args.jobs),
         ),
         _ => run(&args),
     });
@@ -1552,5 +1563,21 @@ fn main() -> ExitCode {
             eprintln!("fux-vt-compare: {e}\n\n{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `bench --instructions` and `footprint` run few children unless
+    /// `--jobs` says: CARGO_BUILD_JOBS, else 4, never every core.
+    #[test]
+    fn instructions_take_few_jobs_by_default() {
+        assert_eq!(super::few_jobs_from(None), 4);
+        assert_eq!(super::few_jobs_from(Some("2")), 2);
+        assert_eq!(super::few_jobs_from(Some("0")), 4);
+        assert_eq!(super::few_jobs_from(Some("x")), 4);
+        let env = std::env::var("CARGO_BUILD_JOBS").ok();
+        assert_eq!(super::children(None), super::few_jobs_from(env.as_deref()));
+        assert_eq!(super::children(Some(3)), 3);
     }
 }
