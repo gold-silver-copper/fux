@@ -21,8 +21,8 @@
 //! Operations, by their first byte:
 //! - `ff r c`: resize to 1 + 2r by 1 + 2c;
 //! - `fe b`: history's budget to `BUDGETS[b % 5]`;
-//! - `fd`: clear history; `fc`: a tick; `fb`: take the prints, held to
-//!   their caps; `fa b`: record prints or not;
+//! - `fd`: clear history; `fc`: a tick, newer than every row; `fb`: take
+//!   the prints, held to their caps; `fa b`: record prints or not;
 //! - `f9 k`: the host's palette, entry k % 16 known;
 //! - `f8 b`: the mark nonces, none or both;
 //! - `f7`: a line submitted;
@@ -270,9 +270,14 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             0xfd => run.both().into_iter().for_each(Parser::clear_history),
+            // A tick is newer than all processing took so far. The two
+            // parsers' ticks differ: each call begins a version, and they
+            // are fed in calls of their own sizes.
             0xfc => {
-                let ticks: Vec<u64> = run.both().into_iter().map(Parser::tick).collect();
-                assert!(alike(&ticks));
+                for p in run.both() {
+                    let tick = p.tick();
+                    assert!(p.screen().rows().all(|row| row.version() < tick));
+                }
             }
             0xfb => run.both().into_iter().for_each(prints_bounded),
             0xfa => {
