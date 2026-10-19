@@ -266,21 +266,15 @@ impl Decoder {
         // effect", and the rest "are ignored" (DEC STD 070, sixel graphics,
         // 9.1), BEL ringing as in text (the parser's) and CAN, SUB and ESC
         // the parser's too.
-        if byte < 0x20 || matches!(byte, b' ' | 0x7f) {
-            return;
-        }
         // GR codes are errors read as GL, "the 8th bit ... set to zero" (DEC
         // STD 070-9, 9.4). C1 codes, which there end sixel mode (9.3), are
         // no controls in UTF-8, as fux-vt reads its input, and are ignored
-        // as C0 controls are (9.1).
+        // as C0 controls are (9.1); so are SPACE and DELETE, in GL or GR.
         let byte = match byte {
-            0x80..=0x9f => return,
-            0xa0..=0xff => byte & 0x7f,
-            _ => byte,
+            0x21..=0x7e => byte,
+            0xa1..=0xfe => byte & 0x7f,
+            _ => return,
         };
-        if matches!(byte, b' ' | 0x7f) {
-            return;
-        }
         match byte {
             b'0'..=b'9' if self.command != Command::None => {
                 let digit = u32::from(byte.wrapping_sub(b'0'));
