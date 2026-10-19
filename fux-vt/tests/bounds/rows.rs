@@ -2225,6 +2225,7 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B43", b43),
     ("B44", b44),
     ("B45", b45),
+    ("B46", super::colours::b46),
 ];
 
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
@@ -2246,7 +2247,7 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `threats.md` has: B01 to B45 and B34a.
-pub const COUNT: usize = 46;
+/// How many rows `threats.md` has: B01 to B46 and B34a.
+pub const COUNT: usize = 47;
 
 const _: () = assert!(ROWS.len() == COUNT);
