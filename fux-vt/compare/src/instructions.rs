@@ -89,21 +89,22 @@ struct Task {
 
 /// An engine's count of one workload: the fewest instructions of its
 /// runs less the fewest of its baseline's, and the spread of its runs
-/// over that count.
+/// over that count. The two minima are of independent runs, so a workload
+/// that costs next to nothing can come out at or below its baseline:
+/// that is no count (`side` says none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Side {
     count: i64,
     noise: f64,
 }
 
-fn side(full: &[i64], baseline: &[i64]) -> Side {
-    let low = |v: &[i64]| v.iter().copied().min().unwrap_or(0);
-    let high = full.iter().copied().max().unwrap_or(0);
-    let count = low(full).saturating_sub(low(baseline));
-    Side {
+fn side(full: &[i64], baseline: &[i64]) -> Option<Side> {
+    let (low, high) = (full.iter().copied().min()?, full.iter().copied().max()?);
+    let count = low.saturating_sub(baseline.iter().copied().min()?);
+    (count > 0).then(|| Side {
         count,
-        noise: (high.saturating_sub(low(full)) as f64) / (count.max(1) as f64),
-    }
+        noise: (high.saturating_sub(low) as f64) / (count as f64),
+    })
 }
 
 /// Counts fux-vt and the in-process engines among `engines` on the named
@@ -305,15 +306,16 @@ pub fn run(
             let mut per_engine = serde_json::Map::new();
             let mut held_line = String::new();
             for (c, kind) in &here {
-                let cell = counts
-                    .get(*c)
-                    .and_then(|v| v.get(w))
-                    .filter(|[full, base]| !full.is_empty() && !base.is_empty())
-                    .map(|[full, base]| side(full, base));
+                let counted = counts.get(*c).and_then(|v| v.get(w));
+                let cell = counted.and_then(|[full, base]| side(full, base));
                 let rows_held = held.get(*c).and_then(|h| h.get(w)).cloned().flatten();
                 let _ = write!(held_line, " {:>10}", rows_held.as_deref().unwrap_or("-"));
+                // Equal retention holds the screen alone: an engine that
+                // read back rows kept is not counted on it.
+                let kept = retention == bench::Retention::None
+                    && rows_held.as_deref().is_some_and(|r| r != "0");
                 match cell {
-                    Some(s) => {
+                    Some(s) if !kept => {
                         worst = worst.max(s.noise);
                         let per_byte = (s.count as f64) / (bytes.max(1) as f64);
                         let _ = write!(text, " {per_byte:>10.2}");
@@ -327,7 +329,20 @@ pub fn run(
                             }),
                         );
                     }
-                    None => {
+                    _ => {
+                        let why = if kept {
+                            format!(
+                                "held {} rows under equal retention",
+                                rows_held.as_deref().unwrap_or("?")
+                            )
+                        } else if counted.is_some_and(|[f, b]| !f.is_empty() && !b.is_empty()) {
+                            "counted at or below its baseline".to_owned()
+                        } else {
+                            "no count".to_owned()
+                        };
+                        let why = format!("{} {workload} ({}): {why}", kind.name, retention.name());
+                        eprintln!("bench --instructions: {why}");
+                        failed.push(why);
                         let _ = write!(text, " {:>10}", "error");
                     }
                 }
@@ -396,8 +411,11 @@ mod tests {
     #[test]
     fn a_count_is_its_fewest_less_its_baselines_fewest() {
         let side = super::side(&[1103, 1100, 1101], &[101, 100, 102]);
-        assert_eq!(side.count, 1000);
-        assert!((side.noise - 3.0 / 1000.0).abs() < 1e-9);
+        assert!(side.is_some_and(|s| s.count == 1000 && (s.noise - 3.0 / 1000.0).abs() < 1e-9));
+        // At or below its baseline, or with no runs: no count.
+        assert_eq!(super::side(&[100, 104], &[100, 101]), None);
+        assert_eq!(super::side(&[90], &[100]), None);
+        assert_eq!(super::side(&[], &[100]), None);
     }
 
     /// A workload made alone is the one `bench` makes among all of them.
