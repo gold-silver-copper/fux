@@ -2077,9 +2077,10 @@ pub fn run(row: Row, scale: Scale) -> Found {
     // known to fail is seen to fail as it is known to at each.
     let found: Vec<String> = (CHUNKS.into_iter())
         .filter_map(|chunk| {
-            row(scale, chunk)
-                .err()
-                .map(|e| format!("at {chunk} bytes a call: {e}"))
+            row(scale, chunk).err().map(|e| match chunk {
+                super::probe::WHOLE => format!("whole: {e}"),
+                _ => format!("at {chunk} bytes a call: {e}"),
+            })
         })
         .collect();
     match found.is_empty() {
