@@ -383,10 +383,8 @@ needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
 [[check]]
 name = "nightly-mutation"
 schedule = "nightly"
-command = "cargo mutants over the frozen guard set (threats.md)"
-needs = ["cargo-mutants", "the guard set"]
-wired = false
-why = "the guard set is not frozen yet"
+command = "fux-vt/compare/mutants.sh guards"
+needs = ["cargo-mutants 27.1.0", "cargo-nextest", "fux-vt/compare/mutants-guards.txt"]
 
 # --- every PR (ci.yml), not wired yet ---------------------------------------
 
