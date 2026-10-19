@@ -24,7 +24,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=${FUX_MUTANTS_OUT:-$root/target/mutants}
-cpus=${FUX_MUTANTS_CPUS:-4-11}
+# The CPUs it runs on, if FUX_MUTANTS_CPUS names them (taskset's list);
+# else wherever the system puts it.
+cpus=${FUX_MUTANTS_CPUS:-}
 equivalent=$here/mutants-equivalent.txt
 mkdir -p "$out"
 
@@ -72,7 +74,11 @@ fi
 echo "mutants: $selected selected"
 
 status=0
-taskset -c "$cpus" cargo mutants "${args[@]}" "${after[@]}" || status=$?
+if [[ -n $cpus ]]; then
+  taskset -c "$cpus" cargo mutants "${args[@]}" "${after[@]}" || status=$?
+else
+  cargo mutants "${args[@]}" "${after[@]}" || status=$?
+fi
 # cargo-mutants exits 2 when a mutant is missed, 3 on a timeout: judged below.
 case $status in 0 | 2 | 3) ;; *) echo "mutants: cargo-mutants failed ($status)" >&2; exit 1 ;; esac
 
@@ -97,7 +103,9 @@ for o in outcomes:
     name = scenario["Mutant"]["name"]
     tried.add(name)
     kind = kinds.get(o["summary"], "unattempted")
-    if kind != "caught" and name in equivalent:
+    # Only a mutant no test caught can be equivalent: one that timed out
+    # changed behaviour (it hung), whatever the list says.
+    if kind == "missed" and name in equivalent:
         kind = "equivalent"
     tally[kind].append(name)
 tally["unattempted"] += [n for n in selected if n not in tried]
