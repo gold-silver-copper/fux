@@ -684,9 +684,6 @@ impl Screen {
                 report.record("prints.runs", "", prints.check());
                 report.record("prints.cap", "", prints.check_cap());
             }
-            report.wait("grid.pending_wrap", "P11: the tag of which setter set it");
-            report.wait("styles.memo", "P22: the DECCARA memo");
-            report.wait("grid.uniform", "P19: uniform rows");
             report
         })
     }
