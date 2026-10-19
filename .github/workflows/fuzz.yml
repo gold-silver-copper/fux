@@ -6,6 +6,9 @@ name: Fuzz
 # in the Actions cache between nights. `cargo test` runs none of them, and
 # a fuzz run is too long for every push. Each target is a job of its own,
 # so one that fails or doesn't build names itself and the others still run.
+# Each target's options are fux-vt/compare/fuzz-options.txt's, which
+# harness.sh fuzz reads too; each is built and run with debug assertions
+# (-a), as harness.sh runs them, and a crash's input is kept as an artifact.
 
 on:
   schedule:
@@ -36,20 +39,29 @@ jobs:
           cargo install cargo-fuzz --locked --version 0.13.2
 
       - name: fux's targets, over their corpora
-        env:
-          # session frees millions of small allocations (fuzz/README.md).
-          ASAN_OPTIONS: quarantine_size_mb=16
         run: |
           set -euo pipefail
           failed=()
-          for target in protocol paint layout config session fuxth_tokens fuxth_run fuxth_pause; do
-            cargo +nightly fuzz run "$target" --fuzz-dir fuzz "fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25 \
-              || failed+=("$target")
-          done
+          while read -r target dir asan options; do
+            [[ $target == "#"* || -z $target || $dir != fuzz ]] && continue
+            [[ $asan == - ]] && asan=""
+            # shellcheck disable=SC2086 # the options are words, split on purpose
+            ASAN_OPTIONS=$asan cargo +nightly fuzz run "$target" --fuzz-dir fuzz -O -a "fuzz/corpus/$target" -- \
+              -runs=0 -rss_limit_mb=2048 -timeout=25 $options </dev/null || failed+=("$target")
+          done <fux-vt/compare/fuzz-options.txt
           if ((${#failed[@]})); then
             echo "::error::failed: ${failed[*]}"
             exit 1
           fi
+
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-replay-artifacts
+          path: fuzz/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
 
   explore:
     name: ${{ matrix.target }}, explored
@@ -59,19 +71,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: terminal, dir: fux-vt/fuzz, options: "-max_len=4096 -dict=fux-vt/fuzz/terminal.dict -use_value_profile=1" }
-          - { target: deep, dir: fux-vt/fuzz, options: "-max_len=65536 -dict=fux-vt/fuzz/terminal.dict -timeout=60" }
-          - { target: keys, dir: fux-vt/fuzz, options: "" }
-          - { target: graphemes, dir: fux-vt/fuzz, options: "-use_value_profile=1" }
-          - { target: cells, dir: fux-vt/fuzz, options: "-use_value_profile=1" }
-          - { target: oracle, dir: diff/fuzz, options: "-dict=fux-vt/fuzz/terminal.dict" }
+          - { target: terminal, dir: fux-vt/fuzz }
+          - { target: deep, dir: fux-vt/fuzz }
+          - { target: keys, dir: fux-vt/fuzz }
+          - { target: graphemes, dir: fux-vt/fuzz }
+          - { target: cells, dir: fux-vt/fuzz }
+          - { target: oracle, dir: diff/fuzz }
     defaults:
       run:
         shell: bash
     env:
       TARGET: ${{ matrix.target }}
       DIR: ${{ matrix.dir }}
-      OPTIONS: ${{ matrix.options }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,7 +102,7 @@ jobs:
         run: diff/oracle.sh --pin HEAD
 
       - name: Build
-        run: cargo +nightly fuzz build "$TARGET" --fuzz-dir "$DIR"
+        run: cargo +nightly fuzz build "$TARGET" --fuzz-dir "$DIR" -O -a
 
       # What earlier nights found, newest first; saved again only when the
       # run passes, so a night that crashes keeps the last good corpus.
@@ -110,8 +121,24 @@ jobs:
           for dir in "$DIR/corpus/$TARGET" "$DIR/seeds/$TARGET"; do
             [[ -d "$dir" ]] && from+=("$dir")
           done
+          listed=$(awk -v t="$TARGET" -v d="$DIR" '$1 == t && $2 == d' fux-vt/compare/fuzz-options.txt)
+          if [[ -z $listed ]]; then
+            echo "::error::fux-vt/compare/fuzz-options.txt has no line for $TARGET in $DIR"
+            exit 1
+          fi
+          read -r _ _ asan options <<<"$listed"
+          [[ $asan == - ]] && asan=""
           echo "corpus: $(ls "$found" | wc -l) found before, from ${from[*]:-nothing stored}"
-          # shellcheck disable=SC2086
-          cargo +nightly fuzz run "$TARGET" --fuzz-dir "$DIR" "$found" "${from[@]}" -- \
-            -max_total_time=300 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1 $OPTIONS
+          # shellcheck disable=SC2086 # the options are words, split on purpose
+          ASAN_OPTIONS=$asan cargo +nightly fuzz run "$TARGET" --fuzz-dir "$DIR" -O -a "$found" "${from[@]}" -- \
+            -max_total_time=300 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1 $options
           echo "corpus: $(ls "$found" | wc -l) after"
+
+      - name: Crash input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: ${{ matrix.dir }}/artifacts/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore

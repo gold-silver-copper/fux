@@ -274,21 +274,14 @@ deep() {
 # `cargo fuzz list` says, so a new one is never left out.
 fuzz_dirs=(fuzz fux-vt/fuzz diff/fuzz)
 
-# What a target takes beyond its corpus: TARGET DICT [ASAN_OPTIONS].
-fuzz_extras=(
-  "config fuzz/config.dict"
-  "session fuzz/session.dict quarantine_size_mb=16"
-  "fuxth_tokens fuzz/fuxth.dict"
-  "fuxth_run fuzz/fuxth.dict"
-  "fuxth_pause fuzz/fuxth.dict"
-  "terminal fux-vt/fuzz/terminal.dict"
-  "deep fux-vt/fuzz/terminal.dict"
-  "oracle fux-vt/fuzz/terminal.dict"
-)
+# What each target takes beyond its corpus, a line each: TARGET DIR
+# ASAN_OPTIONS OPTIONS..., which fuzz.yml reads too.
+fuzz_options=$here/fuzz-options.txt
 
-# fuzz MINUTES: each target for its share, from its stored corpus and what
+# fuzz MINUTES: each target for its share, with its options
+# (fuzz-options.txt), from its stored corpus, its frozen seeds and what
 # earlier runs here found (kept in $out/fuzz-corpus, so the stored corpus
-# is left as it is). A crash is minimized; it and the minimized input are
+# is left as it is). A target with no line there fails, unrun. A crash is minimized; it and the minimized input are
 # listed, to be made a test. A line per target goes to fuzz.jsonl.
 #
 # diff/fuzz's target is the oracle, which builds against base-vt's pin in
@@ -296,7 +289,7 @@ fuzz_extras=(
 # uses (diff/oracle.sh --pin), and the pin and Cargo.lock are put back
 # when the command ends.
 fuzz() {
-  local minutes=${1:-10} dir name target extra dict asan share built=() broken=() targets=()
+  local minutes=${1:-10} dir name target listed asan options share built=() broken=() targets=()
   local pin=$out/oracle-pin
   mkdir -p "$pin"
   cp "$root/diff/oracle/Cargo.toml" "$root/diff/Cargo.lock" "$pin/"
@@ -332,17 +325,23 @@ fuzz() {
   fi
   for spec in "${targets[@]}"; do
     read -r dir target <<<"$spec"
-    dict="" asan=""
-    for extra in "${fuzz_extras[@]}"; do
-      [[ $extra == "$target "* ]] && read -r _ dict asan <<<"$extra"
-    done
-    local found=$out/fuzz-corpus/$target stored=$root/$dir/corpus/$target
-    local args=(-max_total_time="$share" -rss_limit_mb=2048 -timeout=25)
-    [[ -n $dict ]] && args+=(-dict="$root/$dict")
+    ran+=("fuzz-$target")
+    listed=$(awk -v t="$target" -v d="$dir" '$1 == t && $2 == d' "$fuzz_options")
+    if [[ -z $listed ]]; then
+      echo "1 0" >"$out/status/fuzz-$target"
+      echo "fuzz-options.txt has no line for $target in $dir" >"$out/logs/fuzz-$target.log"
+      echo "  fuzz-$target   FAIL: not in fuzz-options.txt"
+      continue
+    fi
+    read -r _ _ asan options <<<"$listed"
+    [[ $asan == - ]] && asan=""
+    local found=$out/fuzz-corpus/$target stored=$root/$dir/corpus/$target seeds=$root/$dir/seeds/$target
+    # shellcheck disable=SC2206 # the options are words, split on purpose
+    local args=(-max_total_time="$share" -rss_limit_mb=2048 -timeout=25 $options)
     mkdir -p "$found"
     local corpora=("$found")
     [[ -d $stored ]] && corpora+=("$stored")
-    ran+=("fuzz-$target")
+    [[ -d $seeds ]] && corpora+=("$seeds")
     (cd "$root" && ASAN_OPTIONS=$asan step "fuzz-$target" \
       cargo +nightly fuzz run "$target" --fuzz-dir "$dir" -O -a "${corpora[@]}" -- "${args[@]}")
     local rc seconds crash=""

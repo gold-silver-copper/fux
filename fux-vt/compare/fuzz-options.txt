@@ -1,0 +1,22 @@
+# Each fuzz target's options beyond its corpus, read by harness.sh fuzz and
+# by .github/workflows/fuzz.yml alike, a line each:
+#
+#   TARGET DIR ASAN_OPTIONS OPTIONS...
+#
+# DIR is its --fuzz-dir, ASAN_OPTIONS - for none. Both put these after their
+# own -max_total_time, -rss_limit_mb=2048 and -timeout=25, so a target's own
+# -timeout wins. Every target `cargo fuzz list` names has a line.
+protocol fuzz -
+paint fuzz -
+layout fuzz -
+config fuzz - -dict=fuzz/config.dict
+session fuzz quarantine_size_mb=16 -dict=fuzz/session.dict
+fuxth_tokens fuzz - -dict=fuzz/fuxth.dict
+fuxth_run fuzz - -dict=fuzz/fuxth.dict
+fuxth_pause fuzz - -dict=fuzz/fuxth.dict
+terminal fux-vt/fuzz - -max_len=4096 -dict=fux-vt/fuzz/terminal.dict -use_value_profile=1
+deep fux-vt/fuzz - -max_len=65536 -dict=fux-vt/fuzz/terminal.dict -timeout=60
+keys fux-vt/fuzz -
+graphemes fux-vt/fuzz - -use_value_profile=1
+cells fux-vt/fuzz - -use_value_profile=1
+oracle diff/fuzz - -dict=fux-vt/fuzz/terminal.dict

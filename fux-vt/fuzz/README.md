@@ -6,25 +6,26 @@ a nightly toolchain and cargo-fuzz (CI uses 0.13.2). From the repository
 root:
 
 ```sh
-cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz
-cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -- -max_total_time=600 -max_len=4096 \
-  -dict=fux-vt/fuzz/terminal.dict -use_value_profile=1 -rss_limit_mb=4096 -malloc_limit_mb=1024
-cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz -- -max_total_time=120 -use_value_profile=1
-cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz -- -max_total_time=120 -use_value_profile=1
-cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz fux-vt/fuzz/corpus/keys -- -max_total_time=120
+cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a
+cargo +nightly fuzz run TARGET --fuzz-dir fux-vt/fuzz -O -a fux-vt/fuzz/corpus/TARGET fux-vt/fuzz/seeds/TARGET -- \
+  -max_total_time=600 -rss_limit_mb=2048 -timeout=25 OPTIONS
 ```
 
-`deep` runs as `terminal` does, with `-max_len=65536 -timeout=60`.
+Each target's OPTIONS (its dictionary, `-max_len`, value profiling, its
+own timeout) are its line of `fux-vt/compare/fuzz-options.txt`, which
+`run.sh fuzz` and CI both read; a corpus or seeds directory that does not
+exist is left out.
 
 `fux-vt/compare/run.sh fuzz [MINUTES]` runs every target of the repository
-in turn, these five included, and minimizes any crash. CI
+in turn, these six included, from their corpus and seeds, and minimizes
+any crash. CI
 (`.github/workflows/fuzz.yml`) explores each of them nightly for five
 minutes, a job each, from its corpus, its frozen seeds and what earlier
 nights found, which the Actions cache keeps between nights.
 
-Under AddressSanitizer on macOS a run passes 1 GiB of RSS within a minute,
-so RSS is capped at 4 GiB and single allocations at 1 GiB instead.
-`-use_value_profile=1` rewards progress through comparisons (final bytes,
+Under AddressSanitizer on macOS a run passes 1 GiB of RSS within a minute;
+there, give it `-rss_limit_mb=4096 -malloc_limit_mb=1024` after the
+options instead. `-use_value_profile=1` rewards progress through comparisons (final bytes,
 table lookups) that edge coverage misses.
 
 ## Targets
