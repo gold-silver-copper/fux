@@ -41,6 +41,10 @@ pub struct Options {
     pub jobs: usize,
     /// A calibration's JSON (`--calibrate`) to take floors from.
     pub floors: Option<PathBuf>,
+    /// Take them only if made here (`--floors-here`): one made by another
+    /// counter or machine is said and left out, each workload judged by
+    /// this run's spread; else (`--floors`) it stops the run.
+    pub floors_here: bool,
     /// An A/A run of the working tree against itself, writing floors.
     pub calibrate: bool,
     pub only: Vec<String>,
@@ -470,11 +474,24 @@ fn tail(n: usize, k: usize) -> f64 {
 fn read_floors(
     path: &Path,
     (counter, setup): (&str, &str),
-) -> Result<std::collections::BTreeMap<String, f64>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    floors_of(&json, (counter, setup)).map_err(|e| format!("{}: {e}", path.display()))
+) -> Result<std::collections::BTreeMap<String, f64>, Unfit> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| Unfit::Unread(format!("{}: {e}", path.display())))?;
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| Unfit::Unread(format!("{}: {e}", path.display())))?;
+    floors_of(&json, (counter, setup)).map_err(|e| match e {
+        Unfit::Unread(why) => Unfit::Unread(format!("{}: {why}", path.display())),
+        Unfit::Elsewhere(why) => Unfit::Elsewhere(format!("{}: {why}", path.display())),
+    })
+}
+
+/// Why floors can't be taken from a file: it can't be read as a
+/// calibration, or it is one made by another counter or on another
+/// machine.
+#[derive(Debug)]
+enum Unfit {
+    Unread(String),
+    Elsewhere(String),
 }
 
 /// The machine a count was made on, as its counter's report says: its
@@ -491,24 +508,26 @@ fn machine(setup: &str) -> Vec<&str> {
 fn floors_of(
     json: &serde_json::Value,
     (counter, setup): (&str, &str),
-) -> Result<std::collections::BTreeMap<String, f64>, String> {
+) -> Result<std::collections::BTreeMap<String, f64>, Unfit> {
     let field = |name: &str| json.get(name).and_then(serde_json::Value::as_str);
     if field("kind") != Some("fux-bench calibration") {
-        return Err("not a calibration (--calibrate)".into());
+        return Err(Unfit::Unread("not a calibration (--calibrate)".into()));
     }
     if field("counter") != Some(counter) {
-        return Err(format!(
+        return Err(Unfit::Elsewhere(format!(
             "calibrated by {}, and this run counts by {counter}",
             field("counter").unwrap_or("an unnamed counter")
-        ));
+        )));
     }
     if machine(field("counter_setup").unwrap_or_default()) != machine(setup) {
-        return Err("calibrated on another machine: its CPUs or PMUs are not this one's".into());
+        return Err(Unfit::Elsewhere(
+            "calibrated on another machine: its CPUs or PMUs are not this one's".into(),
+        ));
     }
     let rows = json
         .get("workloads")
         .and_then(serde_json::Value::as_array)
-        .ok_or("no workloads")?;
+        .ok_or_else(|| Unfit::Unread("no workloads".into()))?;
     Ok(rows
         .iter()
         .filter_map(|w| {
@@ -543,9 +562,20 @@ pub fn run(options: &Options) -> Result<bool, String> {
     let (counter, counter_setup) = Counter::detect()?;
     // Read before the counts, so a floors file that can't be used stops
     // the run at once.
-    let floors = (options.floors.as_deref())
-        .map(|path| read_floors(path, (counter.name(), &counter_setup)))
-        .transpose()?;
+    let floors = match options.floors.as_deref() {
+        None => None,
+        Some(path) => match read_floors(path, (counter.name(), &counter_setup)) {
+            Ok(floors) => Some(floors),
+            // Said, never left out silently: the table's header says how
+            // each workload is judged instead.
+            Err(Unfit::Elsewhere(why)) if options.floors_here => {
+                eprintln!("fux-bench: {why}; judging each workload by this run's spread instead");
+                None
+            }
+            Err(Unfit::Unread(why) | Unfit::Elsewhere(why)) => return Err(why),
+        },
+    };
+    let floors_from = floors.as_ref().and(options.floors.as_ref());
     let corpus = crate::corpus::dir(&root);
     let recordings = crate::corpus::recordings(&corpus)?;
     let specs: Vec<workloads::Spec> = workloads::list(&recordings)
@@ -677,7 +707,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         options.repeats,
         if calibrating {
             "calibrated here: max(0.25%, |A/A change|, 3 x spread)".to_owned()
-        } else if let Some(path) = &options.floors {
+        } else if let Some(path) = floors_from {
             format!("from {}", path.display())
         } else {
             "uncalibrated: max(0.25%, 3 x this run's spread)".to_owned()
@@ -809,7 +839,7 @@ pub fn run(options: &Options) -> Result<bool, String> {
         "counter_setup": counter_setup,
         "rounds": options.repeats,
         "jobs": options.jobs,
-        "floors": options.floors.as_ref().map(|p| p.display().to_string()),
+        "floors": floors_from.map(|p| p.display().to_string()),
         "slower": named(Verdict::Slower),
         "faster": named(Verdict::Faster),
         "noisy": named(Verdict::Noisy),
@@ -873,7 +903,9 @@ fn hash_by(path: &Path, programs: &[(&str, &[&str])]) -> Result<String, String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{FLOOR_MIN, Verdict, floor_of, floors_of, hash_by, paired, signs, tail, verdict};
+    use super::{
+        FLOOR_MIN, Unfit, Verdict, floor_of, floors_of, hash_by, paired, signs, tail, verdict,
+    };
 
     /// A floors file is used only for the counter and the machine it was
     /// calibrated with: a calibration by another counter, or on CPUs or
@@ -895,11 +927,21 @@ mod tests {
         let newer = setup.replace("7.2.3", "7.3.0");
         assert!(floors_of(&calibration(perf, &newer), (perf, setup)).is_ok());
         let time = "/usr/bin/time -l (instructions retired)";
-        assert!(floors_of(&calibration(time, setup), (perf, setup)).is_err());
+        let elsewhere = |r| matches!(r, Err(Unfit::Elsewhere(_)));
+        assert!(elsewhere(floors_of(
+            &calibration(time, setup),
+            (perf, setup)
+        )));
         let other = "perf version 7.2.3\ncpus all\naslr off\ncpu 0 Apple M4\ncpu 1 Apple M4";
-        assert!(floors_of(&calibration(perf, other), (perf, setup)).is_err());
+        assert!(elsewhere(floors_of(
+            &calibration(perf, other),
+            (perf, setup)
+        )));
         let against = serde_json::json!({ "kind": "fux-bench against" });
-        assert!(floors_of(&against, (perf, setup)).is_err());
+        assert!(matches!(
+            floors_of(&against, (perf, setup)),
+            Err(Unfit::Unread(_))
+        ));
     }
 
     /// A file's SHA-256 is asked of each program in turn: one that fails,
