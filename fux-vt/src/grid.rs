@@ -1066,9 +1066,12 @@ impl Grid {
                 if swept {
                     self.sweep();
                 }
-                // Its bytes change only as its room grows, or a sweep:
+                // Its bytes change only as its room grows, or a sweep, or
+                // as a table shared with a clone is copied, at its length:
                 // history makes room for them first, and if it can't, the
                 // styles only it held go too.
+                let copied = Arc::get_mut(&mut self.styles).is_none();
+                Arc::make_mut(&mut self.styles);
                 let grows = self.styles.full();
                 if grows && !self.make_style_room() {
                     self.sweep();
@@ -1079,7 +1082,7 @@ impl Grid {
                 let id = Arc::make_mut(&mut self.styles)
                     .insert(attributes)
                     .unwrap_or(0);
-                if grows || swept {
+                if grows || swept || copied {
                     self.charge_styles(self.cells.len());
                 }
                 id
