@@ -3046,7 +3046,8 @@ impl Screen {
                 }
                 // 0 as the blinking block it is, as xterm answers it.
                 let ps = shape.number().max(1);
-                let _ = write!(out, "{ps} q");
+                out.extend(char::from_digit(ps.into(), 10));
+                out.push_str(" q");
             }
             b"r" => {
                 // Exact: the margins are rows of a screen a u16 counts.

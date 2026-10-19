@@ -2103,11 +2103,18 @@ impl Parser {
     fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
         let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
-            Some(Setting::Written) => '1',
-            Some(Setting::Unknown) | None => '0',
+            Some(Setting::Written) => b'1',
+            Some(Setting::Unknown) | None => b'0',
             Some(Setting::Unanswered) => return,
         };
-        sink.reply(format!("\x1bP{status}$r{setting}\x1b\\").as_bytes());
+        // `DCS status $ r setting ST`, put together without the formatter.
+        let mut reply = Vec::with_capacity(setting.len().saturating_add(7));
+        reply.extend_from_slice(b"\x1bP");
+        reply.push(status);
+        reply.extend_from_slice(b"$r");
+        reply.extend_from_slice(setting.as_bytes());
+        reply.extend_from_slice(b"\x1b\\");
+        sink.reply(&reply);
     }
 
     fn osc_command(
