@@ -1083,7 +1083,9 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     }
     let osc = [b("\x1b]1"), repeat(b"a", 255), b("\x1b")].concat();
     let csi = [b("\x1b\x1b[?"), repeat(b"1", 255)].concat();
-    for input in [osc, csi] {
+    // A key CSI past its window after an Escape (FA-RE-B-4).
+    let key = [b("\x1b\x1b["), repeat(b"1", 256)].concat();
+    for input in [osc, csi, key] {
         decoded_by(expecting(), &input, chunk, 516, 4 << 10, false)?;
     }
     Ok(())
