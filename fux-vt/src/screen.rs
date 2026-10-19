@@ -1816,9 +1816,13 @@ impl Screen {
                 self.mark_joined(at.0, at.1, false, c);
             }
             // A Prepend character of no width joins nothing after it,
-            // joined to a cluster as when a cell of its own (README).
-            if width == 0 && properties.is_prepend() {
-                self.break_cluster();
+            // joined to a cluster as when a cell of its own (README): what
+            // follows is segmented afresh, still after it.
+            if width == 0
+                && properties.is_prepend()
+                && let Some(printed) = &mut self.last_print
+            {
+                printed.cluster = Cluster::ended();
             }
             return Ok(());
         }
@@ -1854,12 +1858,15 @@ impl Screen {
                 // Dropped, as its cell is full, it is still where the text
                 // is segmented from: after a control, say, a new cluster
                 // begins, which the full cell takes none of.
-                if properties.is_prepend() {
-                    self.break_cluster();
-                } else if self.last_print.is_some() {
+                if self.last_print.is_some() {
                     self.last_print = Some(Printed {
+                        at: (row, col),
+                        cluster: if properties.is_prepend() {
+                            Cluster::ended()
+                        } else {
+                            Cluster::starting(properties)
+                        },
                         kept: if joined { Kept::Unknown } else { Kept::Full },
-                        ..Printed::of((row, col), properties)
                     });
                 }
             }

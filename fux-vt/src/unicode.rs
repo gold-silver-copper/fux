@@ -226,6 +226,16 @@ impl Cluster {
         Self::default().after(next, false)
     }
 
+    /// A cluster nothing joins, as one a control ends (GB4): the state
+    /// after a Prepend character of no width, which joins nothing after it
+    /// (README), so that what follows is segmented afresh.
+    pub(crate) fn ended() -> Self {
+        Self {
+            last: Break::Control,
+            ..Self::default()
+        }
+    }
+
     /// The state of the cluster whose text is `text`, as if its characters
     /// had been printed one after another.
     pub(crate) fn of(text: &str) -> Self {

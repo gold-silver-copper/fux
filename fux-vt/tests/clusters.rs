@@ -331,6 +331,31 @@ fn what_follows_a_character_joined_at_no_width_is_segmented_after_it() -> Result
     Ok(())
 }
 
+/// So too after a zero-width Prepend character, which joins nothing after
+/// it: what follows it is segmented afresh, and a character of no width
+/// joining no cluster there (ZWSP, Control: GB5) still joins the cell, and
+/// what follows that is segmented after it. A lone vowel (V) then a spacing
+/// mark (GB9a) widen the cell, after `x` and after U+0600; so do a tag (an
+/// Extend) and an emoji modifier, which GB9 joins to it (the graphemes
+/// fuzz target, run 39295133788).
+#[test]
+fn what_follows_a_character_joined_at_no_width_after_a_zero_width_prepend_is_segmented_after_it()
+-> Result {
+    for text in [
+        "x\u{605}\u{200b}\u{1161}\u{e33}",
+        "\u{600}\u{605}\u{200b}\u{1161}\u{e33}",
+        "a\u{70f}\u{e00ff}\u{e0063}\u{1f3fb}",
+    ] {
+        let got = plain(1, 6, text.as_bytes())?;
+        assert_eq!(
+            got,
+            (vec![row(&[c(text, true)], 6)], (0, 2), false),
+            "{text:?}"
+        );
+    }
+    Ok(())
+}
+
 /// A zero-width Prepend character joins the cell before it, and stays
 /// apart from what UAX #29's GB9b would join it to, as the README's
 /// departure says: `x\u{605}A` is `x\u{605}` and `A`, and
