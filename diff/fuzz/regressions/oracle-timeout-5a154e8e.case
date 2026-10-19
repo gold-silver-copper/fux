@@ -1,0 +1,10 @@
+size 3 10
+history 2000
+setup events,mode_reports,in_band_resize,size_reports,color_scheme_updates,kitty_keyboard,reflow,hyperlinks,prompt_marks,setting_reports,palette,pictures,identity=fux/0.17.0
+output before\x0d\x0athe refusals
+resize 1 65535
+resize 65535 1100
+resize 65535 65535
+resize 0 5
+resize 5 0
+output after

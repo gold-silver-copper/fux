@@ -196,7 +196,32 @@ pub fn safe(rows: u16, cols: u16) -> bool {
     cells <= SAFE_CELLS || cells > MAX_CELLS
 }
 
+/// The most cells a screen of a case the fuzz target runs may have,
+/// unless fux-vt is sure to refuse the size: the binary cases' largest
+/// screen (40 by 100) and a little more. Every observation compares every
+/// cell, both sides', with its history, about 9 µs a cell in release: a
+/// case's comparisons stay well within the fuzzer's 25 s limit up to a few
+/// hundred thousand cells, which a 1 by 65,535 screen with history passes
+/// (`diff/fuzz/regressions/oracle-timeout-5a154e8e.case`, 786,480 cells in
+/// 7 s). The oracle's own runs (`diff/oracle.sh`) check such sizes still.
+pub const QUICK_CELLS: usize = 4096;
+
 impl Case {
+    /// Whether every size the case asks for is safe to try, and small
+    /// enough to compare quickly ([`QUICK_CELLS`]), or certain to be
+    /// refused: what the fuzz target runs.
+    pub fn is_quick(&self) -> bool {
+        let quick = |rows: u16, cols: u16| {
+            let cells = usize::from(rows).saturating_mul(usize::from(cols));
+            cells <= QUICK_CELLS || cells > MAX_CELLS
+        };
+        quick(self.rows, self.cols)
+            && self.steps.iter().all(|step| match step {
+                Step::Resize(rows, cols) => quick(*rows, *cols),
+                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
+            })
+    }
+
     /// Whether every size the case asks for is safe to try.
     pub fn is_safe(&self) -> bool {
         safe(self.rows, self.cols)
@@ -479,6 +504,30 @@ fn setup_from(text: &str) -> Result<Setup, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A case that resizes to 65,535 columns, which fux-vt takes, is left
+    /// to the oracle's own runs: compared at every step, its wide rows took
+    /// the fuzz target 7 s (FA-SB-3's artifact); its refused sizes alone
+    /// would not have.
+    #[test]
+    fn a_case_too_wide_to_compare_quickly_is_not_fuzzed() -> Result<(), String> {
+        let text = include_str!("../../fuzz/regressions/oracle-timeout-5a154e8e.case");
+        let case = Case::from_text(text)?;
+        assert!(case.is_safe(), "safe to try");
+        assert!(!case.is_quick(), "but not quick to compare");
+        let refused_only = Case {
+            steps: (case.steps.iter())
+                .filter(|s| !matches!(s, Step::Resize(1, u16::MAX)))
+                .cloned()
+                .collect(),
+            ..case
+        };
+        assert!(
+            refused_only.is_quick(),
+            "the sizes fux-vt refuses are cheap"
+        );
+        Ok(())
+    }
 
     #[test]
     fn a_case_reads_back_as_it_was_written() -> Result<(), String> {

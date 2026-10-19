@@ -58,7 +58,12 @@ const TEXT_STEPS: usize = 300;
 fn case(data: &[u8]) -> Option<Case> {
     if data.starts_with(b"size ") {
         let case = Case::from_text(std::str::from_utf8(data).ok()?).ok()?;
-        return (case.is_safe() && case.bytes() <= TEXT_BYTES && case.steps.len() <= TEXT_STEPS)
+        // Sizes it can compare quickly only (`Case::is_quick`): a screen
+        // of 65,535 columns compared at every step outran its timeout.
+        return (case.is_safe()
+            && case.is_quick()
+            && case.bytes() <= TEXT_BYTES
+            && case.steps.len() <= TEXT_STEPS)
             .then_some(case);
     }
     let (header, mut input) = data.split_at_checked(5)?;
