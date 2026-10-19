@@ -2795,7 +2795,7 @@ impl Screen {
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
         self.grid_mut()
-            .erase_in(display, part, version, |g, y, start, end| {
+            .erase_in((display, false), part, version, |g, y, start, end| {
                 if private {
                     g.erase_to_spaces(y, (start, end), None, version);
                     if end >= cols {
@@ -3684,7 +3684,7 @@ impl Screen {
                     } else {
                         let a = self.blank_style();
                         self.with_grid(|g, _, v| {
-                            g.erase_in(byte == b'J', part, v, |g, y, start, end| {
+                            g.erase_in((byte == b'J', true), part, v, |g, y, start, end| {
                                 g.erase(y, start, end, a, v);
                             });
                         });
