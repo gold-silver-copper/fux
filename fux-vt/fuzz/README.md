@@ -96,9 +96,13 @@ text budget. They are kept as they were written; nothing regenerates them.
 What a run adds, and the `graphemes` and `cells` corpora, stay local (git
 ignores them); a crash becomes a named regression test.
 
-`seeds/terminal` and `seeds/keys` hold the frozen seeds: each safety
-reproducer of `threats.md` (`b01-raster-pictures`, `b20-long-osc`, …) in
-the target's format, written from its definition in `tests/seeds.rs`,
+`seeds/terminal`, `seeds/deep` and `seeds/keys` hold the frozen seeds:
+each safety reproducer of `threats.md` (`b01-raster-pictures`,
+`b20-long-osc`, …) in the target's format, written from its definition
+in `tests/seeds.rs`: a `terminal` one past that target's 4,096 bytes in
+`deep`'s (64 KiB, 128 operations, a repeated pattern as `f2`), and none
+for the two no run of either holds (`b03-width-ladder`,
+`b11-every-cell-a-colour`, kept as `tests/seeds/*.bin`),
 which also replays each at its row's screen size and checks that it reaches
 the limit it is for. The sixel ones are slow at BASE until their fixes
 land (a width ladder, a 360:1 aspect and 215 declared extents each take
