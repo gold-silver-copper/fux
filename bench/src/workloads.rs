@@ -572,6 +572,12 @@ impl fux_vt::Sink for Sink {
     }
 }
 
+/// What a pane is given of `bytes` (a tick's read, or a whole load), a
+/// call at a time, as fux's server gives it: [`PANE_PIECE`] bytes a call.
+fn given(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    pieces(bytes, PANE_PIECE)
+}
+
 /// `bytes` in pieces of `size`, the last one shorter.
 fn pieces(bytes: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
     let mut rest = bytes;
@@ -768,7 +774,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     }
     for load in loads {
         pane.resize(fux::pane::size(load.rows, load.cols));
-        for piece in pieces(&load.bytes, PANE_PIECE) {
+        for piece in given(&load.bytes) {
             pane.output(black_box(piece));
             // What a call's budget left is read on the pane's next turns.
             while pane.has_unread() {
@@ -909,7 +915,7 @@ fn paint(
             s.resize(c, r.rows.saturating_add(1), r.cols);
             for (_, output) in &r.steps {
                 for read in pieces(output, PANE_READ) {
-                    for piece in pieces(read, PANE_PIECE) {
+                    for piece in given(read) {
                         for &id in &panes {
                             s.output(id, piece);
                         }
@@ -1129,7 +1135,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
                 .copied()
                 .ok_or("no pane")?;
             n = n.saturating_add(1);
-            for piece in pieces(read, PANE_PIECE) {
+            for piece in given(read) {
                 s.output(pane, piece);
             }
             unread(&mut s);
@@ -1389,5 +1395,18 @@ mod tests {
     fn an_unknown_workload_is_an_error() {
         assert!(super::run("vt/nothing", &dir(), &payloads(), false).is_err());
         assert!(super::run("nothing", &dir(), &payloads(), false).is_err());
+    }
+
+    /// A pane is given what one of fux's server's reads brings, 16 KiB
+    /// (src/server.rs, read_pane's buffer), not a tick's 64 KiB: a tick is
+    /// four calls, and the fairness record says so (HAR-79).
+    #[test]
+    fn a_pane_is_given_what_one_server_read_brings() {
+        let tick = vec![b'x'; super::PANE_READ];
+        let calls: Vec<usize> = super::given(&tick).map(<[u8]>::len).collect();
+        assert_eq!(calls, [16384; 4]);
+        for name in ["pane/ascii", "paint/corpus", "wait/text"] {
+            assert!(super::fed(name).contains("16384 bytes a call"), "{name}");
+        }
     }
 }
