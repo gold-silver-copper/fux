@@ -406,10 +406,12 @@ fn table_bytes(buckets: usize) -> usize {
 pub(crate) struct Links {
     /// What the links held cost: the strings of those the rows had when
     /// they were last counted (`sweep`) and of every link made since, and
-    /// `ids`'s table (`map`).
+    /// `ids`'s table (`table_bytes` of `buckets`).
     held: usize,
-    /// What `ids`'s table allocates (`table_bytes`).
-    map: usize,
+    /// The buckets `ids`'s table has, as allocated: counted when it is
+    /// made, grown or made smaller, as removals leave it as it is while
+    /// its `capacity` counts their tombstones out.
+    buckets: usize,
     /// The links with an `id`, by `id` and URI, until the rows are counted
     /// without them.
     ids: HashSet<ById>,
@@ -437,9 +439,11 @@ impl Links {
     pub(crate) fn insert(&mut self, opened: &Hyperlink) -> Option<Hyperlink> {
         let link = opened.clone();
         let held = self.held.saturating_add(link.cost());
+        // With no room left, the table is made again, as large or twice as
+        // large, the old one held until the new one is filled.
         let grows = link.id().is_some() && self.ids.len() >= self.ids.capacity();
         let grown = match grows {
-            true => table_bytes(buckets(self.ids.capacity()).saturating_mul(2).max(4)),
+            true => table_bytes(self.buckets.saturating_mul(2).max(4)),
             false => 0,
         };
         if held.saturating_add(grown) > LINK_BYTES {
@@ -447,9 +451,12 @@ impl Links {
         }
         if grows {
             self.ids.try_reserve(1).ok()?;
-            let map = table_bytes(buckets(self.ids.capacity()));
-            self.held = held.saturating_sub(self.map).saturating_add(map);
-            self.map = map;
+            // A table just made holds no tombstone: its capacity is all
+            // its buckets'.
+            let made = buckets(self.ids.capacity());
+            self.held =
+                (held.saturating_sub(table_bytes(self.buckets))).saturating_add(table_bytes(made));
+            self.buckets = made;
         } else {
             self.held = held;
         }
@@ -509,7 +516,7 @@ impl Links {
         // its table counted as it is now: the links by their newest row,
         // which only rows with links have, so that nothing is kept a
         // history row.
-        let half = (LINK_BYTES / 2).saturating_sub(self.map);
+        let half = (LINK_BYTES / 2).saturating_sub(table_bytes(self.buckets));
         let wide = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
         let len = u32::try_from(len).unwrap_or(u32::MAX - 1);
         let mut live = (seen.iter()).fold(0usize, |live, &(_, _, c)| live.saturating_add(wide(c)));
@@ -545,14 +552,19 @@ impl Links {
         // the smaller one fits beside it while both are held.
         if self.ids.is_empty() {
             self.ids = HashSet::new();
-        } else if buckets(self.ids.len()).saturating_mul(2) < buckets(self.ids.capacity()) {
+            self.buckets = 0;
+        } else if buckets(self.ids.len()).saturating_mul(2) < self.buckets {
             let smaller = table_bytes(buckets(self.ids.len()));
-            if live.saturating_add(self.map).saturating_add(smaller) <= LINK_BYTES {
+            if live
+                .saturating_add(table_bytes(self.buckets))
+                .saturating_add(smaller)
+                <= LINK_BYTES
+            {
                 self.ids.shrink_to(self.ids.len());
+                self.buckets = buckets(self.ids.capacity());
             }
         }
-        self.map = table_bytes(buckets(self.ids.capacity()));
-        self.held = live.saturating_add(self.map);
+        self.held = live.saturating_add(table_bytes(self.buckets));
         wide(lose)
     }
     /// Whether making room may be tried now, counting this try: after one
@@ -628,9 +640,14 @@ impl Links {
         let live = costs
             .values()
             .fold(0, |sum: usize, cost| sum.saturating_add(*cost));
-        let map = table_bytes(buckets(self.ids.capacity()));
+        // Its capacity counts tombstones out: the table has at least the
+        // buckets it says, and what is counted is what it has.
+        let map = table_bytes(self.buckets);
+        let least = buckets(self.ids.capacity());
         crate::check::ensure(
-            map == self.map && live.saturating_add(map) <= self.held && self.held <= LINK_BYTES,
+            least <= self.buckets
+                && live.saturating_add(map) <= self.held
+                && self.held <= LINK_BYTES,
             || {
                 format!(
                     "{} bytes of links held, the rows' cost {live} and the table's {map}",
@@ -681,6 +698,35 @@ pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sweep that lets most links with an id go leaves the table as
+    /// large as it was (a `HashSet` gives no room back on removals), so it
+    /// is made smaller, and counted as made: `capacity` alone, which
+    /// counts the removed entries' tombstones out (896 down to 412 here),
+    /// took the table for half as large, kept it, and counted it so.
+    #[test]
+    fn the_id_table_is_counted_as_allocated_after_a_sweep() {
+        let mut links = Links::default();
+        let made: Vec<Hyperlink> = (0..896u64)
+            .filter_map(|i| links.insert(&Hyperlink::new(i, "u", Some(&i.to_string()))))
+            .collect();
+        assert_eq!(made.len(), 896);
+        let full = buckets(links.ids.capacity());
+        assert_eq!(full, 1024, "the table after the 896th link");
+        let mut row = RowLinks::default();
+        for (i, link) in made.iter().take(200).enumerate() {
+            assert!(row.set(i * 2..i * 2 + 1, Some(link)));
+        }
+        let lose = links.sweep(|| std::iter::once((None, row.runs())), 0);
+        assert_eq!((lose, links.ids.len()), (0, 200));
+        // Kept to 200, the table is made smaller, to 256 buckets: a table
+        // just made, its capacity all its buckets' (7 in 8); and held
+        // counts it.
+        let now = buckets(links.ids.capacity());
+        assert_eq!((now, links.ids.capacity()), (256, 224), "made smaller");
+        let strings = made.iter().take(200).map(Hyperlink::cost).sum::<usize>();
+        assert_eq!(links.held, strings + table_bytes(now));
+    }
 
     #[test]
     fn a_payload_opens_its_link_or_closes() {
