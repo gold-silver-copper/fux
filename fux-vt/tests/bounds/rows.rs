@@ -1535,10 +1535,14 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             continue;
         }
         for (name, sequence) in screen_wide(rows, cols) {
-            // 100x as 10x below fux's largest pane: the work a byte is the
-            // same at every count, and a hundred 4 KiB calls of each
-            // function at 500x500 take an hour.
-            let times = if largest { 1 } else { scale.times().min(10) };
+            // Ten 4 KiB calls at 50x200, and one at the larger screens: the
+            // work a byte is the same at every count, and ten 4 KiB calls
+            // of each function at 500x500 take minutes (DECCRA's alone, a
+            // screen of clusters copied 10,240 times, 113 s on box2).
+            let times = match setup.cells() > 10_000 {
+                true => 1,
+                false => scale.times().min(10),
+            };
             let count = (4096usize.checked_div(sequence.len()).unwrap_or(0)).saturating_mul(times);
             let input = repeat(&sequence, count);
             let mut probe = Probe::new(&setup, bound, chunk.max(16), 1)?;
@@ -1569,7 +1573,10 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
         let r = u64::from(rows);
         let wide = format!("\x1b[?69h\x1b[1;{}s\x1b[{rows};2H", cols.saturating_sub(1));
         let narrow = format!("\x1b[?69h\x1b[1;2s\x1b[{rows};1H");
-        let times = if largest { 1 } else { scale.times().min(10) };
+        let times = match setup.cells() > 10_000 {
+            true => 1,
+            false => scale.times().min(10),
+        };
         // The span's text, at most 49 bytes a cell (32 long, 17 short): the
         // whole width less a column, or the narrow margins' 2 cells, one
         // scroll for every 2 glyphs printed.
@@ -1584,19 +1591,31 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
                 ("text", text, 0, 0),
             ]));
             let margins = Bound { work, ..bound };
-            let input = repeat(
-                each,
-                4096usize
-                    .checked_div(each.len())
-                    .unwrap_or(0)
-                    .saturating_mul(times),
-            );
+            // Each scroll's work is the screen's, so the bound a byte is met
+            // or broken by the first few: 4 KiB of them at 50x200, and at
+            // the larger screens 1 KiB, which keeps the work a byte the
+            // same and the row a second or so (each LF at 500x500 moves
+            // 250,000 cells).
+            let bytes: usize = if setup.cells() > 10_000 { 1024 } else { 4096 };
+            let count = (bytes.checked_div(each.len()).unwrap_or(0)).saturating_mul(times);
+            let input = repeat(each, count);
             let mut probe = Probe::new(&setup, margins, chunk.max(16), 1)?;
             probe.feed(&prefix)?;
             probe.feed(setup_bytes.as_bytes())?;
             probe.restart(margins, 1);
             probe
                 .feed(&input)
+                .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
+            // Reaching the limit: each scroll moves the span of every row,
+            // at least R cells for each 2 glyphs wrapping between 2-column
+            // margins, and half the screen's for each LF or SU.
+            let scrolls = u64::try_from(count).unwrap_or(0);
+            let least = match name {
+                "wrapping text" => scrolls.saturating_mul(r) / 2,
+                _ => scrolls.saturating_mul(n / 2),
+            };
+            probe
+                .at_least("cells", least)
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
             probe
                 .finish()
