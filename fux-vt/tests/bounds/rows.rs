@@ -1663,7 +1663,38 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
         2 => {}
         n => return Err(format!("two refusals counted as {n}")),
     }
+    modes_past_a_refusal()?;
     degrades(chunk)
+}
+
+/// A refusal inside a mode sequence loses only the mode it was for: the
+/// alternate screen 1049 asks room for. Synchronized output, before it or
+/// after it, is set, and the frame it begins is told (FA-PAR-1).
+fn modes_past_a_refusal() -> Found {
+    struct Quiet;
+    impl fux_vt::Sink for Quiet {}
+    for sequence in [&b"\x1b[?2026;1049h"[..], b"\x1b[?1049;2026h"] {
+        let shown = sequence.escape_ascii();
+        let mut parser = refusing(1)?;
+        let stop = parser.process_until_stop(sequence, &mut Quiet);
+        fux_vt::refuse_next(0);
+        let length = sequence.len();
+        if !matches!(stop, Ok(Some((n, fux_vt::Stop::Begun))) if n == length) {
+            return Err(format!("{shown}: {stop:?}, not the frame begun"));
+        }
+        let screen = parser.screen();
+        let modes = (
+            screen.mode(Mode::SynchronizedOutput),
+            screen.mode(Mode::AlternateScreenSaveCursor),
+            parser.refused(),
+        );
+        if modes != (true, false, 1) {
+            return Err(format!(
+                "{shown}: (2026, 1049, refusals) {modes:?}, not (true, false, 1)"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Each site's degrade (SCR-10), the checker clean after it and the bytes
