@@ -307,7 +307,12 @@ impl Screen {
     /// alone is past it.
     pub(crate) fn set_picture_bytes(&mut self, bytes: usize, drawing: usize) -> bool {
         self.picture_budget = bytes;
-        self.make_room(drawing, true)
+        // The one being drawn past it alone goes (the parser's), and the
+        // pictures kept still fit the budget without it.
+        self.make_room(drawing, true) || {
+            let _ = self.make_room(0, true);
+            false
+        }
     }
 
     /// The pictures the screen shows: on the screen in use, every cell they

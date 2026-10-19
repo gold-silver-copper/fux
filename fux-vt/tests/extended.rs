@@ -1020,6 +1020,24 @@ fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
     Ok(())
 }
 
+/// A lowered picture budget holds the pictures kept too, when the one
+/// being drawn is past it alone (FA-RE-B-3): a 100 by 6 picture kept
+/// (2,400 bytes) and another of its size being drawn, then a budget of
+/// 1,000: neither is kept.
+#[test]
+fn a_lowered_picture_budget_holds_the_pictures_kept() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 60)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bPq\"1;1!100~\x1b\\\r\n\x1bPq!100~")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    p.set_picture_bytes(1000);
+    assert_eq!(p.screen().pictures().count(), 0);
+    Ok(())
+}
+
 /// A picture shows while every cell it covers, row by row down from its
 /// top, holds the placeholder: a region scroll that moves part of it past
 /// the rest, or an edit in the call that placed it, takes it away, as
