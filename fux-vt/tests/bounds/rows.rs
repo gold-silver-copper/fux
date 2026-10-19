@@ -130,7 +130,10 @@ pub fn b03(scale: Scale, chunk: usize) -> Found {
         },
     )?;
     // The width ladder: a raster widening by one pixel each, before any
-    // sixel, so each one grows the picture.
+    // sixel, which at BASE grew the picture each time. Raster attributes
+    // grow nothing now (they are kept as numbers until the picture ends),
+    // so the ladders paint no pixel and have no work to reach: they guard
+    // that a raster grows nothing, by the bound.
     let mut widths = b("\x1bPq");
     for w in 1..=4096 {
         widths.extend(format!("\"1;1;{w};2160").bytes());
@@ -1249,6 +1252,10 @@ pub fn b29(scale: Scale, chunk: usize) -> Found {
     for piece in super::probe::pieces(&marks, chunk) {
         probe.feed(piece)?;
     }
+    // Each late mark reads a row of history at least, looking for where
+    // its command began.
+    let marks = u64::try_from(290usize.saturating_mul(scale.times())).unwrap_or(0);
+    probe.at_least("rows", marks)?;
     probe.finish()
 }
 
@@ -1297,6 +1304,9 @@ pub fn b31(scale: Scale, chunk: usize) -> Found {
     probe.feed(&prefix)?;
     probe.restart(bound, scale.times());
     probe.feed(marks.as_bytes())?;
+    // Each ZWSP's three bytes, at least, go into the cell's text.
+    let marks = u64::try_from(3000usize.saturating_mul(scale.times())).unwrap_or(0);
+    probe.at_least("text", marks)?;
     probe.finish()
 }
 
@@ -1389,7 +1399,11 @@ pub fn b34a(scale: Scale, chunk: usize) -> Found {
         "\u{1100}\x1b[65535b".as_bytes(),
         372usize.saturating_mul(scale.times()),
     );
-    fed(&setup, bound, chunk, scale.times(), &input, |_| Ok(()))
+    // The cluster filled once: 42 joins of the 3-byte jamo, each reading
+    // the cluster whole, 3 + 6 + … + 126 = 2,709 text bytes.
+    fed(&setup, bound, chunk, scale.times(), &input, |p| {
+        p.at_least("text", 2709)
+    })
 }
 
 /// The screen-wide functions of B35, each a sequence repeated to fill
@@ -1480,6 +1494,15 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             probe.restart(bound, 1);
             probe
                 .feed(&input)
+                .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
+            // Each function touches every cell the screen of clusters
+            // holds at least once: what reaching its limit is (a
+            // rectangle's default is the page; ED 2 erases what is
+            // written, once).
+            let filled = usize::from(rows.min(200)).saturating_mul(usize::from(cols.min(500)));
+            let cells = u64::try_from(filled).unwrap_or(0);
+            probe
+                .at_least("cells", cells)
                 .map_err(|e| format!("{name} at {rows}x{cols}: {e}"))?;
             probe
                 .finish()
