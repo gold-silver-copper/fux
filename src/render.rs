@@ -95,7 +95,20 @@ pub struct Visible {
 /// The same picture in the same place, showing the same part.
 impl PartialEq for Visible {
     fn eq(&self, other: &Visible) -> bool {
-        (self.pane, self.id, self.area, self.crop) == (other.pane, other.id, other.area, other.crop)
+        self.sixel_key() == other.sixel_key() && self.area == other.area
+    }
+}
+
+impl Visible {
+    /// What its sixel data is kept by (`Sixels`): its pane, its number
+    /// there, its crop (left, top, width, height, as `crop`), and the
+    /// picture's address. A pane's program started again (`respawn`)
+    /// numbers its pictures from 0 again; while an old picture's data is
+    /// kept, the client's list of what it shows holds that picture, so a
+    /// new one has another address.
+    fn sixel_key(&self) -> SixelKey {
+        let address = std::sync::Arc::as_ptr(&self.picture).addr();
+        (self.pane, self.id, self.crop, address)
     }
 }
 
@@ -159,7 +172,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
 }
 
 /// The sixel data of the pictures a client was last sent, each by its pane,
-/// number and crop: a picture that only moves is sent again with the same
+/// number, crop and address (`Visible::sixel_key`): a picture that only moves is sent again with the same
 /// data at its new place, encoded once (`threats.md` B08). At most
 /// `SIXEL_BYTES` are kept; a picture past them is encoded each time it is
 /// sent.
@@ -171,8 +184,8 @@ pub struct Sixels {
     encoded: usize,
 }
 
-/// A picture's pane, number and crop: what its sixel data is kept by.
-type SixelKey = (PaneId, u64, (u32, u32, u32, u32));
+/// What a picture's sixel data is kept by (`Visible::sixel_key`).
+type SixelKey = (PaneId, u64, (u32, u32, u32, u32), usize);
 
 /// The most sixel data a client keeps to send again: 16 MiB, a 4K screen
 /// of one picture's worth in 256 colours at half its 12 bytes a pixel.
@@ -186,7 +199,7 @@ impl Sixels {
         let (row, col, _, _) = picture.area;
         out.extend_from_slice(b"\x1b7");
         goto(out, row, col);
-        let key = (picture.pane, picture.id, picture.crop);
+        let key = picture.sixel_key();
         if let Some((_, data)) = self.kept.iter().find(|(k, _)| *k == key) {
             out.extend_from_slice(data);
         } else {
@@ -209,7 +222,7 @@ impl Sixels {
     /// the client now shows.
     pub fn keep(&mut self, shown: &[Visible]) {
         self.kept
-            .retain(|(key, _)| shown.iter().any(|p| (p.pane, p.id, p.crop) == *key));
+            .retain(|(key, _)| shown.iter().any(|p| p.sixel_key() == *key));
     }
 }
 
@@ -1813,6 +1826,41 @@ mod tests {
         assert_eq!(sixels.encoded, 2, "a new crop is encoded");
         sixels.keep(&[]);
         assert!(sixels.kept.is_empty(), "kept what no longer shows");
+        Ok(())
+    }
+
+    /// A pane's program started again (`respawn`) numbers its pictures
+    /// from 0 again: a new picture with an old one's number, place and
+    /// crop is another picture, sent with its own data.
+    #[test]
+    fn a_new_picture_with_an_old_number_is_sent_anew() -> Result<(), String> {
+        let solid = |rgba: [u8; 4]| {
+            let pixels = std::iter::repeat_n(rgba, 20 * 12).flatten().collect();
+            fux_vt::sixel::Picture::new(20, 12, pixels)
+                .map(std::sync::Arc::new)
+                .ok_or("20 by 12")
+        };
+        let (red, blue) = (solid([255, 0, 0, 255])?, solid([0, 0, 255, 255])?);
+        let at = |picture: &std::sync::Arc<fux_vt::sixel::Picture>| Visible {
+            pane: PaneId::of(1),
+            id: 1,
+            area: (0, 0, 1, 2),
+            crop: (0, 0, 20, 12),
+            picture: std::sync::Arc::clone(picture),
+        };
+        assert!(at(&red) != at(&blue), "another picture shows");
+        let mut sixels = Sixels::default();
+        let mut out = Vec::new();
+        sixels.picture_into(&at(&red), &mut out);
+        sixels.keep(&[at(&red), at(&blue)]);
+        out.clear();
+        sixels.picture_into(&at(&blue), &mut out);
+        let mut alone = Vec::new();
+        fux_vt::sixel::encode(&blue, (0, 0, 20, 12), &mut alone);
+        assert_eq!(
+            out,
+            [b"\x1b7\x1b[1;1H".as_slice(), &alone, b"\x1b8"].concat()
+        );
         Ok(())
     }
 
