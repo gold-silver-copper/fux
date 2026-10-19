@@ -526,7 +526,8 @@ pub struct Pane {
     /// turn, so that one pane can't hold up the others on the server's one
     /// thread. While any waits, output read is put after it, and the
     /// server reads no more from the program; see [`Pane::read_unread`].
-    unread: Vec<u8>,
+    /// With it, since when it waits: its turn is due then.
+    unread: (Vec<u8>, Instant),
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -796,7 +797,7 @@ impl Pane {
             input: InputQueue::default(),
             runs,
             frame: None,
-            unread: Vec::new(),
+            unread: (Vec::new(), Instant::now()),
             colours: Colours::default(),
             bell: false,
             copied: None,
@@ -855,8 +856,8 @@ impl Pane {
                 self.log = None;
             }
         }
-        if !self.unread.is_empty() {
-            self.unread.extend_from_slice(bytes);
+        if self.has_unread() {
+            self.unread.0.extend_from_slice(bytes);
             return;
         }
         self.read(bytes, now);
@@ -865,14 +866,26 @@ impl Pane {
     /// Whether output waits to be read on the pane's next turn
     /// ([`Pane::read_unread`]).
     pub fn has_unread(&self) -> bool {
-        !self.unread.is_empty()
+        !self.unread.0.is_empty()
+    }
+
+    /// When the pane's next turn to read the output waiting is due, if any
+    /// waits: since it began to wait, so that it is due on the server's
+    /// next turn, whenever that reads the clock.
+    pub fn unread_due(&self) -> Option<Instant> {
+        self.has_unread().then_some(self.unread.1)
     }
 
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does.
     pub fn read_unread(&mut self) {
-        let unread = std::mem::take(&mut self.unread);
+        let unread = std::mem::take(&mut self.unread.0);
         self.read(&unread, Instant::now());
+    }
+
+    /// `left` waits to be read on the pane's next turn, from `now`.
+    fn wait_unread(&mut self, left: Vec<u8>, now: Instant) {
+        self.unread = (left, now);
     }
 
     /// Reads `bytes` as [`Pane::output_at`] does, with no output waiting.
@@ -895,7 +908,7 @@ impl Pane {
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
                 if let Some((taken, _)) = self.feed(&frame, false) {
                     let left = frame.get(taken..).unwrap_or_default();
-                    self.unread = [left, rest].concat();
+                    self.wait_unread([left, rest].concat(), now);
                     return;
                 }
             } else {
@@ -906,7 +919,7 @@ impl Pane {
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
-                        self.unread = rest.get(end..).unwrap_or_default().to_vec();
+                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), now);
                         return;
                     }
                 }
@@ -927,7 +940,10 @@ impl Pane {
             && let Some((taken, _)) = self.feed(&held, false)
         {
             // No output waits while a frame is held: it is the first.
-            self.unread = held.get(taken..).unwrap_or_default().to_vec();
+            self.wait_unread(
+                held.get(taken..).unwrap_or_default().to_vec(),
+                Instant::now(),
+            );
         }
     }
 
