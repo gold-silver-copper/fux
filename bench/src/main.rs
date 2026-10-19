@@ -287,14 +287,37 @@ fn time(corpus: &Path, payloads: &Path, names: &[String]) -> Result<bool, String
             units = workloads::run(&spec.name, corpus, payloads, false)?.units;
             best = best.min(cpu()?.saturating_sub(start).saturating_sub(base));
         }
-        let secs = best.as_secs_f64().max(1e-9);
-        // MB/s only of a workload fed bytes: another's units (keys, waits)
-        // are no bytes.
-        let mbs = match workloads::fed(&spec.name).starts_with(workloads::NO_STREAM) {
-            true => "-".to_owned(),
-            false => format!("{:.1}", (units as f64) / secs / 1e6),
-        };
-        println!("{:<26} {:>10.2} {mbs:>10}", spec.name, secs * 1e3);
+        println!("{}", row(&spec.name, best, units));
     }
     Ok(true)
+}
+
+/// `time`'s row of a workload that took `cpu` for `units`: its name, the
+/// milliseconds, and MB/s only of a workload fed bytes: another's units
+/// (keys, waits) are no bytes, and it shows `-`.
+fn row(name: &str, cpu: std::time::Duration, units: usize) -> String {
+    let secs = cpu.as_secs_f64().max(1e-9);
+    let mbs = match workloads::fed(name).starts_with(workloads::NO_STREAM) {
+        true => "-".to_owned(),
+        false => format!("{:.1}", (units as f64) / secs / 1e6),
+    };
+    format!("{name:<26} {:>10.2} {mbs:>10}", secs * 1e3)
+}
+
+/// A workload fed no bytes (keys encoded, a probe) prints no MB/s, where
+/// its units would be read as bytes; one fed bytes prints its MB/s.
+#[cfg(test)]
+#[test]
+fn a_workload_fed_no_bytes_prints_no_mb_per_s() {
+    let second = std::time::Duration::from_secs(1);
+    let mbs = |name: &str| {
+        row(name, second, 2_000_000)
+            .split_whitespace()
+            .last()
+            .map(str::to_owned)
+    };
+    assert_eq!(mbs("encode/legacy").as_deref(), Some("-"));
+    assert_eq!(mbs("ready/probe").as_deref(), Some("-"));
+    assert_eq!(mbs("vt/ascii").as_deref(), Some("2.0"));
+    assert_eq!(mbs("pane/ascii").as_deref(), Some("2.0"));
 }
