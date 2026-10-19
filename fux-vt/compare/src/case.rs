@@ -356,12 +356,21 @@ pub fn verdict(subject: usize, base: &Snapshot, engine: usize, snapshot: Snapsho
 /// every field it can tell, the subject's `base` read as it is. A field the
 /// subject cannot tell then differs wherever an engine shows it, so the
 /// judgement of these verdicts, less that of `verdicts`, is what the
-/// subject could not be judged on: coverage unavailable, not a pass.
-pub fn reread(base: &Snapshot, verdicts: &[Verdict]) -> Vec<Verdict> {
+/// subject could not be judged on: coverage unavailable, not a pass. The
+/// device's state and the last row's wrap, which only fux-vt and xterm
+/// read, stay masked as `subject` masks them (`Can::device`): no other
+/// engine tells them, so they are left out of its comparison rather than
+/// making every point unavailable.
+pub fn reread(base: &Snapshot, verdicts: &[Verdict], subject: usize) -> Vec<Verdict> {
+    let device = engine::kind(subject)
+        .map_or(engine::Can::ALL, |k| k.can)
+        .device();
     verdicts
         .iter()
         .map(|v| {
-            let can = engine::kind(v.engine).map_or(engine::Can::ALL, |k| k.can);
+            let can = engine::kind(v.engine)
+                .map_or(engine::Can::ALL, |k| k.can)
+                .and(device);
             Verdict {
                 engine: v.engine,
                 differences: snapshot::differences(&base.masked(&can), &v.snapshot.masked(&can)),
@@ -1226,8 +1235,34 @@ mod tests {
         let base = text(&["a"], 1, (0, 1), false);
         let verdicts = vec![super::verdict(libvterm, &base, ghostty, dim)];
         assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
-        let again = super::reread(&base, &verdicts);
+        let again = super::reread(&base, &verdicts, ghostty);
         assert_eq!(outvoted_on(&again), ["cell (0,0) dim"]);
+        Ok(())
+    }
+
+    /// A subject that can't tell the device's state (HAR-46: the cursor's
+    /// shape, the tab stops, the line renditions, protection) agrees, read
+    /// again for coverage, where it agrees on everything else: those
+    /// fields are left out of its comparison, not counted unavailable at
+    /// every point (as they were, so Ghostty's corpus agreed on none).
+    #[test]
+    fn the_device_state_a_subject_cannot_tell_leaves_it_available() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let base = text(&["a"], 1, (0, 1), false);
+        let mut told = text(&["a"], 1, (0, 1), false);
+        told.device = snapshot::Device {
+            cursor_shape: 2,
+            tab_stops: vec![8, 16],
+            renditions: vec![1],
+            protected: vec![(0, 0)],
+        };
+        let verdicts = vec![super::verdict(ghostty, &base, FUX_VT, told)];
+        assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
+        let again = super::reread(&base, &verdicts, ghostty);
+        assert_eq!(outvoted_on(&again), Vec::<String>::new());
+        // fux-vt as the subject still is judged on them.
+        let fux = super::reread(&base, &verdicts, FUX_VT);
+        assert!(!outvoted_on(&fux).is_empty());
         Ok(())
     }
 

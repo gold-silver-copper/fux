@@ -1524,7 +1524,7 @@ fn judge_both(
             return false;
         }
         let subject = failing_fields(verdicts);
-        let unavailable = failures(&case::reread(base, verdicts))
+        let unavailable = failures(&case::reread(base, verdicts, case.subject))
             .into_iter()
             .filter(|key| !subject.iter().any(|(k, _)| k == key))
             .collect();

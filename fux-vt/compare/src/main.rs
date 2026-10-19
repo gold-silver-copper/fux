@@ -793,7 +793,7 @@ fn case_result(
     let (name, family, index) = named;
     // The fields the subject cannot tell where the judge would have
     // failed it: unavailable, so the case is no pass (`case::reread`).
-    let reread = case::reread(&outcome.fux, &outcome.verdicts);
+    let reread = case::reread(&outcome.fux, &outcome.verdicts, subject);
     let unavailable: Vec<String> =
         case::judged(index, name, subject, &outcome.fux, &reread, *at_end)?
             .into_iter()

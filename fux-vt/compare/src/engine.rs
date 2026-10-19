@@ -185,6 +185,22 @@ impl Can {
         ..Can::ALL
     };
 
+    /// Every field but the device's state and the last row's soft wrap,
+    /// which keep this one's: what a subject that cannot tell those is
+    /// judged on when coverage is reckoned (`case::reread`). Only fux-vt
+    /// and xterm read the device (HAR-46), so a subject that can't is
+    /// compared without it, rather than unavailable at every point.
+    pub const fn device(self) -> Can {
+        Can {
+            cursor_shape: self.cursor_shape,
+            tab_stops: self.tab_stops,
+            renditions: self.renditions,
+            protection: self.protection,
+            last_wrapped: self.last_wrapped,
+            ..Can::ALL
+        }
+    }
+
     /// What both can tell. A field the subject cannot tell is masked on
     /// both sides, as an engine's own `Can` masks one, so comparing with
     /// `subject.and(engine)` compares only what both can tell.
