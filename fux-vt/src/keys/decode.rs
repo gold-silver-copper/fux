@@ -67,11 +67,12 @@ const REPLY_DELAY: Duration = Duration::from_secs(1);
 /// or `ESC P1` waits as long as an answer begun (`REPLY_DELAY`), unless the
 /// answer to DA1, asked last, comes first.
 const REPLY_WINDOW: Duration = Duration::from_secs(1);
-/// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
-/// bytes. A longer string is dropped.
+/// The longest OSC answer kept, with the BEL or the ESC that begins its
+/// end: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29 bytes. A longer string is
+/// dropped.
 const OSC_LIMIT: usize = 128;
-/// The longest DCS answer kept: a DECRPSS of the longest pen,
-/// `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
+/// The longest DCS answer kept, with the ESC that begins its ST: a
+/// DECRPSS of the longest pen, `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
 /// is under 90 bytes, and XTGETTCAP's answer for `Smulx` under 50.
 const DCS_LIMIT: usize = 256;
 /// The longest sequence the decoder holds unfinished: `ESC P` and a DCS
@@ -382,7 +383,8 @@ enum Step {
     /// The bytes are an answer's string past its limit, all of it: the rest
     /// of it is dropped as it comes, to its end (BEL too if `bel`, or ST).
     /// A `CSI ?` answer past its limit (`csi`) ends at its final byte.
-    Overlong { bel: bool, csi: bool },
+    /// `escape` if the bytes end with an ESC, which may begin the ST.
+    Overlong { bel: bool, csi: bool, escape: bool },
     /// The bytes are a prefix of something longer.
     Incomplete,
 }
@@ -592,8 +594,7 @@ impl Decoder {
                         }
                     }
                 }
-                Step::Overlong { bel, csi } => {
-                    let escape = false;
+                Step::Overlong { bel, csi, escape } => {
                     return State::Dropping {
                         bel,
                         escape,
@@ -624,7 +625,7 @@ impl Decoder {
     /// and the end that may begin its marker (B23).
     pub fn check(&self) -> crate::Checked {
         let mut report = crate::Checked::default();
-        let held = DCS_LIMIT.saturating_add(2);
+        let held = HELD;
         let found = match &self.state {
             State::Pending { held: bytes, .. } => crate::check::ensure(bytes.len() <= held, || {
                 format!(
@@ -783,6 +784,11 @@ fn ss3(bytes: &[u8], flush: bool) -> Step {
 fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
     let rest = bytes.get(1..).unwrap_or_default();
     let step = match bytes.get(2) {
+        // `CSI ?` begins an answer, never a key: the Escape is no part of
+        // it, and is not held while the answer is (B24).
+        Some(b'[') if bytes.get(3) == Some(&b'?') => {
+            return Step::Done(1, press(Key::Escape, Modifiers::NONE));
+        }
         Some(b'[') => csi(rest, flush),
         Some(b'O') => ss3(rest, flush),
         None if !flush => return Step::Incomplete,
@@ -848,19 +854,37 @@ fn answer(
             // and the ESC begins what comes next.
             Some(_) => return Step::Done(i.saturating_add(2), None),
             None if flush => return Step::Done(bytes.len(), None),
+            // The string and the ESC that may begin its ST past the limit:
+            // no answer, whatever follows, and no more is held (B24).
+            None if i >= limit => {
+                return Step::Overlong {
+                    bel,
+                    csi: false,
+                    escape: true,
+                };
+            }
             None => return Step::Incomplete,
         },
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > limit => return Step::Overlong { bel, csi: false },
+        None if body.len() > limit => {
+            return Step::Overlong {
+                bel,
+                csi: false,
+                escape: false,
+            };
+        }
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
     let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
-    // A string past the limit is no answer, whether it came whole or not.
+    // A string past the limit is no answer, whether it came whole or not:
+    // with the BEL or the ESC that begins its end, at most `limit` bytes,
+    // so that one held unfinished is never more than its opening and
+    // `limit` (B24).
     let reply = payload
-        .filter(|p| p.len() <= limit)
+        .filter(|p| p.len() < limit)
         .and_then(reply)
         .map(Input::Reply);
     Step::Done(consumed, reply)
@@ -997,6 +1021,7 @@ fn long_answer(body: &[u8], flush: bool) -> Step {
         None if body.len() > DCS_LIMIT => Step::Overlong {
             bel: false,
             csi: true,
+            escape: false,
         },
         None => Step::Incomplete,
     }
