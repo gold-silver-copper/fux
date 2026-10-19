@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE]
+usage: fux-bench [--against REF] [--repeats N] [--jobs N] [--floors FILE | --floors-here FILE]
                  [--only TEXT]... [--json FILE]
        fux-bench --calibrate [--repeats N] [--jobs N] [--only TEXT]... [--json FILE]
        fux-bench list
@@ -164,6 +164,7 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
         repeats: 15,
         jobs: default_jobs(),
         floors: None,
+        floors_here: false,
         calibrate: false,
         only: Vec::new(),
         json: results(match command.as_str() {
@@ -195,6 +196,10 @@ fn run(argv: Vec<String>) -> Result<bool, String> {
             "--repeats" => options.repeats = count(&value(&mut args, &arg)?, &arg)?,
             "--jobs" => options.jobs = count(&value(&mut args, &arg)?, &arg)?,
             "--floors" => options.floors = Some(value(&mut args, &arg)?.into()),
+            "--floors-here" => {
+                options.floors = Some(value(&mut args, &arg)?.into());
+                options.floors_here = true;
+            }
             "--calibrate" => options.calibrate = true,
             "--only" => options.only.push(value(&mut args, &arg)?),
             "--json" => options.json = value(&mut args, &arg)?.into(),

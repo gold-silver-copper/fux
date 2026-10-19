@@ -38,7 +38,8 @@ if [[ -z ${FUX_PERF:-} ]] && ! command -v perf >/dev/null; then
 fi
 # The A/A floors `fux-bench --against` judges each workload by: the
 # calibration FUX_BENCH_FLOORS names, else the one committed beside this
-# script (floors.json), else the bench's own.
+# script (floors.json), if either was made on this machine by this counter
+# (`--floors-here`); else, as fux-bench says, this run's spread.
 floors=${FUX_BENCH_FLOORS:-}
 [[ -z $floors && -f $here/floors.json ]] && floors=$here/floors.json
 mkdir -p "$out/logs" "$out/status"
@@ -184,7 +185,7 @@ full() {
   build_bench
   # The speed method's fifteen rounds (speed-method.md), the bench's own
   # default, said here so the gate's count is in its stamp.
-  step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} ${floors:+--floors "$floors"} --repeats 15 \
+  step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} ${floors:+--floors-here "$floors"} --repeats 15 \
     --json "$out/against.json"
   # Each engine's memory, and its instructions per byte beside Ghostty's:
   # every measure a child process of its own. About 5 s and 45-60 s.
