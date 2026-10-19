@@ -1445,17 +1445,27 @@ impl Parser {
                     None
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
-                // A C0 control, as `ground` carries it out.
-                if self.control(byte, sink).is_err() {
-                    self.refuse();
-                }
+                // A C0 control, as `ground` carries it out; CR LF, which
+                // ends most lines, as one.
+                let fed = if let [b'\r', b'\n', after @ ..] = remaining {
+                    if self.screen.carriage_return_line_feed().is_err() {
+                        self.refuse();
+                    }
+                    remaining = after;
+                    true
+                } else {
+                    if self.control(byte, sink).is_err() {
+                        self.refuse();
+                    }
+                    remaining = tail;
+                    matches!(byte, 0x0a..=0x0c)
+                };
                 self.screen.forget_repeat();
-                remaining = tail;
                 // A line feed at the bottom margin moves a row's text into
                 // history, spent: up to a row's text a byte (decision 820).
-                match byte {
-                    0x0a..=0x0c => self.over::<UNTIL_STOP>(),
-                    _ => None,
+                match fed {
+                    true => self.over::<UNTIL_STOP>(),
+                    false => None,
                 }
             } else if ground
                 && byte >= 0x80
