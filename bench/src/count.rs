@@ -158,6 +158,11 @@ fn setup(raw: &str) -> String {
 /// the count is their sum. Anything else is refused: an unsupported event,
 /// a share under 100%, lines that don't pair, or no PMU that ran.
 fn perf(stderr: &str) -> Result<u64, String> {
+    // The event as perf names it: plain, or a PMU's (`apple_avalanche_pmu/
+    // instructions/u` in CSV, `cpu_core/instructions/u` on Intel's hybrids,
+    // which name their verbose lines so too).
+    let instructions =
+        |event: &str| event.starts_with("instructions") || event.contains("/instructions/");
     let block = stderr
         .rsplit_once("fux-perf: begin\n")
         .and_then(|(_, rest)| rest.split_once("fux-perf: end"))
@@ -168,7 +173,7 @@ fn perf(stderr: &str) -> Result<u64, String> {
     for line in block.lines() {
         let fields: Vec<&str> = line.split(',').collect();
         if let [value, _unit, event, _running, _share, ..] = fields.as_slice() {
-            if !event.starts_with("instructions") && !event.contains("/instructions/") {
+            if !instructions(event) {
                 return Err(format!("perf: an event not asked for: {line:?}"));
             }
             match *value {
@@ -182,7 +187,7 @@ fn perf(stderr: &str) -> Result<u64, String> {
                 )),
             }
         } else if let Some((event, numbers)) = line.split_once(": ")
-            && event.starts_with("instructions")
+            && instructions(event)
         {
             let n: Vec<u64> = numbers
                 .split(' ')
@@ -287,6 +292,19 @@ mod tests {
                 "{name}: {got:?}"
             );
         }
+    }
+
+    /// Intel's hybrid cores name each PMU's verbose line as its CSV line
+    /// (`cpu_core/instructions/u: …`): read as Apple's are, not refused as
+    /// malformed. Written in the shape of the `pinned` fixture, the PMUs
+    /// renamed (no hybrid Intel machine is here to record one).
+    #[test]
+    fn perf_reads_a_hybrid_intel_report() {
+        let report = "fux-perf: begin\n\ncpu_atom/instructions/u: 0 1000 0\n\
+                      cpu_core/instructions/u: 10040388 1000 1000\n\
+                      <not counted>,,cpu_atom/instructions/u,0,0.00,,\n\
+                      10040388,,cpu_core/instructions/u,1000,100.00,,\nfux-perf: end\n";
+        assert_eq!(Counter::Perf.parse(report), Ok(10_040_388));
     }
 
     #[test]
