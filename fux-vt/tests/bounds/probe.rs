@@ -2,6 +2,20 @@
 //! at one chunking, each call's work and the heap's peak checked as it
 //! goes against the row's bound, so that a row past its bound stops at the
 //! call that crossed it rather than running away.
+//!
+//! With `FUX_VT_WORST_FEED=FILE`, each probe also appends to FILE its
+//! costliest call and its longest, as a line `NAME CHUNK UNITS NANOSECONDS`
+//! (NAME the test, the thread's name, and the probe's number in the run;
+//! units weighted as `Work::cost`, in twentieths). With
+//! `FUX_VT_WORST_FEED_INPUTS=DIR` too, a probe fed 4 KiB a call whose
+//! longest call took more than [`KEPT`] leaves what it fed in DIR
+//! (`NAME.bin`, and `NAME.setup`: rows, columns, history, prints and the
+//! features' places in `Feature::ALL`), for fux-bench to time again
+//! without the counters (`fux-bench calls`). `fux-vt/compare/worst-feed.sh`
+//! gathers both.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use fux_vt::{Feature, Options, Parser, Sink, Size, Work};
 
@@ -34,6 +48,13 @@ impl Scale {
         }
     }
 }
+
+/// A call longer than this, counted, may be past 50 ms uncounted too: its
+/// probe's input is kept, to time again.
+pub const KEPT: Duration = Duration::from_millis(25);
+
+/// Probes made in this run, to name each.
+static MADE: AtomicUsize = AtomicUsize::new(0);
 
 /// The chunkings every probe feeds its input at (`threats.md` section 2),
 /// in bytes a call: and `WHOLE`, all of it in one piece, given again from
@@ -199,12 +220,29 @@ pub struct Probe {
     /// The work done since the parser was made.
     pub work: Work,
     replies: Replies,
+    /// The costliest call so far, in weighted work, and the longest.
+    worst: (u64, Duration),
+    /// Its name, its setup, and where what it is fed is kept, if it is.
+    name: String,
+    setup: Setup,
+    kept: Option<(std::path::PathBuf, std::fs::File)>,
 }
 
 impl Probe {
     /// A parser of `setup`, to be fed at `chunk` bytes a call, held to
     /// `bound` for `copies` copies of a reproducer.
     pub fn new(setup: &Setup, bound: Bound, chunk: usize, copies: usize) -> Result<Self, String> {
+        let name = format!(
+            "{}-{}",
+            std::thread::current().name().unwrap_or("probe"),
+            MADE.fetch_add(1, Ordering::Relaxed)
+        );
+        // Opened before the heap is watched, and written unbuffered: the
+        // probe's bound counts every allocation on its thread.
+        let kept = (std::env::var_os("FUX_VT_WORST_FEED_INPUTS"))
+            .filter(|_| chunk == 4096)
+            .map(|dir| std::path::Path::new(&dir).join(format!("{name}.bin")))
+            .and_then(|path| std::fs::File::create(&path).ok().map(|f| (path, f)));
         let parser = setup.parser()?;
         Ok(Self {
             parser,
@@ -217,6 +255,10 @@ impl Probe {
             calls: 0,
             work: Work::ZERO,
             replies: Replies::default(),
+            worst: (0, Duration::ZERO),
+            name,
+            setup: *setup,
+            kept,
         })
     }
 
@@ -234,15 +276,21 @@ impl Probe {
     /// that it stayed under the ceiling, and that the work so far and the
     /// heap are within the bound.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if let Some((_, file)) = &mut self.kept {
+            std::io::Write::write_all(file, bytes).map_err(|e| e.to_string())?;
+        }
         for piece in pieces(bytes, self.chunk) {
             let mut rest = piece;
             while !rest.is_empty() {
-                let before = Work::now();
+                let (before, started) = (Work::now(), Instant::now());
                 let stop = self
                     .parser
                     .process_until_stop(rest, &mut self.replies)
-                    .map_err(|e| format!("a call failed: {e}"))?;
+                    .map_err(|e| format!("a call failed: {e}"));
+                let took = started.elapsed();
                 let done = Work::now().since(before);
+                self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
+                let stop = stop?;
                 let taken = stop.map_or(rest.len(), |(taken, _)| taken);
                 if taken == 0 {
                     return Err(format!("a call stopped before any byte: {stop:?}"));
@@ -264,9 +312,11 @@ impl Probe {
         bytes: usize,
         call: impl FnOnce(&mut Parser) -> T,
     ) -> Result<T, String> {
-        let before = Work::now();
+        let (before, started) = (Work::now(), Instant::now());
         let result = call(&mut self.parser);
+        let took = started.elapsed();
         let done = Work::now().since(before);
+        self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
         self.add(done, bytes)?;
         Ok(result)
     }
@@ -367,6 +417,49 @@ impl Probe {
             return Err(format!("the checker found: {report}"));
         }
         Ok(())
+    }
+}
+
+impl Drop for Probe {
+    /// Appends the costliest call to `FUX_VT_WORST_FEED`, if it is set;
+    /// keeps what it was fed if its longest call took more than [`KEPT`].
+    fn drop(&mut self) {
+        if let Some((path, _)) = self.kept.take() {
+            let setup = &self.setup;
+            let features: Vec<String> = (Feature::ALL.into_iter().enumerate())
+                .filter(|(_, f)| setup.options.has(*f))
+                .map(|(i, _)| i.to_string())
+                .collect();
+            let text = format!(
+                "{} {} {} {} {}\n",
+                setup.rows,
+                setup.cols,
+                setup.history,
+                setup.prints,
+                features.join(",")
+            );
+            let _ = match self.worst.1 > KEPT {
+                true => std::fs::write(path.with_extension("setup"), text),
+                false => std::fs::remove_file(&path),
+            };
+        }
+        let Some(path) = std::env::var_os("FUX_VT_WORST_FEED") else {
+            return;
+        };
+        let line = format!(
+            "{} {} {} {}\n",
+            self.name,
+            self.chunk,
+            self.worst.0,
+            self.worst.1.as_nanos()
+        );
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path);
+        if let Ok(mut file) = file {
+            let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+        }
     }
 }
 

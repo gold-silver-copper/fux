@@ -9,10 +9,15 @@
 //!   taken or a call stops at its budget: the call that did the most;
 //! - a resize with its history full at 50x200, to 80 columns, and back.
 //!
-//! Each is held to U: past it, the part fails.
+//! Each is held to U: past it, the part fails. Each call is timed too
+//! (in this build, with the counters on); with `FUX_VT_WORST_FEED=FILE`,
+//! each recording and each resize appends its costliest call and its
+//! longest to FILE, as the bounds suite's probes do (`TEST CHUNK UNITS
+//! NANOSECONDS`), for `fux-vt/compare/worst-feed.sh`.
 use crate::inputs::{self, Recording};
 use crate::model::Setup;
 use fux_vt::{Parser, Size, Work};
+use std::time::{Duration, Instant};
 
 /// A read of a pane's output, as fux takes it from the PTY.
 const READ: usize = 4096;
@@ -22,11 +27,27 @@ const HISTORY: usize = inputs::PANE_HISTORY_BYTES;
 /// history holds at 200 columns.
 const FILL: usize = 8 << 20;
 
-/// The most one call did, and where.
+/// The most one call did, and where; and the longest a call took.
 #[derive(Debug)]
 pub struct Worst {
     pub cost: u64,
     pub at: String,
+    pub longest: Duration,
+}
+
+/// Appends `name`'s costliest and longest call to `FUX_VT_WORST_FEED`, if
+/// it is set.
+fn record(name: &str, cost: u64, longest: Duration) -> Result<(), String> {
+    let Some(path) = std::env::var_os("FUX_VT_WORST_FEED") else {
+        return Ok(());
+    };
+    let line = format!("{name} {READ} {cost} {}\n", longest.as_nanos());
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()))
+        .map_err(|e| format!("FUX_VT_WORST_FEED: {e}"))
 }
 
 /// A host that hears nothing.
@@ -45,11 +66,12 @@ fn size(rows: u16, cols: u16) -> Result<Size, String> {
     Size::new(rows, cols).map_err(|e| format!("{rows}x{cols}: {e}"))
 }
 
-/// `f` run, and the work it did, weighed.
-fn cost<T>(f: impl FnOnce() -> T) -> (T, u64) {
-    let before = Work::now();
+/// `f` run, the work it did, weighed, and how long it took.
+fn cost<T>(f: impl FnOnce() -> T) -> (T, u64, Duration) {
+    let (before, started) = (Work::now(), Instant::now());
     let out = f();
-    (out, Work::now().since(before).cost())
+    let took = started.elapsed();
+    (out, Work::now().since(before).cost(), took)
 }
 
 /// The call that did the most over `recording`, fed as a pane is.
@@ -63,21 +85,21 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
     let mut worst = Worst {
         cost: 0,
         at: String::new(),
+        longest: Duration::ZERO,
     };
     let mut fed = 0usize;
     for (resize, output) in &recording.steps {
         if let Some((rows, cols)) = resize {
-            let (resized, done) = cost(|| {
+            let (resized, done, took) = cost(|| {
                 parser
                     .resize(size(*rows, *cols)?)
                     .map_err(|e| e.to_string())
             });
             resized?;
+            worst.longest = worst.longest.max(took);
             if done > worst.cost {
-                worst = Worst {
-                    cost: done,
-                    at: format!("{} resized to {rows}x{cols}", recording.name),
-                };
+                worst.cost = done;
+                worst.at = format!("{} resized to {rows}x{cols}", recording.name);
             }
         }
         let mut reads = output.as_slice();
@@ -86,12 +108,11 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
             reads = later;
             let mut taken = 0usize;
             while let Some(rest) = read.get(taken..).filter(|r| !r.is_empty()) {
-                let (stop, done) = cost(|| parser.process_until_stop(rest, &mut Deaf));
+                let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
+                worst.longest = worst.longest.max(took);
                 if done > worst.cost {
-                    worst = Worst {
-                        cost: done,
-                        at: format!("{} at byte {}", recording.name, fed.saturating_add(taken)),
-                    };
+                    worst.cost = done;
+                    worst.at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
                 }
                 // Stopped at a frame's edge or its budget, it is given the
                 // rest; else all of it was taken, or refused (an allocation
@@ -104,6 +125,11 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
             fed = fed.saturating_add(read.len());
         }
     }
+    record(
+        &format!("corpus:{}", recording.name),
+        worst.cost,
+        worst.longest,
+    )?;
     Ok(worst)
 }
 
@@ -121,10 +147,12 @@ pub fn resize_history(history: usize, fill: usize) -> Result<(u64, u64), String>
         parser.process(line).map_err(|e| e.to_string())?;
         written = written.saturating_add(line.len());
     }
-    let (there, to) = cost(|| parser.resize(narrow));
+    let (there, to, to_took) = cost(|| parser.resize(narrow));
     there.map_err(|e| e.to_string())?;
-    let (back, from) = cost(|| parser.resize(wide));
+    let (back, from, from_took) = cost(|| parser.resize(wide));
     back.map_err(|e| e.to_string())?;
+    record("resize-history:to-80", to, to_took)?;
+    record("resize-history:to-200", from, from_took)?;
     Ok((to, from))
 }
 
@@ -133,20 +161,24 @@ pub fn check() -> Result<String, String> {
     let mut worst = Worst {
         cost: 0,
         at: String::new(),
+        longest: Duration::ZERO,
     };
     for recording in inputs::corpus()? {
         let one = feed(&recording)?;
+        let longest = worst.longest.max(one.longest);
         if one.cost > worst.cost {
             worst = one;
         }
+        worst.longest = longest;
     }
     let (to, from) = resize_history(HISTORY, FILL)?;
     let share = |cost: u64| cost as f64 / Work::CEILING as f64 * 100.0;
     let summary = format!(
-        "the worst 4 KiB read's call {:.2}% of U ({}); a full history resized 200 to 80 \
-         columns {:.2}%, and back {:.2}%",
+        "the worst 4 KiB read's call {:.2}% of U ({}), the longest {:.2} ms; a full history \
+         resized 200 to 80 columns {:.2}%, and back {:.2}%",
         share(worst.cost),
         worst.at,
+        worst.longest.as_secs_f64() * 1e3,
         share(to),
         share(from),
     );
