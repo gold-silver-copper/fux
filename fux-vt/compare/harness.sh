@@ -222,8 +222,8 @@ deep() {
   local today
   today=$(date -u +%Y%m%d)
   echo "deep: 20,000 random cases at today's seed, $today"
-  ran+=("random-$today")
-  step "random-$today" "$compare" run --seed "$today" --cases 20000
+  ran+=("random-day-$today")
+  step "random-day-$today" "$compare" run --seed "$today" --cases 20000
   echo "deep: esctest in a fux pane, in real xterm and on each engine; tmux and zellij; feel; MB/s (each alone)"
   ran+=(esctest-in-fux esctest-xterm multiplexers feel info)
   step esctest-in-fux "$compare" esctest --in-fux ${jobs:+--jobs "$jobs"} --json "$out/esctest-in-fux.json"
