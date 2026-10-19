@@ -105,7 +105,7 @@ needs = ["references/xterm/esctest2 at 2798f121", "python3", "Zig 0.16 and Ghost
 [[check]]
 name = "against"
 schedule = "full"
-command = "fux-bench --against REF --jobs N --repeats 9 --json against.json"
+command = "fux-bench --against REF --jobs N --repeats 15 --json against.json"
 needs = ["perf (instructions:u)", "git history with REF"]
 
 [[check]]
