@@ -976,6 +976,27 @@ fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
     Ok(())
 }
 
+/// A picture being drawn lets another go only for the room it takes: a
+/// doubling of its pixels that could not fit even with every picture gone
+/// lets none go, and the exact growth that fits beside them is taken
+/// (FA-SIX-4). The budget holds the first picture (4 by 6 pixels, 96
+/// bytes) and the second at 11 by 6 (264), with its 10 by 6 drawn first
+/// (240), but not its doubling to 20 by 6 beside those 240 (720).
+#[test]
+fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 20)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.set_picture_bytes(96 + 240 + 264);
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!4~\x1b\\\x1b[3;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!10~$!11~\x1b\\")?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.cols)).collect();
+    assert_eq!(shown, [(0, 2), (2, 6)]);
+    Ok(())
+}
+
 /// A picture shows while every cell it covers, row by row down from its
 /// top, holds the placeholder: a region scroll that moves part of it past
 /// the rest, or an edit in the call that placed it, takes it away, as
