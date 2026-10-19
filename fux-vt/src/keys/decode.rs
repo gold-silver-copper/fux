@@ -722,34 +722,12 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
     match second {
         b'[' => csi(bytes, flush),
         b']' => osc(bytes, flush),
-        b'O' => match bytes.get(2) {
-            None if !flush => Step::Incomplete,
-            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-            // A byte no final key names: Alt-O, then the byte.
-            Some(&last) => match final_key(last, Modifiers::NONE) {
-                Some(input) => Step::Done(3, Some(input)),
-                None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-            },
-        },
+        b'O' => ss3(bytes, flush),
         // An Escape before a whole CSI or SS3 key is that key with Alt, as
         // libtermkey reads an Escape prefix, and rxvt and PuTTY send Alt with
         // the arrows; before anything else, or alone, an Escape, then the
         // second decoded on its own, as vim's users type `ESC ESC`.
-        0x1b => match bytes.get(2) {
-            Some(b'[' | b'O') => match decode(bytes.get(1..).unwrap_or_default(), flush, answers) {
-                Step::Done(n, Some(Input::Key(stroke))) => {
-                    let mut stroke = stroke;
-                    stroke.press.mods.alt = true;
-                    Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
-                }
-                Step::Incomplete => Step::Incomplete,
-                Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } => {
-                    Step::Done(1, press(Key::Escape, Modifiers::NONE))
-                }
-            },
-            None if !flush => Step::Incomplete,
-            _ => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
-        },
+        0x1b => escape_prefix(bytes, flush),
         // An answer only while one is expected: else `ESC P` is Alt-P at
         // once, and a string that began with it would be an answer read
         // whole and keys read in pieces. Its string ends with ST (`ESC \`);
@@ -770,6 +748,47 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             }
             None => Step::Incomplete,
         },
+    }
+}
+
+/// `ESC O`: an SS3 key; else Alt-O, then what follows, once the deadline
+/// has passed if nothing follows yet.
+fn ss3(bytes: &[u8], flush: bool) -> Step {
+    match bytes.get(2) {
+        None if !flush => Step::Incomplete,
+        None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
+        // A byte no final key names: Alt-O, then the byte.
+        Some(&last) => match final_key(last, Modifiers::NONE) {
+            Some(input) => Step::Done(3, Some(input)),
+            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
+        },
+    }
+}
+
+/// `ESC ESC`: an Escape before a whole CSI or SS3 key is that key with Alt;
+/// before anything else, or alone, an Escape, and what follows is decoded
+/// on its own. It calls `csi` and `ss3`, not `decode`, so that `decode` is
+/// no recursive function and stays inlined into the decoder's loop: called
+/// recursively it was not, and a key cost 12% more (`decode/legacy`).
+#[cold]
+#[inline(never)]
+fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
+    let rest = bytes.get(1..).unwrap_or_default();
+    let step = match bytes.get(2) {
+        Some(b'[') => csi(rest, flush),
+        Some(b'O') => ss3(rest, flush),
+        None if !flush => return Step::Incomplete,
+        _ => return Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+    };
+    match step {
+        Step::Done(n, Some(Input::Key(mut stroke))) => {
+            stroke.press.mods.alt = true;
+            Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
+        }
+        Step::Incomplete => Step::Incomplete,
+        Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } => {
+            Step::Done(1, press(Key::Escape, Modifiers::NONE))
+        }
     }
 }
 
