@@ -75,18 +75,35 @@ fn cell(c: &CellRef<'_>) -> Cell {
     Cell::new(text, width, style)
 }
 
-/// The bytes of history's budget beside its rows, with any history.
+/// The bytes of history's budget beside its rows, with any history, for
+/// what else it holds: the oldest and newest blocks partly filled, the
+/// ring's last chunk, the maps' buckets. Enough at every size tried, rows
+/// 1 to 30,000 at 1 to 6000 columns.
 const HISTORY_ROOM: usize = 1 << 16;
 
-/// History's budget for `rows` full rows of `cols`: 24 bytes a row and 8
-/// a cell, and, with any history, room beside them for what else history's
-/// budget holds (its maps' buckets, the style table past the screen's
-/// share): so fux-vt keeps at least the rows, and a row lost is seen. The
-/// adapter's and `bench`'s fux-vt+prints'.
+/// The cells a block of fux-vt's history holds (history.rs, `BLOCK`). A
+/// row's cells are never split between blocks, so a block holds as many
+/// whole rows as fit, and the cells past the last are spent; a row wider
+/// than a block has one of its own.
+const BLOCK_CELLS: usize = 1 << 12;
+
+/// History's budget for `rows` full rows of `cols`: 24 bytes a row, and 8
+/// a cell of the blocks the rows fill (a row's share of a block, which is
+/// more than its own cells where `cols` does not divide [`BLOCK_CELLS`]);
+/// and, with any history, [`HISTORY_ROOM`] beside them: so fux-vt keeps at
+/// least the rows of plain cells (styles count in the budget too,
+/// `threats.md` B11), and a row lost is seen. The adapter's and `bench`'s
+/// fux-vt+prints'.
 pub fn history_bytes(rows: usize, cols: u16) -> usize {
-    let row = usize::from(cols).saturating_mul(8).saturating_add(24);
-    let room = if rows == 0 { 0 } else { HISTORY_ROOM };
-    rows.saturating_mul(row).saturating_add(room)
+    if rows == 0 {
+        return 0;
+    }
+    let cols = usize::from(cols).max(1);
+    let block = BLOCK_CELLS.max(cols);
+    let blocks = rows.div_ceil(BLOCK_CELLS.checked_div(cols).unwrap_or(1).max(1));
+    (rows.saturating_mul(24))
+        .saturating_add(blocks.saturating_mul(block).saturating_mul(8))
+        .saturating_add(HISTORY_ROOM)
 }
 
 pub fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
@@ -235,5 +252,41 @@ fn device(parser: &Parser) -> Device {
         tab_stops,
         renditions,
         protected,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::Setup;
+
+    /// The adapter's history keeps at least the rows asked of full rows of
+    /// plain cells, at widths that do and don't divide a block, as the
+    /// cases and the bench read it ("history rows kept"): 10,000 rows at
+    /// 200 columns, the bench's census size, kept 9,791 when a row was
+    /// counted at its own cells alone.
+    #[test]
+    fn history_keeps_the_rows_asked() -> Result<(), String> {
+        for (rows, cols) in [
+            (100, 80),
+            (1000, 1000),
+            (10_000, 80),
+            (10_000, 200),
+            (10_000, 4097),
+        ] {
+            let mut engine = super::make(&Setup {
+                rows: 10,
+                cols,
+                history: rows,
+                reflow: true,
+            })?;
+            let mut line = vec![b'x'; usize::from(cols)];
+            line.extend_from_slice(b"\r\n");
+            for _ in 0..rows.saturating_add(100) {
+                engine.feed(&line, 4096)?;
+            }
+            let held = engine.history_len().unwrap_or(0);
+            assert!(held >= rows, "{held} of {rows} rows kept at {cols} columns");
+        }
+        Ok(())
     }
 }

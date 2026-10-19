@@ -307,10 +307,11 @@ Normalized away:
   clear the title on RIS.
 - **The history rows a case asks for are compared, or all fux-vt keeps,
   the more.** Engines keep far more than a case can fill. fux-vt's budget
-  is in bytes: it gets the case's rows at 24 bytes and 8 a cell, and 64
-  KiB beside them for its maps and styles, so a subject keeping fewer
-  rows than the others differs on "history rows kept", as one keeping
-  more does. Cases that resize give fux-vt 10000 rows, since a screen
+  is in bytes: it gets the case's rows at 24 bytes and 8 a cell of the
+  history blocks they fill (a row's share of a block of 4096 cells), and
+  64 KiB beside them for its partly filled blocks and maps, so a subject
+  keeping fewer rows than the others differs on "history rows kept", as
+  one keeping more does. Cases that resize give fux-vt 10000 rows, since a screen
   that grows pulls rows back from history.
 - **Random cases settle the cursor before each resize.** They send `CSI ? 7
   h`, CR, `.`, CR (`--newline-before-resize` in a replay), because engines
