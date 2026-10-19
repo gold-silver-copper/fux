@@ -114,7 +114,10 @@ together() {
   local spec pids=()
   for spec in "$@"; do
     if [[ -n $jobs ]] && { [[ $spec == +* ]] || ((${#pids[@]} >= jobs)); }; then
-      wait "${pids[@]}"
+      # An empty array is unbound under set -u in bash 3.2 (macOS's).
+      if ((${#pids[@]})); then
+        wait "${pids[@]}"
+      fi
       pids=()
     fi
     if [[ -n $jobs && $spec == +* ]]; then
@@ -126,7 +129,9 @@ together() {
     step ${spec#+} &
     pids+=($!)
   done
-  wait "${pids[@]}"
+  if ((${#pids[@]})); then
+    wait "${pids[@]}"
+  fi
 }
 
 ran=()
