@@ -323,8 +323,11 @@ fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
         let mut log = String::new();
         for _ in 0..80 {
             let n = r.below(40);
-            // A flags number's bits past the spec's five mean nothing.
-            let flags = u8::try_from(n & 0x1f).unwrap_or(u8::MAX);
+            // A flags number's bits past the spec's five mean nothing, and
+            // report event types (2) isn't kept: fux sends no repeats or
+            // releases, and the spec's "Detection of support" has a
+            // terminal report only the flags it honours.
+            let flags = u8::try_from(n & 0b1_1101).unwrap_or(u8::MAX);
             let stack = if alternate {
                 &mut secondary
             } else {
