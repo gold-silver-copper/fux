@@ -2776,6 +2776,7 @@ impl Grid {
         report.record("grid.order", which, self.check_order());
         report.record("grid.slots", which, self.check_slots());
         report.record("grid.blank_past_used", which, self.check_blank_past_used());
+        report.record("grid.blank_past_end", which, self.check_blank_past_end());
         report.record("grid.wide_pairs", which, self.check_wide_pairs());
         report.record("grid.text", which, self.check_text());
         report.record("grid.style_numbers", which, self.check_style_numbers());
@@ -2868,6 +2869,30 @@ impl Grid {
         crate::check::ensure(self.blank_past_used(), || {
             "a cell past a row's used mark is not blank".into()
         })
+    }
+
+    /// 9a: on a screen row that is not single width, every cell past its
+    /// end (`row_end`) holds nothing, no half of a wide glyph either: the
+    /// rendition erased them, and no write reaches past the end.
+    fn check_blank_past_end(&self) -> Result<(), String> {
+        for row in 0..self.size.rows() {
+            if !self.rendition(row).is_double() {
+                continue;
+            }
+            let end = usize::from(self.row_end(row));
+            let cells = self
+                .slot(row)
+                .map(|slot| self.slice(slot))
+                .unwrap_or_default();
+            let held = (cells.iter().enumerate().skip(end))
+                .find(|(_, c)| c.has_contents() || c.is_wide() || c.is_wide_continuation());
+            if let Some((col, _)) = held {
+                return Err(format!(
+                    "row {row}, column {col}: a cell past a double-width line's end holds something"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 11: a wide glyph's halves are side by side, on the screen and in
@@ -3091,6 +3116,14 @@ mod faults {
                 *cell = Compact::ascii(b'x', 0);
             }
             g.meta.iter_mut().for_each(|m| m.used = 0);
+        })?;
+        shows("grid.blank_past_end", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            let at = g.order.get(0).map(|slot| slot * 4 + 3);
+            if let Some(cell) = at.and_then(|at| g.cells.get_mut(at)) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
         })?;
         shows("grid.wide_pairs", |g| {
             if let Some(cell) = g.cells.get_mut(0) {
