@@ -904,14 +904,7 @@ impl Session {
         // The program `run` started, unless that is a shell (`run -- bash`):
         // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
-            (Runs::Program(launch), Some(child)) => {
-                // A shell taking commands typed at it: no -c, no script.
-                let shell = launch.argv.split_first().is_some_and(|(p, args)| {
-                    let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
-                    interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
-                });
-                (!shell).then(|| child.leader.pid())
-            }
+            (Runs::Program(_), Some(child)) => (!pane.runs_shell()).then(|| child.leader.pid()),
             _ => None,
         };
         pane.process.job().or(program).ok_or_else(|| {
@@ -3166,11 +3159,6 @@ fn unread(process: &Process) -> Vec<u8> {
     }
     left
 }
-
-/// Shells a pane may run, taking commands typed at them.
-const SHELLS: &[&str] = &[
-    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
-];
 
 /// What a close from the command line prints: `closed` and the ids gone.
 fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
