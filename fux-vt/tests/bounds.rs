@@ -152,6 +152,34 @@ fn known_failing(row: &str, scale: Scale) -> Option<&'static str> {
         .map(|line| line.split('`').nth(1).unwrap_or_default())
 }
 
+/// Whether `found`, a row's failures one a chunking, are as `known` says:
+/// at every chunking, each saying it.
+fn fails_as_known(found: &[String], known: &str) -> bool {
+    !known.is_empty()
+        && found.len() == probe::CHUNKS.len()
+        && found.iter().all(|f| f.contains(known))
+}
+
+/// A row known to fail fails so at every chunking, each on its own: one
+/// chunking's error saying it four times, the others failing otherwise,
+/// or passing, is not as known (FA-RE-B-10).
+#[test]
+fn a_known_failure_is_matched_at_each_chunking() {
+    let known = "past its bound";
+    let each: Vec<String> = probe::CHUNKS
+        .iter()
+        .map(|c| format!("at {c}: {known} 9"))
+        .collect();
+    assert!(fails_as_known(&each, known));
+    let once = [format!("at 1: {known} {known} {known} {known}")];
+    assert!(!fails_as_known(&once, known));
+    let mut other = each.clone();
+    if let Some(last) = other.last_mut() {
+        *last = "whole: a heap peak of 9".to_string();
+    }
+    assert!(!fails_as_known(&other, known));
+}
+
 /// Runs row `row` at `scale` at every chunking: it passes within its
 /// bound, or fails as the known-failing list says it does.
 fn judge(row: &str, scale: Scale) -> Result {
@@ -162,18 +190,16 @@ fn judge(row: &str, scale: Scale) -> Result {
         .ok_or(format!("no row {row}"))?;
     match (rows::run(probe, scale), known_failing(row, scale)) {
         (Ok(()), None) => Ok(()),
-        // As known at every chunking.
-        (Err(found), Some(known))
-            if !known.is_empty() && found.matches(known).count() >= probe::CHUNKS.len() =>
-        {
-            Ok(())
-        }
+        (Err(found), Some(known)) if fails_as_known(&found, known) => Ok(()),
         (Err(found), Some(known)) => Err(format!(
-            "{row} at {} fails otherwise than known (`{known}`): {found}",
-            scale.name()
+            "{row} at {} fails otherwise than known (`{known}`): {}",
+            scale.name(),
+            found.join("; ")
         )
         .into()),
-        (Err(found), None) => Err(format!("{row} at {}: {found}", scale.name()).into()),
+        (Err(found), None) => {
+            Err(format!("{row} at {}: {}", scale.name(), found.join("; ")).into())
+        }
         (Ok(()), Some(_)) => Err(format!(
             "{row} at {} is within its bound now: take it off tests/bounds/known-failing.txt",
             scale.name()
