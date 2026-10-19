@@ -176,21 +176,6 @@ impl Screen {
                 g.wrap(y, wrapped, v);
             });
         }
-        let bottom = self.cursor_mark().map_or(top, |mark| mark.row);
-        // Moved with the cells, the picture's rows are the last `rows`
-        // down to the cursor's, if they lie inside the region; else it
-        // lost bands, and is not kept.
-        let top = match lifted {
-            false => Some(top),
-            true => {
-                let g = self.grid();
-                let first = g.cursor.row().checked_sub(rows.saturating_sub(1));
-                first
-                    .filter(|first| !stacked && *first >= g.lines.first())
-                    .and_then(|first| g.live_row(first))
-                    .map(|row| row.id())
-            }
-        };
         // "The ANSI text vertical position is updated to reflect the
         // vertical motion commands executed" (DEC STD 070-9, 11.3): the
         // cursor goes down to the row the last band ends in when that is
@@ -202,17 +187,42 @@ impl Screen {
         // was.
         let down = picture.ended().checked_div(u32::from(cell.1)).unwrap_or(0);
         let down = u16::try_from(down).unwrap_or(u16::MAX);
+        // The screen row of its last band, and that row.
+        let mut last = Some(self.grid().cursor.row());
+        let mut bottom = self.cursor_mark().map_or(top, |mark| mark.row);
         // At most 8 rows below it: a new line goes down as many rows as the
         // aspect ratio makes six pixel rows, so a few bytes could otherwise
-        // ask for any number of line feeds (B05).
+        // ask for any number of line feeds (B05). Each that scrolls the
+        // cells between left and right margins lifts its bands with them.
         if let Some(cursor) = display {
             self.grid_mut().cursor = cursor;
         } else {
             for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
+                let g = self.grid();
+                if g.lr() && g.in_columns() && g.cursor.row() == g.lines.last() {
+                    lifted = true;
+                    last = last.and_then(|last| last.checked_sub(1));
+                    let row = last.and_then(|last| self.grid().live_row(last));
+                    bottom = row.map_or(bottom, |row| row.id());
+                }
                 self.linefeed()?;
             }
             self.grid_mut().set_col(col);
         }
+        // Moved with the cells, the picture's rows are the last `rows`
+        // down to its last band's, if they lie inside the region; else it
+        // lost bands, and is not kept.
+        let top = match lifted {
+            false => Some(top),
+            true => {
+                let g = self.grid();
+                let first = last.and_then(|last| last.checked_sub(rows.saturating_sub(1)));
+                first
+                    .filter(|first| !stacked && *first >= g.lines.first())
+                    .and_then(|first| g.live_row(first))
+                    .map(|row| row.id())
+            }
+        };
         let alternate = self.alternate_active;
         let Some(top) = top else {
             return Ok(());
