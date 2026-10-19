@@ -560,6 +560,38 @@
       ]
     }
   },
+  "cases-differing": {
+    "reflow-moves-the-saved-cursor": {
+      "citation": "the resize family's: where the cursor's reflowed line no longer fits, Ghostty reflows the columns at the old height first; fux-vt keeps the cursor on its character and pulls rows back from history (wezterm and xterm.js agree with fux-vt)",
+      "on": [
+        "cell (*) text",
+        "cursor",
+        "row * soft-wrapped"
+      ]
+    }
+  },
+  "corpus-replies-differ": {
+    "zellij": {
+      "citation": "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded"
+    },
+    "zellij-small": {
+      "citation": "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded"
+    }
+  },
+  "corpus-reply-changes": {
+    "\u001b[?2027;0$y": {
+      "citation": "mode 2027 (grapheme clusters) is permanently set: 3a6bda6a",
+      "now": "\u001b[?2027;3$y"
+    },
+    "\u001b[?62;22c": {
+      "citation": "DA1 names selective erase (6), horizontal scrolling (21) and rectangular editing (28): a218350c and the commits before it",
+      "now": "\u001b[?62;6;21;22;28c"
+    },
+    "\u001b[?69;0$y": {
+      "citation": "DECLRMM (69) is a mode fux-vt knows, reset: f9a18914",
+      "now": "\u001b[?69;2$y"
+    }
+  },
   "corpus-statuses": {
     "bash": {
       "citation": "",

@@ -5,7 +5,10 @@
 //! the corpus statuses (`corpus::STATUSES`), transparency's recorded
 //! differences (`transparency::KNOWN`), the family statuses
 //! (`families::FAMILIES`), their named cases and the cases' expected
-//! fields (`cases`), the encoder verdicts (`encoders::VERDICTS`), and the
+//! fields (`cases`), the named cases recorded as differing
+//! (`cases::DIFFERING`), the recordings whose replies differ and the reply
+//! changes applied to them (`corpus::REPLIES_DIFFER`, `REPLY_CHANGES`), the
+//! encoder verdicts (`encoders::VERDICTS`), and the
 //! conformance ledger's tags (`ledger.json`, by `SUITE:ID`). Each
 //! is a map from an entry's id to the entry, every entry with its
 //! `citation`: the reason, section or quote it rests on.
@@ -131,6 +134,18 @@ pub fn all() -> Result<Map<String, Value>, String> {
         })
         .collect();
     lists.insert("expected-fields".into(), Value::Object(expected));
+    let differing: Map<String, Value> = (crate::cases::DIFFERING.iter())
+        .map(|d| (d.case.to_owned(), json!({ "on": d.on, "citation": d.why })))
+        .collect();
+    lists.insert("cases-differing".into(), Value::Object(differing));
+    let replies: Map<String, Value> = (crate::corpus::REPLIES_DIFFER.iter())
+        .map(|&(name, why)| (name.to_owned(), json!({ "citation": why })))
+        .collect();
+    lists.insert("corpus-replies-differ".into(), Value::Object(replies));
+    let changes: Map<String, Value> = (crate::corpus::REPLY_CHANGES.iter())
+        .map(|&(was, now, why)| (was.to_owned(), json!({ "now": now, "citation": why })))
+        .collect();
+    lists.insert("corpus-reply-changes".into(), Value::Object(changes));
     let verdicts: Map<String, Value> = crate::encoders::VERDICTS
         .iter()
         .map(|&(name, why)| (name.to_owned(), json!({ "citation": why })))
@@ -460,6 +475,9 @@ mod tests {
             "expected-fields",
             "encoder-verdicts",
             "ledger",
+            "cases-differing",
+            "corpus-replies-differ",
+            "corpus-reply-changes",
         ] {
             let list = all
                 .get(name)
