@@ -1548,10 +1548,13 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
         .collect();
     let window = screen.window();
     // A row drawn again to show as it did at the input brings nothing, nor
-    // does one in history then and still, that nothing printed in since
-    // (its line ended, the top row erased under it).
+    // does one in history now that nothing printed in since and that reads
+    // as it did then, if on the screen (its line ended, the top row erased
+    // under it, maybe after a late redraw scrolled it there).
     let kept = |r: &Row<'_>| {
-        window.place(r).is_none() && !watch.before.contains_key(&r.id()) && !moved.contains(&r.id())
+        window.place(r).is_none()
+            && !moved.contains(&r.id())
+            && (watch.before.get(&r.id())).is_none_or(|(_, (_, was))| *was == crate::pane::shows(r))
     };
     let new = |r: &Row<'_>| {
         !kept(r)
