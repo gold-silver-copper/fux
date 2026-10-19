@@ -495,7 +495,8 @@ impl<'a> Row<'a> {
 }
 
 /// What was printed while the host records ([`Parser::record_prints`]):
-/// each run of text that changed cells, in the order printed, though later
+/// each run of text printed, though it changed no cell (a redraw of what
+/// was there), in the order printed, though later
 /// drawn over, its texts end to end. A row moved within the screen, its
 /// text as it was (lines deleted or put in above it, a region scrolled),
 /// is a run with no text and no columns: the topmost of those moved.
@@ -512,6 +513,14 @@ pub struct Prints {
     text: String,
     cap: usize,
     lost: bool,
+    /// Glyphs printed over themselves, changing no cell, after the last
+    /// text recorded and not beside it: their row and columns. The text
+    /// printed next beside them takes them (`Screen::printed_as`); any
+    /// other lets them go.
+    held: Option<(RowId, Range<u16>)>,
+    /// Where the text recorded last ended, kept across takes: a glyph
+    /// printed over itself there goes on with it.
+    anchor: Option<(RowId, u16)>,
 }
 
 /// The most runs [`Prints`] keeps between takes.
@@ -547,7 +556,17 @@ impl Prints {
             text: String::new(),
             cap: text_cap(cells),
             lost: false,
+            held: None,
+            anchor: None,
         }
+    }
+    /// Takes what was recorded, leaving one for a screen of `cells` cells
+    /// that keeps where the text recorded last ended and the glyphs held,
+    /// so that a take between two calls changes nothing recorded after it.
+    pub(crate) fn take(&mut self, cells: usize) -> Self {
+        let mut next = Self::new(cells);
+        (next.anchor, next.held) = (self.anchor, self.held.take());
+        std::mem::replace(self, next)
     }
     /// The most bytes of text it keeps.
     pub fn cap(&self) -> usize {
@@ -624,6 +643,36 @@ impl Prints {
     pub(crate) fn join(&mut self, row: RowId, cols: Range<u16>, text: &str) {
         self.add(row, cols, text, true);
     }
+    /// Whether a glyph printed over itself at `cols` of `row`, changing no
+    /// cell, is recorded now: where the text recorded last ended; else it
+    /// is held, with any held just before it, for the text printed next
+    /// beside it (`take_held`).
+    pub(crate) fn unchanged(&mut self, row: RowId, cols: Range<u16>) -> bool {
+        if self.lost || self.anchor == Some((row, cols.start)) {
+            return !self.lost;
+        }
+        self.held = match self.held.take() {
+            Some((at, held)) if at == row && held.end == cols.start => {
+                Some((row, held.start..cols.end))
+            }
+            _ => Some((row, cols)),
+        };
+        false
+    }
+    /// Whether it holds glyphs printed over themselves (`unchanged`).
+    #[inline]
+    pub(crate) fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+    /// The columns of the glyphs held that end where text printed at `col`
+    /// of `row` begins, which it takes; any others are let go.
+    pub(crate) fn take_held(&mut self, row: RowId, col: u16) -> Option<Range<u16>> {
+        self.held
+            .take()
+            .filter(|(at, held)| *at == row && held.end == col)
+            .map(|(_, held)| held)
+    }
+    #[inline]
     fn add(&mut self, row: RowId, cols: Range<u16>, text: &str, joins: bool) {
         // Its room is within its caps: while it lasts, nothing is past them.
         let start = self.text.len();
@@ -638,7 +687,7 @@ impl Prints {
         work!(prints, text.len());
         self.text.push_str(text);
         let end = self.text.len();
-        match self.runs.last_mut() {
+        let ends = match self.runs.last_mut() {
             // It goes on where the last left off, or joins a cell it took.
             Some((last, at, bytes))
                 if *last == row
@@ -647,9 +696,15 @@ impl Prints {
             {
                 at.end = at.end.max(cols.end);
                 bytes.end = end;
+                at.end
             }
-            _ => self.runs.push((row, cols, start..end)),
-        }
+            _ => {
+                let ends = cols.end;
+                self.runs.push((row, cols, start..end));
+                ends
+            }
+        };
+        self.anchor = Some((row, ends));
     }
 }
 

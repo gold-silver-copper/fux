@@ -346,6 +346,44 @@ fn prints_are_recorded_though_drawn_over() -> Result {
     Ok(())
 }
 
+/// What is recorded is what was printed, however the output is split
+/// across calls: `OUT0016` printed over `OUT0011`, whole or a byte a
+/// call, or split inside, is recorded as `OUT0016`, as fux's text waits
+/// need (its oracle, mode full, seed 5: FA-TXT-2); a glyph left as it was
+/// goes with the text printed beside it, before or after, and a redraw of
+/// it all is none, however split; text that is not ASCII and REP's copies
+/// the same.
+#[test]
+fn what_is_recorded_does_not_depend_on_how_the_output_is_split() -> Result {
+    for (before, then, printed) in [
+        ("OUT0011", "OUT0016", "OUT0016"),
+        ("OUT0016", "OUT0016", ""),
+        ("OUT0011X", "OUT0016X", "OUT0016X"),
+        ("\u{e9}t\u{e9}1", "\u{e9}t\u{e9}2", "\u{e9}t\u{e9}2"),
+        ("aaab", "a\x1b[3b", "aaaa"),
+        ("aaaa", "a\x1b[3b", ""),
+        ("\u{e9}\u{e9}x", "\u{e9}\x1b[2b", "\u{e9}\u{e9}\u{e9}"),
+    ] {
+        let recorded = |pieces: &[&[u8]]| -> Result<String> {
+            let mut p = Parser::with_options(Size::new(2, 12)?, 0, Options::new())?;
+            p.process(format!("{before}\r").as_bytes())?;
+            p.record_prints(true);
+            for piece in pieces {
+                p.process(piece)?;
+            }
+            let prints = p.take_prints();
+            Ok(prints.iter().map(|t| t.text).collect())
+        };
+        let whole = recorded(&[then.as_bytes()])?;
+        let bytes: Vec<&[u8]> = then.as_bytes().iter().map(std::slice::from_ref).collect();
+        let (head, tail) = then.as_bytes().split_at_checked(3).ok_or("short")?;
+        assert_eq!(recorded(&bytes)?, whole, "{then:?} a byte a call");
+        assert_eq!(recorded(&[head, tail])?, whole, "{then:?} split");
+        assert_eq!(whole, printed, "{before:?} then {then:?}");
+    }
+    Ok(())
+}
+
 /// What is recorded may hold 4 bytes a cell of the screen it is printed
 /// on: a resize with nothing recorded yet makes room for the new size, as
 /// taking the prints does, and loses nothing (FA-PAR-5).

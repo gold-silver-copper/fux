@@ -1232,7 +1232,7 @@ impl Parser {
         self.screen.record_prints(on);
     }
     /// What was printed since the last call, while recording: each run
-    /// of text that changed cells, though drawn over since.
+    /// of text printed, though it changed no cell or was drawn over since.
     pub fn take_prints(&mut self) -> crate::Prints {
         self.screen.take_prints()
     }

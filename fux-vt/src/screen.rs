@@ -878,28 +878,17 @@ fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
 }
 
 /// `Screen::fill`'s sweep of copies of `unit` over `cells`, which hold no
-/// half of a wide glyph: writes the copies that change cells, only the
-/// first stretch of them while `recording`, as `run` records, and says how
-/// many copies it covered and which of them it changed.
-fn sweep<const N: usize>(
-    cells: &mut [Compact],
-    unit: [Compact; N],
-    recording: bool,
-) -> (usize, Option<Range<usize>>) {
+/// half of a wide glyph: writes the copies from the first that changes a
+/// cell, and says whether one did.
+fn sweep<const N: usize>(cells: &mut [Compact], unit: [Compact; N]) -> bool {
     let (copies, _) = cells.as_chunks_mut::<N>();
-    let all = copies.len();
     let Some(first) = copies.iter().position(|c| *c != unit) else {
-        return (all, None);
+        return false;
     };
-    let last = match recording {
-        true => (copies.iter().skip(first).position(|c| *c == unit))
-            .map_or(all, |same| first.saturating_add(same)),
-        false => all,
-    };
-    for copy in copies.iter_mut().take(last).skip(first) {
+    for copy in copies.iter_mut().skip(first) {
         *copy = unit;
     }
-    (if recording { last } else { all }, Some(first..last))
+    true
 }
 
 impl Screen {
@@ -1363,7 +1352,7 @@ impl Screen {
     pub(crate) fn take_prints(&mut self) -> Prints {
         let cells = self.size().cells();
         (self.prints.as_mut())
-            .map(|prints| mem::replace(prints, Prints::new(cells)))
+            .map(|prints| prints.take(cells))
             .unwrap_or_default()
     }
     /// The number of the last change to a row of the primary screen's
@@ -1379,6 +1368,61 @@ impl Screen {
         };
         if let Some(prints) = &mut self.prints {
             prints.push(id, cols, text);
+        }
+    }
+    /// Notes that `text` was printed at live row `row`, columns `cols`, if
+    /// recording: as `printed` if it `changed` cells, after the glyphs
+    /// printed over themselves just before it, held (`Prints::unchanged`),
+    /// read from their cells; one that changed none is recorded where the
+    /// text recorded last ended, and held otherwise. So a run printed over
+    /// what it partly was is recorded whole however the output was split,
+    /// and a redraw of what was there alone is not (FA-TXT-2).
+    #[inline]
+    fn printed_as(&mut self, changed: bool, row: u16, cols: Range<u16>, text: &str) {
+        if !changed {
+            self.printed_over_itself(row, cols, text);
+            return;
+        }
+        if self.prints.as_ref().is_some_and(Prints::holds) {
+            self.take_held(row, cols.start);
+        }
+        self.printed(row, cols, text);
+    }
+    /// `printed_as` of a glyph that changed no cell. Out of line, beside
+    /// the text that changed cells.
+    #[inline(never)]
+    fn printed_over_itself(&mut self, row: u16, cols: Range<u16>, text: &str) {
+        let Some(id) = self.grid().live_id(row) else {
+            return;
+        };
+        if let Some(prints) = &mut self.prints
+            && prints.unchanged(id, cols.clone())
+        {
+            prints.push(id, cols, text);
+        }
+    }
+    /// Records the glyphs held that end at `col` of live row `row`, as
+    /// their cells hold them, and lets any others go. Out of line: only a
+    /// run printed over what it partly was comes here.
+    #[cold]
+    #[inline(never)]
+    fn take_held(&mut self, row: u16, col: u16) {
+        let Some(id) = self.grid().live_id(row) else {
+            return;
+        };
+        let Some(cols) = self.prints.as_mut().and_then(|p| p.take_held(id, col)) else {
+            return;
+        };
+        let Some(line) = self.grid().live_row(row) else {
+            return;
+        };
+        let mut text = String::new();
+        let cells = (usize::from(cols.start)..usize::from(cols.end)).filter_map(|x| line.cell(x));
+        for cell in cells.filter(|cell| !cell.is_wide_continuation()) {
+            text.push_str(cell.contents());
+        }
+        if let Some(prints) = &mut self.prints {
+            prints.push(id, cols, &text);
         }
     }
     /// Notes that `c` joined the cell at live row `row`, column `col`,
@@ -1862,12 +1906,10 @@ impl Screen {
             }
         }
         self.last_print = Some(Printed::of((row, col), properties));
-        if changed && self.prints.is_some() {
-            self.printed(
-                row,
-                col..col.saturating_add(width),
-                c.encode_utf8(&mut [0; 4]),
-            );
+        if self.prints.is_some() {
+            let mut text = [0; 4];
+            let text = c.encode_utf8(&mut text);
+            self.printed_as(changed, row, col..col.saturating_add(width), text);
         }
         Ok(())
     }
@@ -1927,8 +1969,10 @@ impl Screen {
         properties: Properties,
         chars: &mut Chars<'_>,
     ) -> Option<(char, Properties)> {
-        // Where `first` is in the text.
-        let mut bytes = chars.taken().saturating_sub(first.len_utf8())..chars.taken();
+        // Where `first` is in the text, and the end of the last glyph
+        // written.
+        let from = chars.taken().saturating_sub(first.len_utf8());
+        let mut to = chars.taken();
         let g = self.grid();
         let (row, start) = g.cursor.at();
         let end = g.line_end();
@@ -1941,15 +1985,14 @@ impl Screen {
         };
         // `print` takes the pen's style for a glyph that fits too.
         let style = self.pen_style() | self.protect;
-        // The last glyph written, and where; the character the run
-        // stopped at; and the glyphs it changed, as columns and text, which
-        // a host that records prints is given as `print` gives each: one
-        // span of them, so the run stops before a glyph changed past one
-        // left as it was.
+        // The last glyph written, and where; and the character the run
+        // stopped at. A host that records prints is given every glyph
+        // written, as `print` gives each: the run's text, from `first` to
+        // where it stopped.
         let mut last = None;
         let mut stopped = None;
         let mut col = start;
-        let mut span: Option<(Range<u16>, Range<usize>)> = None;
+        let mut any = false;
         self.with_grid(|g, _, version| {
             g.mutate_row_to(row, version, |cells| {
                 let mut changed = None;
@@ -1977,18 +2020,6 @@ impl Screen {
                     let cell = Compact::glyph(c, usize::from(width), style);
                     // Already this glyph, whole, as a redraw finds it.
                     if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
-                        let next = col.saturating_add(width);
-                        match &mut span {
-                            _ if !RECORDING => {}
-                            None => span = Some((col..next, bytes.clone())),
-                            Some((cols, text)) if cols.end == col => {
-                                (cols.end, text.end) = (next, bytes.end);
-                            }
-                            Some(_) => {
-                                stopped = Some((c, properties));
-                                break;
-                            }
-                        }
                         if let Some(slot) = cells.get_mut(i) {
                             *slot = cell;
                         }
@@ -1999,11 +2030,8 @@ impl Screen {
                     }
                     last = Some((col, c, properties));
                     col = col.saturating_add(width);
-                    let at = chars.taken();
+                    to = chars.taken();
                     glyph = chars.next().and_then(|c| {
-                        if RECORDING {
-                            bytes = at..chars.taken();
-                        }
                         let properties = Properties::of(c);
                         match run_width(properties, col, end, Cluster::default()) {
                             Some(width) => Some((c, properties, width)),
@@ -2014,6 +2042,7 @@ impl Screen {
                         }
                     });
                 }
+                any = changed.is_some();
                 changed
             });
             // Past the glyphs; in the last column the cursor waits
@@ -2029,8 +2058,8 @@ impl Screen {
             self.repeat = Some(c);
             self.last_print = Some(Printed::of((row, at), properties));
         }
-        if RECORDING && let Some((cols, text)) = span {
-            self.printed(row, cols, chars.text(text));
+        if RECORDING && col > start {
+            self.printed_as(any, row, start..col, chars.text(from..to));
         }
         stopped
     }
@@ -2041,9 +2070,8 @@ impl Screen {
     /// wide glyph; says how many, none where `print` must write the next.
     /// The glyph is the same each time, so it is looked up and made once.
     /// `text` is the copies' text while the host records prints, as long
-    /// as a row's worth of them; the copies it records are one span, as
-    /// `run` records, so it stops before one changed past one left as it
-    /// was.
+    /// as a row's worth of them; it is given every copy written, as `run`
+    /// gives its glyphs.
     fn fill(&mut self, c: char, properties: Properties, copies: usize, text: &str) -> usize {
         let g = self.grid();
         let (row, start) = g.cursor.at();
@@ -2057,7 +2085,6 @@ impl Screen {
         };
         let room = usize::from(end.saturating_sub(start).checked_div(width).unwrap_or(0));
         let copies = copies.min(room);
-        let recording = self.prints.is_some();
         let cell = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
         let wide = width == 2;
         // The column copy `k` is written at.
@@ -2067,7 +2094,7 @@ impl Screen {
                 .and_then(|k| k.checked_mul(width))
                 .map_or(end, |cols| start.saturating_add(cols))
         };
-        let (mut made, mut span) = (0, None::<Range<usize>>);
+        let (mut made, mut any) = (0, false);
         self.with_grid(|g, _, version| {
             g.mutate_row_to(row, version, |cells| {
                 let from = usize::from(start);
@@ -2078,15 +2105,13 @@ impl Screen {
                 if let Some(cells) = cells.get_mut(from..to)
                     && !Compact::any_halves(cells)
                 {
-                    let changed;
-                    (made, changed) = match wide {
-                        false => sweep(cells, [cell], recording),
-                        true => sweep(cells, [cell, Compact::continuation()], recording),
+                    made = copies;
+                    let changed = match wide {
+                        false => sweep(cells, [cell]),
+                        true => sweep(cells, [cell, Compact::continuation()]),
                     };
-                    let changed = changed?;
-                    let end = from.saturating_add(changed.end.saturating_mul(usize::from(width)));
-                    span = recording.then_some(changed);
-                    return u16::try_from(end).ok();
+                    any = changed;
+                    return changed.then(|| u16::try_from(to).ok()).flatten();
                 }
                 let half = |cell: Option<&Compact>| {
                     cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
@@ -2106,12 +2131,6 @@ impl Screen {
                         break;
                     }
                     if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
-                        match &mut span {
-                            _ if !recording => {}
-                            None => span = Some(k..k.saturating_add(1)),
-                            Some(copies) if copies.end == k => copies.end = k.saturating_add(1),
-                            Some(_) => break,
-                        }
                         if let Some(slot) = cells.get_mut(i) {
                             *slot = cell;
                         }
@@ -2122,6 +2141,7 @@ impl Screen {
                     }
                     made = k.saturating_add(1);
                 }
+                any = changed.is_some();
                 changed
             });
             if made > 0 {
@@ -2137,14 +2157,9 @@ impl Screen {
         }
         self.repeat = Some(c);
         self.last_print = Some(Printed::of((row, at(last)), properties));
-        if let Some(copies) = span {
-            let bytes =
-                copies.start.saturating_mul(c.len_utf8())..copies.end.saturating_mul(c.len_utf8());
-            self.printed(
-                row,
-                at(copies.start)..at(copies.end),
-                text.get(bytes).unwrap_or_default(),
-            );
+        if self.prints.is_some() {
+            let bytes = text.get(..made.saturating_mul(c.len_utf8()));
+            self.printed_as(any, row, start..at(made), bytes.unwrap_or_default());
         }
         made
     }
@@ -2480,15 +2495,15 @@ impl Screen {
             // repairs, is written up to it, and the glyph there printed.
             let written = loop {
                 match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
-                    Written::All => {
+                    written @ (Written::All | Written::Same) => {
                         if self.prints.is_some() {
                             let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
                             let text = str::from_utf8(run).unwrap_or_default();
-                            self.printed(row, col..end, text);
+                            let changed = matches!(written, Written::All);
+                            self.printed_as(changed, row, col..end, text);
                         }
                         break true;
                     }
-                    Written::Same => break true,
                     Written::Before(n) => match run.get(..n) {
                         Some(before) if !before.is_empty() && n < run.len() => run = before,
                         Some(_) | None => break false,
@@ -2536,13 +2551,13 @@ impl Screen {
         }
         let style = self.pen_style() | self.protect;
         match self.with_grid(|g, _, v| g.write_ascii(row, col, &[byte], style, v)) {
-            Written::All => {
+            written @ (Written::All | Written::Same) => {
                 if self.prints.is_some() {
                     let text = str::from_utf8(std::slice::from_ref(&byte)).unwrap_or_default();
-                    self.printed(row, col..col.saturating_add(1), text);
+                    let changed = matches!(written, Written::All);
+                    self.printed_as(changed, row, col..col.saturating_add(1), text);
                 }
             }
-            Written::Same => {}
             Written::Before(_) => return false,
         }
         let end = col.saturating_add(1);
