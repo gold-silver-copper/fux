@@ -3,16 +3,28 @@
 //!
 //! A character's width is unicode-width 0.2.2's for Unicode 17.0.0 (its
 //! `scripts/unicode.py`), generated into fux-vt's table by `fux-vt/gen`,
-//! with one departure: U+17D8 KHMER SIGN BEYYAL, which it makes 3 columns,
-//! takes 1, as in xterm 411 and glibc, since a cell holds 1 column or 2.
+//! with two departures, each as glibc's wcwidth has it: U+17D8 KHMER SIGN
+//! BEYYAL, which it makes 3 columns, takes 1, as in xterm 411, since a cell
+//! holds 1 column or 2; and a spacing mark (General_Category Mc) it makes 0
+//! (one that is Grapheme_Extend, as U+09BE BENGALI VOWEL SIGN AA) takes 1,
+//! so a consonant and its spacing vowel sign take two columns, but for a
+//! spacing virama (Canonical_Combining_Class 9), which joins consonants.
+//! Such a mark is the second half of a two-part vowel sign or a composed
+//! letter (U+09CB is U+09C7 U+09BE, U+0B94 U+0B92 U+0BD7), so right after
+//! another spacing mark it adds no column, and a cluster takes the columns
+//! of its form with each such pair composed (as glibc's widths summed over
+//! the NFC form): canonical equivalents take the same columns, even where
+//! a leading mark of no width was dropped (`Screen::print_as`).
 //!
 //! A cluster's width is unicode-width 0.2.2's string width of that cluster
 //! alone (its `width_in_str`, read from the last character back), for the
 //! rules that can hold within one cluster: emoji presentation (U+FE0F) and
 //! text presentation (U+FE0E) sequences, emoji modifiers, emoji ZWJ and tag
 //! sequences, keycaps, regional indicator pairs, a curly quote with U+FE01,
-//! Kirat Rai's vowel signs, and a Khmer letter subjoined by a coeng (a
-//! conjunct, one cluster by UAX #29's GB9c). Its rules for ligatures
+//! and Kirat Rai's vowel signs. Its rule that a Khmer letter subjoined by a
+//! coeng adds no column takes no part: the coeng (Mn) takes none and the
+//! letter its one, so a conjunct of two letters takes two columns, as
+//! glibc's widths summed make it. Its rules for ligatures
 //! between characters that never share a cluster (Arabic Lam-Alef, Hebrew
 //! Alef-Lamed, Buginese, Tifinagh, Lisu and Old Turkic) take no part: a
 //! cluster is laid out alone. Text of several clusters takes the sum of
@@ -35,10 +47,13 @@ const MODIFIER_BASE: u16 = 1 << 12;
 const TRANSPARENT: u16 = 1 << 13;
 /// Its bit for a character the cluster rule's arms look at, before or
 /// after it: a variation selector, ZWJ, the keycap, a regional indicator,
-/// an emoji modifier, a tag, Kirat Rai's vowel signs, the Khmer coeng, or
-/// a line feed after a carriage return. Text with none of them takes its
+/// an emoji modifier, a tag, Kirat Rai's vowel signs, or a line feed after
+/// a carriage return. Text with none of them takes its
 /// characters' columns summed.
 pub(super) const CONTEXT: u16 = 1 << 14;
+/// Its bit for a spacing mark (General_Category Mc). One the rule looks at
+/// too is a spacing mark unicode-width makes 0 and fux-vt 1.
+const SPACING: u16 = 1 << 15;
 
 /// The columns `c` takes alone as fux-vt prints it, `None` for a control.
 /// A host that lays out what fux-vt holds (fux's painter) takes its widths
@@ -134,7 +149,6 @@ impl Next {
     const VARIATION_SELECTOR_1_2_OR_3: Self = Self(0b0000_0010_0000_0000);
     const VARIATION_SELECTOR_15: Self = Self(0b0100_0000_0000_0000);
     const VARIATION_SELECTOR_16: Self = Self(0b1000_0000_0000_0000);
-    const KHMER_COENG_ELIGIBLE_LETTER: Self = Self(0b0011_1100_0000_0111);
 
     /// The bit of a ligature's states, which a variation selector keeps.
     const LIGATURE: u16 = 0b0010_0000_0000_0000;
@@ -205,18 +219,6 @@ fn alone(c: char, bits: u16) -> (i8, Next) {
         '\u{fe0f}' => Next::VARIATION_SELECTOR_16,
         '\u{16d67}' => Next::KIRAT_RAI_VOWEL_SIGN_E,
         '\u{16d68}' => Next::KIRAT_RAI_VOWEL_SIGN_AI,
-        '\u{1780}'..='\u{1782}'
-        | '\u{1784}'..='\u{1787}'
-        | '\u{1789}'..='\u{178c}'
-        | '\u{178e}'..='\u{1793}'
-        | '\u{1795}'..='\u{1798}'
-        | '\u{179b}'..='\u{179d}'
-        | '\u{17a0}'
-        | '\u{17a2}'
-        | '\u{17a7}'
-        | '\u{17ab}'
-        | '\u{17ac}'
-        | '\u{17af}' => Next::KHMER_COENG_ELIGIBLE_LETTER,
         '\u{1f1e6}'..='\u{1f1ff}' => Next::REGIONAL_INDICATOR,
         '\u{1f3fb}'..='\u{1f3ff}' => Next::EMOJI_MODIFIER,
         _ if bits & PRESENTATION != 0 => Next::EMOJI_PRESENTATION,
@@ -235,19 +237,71 @@ fn alone(c: char, bits: u16) -> (i8, Next) {
 fn cluster_width(cluster: &str) -> usize {
     let mut total = 0isize;
     let mut next = Next::DEFAULT;
+    let mut widened = false;
     for c in cluster.chars().rev() {
-        let (add, before) = in_cluster(c, next);
+        let bits = bits(c);
+        widened |= bits & (CONTEXT | SPACING) == CONTEXT | SPACING;
+        let (add, before) = in_cluster(c, bits, next);
         total = total.saturating_add(isize::from(add));
         next = before;
+    }
+    if widened {
+        total = total.saturating_add(composed(cluster));
     }
     usize::try_from(total).unwrap_or(0)
 }
 
-/// `c`'s columns, with `next` after it (unicode-width 0.2.2's
+/// What fux-vt's rule for the spacing marks it widens changes in the
+/// columns `cluster_width` counts: the cluster is composed first, each
+/// pair of a character and such a mark that composes canonically
+/// (`tables::COMPOSITIONS`) made one, from the start, as NFC composes;
+/// then each character of it takes its columns, but such a mark right
+/// after another spacing mark, which takes none.
+fn composed(cluster: &str) -> isize {
+    let alone = |c: char| of_bits(bits(c)).map_or(1, |w| isize::try_from(w).unwrap_or(1));
+    // The columns `c` of the composed text takes, after `before`.
+    let counted = |c: char, before: Option<char>| {
+        let widened = bits(c) & (CONTEXT | SPACING) == CONTEXT | SPACING;
+        if widened && before.is_some_and(|b| bits(b) & SPACING != 0) {
+            0
+        } else {
+            alone(c)
+        }
+    };
+    let mut chars = cluster.chars();
+    let Some(first) = chars.next() else {
+        return 0;
+    };
+    let (mut before, mut pending) = (None, first);
+    let (mut rule, mut summed) = (0isize, alone(first));
+    for c in chars {
+        summed = summed.saturating_add(alone(c));
+        let pair = bits(c) & (CONTEXT | SPACING) == CONTEXT | SPACING;
+        let whole = pair
+            .then(|| {
+                let found = super::tables::COMPOSITIONS
+                    .binary_search_by(|&(first, second, _)| (first, second).cmp(&(pending, c)));
+                found
+                    .ok()
+                    .and_then(|at| super::tables::COMPOSITIONS.get(at))
+            })
+            .flatten();
+        match whole {
+            Some(&(_, _, whole)) => pending = whole,
+            None => {
+                rule = rule.saturating_add(counted(pending, before));
+                (before, pending) = (Some(pending), c);
+            }
+        }
+    }
+    rule.saturating_add(counted(pending, before))
+        .saturating_sub(summed)
+}
+
+/// `c`'s columns (its table bits `bits`), with `next` after it (unicode-width 0.2.2's
 /// `width_in_str`, its arms that can hold within a cluster), and what it
 /// is to the character before it.
-fn in_cluster(c: char, mut next: Next) -> (i8, Next) {
-    let bits = bits(c);
+fn in_cluster(c: char, bits: u16, mut next: Next) -> (i8, Next) {
     if next.is_emoji_presentation() {
         if bits & EMOJI_STYLE != 0 {
             let width = if next.is_zwj_emoji_presentation() {
@@ -291,9 +345,6 @@ fn in_cluster(c: char, mut next: Next) -> (i8, Next) {
             if bits & TRANSPARENT != 0 {
                 return (0, next);
             }
-        }
-        if next == Next::KHMER_COENG_ELIGIBLE_LETTER && c == '\u{17d2}' {
-            return (-1, Next::DEFAULT);
         }
         if let Some(found) = emoji_sequence(c, bits, next) {
             return found;

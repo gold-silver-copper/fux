@@ -437,15 +437,28 @@ fux-vt's work counters and a counting allocator against it.
   `fux-vt/gen`, one lookup a character in the same table. A character
   takes the columns unicode-width 0.2.2 gives it (zero for its zero
   widths, 2 for East Asian Wide and Fullwidth, else 1; controls none),
-  U+17D8 aside. A grapheme cluster takes unicode-width 0.2.2's string
-  width of that cluster alone (`src/unicode/width.rs`: emoji and text
-  presentation, modifiers, ZWJ, tag and keycap sequences, flags, Kirat
-  Rai's vowels, Khmer conjuncts); its ligatures between clusters (Arabic
-  Lam-Alef and the like) take no part, as a cluster is laid out alone. It
-  is a recorded tailoring of UAX #11, which leaves a terminal's widths to
-  it, chosen to match what programs laid out with unicode-width expect.
-  Tested against unicode-width 0.2.2 for every code point and some 17 M
-  clusters (`unicode::tests`).
+  U+17D8 aside, and the 46 spacing marks (General_Category Mc, no virama)
+  it makes zero as Grapheme_Extend (U+09BE BENGALI VOWEL SIGN AA), which
+  take 1, as glibc's wcwidth has them: a consonant and its spacing vowel
+  sign take two columns. A grapheme cluster takes unicode-width 0.2.2's
+  string width of that cluster alone (`src/unicode/width.rs`: emoji and
+  text presentation, modifiers, ZWJ, tag and keycap sequences, flags,
+  Kirat Rai's vowels), but without its rule that a Khmer conjunct takes
+  one column (the coeng takes none and each letter one: two, as glibc's
+  widths summed); and a cluster holding such a spacing mark takes the
+  columns of its form composed (each pair of a character and such a mark
+  with a canonical decomposition made one, `tables::COMPOSITIONS`), such
+  a mark right after another spacing mark taking none, so canonical
+  equivalents take the same columns (U+09CB and U+09C7 U+09BE). Its
+  ligatures between clusters (Arabic Lam-Alef and the like) take no
+  part, as a cluster is laid out alone. It is a recorded tailoring of
+  UAX #11, which leaves a terminal's widths to it, chosen to match what
+  programs laid out with unicode-width expect, and, for spacing marks and
+  Khmer conjuncts, with glibc's widths (ucs-detect: 83 of 85 languages,
+  where unicode-width's rule gives 77; a Tai Tham (Khün) conjunct
+  and one Malayalam chillu sequence still differ). Tested against unicode-width 0.2.2 for every code point and
+  some 15 M clusters, its departures aside (`unicode::tests`), and
+  against NormalizationTest's canonical equivalents (`tests/ucd.rs`).
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.

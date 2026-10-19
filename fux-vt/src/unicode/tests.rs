@@ -165,20 +165,47 @@ fn continues_cluster_answers_as_the_state_machine() {
     assert!(!continues_cluster("\u{1F44D}", 'x'));
 }
 
+/// Whether fux-vt's width rule gives `c` other columns than
+/// unicode-width 0.2.2: U+17D8, and the spacing marks it makes 0.
+fn departs(c: char) -> bool {
+    use unicode_width::UnicodeWidthChar;
+    crate::char_width(c) != c.width()
+}
+
 /// fux-vt's widths (threats.md B32): no character takes more than 2
 /// columns, U+17D8 KHMER SIGN BEYYAL, the one unicode-width makes 3,
-/// takes 1, as in xterm 411; every other is unicode-width 0.2.2's, of the
-/// same Unicode version as the tables.
+/// takes 1, as in xterm 411; the 46 spacing marks (Mc, no virama) it makes
+/// 0, as Grapheme_Extend, take 1, as in glibc; every other is
+/// unicode-width 0.2.2's, of the same Unicode version as the tables.
 #[test]
 fn every_character_is_as_wide_as_the_width_rule_says() {
     use unicode_width::UnicodeWidthChar;
     assert_eq!(unicode_width::UNICODE_VERSION, UNICODE_VERSION);
+    let mut spacing = 0u32;
     for c in (0..=0x10_ffff).filter_map(char::from_u32) {
         let width = crate::char_width(c);
         assert!(width.is_none_or(|w| w <= 2), "{c:?} is {width:?} wide");
-        if c != '\u{17d8}' {
-            assert_eq!(width, c.width(), "{c:?}");
+        if c != '\u{17d8}' && width != c.width() {
+            // A spacing mark: Grapheme_Extend, so Extend to UAX #29.
+            assert_eq!((width, c.width()), (Some(1), Some(0)), "{c:?}");
+            assert_eq!(Properties::of(c).kind(), super::Break::Extend, "{c:?}");
+            spacing = spacing.saturating_add(1);
         }
+    }
+    assert_eq!(spacing, 46);
+    for mark in [
+        '\u{9be}',
+        '\u{bbe}',
+        '\u{cc0}',
+        '\u{d3e}',
+        '\u{dcf}',
+        '\u{1133e}',
+    ] {
+        assert_eq!(crate::char_width(mark), Some(1), "{mark:?}");
+    }
+    // Spacing viramas stay at none.
+    for virama in ['\u{a9c0}', '\u{1134d}'] {
+        assert_eq!(crate::char_width(virama), Some(0), "{virama:?}");
     }
     assert_eq!(crate::char_width('\u{17d8}'), Some(1));
     assert_eq!(crate::str_width("\u{17d8}"), 1);
@@ -220,7 +247,10 @@ fn one_cluster(text: &str) -> bool {
 }
 
 /// The cluster rule (`str_width` of one cluster) is unicode-width 0.2.2's
-/// string width of that cluster, U+17D8 aside: for every character alone,
+/// string width of that cluster, but for a cluster holding U+17D8, a
+/// spacing mark the rule departs on, or a Khmer coeng (whose rule fux-vt
+/// does not take: `a_spacing_mark_and_a_coeng_conjunct_take_their_columns`):
+/// for every character alone,
 /// and before and after each of `CONTEXT`'s; for the ZWJ, keycap,
 /// modifier, flag and tag sequences built of every emoji; and for every
 /// cluster of the Unicode conformance test.
@@ -229,7 +259,7 @@ fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
     use unicode_width::UnicodeWidthStr;
     let mut checked = 0u32;
     let mut check = |text: &str| {
-        if one_cluster(text) && !text.contains('\u{17d8}') {
+        if one_cluster(text) && !text.chars().any(|c| c == '\u{17d2}' || departs(c)) {
             assert_eq!(crate::str_width(text), text.width(), "{text:?}");
             checked = checked.saturating_add(1);
         }
@@ -314,7 +344,39 @@ fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
             check(&text);
         }
     }
-    assert!(checked > 17_000_000, "{checked} clusters");
+    assert!(checked > 15_000_000, "{checked} clusters");
+}
+
+/// fux-vt's departures in a cluster: a consonant and a spacing vowel sign
+/// take two columns, each one, as glibc's widths summed make them (ucs-detect
+/// measures Bengali, Kannada, Malayalam, Sinhala, Tamil and Grantha so); a
+/// Khmer conjunct, two letters joined by a coeng (Mn, none), two; a spacing
+/// virama none, so a Javanese consonant and its pangkon one.
+#[test]
+fn a_spacing_mark_and_a_coeng_conjunct_take_their_columns() {
+    for (text, width) in [
+        ("\u{995}\u{9be}", 2),
+        ("\u{c95}\u{cc0}", 2),
+        ("\u{d15}\u{d3e}", 2),
+        ("\u{d9a}\u{dcf}", 2),
+        ("\u{b95}\u{bbe}", 2),
+        ("\u{11315}\u{1133e}", 2),
+        ("\u{1780}\u{17d2}\u{1781}", 2),
+        ("\u{1780}\u{17d2}\u{178a}\u{17b7}", 2),
+        ("\u{a98f}\u{a9c0}", 1),
+        ("\u{11315}\u{1134d}", 1),
+        // Two-part vowel signs: as their composed forms.
+        ("\u{995}\u{9c7}\u{9be}", 2),
+        ("\u{9c7}\u{9be}", 1),
+        ("\u{9cb}", 1),
+        ("\u{d9a}\u{dd9}\u{dcf}\u{dca}", 2),
+        ("\u{dd9}\u{dcf}\u{dca}", 1),
+        ("\u{b92}\u{bd7}", 1),
+        ("\u{1d158}\u{1d165}", 1),
+    ] {
+        assert!(one_cluster(text), "{text:?}");
+        assert_eq!(crate::str_width(text), width, "{text:?}");
+    }
 }
 
 /// `Cluster::start`'s ASCII shortcut is what the table gives.
@@ -331,15 +393,14 @@ fn a_cluster_started_with_ascii_is_as_the_table_starts_it() {
 
 /// The table's bit for the characters the cluster width rule looks at
 /// (`width::CONTEXT`) is set on exactly those its arms name: a line feed,
-/// the Khmer coeng, ZWJ, the keycap, the variation selectors, Kirat Rai's
+/// a spacing mark fux-vt widens, ZWJ, the keycap, the variation selectors, Kirat Rai's
 /// vowel signs, the regional indicators, the emoji modifiers and the tags.
 #[test]
 fn the_width_rule_looks_at_the_characters_its_arms_name() {
     for c in (0..=0x10_ffffu32).filter_map(char::from_u32) {
         let named = matches!(
             c,
-            '\n' | '\u{17d2}'
-                | '\u{200d}'
+            '\n' | '\u{200d}'
                 | '\u{20e3}'
                 | '\u{fe00}'..='\u{fe0f}'
                 | '\u{16d63}'..='\u{16d6a}'
@@ -347,9 +408,10 @@ fn the_width_rule_looks_at_the_characters_its_arms_name() {
                 | '\u{1f3fb}'..='\u{1f3ff}'
                 | '\u{e0020}'..='\u{e007f}'
         );
+        let spacing = c != '\u{17d8}' && departs(c);
         assert_eq!(
             Properties::of(c).in_context(),
-            named,
+            named || spacing,
             "{:04X}",
             u32::from(c)
         );

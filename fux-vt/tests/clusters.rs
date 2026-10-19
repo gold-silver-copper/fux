@@ -13,15 +13,21 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Clusters two columns wide by the width rule (unicode-width 0.2.2's
 /// string width): VS16 after a narrow emoji, a flag of two regional
 /// indicators (one column each alone), an emoji modifier sequence after a
-/// narrow base, a keycap, a Prepend character with a digit, and four
-/// leading jamo (GB6), which sum to 8 and take 2. All but the last begin
-/// with a narrow character, and widen as the rest joins.
-const RULES: [(&str, &str); 6] = [
+/// narrow base, a keycap, a Prepend character with a digit, a consonant
+/// and its spacing vowel sign (fux-vt's spacing-mark rule: one column
+/// each), a two-part vowel sign decomposed, a Khmer conjunct (two letters
+/// joined by a coeng, which takes none), and four leading jamo (GB6),
+/// which sum to 8 and take 2. All but the last begin with a narrow
+/// character, and widen as the rest joins.
+const RULES: [(&str, &str); 9] = [
     ("VS16", "\u{2764}\u{fe0f}"),
     ("flag", "\u{1f1ef}\u{1f1f5}"),
     ("modifier", "\u{261d}\u{1f3fb}"),
     ("keycap", "1\u{fe0f}\u{20e3}"),
     ("Prepend", "\u{600}1"),
+    ("spacing mark", "\u{995}\u{9be}"),
+    ("two-part vowel sign", "\u{995}\u{9c7}\u{9be}"),
+    ("coeng", "\u{1780}\u{17d2}\u{1781}"),
     ("jamo", "\u{1100}\u{1100}\u{1100}\u{1100}"),
 ];
 

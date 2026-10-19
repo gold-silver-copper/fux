@@ -14,22 +14,98 @@ use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// The spacing marks unicode-width makes 0 and fux-vt's rule 1, the
+/// canonical decompositions of two whose second is one, `(first, second)
+/// -> composed`, and every spacing mark (`data/spacing-marks.txt`, from
+/// UnicodeData.txt).
+type Marks = (
+    std::collections::HashSet<char>,
+    std::collections::HashMap<(char, char), char>,
+    std::collections::HashSet<char>,
+);
+
+fn marks() -> &'static Marks {
+    static MARKS: std::sync::OnceLock<Marks> = std::sync::OnceLock::new();
+    MARKS.get_or_init(|| {
+        let hex = |h: &str| u32::from_str_radix(h, 16).ok().and_then(char::from_u32);
+        let mut marks = Marks::default();
+        let text = include_str!("../data/spacing-marks.txt");
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            match fields[..] {
+                [code, "widened"] => {
+                    marks.0.extend(hex(code));
+                    marks.2.extend(hex(code));
+                }
+                [code] => marks.2.extend(hex(code)),
+                [whole, "=", first, second] => {
+                    if let (Some(w), Some(f), Some(s)) = (hex(whole), hex(first), hex(second)) {
+                        marks.1.insert((f, s), w);
+                    }
+                }
+                _ => {}
+            }
+        }
+        marks
+    })
+}
+
 /// The columns `c` takes, by fux-vt's written width rule (its README, "A
 /// glyph", B32): unicode-width's, but a cell holds at most 2, so U+17D8,
 /// the one character unicode-width makes 3 columns wide, takes 1, as in
-/// xterm 411 and glibc.
+/// xterm 411 and glibc; and a spacing mark it makes 0 (but a virama) takes
+/// 1, as in glibc.
 pub fn width(c: char) -> Option<usize> {
+    if marks().0.contains(&c) {
+        return Some(1);
+    }
     c.width().map(|w| if w > 2 { 1 } else { w })
 }
 
 /// The columns `text` takes by the same rule: unicode-width's, each
-/// character it makes wider than 2 counted at 1.
+/// character it makes wider than 2 counted at 1, without its rule that a
+/// Khmer coeng takes a column back (the coeng takes none, its letter one),
+/// each spacing mark it makes 0 and the rule 1 one more; but each
+/// character's alone in place of the columns of the text composed (each
+/// pair of a character and such a mark that composes canonically made
+/// one, from the start), where such a mark right after another spacing
+/// mark takes none.
 fn text_width(text: &str) -> usize {
+    let text: String = text.chars().filter(|&c| c != '\u{17d2}').collect();
     let over = text.chars().filter(|c| c.width().is_some_and(|w| w > 2));
     let extra = over
         .map(|c| c.width().unwrap_or(1).saturating_sub(1))
         .sum::<usize>();
-    text.width().saturating_sub(extra)
+    let (widened, pairs, spacing) = marks();
+    let alone = |c: char| width(c).unwrap_or(1);
+    let counted = |c: char, before: Option<char>| {
+        if widened.contains(&c) && before.is_some_and(|b| spacing.contains(&b)) {
+            0
+        } else {
+            alone(c)
+        }
+    };
+    // unicode-width's columns, the widened marks' one each, then the rule's
+    // for the composed text in place of each character's alone.
+    let base = (text.width().saturating_sub(extra))
+        .saturating_add(text.chars().filter(|c| widened.contains(c)).count());
+    let summed = text.chars().map(alone).fold(0usize, usize::saturating_add);
+    let mut rule = 0usize;
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        let (mut before, mut pending) = (None, first);
+        for c in chars {
+            match pairs.get(&(pending, c)) {
+                Some(&whole) => pending = whole,
+                None => {
+                    rule = rule.saturating_add(counted(pending, before));
+                    (before, pending) = (Some(pending), c);
+                }
+            }
+        }
+        rule = rule.saturating_add(counted(pending, before));
+    }
+    base.saturating_add(rule).saturating_sub(summed)
 }
 
 /// A character fux-vt prints as a glyph or joins to one: any but a
