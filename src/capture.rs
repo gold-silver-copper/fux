@@ -443,8 +443,8 @@ fn print(
     out.push('\n');
     // JSON's lines are the text's, trimmed alike.
     let json = state.map(|state| {
-        // On a blank row trimmed away, it is still where it is: past the
-        // lines printed.
+        // The screen's own row and column, as the state line says them,
+        // whatever blank rows are trimmed from the lines.
         let cursor = cursor.map_or(Json::Null, |(y, x)| {
             Json::Array(vec![Json::int(y), Json::int(x)])
         });
