@@ -804,6 +804,12 @@ fn usage(pid: u32) -> Option<(u64, f64)> {
 
 /// The median and the 99th percentile of `values`, in ms, and their mean.
 fn summary(values: &mut [f64]) -> serde_json::Value {
+    // No key: no figures, said as none (null), never a NaN.
+    if values.is_empty() {
+        return serde_json::json!({
+            "keys": 0, "p50_ms": null, "p99_ms": null, "mean_ms": null, "max_ms": null,
+        });
+    }
     values.sort_by(f64::total_cmp);
     // The value `percent` of the way from the least to the most, nearest.
     let at = |percent: usize| -> f64 {
@@ -828,6 +834,7 @@ fn summary(values: &mut [f64]) -> serde_json::Value {
 /// Latency: `keys` keys typed at `session`'s client, one at a time.
 fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String> {
     let mut times = Vec::with_capacity(keys);
+    let mut waited = Vec::new();
     let mut missed = 0usize;
     // The first keys whose echo never came, and the bytes the client was
     // sent meanwhile: whether it was painted at all.
@@ -857,6 +864,9 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
             None => {
                 missed = missed.saturating_add(1);
                 in_a_row = in_a_row.saturating_add(1);
+                // At least the wait, in the quantiles: a key whose echo
+                // never came took longer than any that did.
+                waited.push(KEY_WAIT.as_secs_f64() * 1e3);
                 if misses.len() < 10 {
                     let (after, _) = session.terminal.counts();
                     misses.push(serde_json::json!({
@@ -875,11 +885,13 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
     }
     let (bytes_after, frames_after) = session.terminal.counts();
     let completed = times.len();
+    times.extend(waited);
     let mut value = summary(&mut times);
     if let Some(map) = value.as_object_mut() {
-        // Every key typed, those whose echo came (the percentiles are
-        // theirs), and those that timed out (KEY_WAIT); a run stops after
-        // MISSES_IN_A_ROW in a row, so attempted can be fewer than asked.
+        // Every key typed, those whose echo came, and those that timed out
+        // (KEY_WAIT), which the percentiles and the mean count at the wait,
+        // the least they took; a run stops after MISSES_IN_A_ROW in a row,
+        // so attempted can be fewer than asked.
         map.insert("asked".into(), serde_json::json!(keys));
         map.insert("attempted".into(), serde_json::json!(typed));
         map.insert("completed".into(), serde_json::json!(completed));
@@ -890,9 +902,12 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
             "client_bytes_per_key".into(),
             serde_json::json!((bytes_after.saturating_sub(bytes_before) as f64) / typed),
         );
+        // Paints are counted by the frame's marker (`CSI ? 2026 h`): none
+        // seen is none known (a multiplexer that does not send it), not 0.
+        let frames = frames_after.saturating_sub(frames_before);
         map.insert(
             "paints_per_key".into(),
-            serde_json::json!((frames_after.saturating_sub(frames_before) as f64) / typed),
+            serde_json::json!((frames > 0).then(|| (frames as f64) / typed)),
         );
     }
     Ok(value)
@@ -1394,6 +1409,20 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// No key that came is no figure, said as none, never NaN; a key that
+    /// timed out counts at the wait, the least it took (HAR-86).
+    #[test]
+    fn a_summary_counts_what_timed_out_and_says_none_for_nothing() {
+        let none = super::summary(&mut []);
+        assert_eq!(none.get("p50_ms"), Some(&serde_json::Value::Null));
+        let mut times = vec![1.0, 2.0, 3.0, 2000.0];
+        let some = super::summary(&mut times);
+        assert_eq!(
+            some.get("max_ms").and_then(serde_json::Value::as_f64),
+            Some(2000.0)
+        );
+    }
 
     /// A key that timed out, or a load that never arrived, is a
     /// measurement not made, and `feel` fails (at the parent it exited 0).

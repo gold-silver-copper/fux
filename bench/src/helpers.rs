@@ -195,18 +195,46 @@ pub fn serve(argv: &[String]) -> Result<bool, String> {
             };
             // One write, as `cat` of one file would make it: the PTY still
             // splits it into reads of its own.
-            let mut all = Vec::with_capacity(load.len().saturating_add(32));
-            all.extend_from_slice(b"\x1bc");
-            all.extend_from_slice(load);
-            all.extend_from_slice(marker(n).as_bytes());
-            out(&all)?;
+            out(&framed(load, n))?;
         }
         Ok(())
     })
 }
 
+/// Load `n` as `serve` writes it: RIS, the load, then ST and CAN, which end
+/// whatever string (an OSC, a DCS) the load left open, so that it can't
+/// swallow the marker after them.
+fn framed(load: &[u8], n: usize) -> Vec<u8> {
+    let mut all = Vec::with_capacity(load.len().saturating_add(32));
+    all.extend_from_slice(b"\x1bc");
+    all.extend_from_slice(load);
+    all.extend_from_slice(b"\x1b\\\x18");
+    all.extend_from_slice(marker(n).as_bytes());
+    all
+}
+
 #[cfg(test)]
 mod tests {
+    /// A load that ends inside an OSC still shows its marker after it
+    /// (HAR-86): at the parent the OSC took the marker, and the run waited
+    /// for it to its limit.
+    #[test]
+    fn a_load_left_in_a_string_still_shows_its_marker() -> Result<(), String> {
+        let size = fux_vt::Size::new(5, 40).map_err(|e| e.to_string())?;
+        let mut vt =
+            fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS).map_err(|e| e.to_string())?;
+        for load in [
+            &b"\x1b]0;a title never ended"[..],
+            b"\x1bPq#0;2;0;0;0",
+            b"plain",
+        ] {
+            let _ = vt.process(&super::framed(load, 7));
+            let text: String = vt.screen().rows().map(|r| r.cells_text()).collect();
+            assert!(text.contains(super::marker(7).trim()), "{load:?}: {text:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn requests_are_read_around_a_terminals_answers() {
         let mut r = super::Requests::default();
