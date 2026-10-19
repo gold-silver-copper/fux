@@ -108,8 +108,10 @@ For fux-vt beside other engines in instructions per byte, see
 ## `info`
 
 Figures not compared against REF: `fux-vt/compare/run.sh bench --engines
-ghostty,alacritty --mb 4` (MB/s by wall time, best of 3; its first run
-builds Ghostty, which takes minutes) and `fux-diff --speed`.
+ghostty,alacritty --mb 4 --json` (MB/s by wall time, best of 3; its first
+run builds Ghostty, which takes minutes), read from its JSON (kept beside
+info.json as `info.compare.json`), and `fux-diff --speed`. `info` exits 1
+when either fails or its figures can't be read.
 
 ## `feel`: what a person at the terminal feels
 
