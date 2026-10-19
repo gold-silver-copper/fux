@@ -187,8 +187,12 @@ pub struct Sixels {
 /// What a picture's sixel data is kept by (`Visible::sixel_key`).
 type SixelKey = (PaneId, u64, (u32, u32, u32, u32), usize);
 
-/// The most sixel data a client keeps to send again: 16 MiB, a 4K screen
-/// of one picture's worth in 256 colours at half its 12 bytes a pixel.
+/// The most sixel data a client keeps to send again: 16 MiB, a fixed
+/// bound on what the cache holds per client. At `threats.md` B08's worst,
+/// 12 bytes a pixel, that is the data of 1.4 million pixels (a 1,600 by
+/// 870 picture); a picture of few colours, as most are, encodes to far
+/// less, so it holds a screenful of them. One past it is not kept but
+/// encoded each time it is sent, its work bounded by B08.
 const SIXEL_BYTES: usize = 16 << 20;
 
 impl Sixels {
