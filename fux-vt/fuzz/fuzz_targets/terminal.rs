@@ -2,8 +2,9 @@
 //! The fast target: a screen of at most 16 by 24 and a few rows of history,
 //! fed each operation whole, a byte at a time and in pieces as fux's pane
 //! reads, the three compared and fux-vt's invariants checked after each
-//! operation (`threats.md` section 6). The `deep` target checks versions
-//! after every byte, at large sizes.
+//! operation (`threats.md` section 6), the byte-at-a-time copy's row
+//! versions after every byte. The `deep` target checks them so at large
+//! sizes.
 use fux_vt::{Feature, Identity, Options, Parser, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
@@ -152,9 +153,14 @@ fuzz_target!(|data: &[u8]| {
                 assert!(whole.process_with(bytes, &mut a).is_ok());
                 versions_follow(&before, &whole);
                 marks_sound(&at, mark, &whole);
+                // A byte at a time, each byte's changes checked too: a row
+                // changed and changed back within an operation still takes
+                // a new version (the screen is small, its rows few).
                 for byte in bytes {
                     let one = std::slice::from_ref(byte);
+                    let before = rows(&split);
                     assert!(split.process_with(one, &mut b).is_ok());
+                    versions_follow(&before, &split);
                 }
                 assert_eq!(a, b);
                 let mut c = Record::default();
