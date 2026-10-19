@@ -269,6 +269,18 @@ impl Decoder {
         if byte < 0x20 || matches!(byte, b' ' | 0x7f) {
             return;
         }
+        // GR codes are errors read as GL, "the 8th bit ... set to zero" (DEC
+        // STD 070-9, 9.4). C1 codes, which there end sixel mode (9.3), are
+        // no controls in UTF-8, as fux-vt reads its input, and are ignored
+        // as C0 controls are (9.1).
+        let byte = match byte {
+            0x80..=0x9f => return,
+            0xa0..=0xff => byte & 0x7f,
+            _ => byte,
+        };
+        if matches!(byte, b' ' | 0x7f) {
+            return;
+        }
         match byte {
             b'0'..=b'9' if self.command != Command::None => {
                 let digit = u32::from(byte.wrapping_sub(b'0'));
@@ -809,6 +821,20 @@ mod tests {
         let mut decoder = Decoder::new(9, 1);
         data.iter().for_each(|b| decoder.push(*b, &mut |_, _| true));
         decoder.finish(&mut |_, _| true)
+    }
+
+    /// GR codes are errors whose 8th bit "is set to zero and the code is
+    /// then processed as a GL code" (DEC STD 070-9, 9.4): `!3` then 0xFE
+    /// is three `~`. C1 codes, which DEC has end sixel mode (9.3), are no
+    /// controls in UTF-8 (README), and are ignored as C0 controls are
+    /// (9.1): a repeat count goes on past one (FA-SIX-9).
+    #[test]
+    fn gr_codes_are_read_as_gl_and_c1_codes_ignored() {
+        let pixels = |data: &[u8]| decode(data).map(|p| (p.width(), p.height(), p.rgba.clone()));
+        let three = pixels(b"#1;2;100;0;0!3~");
+        assert!(three.is_some());
+        assert_eq!(pixels(b"#1;2;100;0;0!3\xfe"), three, "GR");
+        assert_eq!(pixels(b"#1;2;100;0;0!\x853~"), three, "C1");
     }
 
     /// A sixel before any colour is selected is drawn in a colour that
