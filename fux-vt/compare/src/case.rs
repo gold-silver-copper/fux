@@ -791,6 +791,26 @@ fn size(r: &mut Rng, small: usize, large: usize) -> u16 {
     u16::try_from(n).unwrap_or(1)
 }
 
+/// A write's snippets as writes, a new one begun at each RIS: xterm 411
+/// clears its saved lines on RIS (VTReset, then ReallyReset's "clear
+/// savedLines"), and then ClearScreen's ScrollJump does the scroll its jump
+/// scroll held back from the same write, putting a row back into history,
+/// where fux-vt, as xterm means to, keeps none (`replay --engines xterm
+/// --size 1x1 --history 3 '-l\ec'`; as two writes, xterm agrees).
+fn ris_alone(snippets: Vec<Snippet>) -> Vec<Step> {
+    let mut steps: Vec<Vec<Snippet>> = vec![Vec::new()];
+    for snippet in snippets {
+        let starts = snippet.bytes == b"\x1bc" && steps.last().is_some_and(|s| !s.is_empty());
+        if starts {
+            steps.push(Vec::new());
+        }
+        if let Some(last) = steps.last_mut() {
+            last.push(snippet);
+        }
+    }
+    steps.into_iter().map(Step::Output).collect()
+}
+
 /// A random case drawing output from `families` (indices into
 /// [`FAMILIES`]); resizes come only from the resize family.
 pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
@@ -812,19 +832,18 @@ pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
         .filter(|&f| FAMILIES.get(f).is_some_and(|f| f.name != families::RESIZE))
         .collect();
     let steps = (0..r.below(10).saturating_add(1))
-        .map(|_| {
+        .flat_map(|_| {
             if resizes && (output.is_empty() || r.chance(15)) {
-                Step::Resize(size(r, 8, 40), size(r, 16, 100))
+                vec![Step::Resize(size(r, 8, 40), size(r, 16, 100))]
             } else {
-                Step::Output(
-                    (0..r.below(10).saturating_add(1))
-                        .filter_map(|_| {
-                            let family = *r.pick(&output)?;
-                            let bytes = (FAMILIES.get(family)?.generate)(r);
-                            Some(Snippet { family, bytes })
-                        })
-                        .collect(),
-                )
+                let snippets: Vec<Snippet> = (0..r.below(10).saturating_add(1))
+                    .filter_map(|_| {
+                        let family = *r.pick(&output)?;
+                        let bytes = (FAMILIES.get(family)?.generate)(r);
+                        Some(Snippet { family, bytes })
+                    })
+                    .collect();
+                ris_alone(snippets)
             }
         })
         .collect();
@@ -912,6 +931,29 @@ mod tests {
     use crate::snapshot::{self, Cell, Color, Field, Line, Snapshot, Style, Width};
 
     const PEN: Color = Color::Rgb(10, 20, 30);
+
+    /// A random case's RIS begins a write of its own (FA-E2-1): in no
+    /// write of the reset family's cases does RIS follow other output.
+    #[test]
+    fn ris_is_written_alone_in_random_cases() {
+        let families = [
+            crate::families::find("reset"),
+            crate::families::find("text"),
+        ];
+        let families: Vec<usize> = families.into_iter().flatten().collect();
+        let mut r = crate::rng::Rng::new(1);
+        let mut seen = 0usize;
+        for _ in 0..500 {
+            for step in super::random(&mut r, &families, true).steps {
+                if let Step::Output(snippets) = step {
+                    let ris = snippets.iter().position(|s| s.bytes == b"\x1bc");
+                    assert!(ris.is_none_or(|i| i == 0), "{snippets:?}");
+                    seen = seen.saturating_add(usize::from(ris.is_some()));
+                }
+            }
+        }
+        assert!(seen > 100, "{seen}");
+    }
 
     /// A screen of one cell: its text, foreground and whether it is bold.
     fn screen(text: &str, fg: Color, bold: bool) -> Snapshot {
