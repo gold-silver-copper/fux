@@ -33,6 +33,7 @@ fux %2 capture json                                     # also: main-screen, las
 fux %2 str C-c key send-keys                            # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str 1b bytes 30 pause str '[A' text send-keys    # bytes in hex, split by a pause: input that arrives in pieces
 fux opts str 'ssh -n host make' command run             # a remote command: then `%2 wait-exit wait` waits for its end
+fux opts str 'koh connect host' command run            # a remote shell, REPL or TUI: then `%2 str 'make' line`, keys answer settled
 fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as `wrapped capture` counts
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 horizontal split
 fux %2 str TERM signal; fux %2 respawn                  # stop; start again on a new terminal
