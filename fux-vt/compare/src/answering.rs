@@ -265,20 +265,52 @@ impl Answering {
     }
 }
 
-/// DEC Special Graphics, 0x5f to 0x7e, as fux-vt draws them (fux-vt's
-/// `screen.rs`, `special_graphics`, as xterm draws them).
-const GRAPHICS: [char; 32] = [
-    ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺', '⎻', '─',
-    '⎼', '⎽', '├', '┤', '┴', '┬', '│', '≤', '≥', 'π', '≠', '£', '·',
-];
+/// The DEC code fux-vt sums for a Special Graphics or DEC Supplemental
+/// glyph past Latin-1 (its `screen.rs`, `dec_code`; xterm 411's
+/// `unmap_DEC_Spec_Graphic` and `unmap_DEC_Supp_Graphic`).
+fn dec_code(c: char) -> Option<u16> {
+    Some(match c {
+        '◆' => 0x14,
+        '▒' => 0x78,
+        '␉' => 0x0a,
+        '␌' => 0x0d,
+        '␍' => 0x0e,
+        '␊' => 0x0b,
+        '␤' => 0x15,
+        '␋' => 0x0c,
+        '┘' => 0x16,
+        '┐' => 0x17,
+        '┌' => 0x18,
+        '└' => 0x19,
+        '┼' => 0x1a,
+        '⎺' => 0x1b,
+        '⎻' => 0x1c,
+        '─' => 0x1d,
+        '⎼' => 0x1e,
+        '⎽' => 0x1f,
+        '├' => 0x80,
+        '┤' => 0x81,
+        '┴' => 0x82,
+        '┬' => 0x83,
+        '│' => 0x84,
+        '≤' => 0x85,
+        '≥' => 0x86,
+        '≠' => 0x87,
+        'Œ' => 0x97,
+        'Ÿ' => 0x98,
+        'œ' => 0x99,
+        'π' => 0xc6,
+        _ => return None,
+    })
+}
 
 /// What a cell adds to the checksum, as fux-vt counts it (its `screen.rs`,
-/// `checksum_of`, xterm's default): its character, a Special Graphics glyph
-/// as the code it is drawn from (0x60 to 0x7e), any other past Latin-1 as
-/// ESC, a blank as a space and a wide glyph's second half as ESC; its
-/// combining marks as they are; and its VT100 attributes: 0x08 hidden, 0x10
-/// underlined, 0x20 inverse, 0x40 blinking, 0x80 bold; a wide glyph's
-/// second half has none, as in fux-vt.
+/// `checksum_of`): its character within Latin-1, a Special Graphics or DEC
+/// Supplemental glyph past it as its DEC code ([`dec_code`]), any other
+/// past Latin-1 as ESC, a blank as a space and a wide glyph's second half
+/// as ESC; its combining marks as they are; and its VT100 attributes: 0x08
+/// hidden, 0x10 underlined, 0x20 inverse, 0x40 blinking, 0x80 bold; a wide
+/// glyph's second half has none, as in fux-vt.
 fn cell_sum(cell: &Cell) -> u16 {
     let style = &cell.style;
     const SPACE: u16 = 0x20;
@@ -288,11 +320,7 @@ fn cell_sum(cell: &Cell) -> u16 {
         None => SPACE,
         Some(c) => match u16::try_from(u32::from(c)) {
             Ok(code @ 0x20..=0xff) => code,
-            _ => GRAPHICS
-                .iter()
-                .zip(0x5fu16..)
-                .find(|(g, code)| **g == c && *code >= 0x60)
-                .map_or(u16::from(ESC), |(_, code)| code),
+            _ => dec_code(c).unwrap_or(u16::from(ESC)),
         },
     };
     let marks = chars.fold(0u16, |sum, c| {
@@ -438,6 +466,7 @@ mod tests {
         "\x1b[1m漢字\x1b[0mx\x1b[7m字",
         "e\u{301}\u{302}a\u{20dd}",
         "\x1b(0`abjklmnqtuvwx~_\x1b(Bq",
+        "\x1b(%5W]wA($\x1b(B",
         "é£ÿ€\u{1F600}\u{0100}",
         "abcdef\x1b[1;3H\x1b[1;7m\x1b[K\x1b[2;1H\x1b[4mxyz\x1b[2J",
         "abcdefg漢",
@@ -485,6 +514,8 @@ mod tests {
             "\u{FE0F}",
             "\x1b(0",
             "\x1b(B",
+            "\x1b(%5",
+            "W",
             "q",
             "`",
             "\x1b[1m",

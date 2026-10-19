@@ -376,13 +376,15 @@ fn special_graphics(c: char) -> char {
 }
 
 /// What a cell adds to a DECRQCRA checksum (`Screen::rectangle_checksum`),
-/// as xterm 411 counts it by default (`xtermCheckRect`, `xtermCharSetDec`):
-/// its character within Latin-1, a DEC Special Graphics or DEC
+/// as xterm 411 counts it by default (`xtermCheckRect`, `xtermCharSetDec`)
+/// but for the cells the README's RectangleChecksums row lists (decisions.md
+/// 964): its character within Latin-1, a DEC Special Graphics or DEC
 /// Supplemental glyph past it as its DEC code (`dec_code`), any other past
 /// Latin-1 or below a space as ESC; its combining marks as they are; and
-/// its VT100 attributes. Special Graphics' °, ±, £ and · count as their
-/// Latin-1 codes, the codes xterm gives them; its blank (0x5f) is kept as a
-/// space and counts as one.
+/// its VT100 attributes. The sum is of the character the cell shows, where
+/// xterm sums the byte written and the set it came from: Special Graphics'
+/// °, ±, £ and · count as their Latin-1 codes, as in xterm, but its blank
+/// (0x5f), kept as a space, as a space, and a UTF-8 é as 0xe9 (xterm 0x69).
 fn checksum_of(cell: &CellRef<'_>) -> u16 {
     const ESC: u16 = 0x1b;
     let mut chars = cell.contents().chars();

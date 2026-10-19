@@ -5,8 +5,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | Reference | implemented | partial | departure | not implemented | not applicable | all |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | ECMA-48 | 67 | 1 | 3 | 3 | 88 | 162 |
-| DEC STD 070 | 87 | 4 | 2 | 22 | 25 | 140 |
-| ctlseqs | 108 | 16 | 2 | 27 | 92 | 245 |
+| DEC STD 070 | 86 | 4 | 3 | 22 | 25 | 140 |
+| ctlseqs | 107 | 16 | 3 | 27 | 92 | 245 |
 | fux-vt | 45 | 2 | 0 | 1 | 2 | 50 |
 
 ## ECMA-48
@@ -278,7 +278,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-173 DECCARA | DECCARA (CHANGE ATTRIBUTES RECTANGULAR AREA) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
 | 5-175 DECRARA | DECRARA (REVERSE ATTRIBUTES RECTANGULAR AREA) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle` |  |
 | 5-177 DECSACE | DECSACE (SELECT ATTRIBUTE CHANGE EXTENT) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` |  |
-| 5-179 DECRQCRA | DECRQCRA (REQUEST CHECKSUM OF RECTANGULAR AREA) | implemented | `opt_in::rectangle_checksums_sum_the_cells`, `opt_in::rectangle_checksums_sum_a_designated_glyph_as_xterm_does` | with `Feature::RectangleChecksums` |
+| 5-179 DECRQCRA | DECRQCRA (REQUEST CHECKSUM OF RECTANGULAR AREA) | departure | `opt_in::rectangle_checksums_sum_the_cells`, `opt_in::rectangle_checksums_sum_a_designated_glyph_as_xterm_does` | with `Feature::RectangleChecksums`: xterm 411's sum, but the sum of the character a cell shows, not of the byte and set it was written with, and an empty cell a space, as esctest reads it (decisions.md 964, awaiting the owner; README, RectangleChecksums) |
 | 5-180 DSR | DSR (MEMORY CHECKSUM DEVICE STATUS REPORT) | implemented | `opt_in::extended_replies_answer_the_device_status_reports` | answers that there is no macro space, so a memory checksum of none (DSR 63 answers `DCS Pid ! ~ 0000 ST`) |
 | 5-182 DECDMAC | DECDMAC (DEFINE MACRO) | not implemented |  | macros (DEC STD 070, 5.12.3) are not implemented: DSR 62 and 63 answer that there is no macro space |
 | 5-184 DECINVM | DECINVM (INVOKE MACRO) | not implemented |  | macros (DEC STD 070, 5.12.3) are not implemented: DSR 62 and 63 answer that there is no macro space |
@@ -488,7 +488,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI Ps * x | CSI Ps * x (Select Attribute Change Extent (DECSACE), VT420 and up.) | implemented | `rectangles::deccara_changes_the_renditions_of_an_area`, `rectangles::decrara_reverses_the_renditions_of_an_area`, `rectangles::decsace_selects_a_stream_or_a_rectangle`, `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins` |  |
 | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x | CSI Pc ; Pt ; Pl ; Pb ; Pr $ x (Fill Rectangular Area (DECFRA), VT420 and up.) | implemented | `rectangles::decfra_fills_a_rectangle` |  |
 | CSI Ps # y | CSI Ps # y (Select checksum extension (XTCHECKSUM), xterm.) | not implemented |  | the checksum is xterm's default, the VT520's; it cannot be changed |
-| CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y | CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y (Request Checksum of Rectangular Area (DECRQCRA), VT420 and up.) | implemented | `opt_in::rectangle_checksums_sum_the_cells`, `opt_in::rectangle_checksums_sum_a_designated_glyph_as_xterm_does` | with `Feature::RectangleChecksums` |
+| CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y | CSI Pi ; Pg ; Pt ; Pl ; Pb ; Pr * y (Request Checksum of Rectangular Area (DECRQCRA), VT420 and up.) | departure | `opt_in::rectangle_checksums_sum_the_cells`, `opt_in::rectangle_checksums_sum_a_designated_glyph_as_xterm_does` | with `Feature::RectangleChecksums`: xterm 411's sum, but the sum of the character a cell shows, not of the byte and set it was written with, and an empty cell a space, as esctest reads it (decisions.md 964, awaiting the owner; README, RectangleChecksums) |
 | CSI Ps ; Pu ' z | CSI Ps ; Pu ' z (Enable Locator Reporting (DECELR).) | not applicable |  | fux-vt has no locator (DEC STD 070, chapter 13): mouse reports are xterm's (CSI ? 1000 h and the others) |
 | CSI Pt ; Pl ; Pb ; Pr $ z | CSI Pt ; Pl ; Pb ; Pr $ z (Erase Rectangular Area (DECERA), VT400 and up.) | implemented | `rectangles::decera_and_decsera_erase_a_rectangle` |  |
 | CSI Pm ' { | CSI Pm ' { (Select Locator Events (DECSLE).) | not applicable |  | fux-vt has no locator (DEC STD 070, chapter 13): mouse reports are xterm's (CSI ? 1000 h and the others) |

@@ -760,9 +760,12 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 /// checksum of the rectangle's cells as xterm and the VT520 sum them
 /// (`xtermCheckRect`; ctlseqs, XTCHECKSUM): each character, plus 0x10
 /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
-/// and negated, four upper-case hex digits. An empty cell is a space; a
-/// character past Latin-1 is ESC; a DEC Special Graphics glyph, its DEC code
-/// (`rectangle_checksums_sum_a_designated_glyph_as_xterm_does`). The page is ignored, as in xterm (decisions.md 47); the
+/// and negated, four upper-case hex digits. A character past Latin-1 is
+/// ESC; a DEC Special Graphics glyph, its DEC code
+/// (`rectangle_checksums_sum_a_designated_glyph_as_xterm_does`). Two
+/// departures from xterm 411 (decisions.md 964): an empty cell is a space,
+/// as esctest reads it (xterm: nothing), and a UTF-8 é its Latin-1 code
+/// (xterm: 0x69). The page is ignored, as in xterm (decisions.md 47); the
 /// rectangle defaults to the whole screen, and counts from the margins in
 /// origin mode. An inverted rectangle has "the sequence ... ignored" (DEC
 /// STD 070, DECRQCRA): no reply. Without the option, nothing is answered.
