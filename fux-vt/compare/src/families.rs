@@ -1438,9 +1438,10 @@ mod tests {
         assert!(lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 1));
         assert!((super::SCROLL_ZERO.when)(b"\x1b[0T", 4, 10));
         assert!(!(super::SCROLL_ZERO.when)(b"\x1b[T\x1b[0S", 4, 10));
-        for (family, beside, _) in super::DEPARTURES {
+        // That each is beside an engine there is, engine.rs's test says:
+        // the oracle, which shares this file, has no engines.
+        for (family, _, _) in super::DEPARTURES {
             assert!(super::find(family).is_some(), "{family}");
-            assert!(crate::engine::find(beside).is_some(), "{beside}");
         }
     }
 

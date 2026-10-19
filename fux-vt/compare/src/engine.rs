@@ -476,3 +476,14 @@ pub fn kind(index: usize) -> Option<&'static Kind> {
 pub fn name(index: usize) -> &'static str {
     kind(index).map_or("?", |k| k.name)
 }
+
+#[cfg(test)]
+mod tests {
+    /// Each recorded departure is beside an engine there is.
+    #[test]
+    fn every_departure_is_beside_an_engine() {
+        for (family, beside, _) in crate::families::DEPARTURES {
+            assert!(super::find(beside).is_some(), "{family}: {beside}");
+        }
+    }
+}
