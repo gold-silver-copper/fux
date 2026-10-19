@@ -286,3 +286,24 @@ fn a_cloned_parser_keeps_every_invariant() -> Result {
     invariants::check(&p.clone());
     Ok(())
 }
+
+/// A style a cloned parser adds is charged to its history for the table
+/// its copy holds, which the clone made at its length, not the room the
+/// shared one had (B11, FA-RE-B-7): more distinct styles than the screen's
+/// share holds, then one more on the clone.
+#[test]
+fn a_cloned_parser_charges_the_styles_it_adds() -> Result {
+    let mut p = Parser::new(Size::new(2, 4)?, 1 << 20)?;
+    let mut input = String::new();
+    for i in 0..6000u32 {
+        let (g, b) = (i / 256, i % 256);
+        input.push_str(&format!("\x1b[48;2;0;{g};{b}mx\r\n"));
+    }
+    p.process(input.as_bytes())?;
+    let mut clone = p.clone();
+    clone.process(b"\x1b[48;2;1;1;1mx")?;
+    invariants::check(&clone);
+    p.process(b"\x1b[48;2;1;1;1mx")?;
+    invariants::check(&p);
+    Ok(())
+}
