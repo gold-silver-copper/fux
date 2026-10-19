@@ -225,15 +225,16 @@ impl Cluster {
 
     /// Whether no rule joins a character whose properties are `next` to
     /// the cluster, by the shortcut that needs none of the rules: it is of
-    /// kind Other, neither a pictograph nor a conjunct's consonant, and
-    /// the cluster does not end with a Prepend character. A character it
-    /// does not answer for may still not join.
+    /// kind Other and no conjunct's consonant, the cluster does not end
+    /// with a Prepend character, and it is no pictograph after an emoji's
+    /// zero width joiner. A character it does not answer for may still not
+    /// join.
     #[inline]
     pub(crate) fn never_joins(self, next: Properties) -> bool {
         next.kind == Break::Other
-            && !next.pictographic
             && next.conjunct != Conjunct::Consonant
             && self.last != Break::Prepend
+            && !(next.pictographic && self.emoji == Emoji::Joined)
     }
 
     /// Whether the cluster ends with a Prepend character, which joins
