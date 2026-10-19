@@ -538,7 +538,8 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
 /// (`133;C`) and never its end, then reads its terminal, is waited for no
 /// longer than an unmarked one: no action's input began that command, so
 /// `run` and a bare `wait` after it answer once it is quiet, polling its
-/// terminal (`less`), not at their limit (decision 29).
+/// terminal (`less`), not at their limit (decision 29). Where fux is not
+/// told what it is blocked in (macOS), the quiet pane is `settled`.
 #[test]
 fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
     let server = Server::start("")?;
@@ -555,12 +556,13 @@ fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
         .next()
         .unwrap_or_default()
         .to_owned();
+    let quiet = format!("{pane} {}", if PROBED { "waiting" } else { "settled" });
     let first = answer.lines().next().unwrap_or_default();
-    assert!(first.starts_with(&format!("{pane} waiting")), "{answer}");
+    assert!(first.starts_with(&quiet), "{answer}");
     let began = std::time::Instant::now();
     let answer = server.ok(&["str", &pane, "pane", "wait"])?;
     assert!(began.elapsed() < PATIENCE, "{answer}");
-    assert!(answer.starts_with(&format!("{pane} waiting")), "{answer}");
+    assert!(answer.starts_with(&quiet), "{answer}");
     Ok(())
 }
 
