@@ -3147,6 +3147,40 @@ impl Screen {
         Some(Dispatch::Done)
     }
 
+    /// The CSI sequences with an intermediate `csi` carries out first:
+    /// DECSCUSR, the kitty keyboard protocol's and XTMODKEYS, DECSTR and
+    /// DECSCL; `None` for the rest. DECSTR and DECSCL are here, not in
+    /// `other_csi`, as the parser asks whether synchronized output ended as
+    /// `csi` returns.
+    #[inline(never)]
+    fn csi_intermediate(
+        &mut self,
+        p: &Parameters,
+        intermediates: &[u8],
+        byte: u8,
+        options: &Options,
+    ) -> Option<Dispatch> {
+        // DECSCUSR: its intermediate is a space.
+        if intermediates == b" " && byte == b'q' {
+            // 0, the default, is a blinking block, as 1 is, kept apart.
+            let ps = p.first(0, 0);
+            if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
+                self.terminal.cursor_shape = shape;
+            }
+            return Some(Dispatch::Done);
+        }
+        if options.has(Feature::KittyKeyboard)
+            && let Some(dispatch) = self.keyboard_protocol(p, intermediates, byte)
+        {
+            return Some(dispatch);
+        }
+        if byte == b'p' && matches!(intermediates, b"!" | b"\"") {
+            self.soft_reset_or_level(p, intermediates == b"!");
+            return Some(Dispatch::Done);
+        }
+        None
+    }
+
     pub(crate) fn csi(
         &mut self,
         p: &Parameters,
@@ -3155,28 +3189,16 @@ impl Screen {
         options: &Options,
     ) -> Result<Dispatch, Error> {
         let private = intermediates == b"?";
-        // DECSCUSR: its intermediate is a space.
-        if intermediates == b" " && byte == b'q' {
-            // 0, the default, is a blinking block, as 1 is, kept apart.
-            let ps = p.first(0, 0);
-            if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
-                self.terminal.cursor_shape = shape;
+        // A sequence with an intermediate, out of line, as most have none;
+        // of the private ones only the kitty flags' and XTQMODKEYS's
+        // queries (`CSI ? u`, `CSI ? 4 m`) are there, not the modes.
+        if !intermediates.is_empty() && (!private || matches!(byte, b'u' | b'm')) {
+            if let Some(dispatch) = self.csi_intermediate(p, intermediates, byte, options) {
+                return Ok(dispatch);
             }
-            return Ok(Dispatch::Done);
-        }
-        if options.has(Feature::KittyKeyboard)
-            && let Some(dispatch) = self.keyboard_protocol(p, intermediates, byte)
-        {
-            return Ok(dispatch);
-        }
-        // DECSTR and DECSCL, here, not in `other_csi`, as the parser asks
-        // whether synchronized output ended as this returns.
-        if byte == b'p' && matches!(intermediates, b"!" | b"\"") {
-            self.soft_reset_or_level(p, intermediates == b"!");
-            return Ok(Dispatch::Done);
-        }
-        if !intermediates.is_empty() && !private {
-            return Ok(Dispatch::Unhandled);
+            if !private {
+                return Ok(Dispatch::Unhandled);
+            }
         }
         if matches!(byte, b'h' | b'l') {
             return self.set_modes(p, private, Some(byte == b'h'), options);
