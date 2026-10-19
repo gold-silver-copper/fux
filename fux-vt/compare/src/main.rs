@@ -1580,4 +1580,50 @@ mod tests {
         assert_eq!(super::children(None), super::few_jobs_from(env.as_deref()));
         assert_eq!(super::children(Some(3)), 3);
     }
+
+    /// A grouped check's command keeps a path with a space in it as one
+    /// word, run alongside the others or, with --jobs, alone ("+"): the
+    /// harness's own `spec` and `together` (lib.sh, which harness.sh
+    /// sources), each given a path under "a b/".
+    #[test]
+    fn a_grouped_checks_path_with_a_space_stays_one_word() -> Result<(), String> {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib.sh");
+        let dir = std::env::temp_dir().join(format!("fux-vt-harness-{}", std::process::id()));
+        let out = dir.join("a b").join("out");
+        let script = r#"set -euo pipefail
+. "$1"
+out=$2 product=p harness=h
+mkdir -p "$out/logs" "$out/status"
+args() { printf '%s\n' "$#" "$@" >"$out/$1.args"; }
+jobs=
+together "$(spec side args side "$out/x.json")"
+jobs=2
+together "+$(spec alone args alone "$out/x.json")"
+"#;
+        let ran = std::process::Command::new("bash")
+            .args(["-c", script, "bash"])
+            .arg(&lib)
+            .arg(&out)
+            .output()
+            .map_err(|e| e.to_string())?;
+        let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap_or_default();
+        let got: Vec<String> = ["side", "alone"]
+            .iter()
+            .flat_map(|n| [read(&format!("{n}.args")), read(&format!("status/{n}"))])
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let path = out.join("x.json").display().to_string();
+        let [side, side_status, alone, alone_status] = got.as_slice() else {
+            return Err(format!("{got:?}"));
+        };
+        assert_eq!(side, &format!("2\nside\n{path}\n"));
+        assert_eq!(alone, &format!("2\nalone\n{path}\n"));
+        assert!(side_status.starts_with("0 ") && alone_status.starts_with("0 "));
+        Ok(())
+    }
 }
