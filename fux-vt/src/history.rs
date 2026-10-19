@@ -17,10 +17,11 @@
 //! The grid trims it to its budget of bytes once a row is in (`trim`): what
 //! it holds counts, as the memory it takes (`threats.md` B17): the ring of
 //! rows' records (`Kept`) and every block as their capacity, the rows'
-//! text, and the maps' buckets. Room grows by doubling, and is given back
-//! when it holds more than twice what is kept, so the oldest rows go in
-//! steps: a block's rows when a block is to come, and while the rows keep
-//! less than half the ring's room, half of them.
+//! text, and the maps' buckets. While it holds more than its budget the
+//! oldest rows go, a run of them at a time (`pop_run`). The ring's room
+//! comes and goes a chunk at a time (`Ring`), a block's as its last row
+//! goes, and a map gives its room back once it has room for more than four
+//! times its entries and 64.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -47,8 +48,8 @@ const BLOCKS: usize = 1 << 16;
 
 /// The bytes `History::texts` and `History::linked` take for each row of
 /// their capacity: a bucket is the row's number, its value and the map's
-/// control byte (`threats.md` B17's 57 and 33 bytes), and a map has 8
-/// buckets for 7 of capacity.
+/// control byte (57 and 41 bytes on 64-bit targets), and a map has 8
+/// buckets for 7 of capacity (66 and 47 bytes a row).
 const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
 const LINK_BUCKET: usize = (size_of::<(u64, KeptLinks)>() + 1) * 8 / 7 + 1;
 /// The bytes `History::renditions` takes for each row of its capacity.
@@ -197,9 +198,11 @@ pub(crate) struct Found<'a> {
     pub(crate) links: Option<Runs<'a>>,
 }
 
-/// A number noted while it is read (`Screen::track_pictures`),
-/// which reading it from several threads at once notes alike: `None` is
-/// `u64::MAX`, no row's number.
+/// An `Option<u64>` noted through `&self`, while it is read
+/// (`Screen::track_pictures`, from `Screen::pictures`): kept in an atomic,
+/// so that a `Screen`, which is `Sync`, read from several threads at once
+/// notes it alike from each. `None` is kept as `u64::MAX`, which is no
+/// row's number.
 #[derive(Debug)]
 pub(crate) struct Noted(AtomicU64);
 
@@ -598,7 +601,8 @@ impl History {
     fn make_room(&mut self, len: usize) -> Result<(), Error> {
         let block = self.block_cells();
         if !self.rows.has_room() {
-            // No more rows than a grid may hold, once the chunk fills.
+            // The oldest go first, so that with the chunk made it holds no
+            // more rows than a grid may (`MAX_ROWS`).
             let most = MAX_ROWS.saturating_sub(self.rows.chunk());
             while self.rows.len() > most {
                 self.pop();

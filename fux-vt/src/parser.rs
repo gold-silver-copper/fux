@@ -436,10 +436,14 @@ enum Pending {
     #[default]
     Ground,
     Escape {
+        /// No intermediate yet: `[` begins a CSI, `c` is RIS.
         plain: bool,
     },
     Csi {
+        /// Where `Phase::next` is in its parameters.
         phase: Phase,
+        /// Read to its final byte and not carried out, as
+        /// `State::CsiIgnore` is.
         ignored: bool,
     },
 }

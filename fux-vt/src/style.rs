@@ -20,9 +20,10 @@
 //! floor that grows with the grid, the grid sweeps it (`Grid::sweep`): it
 //! marks the styles its cells use, keeps those, in the order they had, and
 //! writes their new numbers into its cells. A sweep reads every cell, but
-//! comes only after as many new styles as there were in use, and at least
-//! an eighth of the grid's cells, so a style costs a few cell reads however
-//! many there are. No reader sees a style's number.
+//! after one that keeps L styles the next comes only after max(floor − L,
+//! L) new ones, at least half the floor, which is an eighth of the grid's
+//! cells or more: so a style costs a few cell reads however many there
+//! are (`threats.md` B13). No reader sees a style's number.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
@@ -52,10 +53,11 @@ pub(crate) struct Styles {
     live: usize,
 }
 
-/// The keys of the tables' hash, drawn once a process from std's random
-/// keys: a program sees neither them nor any hash. Each word hashed is
-/// folded in by one 128-bit multiply by a key (as foldhash does), rather
-/// than by SipHash's rounds, which cost the SGR path several percent.
+/// The tables' hasher. Zero-sized: its keys are `keys()`'s, a static
+/// drawn once a process from std's random keys, so a program sees neither
+/// them nor any hash, and a table carries none. Each word hashed is folded
+/// in by one 128-bit multiply by a key (as foldhash does), rather than by
+/// SipHash's rounds, which cost the SGR path several percent.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Keyed;
 
@@ -183,10 +185,10 @@ impl Styles {
     }
 
     /// Whether the table is to be swept before another style is added:
-    /// it has twice the styles in use at the last sweep, and more than the
-    /// floor, which is at least an eighth of `cells`, the cells the grid
-    /// holds, so a sweep comes after at least that many new styles; or it
-    /// is full.
+    /// it has twice the styles in use at the last sweep, L, and the floor,
+    /// at least an eighth of `cells`, the cells the grid holds, so a sweep
+    /// comes after max(floor − L, L) new styles, at least half the floor;
+    /// or it is full.
     pub(crate) fn wants_sweep(&self, cells: usize) -> bool {
         let floor = FLOOR.max(cells / 8);
         let len = self.table.len();
