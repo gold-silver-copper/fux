@@ -1600,6 +1600,11 @@ impl Screen {
         self.with_grid(|g, next, version| {
             g.scroll(region, count, direction, blank, next, version);
         });
+        // A scroll up that keeps none of the rows it takes crops the
+        // pictures whose top rows they were (DEC STD 070-9, 11.2.4).
+        if !self.pictures.is_empty() {
+            self.crop_pictures(region, direction);
+        }
         // Rows moved within the screen (lines deleted or put in above
         // them, a region scrolled) are recorded, their text unchanged: a
         // whole screen scrolled into history moves none of its lines.

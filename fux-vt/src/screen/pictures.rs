@@ -66,6 +66,11 @@ pub(crate) struct Placement {
     /// while its bottom row is where it was. Scrolls keep the order of the
     /// rows they don't make anew, so no older row is among its rows then.
     whole_at: u64,
+    /// Its first rows that are gone, scrolled off the top of a region or
+    /// a screen that keeps no history (DEC STD 070-9, 11.2.4: what scrolls
+    /// off is gone, the rest stays), noted by the scroll that took them
+    /// (`crop_pictures`), whatever margins are set later.
+    cropped: u16,
     /// Its number, never reused, so a host can tell it from another.
     id: u64,
 }
@@ -261,6 +266,7 @@ impl Screen {
             cell,
             alternate,
             whole_at: self.version,
+            cropped: 0,
             id: self.picture_ids,
         });
         // Its rows, and others', may have gone into history.
@@ -434,14 +440,11 @@ impl Screen {
             None => {
                 let bottom = i64::try_from(grid.screen_index_of(placement.bottom)?).ok()?;
                 let first = bottom.checked_sub(i64::try_from(last).ok()?)?;
-                let margin = i64::try_from(grid.history_len())
-                    .ok()?
-                    .saturating_add(i64::from(grid.lines.first()));
-                let kept = if (first..=bottom).contains(&margin) {
-                    margin
-                } else {
-                    first.max(0)
-                };
+                // The rows its scrolls took, and any above the oldest row
+                // kept.
+                let kept = first
+                    .saturating_add(i64::from(placement.cropped))
+                    .max(first.max(0));
                 (
                     first,
                     Some(usize::try_from(kept.saturating_sub(first)).ok()?),
@@ -488,6 +491,48 @@ impl Screen {
         })
     }
 
+    /// Notes, after a scroll up of `region` that kept none of the rows it
+    /// took, the rows each picture of the screen in use whose top row it
+    /// took lost off the region's top: those of its rows above the top
+    /// margin now, which were the region's and are others' (a picture
+    /// that went on above the region, its top row there, was cut by the
+    /// scroll and is not shown after).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn crop_pictures(
+        &mut self,
+        region: crate::geometry::Span,
+        direction: crate::grid::Scroll,
+    ) {
+        let g = self.grid();
+        let kept = direction == (crate::grid::Scroll::Up { history: true })
+            && region == g.size().lines()
+            && g.history_bytes() > 0;
+        if kept || direction == crate::grid::Scroll::Down {
+            return;
+        }
+        let alternate = self.alternate_active;
+        let history = i64::try_from(self.grid().history_len()).unwrap_or(i64::MAX);
+        let top = i64::from(region.first());
+        let found: Vec<Option<i64>> = (self.pictures.iter())
+            .map(|p| {
+                if p.alternate != alternate || self.top_index(p).is_some() {
+                    return None;
+                }
+                let last = i64::from(p.rows.saturating_sub(1));
+                let at = i64::try_from(self.grid().screen_index_of(p.bottom)?).ok()?;
+                Some(at.saturating_sub(last).saturating_sub(history))
+            })
+            .collect();
+        for (p, first) in self.pictures.iter_mut().zip(found) {
+            let Some(first) = first else {
+                continue;
+            };
+            let above = top.saturating_sub(first).clamp(0, i64::from(p.rows));
+            p.cropped = p.cropped.max(u16::try_from(above).unwrap_or(p.rows));
+        }
+    }
+
     /// The pixel size of the text area, for a program's `CSI 14 t`.
     pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
         let (width, height) = self.graphics.cell?;
@@ -527,6 +572,25 @@ impl Screen {
     /// 11.2.4).
     pub(super) fn check_pictures_shown(&self) -> Result<(), String> {
         let grid = self.grid();
+        // What is cropped is what the scrolls noted on the placement, and
+        // what lies above the screen's top: no row is cropped by a margin
+        // set since.
+        for (p, shown) in (self.pictures.iter())
+            .filter(|p| p.alternate == self.alternate_active)
+            .filter_map(|p| Some((p, self.shown(p)?)))
+        {
+            let above = u16::try_from(shown.row.saturating_neg().max(0)).unwrap_or(u16::MAX);
+            let noted = match self.top_index(p) {
+                Some(_) => 0,
+                None => p.cropped.max(above.min(p.rows)),
+            };
+            crate::check::ensure(shown.cropped == noted, || {
+                format!(
+                    "picture {} shown with {} rows cropped, {noted} noted",
+                    shown.id, shown.cropped
+                )
+            })?;
+        }
         for shown in self.pictures() {
             let top = i64::try_from(grid.history_len())
                 .unwrap_or(i64::MAX)
@@ -585,6 +649,7 @@ mod faults {
             cell: CELL,
             alternate: false,
             whole_at: 0,
+            cropped: 0,
             id,
         })
     }

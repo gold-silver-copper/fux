@@ -1067,6 +1067,49 @@ fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
     Ok(())
 }
 
+/// The rows a region's scroll took from a picture stay taken, whatever
+/// margins are set after (decision 962): with the margins reset, as
+/// programs reset them, the picture of the test above still shows its
+/// second row, its first cropped; and a picture cropped by the top of a
+/// screen that keeps no history keeps the rows that still hold it when a
+/// margin is set inside it later.
+#[test]
+fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
+    let graphics = fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    };
+    let shown = |p: &Parser| -> Vec<(i64, u16, u16)> {
+        (p.screen().pictures())
+            .map(|s| (s.row, s.rows, s.cropped))
+            .collect()
+    };
+    let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1b[2;4r\x1b[1;1Habcd\x1b[2;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\\n\n\x1b[r")?;
+    assert_eq!(shown(&p), [(0, 2, 1)], "margins reset");
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "margins reset: {report}");
+    }
+    // Three rows on a screen of four with no history, scrolled once: its
+    // top above the screen; then a region from the second row.
+    let mut p = Parser::with_options(Size::new(4, 4)?, 0, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1b[2;1H\x1bPq\"1;1#1;2;100;0;0~-~-~\x1b\\\x1b[4;1H\n")?;
+    assert_eq!(shown(&p), [(0, 3, 0)]);
+    p.process(b"\n\x1b[2;4r")?;
+    assert_eq!(shown(&p), [(-1, 3, 1)], "a margin set inside it");
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "a margin set inside it: {report}");
+    }
+    Ok(())
+}
+
 /// A picture being drawn lets another go only for the room it takes: a
 /// doubling of its pixels that could not fit even with every picture gone
 /// lets none go, and the exact growth that fits beside them is taken
