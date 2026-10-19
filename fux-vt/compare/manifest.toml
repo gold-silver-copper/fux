@@ -366,18 +366,48 @@ schedule = "compare"
 command = "fux-vt/compare/run.sh encoders"
 needs = []
 
+[[check]]
+name = "workflow-compare-esctest"
+schedule = "compare"
+command = "fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt: Ghostty's core and fux-vt, each held to its list"
+needs = ["esctest2 at the commit references/fetch.sh pins", "python3", "Zig 0.16 and Ghostty"]
+
+[[check]]
+name = "workflow-compare-corpus"
+schedule = "compare"
+command = "fux-vt/compare/run.sh corpus: the recordings beside xterm and the panel"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "workflow-compare-transparency"
+schedule = "compare"
+command = "fux-vt/compare/run.sh transparency: each recording directly and through fux"
+needs = []
+
+[[check]]
+name = "workflow-compare-footprint"
+schedule = "compare"
+command = "fux-vt/compare/run.sh footprint: each in-process engine's memory"
+needs = []
+
+[[check]]
+name = "workflow-compare-bench"
+schedule = "compare"
+command = "fux-vt/compare/run.sh bench --engines in-process --mb 2: every engine in this process takes every workload (a shared runner's MB/s measure nothing)"
+needs = []
+
 # --- nightly (fuzz.yml) -----------------------------------------------------
 
 [[check]]
 name = "nightly-fuzz-replay"
 schedule = "nightly"
-command = "cargo +nightly fuzz run TARGET CORPUS -- -runs=0 (every target with a corpus)"
+command = "cargo +nightly fuzz run TARGET --fuzz-dir fuzz -O -a fuzz/corpus/TARGET -- -runs=0, for each of fux's targets (fuzz/), every one listed in fuzz-options.txt"
 needs = ["nightly Rust", "cargo-fuzz"]
 
 [[check]]
 name = "nightly-fuzz-explore"
 schedule = "nightly"
-command = "cargo +nightly fuzz run TARGET -- -max_total_time=300 (fux-vt's six targets and the oracle, each a job, a cached corpus)"
+command = "cargo +nightly fuzz run TARGET -O -a -- -max_total_time=300, each a job: fux-vt's five targets (terminal, deep, keys, graphemes, cells) and the oracle (diff/fuzz), from their corpus, seeds and what earlier nights found (an Actions cache)"
 needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
 
 [[check]]
@@ -392,15 +422,13 @@ schedule = "nightly"
 command = "cargo test -p fux-vt --features checks --release --locked --test external_corpora moshs_fuzz_corpus -- --ignored"
 needs = ["the network at run time (mosh's seeds are fetched at their pin)"]
 
-# --- every PR (ci.yml), not wired yet ---------------------------------------
+# --- every PR (ci.yml) ------------------------------------------------------
 
 [[check]]
 name = "ci-esctest"
 schedule = "ci"
-command = "fux-vt-compare esctest (fux-vt alone, the pinned esctest2 from an Actions cache)"
-needs = ["esctest2 at 2798f121, fetched and cached (GPL: run, never vendored)", "python3", "a fux-vt-only build of compare"]
-wired = false
-why = "compare builds Ghostty by Zig, too slow for every PR, and CI has no esctest2"
+command = "cargo run --release --no-default-features --manifest-path fux-vt/compare/Cargo.toml -- esctest: esctest2 against fux-vt alone, compare built without the engines it links, held to esctest-expected.txt"
+needs = ["esctest2 at the commit references/fetch.sh pins, fetched once and kept in an Actions cache keyed by it (GPL: run, never vendored)", "python3"]
 
 [[check]]
 name = "ci-wraptest"
