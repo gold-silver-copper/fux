@@ -86,6 +86,9 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    // Set before writing: macOS refuses a timeout on a socket its peer
+    // has closed, as the server may have by the time the writes are done.
+    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let hello = Hello {
         protocol: PROTOCOL,
         version: "0".into(),
@@ -109,7 +112,6 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
     stream.write_all(&request.encode().map_err(e)?).map_err(e)?;
     stream.shutdown(std::net::Shutdown::Write).map_err(e)?;
-    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let mut answer = Vec::new();
     stream.read_to_end(&mut answer).map_err(e)?;
     let mut decoder = Decoder::default();

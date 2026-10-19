@@ -446,13 +446,15 @@ fn a_client_of_another_protocol_is_told_how_to_restart_the_server() -> Outcome {
     use std::io::{Read, Write};
     let server = Server::start("")?;
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    // Set before writing: macOS refuses a timeout on a socket its peer
+    // has closed, as the server may have by the time the writes are done.
+    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let hello = Hello {
         protocol: 999,
         version: "0.0.0".into(),
         role: fux::protocol::Role::Attach,
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    stream.set_read_timeout(Some(PATIENCE)).map_err(e)?;
     let mut decoder = fux::protocol::Decoder::default();
     let mut buffer = [0u8; 4096];
     let mut exit = None;
@@ -944,6 +946,11 @@ fn attach_with(
     use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
     use std::io::{Read, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    // Set before writing: macOS refuses a timeout on a socket its peer
+    // has closed, as the server may have by the time the writes are done.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+        .map_err(e)?;
     let hello = Hello {
         protocol: PROTOCOL,
         version: "test".into(),
@@ -960,9 +967,6 @@ fn attach_with(
     let sent = fuxix::socket::send_with_fd(&stream, &bytes, fd).map_err(e)?;
     stream
         .write_all(bytes.get(sent..).unwrap_or_default())
-        .map_err(e)?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(100)))
         .map_err(e)?;
     let mut decoder = Decoder::default();
     let mut frames = Vec::new();

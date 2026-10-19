@@ -1013,7 +1013,10 @@ fn attached(
         }
         let _ = stdout.flush();
         for act in std::mem::take(&mut acts) {
-            send(stream, &AttachedFrame::Act(Box::new(act)))?;
+            let act = AttachedFrame::Act(Box::new(act));
+            if let Err(ended) = tell(stream, decoder, keyboard.is_some(), &act) {
+                return ended;
+            }
         }
         let mut fds = vec![
             PollFd::new(&*stream, PollFlags::IN),
@@ -1044,7 +1047,10 @@ fn attached(
         if is(WINCH) {
             crate::drain(winch.pipe());
             if terminal {
-                send(stream, &AttachedFrame::Resize(window_size()))?;
+                let resize = AttachedFrame::Resize(window_size());
+                if let Err(ended) = tell(stream, decoder, keyboard.is_some(), &resize) {
+                    return ended;
+                }
             }
         }
         if let Some(keyboard) = &mut keyboard {
@@ -1069,6 +1075,43 @@ fn attached(
         }
         if is(STREAM) && !read_more(stream, decoder)? {
             return Ok("the server closed the connection".into());
+        }
+    }
+}
+
+/// Sends an attached client's `frame`. A write the server hung up on
+/// ends the attachment as the server's last frames say: once it has sent
+/// its `Exit` (a detach, say) it closes, while the client, not yet having
+/// read it, may still be writing. Only a server that said nothing makes
+/// the failed write the end.
+fn tell(
+    stream: &mut Link,
+    decoder: &mut Decoder,
+    welcomed: bool,
+    frame: &AttachedFrame,
+) -> Result<(), Result<String, Error>> {
+    let Err(error) = send(stream, frame) else {
+        return Ok(());
+    };
+    // It has closed, so what it sent ends soon; the wait is for a server
+    // that took no more for another reason.
+    stream.set_read_timeout(Some(crate::door::ANSWER));
+    loop {
+        loop {
+            match decoder.frame() {
+                Ok(Some(ToAttached::Exit(reason))) if welcomed => {
+                    return Err(Ok(reason.to_owned()));
+                }
+                Ok(Some(ToAttached::Exit(reason))) => {
+                    return Err(Err(Error::Refused(reason.to_owned())));
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => return Err(Err(error)),
+            }
+        }
+        if !matches!(read_more(stream, decoder), Ok(true)) {
+            return Err(Err(error));
         }
     }
 }

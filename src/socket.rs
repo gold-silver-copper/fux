@@ -367,11 +367,26 @@ fn probe(path: &Path) -> io::Result<()> {
     }
 }
 
+/// A socket bound at its path, not yet listening: no client connects to it
+/// until its owner has made all else a client may look for (its door).
+pub struct Bound {
+    fd: std::os::fd::OwnedFd,
+    path: PathBuf,
+}
+
+impl Bound {
+    /// Listens: from here clients connect.
+    pub fn listen(self) -> Result<UnixListener, Error> {
+        fuxix::socket::listen(&self.fd, 128).map_err(failed("listening on ", &self.path))?;
+        Ok(UnixListener::from(self.fd))
+    }
+}
+
 /// Takes ownership of `path` and binds it. Refuses a live server's socket and
 /// anything that is not a socket; replaces only a socket proven stale. Where
 /// the system denies sockets the lock is taken all the same, with no
-/// listener: its owner serves through its door alone.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener>), Error> {
+/// socket: its owner serves through its door alone.
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<Bound>), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
     let mut lock_path = path.as_os_str().to_owned();
@@ -443,8 +458,8 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<UnixListener
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
-    fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
-    Ok((endpoint, Some(UnixListener::from(fd))))
+    let path = path.to_owned();
+    Ok((endpoint, Some(Bound { fd, path })))
 }
 
 #[cfg(test)]
@@ -459,7 +474,7 @@ mod tests {
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
         match bind_socket(&checked(path, "test")?)? {
-            (endpoint, Some(listener)) => Ok((endpoint, listener)),
+            (endpoint, Some(bound)) => Ok((endpoint, bound.listen()?)),
             (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
         }
     }
