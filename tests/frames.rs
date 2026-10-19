@@ -135,7 +135,14 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
     // build a turn takes seconds, past a new client's patience for the
     // server's greeting. HELLO comes once they have.
     type_now(&server, "%1", "sleep 4; echo HE''LLO")?;
-    let deadline = after(Duration::from_secs(20));
+    // How long a frame of the flood takes in this build (two budgets and
+    // more: seconds unoptimized, on a slow runner more) sets the wait. The
+    // flood never ends, so a pane it starved would show HELLO never; one
+    // painted between the flood's turns shows it within a few frames of
+    // its echo, which comes once the first frame does if not before.
+    let started = Instant::now();
+    let first = after(Duration::from_secs(300));
+    let mut deadline = None;
     loop {
         client.pump()?;
         let text = client.text();
@@ -146,8 +153,13 @@ fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
         if text.contains("HELLO") {
             return Ok(());
         }
+        if deadline.is_none() && text.contains("DONE") {
+            let frame = started.elapsed();
+            deadline = Some(after(Duration::from_secs(4) + frame * 5));
+        }
+        let by = deadline.unwrap_or(first);
         assert!(
-            Instant::now() < deadline,
+            Instant::now() < by,
             "the other pane was not painted:\n{text}"
         );
         std::thread::sleep(Duration::from_millis(15));
