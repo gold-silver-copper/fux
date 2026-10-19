@@ -1499,24 +1499,22 @@ impl Screen {
         self.structural = self.version;
     }
 
-    fn scroll(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
+    fn scroll(&mut self, region: Span, count: u16, direction: Scroll) {
         if self.grid().lr() {
             self.scroll_columns(region, count, direction);
-            return Ok(());
+            return;
         }
-        self.scroll_rows(region, count, direction)
+        self.scroll_rows(region, count, direction);
     }
-    /// `scroll` without left and right margins: the rows move.
-    fn scroll_rows(&mut self, region: Span, count: u16, direction: Scroll) -> Result<(), Error> {
-        // A bounded multi-row scroll can fail after earlier rows have moved
-        // (allocation failure). Even that partial result must
-        // invalidate every reader's window, not just its newly blank rows.
+    /// `scroll` without left and right margins: the rows move, and every
+    /// reader's window is invalid, not just its newly blank rows.
+    fn scroll_rows(&mut self, region: Span, count: u16, direction: Scroll) {
         self.structural = self.version;
         // The rows brought in take the pen's colours (`bce`), as in xterm.
         let blank = self.blank_style();
         self.with_grid(|g, next, version| {
-            g.scroll(region, count, direction, blank, next, version)
-        })?;
+            g.scroll(region, count, direction, blank, next, version);
+        });
         // Rows moved within the screen (lines deleted or put in above
         // them, a region scrolled) are recorded, their text unchanged: a
         // whole screen scrolled into history moves none of its lines.
@@ -1530,7 +1528,6 @@ impl Screen {
             };
             self.printed(first, 0..0, "");
         }
-        Ok(())
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
     /// its blanks in the pen's colours. Out of line: without margins it is
@@ -1558,7 +1555,7 @@ impl Screen {
                 }
                 return Ok(());
             }
-            self.scroll_rows(g.lines, 1, Scroll::Up { history: true })?;
+            self.scroll_rows(g.lines, 1, Scroll::Up { history: true });
         } else {
             // Down a row, stopping at the last.
             let g = self.grid_mut();
@@ -1595,7 +1592,7 @@ impl Screen {
         let g = self.grid();
         if g.cursor.row() == g.lines.first() {
             if !g.lr() || g.in_columns() {
-                self.scroll(g.lines, 1, Scroll::Down)?;
+                self.scroll(g.lines, 1, Scroll::Down);
             }
         } else {
             let g = self.grid_mut();
@@ -3970,7 +3967,7 @@ impl Screen {
                         _ => Scroll::Down,
                     };
                     spend_scroll(region, n, self.size());
-                    self.scroll(region, n, direction)?;
+                    self.scroll(region, n, direction);
                 }
             }
             // `CSI` with five parameters and `T` is xterm's mouse highlight
@@ -3983,7 +3980,7 @@ impl Screen {
                     _ => Scroll::Down,
                 };
                 spend_scroll(lines, n, self.size());
-                self.scroll(lines, n, direction)?;
+                self.scroll(lines, n, direction);
                 // A double-width line moved under the cursor holds it to its
                 // end. IL and DL leave it at the left margin, and the line a
                 // feed brings under it is new.

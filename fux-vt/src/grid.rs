@@ -1761,7 +1761,7 @@ impl Grid {
         blank: u32,
         next: &mut u64,
         version: u64,
-    ) -> Result<(), Error> {
+    ) {
         // A line feed at the bottom of the screen, the commonest scroll,
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
@@ -1776,10 +1776,9 @@ impl Grid {
                     break;
                 }
             }
-            return Ok(());
+            return;
         }
         self.scroll_region(region, count, direction, blank, next, version);
-        Ok(())
     }
 
     /// No room in history for the rows a scroll of the screen takes into
@@ -3055,7 +3054,7 @@ mod faults {
                 0,
                 &mut next,
                 1,
-            )?;
+            );
         }
         Ok(grid)
     }
