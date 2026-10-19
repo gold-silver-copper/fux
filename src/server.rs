@@ -1233,27 +1233,41 @@ impl Server {
         let Some(view) = session.views.get(&client) else {
             return;
         };
+        // A pane part way through a frame shows as it was last painted
+        // (render::compose_held), its pictures too.
         let placed = attached.placement.panes.clone();
-        render::compose_view(session, view, &mut attached.spare, &mut attached.placement);
-        // A pane part way through a frame shows as it was last painted,
-        // where it still is; the rest of the screen is painted, so one
-        // pane holds up no other (threats.md P24).
-        for &(id, rect) in &attached.placement.panes {
-            if attached.known
-                && placed.contains(&(id, rect))
-                && session.panes.get(&id).is_some_and(Pane::mid_frame)
-            {
-                attached.spare.keep_area(&attached.shown, rect);
-            }
-        }
+        let painted = (attached.known).then_some(render::Painted {
+            grid: &attached.shown,
+            panes: &placed,
+        });
+        render::compose_held(
+            session,
+            view,
+            &mut attached.spare,
+            &mut attached.placement,
+            painted,
+        );
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }
         // A picture gone or moved has its cells painted again, blank, which
         // takes its pixels away; one whose cells this paint paints over, or
         // new, is sent after the text.
-        let pictures = render::pictures(session, client, &attached.placement);
+        let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
+        for &(id, rect) in &attached.placement.panes {
+            if session.panes.get(&id).is_some_and(Pane::mid_frame) {
+                pictures.retain(|p| p.pane != id);
+                let (rows, cols) = (attached.spare.rows, attached.spare.cols);
+                let painted = render::Painted {
+                    grid: &attached.shown,
+                    panes: &placed,
+                };
+                if known && painted.kept(id, rect, rows, cols) {
+                    pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());
+                }
+            }
+        }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
         }
