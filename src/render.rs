@@ -1042,7 +1042,9 @@ pub fn compose_held(
                 }
             }
         }
-        if held(&focus) {
+        // Only where a pane's own cursor shows: in normal mode (none under
+        // an overlay, copy mode's its own).
+        if held(&focus) && view.mode.is_normal() {
             let painted = kept(focus, rect);
             let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
             grid.cursor = at;
@@ -2536,6 +2538,9 @@ mod tests {
         // And its own, as painted.
         painted.cursor = Some((held.y(), held.x().saturating_add(1)));
         assert_eq!(compose(&s, &painted).cursor, painted.cursor);
+        // But none under fux's own panel, as for any pane.
+        s.input(c, b"\x02x");
+        assert_eq!(compose(&s, &painted).cursor, None, "under a confirmation");
         Ok(())
     }
 
