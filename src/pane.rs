@@ -987,10 +987,14 @@ impl Pane {
             let runs = (self.classes).classify(self.parser.screen(), marked, piece, now);
             let mut start = 0usize;
             let mut begun = None;
-            for (end, origin) in runs {
+            for &(end, origin) in &runs {
                 let run = piece.get(start..end).unwrap_or_default();
                 if let Some((taken, stop)) = self.record(run, origin, until_frame) {
-                    begun = Some((done.saturating_add(start).saturating_add(taken), stop));
+                    // The rest of the piece is read again later, and told
+                    // again then.
+                    let at = start.saturating_add(taken);
+                    self.classes.unread(piece, &runs, at);
+                    begun = Some((done.saturating_add(at), stop));
                     break;
                 }
                 start = end;
@@ -2086,6 +2090,54 @@ mod tests {
         }
         assert!(!pane.mid_frame());
         assert_eq!(first_row(&pane), "DONEZ");
+        Ok(())
+    }
+
+    /// The kernel's echo of what was typed, in the piece of output a
+    /// parser call's budget stopped in, is told an echo when it is read on
+    /// the next turn: the output read so far took none of the echo's bytes
+    /// the parser had yet to read. The input is written a minute ahead, for the echo to be
+    /// looked for however long an unoptimized build takes on a budget.
+    #[test]
+    fn an_echo_read_after_a_budget_stop_is_an_echo() -> Result<(), String> {
+        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
+        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
+        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
+        let input = crate::classify::Input {
+            unit: log::Unit::Edit,
+            line: None,
+            ahead: false,
+        };
+        let ahead = after(Instant::now(), Duration::from_secs(60));
+        assert!(
+            pane.classes
+                .wrote(input, b"abc", Some(&modes.modes()), ahead)
+        );
+        // Each ED of the screen is spent as a million cells: 200 of them,
+        // 800 bytes, in one piece with the echo, spend a budget.
+        let mut out: Vec<u8> = std::iter::repeat_n(b"\x1b[2J", 200)
+            .flatten()
+            .copied()
+            .collect();
+        out.extend_from_slice(b"\x1b[Habc");
+        pane.output(&out);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
+            .flat_map(|(_, printed)| {
+                printed
+                    .runs()
+                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
+            })
+            .filter(|(text, _)| text == "abc")
+            .map(|(_, echo)| echo)
+            .collect();
+        assert_eq!(echoes, [Echo::Is]);
         Ok(())
     }
 
