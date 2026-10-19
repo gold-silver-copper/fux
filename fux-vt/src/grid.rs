@@ -513,12 +513,17 @@ impl Grid {
     /// and their numbers, which the rows it is given keep; unmade if this
     /// one is.
     fn successor(&self, size: Size) -> Self {
-        Self {
+        let mut next = Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
             unmade: self.unmade,
             ..Self::bare(size, self.history_bytes())
-        }
+        };
+        // Its history counts the styles it shares as this one's does
+        // (B11), before it is given a row.
+        let cells = if self.unmade { 0 } else { size.cells() };
+        next.charge_styles(cells);
+        next
     }
 
     /// Room for the screen's rows, exactly; their cells' only once made.
@@ -979,9 +984,7 @@ impl Grid {
                     .insert(attributes)
                     .unwrap_or(0);
                 if grows || swept {
-                    let share = crate::style::screen_share(self.cells.len());
-                    self.history
-                        .charge(self.styles.bytes().saturating_sub(share));
+                    self.charge_styles(self.cells.len());
                 }
                 id
             }
@@ -990,6 +993,14 @@ impl Grid {
             *slot = (attributes, id);
         }
         id
+    }
+
+    /// Charges the style table's bytes beyond the share of a screen of
+    /// `cells` cells to history's budget (`threats.md` B11).
+    fn charge_styles(&mut self, cells: usize) {
+        let share = crate::style::screen_share(cells);
+        self.history
+            .charge(self.styles.bytes().saturating_sub(share));
     }
 
     /// Charges the style table's bytes, one more style in it, beyond the
@@ -2105,6 +2116,7 @@ impl Grid {
                         return Err(refused);
                     }
                     self.history = History::new(self.history_bytes());
+                    self.charge_styles(self.cells.len());
                     crate::degraded();
                 }
             }
@@ -2607,6 +2619,7 @@ impl Grid {
         report.record("grid.text", which, self.check_text());
         report.record("grid.style_numbers", which, self.check_style_numbers());
         report.record("grid.recent", which, self.check_recent());
+        report.record("grid.charged", which, self.check_charged());
         report.record("styles.table", which, self.styles.check());
         let keyed = |attributes: &Attributes| {
             std::hash::BuildHasher::hash_one(&crate::style::Keyed, attributes)
@@ -2759,6 +2772,17 @@ impl Grid {
             )?;
         }
         Ok(())
+    }
+
+    /// 21a: history is charged the style table's bytes beyond the
+    /// screen's share (B11).
+    fn check_charged(&self) -> Result<(), String> {
+        let share = crate::style::screen_share(self.cells.len());
+        let want = self.styles.bytes().saturating_sub(share);
+        let charged = self.history.charged();
+        crate::check::ensure(charged == want, || {
+            format!("history charged {charged} bytes for styles of {want}")
+        })
     }
 
     /// 20: every row's version is at most the screen's, `version`.
@@ -2929,6 +2953,7 @@ mod faults {
                 *slot = (bold, crate::style::TABLE | 3);
             }
         })?;
+        shows("grid.charged", |g| g.history.charge(1))?;
         shows("grid.versions", |g| {
             g.meta.iter_mut().for_each(|m| m.version = 2);
         })?;

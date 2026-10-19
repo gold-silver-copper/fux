@@ -336,6 +336,11 @@ impl History {
     fn block_cells(&self) -> usize {
         (self.budget / 64).clamp(1, BLOCK)
     }
+    /// The bytes charged beside the rows (`charge`).
+    #[cfg(feature = "checks")]
+    pub(crate) fn charged(&self) -> usize {
+        self.charged
+    }
     /// Counts `bytes` in the budget beside the rows, in place of what was
     /// charged before, and lets the oldest rows go to fit.
     pub(crate) fn charge(&mut self, bytes: usize) {

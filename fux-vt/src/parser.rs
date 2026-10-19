@@ -2322,6 +2322,7 @@ mod faults {
             "grid.text",
             "grid.style_numbers",
             "grid.recent",
+            "grid.charged",
             "styles.table",
             "styles.spread",
             "grid.versions",
