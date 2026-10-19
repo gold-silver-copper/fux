@@ -269,11 +269,17 @@ fn drop_to_end(
     if csi {
         let end = bytes
             .iter()
-            .position(|b| (0x40..=0x7e).contains(b))
+            .position(|b| !(0x20..=0x3f).contains(b))
             .ok_or(false)?;
-        return Ok(Cow::Borrowed(
-            bytes.get(end.saturating_add(1)..).unwrap_or_default(),
-        ));
+        // A final byte is dropped with it; any other byte begins what comes
+        // next, as `long_answer` has it.
+        let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
+        let rest = if final_byte {
+            end.saturating_add(1)
+        } else {
+            end
+        };
+        return Ok(Cow::Borrowed(bytes.get(rest..).unwrap_or_default()));
     }
     for (i, &byte) in bytes.iter().enumerate() {
         let rest = match (escape, byte) {
@@ -827,8 +833,10 @@ fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
             stroke.press.mods.alt = true;
             Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
         }
-        Step::Incomplete => Step::Incomplete,
-        Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } => {
+        // Past a key's window (32 bytes after `ESC [`) it is no key, and
+        // the Escape is not held while it is (B24).
+        Step::Incomplete if rest.len() <= 2 + 32 => Step::Incomplete,
+        Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } | Step::Incomplete => {
             Step::Done(1, press(Key::Escape, Modifiers::NONE))
         }
     }
@@ -1042,8 +1050,15 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 #[cold]
 #[inline(never)]
 fn long_answer(body: &[u8], flush: bool) -> Step {
-    match body.iter().position(|b| (0x40..=0x7e).contains(b)) {
-        Some(end) => Step::Done(end.saturating_add(3), None),
+    // Its end: a final byte, dropped with it; or a byte no control sequence
+    // holds (ECMA-48 5.4, 5.5: an ESC, a control), which begins what comes
+    // next.
+    let end = body.iter().position(|b| !(0x20..=0x3f).contains(b));
+    match end {
+        Some(end) if body.get(end).is_some_and(|b| (0x40..=0x7e).contains(b)) => {
+            Step::Done(end.saturating_add(3), None)
+        }
+        Some(end) => Step::Done(end.saturating_add(2), None),
         None if flush => Step::Done(body.len().saturating_add(2), None),
         // Past what is held: the rest of it is dropped as it comes, to its
         // final byte, however it is split (threats.md B25).
@@ -1904,6 +1919,22 @@ mod tests {
         // but Alt-[ and Alt-O: the Escape before them is an Escape.
         assert_eq!(all(b"\x1b\x1b["), vec![key("Escape"), key("M-[")]);
         assert_eq!(all(b"\x1b\x1bO"), vec![key("Escape"), key("M-O")]);
+    }
+
+    /// A CSI past its window that an ESC or a control cuts short ends there,
+    /// unfinished, and the byte begins what comes next (ECMA-48 5.5), whole
+    /// or split: the Up after a long one is typed (FA-RE-B-8).
+    #[test]
+    fn an_over_long_csi_cut_short_by_an_esc_drops_only_itself() {
+        let mut long = b"\x1b[".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 40));
+        long.extend_from_slice(b"\x1b[A");
+        assert_eq!(all(&long), vec![key("Up")]);
+        let mut held = b"\x1b[".to_vec();
+        held.extend(std::iter::repeat_n(b'1', 300));
+        held.extend_from_slice(b"\x1b[A");
+        assert_eq!(all(&held), vec![key("Up")]);
+        split_anywhere(&long, false, &[key("Up")]);
     }
 
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
