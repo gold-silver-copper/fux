@@ -9,6 +9,8 @@ repository = "https://github.com/gold-silver-copper/fux"
 readme = "README.md"
 keywords = ["terminal", "vt100", "ansi", "emulator", "parser"]
 categories = ["command-line-interface", "parser-implementations"]
+# The external suites the tests read from their own checkouts: not published.
+exclude = ["tests/external"]
 
 [features]
 # The work counters and the invariant checker (threats.md P15): for the
