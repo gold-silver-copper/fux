@@ -1234,6 +1234,164 @@ pub const FAMILIES: &[Family] = &[
 
 /// Whether `text` is `pattern`, each `*` in it standing for any run of
 /// characters.
+/// Where a family that differs departs from the engine it is judged
+/// beside (xterm, the authority where the standards are silent; Ghostty for
+/// grapheme clusters, which xterm lacks and Ghostty's mode 2027 defines):
+/// what makes it (the case's output, all its writes
+/// in order, and its size, rows and columns), the fields that then differ,
+/// and why fux-vt is right there, by the section or document that decides.
+pub struct Departure {
+    pub why: &'static str,
+    pub when: fn(&[u8], u16, u16) -> bool,
+    pub fields: &'static [&'static str],
+}
+
+/// Each family that differs, judged by `verdicts` beside the engine named
+/// in random cases of it and text, each snippet a write of its own (bytes
+/// that arrive together xterm's jump scroll draws differently): a case
+/// that differs where no departure of its family covers fails; how many
+/// cases each departure covered is printed (one rare in the generator may
+/// cover none in a run). Not listed: hostile, which mixes every
+/// family, and resize, which reflows where xterm does not and differs from
+/// Ghostty's reflow by design (its status).
+pub const DEPARTURES: &[(&str, &str, &[Departure])] = &[
+    ("scroll", "xterm", &[BOTTOM_PAST_SCREEN, SCROLL_ZERO]),
+    ("origin", "xterm", &[BOTTOM_PAST_SCREEN, REGION_HISTORY]),
+    ("alternate", "xterm", &[]),
+    ("insert-mode", "xterm", &[]),
+    (
+        "clusters",
+        "ghostty",
+        &[LONE_INDICATOR, PREPEND, WIDENED_AT_THE_EDGE],
+    ),
+];
+
+/// Each CSI sequence in `bytes`: its private marker, if any, its
+/// parameters (none for an empty one) and its final byte.
+fn csis(bytes: &[u8]) -> Vec<(Option<u8>, Vec<Option<u32>>, u8)> {
+    let mut out = Vec::new();
+    let mut rest = bytes;
+    while let Some(at) =
+        (0..rest.len()).find(|&i| rest.get(i..).is_some_and(|r| r.starts_with(b"\x1b[")))
+    {
+        rest = rest.get(at.saturating_add(2)..).unwrap_or_default();
+        let private = rest.first().copied().filter(|b| b"?<=>".contains(b));
+        let body = rest
+            .get(usize::from(private.is_some())..)
+            .unwrap_or_default();
+        let len = body
+            .iter()
+            .position(|b| !(b.is_ascii_digit() || *b == b';'))
+            .unwrap_or(body.len());
+        let (Some(text), Some(&last)) = (body.get(..len), body.get(len)) else {
+            break;
+        };
+        let params = (text.split(|b| *b == b';'))
+            .map(|p| std::str::from_utf8(p).ok().and_then(|p| p.parse().ok()))
+            .collect();
+        out.push((private, params, last));
+        rest = body.get(len..).unwrap_or_default();
+    }
+    out
+}
+
+/// The characters of `bytes`.
+fn chars(bytes: &[u8]) -> Vec<char> {
+    String::from_utf8_lossy(bytes).chars().collect()
+}
+
+fn indicator(c: Option<&char>) -> bool {
+    c.is_some_and(|c| ('\u{1f1e6}'..='\u{1f1ff}').contains(c))
+}
+
+const LONE_INDICATOR: Departure = Departure {
+    why: "a regional indicator with no other beside it is one column, as in xterm, alacritty, \
+          libvterm, xterm.js and tmux, where Ghostty makes it two (the family's status)",
+    // Or any, on a screen too narrow for the flag a pair makes.
+    when: |bytes, _, cols| {
+        let c = chars(bytes);
+        (0..c.len()).any(|i| {
+            indicator(c.get(i))
+                && (cols < 2
+                    || !indicator(i.checked_sub(1).and_then(|p| c.get(p)))
+                        && !indicator(c.get(i.saturating_add(1))))
+        })
+    },
+    fields: &["*"],
+};
+
+const PREPEND: Departure = Departure {
+    why: "a Prepend character joins what follows it, as UAX #29 (GB9b) has it and mode 2027 \
+          requires, where Ghostty, as every engine of the panel, breaks after it",
+    when: |bytes, _, _| {
+        chars(bytes)
+            .iter()
+            .any(|c| ('\u{600}'..='\u{605}').contains(c))
+    },
+    fields: &["*"],
+};
+
+const WIDENED_AT_THE_EDGE: Departure = Departure {
+    why: "a cluster VS16 widens stays narrow in the last column, where Ghostty wraps it (the \
+          family's status)",
+    when: |bytes, _, _| chars(bytes).contains(&'\u{fe0f}'),
+    fields: &["*"],
+};
+
+/// A DECSTBM in the output whose bottom is past the screen.
+fn bottom_past_screen(bytes: &[u8], rows: u16, _: u16) -> bool {
+    csis(bytes).iter().any(|(private, params, last)| {
+        *last == b'r'
+            && private.is_none()
+            && params
+                .get(1)
+                .copied()
+                .flatten()
+                .is_some_and(|b| b > u32::from(rows))
+    })
+}
+
+const BOTTOM_PAST_SCREEN: Departure = Departure {
+    why: "a DECSTBM whose bottom is past the screen is ignored, as DEC STD 070 says (DECSTBM, \
+          note 3), where xterm takes it as the last line: what follows is laid out in other \
+          margins",
+    when: bottom_past_screen,
+    fields: &["*"],
+};
+
+const SCROLL_ZERO: Departure = Departure {
+    why: "`CSI 0 T` scrolls a line, fux-vt's parameters not telling 0 from empty, where xterm \
+          reads it as mouse tracking",
+    when: |bytes, _, _| {
+        (csis(bytes).iter()).any(|(p, params, last)| {
+            p.is_none() && *last == b'T' && params.first().copied().flatten() == Some(0)
+        })
+    },
+    fields: &["*"],
+};
+
+const REGION_HISTORY: Departure = Departure {
+    why: "a region whose top is the screen's keeps no history in fux-vt, which keeps only the \
+          lines whole-screen scrolls push off (documented), where xterm keeps those that scroll \
+          off such a region too",
+    when: |bytes, rows, _| {
+        csis(bytes).iter().any(|(p, params, last)| {
+            let top = params.first().copied().flatten().unwrap_or(1);
+            let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
+            p.is_none() && *last == b'r' && top <= 1 && bottom < u32::from(rows)
+        })
+    },
+    fields: &["history *"],
+};
+
+/// The engine `family` is judged beside and its departures, if it is
+/// judged so.
+pub fn departures(family: &str) -> Option<(&'static str, &'static [Departure])> {
+    (DEPARTURES.iter())
+        .find(|(f, _, _)| *f == family)
+        .map(|(_, beside, d)| (*beside, *d))
+}
+
 pub fn glob(pattern: &str, text: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
@@ -1264,6 +1422,27 @@ pub fn find(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{Authority, FAMILIES, Status, XTERM};
+
+    /// The departures' triggers find what they name, and nothing else.
+    #[test]
+    fn a_departure_is_made_by_what_it_names() {
+        assert!(super::bottom_past_screen(b"x\x1b[2;99rX", 24, 80));
+        assert!(!super::bottom_past_screen(
+            b"x\x1b[2;24rX\x1b[?2;99r",
+            24,
+            80
+        ));
+        let lone = super::LONE_INDICATOR.when;
+        assert!(lone("a\u{1f1fa}b".as_bytes(), 4, 10));
+        assert!(!lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 10));
+        assert!(lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 1));
+        assert!((super::SCROLL_ZERO.when)(b"\x1b[0T", 4, 10));
+        assert!(!(super::SCROLL_ZERO.when)(b"\x1b[T\x1b[0S", 4, 10));
+        for (family, beside, _) in super::DEPARTURES {
+            assert!(super::find(family).is_some(), "{family}");
+            assert!(crate::engine::find(beside).is_some(), "{beside}");
+        }
+    }
 
     /// Every decided family has its check: the test its standard names
     /// cites the section, or xterm is among the engines beside it. A test

@@ -549,6 +549,16 @@ impl Case {
         self.run(panel).is_ok_and(|o| !o.agrees())
     }
 
+    /// Every byte of its output, in order, its resizes left out.
+    pub fn output(&self) -> Vec<u8> {
+        (self.steps.iter())
+            .flat_map(|s| match s {
+                Step::Output(snippets) => snippets.iter().flat_map(|x| x.bytes.clone()).collect(),
+                Step::Resize(..) => Vec::new(),
+            })
+            .collect()
+    }
+
     /// The families the case's output comes from, by name, each once.
     pub fn families(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = Vec::new();
