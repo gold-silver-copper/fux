@@ -2855,9 +2855,10 @@ impl Screen {
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
-        // It erases no line whole, sparing what is protected, so each keeps
-        // its rendition, which ED's erasing a line whole makes single width
-        // (DEC STD 070, DECSED, note 3; ED, note 1).
+        // DECSED leaves every line's rendition (DEC STD 070, DECSED, note
+        // 3); an ED that spares SPA's guarded glyphs erases whole, and so
+        // makes single width (ED, note 1), each line but those it spared a
+        // glyph of.
         let g = self.grid();
         let renditions: Vec<(u16, LineRendition)> = match display && g.doubled() {
             true => (0..g.size().rows())
@@ -2879,7 +2880,11 @@ impl Screen {
             });
         let g = self.grid_mut();
         for (y, rendition) in renditions {
-            g.set_rendition(y, rendition, version);
+            let styles = g.styles();
+            let spared = || g.live_cells(y).iter().any(|c| styles.guarded(c.style()));
+            if private || spared() {
+                g.set_rendition(y, rendition, version);
+            }
         }
     }
 
