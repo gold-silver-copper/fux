@@ -13,6 +13,7 @@
 //! a tie within it, and unranked where no floor was measured.
 
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -203,7 +204,10 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
         rows.push(row("Speed", "MB/s, fux-vt", &missing(dir, "info"), ""));
         return;
     };
-    let measured = mb_per_s(&info).len();
+    let ranked = mb_per_s(dir, Some(&info));
+    let first = (ranked.iter())
+        .filter(|r| r.standing == Standing::Ahead)
+        .count();
     let mbs = |engine: &str| {
         let at = format!("/engines_mb_per_s/equal-budget, in process/corpus/{engine}");
         number(&info, &at).map_or_else(|| "?".into(), |v| format!("{v:.0}"))
@@ -212,8 +216,9 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
         "Speed",
         "MB/s on the corpus, equal budget, in process",
         &format!(
-            "{} ({measured} workloads measured; unranked, no A/A floor for wall time)",
+            "{} (first on {first} of {} workloads; floor {MBS_FLOOR})",
             mbs("fux-vt"),
+            ranked.len()
         ),
         &format!("Ghostty {}, alacritty {}", mbs("ghostty"), mbs("alacritty")),
     ));
@@ -494,33 +499,131 @@ fn passed(results: &Value, pointer: &str) -> Option<(u64, u64)> {
 /// (speed-method.md), however steady a run's repeats.
 const FLOOR_MIN_PERCENT: f64 = 0.25;
 
-/// The MB/s rows, from `fux-bench info` (by table, workload and engine):
-/// higher is better, and none is ranked, no A/A floor being measured for
-/// wall time.
-fn mb_per_s(info: &Value) -> Vec<Ranked> {
-    let floor = Floor::Unknown("no A/A floor measured for MB/s, a wall time");
-    let tables = (info.get("engines_mb_per_s").and_then(Value::as_object))
-        .into_iter()
-        .flatten();
-    let rows = tables.flat_map(|(table, workloads)| {
-        let workloads = workloads.as_object().into_iter().flatten();
-        workloads.map(move |(name, engines)| (table, name, engines))
-    });
-    rows.filter_map(|(table, name, engines)| {
-        let figures: Vec<(String, f64)> = (engines.as_object())
+/// One run's MB/s, by table (`RETENTION, in process`), workload and
+/// engine.
+type Mbs = BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>;
+
+/// The MB/s of each run there is: `fux-bench info`'s (by table, workload
+/// and engine), and each `bench-mbs-*` check's (`fux-vt-compare bench
+/// --json`, an engine beside fux-vt), of checks that ran and passed. A
+/// measure whose contract failed is left out.
+fn mbs_runs(dir: &Path, info: Option<&Value>) -> Vec<Mbs> {
+    let mut runs = Vec::new();
+    if let Some(info) = info {
+        let mut run = Mbs::new();
+        for (table, workloads) in (info.get("engines_mb_per_s").and_then(Value::as_object))
             .into_iter()
             .flatten()
-            .filter_map(|(e, v)| Some((e.clone(), v.as_f64()?)))
-            .collect();
-        rank(
-            format!("MB/s ({table}): {name}"),
-            &figures,
-            false,
-            floor,
-            &|v| format!("{v:.1}"),
-        )
-    })
-    .collect()
+        {
+            for (name, engines) in workloads.as_object().into_iter().flatten() {
+                for (engine, v) in engines.as_object().into_iter().flatten() {
+                    if let Some(v) = v.as_f64() {
+                        let row = run.entry(table.clone()).or_default().entry(name.clone());
+                        row.or_default().insert(engine.clone(), v);
+                    }
+                }
+            }
+        }
+        runs.push(run);
+    }
+    let mut checks: Vec<String> = (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|n| n.strip_suffix(".stamp.json").map(str::to_owned))
+        .filter(|n| n.starts_with("bench-mbs-"))
+        .collect();
+    checks.sort();
+    for doc in checks.iter().filter_map(|check| load(dir, check)) {
+        let mut run = Mbs::new();
+        for table in (doc.get("tables").and_then(Value::as_array))
+            .into_iter()
+            .flatten()
+        {
+            let retention = table
+                .get("retention")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let place = match table.get("in_process").and_then(Value::as_bool) {
+                Some(false) => "own process",
+                _ => "in process",
+            };
+            for w in (table.get("workloads").and_then(Value::as_array))
+                .into_iter()
+                .flatten()
+            {
+                let name = w.get("name").and_then(Value::as_str).unwrap_or("?");
+                for (engine, cell) in (w.get("engines").and_then(Value::as_object))
+                    .into_iter()
+                    .flatten()
+                {
+                    let failed = cell.get("contract_failed").and_then(Value::as_bool) == Some(true);
+                    if let (Some(v), false) = (number(cell, "/mb_per_s"), failed) {
+                        let row = run.entry(format!("{retention}, {place}")).or_default();
+                        row.entry(name.to_owned())
+                            .or_default()
+                            .insert(engine.clone(), v);
+                    }
+                }
+            }
+        }
+        runs.push(run);
+    }
+    runs
+}
+
+/// The median of `values`, which are not empty.
+fn median(values: &mut [f64]) -> Option<f64> {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    match values.len() % 2 {
+        1 => values.get(mid).copied(),
+        _ => Some((values.get(mid.checked_sub(1)?)? + values.get(mid)?) / 2.0),
+    }
+}
+
+/// How MB/s is ranked, as checkpoint 0's scoreboard ranked it.
+const MBS_FLOOR: &str =
+    "per workload: max(0.25%, the widest deviation of fux-vt's runs from their median)";
+
+/// The MB/s rows of every run there is (`mbs_runs`): higher is better;
+/// each engine's figure the median of its runs, fux-vt's of all its runs
+/// beside every engine, and the floor max(0.25%, the widest deviation of
+/// fux-vt's runs from their median), as checkpoint 0's scoreboard ranks
+/// it.
+fn mb_per_s(dir: &Path, info: Option<&Value>) -> Vec<Ranked> {
+    let runs = mbs_runs(dir, info);
+    let mut by: BTreeMap<(&str, &str), BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
+    for run in &runs {
+        for (table, workloads) in run {
+            for (name, engines) in workloads {
+                for (engine, v) in engines {
+                    let row = by.entry((table.as_str(), name.as_str())).or_default();
+                    row.entry(engine.as_str()).or_default().push(*v);
+                }
+            }
+        }
+    }
+    by.into_iter()
+        .filter_map(|((table, name), engines)| {
+            let fux = engines.get("fux-vt")?.clone();
+            let mut sorted = fux.clone();
+            let middle = median(&mut sorted)?;
+            let widest = (fux.iter())
+                .map(|v| (v / middle - 1.0).abs() * 100.0)
+                .fold(FLOOR_MIN_PERCENT, f64::max);
+            let figures: Vec<(String, f64)> = engines
+                .into_iter()
+                .filter(|(e, _)| !e.starts_with("fux-vt+"))
+                .filter_map(|(e, mut v)| Some((e.to_owned(), median(&mut v)?)))
+                .collect();
+            rank(
+                format!("MB/s ({table}): {name}"),
+                &figures,
+                false,
+                Floor::Percent(widest),
+                &|v| format!("{v:.1}"),
+            )
+        })
+        .collect()
 }
 
 /// esctest's engines: each run's JSON, and where in it each terminal is.
@@ -639,9 +742,7 @@ fn ranked(dir: &Path) -> Vec<Ranked> {
     if let Some(footprint) = load(dir, "footprint") {
         out.extend(memory(&footprint));
     }
-    if let Some(info) = load(dir, "info") {
-        out.extend(mb_per_s(&info));
-    }
+    out.extend(mb_per_s(dir, load(dir, "info").as_ref()));
     out
 }
 
@@ -1057,8 +1158,9 @@ mod tests {
 
     /// Instructions per byte are ranked past a floor of at least 0.25%,
     /// whatever the repeats' own spread (0.01% here): 0.1% apart is a tie.
-    /// MB/s is read as fux-bench info writes it, by table, and is not
-    /// ranked, no A/A floor being measured for wall time.
+    /// MB/s is read as fux-bench info writes it, by table, and ranked as
+    /// checkpoint 0 ranked it: past max(0.25%, the widest deviation of
+    /// fux-vt's runs from their median), here one run's, so 0.25%.
     #[test]
     fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
         let dir = dir("floors")?;
@@ -1086,7 +1188,32 @@ mod tests {
         assert_eq!(none.standing, super::Standing::Ahead);
         let mbs = row("MB/s").ok_or("no MB/s row")?;
         assert!(mbs.measure.contains("equal-budget, in process") && mbs.measure.contains("ascii"));
-        assert!(matches!(mbs.standing, super::Standing::Unranked(_)));
+        assert_eq!(mbs.standing, super::Standing::Ahead);
+        assert_eq!(mbs.floor, super::Floor::Percent(0.25));
+        // With each engine's own run beside it, fux-vt's runs of 100 and 110
+        // (their median 105) widen the floor to 4.76%: Ghostty's 104 ties.
+        for (engine, fux, theirs) in [("ghostty", 100.0, 104.0), ("alacritty", 110.0, 50.0)] {
+            let doc = json!({"kind": "fux-vt-compare bench", "tables": [{"retention": "equal-retention",
+                "in_process": true, "workloads": [{"name": "unicode", "engines": {
+                    "fux-vt": {"mb_per_s": fux}, engine: {"mb_per_s": theirs},
+                    "fux-vt+prints": {"mb_per_s": 1.0}}}]}]});
+            let check = format!("bench-mbs-{engine}-synth");
+            std::fs::write(dir.join(format!("{check}.json")), doc.to_string())
+                .map_err(|e| e.to_string())?;
+            stamped(&dir, &check, "p", 0)?;
+        }
+        let rows = super::ranked(&dir);
+        let unicode = (rows.iter())
+            .find(|r| r.measure == "MB/s (equal-retention, in process): unicode")
+            .ok_or("no unicode row")?;
+        assert_eq!(
+            (unicode.fux_vt.as_str(), unicode.best.as_str()),
+            ("105.0", "ghostty 104.0")
+        );
+        assert!(
+            matches!(unicode.floor, super::Floor::Percent(p) if (p - 100.0 * 5.0 / 105.0).abs() < 1e-9)
+        );
+        assert_eq!(unicode.standing, super::Standing::Tie);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
