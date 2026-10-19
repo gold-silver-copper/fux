@@ -27,6 +27,8 @@ use std::collections::{HashMap, VecDeque};
 
 mod ring;
 use ring::Ring;
+mod spans;
+use spans::Spans;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -273,6 +275,12 @@ pub(crate) struct History {
     /// The rows whose line ends with them though soft-wrapped (`ENDS`), by
     /// number, oldest first: as rare.
     ended: VecDeque<u64>,
+    /// The rows by identity (`position`): outside the budget, so that what
+    /// a history keeps does not change with how its rows' identities run;
+    /// at most a span a row it held since a span last began, and one,
+    /// about 64 bytes each: a B-tree entry and its share of a node half
+    /// full, and its place in push order (`threats.md` B40).
+    spans: Spans,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
     /// The bytes of the rows' text.
@@ -319,6 +327,7 @@ impl Clone for History {
             linked_room: self.linked_room,
             renditions: self.renditions.clone(),
             ended: self.ended.clone(),
+            spans: self.spans.clone(),
             cells: self.cells,
             text: self.text,
             budget: self.budget,
@@ -446,6 +455,7 @@ impl History {
         (self.texts_room, self.linked_room) = (0, 0);
         self.renditions = VecDeque::new();
         self.ended = VecDeque::new();
+        self.spans = Spans::default();
         self.recount();
     }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
@@ -456,7 +466,10 @@ impl History {
         (fresh.first_row, fresh.let_go) = (self.first_row, self.let_go);
         fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
-        if fresh.take(self).is_ok() {
+        fresh.spans.stage();
+        let took = fresh.take(self);
+        fresh.spans.finish();
+        if took.is_ok() {
             *self = fresh;
         } else {
             // No memory for it: the rows go from where they are.
@@ -562,20 +575,12 @@ impl History {
             links,
         })
     }
-    /// Where the row with identity `id` is, oldest first.
+    /// Where the row with identity `id` is, oldest first: found by its
+    /// span (`Spans`), one row read (`threats.md` B40).
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
-        // A chunk at a time, each a slice searched as such.
-        let mut before = 0usize;
-        let mut at = None;
-        for slice in self.rows.slices() {
-            if let Some(found) = slice.iter().position(|kept| kept.id == id) {
-                at = before.checked_add(found);
-                break;
-            }
-            before = before.saturating_add(slice.len());
-        }
-        spend!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
-        at
+        let index = self.index_of_number(self.spans.number_of(id.0)?)?;
+        spend!(rows, 1);
+        (self.rows.get(index)?.id == id).then_some(index)
     }
     /// The links of each row that has any, with its index, oldest first.
     pub(crate) fn links(&self) -> impl Iterator<Item = (usize, Runs<'_>)> {
@@ -685,6 +690,11 @@ impl History {
             cells => self.newest.extend_from_slice(cells),
         }
         self.cells = self.cells.saturating_add(len);
+        // A row whose identity follows the last one's goes on with its
+        // span; any other begins one.
+        if self.spans.went_on(row.id.0) {
+            self.begin_span(row.id);
+        }
         self.rows
             .push_back(Kept::new(&row, (self.newest_block, start)));
         if (row.flags >> RENDITION_SHIFT) & 3 != 0 {
@@ -694,6 +704,26 @@ impl History {
             let _ = self.keep_ended();
         }
         Ok(())
+    }
+
+    /// Rows are about to be pushed in from another history (a resize):
+    /// the spans they begin are found once it is done (`finish_spans`).
+    pub(crate) fn stage_spans(&mut self) {
+        self.spans.stage();
+    }
+    /// The rows a resize pushed are all in: their spans are found now.
+    pub(crate) fn finish_spans(&mut self) {
+        self.spans.finish();
+    }
+
+    /// Notes that the row coming next, `id`, begins a span of identities.
+    /// Out of line, as rows come one identity after another as a screen
+    /// scrolls them in.
+    #[cold]
+    #[inline(never)]
+    fn begin_span(&mut self, id: RowId) {
+        let number = self.number(self.rows.len()).unwrap_or(u64::MAX);
+        self.spans.begin(id.0, number, self.first_row);
     }
 
     /// Notes the rendition of the row pushed last, which is not single
@@ -1134,6 +1164,13 @@ impl History {
             )?;
             after = number.saturating_add(1);
         }
+        // 20: each row is found by its identity where it is (`position`).
+        for (i, kept) in self.rows.iter().enumerate() {
+            let found = self.spans.number_of(kept.id.0);
+            crate::check::ensure(found == self.number(i), || {
+                format!("row {i}, {:?}, is found as number {found:?}", kept.id)
+            })?;
+        }
         Ok(())
     }
 
@@ -1249,6 +1286,11 @@ mod faults {
         shows("history.flags", |h| {
             h.renditions
                 .push_back((u64::MAX, LineRendition::DoubleWidth));
+        });
+        shows("history.flags", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.id = RowId(1 << 40);
+            }
         });
         shows("history.budget", |h| h.budget = 0);
         shows("history.capacities", |h| h.rows.reserve_more(1000));
