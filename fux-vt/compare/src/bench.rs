@@ -499,8 +499,8 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
         Retention::Budget => 10_000usize,
         Retention::None => 0,
     };
-    // As the adapter sizes it: 24 bytes a row and 8 a cell.
-    let history = rows.saturating_mul(usize::from(load.cols).saturating_mul(8).saturating_add(24));
+    // As the adapter sizes it.
+    let history = crate::engines::fux_vt::history_bytes(rows, load.cols);
     let mut best: Option<Measured> = None;
     for _ in 0..RUNS {
         let mut parser =
