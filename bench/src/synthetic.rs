@@ -1,7 +1,6 @@
-//! The synthetic workloads, as `fux-vt/compare`'s `bench` makes them
-//! (`fux-vt/compare/src/bench.rs`, modelled on alacritty's vtebench): the
-//! same generators, copied, so both crates time the same bytes. Each is for
-//! a 50×200 screen.
+//! The synthetic workloads, modelled on alacritty's vtebench, each for a
+//! 50×200 screen: this one file is compiled by `fux-vt/compare` too (its
+//! `bench::synthetic`), so both crates time the same bytes.
 use crate::rng::Rng;
 use std::fmt::Write;
 
@@ -80,21 +79,37 @@ fn ascii(r: &mut Rng, bytes: usize) -> Vec<u8> {
 fn dense_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes);
     while out.len() < bytes {
-        out.extend_from_slice(b"\x1b[H");
-        for _ in 0..usize::from(ROWS).saturating_mul(usize::from(COLS)) {
-            let glyph = char::from(b'A'.saturating_add(u8::try_from(r.below(26)).unwrap_or(0)));
-            let _ = write!(
-                Text(&mut out),
-                "\x1b[38;5;{};48;5;{}m{glyph}",
-                r.below(256),
-                r.below(256)
-            );
-        }
+        dense_screen(r, &mut out, ROWS, COLS);
     }
     out
 }
 
+/// A screen of `rows` x `cols` where every cell has its own 256-colour
+/// foreground and background: one screen of `dense-cells`.
+pub fn dense_screen(r: &mut Rng, out: &mut Vec<u8>, rows: u16, cols: u16) {
+    out.extend_from_slice(b"\x1b[H");
+    for _ in 0..usize::from(rows).saturating_mul(usize::from(cols)) {
+        let glyph = char::from(b'A'.saturating_add(u8::try_from(r.below(26)).unwrap_or(0)));
+        let _ = write!(
+            Text(out),
+            "\x1b[38;5;{};48;5;{}m{glyph}",
+            r.below(256),
+            r.below(256)
+        );
+    }
+}
+
 fn medium_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes);
+    while out.len() < bytes {
+        medium_screen(r, &mut out, ROWS, COLS);
+    }
+    out
+}
+
+/// A screen of `rows` x `cols` of words, an SGR change every few cells:
+/// one screen of `medium-cells`.
+pub fn medium_screen(r: &mut Rng, out: &mut Vec<u8>, rows: u16, cols: u16) {
     let words = [
         "the ", "quick ", "brown ", "fox ", "jumps ", "over ", "lazy ", "dog ",
     ];
@@ -108,19 +123,15 @@ fn medium_cells(r: &mut Rng, bytes: usize) -> Vec<u8> {
         "\x1b[44m",
         "\x1b[m",
     ];
-    let mut out = Vec::with_capacity(bytes);
-    while out.len() < bytes {
-        out.extend_from_slice(b"\x1b[H");
-        for _ in 0..usize::from(ROWS)
-            .saturating_mul(usize::from(COLS))
-            .checked_div(6)
-            .unwrap_or(1)
-        {
-            out.extend_from_slice(r.pick(&sgr).copied().unwrap_or("").as_bytes());
-            out.extend_from_slice(r.pick(&words).copied().unwrap_or("").as_bytes());
-        }
+    out.extend_from_slice(b"\x1b[H");
+    for _ in 0..usize::from(rows)
+        .saturating_mul(usize::from(cols))
+        .checked_div(6)
+        .unwrap_or(1)
+    {
+        out.extend_from_slice(r.pick(&sgr).copied().unwrap_or("").as_bytes());
+        out.extend_from_slice(r.pick(&words).copied().unwrap_or("").as_bytes());
     }
-    out
 }
 
 fn cursor_motion(r: &mut Rng, bytes: usize) -> Vec<u8> {
