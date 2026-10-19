@@ -1046,6 +1046,10 @@ fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
     terminal.wait_for("stopped")?;
     terminal.type_bytes(b"\x02d")?;
     let status = terminal.wait_exit()?;
-    assert!(status.success(), "{status}");
+    assert!(
+        status.success(),
+        "{status}: {:?}",
+        String::from_utf8_lossy(&terminal.output)
+    );
     Ok(())
 }

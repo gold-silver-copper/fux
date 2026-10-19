@@ -99,18 +99,25 @@ impl Listening {
     /// The socket at `socket` bound and its door opened; where the system
     /// denies sockets, the door alone, the lock held all the same.
     fn open(socket: &SocketPath) -> Result<Listening, Error> {
-        let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
-        if let Some(listener) = &listener {
-            listener.set_nonblocking(true).map_err(Error::Setup)?;
-        }
+        let (endpoint, bound) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
         let door = match crate::door::Door::open(socket.path()) {
             Ok(door) => Some(door),
-            Err(error) if listener.is_none() => return Err(Error::Setup(error)),
+            Err(error) if bound.is_none() => return Err(Error::Setup(error)),
             Err(error) => {
                 log!("no door beside the socket: {error}");
                 None
             }
         };
+        // Listened on only once the door is there: a client that can
+        // connect finds the door too, as one in a sandbox looks for it as
+        // soon as `fux start` says the server answers.
+        let listener = bound
+            .map(crate::socket::Bound::listen)
+            .transpose()
+            .map_err(Error::Socket)?;
+        if let Some(listener) = &listener {
+            listener.set_nonblocking(true).map_err(Error::Setup)?;
+        }
         Ok(Listening {
             listener,
             door,

@@ -46,16 +46,22 @@ fn gone(pid: i32, what: &str) -> Outcome {
 
 /// dash starts a background job in a process group of its own, out of reach
 /// of a signal to the shell's group, and does not hang it up when it exits
-/// itself. However its pane closes, the job ends with it; a `nohup` job
-/// survives, as it would a closed terminal (bevy-final finding 013).
+/// itself. However its pane closes, the job ends with it (bevy-final finding
+/// 013). A `nohup` job outlives its shell's own `exit`, as it would a closed
+/// terminal; a pane fux closes takes its whole session, the `nohup` job too,
+/// once the hang-up's grace is over.
 #[test]
 fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     // dash's own way with jobs is what is tested; CI's machines all have it.
-    if !std::path::Path::new("/bin/dash").exists() {
-        eprintln!("skipped: /bin/dash is not installed");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let Some(dash) = std::env::split_paths(&path)
+        .map(|dir| dir.join("dash"))
+        .find(|dash| dash.is_file())
+    else {
+        eprintln!("skipped: dash is not installed");
         return Ok(());
-    }
-    let server = Server::start("str shell str /bin/dash set")?;
+    };
+    let server = Server::start(&format!("str shell str {} set", dash.display()))?;
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         if how == "workspace kill" {
@@ -103,7 +109,11 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
             }
         }
         gone(job, &format!("a background job, after {how}"))?;
-        assert!(alive(kept), "a nohup job ended, after {how}");
+        if how == "exit" {
+            assert!(alive(kept), "a nohup job ended, after {how}");
+        } else {
+            gone(kept, &format!("a nohup job, after {how}"))?;
+        }
     }
     Ok(())
 }
