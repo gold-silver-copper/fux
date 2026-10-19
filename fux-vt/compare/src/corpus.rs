@@ -401,6 +401,11 @@ pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
         "\x1b[?69;2$y",
         "DECLRMM (69) is a mode fux-vt knows, reset: f9a18914",
     ),
+    (
+        "\x1b[?1016;0$y",
+        "\x1b[?1016;2$y",
+        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, reset, as ctlseqs (\"Mouse Tracking\") and xterm 411 keep it: KEY-23, 2cc51305",
+    ),
 ];
 
 /// The replies that came with XTGETTCAP's answer and XTQMODKEYS's.
