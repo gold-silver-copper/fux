@@ -341,3 +341,27 @@ fn screens_and_resets() -> Result {
     assert_eq!(p.screen().link(0, 0).map(|l| l.uri()), Some("u"));
     Ok(())
 }
+
+/// A line made double width loses its cells past its new end (DECDWL,
+/// note 2), and their links with them: a row linked only past its half
+/// has no link left (FA-SCR-G4).
+#[test]
+fn a_line_made_double_width_loses_the_links_past_its_end() -> Result {
+    let p = parser(
+        2,
+        10,
+        0,
+        b"abcde\x1b]8;;http://x\x07fghij\x1b]8;;\x07\x1b#6",
+    )?;
+    let row = p.screen().window().row(0).ok_or("no row")?;
+    assert!(!row.has_links());
+    let p = parser(
+        2,
+        10,
+        0,
+        b"\x1b]8;;http://x\x07abcdefghij\x1b]8;;\x07\x1b#6",
+    )?;
+    let screen = p.screen();
+    assert!(screen.link(0, 4).is_some());
+    Ok(())
+}

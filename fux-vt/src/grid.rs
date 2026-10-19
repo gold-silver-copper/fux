@@ -2328,6 +2328,7 @@ impl Grid {
             self.narrow |= DOUBLED;
             let (end, cols) = (self.halved_end(row), self.size.cols());
             self.erase(row, end, cols, 0, version);
+            self.set_link(row, usize::from(end)..usize::from(cols), None, version);
             if self.cursor.row == row {
                 self.fit_to_row();
             }
