@@ -51,7 +51,7 @@ fn end(process: Process) {
 }
 
 /// B10: within REDRAWS a line drawn again the same changed nothing, and no
-/// piece lost prints (src/pane.rs:1023:50 delete !; src/log.rs:199:9
+/// piece lost prints (src/pane.rs delete !; src/log.rs
 /// replace Log::prints_lost_after -> bool with true).
 #[test]
 fn a_line_drawn_again_the_same_changes_nothing() -> Result {
@@ -67,7 +67,7 @@ fn a_line_drawn_again_the_same_changes_nothing() -> Result {
 }
 
 /// B10: past REDRAWS (1 MiB printed since the last input) every run is
-/// whole, a line drawn again the same included (src/pane.rs:1023:47
+/// whole, a line drawn again the same included (src/pane.rs
 /// replace && with ||).
 #[test]
 fn past_a_flood_every_run_is_whole() -> Result {
@@ -92,7 +92,7 @@ fn past_a_flood_every_run_is_whole() -> Result {
 
 /// B29: a command typed, begun on the main screen, whose program is blocked
 /// elsewhere (a relay's report: waiting) is at work, busy; not typed, it
-/// waits (src/ready.rs:140:34 replace || with &&; src/ready.rs:140:37
+/// waits (src/ready.rs replace || with &&; src/ready.rs
 /// delete !).
 #[test]
 fn a_command_typed_blocked_elsewhere_is_busy() -> Result {

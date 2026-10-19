@@ -151,13 +151,13 @@ jobs:
           if-no-files-found: ignore
 
   mutation:
-    name: guard mutants, shard ${{ matrix.shard }} of 12
+    name: guard mutants, shard ${{ matrix.shard }} of 24
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     defaults:
       run:
         shell: bash
@@ -173,19 +173,18 @@ jobs:
           cargo install cargo-mutants --locked --version 27.1.0
           cargo install cargo-nextest --locked --version 0.9.148
 
-      # The frozen guard set (fux-vt/compare/mutants-guards.txt), a twelfth
-      # of it a job: each mutant built at opt-level 1 (the bounds tests at
-      # opt-level 0 take minutes) and tried against fux-vt's tests but the
-      # `_10x` bounds rows, and fux's unit tests but the one that makes a
-      # 1 GiB buffer. Each test binary may hold 2 GiB, so a guard mutant
-      # that lets memory go unbounded fails its test, not the runner.
+      # Every guard is generated first: a guard whose line moved fails here,
+      # by name, in a second.
+      - name: the guard names
+        run: fux-vt/compare/mutants.sh check
+
+      # The frozen guard set (fux-vt/compare/mutants-guards.txt), a 24th of
+      # it a job, two mutants at a time, as mutants.sh runs the guards:
+      # opt-level 1, 150 s a mutant, 2 GiB a test binary, guards.rs first.
       - name: the guard mutants
         env:
-          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
           FUX_MUTANTS_JOBS: "2"
-          FUX_MUTANTS_SHARD: ${{ matrix.shard }}/12
-          FUX_MUTANTS_TESTS: (package(fux-vt) & !test(/_10x$/)) | (package(fux) & kind(lib) & !test(=session::tests::keys_for_several_panes_go_to_all_or_none))
+          FUX_MUTANTS_SHARD: ${{ matrix.shard }}/24
           FUX_MUTANTS_OUT: ${{ runner.temp }}/mutants
         run: fux-vt/compare/mutants.sh guards
 

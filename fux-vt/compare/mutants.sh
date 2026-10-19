@@ -12,6 +12,16 @@
 #   fux-vt/compare/mutants.sh guards      the frozen guard set: each line of
 #                                         fux-vt/compare/mutants-guards.txt a
 #                                         mutant's name as `--list` prints it
+#   fux-vt/compare/mutants.sh check       only that every guard is generated
+#                                         (a second): run it after moving a
+#                                         guard's line, and fix the name
+#
+# The guards run as the nightly job does: built at opt-level 1, each mutant
+# under a 150-second timeout (FUX_MUTANTS_TIMEOUT), each test binary
+# limited to 2 GiB of data on Linux so that a guard mutant that lets memory
+# go fails its test, not the machine, the guard tests first
+# (mutants-nextest.toml) and ignored tests run but the ones that fetch,
+# need a harness or write files.
 #
 # It prints each outcome apart (caught, missed, timeout, unviable,
 # equivalent, unattempted) and fails unless every mutant that builds is
@@ -35,20 +45,35 @@ mkdir -p "$out"
 # palette::answer's mutants); fux's integration tests take minutes a mutant
 # and test the server, not fux-vt. Run by nextest, two at a time each.
 tests=${FUX_MUTANTS_TESTS:-'package(fux-vt) | (package(fux) & kind(lib))'}
+if [[ ${1-} == guards ]]; then
+  # Not the `_10x` and `_100x` bounds rows (minutes a mutant), nor the
+  # ignored tests that fetch, need a harness or write files, nor fux's
+  # one that makes a 1 GiB buffer; fux's journal tests need no server.
+  tests=${FUX_MUTANTS_TESTS:-'(package(fux-vt) & !test(/_10x$/) & !test(/_100x$/) & !test(=write_the_seeds) & !test(=moshs_fuzz_corpus_replays_with_no_fault) & !test(=libvterm_passes_its_own_tests)) | (package(fux) & (kind(lib) | binary(journal)) & !test(=session::tests::keys_for_several_panes_go_to_all_or_none))'}
+  export CARGO_PROFILE_DEV_OPT_LEVEL=${CARGO_PROFILE_DEV_OPT_LEVEL:-1}
+  if [[ $(uname) == Linux ]]; then
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-prlimit --data=2147483648 --}
+  fi
+fi
 # FUX_MUTANTS_JOBS mutants at a time (2 if unset); FUX_MUTANTS_SHARD, as
 # K/N, runs only the Kth of N shards of the selection (for CI's matrix).
 args=(--workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
-  --output "$out" --test-tool nextest)
+  --output "$out" --test-tool nextest --timeout "${FUX_MUTANTS_TIMEOUT:-150}"
+  --build-timeout "${FUX_MUTANTS_BUILD_TIMEOUT:-600}")
 # The first failure ends a mutant's tests at once: a test the mutant made
 # hang must not hold up the one that fails.
-after=(-- -E "$tests" --test-threads 2 --max-fail=1:immediate)
+after=(-- --config-file "$here/mutants-nextest.toml" -E "$tests" --test-threads 2
+  --max-fail=1:immediate)
+if [[ ${1-} == guards ]]; then
+  after+=(--run-ignored all)
+fi
 case ${1-} in
   diff)
     ref=${2:-HEAD~1}
     git -C "$root" diff --src-prefix=a/ --dst-prefix=b/ "$ref" -- . >"$out/change.diff"
     args+=(--in-diff "$out/change.diff")
     ;;
-  guards)
+  guards | check)
     guards=$here/mutants-guards.txt
     names=$(grep -v '^#' "$guards" | sed '/^$/d' || true)
     [[ -n $names ]] || { echo "mutants: no guards in $guards" >&2; exit 1; }
@@ -64,19 +89,23 @@ case ${1-} in
     printf '%s\n' "$names" >"$out/guards.txt"
     ;;
   *)
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^set -euo/{/^set -euo/!p}' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
 
 cd "$root"
 cargo mutants --list "${args[@]}" "${after[@]}" >"$out/selected.txt"
-if [[ $1 == guards ]]; then
+if [[ $1 == guards || $1 == check ]]; then
   missing=$(grep -vxF -f "$out/selected.txt" "$out/guards.txt" || true)
   if [[ -n $missing ]]; then
     printf 'mutants: guards not generated:\n%s\n' "$missing" >&2
     exit 1
   fi
+fi
+if [[ $1 == check ]]; then
+  echo "mutants: all $(wc -l <"$out/guards.txt") guards generated"
+  exit 0
 fi
 if [[ -n ${FUX_MUTANTS_SHARD-} ]]; then
   args+=(--shard "$FUX_MUTANTS_SHARD")

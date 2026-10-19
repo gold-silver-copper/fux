@@ -104,6 +104,15 @@ jobs:
           if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds 2>&1 | tee "$CI_LOGS/bounds.log"
 
+      # The guard mutants' tests (fux-vt/tests/guards.rs) with `checks`, in
+      # release beside the bounds suite, the one that makes 64 Mi cells
+      # (about 1.5 GiB, so ignored elsewhere) included.
+      - name: fux-vt guard tests, the 1.5 GiB one included
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --features checks --release --locked --test guards -- --include-ignored 2>&1 | tee "$CI_LOGS/guards.log"
+
       - name: fux-vt wraptest (DEC STD 070 D.6.1)
         timeout-minutes: 5
         run: |

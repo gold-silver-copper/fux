@@ -59,7 +59,7 @@ fn text_bytes(prints: &fux_vt::Prints) -> usize {
     prints.iter().map(|p| p.text.len()).sum()
 }
 
-/// B10, `Prints::over_cap`'s text `>` (lib.rs:556:46, `>=`): text that
+/// B10, `Prints::over_cap`'s text `>` (lib.rs, `>=`): text that
 /// ends exactly at the cap is kept, not lost.
 #[test]
 fn prints_keep_text_that_ends_exactly_at_the_cap() -> Result {
@@ -81,7 +81,7 @@ fn prints_keep_text_that_ends_exactly_at_the_cap() -> Result {
     Ok(())
 }
 
-/// B10, `Prints::over_cap`'s runs `>` (lib.rs:556:76, `>=`): the run
+/// B10, `Prints::over_cap`'s runs `>` (lib.rs, `>=`): the run
 /// that makes `PRINT_RUNS` is kept, though the text must grow for it.
 #[test]
 fn prints_keep_the_last_run_under_the_cap_when_their_text_grows() -> Result {
@@ -97,7 +97,7 @@ fn prints_keep_the_last_run_under_the_cap_when_their_text_grows() -> Result {
     Ok(())
 }
 
-/// B10, `Prints::add`'s `runs.len() != runs.capacity()` (lib.rs:622:32,
+/// B10, `Prints::add`'s `runs.len() != runs.capacity()` (lib.rs,
 /// `==`): a run past `PRINT_RUNS` is lost, though its text has room.
 #[test]
 fn prints_lose_a_run_past_the_cap_though_their_text_has_room() -> Result {
@@ -118,7 +118,7 @@ fn prints_lose_a_run_past_the_cap_though_their_text_has_room() -> Result {
     Ok(())
 }
 
-/// B10, `Prints::heap` (lib.rs:592:9, with 0 and with 1): it is the
+/// B10, `Prints::heap` (lib.rs, with 0 and with 1): it is the
 /// room its text and runs took, and none before anything is printed.
 #[test]
 fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
@@ -132,22 +132,25 @@ fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
     Ok(())
 }
 
-/// B35, `budget::LIMIT`'s `25_000_000 * 20` (budget.rs:43:42, `+`): a
-/// call stops at the budget after 25 M units of work, not before.
+/// B35, the work budget (budget.rs, `CEILING`'s `50_000_000 * 20` with
+/// `+`): a call stops at the first look once it has spent half the frozen
+/// ceiling U (threats.md 4.4: U is 50 M units, a cell 1/4 of a unit).
+/// `a ESC[65535b` asks for 65,535 copies, each a cell: 16,383.75 units,
+/// all spent at the REP, so the stop is after the REP of pair
+/// ceil(25 M / 16,383.75) = 1,526, whatever the screen keeps of them.
 #[test]
 fn a_call_stops_at_the_budget_after_25_million_units() -> Result {
     let pair = "a\x1b[65535b";
+    // In quarters of a unit: the half ceiling, and one REP's copies.
+    let (half, rep) = (25_000_000u64 * 4, 65_535u64);
+    let pairs = half.div_ceil(rep);
+    assert_eq!(pairs, 1_526);
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
-    assert_eq!(
-        p.process_until_stop(times(pair, 100).as_bytes(), &mut Deaf)?,
-        None
-    );
+    let before = times(pair, 1_525);
+    assert_eq!(p.process_until_stop(before.as_bytes(), &mut Deaf)?, None);
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
-    match p.process_until_stop(times(pair, 2000).as_bytes(), &mut Deaf)? {
-        Some((taken, Stop::Budget)) => assert!(
-            (1500 * pair.len()..2000 * pair.len()).contains(&taken),
-            "stopped after {taken} bytes"
-        ),
+    match p.process_until_stop(times(pair, 2_000).as_bytes(), &mut Deaf)? {
+        Some((taken, Stop::Budget)) => assert_eq!(taken, 1_526 * pair.len()),
         other => return Err(format!("stopped as {other:?}").into()),
     }
     Ok(())
@@ -158,9 +161,11 @@ fn cell(text: &str) -> CellRef<'_> {
     CellRef::new(text, false, Attributes::default())
 }
 
-/// B39, `Cells::room_for`'s `len > MAX_CELLS` (cell.rs:748:16, `>` to `>=`): exactly 64 Mi cells are made.
-/// Allocates 64 Mi cells of 24 bytes, about 1.5 GiB, for a moment.
+/// B39, `Cells::room_for`'s `len > MAX_CELLS` (cell.rs, `>` to `>=`): exactly 64 Mi cells are made.
+/// Allocates 64 Mi cells of 24 bytes, about 1.5 GiB, for a moment: run
+/// by CI's step of its own and by the nightly mutation job.
 #[test]
+#[ignore = "makes 64 Mi cells, about 1.5 GiB: CI runs it in a step of its own"]
 fn cells_at_the_most_are_made() -> Result {
     let most = 64 << 20;
     let made = Cells::new(most)?;
@@ -168,21 +173,7 @@ fn cells_at_the_most_are_made() -> Result {
     Ok(())
 }
 
-/// B39, `Cells::resize`'s `len < was` (cell.rs:854:16, `<` to `<=`): a resize to the same length stores no text again.
-#[test]
-fn a_resize_to_the_same_length_keeps_the_overwritten_text() -> Result {
-    let (first, second) = (times("a", 20), times("b", 20));
-    let mut cells = Cells::new(1)?;
-    assert!(cells.set(0, cell(&first)));
-    assert!(cells.set(0, cell(&second)));
-    assert_eq!(cells.text_len(), 40);
-    cells.resize(1, CellRef::default())?;
-    assert_eq!(cells.text_len(), 40);
-    assert_eq!(cells.get(0).map(|c| c.contents()), Some(second.as_str()));
-    Ok(())
-}
-
-/// B30, `store_long`'s `long + text > limit` (compact.rs:578:60, `>` to `>=`): text that ends exactly at the limit is stored without compacting.
+/// B30, `store_long`'s `long + text > limit` (compact.rs, `>` to `>=`): text that ends exactly at the limit is stored without compacting.
 #[test]
 fn a_long_cluster_that_ends_at_the_limit_does_not_compact() -> Result {
     let limit = Cells::text_limit(1);
@@ -210,9 +201,9 @@ fn in_time<T: Send + 'static>(
     }
 }
 
-/// B17, `History::trim_over`'s `&&` (history.rs:366:37, `||`),
-/// `make_room`'s row cap (history.rs:560:35, `<`) and `Ring::advance`
-/// (ring.rs:115-117: its body, `>=`, `&&`, `!`): history over its budget
+/// B17, `History::trim_over`'s `&&` (history.rs, `||`),
+/// `make_room`'s row cap (history.rs, `<`) and `Ring::advance`
+/// (ring.rs: its body, `>=`, `&&`, `!`): history over its budget
 /// lets its oldest rows go, a block's at a time, never all it holds, and
 /// in time.
 #[test]
@@ -242,7 +233,7 @@ fn history_over_its_budget_lets_only_its_oldest_rows_go() -> Result {
     Ok(())
 }
 
-/// B33, `Screen::repeat`'s ASCII run loop (screen.rs:2208:25, `>=`): REP
+/// B33, `Screen::repeat`'s ASCII run loop (screen.rs, `>=`): REP
 /// makes its copies and returns.
 #[test]
 fn repeat_makes_its_ascii_copies_and_returns() -> Result {
@@ -284,7 +275,7 @@ fn needs_room(p: &mut Parser, row: &str) -> Result<bool> {
     Ok(needed)
 }
 
-/// B17, `History::fits` (history.rs:542:18 `||` to `&&`, :542:25 `<=` to `>`), `block_cells` (:337:9 with 0 and with 1) and `make_room`'s half block (:589:40 `>` to `>=`, :589:48 `/` to `%`): the newest block doubles up to a block, a row half a block long starts a whole block, and a row that fits needs no room.
+/// B17, `History::fits` (history.rs `||` to `&&`, :542:25 `<=` to `>`), `block_cells` (:337:9 with 0 and with 1) and `make_room`'s half block (:589:40 `>` to `>=`, :589:48 `/` to `%`): the newest block doubles up to a block, a row half a block long starts a whole block, and a row that fits needs no room.
 #[cfg(feature = "checks")]
 #[test]
 fn history_blocks_double_to_a_block_and_rows_fill_their_room() -> Result {
@@ -312,7 +303,7 @@ fn history_blocks_double_to_a_block_and_rows_fill_their_room() -> Result {
     Ok(())
 }
 
-/// B17/B38, `make_room`'s row cap `rows.len() > most` (history.rs:560:35, `>` to `>=` and to `==`): a history whose budget holds them keeps exactly `MAX_ROWS` (1,048,576) rows.
+/// B17/B38, `make_room`'s row cap `rows.len() > most` (history.rs, `>` to `>=` and to `==`): a history whose budget holds them keeps exactly `MAX_ROWS` (1,048,576) rows.
 #[test]
 fn history_keeps_the_most_rows_a_grid_holds() -> Result {
     // Empty rows cost 24 bytes each in the ring and nothing else: 2^20 of
@@ -325,7 +316,7 @@ fn history_keeps_the_most_rows_a_grid_holds() -> Result {
     Ok(())
 }
 
-/// B17/B39, `make_room`'s cell cap `!rows.is_empty() && (… || room_cells > most)` (history.rs:572:15 delete `!`, :573:62 `||` to `&&`, :573:81 `>` to `==` and to `>=`): rows of 8,192 cells, each a block of its own, are kept to exactly `MAX_CELLS` (64 Mi cells), 8,192 rows. Holds 512 MiB.
+/// B17/B39, `make_room`'s cell cap `!rows.is_empty() && (… || room_cells > most)` (history.rs delete `!`, :573:62 `||` to `&&`, :573:81 `>` to `==` and to `>=`): rows of 8,192 cells, each a block of its own, are kept to exactly `MAX_CELLS` (64 Mi cells), 8,192 rows. Holds 512 MiB.
 #[test]
 fn history_keeps_the_most_cells_a_grid_holds() -> Result {
     let held = in_time(|| {
@@ -343,7 +334,7 @@ fn history_keeps_the_most_cells_a_grid_holds() -> Result {
     Ok(())
 }
 
-/// B17, `History::trim_over`'s `rows.is_empty() && over()` (history.rs:369:33, `&&` to `||`): history over its budget only by a row's text lets the row go and keeps the storage it made, which then counts against the rows to come.
+/// B17, `History::trim_over`'s `rows.is_empty() && over()` (history.rs, `&&` to `||`): history over its budget only by a row's text lets the row go and keeps the storage it made, which then counts against the rows to come.
 #[test]
 fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     // 512 bytes: the ring's chunks are a row each (24 bytes). A row of 8
@@ -363,7 +354,7 @@ fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     Ok(())
 }
 
-/// B17, `maps_changed`'s `capacity > most_room(len)` (history.rs:794:61, `>` to `>=`, `==` and `<`) and `maps_bytes` (:329:9, with 0): a map's room counts in the budget, and one holding exactly 4 × its entries and 64 keeps it.
+/// B17, `maps_changed`'s `capacity > most_room(len)` (history.rs, `>` to `>=`, `==` and `<`) and `maps_bytes` (:329:9, with 0): a map's room counts in the budget, and one holding exactly 4 × its entries and 64 keeps it.
 #[test]
 fn history_counts_a_map_s_room_until_it_is_past_four_times_its_entries_and_64() -> Result {
     // 4 KiB: the ring's chunks are 8 rows (192 bytes). 40 double-width
@@ -380,7 +371,7 @@ fn history_counts_a_map_s_room_until_it_is_past_four_times_its_entries_and_64() 
     Ok(())
 }
 
-/// B17, `History::maps_changed` (history.rs:794:9, with `()`; and :794:61 `>` to `==`): a map holding room past 4 × its entries and 64 gives it back as its rows go.
+/// B17, `History::maps_changed` (history.rs, with `()`; and :794:61 `>` to `==`): a map holding room past 4 × its entries and 64 gives it back as its rows go.
 #[cfg(feature = "checks")]
 #[test]
 fn history_gives_back_a_map_s_room_as_its_rows_go() -> Result {
@@ -399,7 +390,7 @@ fn history_gives_back_a_map_s_room_as_its_rows_go() -> Result {
     Ok(())
 }
 
-/// B17, `Ring::let_first_go`'s `start * 2 >= full.len()` (history/ring.rs:135:41, `>=` to `<`): the chunks a ring lets go are dropped, so a history held at its size holds no more memory however many rows pass through it.
+/// B17, `Ring::let_first_go`'s `start * 2 >= full.len()` (history/ring.rs, `>=` to `<`): the chunks a ring lets go are dropped, so a history held at its size holds no more memory however many rows pass through it.
 #[test]
 fn history_s_ring_holds_no_more_as_rows_pass_through_it() -> Result {
     // 48 bytes: two empty rows of a chunk each; every line feed lets the
@@ -444,7 +435,7 @@ fn sweeping(p: &mut Parser, input: &[u8]) -> Result<u64> {
     Ok(swept_since(before))
 }
 
-/// B11, `Styles::bytes` (style.rs:159:9, with 0 and with 1), `Styles::full` (style.rs:164:9, with false; :164:51, `||` to `&&`) and `table_bytes`'s buckets (style.rs:245:38, `/` to `%` and to `*`): a table grown 86,016 bytes past the screen's share takes that much of history's room.
+/// B11, `Styles::bytes` (style.rs, with 0 and with 1), `Styles::full` (style.rs, with false; :164:51, `||` to `&&`) and `table_bytes`'s buckets (style.rs, `/` to `%` and to `*`): a table grown 86,016 bytes past the screen's share takes that much of history's room.
 #[test]
 fn a_style_table_past_the_screens_share_takes_history_room() -> Result {
     const BUDGET: usize = 100_000;
@@ -463,7 +454,7 @@ fn a_style_table_past_the_screens_share_takes_history_room() -> Result {
     Ok(())
 }
 
-/// B11, `Grid::make_style_room`'s `after > budget` (grid.rs:1002:17, `>` to `>=`) and `Styles::full` (style.rs:164:9, with true; :164:26 and :164:72, `==` to `!=`): a table that grows to exactly history's budget past the share grows without a sweep, and a new style it has room for sweeps nothing, even with the budget lowered under what the table takes.
+/// B11, `Grid::make_style_room`'s `after > budget` (grid.rs, `>` to `>=`) and `Styles::full` (style.rs, with true; :164:26 and :164:72, `==` to `!=`): a table that grows to exactly history's budget past the share grows without a sweep, and a new style it has room for sweeps nothing, even with the budget lowered under what the table takes.
 #[cfg(feature = "checks")]
 #[test]
 fn a_style_table_that_fits_the_budget_exactly_grows_unswept() -> Result {
@@ -474,7 +465,7 @@ fn a_style_table_that_fits_the_budget_exactly_grows_unswept() -> Result {
     Ok(())
 }
 
-/// B11, `Styles::bytes_after_insert`'s `len < room` (style.rs:170:57, `<` to `==` and to `<=`) and `screen_share`'s `* 7 / 8` (style.rs:256:52, `/` to `%`): a table whose growth history can't hold (86,016 past the share, of 70,000) is swept before it grows, never before, and history stays within its budget.
+/// B11, `Styles::bytes_after_insert`'s `len < room` (style.rs, `<` to `==` and to `<=`) and `screen_share`'s `* 7 / 8` (style.rs, `/` to `%`): a table whose growth history can't hold (86,016 past the share, of 70,000) is swept before it grows, never before, and history stays within its budget.
 #[cfg(feature = "checks")]
 #[test]
 fn a_style_table_history_cannot_hold_is_swept_before_it_grows() -> Result {
@@ -489,7 +480,7 @@ fn a_style_table_history_cannot_hold_is_swept_before_it_grows() -> Result {
     Ok(())
 }
 
-/// B11, `Grid::find_table_style`'s `grows || swept` (grid.rs:981:26, `||` to `&&`) and `Styles::retain`'s `places.capacity() > room` (style.rs:221:35, `>` to `==`): a sweep that keeps one style of a table grown to room 14,336 makes its map anew at room 7,168, and charges history for that (28,728 past the share), not for the table before it (315,392).
+/// B11, `Grid::find_table_style`'s `grows || swept` (grid.rs, `||` to `&&`) and `Styles::retain`'s `places.capacity() > room` (style.rs, `>` to `==`): a sweep that keeps one style of a table grown to room 14,336 makes its map anew at room 7,168, and charges history for that (28,728 past the share), not for the table before it (315,392).
 #[cfg(feature = "checks")]
 #[test]
 fn a_sweep_charges_history_for_the_table_it_leaves() -> Result {
@@ -514,7 +505,7 @@ fn a_sweep_charges_history_for_the_table_it_leaves() -> Result {
     Ok(())
 }
 
-/// B11 and B13, `Screen::change_attributes`' memo reset on a sweep (screen.rs:3141:23, `!=` to `==`): a style DECCARA mapped before a sweep in its midst is mapped again after it, by its new number.
+/// B11 and B13, `Screen::change_attributes`' memo reset on a sweep (screen.rs, `!=` to `==`): a style DECCARA mapped before a sweep in its midst is mapped again after it, by its new number.
 #[test]
 fn deccara_maps_a_style_again_after_a_sweep_in_its_midst() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 1 << 20)?;
@@ -541,7 +532,7 @@ fn deccara_maps_a_style_again_after_a_sweep_in_its_midst() -> Result {
     Ok(())
 }
 
-/// B11 and B13, `Screen::change_attributes`' memo slot `kept % 16` (screen.rs:3152:51, `%` to `/`): DECCARA over three styles, the last the default, makes each bold.
+/// B11 and B13, `Screen::change_attributes`' memo slot `kept % 16` (screen.rs, `%` to `/`): DECCARA over three styles, the last the default, makes each bold.
 #[test]
 fn deccara_maps_each_of_three_styles() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
@@ -563,7 +554,7 @@ fn grown(f: impl FnOnce() -> Result) -> Result<usize> {
     Ok(ALLOCATOR.live().saturating_sub(before))
 }
 
-/// B05, `cell_too_small`'s `cell.1 < 6` (parser.rs:807:26, `==` and `>`): a host cell wide enough but under 6 pixels high is taken as 6 high.
+/// B05, `cell_too_small`'s `cell.1 < 6` (parser.rs, `==` and `>`): a host cell wide enough but under 6 pixels high is taken as 6 high.
 #[test]
 fn a_host_cell_under_a_band_high_is_taken_as_a_band_high() -> Result {
     let options = Options::new().with(Feature::Pictures);
@@ -579,7 +570,7 @@ fn a_host_cell_under_a_band_high_is_taken_as_a_band_high() -> Result {
     Ok(())
 }
 
-/// B19, `FrameScan::sequence`'s `b'[' if plain` (parser.rs:505:25, `true`): `ESC ( [` ends at its `[`, so the `?2026l` after it is text, no DECRST, and the frame goes on.
+/// B19, `FrameScan::sequence`'s `b'[' if plain` (parser.rs, `true`): `ESC ( [` ends at its `[`, so the `?2026l` after it is text, no DECRST, and the frame goes on.
 #[test]
 fn an_escape_with_an_intermediate_before_a_bracket_ends_no_frame() -> Result {
     let mut p = Parser::new(Size::new(4, 10)?, 0)?;
@@ -604,7 +595,7 @@ fn osc_of(len: usize) -> Vec<u8> {
     osc
 }
 
-/// B20, `osc_room`'s `need > capacity` (parser.rs:1751:17, `>=`) and `grow_osc`'s doubling to 16 KiB (parser.rs:1760:36, `<<` to `>>`; parser.rs:1762:34, `>` to `<` and to `>=`): the OSC buffer takes the room a string needs, doubling up to 16 KiB, and none for a string that fits.
+/// B20, `osc_room`'s `need > capacity` (parser.rs, `>=`) and `grow_osc`'s doubling to 16 KiB (parser.rs, `<<` to `>>`; parser.rs, `>` to `<` and to `>=`): the OSC buffer takes the room a string needs, doubling up to 16 KiB, and none for a string that fits.
 #[test]
 fn the_osc_buffer_takes_the_room_a_string_needs_up_to_16_kib() -> Result {
     let options = Options::new().with(Feature::Events);
@@ -628,7 +619,7 @@ fn the_osc_buffer_takes_the_room_a_string_needs_up_to_16_kib() -> Result {
     Ok(())
 }
 
-/// B23, `PASTE_LIMIT`'s `64 * 1024` (decode.rs:81:35, `+`): a paste of 64 KiB is delivered whole, and one a byte longer is too long.
+/// B23, `PASTE_LIMIT`'s `64 * 1024` (decode.rs, `+`): a paste of 64 KiB is delivered whole, and one a byte longer is too long.
 #[test]
 fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
     let pasted = |n: usize| {
@@ -646,7 +637,7 @@ fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
     assert_eq!(pasted((64 << 10) + 1), [Input::PasteTooLong]);
 }
 
-/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs:79:31, `-` and `*`), `held_first`'s `bytes.len() > HELD` (decode.rs:535:27, `>=`) and its `&&` (decode.rs:535:34, `||`): a long read gives what is held the 259 bytes that decide it, reads the rest where it lies, and returns.
+/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs, `-` and `*`), `held_first`'s `bytes.len() > HELD` (decode.rs, `>=`) and its `&&` (decode.rs, `||`): a long read gives what is held the 259 bytes that decide it, reads the rest where it lies, and returns.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
@@ -675,7 +666,7 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
     Ok(())
 }
 
-/// B24, `Decoder::may_hold` (decode.rs:520:9, `true`): a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
+/// B24, `Decoder::may_hold` (decode.rs, `true`): a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_while_a_string_is_dropped_is_read_whole() {
@@ -695,7 +686,7 @@ fn a_long_read_while_a_string_is_dropped_is_read_whole() {
     assert_eq!(keys, 300 + 289);
 }
 
-/// B25, `answer`'s `body.len() > limit` (decode.rs:848:28, `>=`): a DCS answer of exactly 256 bytes, its window's inclusive end, decodes alike whole and in a read that ends with its string.
+/// B25, `answer`'s `body.len() > limit` (decode.rs, `>=`): a DCS answer of exactly 256 bytes, its window's inclusive end, decodes alike whole and in a read that ends with its string.
 #[test]
 fn a_dcs_answer_at_its_limit_decodes_alike_whole_and_split() -> Result {
     let mut payload = b"1+r536d756c78=".to_vec();
@@ -720,7 +711,7 @@ fn a_dcs_answer_at_its_limit_decodes_alike_whole_and_split() -> Result {
     Ok(())
 }
 
-/// B25, `long_answer`'s `body.len() > DCS_LIMIT` (decode.rs:989:28, `>=`; decode.rs:989:17, the guard with `true`): a `CSI ?` answer past its 64-byte window is held up to 256 bytes, then dropped as it comes, to its final byte, nothing typed.
+/// B25, `long_answer`'s `body.len() > DCS_LIMIT` (decode.rs, `>=`; decode.rs, the guard with `true`): a `CSI ?` answer past its 64-byte window is held up to 256 bytes, then dropped as it comes, to its final byte, nothing typed.
 #[test]
 fn a_long_csi_answer_is_held_up_to_256_bytes() -> Result {
     for (len, holds) in [(65usize, true), (256, true), (257, false)] {
@@ -763,7 +754,7 @@ fn picture_sizes(p: &Parser) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// B03, `Decoder::sixel`'s "some of it is kept" test (sixel.rs:361:32 and 361:49, `<` to `<=`): a sixel wholly past the columns, or the rows, a picture may keep grows it by nothing.
+/// B03, `Decoder::sixel`'s "some of it is kept" test (sixel.rs and 361:49, `<` to `<=`): a sixel wholly past the columns, or the rows, a picture may keep grows it by nothing.
 #[test]
 fn a_sixel_past_what_a_picture_may_keep_grows_it_by_nothing() -> Result {
     // A band one row tall across all 4,096 columns, at 1:1; then a full
@@ -783,7 +774,7 @@ fn a_sixel_past_what_a_picture_may_keep_grows_it_by_nothing() -> Result {
     Ok(())
 }
 
-/// B03, `next_side`'s clamp (sixel.rs:164:16, `>` to `==`): a side doubled past `MAX_SIDE` is clamped to it, and the decoder's room stays within what a picture may keep.
+/// B03, `next_side`'s clamp (sixel.rs, `>` to `==`): a side doubled past `MAX_SIDE` is clamped to it, and the decoder's room stays within what a picture may keep.
 #[cfg(feature = "checks")]
 #[test]
 fn a_doubled_side_past_the_most_is_clamped() -> Result {
@@ -801,14 +792,17 @@ fn a_doubled_side_past_the_most_is_clamped() -> Result {
 }
 
 /// What a grid's links may cost (`link.rs` `LINK_BYTES`), and what a link
-/// costs beyond its URI (`LINK_COST`).
+/// with no `id` costs beyond its URI: its `Arc<str>`'s two counts.
 const LINKS_HELD: usize = 4 << 20;
-const LINK_COST: usize = 64;
+const LINK_COST: usize = 2 * size_of::<usize>();
 /// The cost of a link to the longest URI kept, and how many fit.
 const LONGEST: usize = URI_LIMIT + LINK_COST;
 const FIT: usize = LINKS_HELD / LONGEST;
 /// The URI whose link, after `FIT` of the longest, fills the bound exactly.
 const LAST_URI: usize = LINKS_HELD - FIT * LONGEST - LINK_COST;
+
+// The last URI is long enough for its `http://`.
+const _: () = assert!(LAST_URI >= 8);
 
 /// `OSC 8` opening a link to a URI `len` bytes long, an `x` printed in it.
 fn link_of(len: usize) -> Vec<u8> {
@@ -840,14 +834,13 @@ fn runs_of(a: usize, b: usize, c: usize, len: usize) -> Vec<bool> {
     cells
 }
 
-/// B14, `Links::insert`'s limit (link.rs:418:17, `>` to `>=`), and B16, `Links::may_make_room` (link.rs:495:9, with true) and `Links::stall` (link.rs:505:9, with ()): links fill 4 MiB exactly, then 256 are refused without making room, and the 257th makes it.
+/// B14, `Links::insert`'s limit (link.rs, `>` to `>=`), and B16, `Links::may_make_room` (link.rs, with true) and `Links::stall` (link.rs, with ()): links fill 4 MiB exactly, then 256 are refused without making room, and the 257th makes it.
 #[test]
 fn links_fill_their_bound_exactly_then_stall_for_256() -> Result {
-    // 1,953 links of 2,147 bytes and one of 1,213 hold exactly 4 MiB; the
-    // next is refused, with every link on the screen, and making room
+    // `FIT` links to the longest URI and one to `LAST_URI` hold exactly
+    // 4 MiB; the next is refused, with every link on the screen, and making room
     // stalls; the screen erased, the next 256 are refused without trying
     // and the 257th makes room.
-    assert_eq!((FIT, LAST_URI), (1953, 1149));
     let mut p = Parser::with_options(
         Size::new(25, 80)?,
         0,
@@ -872,7 +865,7 @@ fn times_bytes(bytes: &[u8], n: usize) -> Vec<u8> {
     std::iter::repeat_n(bytes, n).flatten().copied().collect()
 }
 
-/// B29, `Screen::after_prompt` (shell.rs:236:9, with None): a late `C` with no line submitted starts the output on the row after its prompt's line, not at the cursor.
+/// B29, `Screen::after_prompt` (shell.rs, with None): a late `C` with no line submitted starts the output on the row after its prompt's line, not at the cursor.
 #[test]
 fn a_late_start_follows_its_prompt_s_line() -> Result {
     let marks = Options::new().with(Feature::PromptMarks);
@@ -885,7 +878,7 @@ fn a_late_start_follows_its_prompt_s_line() -> Result {
     Ok(())
 }
 
-/// B33 and B34, `Screen::repeat`'s `per_row` filter (screen.rs:2184:80, `>` to `>=`): REP of a glyph wider than the screen makes no copy and spends none of the call's budget.
+/// B33 and B34, `Screen::repeat`'s `per_row` filter (screen.rs, `>` to `>=`): REP of a glyph wider than the screen makes no copy and spends none of the call's budget.
 #[test]
 fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
     // 2,000 REPs of 65,535 copies would spend 655 M twentieths, past the

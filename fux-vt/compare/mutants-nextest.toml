@@ -1,0 +1,6 @@
+# nextest's settings for mutants.sh: the guard tests first, so that a test
+# a mutant makes hang (on both test threads) cannot keep the test that
+# fails it from running, with `--max-fail=1:immediate` ending the run.
+[[profile.default.overrides]]
+filter = "binary(guards) | binary(journal)"
+priority = 100
