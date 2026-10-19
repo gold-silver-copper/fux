@@ -920,6 +920,11 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
     );
     let most = (PASTE_LIMIT + 5).saturating_add(3 * PASTE_LIMIT);
     decoded(&input, chunk, 258, most, false)?;
+    // A paste at its limit, then an ESC that may begin its end marker: its
+    // room stays within the limit + 5, as the checker reads it, however
+    // the bytes are split (FA-CODEX-4).
+    let full = [b("\x1b[200~"), repeat(b"a", PASTE_LIMIT), b("\x1b")].concat();
+    decoded(&full, chunk, 258, most, false)?;
     // At the limit and one past it (KEY-5): delivered, then refused whole.
     for (len, delivered) in [(PASTE_LIMIT, true), (PASTE_LIMIT + 1, false)] {
         let mut one = b("\x1b[200~");

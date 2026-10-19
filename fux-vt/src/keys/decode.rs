@@ -334,6 +334,14 @@ fn paste<'a>(
         let tail = total.saturating_sub(marker.saturating_sub(1));
         if !too_long && tail <= limit {
             work!(keys, bytes.len());
+            // Grown by doubling, as a `Vec` grows, but never past what the
+            // paste may keep: its limit and the end that may begin the
+            // marker (B23).
+            if total > text.capacity() {
+                let most = limit.saturating_add(marker.saturating_sub(1));
+                let room = total.max(text.capacity().saturating_mul(2)).min(most);
+                text.reserve_exact(room.saturating_sub(text.len()));
+            }
             text.extend_from_slice(bytes);
             return Err(Pasted::Text(text));
         }
@@ -627,7 +635,7 @@ impl Decoder {
             State::Idle | State::Dropping { .. } | State::Paste { .. } => Ok(()),
         };
         report.record("keys.held", "", found);
-        let room = self.paste_limit.saturating_add(PASTE_END.len());
+        let room = (self.paste_limit).saturating_add(PASTE_END.len().saturating_sub(1));
         let found = match &self.state {
             State::Paste {
                 pasted: Pasted::Text(text) | Pasted::TooLong(text),
