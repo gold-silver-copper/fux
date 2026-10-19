@@ -3800,19 +3800,21 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
             }
             // A piece of its own, never joined to another: what is around
             // a pause stays apart. Printable bytes (a character's, or part
-            // of one) edit a line; a control or Escape is a key's.
+            // of one) edit a line; others are the keys they are
+            // (`bytes_unit`).
             Input::Bytes(given) => {
                 sent.push(Sent::Named(given.len(), format!("bytes {}", hex(given))));
-                let edit = given.iter().all(|b| *b >= 0x20 && *b != 0x7f);
-                let unit = if edit { Unit::Edit } else { Unit::Submit };
+                let unit = bytes_unit(given);
                 let mut piece = Piece::new(given.clone(), unit);
                 piece.gap = gap.take();
                 units.push(piece);
                 last = None;
                 continue;
             }
+            // Pauses in a row add up, to the longest one may be.
             Input::Pause(pause) => {
-                gap = Some(*pause);
+                let total = gap.map_or(*pause, |gap: Duration| gap.saturating_add(*pause));
+                gap = Some(total.min(PAUSE_MOST));
                 last = None;
                 continue;
             }
@@ -3830,6 +3832,32 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
 }
 
 /// `bytes` in hex, as `bytes` takes them.
+/// The longest pause before a piece: one `pause`'s most (10,000 ms).
+const PAUSE_MOST: Duration = Duration::from_secs(10);
+
+/// What bytes given as they are are to a program reading them: an edit if
+/// printable (a character's, or part of one), or if each key they are
+/// (decoded as a terminal's input) is one that edits the line, as its
+/// named key is (`command::unit`: DEL is Backspace, `ESC [ D` Left); else
+/// a key that does something.
+fn bytes_unit(given: &[u8]) -> Unit {
+    if given.iter().all(|b| *b >= 0x20 && *b != 0x7f) {
+        return Unit::Edit;
+    }
+    let mut decoder = fux_vt::keys::decode::Decoder::default();
+    let mut inputs = Vec::new();
+    decoder.bytes(given, &mut inputs);
+    decoder.timeout(&mut inputs);
+    let edits = |input: &fux_vt::keys::decode::Input| {
+        matches!(input, fux_vt::keys::decode::Input::Key(stroke)
+            if crate::command::unit(stroke.press) == Unit::Edit)
+    };
+    match !inputs.is_empty() && inputs.iter().all(edits) {
+        true => Unit::Edit,
+        false => Unit::Submit,
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -4108,6 +4136,46 @@ mod tests {
             text.contains("HELD"),
             "no HELD in {} characters",
             text.len()
+        );
+        Ok(())
+    }
+
+    /// Pauses in a row add up (to 10 s at most): the input after them is
+    /// written after all of them. Bytes are read as the keys they are:
+    /// DEL (Backspace) and `ESC [ D` (Left) edit the line, as their named
+    /// keys do, and a CR submits it.
+    #[test]
+    fn pauses_add_up_and_bytes_are_the_keys_they_are() -> Result<(), String> {
+        use crate::command::Input as In;
+        let pane = Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::Shell,
+            pane::size(2, 10),
+            1024,
+        )
+        .map_err(|e| e.to_string())?;
+        let ms = Duration::from_millis;
+        let inputs = [
+            In::Pause(ms(300)),
+            In::Pause(ms(200)),
+            In::Bytes(vec![0x7f]),
+            In::Bytes(b"\x1b[D".to_vec()),
+            In::Bytes(b"\r".to_vec()),
+            In::Pause(ms(9000)),
+            In::Pause(ms(9000)),
+            In::Text("x".into()),
+        ];
+        let (pieces, _) = super::units(&pane, &inputs);
+        let units: Vec<(Unit, Option<Duration>)> = pieces.iter().map(|p| (p.unit, p.gap)).collect();
+        assert_eq!(
+            units,
+            [
+                (Unit::Edit, Some(ms(500))),
+                (Unit::Edit, None),
+                (Unit::Submit, None),
+                (Unit::Edit, Some(ms(10_000))),
+            ]
         );
         Ok(())
     }

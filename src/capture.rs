@@ -409,11 +409,11 @@ fn print(
     // What a selection is drawn with: reverse video, or a background
     // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    // A blank's style shows on the screen: a background, reverse video, a
-    // line under or through it. One bold or coloured in front shows none.
-    let painted = |a: &Attributes| {
-        a.background() != Color::Default || a.inverse() || a.underline() || a.strikeout()
-    };
+    // A blank's style shows on the screen: a background other than the
+    // screen's own, reverse video, a line under or through it. One bold or
+    // coloured in front shows none.
+    let painted =
+        |a: &Attributes| a.background() != base || a.inverse() || a.underline() || a.strikeout();
     // Blanks at a line's end are trimmed, unless they show: highlighted
     // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
     // and runs, a painted surface kept whole); plain text trims them all
@@ -591,6 +591,38 @@ mod tests {
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(&pane, None, view, false, false).0;
         assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
+
+    /// With `styles`, a blank at a line's end is kept when it shows: on a
+    /// screen painted in one background (a full-screen program's), blanks
+    /// in that background are the screen's own, and trimmed, as a
+    /// selection's highlight is told from it.
+    #[test]
+    fn blanks_in_the_screen_s_own_background_are_trimmed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let view = CaptureView {
+            styles: true,
+            ..CaptureView::default()
+        };
+        let size = fux_vt::Size::new(3, 8)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        pane.output(b"\x1b[44m\x1b[2J\x1b[Hab\x1b[2;1Hcd\x1b[41m  ");
+        let text = super::pane(&pane, None, view, false, false).0;
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines
+                .first()
+                .map(|l| l.trim_end_matches("\x1b[0m").ends_with("ab")),
+            Some(true),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .get(1)
+                .is_some_and(|l| l.contains("cd\x1b[41m  ") || l.contains("  ")),
+            "{lines:?}"
+        );
         Ok(())
     }
 }
