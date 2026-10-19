@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, PROTECTED, Text};
+use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
@@ -1415,8 +1415,8 @@ impl Grid {
                 new.set_style(style);
                 new
             } else {
-                let protect = if at.is_protected() { PROTECTED } else { 0 };
-                Compact::ascii(b' ', style | protect)
+                // An unoccupied cell is never protected: only a glyph is.
+                Compact::ascii(b' ', style)
             };
             if new != *at {
                 *at = new;
