@@ -943,13 +943,20 @@ impl History {
         let wrapped = self.kept(index).is_some_and(Kept::wrapped);
         wrapped
             && (self.ended.is_empty()
-                || self.number(index).is_none_or(|n| self.ended.binary_search(&n).is_err()))
+                || self
+                    .number(index)
+                    .is_none_or(|n| self.ended.binary_search(&n).is_err()))
     }
     /// The newest row's line ends with it, which then takes `version`: the
     /// screen's top row, that it went on in, was erased whole. It stays
     /// soft-wrapped, as xterm keeps it (`ENDS`).
     pub(crate) fn end_newest_line(&mut self, version: u64) {
-        if self.rows.len().checked_sub(1).and_then(|i| self.rows.get(i)).is_some_and(Kept::wrapped)
+        if self
+            .rows
+            .len()
+            .checked_sub(1)
+            .and_then(|i| self.rows.get(i))
+            .is_some_and(Kept::wrapped)
             && self.keep_ended()
             && let Some(kept) = self.rows.back_mut()
         {
