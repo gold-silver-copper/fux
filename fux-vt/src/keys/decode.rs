@@ -550,19 +550,38 @@ impl Decoder {
     /// (or an ESC that may end a string being dropped): the held sequence
     /// is given from the front of them only what decides it, no more than
     /// the longest held and one byte, past which every sequence is decided
-    /// (threats.md B24, KEY-3), and so again while what that decided leaves
-    /// one held; the rest follows, where it lies.
+    /// (threats.md B24, KEY-3); then the rest, whole, where it lies. A
+    /// sequence what was given begins and leaves held is read again from
+    /// where it begins in the read, not copied with the rest; an ESC left
+    /// that may end a string being dropped is given the one byte that
+    /// decides it. At most 2 × 258 keys a read past 2 a byte (decision
+    /// 821), and nothing of the read held but a sequence it ends with.
     #[cold]
     #[inline(never)]
-    fn held_first(&mut self, mut bytes: &[u8], out: &mut Vec<Input>) {
-        while bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-            let (head, tail) = bytes
-                .split_at_checked(HELD.saturating_add(1))
-                .unwrap_or((bytes, &[]));
-            self.feed(head, false, out);
-            bytes = tail;
+    fn held_first(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let piece = HELD.saturating_add(1);
+        let mut fed = piece.min(bytes.len());
+        self.feed(bytes.get(..fed).unwrap_or_default(), false, out);
+        while fed < bytes.len() {
+            let step = match &self.state {
+                State::Pending { held, .. } => {
+                    let start = fed.checked_sub(held.len());
+                    let begun = start.filter(|&at| bytes.get(at..fed) == Some(held.as_slice()));
+                    if let Some(start) = begun {
+                        self.state = State::Idle;
+                        self.feed(bytes.get(start..).unwrap_or_default(), false, out);
+                        return;
+                    }
+                    piece
+                }
+                State::Dropping { escape: true, .. } => 1,
+                State::Idle | State::Dropping { .. } | State::Paste { .. } => break,
+            };
+            let next = fed.saturating_add(step).min(bytes.len());
+            self.feed(bytes.get(fed..next).unwrap_or_default(), false, out);
+            fed = next;
         }
-        self.feed(bytes, false, out);
+        self.feed(bytes.get(fed..).unwrap_or_default(), false, out);
     }
 
     /// Decodes `bytes`, with nothing begun before them but what they begin
