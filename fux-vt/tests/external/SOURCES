@@ -1,0 +1,25 @@
+External fuzz corpora replayed by tests/external_corpora.rs (HAR-71), each
+file as its fuzzer reads it: bytes of terminal output, verbatim.
+
+ghostty/  vendored, MIT (ghostty/LICENSE)
+  https://github.com/ghostty-org/ghostty
+  commit e3ebb1d1bf772cf5d1bc70b5ae19e6943e33a110 (2026-10-16)
+  test/fuzz-libghostty/corpus/{osc,parser,stream}-{initial,cmin}/: 4,001
+  AFL++ inputs, as `git archive` gives them (sanitize-filenames.sh left
+  out). The osc and stream targets' first byte picks a mode; it is fed as
+  output too.
+  SHA-256s: ghostty/SHA256SUMS.
+
+vt100-rust/  vendored, MIT (vt100-rust/LICENSE)
+  https://github.com/doy/vt100-rust
+  commit fc26fd9c3d72f9af8a214741c100920734500de7 (2025-07-12)
+  fuzz/in/: 37 AFL seeds.
+  SHA-256s: vt100-rust/SHA256SUMS.
+
+mosh  not vendored: GPL-3.0
+  https://github.com/mobile-shell/mosh
+  commit decd9b705eb81626f694335b8d5940538beb06da (2026-03-22)
+  src/fuzz/terminal_corpus/ (16) and src/fuzz/terminal_parser_corpus/ (11):
+  27 libFuzzer seeds, fetched by the ignored test from
+  raw.githubusercontent.com at that commit and checked against
+  mosh.sha256 before they are replayed.
