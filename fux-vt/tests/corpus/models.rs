@@ -178,9 +178,9 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     while let Some(cluster) = queue.pop_front() {
         let mut chars = cluster.chars();
         let Some(first) = chars.next() else { continue };
-        // Prepend: UAX #29 joins it to a letter after it (GB9b).
-        let prepend = width(first) == Some(0) && clusters(&format!("{first}a")).len() == 1;
-        if prepend && let Some((text, wide)) = cells.last_mut() {
+        if zero_prepend(first)
+            && let Some((text, wide)) = cells.last_mut()
+        {
             if append(text, first) {
                 *wide |= text_width(text) >= 2;
             }
@@ -211,15 +211,31 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
         let mut text = String::from(first);
         let mut wide = width(first) == Some(2);
         // A start of the cluster: once a character is dropped, the rest go.
-        for c in chars {
+        // After a Prepend character of no width (inside a cluster begun by
+        // one of a column, U+0600), what follows is segmented afresh, as
+        // after one that begins it.
+        while let Some(c) = chars.next() {
             if !append(&mut text, c) {
                 break;
             }
             wide |= text_width(&text) >= 2;
+            if zero_prepend(c) {
+                for next in clusters(chars.as_str()).into_iter().rev() {
+                    queue.push_front(next);
+                }
+                break;
+            }
         }
         cells.push((text, wide));
     }
     cells
+}
+
+/// Whether `c` is a Prepend character of no width, which joins no cluster
+/// after it (README, "A character of no width that joins no cluster";
+/// decision 824): UAX #29 joins it to a letter after it (GB9b).
+fn zero_prepend(c: char) -> bool {
+    width(c) == Some(0) && clusters(&format!("{c}a")).len() == 1
 }
 
 /// A cell as the model keeps it.
