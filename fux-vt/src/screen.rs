@@ -3745,6 +3745,10 @@ impl Screen {
                 };
                 spend_scroll(lines, n, self.size());
                 self.scroll(lines, n, direction)?;
+                // A double-width line moved under the cursor holds it to its
+                // end. IL and DL leave it at the left margin, and the line a
+                // feed brings under it is new.
+                self.grid_mut().fit_cursor();
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;

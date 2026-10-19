@@ -1669,12 +1669,9 @@ impl Grid {
                     break;
                 }
             }
-            self.fit_cursor();
             return Ok(());
         }
         self.scroll_region(region, count, direction, blank, next, version);
-        // A double-width line moved under the cursor holds it to its end.
-        self.fit_cursor();
         Ok(())
     }
 
