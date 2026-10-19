@@ -535,12 +535,21 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
     best.ok_or_else(|| "no run".to_owned())
 }
 
-/// The input's SHA-256, by `shasum -a 256` (as run.sh checks its
-/// downloads) or, where there is none, `sha256sum`, for the fairness
-/// record. An error if neither is there or neither gives a hash.
+/// The programs an input's SHA-256 is asked of, in turn.
+const HASHERS: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
+
+/// The input's SHA-256, for the fairness record, by the first of
+/// `HASHERS` that gives one. An error if none is there or none gives one.
 pub fn sha256(bytes: &[u8]) -> Result<String, String> {
+    sha256_by(bytes, &HASHERS)
+}
+
+/// `sha256` by the first of `programs` that exits 0 with 64 hex digits:
+/// one that is missing or fails is passed over for the next.
+fn sha256_by(bytes: &[u8], programs: &[(&str, &[&str])]) -> Result<String, String> {
     use std::io::Write as _;
-    for (program, args) in [("shasum", &["-a", "256"][..]), ("sha256sum", &[])] {
+    let mut why = Vec::new();
+    for &(program, args) in programs {
         let child = std::process::Command::new(program)
             .args(args)
             .stdin(std::process::Stdio::piped())
@@ -548,26 +557,33 @@ pub fn sha256(bytes: &[u8]) -> Result<String, String> {
             .spawn();
         let mut child = match child {
             Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(format!("{program}: {e}")),
+            Err(e) => {
+                why.push(format!("{program}: {e}"));
+                continue;
+            }
         };
+        // A program that exits before reading it all fails below.
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(bytes)
-                .map_err(|e| format!("{program}: {e}"))?;
+            let _ = stdin.write_all(bytes);
         }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| format!("{program}: {e}"))?;
+        let out = match child.wait_with_output() {
+            Ok(out) => out,
+            Err(e) => {
+                why.push(format!("{program}: {e}"));
+                continue;
+            }
+        };
         let text = String::from_utf8_lossy(&out.stdout);
         let hash = text.split_whitespace().next().unwrap_or_default();
-        if !out.status.success() || hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
-        {
-            return Err(format!("{program}: no hash ({})", out.status));
+        if out.status.success() && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(hash.to_owned());
         }
-        return Ok(hash.to_owned());
+        why.push(format!("{program}: no hash ({})", out.status));
     }
-    Err("sha256: neither shasum nor sha256sum is on PATH".into())
+    Err(format!(
+        "sha256: none of the programs gave one: {}",
+        why.join("; ")
+    ))
 }
 
 /// The CPUs this process may run on.
@@ -804,6 +820,14 @@ mod tests {
     fn an_input_hashes_to_its_sha256() -> Result<(), String> {
         let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
         assert_eq!(super::sha256(b"abc")?, abc);
+        // One that fails, or is missing, is passed over for the next.
+        let after = [
+            ("false", &[][..]),
+            ("no-such-hasher", &[]),
+            ("sha256sum", &[]),
+        ];
+        assert_eq!(super::sha256_by(b"abc", &after)?, abc);
+        assert!(super::sha256_by(b"abc", &[("false", &[])]).is_err());
         Ok(())
     }
 
