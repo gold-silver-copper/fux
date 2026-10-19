@@ -886,11 +886,7 @@ impl Grid {
             };
             if let (Some(cells), Some(bytes)) = (dst.get_mut(first..i), run.get(first..i)) {
                 Compact::fill_ascii(cells, bytes, style);
-                prints.push(
-                    id,
-                    at(first)..at(i),
-                    str::from_utf8(bytes).unwrap_or_default(),
-                );
+                prints.push_ascii(id, at(first)..at(i), bytes);
             }
             end = i;
         }
