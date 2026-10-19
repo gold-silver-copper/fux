@@ -325,7 +325,7 @@ macro_rules! stack {
 // and colours through methods, as fux-vt packs them; both have the same
 // opt-in options, off but for events and extended replies, which `run`
 // turns on in both at random. A cursor shape is its Ps, the terminal's
-// own (the baseline's 0 and 7, the current `Initial`) and Ps 0 both 0.
+// own (`Initial`) and Ps 0 both 0.
 stack!(
     base,
     baseline_vt,
@@ -333,26 +333,24 @@ stack!(
     |a| (a.foreground(), a.background()),
     |row| (row.id(), row.version(), row.wrapped()),
     |events, extended| Options::new()
-        .with_events(events)
-        .with_extended_replies(extended),
+        .set(baseline_vt::Feature::Events, events)
+        .set(baseline_vt::Feature::ExtendedReplies, extended),
     |s| [
-        s.hide_cursor(),
-        s.application_cursor(),
-        s.application_keypad(),
-        s.bracketed_paste(),
-        s.focus_reporting(),
-        s.alternate_screen(),
-        s.autowrap(),
-        s.origin_mode(),
+        !s.mode(baseline_vt::Mode::ShowCursor),
+        s.mode(baseline_vt::Mode::ApplicationCursor),
+        s.mode(baseline_vt::Mode::ApplicationKeypad),
+        s.mode(baseline_vt::Mode::BracketedPaste),
+        s.mode(baseline_vt::Mode::FocusReporting),
+        s.mode(baseline_vt::Mode::AlternateScreen),
+        s.mode(baseline_vt::Mode::Autowrap),
+        s.mode(baseline_vt::Mode::Origin),
     ],
-    |s| if s.cursor_shape() == 7 {
-        0
-    } else {
-        s.cursor_shape()
-    },
-    |r, c| [r, c],
-    |s, offset| s.row_from_bottom(offset),
-    |s, id| s.offset_for_row(id)
+    |s| s.cursor_shape().number() % 7,
+    |r, c| [crate::base_size(r, c)],
+    |s, offset| s.rows().nth_back(offset),
+    |s, id| s
+        .row_by_id(id)
+        .and_then(|row| s.history_len().checked_sub(row.index()))
 );
 stack!(
     cur,

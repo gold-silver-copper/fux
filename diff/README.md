@@ -41,8 +41,8 @@ area differed, 2 for a bad argument.
 | Area | Input | Compared |
 | --- | --- | --- |
 | `layout` | random trees, weights 0 to `u32::MAX`, areas up to `u16::MAX` wide | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces; a frame each reads as a type of its own stops both: a command (the baseline's a command line, the current one's a typed request), an attach, an attached client's input (the baseline's the bytes typed, the current one's a typed `Act`), a hello of the `Headless` role the baseline lacks |
-| `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for, which the baseline keeps and a `CursorShape` drops; the shape is compared as its Ps, the terminal's own (0 and 7 in the baseline, `Initial` now) as 0 |
+| `protocol` | random frames (made by the current fux's frame types: hellos, attaches, resizes, detaches, paints, exits, stdout, reply parts, dones) and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces, each kind as the frame type of the stage it is allowed in; an attached client's `Act` and a command's request are typed values fux's own tests decode |
+| `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for; the shape is compared as its Ps, the terminal's own (`Initial`) as 0 |
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
 | `copy` | screens and history from random lines; searches both ways | matches, copied text, row positions |
 | `text` | random words and key names | `split`, `quote`, `join`, `shell_line`, key names, JSON strings, base64 |
@@ -52,10 +52,8 @@ Not covered: the server's connection handling in `server.rs` (the walk,
 `walk/`, and the integration tests cover it), and performance (see
 `bench/`: `fux-bench --against REF` counts fux-vt's instructions against
 any commit, in paired rounds). Nor, since fuxth, whole sessions, command
-lines, copy mode's errors in a session, or config files: the command line
-and the config are fuxth programs and keys are read by each client, so the
-baseline (0.20.0) and the current fux take different inputs there. Areas
-for them return once the baseline is a release with fuxth.
+lines, copy mode's errors in a session, or config files: areas for them,
+now that the baseline (0.31.0) has fuxth too, are still to be written.
 
 ### The baseline
 
@@ -69,7 +67,11 @@ differs too:
   current side what it needs there and compare both in the same form. CI's
   "fux-diff builds" step may fail until then.
 - **After each release,** bump the three `baseline` versions in
-  `Cargo.toml` and `cargo update -p` them.
+  `Cargo.toml` and `cargo update -p` them. They are fux 0.31.0, fux-vt
+  0.10.0 and fuxix 0.6.1: on a branch that changes fux-vt on purpose
+  (vt-best), `terminal` and `input` differ from them where it does (a
+  character cut short is one U+FFFD; a sequence cut by a control gives
+  the control), and the other areas agree.
 
 ## The oracle: fux-vt beside a commit
 
