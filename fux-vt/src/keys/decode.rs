@@ -795,7 +795,9 @@ fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
         _ => return Step::Done(1, press(Key::Escape, Modifiers::NONE)),
     };
     match step {
-        Step::Done(n, Some(Input::Key(mut stroke))) => {
+        // A whole key, more than the `ESC [` or `ESC O` that alone is Alt-[
+        // or Alt-O.
+        Step::Done(n, Some(Input::Key(mut stroke))) if n > 2 => {
             stroke.press.mods.alt = true;
             Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
         }
@@ -1833,6 +1835,10 @@ mod tests {
         assert_eq!(all(b"\x1b\x1bx"), vec![key("Escape"), key("M-x")]);
         assert_eq!(all(b"\x1b\x1b[I"), vec![key("Escape"), Input::FocusIn]);
         split_anywhere(b"\x1b\x1b[A", false, &[key("M-Up")]);
+        // Cut short at the deadline, `ESC [` and `ESC O` are no whole key
+        // but Alt-[ and Alt-O: the Escape before them is an Escape.
+        assert_eq!(all(b"\x1b\x1b["), vec![key("Escape"), key("M-[")]);
+        assert_eq!(all(b"\x1b\x1bO"), vec![key("Escape"), key("M-O")]);
     }
 
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
