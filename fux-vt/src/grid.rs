@@ -1669,9 +1669,12 @@ impl Grid {
                     break;
                 }
             }
+            self.fit_cursor();
             return Ok(());
         }
         self.scroll_region(region, count, direction, blank, next, version);
+        // A double-width line moved under the cursor holds it to its end.
+        self.fit_cursor();
         Ok(())
     }
 
@@ -2826,7 +2829,12 @@ impl Grid {
                 format!("{name} at {:?} off {rows}x{cols}", cursor.at())
             })?;
         }
-        Ok(())
+        // The cursor is on its line's columns: half of them on a line not
+        // single width.
+        let end = self.row_end(self.cursor.row);
+        crate::check::ensure(self.cursor.col < end, || {
+            format!("cursor at {:?} past its line's end {end}", self.cursor.at())
+        })
     }
 
     /// 26: the margins are inside the grid, each the whole of it or two
@@ -2980,6 +2988,10 @@ mod faults {
             g.meta.iter_mut().for_each(|m| m.version = 2);
         })?;
         shows("grid.cursor", |g| g.cursor.row = 3)?;
+        shows("grid.cursor", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            (g.cursor.row, g.cursor.col) = (0, g.size.cols().saturating_sub(1));
+        })?;
         shows("grid.margins", |g| g.narrow = LR)?;
         shows("grid.margins", |g| {
             g.set_rendition(0, LineRendition::DoubleWidth, 1);
