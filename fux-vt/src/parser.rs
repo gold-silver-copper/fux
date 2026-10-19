@@ -2371,6 +2371,7 @@ mod faults {
             "grid.order",
             "grid.slots",
             "grid.blank_past_used",
+            "grid.blank_past_end",
             "grid.wide_pairs",
             "grid.text",
             "grid.style_numbers",
