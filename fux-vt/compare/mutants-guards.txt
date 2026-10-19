@@ -3,7 +3,7 @@
 # one of which must be generated and caught (`mutants.sh guards`).
 # Frozen at vt-best d6cbde3c from threats.md 5.2's rows (frozen at
 # faf8bf00, moved at 9a38df95, decision 8), and its names regenerated at
-# final-fix (last on 9d9f3995), each by its file, function and operator (decision
+# final-fix (last on 164a5fe9), each by its file, function and operator (decision
 # 893): each `#` line names the row and the guard, and where the frozen code
 # is gone or the [new] function was written otherwise, it says what
 # replaced it, and the replacement's mutants follow. Line numbers in the `#`
@@ -293,15 +293,15 @@ fux-vt/src/style.rs:257:5: replace screen_share -> usize with 0
 fux-vt/src/style.rs:257:5: replace screen_share -> usize with 1
 fux-vt/src/style.rs:258:52: replace / with % in screen_share
 fux-vt/src/style.rs:258:52: replace / with * in screen_share
-fux-vt/src/grid.rs:1043:9: replace Grid::make_style_room -> bool with true
-fux-vt/src/grid.rs:1043:9: replace Grid::make_style_room -> bool with false
-fux-vt/src/grid.rs:1046:9: delete ! in Grid::make_style_room
-fux-vt/src/grid.rs:1046:17: replace > with == in Grid::make_style_room
-fux-vt/src/grid.rs:1046:17: replace > with < in Grid::make_style_room
-fux-vt/src/grid.rs:1046:17: replace > with >= in Grid::make_style_room
-fux-vt/src/grid.rs:1010:26: replace && with || in Grid::find_table_style
-fux-vt/src/grid.rs:1010:29: delete ! in Grid::find_table_style
-fux-vt/src/grid.rs:1019:26: replace || with && in Grid::find_table_style
+fux-vt/src/grid.rs:1052:9: replace Grid::make_style_room -> bool with true
+fux-vt/src/grid.rs:1052:9: replace Grid::make_style_room -> bool with false
+fux-vt/src/grid.rs:1055:9: delete ! in Grid::make_style_room
+fux-vt/src/grid.rs:1055:17: replace > with == in Grid::make_style_room
+fux-vt/src/grid.rs:1055:17: replace > with < in Grid::make_style_room
+fux-vt/src/grid.rs:1055:17: replace > with >= in Grid::make_style_room
+fux-vt/src/grid.rs:1019:26: replace && with || in Grid::find_table_style
+fux-vt/src/grid.rs:1019:29: delete ! in Grid::find_table_style
+fux-vt/src/grid.rs:1028:26: replace || with && in Grid::find_table_style
 fux-vt/src/history.rs:414:9: replace History::charge with ()
 # B11 and B13 [new] P22's memo(place, op): not written (decision 826: no per-grid memo); replaced by a 16-entry memo local to the call in Screen::change_attributes (screen.rs:3135-3154): its reset on a sweep, its hit test and its slot
 fux-vt/src/screen.rs:3523:23: replace != with == in Screen::change_attributes
@@ -337,7 +337,7 @@ fux-vt/src/link.rs:689:55: delete ! in parse
 fux-vt/src/link.rs:573:9: replace Links::may_make_room -> bool with true
 fux-vt/src/link.rs:573:9: replace Links::may_make_room -> bool with false
 fux-vt/src/link.rs:583:9: replace Links::stall with ()
-fux-vt/src/grid.rs:1107:12: delete ! in Grid::intern
+fux-vt/src/grid.rs:1116:12: delete ! in Grid::intern
 # B14 [new] P8's heap_cost (strings + headers + ids buckets): not written; a link's cost is Hyperlink::cost (link.rs:99: URI + id + LINK_COST, a bare literal 64 with no mutant); the ids map's buckets and the Arc headers are not counted (threats.md:176, "not reached in round 6", B14 on known-failing.txt)
 fux-vt/src/link.rs:101:9: replace Hyperlink::cost -> usize with 0
 fux-vt/src/link.rs:101:9: replace Hyperlink::cost -> usize with 1
@@ -681,9 +681,9 @@ fux-vt/src/screen.rs:163:19: replace == with != in Printed::full
 # Grid::scroll_region (grid.rs:1806, no mutant), and SCR-8's one turn of the region's slots is Order::rotate
 # (grid.rs:240, decision 36); its guards are scroll_region's count==0 / count==1 branches and rotate's range
 # and `by > len` checks, below. Killed by bounds/rows.rs b36 (`slots` bound).
-fux-vt/src/grid.rs:1909:9: replace Grid::scroll_region with ()
-fux-vt/src/grid.rs:1912:18: replace == with != in Grid::scroll_region
-fux-vt/src/grid.rs:1915:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:1918:9: replace Grid::scroll_region with ()
+fux-vt/src/grid.rs:1921:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:1924:18: replace == with != in Grid::scroll_region
 fux-vt/src/grid.rs:249:9: replace Order::rotate with ()
 # equivalent: rotate's one caller, Grid::scroll_region (grid.rs:1825), calls it only when count >= 2 after count = count.min(region.len()), so last > first: high > low, where high < low, high == low and high <= low are all false (mutants-equivalent.txt)
 fux-vt/src/grid.rs:250:17: replace < with == in Order::rotate
@@ -752,13 +752,13 @@ fux-vt/src/cell.rs:854:16: replace < with > in Cells::resize
 fux-vt/src/cell.rs:854:16: replace < with <= in Cells::resize
 # B40 [now] Grid::index_of (faf8bf00 grid.rs:613 -> now :687). Its `==` (:616:76) moved into Grid::screen_index_of
 # (the screen's rows, :694:91) and History::position (history's, :503:71).
-fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with None
-fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with Some(0)
-fux-vt/src/grid.rs:722:9: replace Grid::index_of -> Option<usize> with Some(1)
-fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with None
-fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with Some(0)
-fux-vt/src/grid.rs:728:9: replace Grid::screen_index_of -> Option<usize> with Some(1)
-fux-vt/src/grid.rs:729:91: replace == with != in Grid::screen_index_of
+fux-vt/src/grid.rs:731:9: replace Grid::index_of -> Option<usize> with None
+fux-vt/src/grid.rs:731:9: replace Grid::index_of -> Option<usize> with Some(0)
+fux-vt/src/grid.rs:731:9: replace Grid::index_of -> Option<usize> with Some(1)
+fux-vt/src/grid.rs:737:9: replace Grid::screen_index_of -> Option<usize> with None
+fux-vt/src/grid.rs:737:9: replace Grid::screen_index_of -> Option<usize> with Some(0)
+fux-vt/src/grid.rs:737:9: replace Grid::screen_index_of -> Option<usize> with Some(1)
+fux-vt/src/grid.rs:738:91: replace == with != in Grid::screen_index_of
 fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with None
 fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with Some(0)
 fux-vt/src/history.rs:581:9: replace History::position -> Option<usize> with Some(1)
@@ -784,12 +784,12 @@ fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 0
 fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 1
 fux-vt/src/parser.rs:1517:9: replace Parser::count_degrades with ()
 # B44 [new] let_row_go: written as Grid::scroll_past_history (grid.rs:1646, a row history has no room for goes as with no history)
-fux-vt/src/grid.rs:1722:9: replace Grid::scroll_past_history with ()
+fux-vt/src/grid.rs:1731:9: replace Grid::scroll_past_history with ()
 # B44 [new] blank_in_place: inline in Grid::clear's refused arm (grid.rs:2098-2103), behind Grid::holds_its_rows;
 # RIS's refused fresh grids fall back to Grid::clear (screen.rs:2614-2636)
-fux-vt/src/grid.rs:2220:24: delete ! in Grid::clear
-fux-vt/src/grid.rs:2237:9: replace Grid::holds_its_rows -> bool with true
-fux-vt/src/grid.rs:2237:9: replace Grid::holds_its_rows -> bool with false
+fux-vt/src/grid.rs:2241:24: delete ! in Grid::clear
+fux-vt/src/grid.rs:2258:9: replace Grid::holds_its_rows -> bool with true
+fux-vt/src/grid.rs:2258:9: replace Grid::holds_its_rows -> bool with false
 # B44 [new] stay_primary: not a function; the alternate screen is made before the switch (`self.alternate.make()?`,
 # screen.rs:3304), so a refusal leaves the primary shown (decision 37). Its guard is Grid::make.
 fux-vt/src/grid.rs:480:9: replace Grid::make -> Result<(), Error> with Ok(())
@@ -809,20 +809,20 @@ fux-vt/src/check.rs:120:5: replace ensure -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:727:9: replace Prints::check_cap -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:742:9: replace Prints::check -> Result<(), String> with Ok(())
 fux-vt/src/compact.rs:433:9: replace Text::check -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2721:9: replace Grid::check with ()
-fux-vt/src/grid.rs:2770:9: replace Grid::check_order -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2791:9: replace Grid::check_slots -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2814:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2854:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2878:9: replace Grid::check_text -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2888:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2904:9: replace Grid::check_recent -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2929:9: replace Grid::check_versions -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2940:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2958:9: replace Grid::check_margins -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2992:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2999:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3010:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2742:9: replace Grid::check with ()
+fux-vt/src/grid.rs:2791:9: replace Grid::check_order -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2812:9: replace Grid::check_slots -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2835:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2875:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2899:9: replace Grid::check_text -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2909:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2925:9: replace Grid::check_recent -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2950:9: replace Grid::check_versions -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2961:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2979:9: replace Grid::check_margins -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3013:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3020:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3031:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1066:9: replace History::check with ()
 fux-vt/src/history.rs:1076:9: replace History::check_counts -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1100:9: replace History::check_blocks -> Result<(), String> with Ok(())
