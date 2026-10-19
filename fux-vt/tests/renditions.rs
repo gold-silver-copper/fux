@@ -334,3 +334,20 @@ fn a_dropped_wide_glyph_carries_out_the_wrap_waiting() -> Result {
     assert_eq!(replies, ["\x1b[2;1R"]);
     Ok(())
 }
+
+/// A mark joins the last cell of the soft-wrapped line above the cursor
+/// at that line's end, a halved line's at half the screen, not past it
+/// (`diff/oracle.sh` seed 2, case 8922: 2x2, DECDHL's top, U+FFFD, then
+/// a leading jamo dropped and a trailing one).
+#[test]
+fn a_mark_joins_a_halved_line_above_at_its_end() -> Result {
+    let p = run(2, 2, b"\x1b#3\xe2\xe1\x84\x80\xe1\x86\xa8")?;
+    let past = p.screen().cell(0, 1).ok_or("no cell")?;
+    assert!(past.contents().is_empty(), "{:?}", past.contents());
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}

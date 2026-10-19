@@ -2236,7 +2236,8 @@ impl Screen {
             Some(left) => (row, left),
             None => {
                 let above = row.checked_sub(1).filter(|&above| g.live_wrapped(above))?;
-                (above, g.size().columns().last())
+                // Its last column: a halved line's ends at half the screen.
+                (above, g.row_end(above).saturating_sub(1))
             }
         };
         let second = g.stored(row, col)?.is_wide_continuation();
