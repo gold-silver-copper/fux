@@ -729,12 +729,12 @@ pub fn b18(scale: Scale, chunk: usize) -> Found {
     })
 }
 
-// B19: finding where a frame ends reads each byte once: `scanned` at most
-// the bytes held and 16 a call.
+// B19: finding where a frame ends reads each byte at most twice:
+// `scanned` at most twice the bytes held and 16 a call (decision 823).
 pub fn b19(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
-        work: &[("scanned", 1, 16, 0)],
+        work: &[("scanned", 2, 16, 0)],
         heap: 0,
     };
     let bound = Bound {
