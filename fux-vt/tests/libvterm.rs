@@ -43,12 +43,13 @@
 //! -o harness`).
 //!
 //! `tests/data/libvterm/expected.txt` lists the assertions fux-vt fails,
-//! each with its reason: an authority that decides otherwise, or a choice
-//! the README records. A failure not listed fails the test, and so does a
-//! listed one that passes.
+//! each with what fux-vt gives instead, derived by hand from the reason
+//! beside it: an authority that decides otherwise, or a choice the README
+//! records. A failure not listed fails the test, and so do a listed one
+//! that passes and a listed one that gives anything else.
 
 use fux_vt::{Feature, Options, Parser, Size};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -59,6 +60,11 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const MAX_CHARS: usize = 6;
 /// What libvterm's cell holds in the second half of a wide glyph.
 const CONTINUATION: u32 = u32::MAX;
+/// The files copied, the checks in them, and the checks outside
+/// [`REFLOW`]: a file or a check lost in reading fails the test.
+const FILES: usize = 26;
+const CHECKS: usize = 426;
+const FIRST_CHECKS: usize = 384;
 /// The file the first translation left out, needing reflow: the other
 /// files' checks are the 384 the suite was first scored on.
 const REFLOW: &str = "69screen_reflow.test";
@@ -392,12 +398,22 @@ fn observe(t: &mut dyn Term, check: &Check, (_, cols): (u16, u16)) -> Result<(St
     })
 }
 
-/// Runs every file on terminals `make` gives, one a file: the checks
-/// failed, by `FILE:LINE`, each with what it wants and gets, and how many
-/// ran.
-fn run(
-    make: &mut dyn FnMut() -> Result<Box<dyn Term>>,
-) -> Result<(BTreeMap<String, String>, usize)> {
+/// A check failed: what it wants and what it gets, written alike.
+struct Failed {
+    what: String,
+    got: String,
+}
+
+/// What [`run`] found: the checks failed, by `FILE:LINE`, and how many
+/// files and checks ran.
+struct Ran {
+    failed: BTreeMap<String, Failed>,
+    files: usize,
+    checks: usize,
+}
+
+/// Runs every file on terminals `make` gives, one a file.
+fn run(make: &mut dyn FnMut() -> Result<Box<dyn Term>>) -> Result<Ran> {
     let mut names: Vec<String> = std::fs::read_dir(data())?
         .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
         .collect::<Result<_>>()?;
@@ -405,6 +421,7 @@ fn run(
     names.sort();
     let mut failed = BTreeMap::new();
     let mut count = 0usize;
+    let files = names.len();
     for name in names {
         let mut t = make()?;
         let mut size = (25, 80);
@@ -422,13 +439,17 @@ fn run(
                     if got != want {
                         let what =
                             format!("?{} {}: wants {want}, gets {got}", check.kind, check.args);
-                        failed.insert(check.at, what);
+                        failed.insert(check.at, Failed { what, got });
                     }
                 }
             }
         }
     }
-    Ok((failed, count))
+    Ok(Ran {
+        failed,
+        files,
+        checks: count,
+    })
 }
 
 /// fux-vt, set up as the harness sets libvterm up.
@@ -688,47 +709,75 @@ impl Term for Harness {
     }
 }
 
-fn expected() -> Result<BTreeSet<String>> {
+/// The listed failures: `FILE:LINE`, what fux-vt gives, and the reason,
+/// tab-separated. What it gives is written as the failure prints it.
+fn expected() -> Result<BTreeMap<String, String>> {
     let text = std::fs::read_to_string(data().join("expected.txt"))?;
-    Ok(text
-        .lines()
+    text.lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| l.split_whitespace().next())
-        .map(str::to_owned)
-        .collect())
+        .map(|l| {
+            let mut cols = l.split('\t');
+            match (cols.next(), cols.next(), cols.next()) {
+                (Some(at), Some(got), Some(_reason)) => Ok((at.to_owned(), got.to_owned())),
+                _ => Err(format!("not FILE:LINE, an answer and a reason: {l}").into()),
+            }
+        })
+        .collect()
 }
 
-/// How many of `failed` are outside the reflow file, of how many checks.
-fn first_scope(failed: &BTreeMap<String, String>, count: usize) -> Result<(usize, usize)> {
+/// The checks outside [`REFLOW`], and how many of them pass.
+fn first_scope(ran: &Ran) -> Result<(usize, usize)> {
     let reflow = read_file(REFLOW)?
         .iter()
         .filter(|l| matches!(l, Line::Check(_)))
         .count();
-    let outside = failed.keys().filter(|f| !f.starts_with(REFLOW)).count();
-    let total = count.saturating_sub(reflow);
+    let outside = ran.failed.keys().filter(|f| !f.starts_with(REFLOW)).count();
+    let total = ran.checks.saturating_sub(reflow);
     Ok((total.saturating_sub(outside), total))
+}
+
+/// Every file and check read: none lost to a misread line.
+fn all_read(ran: &Ran) -> Result {
+    let (_, first) = first_scope(ran)?;
+    assert_eq!(
+        (ran.files, ran.checks, first),
+        (FILES, CHECKS, FIRST_CHECKS),
+        "files, checks and checks outside {REFLOW}"
+    );
+    Ok(())
 }
 
 #[test]
 fn fux_vt_passes_libvterms_tests_but_the_listed() -> Result {
-    let (failed, count) = run(&mut fux)?;
-    let (pass, total) = first_scope(&failed, count)?;
+    let ran = run(&mut fux)?;
+    all_read(&ran)?;
+    let (pass, total) = first_scope(&ran)?;
     println!(
-        "fux-vt passes {} of {count} ({pass} of the first {total})",
-        count.saturating_sub(failed.len())
+        "fux-vt passes {} of {} ({pass} of the first {total})",
+        ran.checks.saturating_sub(ran.failed.len()),
+        ran.checks
     );
     let expected = expected()?;
-    let unexpected: Vec<_> = failed
+    let unexpected: Vec<_> = ran
+        .failed
         .iter()
-        .filter(|(at, _)| !expected.contains(*at))
+        .filter(|(at, _)| !expected.contains_key(*at))
+        .map(|(at, f)| format!("{at} {}", f.what))
         .collect();
     let stale: Vec<_> = expected
+        .keys()
+        .filter(|at| !ran.failed.contains_key(*at))
+        .collect();
+    let other: Vec<_> = ran
+        .failed
         .iter()
-        .filter(|at| !failed.contains_key(*at))
+        .filter(|(at, f)| expected.get(*at).is_some_and(|got| *got != f.got))
+        .map(|(at, f)| format!("{at} {}", f.what))
         .collect();
     assert!(
-        unexpected.is_empty() && stale.is_empty(),
-        "failed, not listed: {unexpected:?}; listed, passing: {stale:?}"
+        unexpected.is_empty() && stale.is_empty() && other.is_empty(),
+        "failed, not listed: {unexpected:?}; listed, passing: {stale:?}; \
+         listed, giving another answer: {other:?}"
     );
     Ok(())
 }
@@ -737,12 +786,19 @@ fn fux_vt_passes_libvterms_tests_but_the_listed() -> Result {
 #[ignore = "needs libvterm's harness, built from its source, in FUX_VT_LIBVTERM_HARNESS"]
 fn libvterm_passes_its_own_tests() -> Result {
     let path = std::env::var("FUX_VT_LIBVTERM_HARNESS")?;
-    let (failed, count) = run(&mut || Ok(Box::new(Harness::new(&path)?) as Box<dyn Term>))?;
-    let (pass, total) = first_scope(&failed, count)?;
+    let ran = run(&mut || Ok(Box::new(Harness::new(&path)?) as Box<dyn Term>))?;
+    all_read(&ran)?;
+    let (pass, total) = first_scope(&ran)?;
     println!(
-        "libvterm passes {} of {count} ({pass} of the first {total})",
-        count.saturating_sub(failed.len())
+        "libvterm passes {} of {} ({pass} of the first {total})",
+        ran.checks.saturating_sub(ran.failed.len()),
+        ran.checks
     );
+    let failed: Vec<_> = ran
+        .failed
+        .iter()
+        .map(|(at, f)| format!("{at} {}", f.what))
+        .collect();
     assert!(failed.is_empty(), "libvterm fails {failed:?}");
     Ok(())
 }
