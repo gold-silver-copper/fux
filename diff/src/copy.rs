@@ -95,16 +95,25 @@ macro_rules! stack {
     };
 }
 
-// The baseline counts rows from the oldest in copy mode's own functions;
-// now they are fux-vt's rows, which know their place. Its `Seek` was copy
-// mode's own; now it is an action's, sent by the client.
+// Both are fux-vt's rows, which know their place; `Seek` is an action's,
+// sent by the client.
 stack! {
-    base, baseline, baseline_vt, copy,
-    |r, c| [r, c],
-    |s| copy::retained(s),
-    |s, index| copy::row_at(s, index).map(|row| (row.id(), copy::index_of(s, row.id()))),
-    |s, from, query, seek| copy::find(s, query, from, seek),
-    |s, kind, start, end| copy::text(s, kind, start, end).map_err(|e| e.to_string())
+    base, baseline, baseline_vt, act,
+    |r, c| [crate::base_size(r, c)],
+    |s| s.rows().len(),
+    |s, index| s.rows().nth(index).map(|row| (row.id(), Some(row.index()))),
+    |s, from, query, seek| s
+        .rows()
+        .nth(from.0)
+        .and_then(|row| copy::find(query, (row, from.1), seek))
+        .map(|(row, col)| (row.index(), col)),
+    |s, kind, start, end| {
+        let at = |(index, col): (usize, u16)| Some((s.rows().nth(index)?, col));
+        match at(start).zip(at(end)) {
+            Some((start, end)) => copy::text(s, kind, start, end).map_err(|e| e.to_string()),
+            None => Err("no such row".to_owned()),
+        }
+    }
 }
 stack! {
     cur, fux, fux_vt, act,

@@ -214,6 +214,12 @@ pub fn size(rows: u16, cols: u16) -> fux_vt::Size {
     fux_vt::Size::from((one(rows), one(cols)))
 }
 
+/// The same size, as the baseline's fux-vt takes it.
+pub fn base_size(rows: u16, cols: u16) -> baseline_vt::Size {
+    let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
+    baseline_vt::Size::from((one(rows), one(cols)))
+}
+
 /// `n` times `scale`, for a number of cases.
 pub fn times(n: usize, scale: usize) -> usize {
     n.saturating_mul(scale)

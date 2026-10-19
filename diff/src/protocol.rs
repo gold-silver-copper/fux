@@ -2,27 +2,24 @@
 //! is framed alike; and random byte streams -- frames, broken frames, stray
 //! headers, empty and oversized lengths -- pushed whole and in pieces
 //! decode to the same frames, which encode to the same bytes again, and the
-//! same errors. The current fux decodes each kind as the frame type of the
-//! stage it is allowed in, and refuses a size of zero and (as the baseline
-//! does not know it) a `Terminal` where the baseline is compared. A command
-//! is not compared: the baseline's is a command line, the current one's a
-//! typed request; nor are an attach and an attached client's input, which
-//! each reads as a type of its own.
+//! same errors. Each side decodes a kind as the frame type of the stage it
+//! is allowed in. The frames are made by the current fux's types; an
+//! attached client's `Act` and a command's request, typed values of their
+//! own, are not among them (fux's own tests check their decoding).
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
-/// A frame, for both to build.
+/// A frame, to build.
 #[derive(Clone, Debug)]
 enum Spec {
     Hello(u32, String, u8),
-    Attach(u16, u16, Option<String>),
-    Input(Vec<u8>),
+    Attach(u16, u16, bool),
     Resize(u16, u16),
     Detach,
     Paint(Vec<u8>),
     Exit(String),
     Stdout(Vec<u8>),
-    Stderr(Vec<u8>),
+    Part(Vec<u8>),
     Done(u8),
 }
 
@@ -56,7 +53,6 @@ fn byte(r: &mut Rng) -> u8 {
 }
 
 fn spec(r: &mut Rng, big: bool) -> Spec {
-    let maybe = |r: &mut Rng| r.chance(50).then(|| text(r));
     match r.below(14) {
         0 => {
             let protocol = r.pick(&[0, 1, 2, u32::MAX]).copied().unwrap_or(1);
@@ -65,9 +61,9 @@ fn spec(r: &mut Rng, big: bool) -> Spec {
         1 => Spec::Attach(
             u16::try_from(r.below(65_536)).unwrap_or(0),
             u16::try_from(r.below(65_536)).unwrap_or(0),
-            maybe(r),
+            r.chance(50),
         ),
-        2 => Spec::Input(bytes(r, big)),
+        2 => Spec::Part(bytes(r, big)),
         3 => Spec::Resize(
             u16::try_from(r.below(65_536)).unwrap_or(0),
             u16::try_from(r.below(65_536)).unwrap_or(0),
@@ -76,7 +72,7 @@ fn spec(r: &mut Rng, big: bool) -> Spec {
         5..=7 => Spec::Paint(bytes(r, big)),
         8 => Spec::Exit(text(r)),
         9 | 10 => Spec::Stdout(bytes(r, big)),
-        11 | 12 => Spec::Stderr(bytes(r, big)),
+        11 | 12 => Spec::Part(bytes(r, big)),
         _ => Spec::Done(byte(r)),
     }
 }
@@ -134,32 +130,6 @@ fn stream(r: &mut Rng) -> Vec<u8> {
     out
 }
 
-/// Where the two part, for the whole frame `held` begins with, whatever its
-/// payload: what the current fux refuses that the baseline takes (a
-/// `Terminal`, a `Stderr`, which it no longer has, or a size of zero, read
-/// before the fields after it); and a frame each reads as a type of its
-/// own, which both stop at: a hello of a role the baseline does not know
-/// (`Headless`), a command (the baseline's a command line, the
-/// current one's a typed request), an attach (the current one's has more
-/// fields) and an attached client's input (the baseline's the bytes typed,
-/// the current one's a typed `Act`), whose decoding fux's own tests check.
-fn refused(held: &[u8]) -> Option<String> {
-    let (header, rest) = held.split_first_chunk::<4>()?;
-    let length = usize::try_from(u32::from_be_bytes(*header)).ok()?;
-    let whole = rest.get(..length).filter(|_| length <= 1 << 20)?;
-    let (&kind, payload) = whole.split_first()?;
-    let rows = payload.first_chunk::<2>();
-    let cols = payload.get(2..).and_then(<[u8]>::first_chunk::<2>);
-    let zero = rows == Some(&[0, 0]) || (rows.is_some() && cols == Some(&[0, 0]));
-    match kind {
-        6 | 10 | 12 => Some(format!("UnexpectedKind({kind})")),
-        2 | 3 => Some(format!("ReadAsItsOwn({kind})")),
-        1 if payload.get(4) == Some(&3) => Some("Headless".into()),
-        4 if zero => Some("ZeroSize".into()),
-        _ => None,
-    }
-}
-
 /// `$name`: every frame `$decoder` decodes, by `$next` from the kind byte
 /// held next, encoded again, and the first error, as the current fux names
 /// it, with what is held after each push, from `bytes` pushed in pieces of
@@ -185,9 +155,6 @@ macro_rules! decoded {
                     let held = bytes
                         .get(pushed.saturating_sub($d.buffered())..pushed)
                         .unwrap_or_default();
-                    if let Some(error) = refused(held) {
-                        return format!("{out}{error}");
-                    }
                     let $kind = held.get(4).copied();
                     let mut next = || -> Result<Option<Vec<u8>>, String> { $next };
                     match next() {
@@ -203,31 +170,24 @@ macro_rules! decoded {
     };
 }
 
-/// The baseline's error `e` as the current fux names the same failure: a
-/// payload that does not read is one of its wire errors, an unknown kind
-/// one not expected, an exit reason not UTF-8 a frame string that is not.
-fn named(e: baseline::protocol::Error) -> String {
-    use baseline::protocol::Error as Base;
-    use fux::protocol::Error;
-    use fux::wire::Error as Wire;
-    let error = match e {
-        Base::Oversized { bytes, limit } => Error::Oversized { bytes, limit },
-        Base::Empty => Error::Empty,
-        Base::Truncated => Error::Wire(Wire::Truncated),
-        Base::Trailing => Error::Wire(Wire::Trailing),
-        Base::NotUtf8 | Base::ExitNotUtf8 => Error::Wire(Wire::NotUtf8),
-        Base::UnknownKind(kind) => Error::UnexpectedKind(kind),
-        Base::UnknownRole(role) => Error::Wire(Wire::Tag("Role", role)),
-        other @ (Base::BadMarker | Base::BadCount) => return format!("{other:?}"),
-    };
-    format!("{error:?}")
-}
-
-decoded!(base, baseline::protocol::Decoder, |d, _kind| d
-    .frame()
-    .map_err(named)?
-    .map(|f| f.encode().map_err(|e| format!("{e:?}")))
-    .transpose());
+decoded!(base, baseline::protocol::Decoder, |d, kind| {
+    use baseline::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
+    fn again<'a>(frame: Option<impl Frame<'a>>) -> Result<Option<Vec<u8>>, String> {
+        frame
+            .map(|f| f.encode().map_err(|e| format!("{e:?}")))
+            .transpose()
+    }
+    let error = |e| format!("{e:?}");
+    match kind {
+        Some(1) => again(d.frame::<Hello>().map_err(error)?),
+        Some(4 | 5) => again(d.frame::<AttachedFrame>().map_err(error)?),
+        // A paint, as to an attached client; output, as to a command
+        // client; the rest as the server's first frames.
+        Some(7) => again(d.frame::<ToAttached>().map_err(error)?),
+        Some(9) => again(d.frame::<ToCommand>().map_err(error)?),
+        _ => again(d.frame::<Greeting>().map_err(error)?),
+    }
+});
 
 decoded!(cur, fux::protocol::Decoder, |d, kind| {
     use fux::protocol::{AttachedFrame, Frame, Greeting, Hello, ToAttached, ToCommand};
@@ -251,52 +211,58 @@ decoded!(cur, fux::protocol::Decoder, |d, kind| {
 /// What each stream writes for `payload`, after other bytes: the
 /// baseline's, then the current fux's.
 fn streamed(payload: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    use baseline::protocol::Stream as Base;
     use fux::protocol::{ToAttached, ToCommand, split_into};
-    let mut a = Vec::new();
-    for base in [Base::Paint, Base::Stdout] {
-        let mut queue = baseline::bytes::ByteQueue::default();
-        queue.push(b"before");
-        base.encode_into(payload, &mut queue);
-        a.extend_from_slice(queue.as_slice());
-    }
+    let mut a = baseline::bytes::ByteQueue::default();
+    a.push(b"before");
+    baseline::protocol::split_into(payload, baseline::protocol::ToAttached::Paint, &mut a);
+    a.push(b"before");
+    baseline::protocol::split_into(payload, baseline::protocol::ToCommand::Stdout, &mut a);
     let mut b = fux::bytes::ByteQueue::default();
     b.push(b"before");
     split_into(payload, ToAttached::Paint, &mut b);
     b.push(b"before");
     split_into(payload, ToCommand::Stdout, &mut b);
-    (a, b.as_slice().to_vec())
+    (a.as_slice().to_vec(), b.as_slice().to_vec())
 }
 
-/// `spec`, encoded by the baseline.
+/// `spec`, encoded by the current fux's frame types.
 fn encode(spec: &Spec) -> Result<Vec<u8>, String> {
-    use baseline::protocol::{Frame, Role};
+    use fux::protocol::{
+        Attach, AttachedFrame, Frame, Greeting, Hello, Role, ToAttached, ToCommand,
+    };
+    use std::borrow::Cow;
     let role = |r: u8| match r {
         0 => Role::Attach,
         1 => Role::Command,
         _ => Role::Kill,
     };
-    let frame = match spec.clone() {
-        Spec::Hello(protocol, version, r) => Frame::Hello {
+    let error = |e| format!("{e:?}");
+    match spec.clone() {
+        Spec::Hello(protocol, version, r) => Hello {
             protocol,
-            version,
             role: role(r),
-        },
-        Spec::Attach(rows, cols, workspace) => Frame::Attach {
-            rows,
-            cols,
-            workspace,
-        },
-        Spec::Input(bytes) => Frame::Input(bytes),
-        Spec::Resize(rows, cols) => Frame::Resize { rows, cols },
-        Spec::Detach => Frame::Detach,
-        Spec::Paint(bytes) => Frame::Paint(bytes),
-        Spec::Exit(reason) => Frame::Exit(reason),
-        Spec::Stdout(bytes) => Frame::Stdout(bytes),
-        Spec::Stderr(bytes) => Frame::Stderr(bytes),
-        Spec::Done(status) => Frame::Done { status },
-    };
-    frame.encode().map_err(|e| format!("{e:?}"))
+            version,
+        }
+        .encode()
+        .map_err(error),
+        Spec::Attach(rows, cols, read_only) => Attach {
+            size: crate::size(rows, cols),
+            workspace: None,
+            read_only,
+            env: Vec::new(),
+        }
+        .encode()
+        .map_err(error),
+        Spec::Resize(rows, cols) => AttachedFrame::Resize(crate::size(rows, cols))
+            .encode()
+            .map_err(error),
+        Spec::Detach => AttachedFrame::Detach.encode().map_err(error),
+        Spec::Paint(bytes) => ToAttached::Paint(Cow::Owned(bytes)).encode().map_err(error),
+        Spec::Exit(reason) => Greeting::Exit(&reason).encode().map_err(error),
+        Spec::Stdout(bytes) => ToCommand::Stdout(Cow::Owned(bytes)).encode().map_err(error),
+        Spec::Part(bytes) => ToCommand::Part(Cow::Owned(bytes)).encode().map_err(error),
+        Spec::Done(status) => Greeting::Done(status).encode().map_err(error),
+    }
 }
 
 pub fn run(r: &mut Rng, scale: usize) -> Outcome {
