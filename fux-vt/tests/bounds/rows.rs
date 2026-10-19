@@ -1888,7 +1888,35 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
         }
     }
     probe.at_least("rows", 1)?;
-    probe.finish()
+    probe.finish()?;
+    b40_spans(scale, chunk)
+}
+
+/// B40's index at its most: every row history takes in begins a span of
+/// identities (IL at the last row makes it anew, the line feed's row
+/// unused), and the index past its free spans is in history's budget, so
+/// history and all it holds stay within B17's bound.
+fn b40_spans(scale: Scale, chunk: usize) -> Found {
+    let setup = Setup::defaults();
+    let bound = heap(
+        (history_peak(setup.history))
+            .saturating_add(prints(&setup))
+            .saturating_add(256 * 80),
+    );
+    let lines = 300_000usize.saturating_mul(scale.times()).min(3_000_000);
+    fed(
+        &setup,
+        bound,
+        chunk.max(4096),
+        1,
+        &repeat(b"x\x1b[L\r\n", lines),
+        |p| {
+            let kept = p.parser.screen().history_len();
+            (kept > 1000)
+                .then_some(())
+                .ok_or(format!("history keeps {kept} rows"))
+        },
+    )
 }
 
 // B41: `push_with`'s closure may only add bytes: one that takes them

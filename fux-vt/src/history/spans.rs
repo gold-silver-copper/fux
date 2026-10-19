@@ -7,6 +7,17 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+/// What a span holds, at most: its entry in `by_id` (a key, a value and
+/// its share of a B-tree node, counted at a node half full, and of the
+/// nodes above), its place in `order` (with room for as many more), and
+/// while history is made anew its place in `staged`.
+pub(crate) const SPAN_BYTES: usize = 80;
+/// The spans a history holds at no cost to its budget: 20 KiB of them,
+/// more than a history that is not made to begin a span a row ever
+/// holds, so that what it keeps does not depend on how its identities
+/// run; past them, each costs `SPAN_BYTES` of the budget (`charged`).
+pub(crate) const FREE_SPANS: usize = 256;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Spans {
     /// The identity the newest span goes on with; `u64::MAX`, which no
@@ -78,6 +89,18 @@ impl Spans {
         } else {
             self.by_id.extend(staged);
         }
+    }
+    /// How many spans it holds.
+    pub(crate) fn len(&self) -> usize {
+        self.by_id
+            .len()
+            .saturating_add(self.staged.as_ref().map_or(0, Vec::len))
+    }
+    /// What it costs history's budget: its spans past `FREE_SPANS`.
+    pub(crate) fn charged(&self) -> usize {
+        self.len()
+            .saturating_sub(FREE_SPANS)
+            .saturating_mul(SPAN_BYTES)
     }
     /// The number the row of identity `id` came with, if a span holds
     /// it; a row let go, or past its span's end, is not that row, which

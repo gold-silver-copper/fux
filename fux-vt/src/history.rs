@@ -275,11 +275,10 @@ pub(crate) struct History {
     /// The rows whose line ends with them though soft-wrapped (`ENDS`), by
     /// number, oldest first: as rare.
     ended: VecDeque<u64>,
-    /// The rows by identity (`position`): outside the budget, so that what
-    /// a history keeps does not change with how its rows' identities run;
-    /// at most a span a row it held since a span last began, and one,
-    /// about 64 bytes each: a B-tree entry and its share of a node half
-    /// full, and its place in push order (`threats.md` B40).
+    /// The rows by identity (`position`): its first `spans::FREE_SPANS`
+    /// spans at no cost to the budget, so that what a history keeps does
+    /// not change with how its rows' identities run; the rest counted in
+    /// it, `spans::SPAN_BYTES` each (`threats.md` B40).
     spans: Spans,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
@@ -396,6 +395,7 @@ impl History {
             .saturating_add(self.linked_room.saturating_mul(LINK_BUCKET))
             .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
             .saturating_add(self.ended.capacity().saturating_mul(size_of::<u64>()))
+            .saturating_add(self.spans.charged())
     }
     /// The cells a block holds: a block's worth (`BLOCK`), or for a small
     /// budget an eighth of it, so that a block is never most of what
@@ -723,7 +723,13 @@ impl History {
     #[inline(never)]
     fn begin_span(&mut self, id: RowId) {
         let number = self.number(self.rows.len()).unwrap_or(u64::MAX);
+        let before = self.spans.charged();
         self.spans.begin(id.0, number, self.first_row);
+        // What the spans cost changes alone: counted again by the change,
+        // as `recount` would count it.
+        let after = self.spans.charged();
+        self.maps = self.maps.saturating_sub(before).saturating_add(after);
+        self.held = self.held.saturating_sub(before).saturating_add(after);
     }
 
     /// Notes the rendition of the row pushed last, which is not single
