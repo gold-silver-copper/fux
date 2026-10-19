@@ -2804,8 +2804,19 @@ impl Screen {
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
+        // It erases no line whole, sparing what is protected, so each keeps
+        // its rendition, which ED's erasing a line whole makes single width
+        // (DEC STD 070, DECSED, note 3; ED, note 1).
+        let g = self.grid();
+        let renditions: Vec<(u16, LineRendition)> = match display && g.doubled() {
+            true => (0..g.size().rows())
+                .filter_map(|y| Some((y, g.live_row(y)?.rendition())))
+                .filter(|(_, r)| r.is_double())
+                .collect(),
+            false => Vec::new(),
+        };
         self.grid_mut()
-            .erase_in((display, false), part, version, |g, y, start, end| {
+            .erase_in(display, part, version, |g, y, start, end| {
                 if private {
                     g.erase_to_spaces(y, (start, end), None, version);
                     if end >= cols {
@@ -2815,6 +2826,10 @@ impl Screen {
                     g.erase_unprotected(y, start, end, blank, version);
                 }
             });
+        let g = self.grid_mut();
+        for (y, rendition) in renditions {
+            g.set_rendition(y, rendition, version);
+        }
     }
 
     /// DECALN (`ESC # 8`; DEC STD 070, Appendix D, Screen Alignment; VT520
@@ -3708,7 +3723,7 @@ impl Screen {
                     } else {
                         let a = self.blank_style();
                         self.with_grid(|g, _, v| {
-                            g.erase_in((byte == b'J', true), part, v, |g, y, start, end| {
+                            g.erase_in(byte == b'J', part, v, |g, y, start, end| {
                                 g.erase(y, start, end, a, v);
                             });
                         });
