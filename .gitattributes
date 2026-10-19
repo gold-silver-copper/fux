@@ -4,3 +4,5 @@ fux-vt/tests/seeds/** binary
 # The conformance table is tab-separated, and a row's last columns may be
 # empty.
 fux-vt/tests/data/conformance.txt -whitespace
+# libvterm's tests, vendored as they are: no line-ending conversion.
+fux-vt/tests/data/libvterm/** -text

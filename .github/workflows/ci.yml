@@ -133,7 +133,9 @@ jobs:
 
       - name: libvterm's tests, translated
         timeout-minutes: 5
-        run: cargo test -p fux-vt --locked --test libvterm
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --locked --test libvterm 2>&1 | tee "$CI_LOGS/libvterm.log"
 
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
@@ -168,18 +170,35 @@ jobs:
           DOCS_RS=1 cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/compare.log"
           cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked --no-default-features -- -D warnings 2>&1 | tee -a "$CI_LOGS/compare.log"
 
+      # esctest2 at the commit references/fetch.sh pins, fetched once and
+      # cached by that commit.
+      - name: esctest2's pinned commit
+        id: esctest2
+        if: runner.os == 'Linux'
+        run: echo "commit=$(sed -n 's/^esctest_commit=//p' references/fetch.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: references/xterm/esctest2
+          key: esctest2-${{ steps.esctest2.outputs.commit }}
+
       - name: esctest against fux-vt
         # fux-vt-compare built without the engines it links (Ghostty's
-        # core needs Zig): esctest2, at the commit references/fetch.sh pins,
-        # against fux-vt alone. A test failing that esctest-expected.txt
-        # does not list fails, and so does one listed that passes.
+        # core needs Zig): esctest2 against fux-vt alone. A test failing
+        # that esctest-expected.txt does not list fails, and so does one
+        # listed that passes.
         if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          COMMIT: ${{ steps.esctest2.outputs.commit }}
         run: |
           set -euo pipefail
-          commit=$(sed -n 's/^esctest_commit=//p' references/fetch.sh)
-          git init -q references/xterm/esctest2
-          git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$commit"
-          git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
+          if [[ ! -d references/xterm/esctest2/.git ]]; then
+            git init -q references/xterm/esctest2
+            git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$COMMIT"
+            git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
+          fi
           cargo run --release --locked --quiet --no-default-features --manifest-path fux-vt/compare/Cargo.toml -- esctest 2>&1 | tee "$CI_LOGS/esctest.log"
 
       - name: fux-vt oracle builds
