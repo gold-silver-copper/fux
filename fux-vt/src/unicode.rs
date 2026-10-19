@@ -31,12 +31,12 @@ pub fn continues_cluster(cluster: &str, c: char) -> bool {
     // no look at the cluster.
     let next = Properties::of(c);
     if matches!(
-        next.kind,
+        next.kind(),
         Break::Other | Break::Prepend | Break::Control | Break::Cr
-    ) && !next.pictographic
-        && next.conjunct != Conjunct::Consonant
+    ) && !next.pictographic()
+        && next.conjunct() != Conjunct::Consonant
         && (cluster.chars().next_back())
-            .is_none_or(|last| Properties::of(last).kind != Break::Prepend)
+            .is_none_or(|last| Properties::of(last).kind() != Break::Prepend)
     {
         return false;
     }
@@ -85,12 +85,10 @@ enum Conjunct {
 }
 
 /// A character's properties from the generated table, all from one
-/// lookup: its segmentation, and the columns it takes alone.
+/// lookup: its segmentation, and the columns it takes alone. Its bits as
+/// the table holds them, each read when asked for.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Properties {
-    kind: Break,
-    pictographic: bool,
-    conjunct: Conjunct,
     bits: u16,
 }
 
@@ -115,17 +113,29 @@ fn bits(c: char) -> u16 {
 impl Properties {
     #[inline]
     pub(crate) fn of(c: char) -> Self {
-        let bits = bits(c);
-        Self {
-            kind: Break::of(bits),
-            pictographic: bits & 0x10 != 0,
-            conjunct: match (bits >> 5) & 3 {
-                1 => Conjunct::Consonant,
-                2 => Conjunct::Extend,
-                3 => Conjunct::Linker,
-                _ => Conjunct::None,
-            },
-            bits,
+        Self { bits: bits(c) }
+    }
+
+    /// Grapheme_Cluster_Break.
+    #[inline]
+    fn kind(self) -> Break {
+        Break::of(self.bits)
+    }
+
+    /// Extended_Pictographic.
+    #[inline]
+    fn pictographic(self) -> bool {
+        self.bits & 0x10 != 0
+    }
+
+    /// Indic_Conjunct_Break.
+    #[inline]
+    fn conjunct(self) -> Conjunct {
+        match (self.bits >> 5) & 3 {
+            1 => Conjunct::Consonant,
+            2 => Conjunct::Extend,
+            3 => Conjunct::Linker,
+            _ => Conjunct::None,
         }
     }
 
@@ -231,10 +241,11 @@ impl Cluster {
     /// join.
     #[inline]
     pub(crate) fn never_joins(self, next: Properties) -> bool {
-        next.kind == Break::Other
-            && next.conjunct != Conjunct::Consonant
+        // Kind Other is 0 in the low four bits, a consonant 1 in bits 5-6.
+        next.bits & 0x0f == 0
+            && next.bits & 0x60 != 0x20
             && self.last != Break::Prepend
-            && !(next.pictographic && self.emoji == Emoji::Joined)
+            && !(next.pictographic() && self.emoji == Emoji::Joined)
     }
 
     /// Whether the cluster ends with a Prepend character, which joins
@@ -247,7 +258,7 @@ impl Cluster {
         use Break::{
             Control, Cr, Extend, L, Lf, Lv, Lvt, Prepend, RegionalIndicator, SpacingMark, T, V, Zwj,
         };
-        match (self.last, next.kind) {
+        match (self.last, next.kind()) {
             // GB3, GB4, GB5.
             (Cr, Lf) => true,
             (Control | Cr | Lf, _) | (_, Control | Cr | Lf) => false,
@@ -258,9 +269,9 @@ impl Cluster {
             // GB9b.
             (Prepend, _) => true,
             // GB9c.
-            _ if self.indic == Indic::Linked && next.conjunct == Conjunct::Consonant => true,
+            _ if self.indic == Indic::Linked && next.conjunct() == Conjunct::Consonant => true,
             // GB11.
-            _ if self.emoji == Emoji::Joined && next.pictographic => true,
+            _ if self.emoji == Emoji::Joined && next.pictographic() => true,
             // GB12, GB13.
             (RegionalIndicator, RegionalIndicator) => self.odd_indicators,
             // GB999.
@@ -274,25 +285,25 @@ impl Cluster {
         fn within<T: Default>(joins: bool, state: T) -> T {
             if joins { state } else { T::default() }
         }
-        let emoji = if next.pictographic {
+        let emoji = if next.pictographic() {
             Emoji::Pictograph
         } else {
-            match (within(joins, self.emoji), next.kind) {
+            match (within(joins, self.emoji), next.kind()) {
                 (Emoji::Pictograph, Break::Extend) => Emoji::Pictograph,
                 (Emoji::Pictograph, Break::Zwj) => Emoji::Joined,
                 _ => Emoji::None,
             }
         };
-        let indic = match (within(joins, self.indic), next.conjunct) {
+        let indic = match (within(joins, self.indic), next.conjunct()) {
             (_, Conjunct::Consonant) => Indic::Consonant,
             (Indic::Consonant | Indic::Linked, Conjunct::Linker) => Indic::Linked,
             (state, Conjunct::Extend) => state,
             _ => Indic::None,
         };
-        let odd_indicators = next.kind == Break::RegionalIndicator
+        let odd_indicators = next.kind() == Break::RegionalIndicator
             && !(joins && self.last == Break::RegionalIndicator && self.odd_indicators);
         Self {
-            last: next.kind,
+            last: next.kind(),
             emoji,
             indic,
             odd_indicators,
