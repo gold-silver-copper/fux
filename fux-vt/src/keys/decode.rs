@@ -422,6 +422,13 @@ impl Decoder {
     /// not waiting.
     pub fn deadline(&self) -> Option<Instant> {
         let (since, wait) = match &self.state {
+            // A character begun, after an Escape or not, waits for its
+            // bytes with no deadline (`single`).
+            State::Pending { held, .. }
+                if utf8_begun(held.strip_prefix(b"\x1b").unwrap_or(held)) =>
+            {
+                return None;
+            }
             State::Pending { held, since } => {
                 let reply = match held.as_slice() {
                     b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expecting.is_some(),
@@ -658,12 +665,34 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
     Some(Input::Key(KeyPress::new(key, mods).into()))
 }
 
+/// Whether `bytes` are the beginning of a character as UTF-8 may begin
+/// one, well-formed (Unicode 17.0, 3.9, Table 3-7) but short of its bytes.
+fn utf8_begun(bytes: &[u8]) -> bool {
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    let (need, second) = match first {
+        0xc2..=0xdf => (2, 0x80..=0xbf),
+        0xe0 => (3, 0xa0..=0xbf),
+        0xe1..=0xec | 0xee..=0xef => (3, 0x80..=0xbf),
+        0xed => (3, 0x80..=0x9f),
+        0xf0 => (4, 0x90..=0xbf),
+        0xf1..=0xf3 => (4, 0x80..=0xbf),
+        0xf4 => (4, 0x80..=0x8f),
+        _ => return false,
+    };
+    let mut rest = rest.iter();
+    bytes.len() < need
+        && rest.next().is_none_or(|b| second.contains(b))
+        && rest.all(|b| (0x80..=0xbf).contains(b))
+}
+
 /// One control byte or character, without an Escape prefix, and how many
 /// bytes it takes; none while it is incomplete. Always inlined into
 /// `decode`, as most keys are one byte: left to the compiler, it was not,
 /// and a key cost up to 9% more (`decode/legacy`).
 #[inline(always)]
-fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
+fn single(bytes: &[u8]) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
     if let Some(control) = Control::of(first.into()) {
         return Some((1, KeyPress::plain(control.key())));
@@ -682,19 +711,16 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
                 0xf0..=0xf7 => 4,
                 _ => 1,
             };
-            if bytes.len() < need && !flush {
-                // Stop at a byte that cannot continue the character.
-                let broken = bytes.iter().skip(1).any(|b| b & 0xc0 != 0x80);
-                if !broken {
-                    return None;
-                }
+            // A well-formed beginning waits for the rest, however long it
+            // takes: a character is never cut short by a deadline.
+            if utf8_begun(bytes) {
+                return None;
             }
             let take = need.min(bytes.len());
             let text = bytes.get(..take).unwrap_or_default();
             // Ill-formed, it is one U+FFFD for its maximal subpart (Unicode
             // 3.9, "U+FFFD Substitution of Maximal Subparts"), which is
-            // what std's `error_len` measures; cut short at the deadline,
-            // one for what came.
+            // what std's `error_len` measures.
             return Some(match str::from_utf8(text) {
                 Ok(s) => match s.chars().next() {
                     Some(c) => (take, KeyPress::plain(Key::Char(c))),
@@ -717,7 +743,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         return Step::Incomplete;
     };
     if first != 0x1b {
-        return single(bytes, flush).map_or(Step::Incomplete, |(n, key)| {
+        return single(bytes).map_or(Step::Incomplete, |(n, key)| {
             Step::Done(n, Some(Input::Key(key.into())))
         });
     }
@@ -750,7 +776,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             Step::Incomplete
         }
         // The Escape and what followed it; within `bytes`, so exact.
-        _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
+        _ => match single(bytes.get(1..).unwrap_or_default()) {
             Some((n, KeyPress { key, mods })) => {
                 let mods = Modifiers { alt: true, ..mods };
                 Step::Done(n.saturating_add(1), press(key, mods))
@@ -1421,6 +1447,45 @@ mod tests {
             assert_eq!(all(bytes), expected, "{bytes:x?}");
             split_anywhere(bytes, false, &expected);
         }
+    }
+
+    /// A character typed a byte at a time, as a slow link or a terminal
+    /// that writes each byte apart sends it, waits for its bytes however
+    /// long they take: a well-formed beginning (Unicode 17.0, 3.9, Table
+    /// 3-7) has no deadline, and a timeout leaves it waiting, alone or after
+    /// an Escape (Alt). A byte that cannot go on with it still gives the
+    /// maximal subpart's U+FFFD at once (FA-KEY-10).
+    #[test]
+    fn a_character_split_across_reads_waits_for_its_bytes() {
+        for (bytes, expected) in [
+            (&b"\xc3\xa9"[..], key("\u{e9}")),
+            ("\u{4e16}".as_bytes(), key("\u{4e16}")),
+            ("\u{1f600}".as_bytes(), key("\u{1f600}")),
+            (b"\x1b\xc3\xa9", key("M-\u{e9}")),
+            ("\x1b\u{1f600}".as_bytes(), key("M-\u{1f600}")),
+        ] {
+            // An Escape and the lead byte come in one read, as Alt sends
+            // them; the rest a byte a read, a deadline apart.
+            let first = if bytes.first() == Some(&0x1b) { 2 } else { 1 };
+            let (head, tail) = bytes.split_at_checked(first).unwrap_or((bytes, &[]));
+            let reads = std::iter::once(head).chain(tail.iter().map(std::slice::from_ref));
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            for (i, read) in reads.enumerate() {
+                d.bytes(read, &mut out);
+                d.mark(Instant::now());
+                if out.is_empty() {
+                    assert_eq!(d.deadline(), None, "{bytes:x?} after read {i}");
+                }
+                d.timeout(&mut out);
+            }
+            assert_eq!(out, vec![expected], "{bytes:x?}");
+        }
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\xe4\xb8", &mut out);
+        d.bytes(b"A", &mut out);
+        assert_eq!(out, vec![key("\u{fffd}"), key("A")]);
     }
 
     /// xterm's modifyOtherKeys form names a key by the code `CSI code ;
