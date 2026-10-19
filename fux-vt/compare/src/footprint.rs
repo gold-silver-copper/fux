@@ -824,10 +824,17 @@ mod tests {
     /// readings: memory allocated after the first reading reads as grown,
     /// none of it reused from content freed before (Linux, where freed
     /// pages stay resident). 8 MiB in small allocations reads as 7.5 at
-    /// least.
+    /// least. In a process of its own ([`crate::memory::alone`]): the
+    /// footprint is the whole process's.
     #[cfg(target_os = "linux")]
     #[test]
     fn what_a_child_measures_with_is_held_over_its_readings() -> Result<(), String> {
+        if !crate::memory::alone(
+            module_path!(),
+            "what_a_child_measures_with_is_held_over_its_readings",
+        )? {
+            return Ok(());
+        }
         let (bytes, made) = super::content(&Measure::History("corpus".into()), 200, 400)?;
         let before = crate::memory::read()?;
         let blocks: Vec<Vec<u8>> = (0..2048)

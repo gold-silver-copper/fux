@@ -84,9 +84,14 @@ mod glibc {
     mod tests {
         /// malloc counts what it hands out in small pieces, which whole
         /// pages read only roughly: 64 MiB in 1 KiB allocations reads as
-        /// at least 0.9 of that, and freed, falls back.
+        /// at least 0.9 of that, and freed, falls back. In a process of
+        /// its own ([`crate::memory::alone`]): malloc's count is the whole
+        /// process's.
         #[test]
-        fn small_allocations_show_in_malloc() {
+        fn small_allocations_show_in_malloc() -> Result<(), String> {
+            if !crate::memory::alone(module_path!(), "small_allocations_show_in_malloc")? {
+                return Ok(());
+            }
             let before = super::malloc_in_use();
             let blocks: Vec<Vec<u8>> = (0..65_536).map(|_| vec![1u8; 1024]).collect();
             let during = super::malloc_in_use();
@@ -96,8 +101,44 @@ mod glibc {
             );
             drop(blocks);
             assert!(super::malloc_in_use() < during, "freed, it falls back");
+            Ok(())
         }
     }
+}
+
+/// Set in the process a test runs itself in, alone ([`alone`]).
+// Linux only: its two tests are.
+#[cfg(all(test, target_os = "linux"))]
+const ALONE: &str = "FUX_VT_COMPARE_TEST_ALONE";
+
+/// For a test that reads the whole process's memory, which other tests
+/// change as they allocate and free beside it: whether this is the
+/// process it measures in. If not, it runs the test `name` of `module`
+/// (`module_path!()`) again in a process of its own (this test binary,
+/// that test alone, on one thread), fails if it fails or did not run, and
+/// says no.
+#[cfg(all(test, target_os = "linux"))]
+pub fn alone(module: &str, name: &str) -> Result<bool, String> {
+    if std::env::var_os(ALONE).is_some() {
+        return Ok(true);
+    }
+    // libtest names a test by its path without the crate's name.
+    let path = module.split_once("::").map_or("", |(_, p)| p);
+    let test = format!("{path}::{name}");
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ran = std::process::Command::new(me)
+        .args([test.as_str(), "--exact", "--test-threads", "1"])
+        .env(ALONE, "1")
+        .output()
+        .map_err(|e| e.to_string())?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert!(ran.status.success(), "{test}, alone: {said}");
+    assert!(said.contains("1 passed"), "{test} ran alone: {said}");
+    Ok(false)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
