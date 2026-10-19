@@ -944,3 +944,35 @@ fn repeat_makes_its_non_ascii_copies_and_returns() -> Result {
     assert_eq!(shown, ["ééééz", ""]);
     Ok(())
 }
+
+/// B33, `Screen::copies_needed`'s `width > cols` (screen.rs, `>` to `==` and to `>=`): REP on a one-column screen makes every copy, a row each.
+#[test]
+fn a_repeat_on_a_one_column_screen_makes_every_copy() -> Result {
+    let mut p = Parser::new(Size::new(3, 1)?, 0)?;
+    // `a` and 2 copies of it: each copy wraps to the next row.
+    p.process(b"a\x1b[2b")?;
+    assert_eq!(lines::lines(&p), ["a", "a", "a"]);
+    Ok(())
+}
+
+/// B24, `Decoder::held_first`'s `fed < bytes.len()` (decode.rs, `<` to `<=`): a held read of exactly 259 bytes that ends on the ESC of an answer dropped past its limit returns, and the `\` after it ends the drop.
+#[test]
+fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Result {
+    let (dropped, after, typed) = in_time(|| {
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1b", &mut out);
+        // `] 1`, 256 `a`s and an ESC: with the Escape held, an OSC answer
+        // whose string and ESC are past its 128 bytes, dropped to its ST.
+        let mut read = b"]1".to_vec();
+        read.extend([b'a'; 256]);
+        read.push(0x1b);
+        d.bytes(&read, &mut out);
+        let dropped = out.len();
+        d.bytes(b"\\x", &mut out);
+        let typed = out.last().is_some_and(|i| matches!(i, Input::Key(_)));
+        Ok((dropped, out.len(), typed))
+    })?;
+    assert_eq!((dropped, after, typed), (0, 1, true));
+    Ok(())
+}
