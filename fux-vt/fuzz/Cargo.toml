@@ -16,6 +16,8 @@ cargo-fuzz = true
 # after every operation.
 default = ["checks"]
 checks = ["fux-vt/checks"]
+# Each target notes the features and host calls it reaches (reach.sh).
+reach = []
 
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }

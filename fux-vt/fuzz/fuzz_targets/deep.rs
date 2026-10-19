@@ -39,7 +39,10 @@
 use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size, Work};
 use libfuzzer_sys::fuzz_target;
 mod common;
-use common::{Record, Rows, marks_sound, pick, prints_bounded, until_stops, versions_follow};
+use common::{
+    Record, Rows, features_reached, marks_sound, pick, prints_bounded, reached, until_stops,
+    versions_follow,
+};
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
 #[path = "../../tests/corpus/invariants.rs"]
@@ -237,6 +240,9 @@ fuzz_target!(|data: &[u8]| {
     };
     whole.record_prints(f1 & 0x80 != 0);
     whole.set_host_graphics(graphics(cell));
+    reached("call record_prints");
+    reached("call set_host_graphics");
+    features_reached(&whole);
     let split = whole.clone();
     let mut run = Run {
         whole,
@@ -258,6 +264,7 @@ fuzz_target!(|data: &[u8]| {
         };
         match operation {
             0xff => {
+                reached("call resize");
                 let (r, c) = (arg(), arg());
                 if let Some(size) = size(r, c) {
                     for p in run.both() {
@@ -266,16 +273,21 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             0xfe => {
+                reached("call set_history_bytes");
                 let budget = pick(&BUDGETS, usize::from(arg()));
                 for p in run.both() {
                     p.set_history_bytes(budget.unwrap_or(0));
                 }
             }
-            0xfd => run.both().into_iter().for_each(Parser::clear_history),
+            0xfd => {
+                reached("call clear_history");
+                run.both().into_iter().for_each(Parser::clear_history);
+            }
             // A tick is newer than all processing took so far. The two
             // parsers' ticks differ: each call begins a version, and they
             // are fed in calls of their own sizes.
             0xfc => {
+                reached("call tick");
                 for p in run.both() {
                     let tick = p.tick();
                     assert!(p.screen().rows().all(|row| row.version() < tick));
@@ -283,10 +295,12 @@ fuzz_target!(|data: &[u8]| {
             }
             0xfb => run.both().into_iter().for_each(prints_bounded),
             0xfa => {
+                reached("call record_prints");
                 let on = arg() & 1 != 0;
                 run.both().into_iter().for_each(|p| p.record_prints(on));
             }
             0xf9 => {
+                reached("call set_host_palette");
                 let k = arg();
                 let mut palette = [None; 16];
                 if let Some(entry) = palette.get_mut(usize::from(k % 16)) {
@@ -297,32 +311,40 @@ fuzz_target!(|data: &[u8]| {
                     .for_each(|p| p.set_host_palette(palette));
             }
             0xf8 => {
+                reached("call require_mark_nonce");
                 let on = arg() & 1 != 0;
                 let (nonce, nested) = (on.then_some(&b"n1"[..]), on.then_some(&b"n2"[..]));
                 run.both()
                     .into_iter()
                     .for_each(|p| p.require_mark_nonce(nonce, nested));
             }
-            0xf7 => run.both().into_iter().for_each(Parser::note_submit),
+            0xf7 => {
+                reached("call note_submit");
+                run.both().into_iter().for_each(Parser::note_submit);
+            }
             0xf6 => {
+                reached("call host_reads");
                 reads = reads.saturating_add(1);
                 if reads <= READS {
                     run.both().into_iter().for_each(|p| host_reads(p));
                 }
             }
             0xf5 => {
+                reached("call set_host_graphics");
                 let cell = graphics(arg());
                 run.both()
                     .into_iter()
                     .for_each(|p| p.set_host_graphics(cell));
             }
             0xf4 => {
+                reached("call set_picture_bytes");
                 let bytes = pick(&PICTURES, usize::from(arg()));
                 run.both()
                     .into_iter()
                     .for_each(|p| p.set_picture_bytes(bytes.unwrap_or(0)));
             }
             0xf3 => {
+                reached("call Window::text");
                 let Some((parameters, rest)) = input.split_first_chunk::<8>() else {
                     break;
                 };

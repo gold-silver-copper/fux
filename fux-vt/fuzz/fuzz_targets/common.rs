@@ -2,7 +2,40 @@
 //! a parser says, the hashes of rows a change of version is checked
 //! against, and feeding as fux's pane does.
 
-use fux_vt::{Color, Event, OSC_PAYLOAD_LIMIT, Parser, Rgb, RowId, Sink, Stop, Unhandled};
+use fux_vt::{Color, Event, Feature, OSC_PAYLOAD_LIMIT, Parser, Rgb, RowId, Sink, Stop, Unhandled};
+
+/// Notes that a run reached `what`: a `Feature` on, or a host call made.
+/// Built with the `reach` feature (`reach.sh`), each name is written to
+/// standard error the first time a process reaches it, as `reached: NAME`;
+/// otherwise nothing is done.
+pub fn reached(what: &str) {
+    #[cfg(feature = "reach")]
+    {
+        use std::{collections::BTreeSet, sync::Mutex};
+        static SEEN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+        if let Ok(mut seen) = SEEN.lock()
+            && !seen.contains(what)
+        {
+            seen.insert(what.to_owned());
+            eprintln!("reached: {what}");
+        }
+    }
+    #[cfg(not(feature = "reach"))]
+    let _ = what;
+}
+
+/// Notes each `Feature` `p` has on as reached, and every one there is as
+/// `of Feature NAME`, so a report knows them all.
+pub fn features_reached(p: &Parser) {
+    if cfg!(feature = "reach") {
+        for feature in Feature::ALL {
+            reached(&format!("of Feature {feature:?}"));
+            if p.options().has(feature) {
+                reached(&format!("feature {feature:?}"));
+            }
+        }
+    }
+}
 
 /// Records replies and events so whole and split processing can be
 /// compared; every event payload must respect the OSC bound.
@@ -201,6 +234,7 @@ pub fn versions_follow(before: &Rows, after: &Rows) {
 /// prompt mark changed, as fux redraws.
 pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows) {
     let screen = after.screen();
+    reached("call full_refresh_since");
     if screen.full_refresh_since(mark) {
         return;
     }
@@ -229,6 +263,7 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
 pub fn prints_bounded(p: &mut Parser) {
     let (rows, cols) = p.screen().size().into();
     let cells = usize::from(rows).saturating_mul(usize::from(cols));
+    reached("call take_prints");
     let prints = p.take_prints();
     let text = prints.iter().map(|print| print.text.len()).sum::<usize>();
     assert!(
@@ -246,6 +281,7 @@ pub fn prints_bounded(p: &mut Parser) {
 pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: impl FnMut(usize)) {
     let (mut left, mut frame) = (piece, None::<(Option<usize>, usize)>);
     while !left.is_empty() {
+        reached("call process_until_stop");
         let stop = p.process_until_stop(left, sink);
         assert!(stop.is_ok());
         let Ok(Some((taken, why))) = stop else {
@@ -270,6 +306,7 @@ pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: im
                 frame = None;
             }
         } else if why == Stop::Begun {
+            reached("call FrameScan");
             frame = Some((p.frame_scan().end(left), 0));
         }
     }
