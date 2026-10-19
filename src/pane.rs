@@ -2163,12 +2163,8 @@ mod tests {
         };
         let now = Instant::now();
         assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
-        // Each ED of the screen is spent as a million cells: 200 of them,
-        // 800 bytes, in one piece with the echo, spend a budget.
-        let mut out: Vec<u8> = std::iter::repeat_n(b"\x1b[2J", 200)
-            .flatten()
-            .copied()
-            .collect();
+        // Output that spends a budget, in one piece with the echo.
+        let mut out = spends_the_budget(1000, 1000);
         out.extend_from_slice(b"\x1b[Habc");
         pane.output_at(&out, now);
         assert!(pane.has_unread(), "the budget stopped no call");
@@ -2207,10 +2203,7 @@ mod tests {
         };
         let now = Instant::now();
         assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
-        let mut out: Vec<u8> = std::iter::repeat_n(b"\x1b[2J", 200)
-            .flatten()
-            .copied()
-            .collect();
+        let mut out = spends_the_budget(1000, 1000);
         out.extend_from_slice(b"\x1b[?2026h\x1b[Habc\x1b[?2026l");
         pane.output_at(&out, now);
         assert!(pane.has_unread(), "the budget stopped no call");
