@@ -355,7 +355,23 @@ fn scalar(
         false => u64::MAX,
     };
     for (i, &byte) in bytes.iter().enumerate() {
-        let framed = parser.byte(byte, sink).or_else(|| parser.over::<true>());
+        let before = parser.state;
+        let framed = parser.byte(byte, sink);
+        // `run` looks at the budget where a sequence or a string ended,
+        // and after a line feed carried out: in text, or among the bytes
+        // of an escape sequence or a CSI, not in a string or a DCS.
+        let ended =
+            parser.state == State::Ground && !matches!(before, State::Ground | State::Utf8(_));
+        let in_string = matches!(
+            before,
+            State::Dcs(_)
+                | State::IgnoreString
+                | State::Sixel
+                | State::Request(_)
+                | State::Osc { .. }
+        );
+        let fed = (0x0a..=0x0c).contains(&byte) && !in_string;
+        let framed = framed.or_else(|| (ended || fed).then(|| parser.over::<true>()).flatten());
         if until_stop && let Some(stop) = framed {
             parser.spend_since(start, stop);
             parser.count_degrades(degrades);
@@ -445,6 +461,7 @@ fn fast_paths_equal_the_general_path_on_long_strings() -> Result<(), Error> {
 }
 
 fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<(), Error> {
+    let mut budget_stops = 0u32;
     for case in cases {
         let mut r = Rng(case);
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
@@ -470,6 +487,12 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             let (mut a, mut b) = (Log::default(), Log::default());
             let mut piece_left = piece;
             loop {
+                // Now and then the budget is all but spent, so that the
+                // call stops at the first place it looks.
+                if until_frame && r.chance(20) {
+                    let spent = crate::budget::LIMIT.saturating_sub(u64::from(r.chance(50)));
+                    (fast.spent, slow.spent) = (spent, spent);
+                }
                 let (got, want) = if until_frame {
                     (
                         fast.process_until_stop(piece_left, &mut a),
@@ -482,6 +505,9 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
                     )
                 };
                 assert_eq!(got, want, "case {case}: {}", input.escape_ascii());
+                if matches!(got, Ok(Some((_, Stop::Budget)))) {
+                    budget_stops = budget_stops.saturating_add(1);
+                }
                 match got {
                     Ok(Some((n, _))) => piece_left = piece_left.get(n..).unwrap_or_default(),
                     Ok(None) | Err(_) => break,
@@ -493,6 +519,7 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
             assert_eq!(difference, None, "case {case}: {shown}");
         }
     }
+    assert!(budget_stops > 0, "no call stopped at its budget");
     Ok(())
 }
 

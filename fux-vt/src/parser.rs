@@ -1416,10 +1416,15 @@ impl Parser {
             } else if ground && byte == 0x1b {
                 let (length, framed) = self.sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
-                framed.or_else(|| self.over::<UNTIL_STOP>())
+                // Looked at once the sequence is done, as `looks` has it.
+                let done = matches!(self.state, State::Ground);
+                framed.or_else(|| done.then(|| self.over::<UNTIL_STOP>()).flatten())
             } else {
                 remaining = tail;
-                self.byte(byte, sink).or_else(|| self.over::<UNTIL_STOP>())
+                let before = self.state;
+                let framed = self.byte(byte, sink);
+                let looks = self.looks(before, byte);
+                framed.or_else(|| looks.then(|| self.over::<UNTIL_STOP>()).flatten())
             };
             // A sequence that began or ended a frame ends whatever was
             // taken, and so does one that spent the budget (`over`): stop
@@ -1488,6 +1493,27 @@ impl Parser {
     #[inline(never)]
     fn refuse_many(&mut self, count: u64) {
         self.refused = self.refused.saturating_add(count);
+    }
+    /// Whether `run` looks at the budget after `byte`, read in state
+    /// `before`: where a sequence or a string ended, and after a line feed
+    /// (LF, VT, FF) carried out, in text or inside an escape sequence or
+    /// CSI: where the work a few bytes can multiply is done (`budget.rs`).
+    /// A rule of states, so that the fast paths, which take a sequence's
+    /// bytes in loops of their own, look where `byte` alone would.
+    fn looks(&self, before: State, byte: u8) -> bool {
+        let ended = matches!(self.state, State::Ground)
+            && !matches!(before, State::Ground | State::Utf8(_));
+        let fed = matches!(byte, 0x0a..=0x0c)
+            && matches!(
+                before,
+                State::Ground
+                    | State::Utf8(_)
+                    | State::Escape(_)
+                    | State::EscapeIgnore
+                    | State::Csi(_)
+                    | State::CsiIgnore
+            );
+        ended || fed
     }
     /// [`Stop::Budget`] if the call under way stops at its budget
     /// (`UNTIL_STOP`) and spent it.
