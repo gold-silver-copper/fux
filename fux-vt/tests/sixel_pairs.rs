@@ -2,7 +2,7 @@
 //! picture, decoded through fux-vt's parser, is the size its `.rgba`
 //! golden says, 64 by 64, and each pixel is the golden's: alpha exactly,
 //! each colour channel within 3 of 255. The tolerance was fixed before the
-//! first run: sixel colours are given in percent (DEC STD 070-9, 8.3.1),
+//! first run: sixel colours are given in percent (DEC STD 070-9, 8.1.3),
 //! and a percent is 2.55 of 255, so two decoders' rounding may differ by
 //! up to 3. `ppmtosixel` frames its picture in 8-bit DCS and ST (0x90,
 //! 0x9c), which in UTF-8, as fux-vt reads its input, are no controls
