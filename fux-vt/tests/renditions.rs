@@ -208,3 +208,18 @@ fn reflow_keeps_a_halved_line_whole_and_alone() -> Result {
     assert!(!p.screen().row_wrapped(1));
     Ok(())
 }
+
+/// DECSED erases no line's rendition (DEC STD 070, DECSED, note 3, p.
+/// 5-162: "Line attributes are not affected"), nor does an ED that spares
+/// SPA's guarded glyphs, which erases no line whole; ED with nothing
+/// protected makes each line it erases whole single width (ED, note 1).
+#[test]
+fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
+    let p = run(2, 10, b"\x1b#6\x1b[?2J")?;
+    assert_eq!(rendition(&p, 0), Some(DoubleWidth), "DECSED");
+    let p = run(2, 10, b"\x1b#6\x1bVx\x1bW\x1b[2J")?;
+    assert_eq!(rendition(&p, 0), Some(DoubleWidth), "ED around SPA's glyph");
+    let p = run(2, 10, b"\x1b#6\x1b[2J")?;
+    assert_eq!(rendition(&p, 0), Some(Single), "ED");
+    Ok(())
+}
