@@ -813,36 +813,70 @@ fn cells(c: char) -> u16 {
 /// (`fux_vt::CLUSTER_CAPACITY`), the characters past it are dropped, as a
 /// pane drops them; it is looked at no further, so a long one costs no more
 /// than one a cell keeps.
-fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> {
-    let mut chars = text
-        .char_indices()
-        .filter(|(_, c)| !c.is_control())
-        .peekable();
-    std::iter::from_fn(move || {
-        let (start, first) = chars.next()?;
-        // Where the cluster's kept text ends, and its last character.
-        let mut kept = start.saturating_add(first.len_utf8());
-        let mut last = kept;
-        while let Some(&(at, c)) = chars.peek() {
-            // A control between ends the cluster, as one does in a pane.
+fn clusters(text: &str) -> Clusters<'_> {
+    Clusters { text, at: 0 }
+}
+
+/// The clusters of `text` from byte `at` on (`clusters`).
+struct Clusters<'a> {
+    text: &'a str,
+    at: usize,
+}
+
+impl<'a> Iterator for Clusters<'a> {
+    type Item = (&'a str, u16);
+
+    fn next(&mut self) -> Option<(&'a str, u16)> {
+        let text = self.text;
+        loop {
+            let start = self.at;
+            let bytes = text.as_bytes();
+            // Printable ASCII before ASCII, or at the end, is a cluster of
+            // one column alone (no ASCII character joins another, UAX
+            // #29): most of fux's text, which the bar lays out at every
+            // paint, needs no decoding and no look in fux-vt's tables.
+            if let Some(&byte) = bytes.get(start)
+                && byte.is_ascii()
+                && bytes.get(start.saturating_add(1)).is_none_or(u8::is_ascii)
+            {
+                self.at = start.saturating_add(1);
+                if byte.is_ascii_control() {
+                    continue;
+                }
+                return Some((text.get(start..self.at).unwrap_or_default(), 1));
+            }
+            let first = text.get(start..)?.chars().next()?;
+            self.at = start.saturating_add(first.len_utf8());
+            if first.is_control() {
+                continue;
+            }
+            // Where the kept text ends: a control ends the cluster, as one
+            // does in a pane.
+            let mut kept = self.at;
+            for c in text.get(self.at..).unwrap_or_default().chars() {
+                let cluster = text.get(start..kept).unwrap_or_default();
+                if c.is_control() || !fux_vt::continues_cluster(cluster, c) {
+                    break;
+                }
+                self.at = self.at.saturating_add(c.len_utf8());
+                if self.at.saturating_sub(start) <= fux_vt::CLUSTER_CAPACITY {
+                    kept = self.at;
+                }
+            }
             let cluster = text.get(start..kept).unwrap_or_default();
-            if at != last || !fux_vt::continues_cluster(cluster, c) {
-                break;
-            }
-            chars.next();
-            last = at.saturating_add(c.len_utf8());
-            if last.saturating_sub(start) <= fux_vt::CLUSTER_CAPACITY {
-                kept = last;
-            }
+            let width = fux_vt::str_width(cluster).min(2);
+            return Some((cluster, u16::try_from(width).unwrap_or(2)));
         }
-        let cluster = text.get(start..kept).unwrap_or_default();
-        let width = fux_vt::str_width(cluster).min(2);
-        Some((cluster, u16::try_from(width).unwrap_or(2)))
-    })
+    }
 }
 
 /// Display width of a string, controls dropped: its clusters' (`clusters`).
 pub fn width(text: &str) -> u16 {
+    // ASCII, as most of it is: a column a character.
+    if text.is_ascii() {
+        let printable = text.bytes().filter(|b| !b.is_ascii_control()).count();
+        return u16::try_from(printable).unwrap_or(u16::MAX).min(4096);
+    }
     clusters(text)
         .map(|(_, width)| width)
         .fold(0, u16::saturating_add)
