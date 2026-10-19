@@ -399,8 +399,14 @@ fn checksum_of(cell: &CellRef<'_>) -> u16 {
     let marks = chars.fold(0u16, |sum, c| {
         sum.wrapping_add(u16::try_from(u32::from(c) & 0xffff).unwrap_or(0))
     });
-    let a = cell.attributes();
-    let rendition = [
+    base.wrapping_add(marks)
+        .wrapping_add(rendition_of(cell.attributes()))
+}
+
+/// What a cell's VT100 attributes add to a DECRQCRA checksum
+/// (`checksum_of`).
+fn rendition_of(a: Attributes) -> u16 {
+    [
         (a.hidden(), 0x08),
         (a.underline(), 0x10),
         (a.inverse(), 0x20),
@@ -409,8 +415,7 @@ fn checksum_of(cell: &CellRef<'_>) -> u16 {
     ]
     .iter()
     .filter(|(on, _)| *on)
-    .fold(0u16, |sum, (_, bit)| sum | bit);
-    base.wrapping_add(marks).wrapping_add(rendition)
+    .fold(0u16, |sum, (_, bit)| sum | bit)
 }
 
 /// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
@@ -3371,8 +3376,27 @@ impl Screen {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
             let end = g.row_end(y);
+            let stored = g.live_cells(y);
+            // The last blank's style and its rendition: a blank cell (no
+            // text, neither half), most of a large screen, adds a space and
+            // its style's rendition, looked up once a run of one style.
+            let mut last: Option<(u32, u16)> = None;
             for x in columns.each().take_while(|x| *x < end) {
-                if let Some(cell) = g.cell(y, x) {
+                let Some(kept) = stored.get(usize::from(x)) else {
+                    continue;
+                };
+                let style = kept.style();
+                if kept.is_blank(style) {
+                    let rendition = match last {
+                        Some((of, rendition)) if of == style => rendition,
+                        _ => {
+                            let rendition = rendition_of(g.styles().get(style));
+                            last = Some((style, rendition));
+                            rendition
+                        }
+                    };
+                    sum = sum.wrapping_add(0x20).wrapping_add(rendition);
+                } else if let Some(cell) = g.cell(y, x) {
                     sum = sum.wrapping_add(checksum_of(&cell));
                 }
             }
