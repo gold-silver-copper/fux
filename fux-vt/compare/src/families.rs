@@ -234,8 +234,6 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
-/// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
-/// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
 /// SUB in ground and inside an escape sequence, a CSI and an OSC, which it
 /// cuts short, and CAN beside it; text before and after.
 fn substitute(r: &mut Rng) -> Vec<u8> {
@@ -245,6 +243,8 @@ fn substitute(r: &mut Rng) -> Vec<u8> {
     format!("x{cut}{control}{after}").into_bytes()
 }
 
+/// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
+/// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
 fn controls(r: &mut Rng) -> Vec<u8> {
     pick(r, &["\r", "\n", "\r\n", "\x08", "\x0b", "\x0c", "\x07"]).into_bytes()
 }
