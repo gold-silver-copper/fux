@@ -621,10 +621,19 @@ fn rep_writes_what_printing_again_writes() -> Result {
         "\x1b[Ha界b界界界界",
         "\x1b[Héééé",
         "\x1b[H\x1b[1m界界",
+        // Inside left and right margins, a scroll region, below it on a
+        // halved line, with autowrap off, in insert mode and on a halved
+        // line, past the copies that change anything (FA-RE-F-1, F-6, F-7).
+        "\x1b[?69h\x1b[2;5s",
+        "\x1b[1;2r",
+        "\x1b[1;2r\x1b[3;1H\x1b#6",
+        "\x1b[?7l",
+        "\x1b[Habc\x1b[4h",
+        "\x1b[H\x1b#6",
     ] {
-        for glyph in ["é", "界"] {
-            for at in ["\x1b[H", "\x1b[1;2H", "\x1b[2;7H"] {
-                for count in [1, 2, 5, 6, 7, 13, 40] {
+        for glyph in ["é", "界", "x"] {
+            for at in ["\x1b[H", "\x1b[1;2H", "\x1b[2;7H", "\x1b[3;3H"] {
+                for count in [1, 2, 5, 6, 7, 13, 40, 300, 1000] {
                     let start = format!("{before}{before}\x1b[m{at}{glyph}");
                     let rep = fed(format!("{start}\x1b[{count}b").as_bytes())?;
                     let again = {
@@ -636,11 +645,22 @@ fn rep_writes_what_printing_again_writes() -> Result {
                     let (a, b) = (rep.0.screen(), again.0.screen());
                     assert_eq!(a.cursor_position(), b.cursor_position(), "{case}");
                     assert_eq!(a.pending_wrap(), b.pending_wrap(), "{case}");
-                    assert!(
-                        a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
-                        "{case}: the cells differ"
-                    );
-                    assert_eq!(rep.1, again.1, "{case}: the prints differ");
+                    // The screen's rows: history keeps what its budget lets,
+                    // trimmed in steps, which fewer copies may meet apart.
+                    let shown = |s: &fux_vt::Screen| -> Vec<Vec<String>> {
+                        let rows: Vec<_> = s.rows().collect();
+                        let first = rows.len().saturating_sub(3);
+                        let rows = rows.get(first..).unwrap_or_default();
+                        rows.iter()
+                            .map(|r| r.cells().map(|c| format!("{c:?}")).collect())
+                            .collect()
+                    };
+                    assert_eq!(shown(a), shown(b), "{case}: the cells differ");
+                    // Prints, while no copy is skipped: those skipped would
+                    // have been printed on rows scrolled away.
+                    if count <= 7 {
+                        assert_eq!(rep.1, again.1, "{case}: the prints differ");
+                    }
                 }
             }
         }

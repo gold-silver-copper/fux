@@ -355,6 +355,12 @@ fn scalar(
         false => u64::MAX,
     };
     (parser.screen.stop_at, parser.screen.stopped) = (parser.end, false);
+    if parser.screen.repeating() && parser.resume::<true>() && until_stop {
+        (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
+        parser.spend_since(start, Stop::Budget);
+        parser.count_degrades(degrades);
+        return Ok(Some((0, Stop::Budget)));
+    }
     for (i, &byte) in bytes.iter().enumerate() {
         let before = parser.state;
         let framed = parser.byte(byte, sink);

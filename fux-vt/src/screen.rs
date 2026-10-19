@@ -565,11 +565,16 @@ pub struct Screen {
     /// Where the call under way stops at its budget (`Parser::run`'s
     /// `end`; `u64::MAX` for none), and whether a scroll inside left and
     /// right margins, which a printed glyph's wrap can make, found it
-    /// spent: the text being printed stops after that glyph, `left` bytes
-    /// of it unprinted, for the parser to stop at (decision 831).
+    /// spent: the text being printed stops after that glyph, for the
+    /// parser to stop at (decision 831); a REP stops so too, its copies
+    /// left kept in `copies_left`.
     pub(crate) stop_at: u64,
     pub(crate) stopped: bool,
-    pub(crate) left: usize,
+    /// A REP's character and the copies of it left when a margin scroll
+    /// stopped it at the budget, made first by the next call
+    /// (`resume_repeat`), so that a call that stops does what one that
+    /// doesn't does.
+    copies_left: Option<(char, usize)>,
     /// Pictures placed on either grid (`pictures`), the last one's number,
     /// and what the host's terminal draws.
     pictures: VecDeque<pictures::Placement>,
@@ -897,7 +902,7 @@ impl Screen {
         Ok(Self {
             stop_at: u64::MAX,
             stopped: false,
-            left: 0,
+            copies_left: None,
             primary: Grid::new(size, history, &mut next_id, 1)?,
             // Its cells are made when a program first shows it.
             alternate: Grid::unmade(size, &mut next_id, 1)?,
@@ -1662,7 +1667,7 @@ impl Screen {
         // margin while the cursor is not past it; a wider glyph is never
         // printed.
         let Some(room) = end.checked_sub(width) else {
-            return Ok(self.too_wide(end, width));
+            return self.too_wide(end, width);
         };
         // A pending wrap is carried out wherever it waits: at the line's
         // end, or where the right margin was before DECLRMM was reset (DEC
@@ -1676,12 +1681,20 @@ impl Screen {
     /// `wrap_for` for a glyph wider than the line: printed as it was
     /// between left and right margins narrower than it, but not on a line
     /// halved to less than it, which nothing past the line's end may take
-    /// (DEC STD 070, 5.6.1), as a glyph wider than the screen is not.
+    /// (DEC STD 070, 5.6.1), as a glyph wider than the screen is not; a
+    /// wrap pending is carried out first, as xterm's `dotext` does for a
+    /// glyph it then drops (FA-RE-F-10).
     #[cold]
     #[inline(never)]
-    fn too_wide(&self, end: u16, width: u16) -> Option<u16> {
+    fn too_wide(&mut self, end: u16, width: u16) -> Result<Option<u16>, Error> {
         let g = self.grid();
-        (width <= g.row_end(g.cursor.row())).then_some(end)
+        if width <= g.row_end(g.cursor.row()) {
+            return Ok(Some(end));
+        }
+        if g.cursor.pending_wrap && self.mode(Mode::Autowrap) {
+            self.wrap(end, 0, width)?;
+        }
+        Ok(None)
     }
     /// `wrap_for` where the glyph, `width` wide, does not fit: the cursor
     /// goes to the next line, or back to `room`, the last column the glyph
@@ -2361,77 +2374,148 @@ impl Screen {
     /// but printing came after that character, where ECMA-48 leaves REP
     /// undefined, as in xterm.
     ///
-    /// Once the copies have filled the screen and every row of history the
-    /// grid keeps, each further row's worth leaves all of it as it was, so
-    /// whole rows' worth past that are skipped: no more than a screen and
-    /// its history's worth is ever printed, and what shows is exactly what
-    /// printing them all would show. An ASCII character is printed in runs,
-    /// as text is; another that joins nothing is written a row's worth at
-    /// a time, looked up and made once (`fill`).
+    /// Once the copies have filled every row they can reach, the screen's,
+    /// and history's that a scroll of the whole screen feeds, each further
+    /// row's worth leaves all of it as it was, so whole rows' worth past
+    /// that are skipped: what shows is exactly what printing them all would
+    /// show. With autowrap off, every copy past the line's end writes its
+    /// last column again; and copies that print nothing (a glyph wider
+    /// than the screen) are one. An ASCII character is printed in runs, as
+    /// text is; another that joins nothing, but in insert mode, is written
+    /// a row's worth at a time, looked up and made once (`fill`).
     fn repeat(&mut self, count: u16) -> Result<(), Error> {
         let Some(c) = self.repeat else {
             return Ok(());
         };
-        let g = self.grid();
-        let width = crate::char_width(c).unwrap_or(1).max(1);
-        // Copies to a row, between the margins once the copies wrap: a wide
-        // glyph leaves an odd last column blank.
-        let line = g.columns().len();
-        let Some(per_row) = usize::from(line).checked_div(width).filter(|n| *n > 0) else {
-            return Ok(());
-        };
-        // The rows of copies history can keep: each is 24 bytes and 8 a cell,
-        // so at least 32, and no more than a grid may have (threats.md
-        // B33: history's bytes read as rows never clamped).
-        let kept = (g.history_bytes() / 32).min(crate::grid::MAX_ROWS);
-        let lines = usize::from(g.size().rows())
-            .saturating_add(kept)
-            .saturating_add(1);
-        let full = lines.saturating_mul(per_row);
         let asked = usize::from(count);
-        let mut count = asked;
-        if let Some(beyond) = count.checked_sub(full) {
-            count = full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0));
-        }
+        let count = self.copies_needed(c, asked);
         // The copies skipped cost nothing (threats.md B33); printing counts
         // the ones made. Every copy is spent from the call's budget here, a
         // cell for each it writes: two for a wide glyph.
+        let width = crate::char_width(c).unwrap_or(1).max(1);
         crate::budget::spend(
             crate::budget::units(asked.saturating_mul(width)),
             crate::budget::weight::cells,
         );
+        self.copies(c, count)
+    }
+
+    /// How many of `asked` copies of `c` REP must print to leave what all
+    /// of them would (`repeat`).
+    fn copies_needed(&self, c: char, asked: usize) -> usize {
+        let g = self.grid();
+        let width = crate::char_width(c).unwrap_or(1).max(1);
+        if width > usize::from(g.size().cols()) {
+            return asked.min(1);
+        }
+        // Without autowrap the copies stop at the line's end.
+        if !self.mode(Mode::Autowrap) {
+            return asked.min(usize::from(g.size().cols()).saturating_add(1));
+        }
+        // Below the scroll region a wrap scrolls nothing: the copies go
+        // round the cursor's row, as long as its line is.
+        let below = g.cursor.row() > g.lines.last();
+        let line = match below {
+            true => usize::from(g.row_end(g.cursor.row()).min(g.columns().end()))
+                .saturating_sub(usize::from(g.columns().first())),
+            false => usize::from(g.columns().len()),
+        };
+        // Copies to a row, between the margins once the copies wrap: a wide
+        // glyph leaves an odd last column blank.
+        let Some(per_row) = line.checked_div(width).filter(|n| *n > 0) else {
+            return asked.min(1);
+        };
+        // History's rows of copies, when a scroll of the whole screen feeds
+        // it: each is 24 bytes and 8 a cell, so at least 32, and no more
+        // than a grid may have (threats.md B33: history's bytes read as
+        // rows never clamped). Inside margins nothing reaches it.
+        let feeds = !g.lr() && g.lines == g.size().lines() && !below;
+        let kept = match feeds {
+            true => (g.history_bytes() / 32).min(crate::grid::MAX_ROWS),
+            false => 0,
+        };
+        let lines = usize::from(g.size().rows())
+            .saturating_add(kept)
+            .saturating_add(1);
+        let full = lines.saturating_mul(per_row);
+        match asked.checked_sub(full) {
+            Some(beyond) => full.saturating_add(beyond.checked_rem(per_row).unwrap_or(0)),
+            None => asked,
+        }
+    }
+
+    /// The copies a REP stopped at the budget left, made first by the
+    /// call after it (`copies_left`).
+    pub(crate) fn resume_repeat(&mut self) -> Result<(), Error> {
+        match self.copies_left.take() {
+            Some((c, count)) => self.copies(c, count),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether a REP stopped at the budget left copies to make.
+    pub(crate) fn repeating(&self) -> bool {
+        self.copies_left.is_some()
+    }
+
+    /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
+    /// inside margins past the budget, the copies left kept for the next
+    /// call (`copies_left`).
+    fn copies(&mut self, c: char, mut count: usize) -> Result<(), Error> {
+        let stop = |screen: &mut Self, count: usize| {
+            if count > 0 {
+                screen.copies_left = Some((c, count));
+            }
+        };
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
         {
             const RUN: usize = 128;
             let run = [byte; RUN];
             while count > 0 {
+                if self.stopped {
+                    stop(self, count);
+                    return Ok(());
+                }
                 let n = count.min(RUN);
-                self.ascii(run.get(..n).unwrap_or_default())?;
-                count = count.saturating_sub(n);
-            }
-        } else {
-            let properties = Properties::of(c);
-            // The copies' text, as the host that records prints is given it.
-            let text: String = match self.prints {
-                Some(_) => std::iter::repeat_n(c, per_row).collect(),
-                None => String::new(),
-            };
-            while count > 0 && !self.stopped {
-                let filled = self.fill(c, properties, count, &text);
-                count = match filled.checked_sub(1) {
-                    Some(_) => count.saturating_sub(filled),
-                    None => {
-                        self.print_as(c, properties)?;
-                        count.saturating_sub(1)
-                    }
-                };
-                // A glyph that joins its own cluster, once the cluster is
-                // full, drops every copy after: they change nothing, and are
-                // skipped (threats.md B34a).
-                if self.last_print.is_some_and(Printed::full) {
+                let taken = self.ascii(run.get(..n).unwrap_or_default())?;
+                if taken == 0 && !self.stopped {
                     break;
                 }
+                count = count.saturating_sub(taken);
+            }
+            return Ok(());
+        }
+        let properties = Properties::of(c);
+        let insert = self.mode(Mode::Insert);
+        // The copies' text, as the host that records prints is given it.
+        let per_row = usize::from(self.grid().size().cols());
+        let text: String = match self.prints {
+            Some(_) if !insert => std::iter::repeat_n(c, per_row).collect(),
+            _ => String::new(),
+        };
+        while count > 0 {
+            if self.stopped {
+                stop(self, count);
+                return Ok(());
+            }
+            // In insert mode each copy moves what is there, as `print` does.
+            let filled = match insert {
+                true => 0,
+                false => self.fill(c, properties, count, &text),
+            };
+            count = match filled.checked_sub(1) {
+                Some(_) => count.saturating_sub(filled),
+                None => {
+                    self.print_as(c, properties)?;
+                    count.saturating_sub(1)
+                }
+            };
+            // A glyph that joins its own cluster, once the cluster is
+            // full, drops every copy after: they change nothing, and are
+            // skipped (threats.md B34a).
+            if self.last_print.is_some_and(Printed::full) {
+                break;
             }
         }
         Ok(())
@@ -2441,14 +2525,19 @@ impl Screen {
     /// margin itself (`wrap_for`); a cell that needs the general glyph path
     /// (a wide glyph's half there, a cluster to extend) takes `print`.
     /// Never enters parser dispatch.
-    pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
+    pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<usize, Error> {
+        let all = bytes.len();
         // DEC Special Graphics print other characters, and insert mode
-        // moves what is there, one glyph at a time.
+        // moves what is there, one glyph at a time, each stopping where a
+        // wrap scrolled inside margins past the budget.
         if self.charsets.graphics() || self.mode(Mode::Insert) {
-            for &byte in bytes {
+            for (i, &byte) in bytes.iter().enumerate() {
+                if self.stopped {
+                    return Ok(i);
+                }
                 self.print(char::from(byte))?;
             }
-            return Ok(());
+            return Ok(all);
         }
         // The first joins a Prepend character printed last (UAX #29, GB9b),
         // as the general path joins it.
@@ -2462,30 +2551,29 @@ impl Screen {
         if let [byte] = bytes
             && self.ascii_glyph(*byte)
         {
-            return Ok(());
+            return Ok(all);
         }
+        let taken = |bytes: &[u8]| all.saturating_sub(bytes.len());
         while let Some((&first, tail)) = bytes.split_first() {
             if self.stopped {
-                self.left = bytes.len();
-                return Ok(());
+                return Ok(taken(bytes));
             }
             let Some(line) = self.wrap_for(1)? else {
-                return Ok(());
+                return Ok(all);
             };
             // A wrap that scrolled inside margins past the budget: the
             // glyph it was for is written, as `print` writes it, and the
             // rest left for the parser to stop before.
             if self.stopped {
                 self.print(char::from(first))?;
-                self.left = tail.len();
-                return Ok(());
+                return Ok(taken(tail));
             }
             let (row, col) = self.grid().cursor.at();
             // `wrap_for` left room for at least one cell, before the right
             // margin or the screen's edge; without it, the run could not
             // advance.
             let Some(room) = line.checked_sub(col).filter(|r| *r > 0) else {
-                return Ok(());
+                return Ok(all);
             };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
@@ -2535,7 +2623,7 @@ impl Screen {
             }
             bytes = bytes.get(run.len()..).unwrap_or_default();
         }
-        Ok(())
+        Ok(all)
     }
 
     /// `ascii` of one glyph, `byte`, where it needs no wrap and finds no
@@ -4414,7 +4502,7 @@ mod faults {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
         let mut screen = Screen::new(size, 1 << 12)?;
         screen.record_prints(true);
-        screen.ascii(b"hello")?;
+        let _ = screen.ascii(b"hello")?;
         Ok(screen)
     }
 

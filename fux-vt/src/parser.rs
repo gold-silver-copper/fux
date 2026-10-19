@@ -1403,6 +1403,13 @@ impl Parser {
             false => u64::MAX,
         };
         (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        // A REP the last call stopped in makes its copies left first.
+        if self.screen.repeating() && self.resume::<UNTIL_STOP>() {
+            (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+            self.spend_since(start, Stop::Budget);
+            self.count_degrades(degrades);
+            return Ok(Some((0, Stop::Budget)));
+        }
         // A string the last call left open goes on at once.
         let mut remaining = match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
             true => self.string(bytes),
@@ -1417,14 +1424,17 @@ impl Parser {
                 let (run, rest) = remaining
                     .split_at_checked(length)
                     .unwrap_or((remaining, &[]));
-                if self.screen.ascii(run).is_err() {
-                    self.refuse();
-                }
+                let taken = match self.screen.ascii(run) {
+                    Ok(taken) => taken,
+                    Err(_) => {
+                        self.refuse();
+                        length
+                    }
+                };
                 remaining = rest;
                 // A wrap scrolled inside margins past the budget: the rest
                 // of the run is for the next call (decision 831).
                 if UNTIL_STOP && self.screen.stopped {
-                    let taken = length.saturating_sub(std::mem::take(&mut self.screen.left));
                     remaining = (bytes.len().saturating_sub(remaining.len()))
                         .checked_sub(length)
                         .and_then(|at| bytes.get(at.saturating_add(taken)..))
@@ -1560,6 +1570,18 @@ impl Parser {
                 | State::Request(_)
                 | State::Osc { .. }
         )
+    }
+    /// Makes the copies a REP the last call stopped in left
+    /// (`Screen::resume_repeat`), counting a refusal; whether the call
+    /// stops at once, its budget spent again by a wrap's margin scroll.
+    /// Out of line, as only a REP inside margins at the budget leaves any.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
+        let resumed = self.screen.resume_repeat();
+        self.kept(resumed);
+        let stopped = std::mem::take(&mut self.screen.stopped);
+        UNTIL_STOP && stopped && self.over::<true>().is_some()
     }
     /// [`Stop::Budget`] if the call under way stops at its budget
     /// (`UNTIL_STOP`) and spent it.

@@ -1391,6 +1391,16 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
         p.at_least("cells", 10_000)
     })?;
+    // Inside 2-column margins, where no scroll reaches history: the
+    // copies past the screen's rows' worth are skipped too (FA-RE-F-1).
+    fed(
+        &setup,
+        bound,
+        chunk,
+        scale.times(),
+        &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
+        |p| p.at_least("cells", 10_000),
+    )?;
     let small = Setup::defaults().sized(2, 10).history(1 << 10);
     // The heap: 64 KiB, and what Prints may keep at 2×10 (B10: 16 KiB of
     // text and 4,096 runs of 32 bytes).
@@ -1427,7 +1437,16 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
     );
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
         p.at_least("cells", 20_000)
-    })
+    })?;
+    // Inside 2-column margins (FA-RE-F-1), as B33.
+    fed(
+        &setup,
+        bound,
+        chunk,
+        scale.times(),
+        &[b("\x1b[?69h\x1b[1;2s\x1b[1;1H"), input.clone()].concat(),
+        |p| p.at_least("cells", 20_000),
+    )
 }
 
 // B34a: REP of a glyph that joins itself skips the copies that change

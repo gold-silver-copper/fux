@@ -292,3 +292,18 @@ fn a_wide_glyph_fits_no_halved_line_a_column_long() -> Result {
     }
     Ok(())
 }
+
+/// A wide glyph a halved line a column long drops carries out a wrap
+/// waiting first, as a glyph wider than the screen does (xterm's
+/// `dotext`; DEC STD 070's Last Column Flag): on 2x2, `ESC # 6`, `a`, then
+/// U+1F44D leaves the cursor at the second line's start (FA-RE-F-10).
+#[test]
+fn a_dropped_wide_glyph_carries_out_the_wrap_waiting() -> Result {
+    let mut parser = Parser::new(Size::new(2, 2)?, 0)?;
+    let mut replies = Vec::new();
+    parser.process_with_replies("\x1b#6a\u{1f44d}\x1b[6n".as_bytes(), |r| {
+        replies.push(String::from_utf8_lossy(r).into_owned());
+    })?;
+    assert_eq!(replies, ["\x1b[2;1R"]);
+    Ok(())
+}

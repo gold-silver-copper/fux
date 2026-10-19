@@ -378,6 +378,53 @@ mod budget {
         Ok(())
     }
 
+    /// A REP inside left and right margins whose wraps scroll past the
+    /// budget stops where the budget is spent, its copies left made by
+    /// the next call, and text in DEC Special Graphics after it stops so
+    /// too: the screen is that of one call given it all (FA-RE-F-5, F-8,
+    /// F-11).
+    #[test]
+    fn a_rep_inside_margins_stops_at_the_budget_and_goes_on() -> Result {
+        let _one = one_at_a_time();
+        let mut input = b"\x1b[88;1;1;4095;4096$x\x1b[?69h\x1b[1;4090s\x1b[4095;1H".to_vec();
+        for _ in 0..2 {
+            input.extend_from_slice(b"x\x1b[65535b\x1b(0");
+            input.extend(std::iter::repeat_n(b'q', 20_000));
+            input.extend_from_slice(b"\x1b(B");
+        }
+        let size = Size::new(4095, 4096)?;
+        let mut whole = Parser::new(size, 0)?;
+        whole.process(&input)?;
+        let mut parser = Parser::new(size, 0)?;
+        let (mut rest, mut stops) = (&input[..], 0u32);
+        while !rest.is_empty() {
+            let before = Work::now();
+            let stop = parser.process_until_stop(rest, &mut Deaf)?;
+            let done = Work::now().since(before);
+            assert!(
+                done.cost() <= Work::CEILING,
+                "a call did {} units",
+                done.cost() / 20
+            );
+            match stop {
+                None => break,
+                Some((taken, Stop::Budget)) => {
+                    stops = stops.saturating_add(1);
+                    rest = rest.get(taken..).unwrap_or_default();
+                }
+                Some(other) => return Err(format!("stopped as {other:?}").into()),
+            }
+        }
+        assert!(stops >= 2, "{stops} stops");
+        let (a, b) = (whole.screen(), parser.screen());
+        assert_eq!(a.cursor_position(), b.cursor_position());
+        assert!(
+            a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
+            "the screens differ"
+        );
+        Ok(())
+    }
+
     /// How many of the REPs of `glyph` in `input` a call carries out
     /// before the budget stops it, on a screen small enough that each
     /// prints only a few of its copies, all of which are spent.
