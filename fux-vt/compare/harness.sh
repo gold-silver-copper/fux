@@ -108,9 +108,15 @@ step() {
   printf '  %-14s %s %4ss\n' "$name" "$([[ $rc == 0 ]] && echo ok || echo FAIL)" "$seconds"
 }
 
-# together STEP...: each STEP ("name command args") side by side. With
-# --jobs N, at most N at a time, and a STEP marked "+" (one that runs N
-# threads itself) alone.
+# spec NAME COMMAND...: a STEP for `together`, its words quoted (printf
+# %q), so a path with a space stays one word.
+spec() {
+  printf '%q ' "$@"
+}
+
+# together STEP...: each STEP (`spec`'s "name command args") side by side.
+# With --jobs N, at most N at a time, and a STEP marked "+" (one that runs
+# N threads itself) alone.
 together() {
   local spec pids=()
   for spec in "$@"; do
@@ -122,12 +128,10 @@ together() {
       pids=()
     fi
     if [[ -n $jobs && $spec == +* ]]; then
-      # shellcheck disable=SC2086 # each spec is words, split on purpose
-      step ${spec#+}
+      eval "step ${spec#+}"
       continue
     fi
-    # shellcheck disable=SC2086
-    step ${spec#+} &
+    eval "step ${spec#+}" &
     pids+=($!)
   done
   if ((${#pids[@]})); then
@@ -154,15 +158,15 @@ quick() {
   # citation in list-changes.txt.
   ran+=(corpus corpus-ghostty transparency random cases encoders lists lists-diff oracle)
   together \
-    "corpus $compare corpus --json $out/corpus.json" \
-    "corpus-ghostty $compare corpus --subject ghostty --json $out/corpus-ghostty.json" \
-    "transparency $compare transparency --json $out/transparency.json" \
-    "random $compare run --cases 2000" \
-    "cases $compare cases --json $out/cases.json" \
-    "encoders $compare encoders" \
-    "lists $compare lists --json $out/lists.json" \
-    "lists-diff $compare lists --against $here/lists-c0.json --esctest $out" \
-    "+oracle $root/diff/oracle.sh ${against:-} ${jobs:+--threads $jobs}"
+    "$(spec corpus "$compare" corpus --json "$out/corpus.json")" \
+    "$(spec corpus-ghostty "$compare" corpus --subject ghostty --json "$out/corpus-ghostty.json")" \
+    "$(spec transparency "$compare" transparency --json "$out/transparency.json")" \
+    "$(spec random "$compare" run --cases 2000)" \
+    "$(spec cases "$compare" cases --json "$out/cases.json")" \
+    "$(spec encoders "$compare" encoders)" \
+    "$(spec lists "$compare" lists --json "$out/lists.json")" \
+    "$(spec lists-diff "$compare" lists --against "$here/lists-c0.json" --esctest "$out")" \
+    "+$(spec oracle "$root/diff/oracle.sh" ${against:+"$against"} ${jobs:+--threads "$jobs"})"
 }
 
 build_bench() {
@@ -176,10 +180,10 @@ full() {
   echo "full: 20,000 random cases with reflow and without, esctest, esctest of Ghostty's core"
   ran+=(random-wide random-no-reflow esctest esctest-ghostty)
   together \
-    "random-wide $compare run --cases 20000" \
-    "random-no-reflow $compare run --cases 20000 --no-reflow" \
-    "+esctest $compare esctest ${jobs:+--jobs $jobs} --json $out/esctest.json" \
-    "+esctest-ghostty $compare esctest ${jobs:+--jobs $jobs} --terminal ghostty --beside fux-vt --json $out/esctest-ghostty.json"
+    "$(spec random-wide "$compare" run --cases 20000)" \
+    "$(spec random-no-reflow "$compare" run --cases 20000 --no-reflow)" \
+    "+$(spec esctest "$compare" esctest ${jobs:+--jobs "$jobs"} --json "$out/esctest.json")" \
+    "+$(spec esctest-ghostty "$compare" esctest ${jobs:+--jobs "$jobs"} --terminal ghostty --beside fux-vt --json "$out/esctest-ghostty.json")"
   echo "full: instructions against ${against:-master} (alone)"
   ran+=(against)
   build_bench
