@@ -110,7 +110,8 @@ footprint
          them), each measured in a child process of its own: a screen
          empty and full of styled text, and 10,000 rows of history from
          each synthetic workload and from the corpus, at 80 and 200
-         columns. --json writes the measures to FILE.
+         columns, --jobs (CARGO_BUILD_JOBS, else 4) at once. --json
+         writes the measures to FILE.
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
          runs it, types each line of keys in FILE (a line `!resize RxC`
          resizes it instead), and keeps every byte it writes (PREFIX.bin)
@@ -1233,18 +1234,11 @@ fn record(args: &Args) -> Result<bool, String> {
 /// The children counted at once unless `--jobs` says: CARGO_BUILD_JOBS,
 /// as a shared machine's limit sets it, else 4, as fux-bench takes
 /// (speed-method.md: a count beside other work takes few cores).
-fn few_jobs() -> usize {
+pub fn few_jobs() -> usize {
     (std::env::var("CARGO_BUILD_JOBS").ok())
         .and_then(|v| v.parse().ok())
         .filter(|&n: &usize| n > 0)
         .unwrap_or(4)
-}
-
-/// Half the cores here, at least one: children measured side by side.
-fn half_the_cores() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .div_ceil(2)
 }
 
 /// The most data compare may hold, in bytes, unless
@@ -1448,7 +1442,7 @@ fn main() -> ExitCode {
         "footprint" => footprint::run(
             &panel(&args, "in-process")?,
             args.json.as_deref(),
-            args.jobs.unwrap_or_else(half_the_cores),
+            args.jobs.unwrap_or_else(few_jobs),
         ),
         _ => run(&args),
     });

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "\
 usage: fux-vt-oracle [--seed N] [--cases N] [--streams N] [--cells N]
                      [--no-corpus] [--shrink SECONDS] [--threads N]
+                     (--threads: default CARGO_BUILD_JOBS, else 4)
        fux-vt-oracle --replay FILE
        fux-vt-oracle --seeds DIR [--seed N] [--cases N] [--streams N]
        fux-vt-oracle --baseline
@@ -65,7 +66,12 @@ fn pinned() -> &'static str {
 
 fn parse() -> Result<Asked, String> {
     let mut args = std::env::args().skip(1);
-    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    // CARGO_BUILD_JOBS's, as the harness's --jobs sets it, else 4: never
+    // every core unasked.
+    let threads = (std::env::var("CARGO_BUILD_JOBS").ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4);
     let mut o = Options {
         seed: 1,
         cases: 10_000,
