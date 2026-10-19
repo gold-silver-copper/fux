@@ -64,6 +64,11 @@ const SYNTHETIC: usize = 16 << 20;
 const RECORDING: usize = 4 << 20;
 /// Every recording in turn, over and over to this size.
 const CORPUS: usize = 4 << 20;
+/// No pass of a recording starts once this many resizes are made: each
+/// reflows the history the passes before left, so a short recording that
+/// resizes, over and over to its size, would be resizes alone (zsh-resize,
+/// 1,533 bytes and 3 resizes, took 30 s to 4 MiB).
+const RESIZES_AT_MOST: usize = 256;
 /// The keys typed in the recordings, over and over to this many bytes.
 const KEYS: usize = 1 << 20;
 /// Keystrokes through a session, this many.
@@ -320,39 +325,42 @@ fn loads(
         }]);
     }
     if name == "corpus" {
-        let total: usize = recordings.iter().map(|r| r.bytes().len()).sum();
-        let mut out = Vec::new();
-        let mut made = 0usize;
-        while total > 0 && made < size(CORPUS) {
-            // Each at the size it was written at, its resizes kept.
-            for (rows, cols, bytes) in recordings.iter().flat_map(Recording::segments) {
-                made = made.saturating_add(bytes.len());
-                out.push(Load { rows, cols, bytes });
-            }
-        }
-        return Ok(out);
+        // Each at the size it was written at, its resizes kept.
+        let segments: Vec<_> = recordings.iter().flat_map(Recording::segments).collect();
+        return Ok(passes(&segments, size(CORPUS)));
     }
     if let Some(one) = name.strip_prefix("corpus:")
         && each > 0
         && let Some(r) = recordings.iter().find(|r| r.name == one)
     {
         // Over and over, whole, its resizes with it, to `each` bytes.
-        let segments = r.segments();
-        let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
-        let (mut out, mut made) = (Vec::new(), 0usize);
-        while made < each && recorded > 0 {
-            for (rows, cols, bytes) in &segments {
-                made = made.saturating_add(bytes.len());
-                out.push(Load {
-                    rows: *rows,
-                    cols: *cols,
-                    bytes: bytes.clone(),
-                });
-            }
-        }
-        return Ok(out);
+        return Ok(passes(&r.segments(), each));
     }
     Err(format!("no workload {name:?}; `list` lists them"))
+}
+
+/// `segments` (a size and the bytes written at it) over and over, whole,
+/// until there are `total` bytes, or [`RESIZES_AT_MOST`] resizes.
+fn passes(segments: &[(u16, u16, Vec<u8>)], total: usize) -> Vec<Load> {
+    let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
+    let (mut out, mut made, mut resizes) = (Vec::<Load>::new(), 0usize, 0usize);
+    while recorded > 0 && made < total && resizes < RESIZES_AT_MOST {
+        for (rows, cols, bytes) in segments {
+            if out
+                .last()
+                .is_some_and(|l| (l.rows, l.cols) != (*rows, *cols))
+            {
+                resizes = resizes.saturating_add(1);
+            }
+            made = made.saturating_add(bytes.len());
+            out.push(Load {
+                rows: *rows,
+                cols: *cols,
+                bytes: bytes.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// Replies and events, kept from being optimized away.
@@ -951,6 +959,26 @@ mod tests {
             bytes: b"x".to_vec(),
         };
         assert!(super::vt(&[load], false).is_err());
+    }
+
+    /// A short recording that resizes is repeated only until it has
+    /// resized [`super::RESIZES_AT_MOST`] times: zsh-resize to 4 MiB was
+    /// some 8,000 resizes, each reflowing a history, 30 s a run.
+    #[test]
+    fn a_recording_that_resizes_is_repeated_to_a_bound() -> Result<(), String> {
+        let recordings = crate::corpus::recordings(&dir())?;
+        let loads = super::loads("corpus:zsh-resize", &recordings, super::RECORDING, 1)?;
+        let sizes: Vec<_> = loads.iter().map(|l| (l.rows, l.cols)).collect();
+        let resizes = sizes
+            .iter()
+            .zip(sizes.iter().skip(1))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            resizes > 0 && resizes <= super::RESIZES_AT_MOST + 4,
+            "{resizes}"
+        );
+        Ok(())
     }
 
     use std::path::Path;
