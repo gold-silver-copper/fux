@@ -892,6 +892,18 @@ fn unread(s: &mut fux::session::Session) {
 
 #[cfg(test)]
 mod tests {
+    /// A vt workload whose parser can't be made (a size of no rows) fails,
+    /// never counted as having fed its bytes (HAR-77).
+    #[test]
+    fn a_vt_workload_that_cannot_be_set_up_fails() {
+        let load = super::Load {
+            rows: 0,
+            cols: 80,
+            bytes: b"x".to_vec(),
+        };
+        assert!(super::vt(&[load], false).is_err());
+    }
+
     use std::path::Path;
 
     fn dir() -> std::path::PathBuf {
