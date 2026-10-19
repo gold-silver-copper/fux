@@ -259,14 +259,21 @@ impl Load {
     }
 }
 
+/// No pass of a recording starts once this many resizes are made, as
+/// fux-bench's `RESIZES_AT_MOST`: each reflows the history the passes
+/// before left, so a short recording that resizes, over and over to its
+/// size, would be resizes alone.
+const RESIZES_AT_MOST: usize = 256;
+
 /// `segments` (a size and the bytes written at it) over and over, whole,
-/// until there are at least `total` bytes: the bytes, and where the size
-/// changes (`Load::resizes`), the first segment's size the load's own.
+/// until there are at least `total` bytes, or [`RESIZES_AT_MOST`]
+/// resizes: the bytes, and where the size changes (`Load::resizes`), the
+/// first segment's size the load's own.
 fn sized(segments: &[(u16, u16, Vec<u8>)], total: usize) -> (Vec<u8>, Vec<(usize, u16, u16)>) {
     let (mut bytes, mut resizes) = (Vec::new(), Vec::new());
     let mut size = segments.first().map(|(r, c, _)| (*r, *c));
     let recorded: usize = segments.iter().map(|(_, _, b)| b.len()).sum();
-    while recorded > 0 && bytes.len() < total {
+    while recorded > 0 && bytes.len() < total && resizes.len() < RESIZES_AT_MOST {
         for (rows, cols, part) in segments {
             if size != Some((*rows, *cols)) {
                 resizes.push((bytes.len(), *rows, *cols));
@@ -892,6 +899,19 @@ pub fn run_to(
 mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// A short recording that resizes is repeated only until it has
+    /// resized [`super::RESIZES_AT_MOST`] times, as fux-bench repeats it.
+    #[test]
+    fn a_recording_that_resizes_is_repeated_to_a_bound() -> Result<(), String> {
+        let load = super::load("corpus:zsh-resize", 4 << 20)?;
+        let resizes = load.resizes.len();
+        assert!(
+            resizes > 0 && resizes <= super::RESIZES_AT_MOST + 4,
+            "{resizes}"
+        );
+        Ok(())
+    }
 
     /// A recording that resizes is fed at each size it was written at, as
     /// fux-bench feeds it: zsh-resize's parts are its size, then each
