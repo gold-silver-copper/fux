@@ -237,7 +237,8 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   (journal-bytes): text may have passed unseen`, 32 MiB by default, or `… a
   piece of output printed more than fux records of one (…)`: text may have
   passed unseen, as one piece of output printed more than fux records of it
-  between reads). Status 3: the program exited first.
+  between reads, or after many runs, or a resize). Status 3: the program
+  exited first.
   A met `wait-exit` answers status 0, `%2 exited 3` and what came: the
   program's own status is in its state (`str exited get`).
 

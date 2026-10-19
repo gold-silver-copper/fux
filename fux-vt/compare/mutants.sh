@@ -4,7 +4,8 @@
 # against fux-vt's tests and fux's unit tests (which kill some that
 # fux-vt's miss, such as palette::answer's; FUX_MUTANTS_TESTS, a nextest
 # filter, says otherwise), with the `checks` feature the bounds tests
-# need, two at a time, in the dev profile (no LTO), pinned to one core type.
+# need, two at a time, in the dev profile (no LTO), on the CPUs
+# FUX_MUTANTS_CPUS names, if any (one core type, for steady timeouts).
 #
 #   fux-vt/compare/mutants.sh diff [REF]  the mutants in the diff from REF
 #                                         (default HEAD~1) to the working tree
