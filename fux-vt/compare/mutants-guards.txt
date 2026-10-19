@@ -3,7 +3,7 @@
 # one of which must be generated and caught (`mutants.sh guards`).
 # Frozen at vt-best d6cbde3c from threats.md 5.2's rows (frozen at
 # faf8bf00, moved at 9a38df95, decision 8), and its names regenerated at
-# final-fix (last on ec98fef9), each by its file, function and operator (decision
+# final-fix (last on e8339b86), each by its file, function and operator (decision
 # 893): each `#` line names the row and the guard, and where the frozen code
 # is gone or the [new] function was written otherwise, it says what
 # replaced it, and the replacement's mutants follow. Line numbers in the `#`
@@ -787,9 +787,9 @@ fux-vt/src/parser.rs:1517:9: replace Parser::count_degrades with ()
 fux-vt/src/grid.rs:1731:9: replace Grid::scroll_past_history with ()
 # B44 [new] blank_in_place: inline in Grid::clear's refused arm (grid.rs:2098-2103), behind Grid::holds_its_rows;
 # RIS's refused fresh grids fall back to Grid::clear (screen.rs:2614-2636)
-fux-vt/src/grid.rs:2241:24: delete ! in Grid::clear
-fux-vt/src/grid.rs:2258:9: replace Grid::holds_its_rows -> bool with true
-fux-vt/src/grid.rs:2258:9: replace Grid::holds_its_rows -> bool with false
+fux-vt/src/grid.rs:2234:24: delete ! in Grid::clear
+fux-vt/src/grid.rs:2251:9: replace Grid::holds_its_rows -> bool with true
+fux-vt/src/grid.rs:2251:9: replace Grid::holds_its_rows -> bool with false
 # B44 [new] stay_primary: not a function; the alternate screen is made before the switch (`self.alternate.make()?`,
 # screen.rs:3304), so a refusal leaves the primary shown (decision 37). Its guard is Grid::make.
 fux-vt/src/grid.rs:480:9: replace Grid::make -> Result<(), Error> with Ok(())
@@ -809,20 +809,20 @@ fux-vt/src/check.rs:120:5: replace ensure -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:727:9: replace Prints::check_cap -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:742:9: replace Prints::check -> Result<(), String> with Ok(())
 fux-vt/src/compact.rs:433:9: replace Text::check -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2742:9: replace Grid::check with ()
-fux-vt/src/grid.rs:2791:9: replace Grid::check_order -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2812:9: replace Grid::check_slots -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2835:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2875:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2899:9: replace Grid::check_text -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2909:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2925:9: replace Grid::check_recent -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2950:9: replace Grid::check_versions -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2961:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2979:9: replace Grid::check_margins -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3013:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3020:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3031:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2735:9: replace Grid::check with ()
+fux-vt/src/grid.rs:2784:9: replace Grid::check_order -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2805:9: replace Grid::check_slots -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2828:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2868:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2892:9: replace Grid::check_text -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2902:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2918:9: replace Grid::check_recent -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2943:9: replace Grid::check_versions -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2954:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2972:9: replace Grid::check_margins -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3006:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3013:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3024:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1072:9: replace History::check with ()
 fux-vt/src/history.rs:1082:9: replace History::check_counts -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1106:9: replace History::check_blocks -> Result<(), String> with Ok(())
