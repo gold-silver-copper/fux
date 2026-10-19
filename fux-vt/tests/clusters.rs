@@ -328,15 +328,26 @@ fn what_follows_a_character_joined_at_no_width_is_segmented_after_it() -> Result
 /// A zero-width Prepend character joins the cell before it, and stays
 /// apart from what UAX #29's GB9b would join it to, as the README's
 /// departure says: `x\u{605}A` is `x\u{605}` and `A`, and
-/// `x\u{605}\u{4e00}` three columns (FA-TXT-1).
+/// `x\u{605}\u{4e00}` three columns (FA-TXT-1); so too when it joins a
+/// cluster, after another zero-width Prepend or after a Prepend glyph,
+/// U+0600 (FA-RE-B-5).
 #[test]
 fn a_zero_width_prepend_character_joins_nothing_after_it() -> Result {
-    let mut p = Parser::new(Size::new(1, 6)?, 0)?;
-    p.process("x\u{605}A".as_bytes())?;
-    let cells: Vec<String> = (0..3)
-        .filter_map(|x| p.screen().cell(0, x).map(|c| c.contents().to_string()))
-        .collect();
-    assert_eq!(cells, ["x\u{605}", "A", ""]);
+    for (text, first) in [
+        ("x\u{605}A", "x\u{605}"),
+        ("x\u{605}\u{605}A", "x\u{605}\u{605}"),
+        ("x\u{d4e}\u{605}A", "x\u{d4e}\u{605}"),
+        ("\u{600}\u{605}A", "\u{600}\u{605}"),
+    ] {
+        let mut p = Parser::new(Size::new(1, 6)?, 0)?;
+        p.process(text.as_bytes())?;
+        let cells: Vec<String> = (0..3)
+            .filter_map(|x| p.screen().cell(0, x).map(|c| c.contents().to_string()))
+            .collect();
+        assert_eq!(cells, [first, "A", ""], "{text:?}");
+        assert!(!fux_vt::continues_cluster(first, 'A'), "{text:?}");
+        assert!(fux_vt::continues_cluster(first, '\u{301}'), "{text:?}");
+    }
     let mut p = Parser::new(Size::new(1, 6)?, 0)?;
     p.process("x\u{605}\u{4e00}".as_bytes())?;
     assert_eq!(p.screen().cursor_position(), (0, 3));

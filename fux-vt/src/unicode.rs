@@ -20,7 +20,8 @@ pub use width::{char_width, str_width};
 /// Whether `c`, printed right after the grapheme cluster `cluster`, would
 /// continue it rather than start the next one, as fux-vt joins what is
 /// printed (UAX #29): an emoji modifier after an emoji, a combining mark
-/// after anything, anything but a control after a Prepend character. A
+/// after anything, anything but a control after a Prepend character but
+/// one of no width, which fux-vt joins nothing of width to (README). A
 /// host that paints cells side by side to a terminal (fux) uses it to tell
 /// where the terminal may join a cell to the one before it.
 pub fn continues_cluster(cluster: &str, c: char) -> bool {
@@ -30,13 +31,18 @@ pub fn continues_cluster(cluster: &str, c: char) -> bool {
     // letters). Unless the cluster ends in a Prepend character, that needs
     // no look at the cluster.
     let next = Properties::of(c);
+    let last = cluster.chars().next_back().map(Properties::of);
+    if last.is_some_and(|last| last.is_prepend() && last.width() == Some(0))
+        && next.width() != Some(0)
+    {
+        return false;
+    }
     if matches!(
         next.kind(),
         Break::Other | Break::Prepend | Break::Control | Break::Cr
     ) && !next.pictographic()
         && next.conjunct() != Conjunct::Consonant
-        && (cluster.chars().next_back())
-            .is_none_or(|last| Properties::of(last).kind() != Break::Prepend)
+        && last.is_none_or(|last| last.kind() != Break::Prepend)
     {
         return false;
     }
