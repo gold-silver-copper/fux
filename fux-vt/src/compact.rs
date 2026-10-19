@@ -235,6 +235,29 @@ impl Compact {
             .and_then(|len| self.text.get(..len))
             .unwrap_or_default()
     }
+    /// The cell with `c` after its inline text, if both fit inline: its
+    /// text's bytes and `c`'s as one little-endian word. A cell with no
+    /// text has none to follow (`Line::append` gives it a space first).
+    #[inline]
+    fn inline_with(self, c: char) -> Option<Self> {
+        // Full already, as a character of four bytes leaves it.
+        let [.., last] = self.text;
+        if last != 0 || self.is_spilled() || !self.has_contents() {
+            return None;
+        }
+        let word = u32::from_le_bytes(self.text);
+        let used = 32u32.saturating_sub(word.leading_zeros()).div_ceil(8);
+        let mut encoded = [0; 4];
+        let length = u32::try_from(c.encode_utf8(&mut encoded).len()).ok()?;
+        if used.checked_add(length)? > 4 {
+            return None;
+        }
+        let added = u32::from_le_bytes(encoded).checked_shl(used.checked_mul(8)?)?;
+        Some(Self {
+            text: (word | added).to_le_bytes(),
+            word: self.word & KEPT,
+        })
+    }
     /// The first character of the inline text; none for a spilled cell.
     #[inline]
     pub(crate) fn first(&self) -> Option<char> {
@@ -471,6 +494,14 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         };
         // The cluster is read and joined again whole.
         work!(text, end);
+        // Still inline: the cell holds it all, its text and `c` as one
+        // word, with no copy's call.
+        if let Some(joined) = cell.inline_with(c)
+            && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut)
+        {
+            *slot = joined;
+            return true;
+        }
         let mut encoded = [0; 4];
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
         let long = end > SHORT;
@@ -487,7 +518,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             && store.len().saturating_add(encoded.len()) <= room
             && let (Ok(start), Ok(len)) = (u32::try_from(range.start), u8::try_from(end))
         {
-            store.extend_from_slice(encoded);
+            push_utf8(store, encoded);
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = cell.with_spilled(start, len);
             }
@@ -706,6 +737,19 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         self.cells
             .get(i)
             .map_or("", |cell| self.text.of(cell.as_ref()))
+    }
+}
+
+/// `bytes`, a character's UTF-8, pushed onto `store` as copies of one to
+/// four bytes known in length, with no copy's call.
+#[inline]
+fn push_utf8(store: &mut Vec<u8>, bytes: &[u8]) {
+    match *bytes {
+        [a] => store.push(a),
+        [a, b] => store.extend_from_slice(&[a, b]),
+        [a, b, c] => store.extend_from_slice(&[a, b, c]),
+        [a, b, c, d] => store.extend_from_slice(&[a, b, c, d]),
+        _ => store.extend_from_slice(bytes),
     }
 }
 
