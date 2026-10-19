@@ -328,3 +328,28 @@ fn decrara_reverses_the_renditions_of_an_area() -> Result {
     );
     Ok(())
 }
+
+/// DECCARA's change stays when the style it makes sweeps the style table,
+/// which numbers the styles in use anew, the area's own cells' too: 4,096
+/// distinct backgrounds fill the table, all but the first two then
+/// unused, so that making the bold one sweeps it, and the bold style can
+/// take the number the cell's old one had before.
+#[test]
+fn deccara_keeps_its_change_across_a_style_sweep() -> Result {
+    let mut parser = Parser::new(Size::new(1, 2)?, 1 << 20)?;
+    let mut input = String::new();
+    for i in 0..4096u32 {
+        let col = if i < 2 { 1 } else { 2 };
+        let (g, b) = (i / 256, i % 256);
+        input.push_str(&format!("\x1b[1;{col}H\x1b[48;2;0;{g};{b}mx"));
+    }
+    input.push_str("\x1b[m\x1b[1;2H\x1b[K\x1b[1;1;1;1;1$r");
+    parser.process(input.as_bytes())?;
+    let cell = parser.screen().cell(0, 0);
+    let background = fux_vt::Color::Rgb(fux_vt::Rgb { r: 0, g: 0, b: 1 });
+    assert!(cell.is_some_and(|c| {
+        let a = c.attributes();
+        c.contents() == "x" && a.bold() && a.background() == background
+    }));
+    Ok(())
+}
