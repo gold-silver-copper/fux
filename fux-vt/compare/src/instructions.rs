@@ -312,8 +312,11 @@ pub fn run(
                 let _ = write!(held_line, " {:>10}", rows_held.as_deref().unwrap_or("-"));
                 // Equal retention holds the screen alone: an engine that
                 // read back rows kept is not counted on it.
+                // Rows it can't tell are not held, as `bench` takes them.
                 let kept = retention == bench::Retention::None
-                    && rows_held.as_deref().is_some_and(|r| r != "0");
+                    && (rows_held.as_deref())
+                        .and_then(|r| r.parse::<usize>().ok())
+                        .is_some_and(|r| r > 0);
                 match cell {
                     Some(s) if !kept => {
                         worst = worst.max(s.noise);

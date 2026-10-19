@@ -93,7 +93,14 @@ fn engines(doc: &serde_json::Value) -> Result<serde_json::Value, String> {
             let cells = (row.get("engines").and_then(serde_json::Value::as_object))
                 .into_iter()
                 .flatten();
+            // A measure whose contract failed (rows kept under equal
+            // retention) is none.
             let figures: serde_json::Map<String, serde_json::Value> = cells
+                .filter(|(_, cell)| {
+                    cell.get("contract_failed")
+                        .and_then(serde_json::Value::as_bool)
+                        != Some(true)
+                })
                 .filter_map(|(engine, cell)| Some((engine.clone(), cell.get("mb_per_s")?.clone())))
                 .collect();
             rows.insert(name.to_owned(), serde_json::Value::Object(figures));
@@ -180,6 +187,11 @@ mod tests {
         let wezterm = at("equal-retention, in process", "sixel:frames", "wezterm");
         assert!(wezterm.is_some_and(|m| m > 0.0), "{wezterm:?}");
         assert!(super::engines(&serde_json::json!({})).is_err());
+        // A measure whose contract failed is none.
+        let failed = serde_json::json!({"tables": [{"retention": "equal-retention", "in_process": true,
+            "workloads": [{"name": "w", "engines": {"x": {"mb_per_s": 9.0, "contract_failed": true}}}]}]});
+        let none = super::engines(&failed)?;
+        assert_eq!(none.pointer("/equal-retention, in process/w/x"), None);
         Ok(())
     }
 
