@@ -65,6 +65,16 @@ harness=$(revision fux-vt/compare bench diff fuzz fux-vt/fuzz references/fetch.s
 commit=$(git -C "$root" rev-parse --short HEAD)
 [[ $product == *-dirty || $harness == *-dirty ]] && commit=$commit-dirty
 
+# A file's SHA-256: by sha256sum, else by shasum -a 256 (some systems have
+# only one of them).
+sha256() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
 # A JSON string.
 quoted() {
   local s=${1//\\/\\\\}
@@ -82,7 +92,10 @@ step() {
   local name=$1 start rc=0 binary=$2 sha=""
   shift
   rm -f "$out/$name.json" "$out/$name.stamp.json"
-  [[ -f $binary ]] && sha=$(shasum -a 256 "$binary" | cut -d' ' -f1)
+  # A hash that can't be made leaves the stamp's empty, and the step runs.
+  if [[ -f $binary ]]; then
+    sha=$(sha256 "$binary") || sha=""
+  fi
   start=$(date +%s)
   "$@" >"$out/logs/$name.log" 2>&1 || rc=$?
   local seconds=$(($(date +%s) - start))

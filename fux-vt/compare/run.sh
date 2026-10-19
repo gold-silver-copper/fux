@@ -29,6 +29,16 @@
 # SDKROOT).
 set -euo pipefail
 
+# A file's SHA-256: by sha256sum, else by shasum -a 256 (some systems have
+# only one of them).
+sha256() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
 here=$(cd "$(dirname "$0")" && pwd)
 cache=${FUX_VT_COMPARE_CACHE:-$HOME/.cache/fux-vt-compare}
 zig_version=0.16.0
@@ -49,7 +59,7 @@ if [[ ! -x $zig_dir/zig ]]; then
   echo "run.sh: fetching Zig $zig_version" >&2
   zig_tarball=$cache/zig-$zig_target-$zig_version.tar.xz
   curl -sSfL -o "$zig_tarball" "https://ziglang.org/download/$zig_version/zig-$zig_target-$zig_version.tar.xz"
-  if [[ $(shasum -a 256 "$zig_tarball" | cut -d' ' -f1) != "$zig_sha256" ]]; then
+  if [[ $(sha256 "$zig_tarball") != "$zig_sha256" ]]; then
     echo "run.sh: the Zig tarball does not match its SHA-256" >&2
     rm -f "$zig_tarball"
     exit 2
@@ -77,7 +87,7 @@ if [[ ! -f $libvterm/include/vterm.h ]]; then
   echo "run.sh: fetching libvterm $libvterm_version" >&2
   tarball=$cache/libvterm-$libvterm_version.tar.gz
   curl -sSfL -o "$tarball" "https://www.leonerd.org.uk/code/libvterm/libvterm-$libvterm_version.tar.gz"
-  if [[ $(shasum -a 256 "$tarball" | cut -d' ' -f1) != "$libvterm_sha256" ]]; then
+  if [[ $(sha256 "$tarball") != "$libvterm_sha256" ]]; then
     echo "run.sh: libvterm tarball does not match its SHA-256" >&2
     exit 2
   fi

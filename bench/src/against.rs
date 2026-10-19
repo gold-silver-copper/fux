@@ -784,22 +784,66 @@ pub fn run(options: &Options) -> Result<bool, String> {
     Ok(named(Verdict::Slower).is_empty() && !broad_loss)
 }
 
-/// A file's SHA-256, by `sha256sum`.
+/// The programs a file's SHA-256 is asked of, in turn (some systems have
+/// only one of them).
+const HASHERS: [(&str, &[&str]); 2] = [("sha256sum", &[]), ("shasum", &["-a", "256"])];
+
+/// A file's SHA-256, by the first of `HASHERS` that gives one.
 fn hash(path: &Path) -> Result<String, String> {
-    let out = Command::new("sha256sum")
-        .arg(path)
-        .output()
-        .map_err(|e| format!("sha256sum: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .ok_or(format!("sha256sum {}: no hash", path.display()))
+    hash_by(path, &HASHERS)
+}
+
+/// A file's SHA-256, by the first of `programs` that exits 0 with 64 hex
+/// digits; else why none did.
+fn hash_by(path: &Path, programs: &[(&str, &[&str])]) -> Result<String, String> {
+    let mut why = Vec::new();
+    for (program, args) in programs {
+        let out = match Command::new(program).args(*args).arg(path).output() {
+            Ok(out) => out,
+            Err(e) => {
+                why.push(format!("{program}: {e}"));
+                continue;
+            }
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let hash = text.split_whitespace().next().unwrap_or_default();
+        if out.status.success() && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(hash.to_owned());
+        }
+        why.push(format!("{program}: no hash ({})", out.status));
+    }
+    Err(format!(
+        "{}: no SHA-256: {}",
+        path.display(),
+        why.join("; ")
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FLOOR_MIN, Verdict, floor_of, paired, signs, tail, verdict};
+    use super::{FLOOR_MIN, Verdict, floor_of, hash_by, paired, signs, tail, verdict};
+
+    /// A file's SHA-256 is asked of each program in turn: one that fails,
+    /// is missing, or prints no 64 hex digits (`true`) is passed over
+    /// (FIPS 180-2's example "abc").
+    #[test]
+    fn a_file_s_hash_falls_through_to_a_program_that_gives_one() -> Result<(), String> {
+        let path = std::env::temp_dir().join(format!("fux-bench-hash-{}", std::process::id()));
+        std::fs::write(&path, b"abc").map_err(|e| e.to_string())?;
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let programs = [
+            ("false", &[][..]),
+            ("true", &[]),
+            ("no-such-hasher", &[]),
+            ("sha256sum", &[]),
+        ];
+        let hashed = hash_by(&path, &programs);
+        let refused = hash_by(&path, &[("false", &[]), ("true", &[])]);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(hashed?, abc);
+        assert!(refused.is_err());
+        Ok(())
+    }
     use std::path::Path;
     use std::process::Command;
 

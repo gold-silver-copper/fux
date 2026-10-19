@@ -14,6 +14,16 @@ force=${1:-}
 ua='Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
 failed=()
 
+# A file's SHA-256: by sha256sum, else by shasum -a 256 (some systems have
+# only one of them).
+sha256() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
 # A file, with a browser's user agent unless a third argument gives another.
 get() {
   local path=$here/$1 url=$2 agent=${3:-$ua}
@@ -100,7 +110,7 @@ fi
 vttest_sha256=cd6886f9aefe6a3f6c566fa61271a55710901a71849c630bf5376aa984bf77cc
 get xterm/vttest.tar.gz https://invisible-island.net/archives/vttest/vttest-20251205.tgz
 if [[ -s $here/xterm/vttest.tar.gz ]] &&
-  [[ $(shasum -a 256 "$here/xterm/vttest.tar.gz" | cut -d' ' -f1) != "$vttest_sha256" ]]; then
+  [[ $(sha256 "$here/xterm/vttest.tar.gz") != "$vttest_sha256" ]]; then
   failed+=("xterm/vttest.tar.gz: not vttest 20251205 (SHA-256); --force fetches it again")
 elif [[ -s $here/xterm/vttest.tar.gz && ( ! -d $here/xterm/vttest || $force == --force ) ]]; then
   rm -rf "$here/xterm/vttest" && mkdir -p "$here/xterm/vttest"
