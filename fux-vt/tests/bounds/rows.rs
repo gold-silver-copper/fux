@@ -212,10 +212,10 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
         let most = u64::try_from(input.len())
             .unwrap_or(0)
             .saturating_mul(per_byte);
-        if probe.counted("cells") > most {
+        if probe.counted("cells")? > most {
             return Err(format!(
                 "{} cells past {most} at a {cell:?} cell",
-                probe.counted("cells")
+                probe.counted("cells")?
             ));
         }
         // Each picture covers 200 columns of its rows.
@@ -654,9 +654,9 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     let mut probe = Probe::new(&setup, heap(usize::MAX), chunk.max(16), 1)?;
     probe.feed(&repeat(b"\n", 400_000))?;
-    let (transient, before) = (Heap::begin(), probe.counted("links"));
+    let (transient, before) = (Heap::begin(), probe.counted("links")?);
     probe.feed(&input)?;
-    if probe.counted("links") <= before {
+    if probe.counted("links")? <= before {
         return Err("no link sweep".into());
     }
     // The links' own memory, 4 MiB and 64 bytes each, and their runs.
@@ -1211,9 +1211,9 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     for ask in asks {
         let mut probe = Probe::new(&wide, heap(steady(&wide)), chunk, 1)?;
         probe.feed(&before)?;
-        let set_up = probe.counted("replies");
+        let set_up = probe.counted("replies")?;
         probe.feed(ask)?;
-        let replied = probe.counted("replies").saturating_sub(set_up);
+        let replied = probe.counted("replies")?.saturating_sub(set_up);
         let most = u64::try_from(ask.len()).unwrap_or(0).saturating_mul(16);
         if replied > most {
             return Err(format!("{ask:?}: {replied} bytes of reply"));
@@ -2050,10 +2050,19 @@ pub const ROWS: &[(&str, Row)] = &[
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
 /// its bound.
 pub fn run(row: Row, scale: Scale) -> Found {
-    for chunk in CHUNKS {
-        row(scale, chunk).map_err(|e| format!("at {chunk} bytes a call: {e}"))?;
+    // Every chunking is run, and what each found is told, so that a row
+    // known to fail is seen to fail as it is known to at each.
+    let found: Vec<String> = (CHUNKS.into_iter())
+        .filter_map(|chunk| {
+            row(scale, chunk)
+                .err()
+                .map(|e| format!("at {chunk} bytes a call: {e}"))
+        })
+        .collect();
+    match found.is_empty() {
+        true => Ok(()),
+        false => Err(found.join("; ")),
     }
-    Ok(())
 }
 
 /// How many rows `threats.md` has: B01 to B45 and B34a.
