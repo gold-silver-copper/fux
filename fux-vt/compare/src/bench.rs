@@ -381,8 +381,10 @@ impl Retention {
     }
 }
 
-/// One engine on one workload: the best of [`RUNS`] feeds, each into a
-/// fresh engine, timed around the feed alone; then, outside the timer,
+/// One engine on one workload: the median of [`RUNS`] feeds, each into a
+/// fresh engine, in rounds that take every engine in turn (so a machine
+/// that slows or speeds up meanwhile moves them all alike), timed around
+/// the feed alone; then, outside the timer,
 /// what the engine kept (the contract): the rows of history it holds and
 /// the reply bytes it wrote; and the time of one read after the feed
 /// (`snapshot(0)`), for engines that defer work until they are read.
@@ -411,29 +413,36 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
     }
     let bytes = load.bytes.as_slice();
     Some(crate::case::guarded(|| {
-        let mut best: Option<Measured> = None;
-        for _ in 0..RUNS {
-            let mut engine = retention.make(kind, &setup).ok_or("no setup")??;
-            let started = Instant::now();
-            load.feed(engine.as_mut())?;
-            let feed = started.elapsed();
-            let started = Instant::now();
-            std::hint::black_box(engine.snapshot(0)?);
-            let read = started.elapsed();
-            let run = Measured {
-                fed: bytes.len(),
-                feed,
-                read,
-                rows_held: engine.history_len(),
-                reply_bytes: engine.replies()?.len(),
-                prints: None,
-            };
-            if best.as_ref().is_none_or(|b| run.feed < b.feed) {
-                best = Some(run);
-            }
-        }
-        best.ok_or_else(|| "no run".to_owned())
+        let mut engine = retention.make(kind, &setup).ok_or("no setup")??;
+        let started = Instant::now();
+        load.feed(engine.as_mut())?;
+        let feed = started.elapsed();
+        let started = Instant::now();
+        std::hint::black_box(engine.snapshot(0)?);
+        let read = started.elapsed();
+        Ok(Measured {
+            fed: bytes.len(),
+            feed,
+            read,
+            rows_held: engine.history_len(),
+            reply_bytes: engine.replies()?.len(),
+            prints: None,
+        })
     }))
+}
+
+/// The run of median feed time of a cell's rounds: none if the engine
+/// has no setup here, the first error if a round failed.
+fn median(mut runs: Vec<Option<Result<Measured, String>>>) -> Option<Result<Measured, String>> {
+    if runs.iter().any(Option::is_none) {
+        return None;
+    }
+    if let Some(Some(Err(e))) = runs.iter().find(|r| matches!(r, Some(Err(_)))) {
+        return Some(Err(e.clone()));
+    }
+    runs.sort_by_key(|r| r.as_ref().and_then(|m| m.as_ref().ok()).map(|m| m.feed));
+    let middle = runs.len() / 2;
+    runs.into_iter().nth(middle).flatten()
 }
 
 /// fux-vt as fux runs it, recording what is printed (`record_prints`) and
@@ -446,8 +455,7 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
     };
     // As the adapter sizes it.
     let history = crate::engines::fux_vt::history_bytes(rows, load.cols);
-    let mut best: Option<Measured> = None;
-    for _ in 0..RUNS {
+    {
         let mut parser =
             fux_vt::Parser::with_options(size, history, crate::engines::fux_vt::options(true))
                 .map_err(|e| format!("fux-vt: {e}"))?;
@@ -476,19 +484,15 @@ fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String>
             }
         }
         let feed = started.elapsed();
-        let run = Measured {
+        Ok(Measured {
             fed: load.bytes.len(),
             feed,
             read: Duration::ZERO,
             rows_held: Some(parser.screen().history_len()),
             reply_bytes: 0,
             prints: Some(recorded),
-        };
-        if best.as_ref().is_none_or(|b| run.feed < b.feed) {
-            best = Some(run);
-        }
+        })
     }
-    best.ok_or_else(|| "no run".to_owned())
 }
 
 /// The programs an input's SHA-256 is asked of, in turn.
@@ -618,15 +622,18 @@ pub fn run_to(
                     .filter(|k| k.in_process == *in_process)
                     .map(|k| Column::Engine(k)),
             );
-            let cells: Cells = columns
-                .iter()
-                .map(|c| {
-                    let m = match c {
+            // Rounds, each taking every column in turn.
+            let mut runs: Vec<Vec<_>> = columns.iter().map(|_| Vec::new()).collect();
+            for _ in 0..RUNS {
+                for (c, column_runs) in columns.iter().zip(&mut runs) {
+                    column_runs.push(match c {
                         Column::Prints => Some(measure_prints(&load, *retention)),
                         Column::Engine(k) => measure(k, &load, *retention),
-                    };
-                    (c.name().to_owned(), m)
-                })
+                    });
+                }
+            }
+            let cells: Cells = (columns.iter().zip(runs))
+                .map(|(c, column_runs)| (c.name().to_owned(), median(column_runs)))
                 .collect();
             out.push((name.clone(), cells));
         }
@@ -646,7 +653,7 @@ pub fn run_to(
             "own process, end to end"
         };
         println!(
-            "\n{} ({}), {place}: MB/s, the best of {RUNS} feeds, the timer around the feed alone \
+            "\n{} ({}), {place}: MB/s, the median of {RUNS} rounds taking the engines in turn, the timer around the feed alone \
              (no read timed); {CHUNK}-byte chunks (NAME@N: N); {mb} MiB per workload; {ROWS}x{COLS} \
              (recordings at their size); fux-vt reflow on, print recording off but in \
              fux-vt+prints; CPUs {cpus}; ! = the contract failed (not ranked)",
@@ -731,6 +738,7 @@ pub fn run_to(
                 "print_recording": "off, but fux-vt+prints",
                 "cpus": cpus,
                 "repeats": RUNS,
+                "statistic": "the median feed of the rounds (repeats), each taking every engine in turn",
                 "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
                 "sixel": "ignored-protocol throughput for an engine without sixel",
             },
@@ -776,6 +784,29 @@ pub fn run_to(
 mod tests {
     use super::Retention;
     use crate::engine::{ENGINES, SUBJECT, Setup};
+
+    /// A cell is its rounds' median feed, none if a round had no setup,
+    /// and the error if one failed.
+    #[test]
+    fn a_cell_is_the_median_of_its_rounds() {
+        let run = |ms: u64| {
+            Some(Ok(super::Measured {
+                fed: 1,
+                feed: std::time::Duration::from_millis(ms),
+                read: std::time::Duration::ZERO,
+                rows_held: None,
+                reply_bytes: 0,
+                prints: None,
+            }))
+        };
+        let feed =
+            |m: Option<Result<super::Measured, String>>| m.and_then(Result::ok).map(|m| m.feed);
+        let middle = super::median(vec![run(9), run(3), run(5)]);
+        assert_eq!(feed(middle), Some(std::time::Duration::from_millis(5)));
+        assert!(super::median(vec![run(1), None, run(2)]).is_none());
+        let failed = super::median(vec![run(1), Some(Err("x".into())), run(2)]);
+        assert!(matches!(failed, Some(Err(e)) if e == "x"));
+    }
 
     /// `NAME@N` is NAME fed N bytes a call, chosen after the others; a bad
     /// N or an unknown NAME is refused.

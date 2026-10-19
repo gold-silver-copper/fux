@@ -1,6 +1,7 @@
 //! `info`: speed that is informational, not compared against REF: MB/s
 //! for fux-vt beside Ghostty and alacritty, from `fux-vt/compare/run.sh
-//! bench` (wall time, best of 3, in process), run as it is, its output
+//! bench` (wall time, the median of 3 rounds taking the engines in turn,
+//! in process), run as it is, its output
 //! shown, and read from what its `bench --json` writes, the figures it
 //! prints its tables from.
 use std::path::Path;
