@@ -35,7 +35,10 @@
 //! history, which keeps each pushed row's cells), avt, wezterm and vt100
 //! are each made to keep 10,000 rows, so each holds the same 10,000 rows.
 //! fux-vt's limit is in bytes: it is given enough for 10,000 full rows, so
-//! it keeps at least those. Ghostty's limit is in bytes, and prunes whole pages: it is
+//! it keeps at least those, but where its rows' styles take the budget
+//! first (`dense-cells` at 200 columns, every cell its own colours: styles
+//! count in history's budget, `threats.md` B11), which holds fewer, and
+//! the pieces are as many as fill it that far. Ghostty's limit is in bytes, and prunes whole pages: it is
 //! given [`GHOSTTY_SCROLLBACK`], more than any measure here fills, so it
 //! keeps every row it is fed, a few more than 10,000 where the last piece
 //! pushes several. Each engine's figure per row is divided by the rows it
@@ -227,7 +230,11 @@ impl Pieces {
     }
 }
 
-/// How many pieces of `name` fill fux-vt's history at `cols` columns.
+/// How many pieces of `name` fill fux-vt's history at `cols` columns: to
+/// [`HISTORY`] rows, or, where its rows' styles take its budget first
+/// (every cell its own colours, 200 a row: `threats.md` B11, styles count
+/// in the history budget), until a piece that scrolls rows into it leaves
+/// it no longer: it holds what its budget holds.
 fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
     let setup = Setup {
         rows: ROWS,
@@ -238,7 +245,8 @@ fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
     let mut vt = make("fux-vt", &setup)?;
     let mut pieces = Pieces::new(name, ROWS)?;
     let (mut count, mut fed) = (0usize, 0usize);
-    while vt.history_len().unwrap_or(0) < HISTORY {
+    let mut held = 0usize;
+    while held < HISTORY {
         if fed > MOST {
             return Err(format!(
                 "footprint: {name} at {cols} columns fills no history in {} MiB",
@@ -249,6 +257,13 @@ fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
         vt.feed(&piece, CHUNK)?;
         fed = fed.saturating_add(piece.len());
         count = count.saturating_add(1);
+        // Every piece scrolls rows into history: one that leaves it no
+        // longer found it full.
+        let now = vt.history_len().unwrap_or(0);
+        if count > 1 && now <= held && held > 0 {
+            break;
+        }
+        held = now;
     }
     Ok(count)
 }
@@ -765,6 +780,19 @@ impl Count {
 #[cfg(test)]
 mod tests {
     use super::{Measure, Pieces, ROWS};
+
+    /// fux-vt's history fills: with 10,000 rows, or, where its rows'
+    /// styles take its budget first (every cell its own colours, 200 a
+    /// row: `threats.md` B11), as far as its budget holds.
+    #[test]
+    fn every_history_measure_fills() -> Result<(), String> {
+        for cols in super::WIDTHS {
+            for name in ["dense-cells", "ascii", "unicode"] {
+                assert!(super::pieces_to_fill(name, cols)? > 0, "{name} at {cols}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn measures_are_named_as_they_are_read() -> Result<(), String> {
