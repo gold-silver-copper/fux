@@ -75,7 +75,7 @@ pub fn b01(scale: Scale, chunk: usize) -> Found {
     // 1,288 bytes at 1x: nothing is drawn).
     let bound = heap(PICTURE_BYTES.saturating_add(64 << 10));
     let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-    probe.parser.set_host_graphics(Graphics {
+    probe.set_host_graphics(Graphics {
         cell: Some((4096, 2160)),
         sixel: true,
     });
@@ -229,7 +229,7 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
             heap: steady(&setup),
         };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-        probe.parser.set_host_graphics(Graphics {
+        probe.set_host_graphics(Graphics {
             cell: Some(cell),
             sixel: true,
         });

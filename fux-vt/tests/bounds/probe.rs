@@ -9,9 +9,12 @@
 //! units weighted as `Work::cost`, in twentieths). With
 //! `FUX_VT_WORST_FEED_INPUTS=DIR` too, a probe fed 4 KiB a call whose
 //! longest call took more than [`KEPT`] leaves what it fed in DIR
-//! (`NAME.bin`, and `NAME.setup`: rows, columns, history, prints and the
+//! (`NAME.bin`, each `feed` a record of its length, 8 bytes little-endian,
+//! and its bytes; and `NAME.setup`: rows, columns, history, prints and the
 //! features' places in `Feature::ALL`), for fux-bench to time again
-//! without the counters (`fux-bench calls`). `fux-vt/compare/worst-feed.sh`
+//! without the counters (`fux-bench calls`). A probe that made a call of
+//! another kind (`host`, `set_host_graphics`) leaves nothing to time
+//! again: its counted time stands. `fux-vt/compare/worst-feed.sh`
 //! gathers both.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -226,6 +229,9 @@ pub struct Probe {
     name: String,
     setup: Setup,
     kept: Option<(std::path::PathBuf, std::fs::File)>,
+    /// Whether it made a call other than a feed, which a replay of its
+    /// feeds would leave out.
+    hosted: bool,
 }
 
 impl Probe {
@@ -259,6 +265,7 @@ impl Probe {
             name,
             setup: *setup,
             kept,
+            hosted: false,
         })
     }
 
@@ -277,6 +284,8 @@ impl Probe {
     /// heap are within the bound.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<(), String> {
         if let Some((_, file)) = &mut self.kept {
+            let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes();
+            std::io::Write::write_all(file, &len).map_err(|e| e.to_string())?;
             std::io::Write::write_all(file, bytes).map_err(|e| e.to_string())?;
         }
         for piece in pieces(bytes, self.chunk) {
@@ -312,6 +321,7 @@ impl Probe {
         bytes: usize,
         call: impl FnOnce(&mut Parser) -> T,
     ) -> Result<T, String> {
+        self.hosted = true;
         let (before, started) = (Work::now(), Instant::now());
         let result = call(&mut self.parser);
         let took = started.elapsed();
@@ -319,6 +329,12 @@ impl Probe {
         self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
         self.add(done, bytes)?;
         Ok(result)
+    }
+
+    /// Tells the parser what graphics its host draws, before it is fed.
+    pub fn set_host_graphics(&mut self, graphics: fux_vt::Graphics) {
+        self.hosted = true;
+        self.parser.set_host_graphics(graphics);
     }
 
     /// Adds a call's work, `done`, for `bytes` bytes, and checks it.
@@ -438,7 +454,7 @@ impl Drop for Probe {
                 setup.prints,
                 features.join(",")
             );
-            let _ = match self.worst.1 > KEPT {
+            let _ = match self.worst.1 > KEPT && !self.hosted {
                 true => std::fs::write(path.with_extension("setup"), text),
                 false => std::fs::remove_file(&path),
             };

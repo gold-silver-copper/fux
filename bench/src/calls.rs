@@ -34,11 +34,30 @@ fn parser(setup: &str) -> Result<fux_vt::Parser, String> {
     Ok(parser)
 }
 
-/// The longest call over `input`, fed to a parser of `setup`.
+/// The longest call over `input`, fed to a parser of `setup`: each of its
+/// records (8 bytes of length, little-endian, then the bytes) as the probe
+/// fed it, 4 KiB at a time.
 fn longest(setup: &str, input: &[u8]) -> Result<Duration, String> {
+    let mut parser = parser(setup)?;
+    let mut most = Duration::ZERO;
+    let mut rest = input;
+    while let Some((len, after)) = rest.split_first_chunk::<8>() {
+        let len = usize::try_from(u64::from_le_bytes(*len)).map_err(|e| e.to_string())?;
+        let (fed, after) = after.split_at_checked(len).ok_or("a record cut short")?;
+        most = most.max(fed_longest(&mut parser, fed));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        return Err("bytes past the last record".into());
+    }
+    Ok(most)
+}
+
+/// The longest call of one feed, 4 KiB at a time, each piece given again
+/// from where a call stopped.
+fn fed_longest(parser: &mut fux_vt::Parser, input: &[u8]) -> Duration {
     struct Deaf;
     impl fux_vt::Sink for Deaf {}
-    let mut parser = parser(setup)?;
     let mut most = Duration::ZERO;
     let mut reads = input;
     while !reads.is_empty() {
@@ -55,7 +74,7 @@ fn longest(setup: &str, input: &[u8]) -> Result<Duration, String> {
             }
         }
     }
-    Ok(most)
+    most
 }
 
 /// Each kept probe in `dir`, its longest call, best of three: printed as
@@ -95,7 +114,10 @@ mod tests {
             parser.screen().size(),
             fux_vt::Size::new(50, 200).map_err(|e| e.to_string())?
         );
-        assert!(super::longest("4 10 0 false", &[b'x'; 10_000])? > std::time::Duration::ZERO);
+        let mut input = 10_000u64.to_le_bytes().to_vec();
+        input.extend([b'x'; 10_000]);
+        assert!(super::longest("4 10 0 false", &input)? > std::time::Duration::ZERO);
+        assert!(super::longest("4 10 0 false", input.get(..100).unwrap_or_default()).is_err());
         assert!(super::parser("50 200").is_err());
         assert!(super::parser("50 200 0 true 9999").is_err());
         Ok(())
