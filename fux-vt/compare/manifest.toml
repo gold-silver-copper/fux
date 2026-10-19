@@ -401,26 +401,20 @@ why = "compare builds Ghostty by Zig, too slow for every PR, and CI has no escte
 [[check]]
 name = "ci-wraptest"
 schedule = "ci"
-command = "cargo test -p fux-vt wraptest (25 checks re-authored, DEC STD 070 D.6.1)"
+command = "cargo test -p fux-vt --test wraptest: wraptest's 25 checks, re-authored as bytes, CPR and screen, against DEC STD 070 Appendix D.6.1 (25 agree)"
 needs = []
-wired = false
-why = "not re-authored yet"
 
 [[check]]
 name = "ci-xtermjs-fixtures"
 schedule = "ci"
-command = "xterm.js's 76 escape-sequence fixtures, vendored (MIT)"
+command = "cargo test -p fux-vt --test xtermjs: xterm.js 991857a1's 76 escape-sequence fixtures, vendored (MIT), at 25x80 through ONLCR (65 agree, 11 differ as recorded)"
 needs = []
-wired = false
-why = "not vendored yet"
 
 [[check]]
 name = "ci-libvterm-tests"
 schedule = "ci"
-command = "libvterm's 384 screen assertions, translated"
+command = "cargo test -p fux-vt --test libvterm: libvterm 0.3.3's t/*.test, vendored in fux-vt/tests/data/libvterm, their 426 screen and cursor assertions translated (the first 384 and 69screen_reflow's 42); fux-vt passes 417 (375 of the 384), the 9 others listed with their reasons in expected.txt"
 needs = []
-wired = false
-why = "the translator is not fixed yet (libvterm passes 379 of its own)"
 
 [[check]]
 name = "ci-bounds"
@@ -431,10 +425,8 @@ needs = []
 [[check]]
 name = "ci-properties"
 schedule = "ci"
-command = "the UTF-8 property against String::from_utf8_lossy, and ECMA-48 2.3.3's default forms"
+command = "cargo test -p fux-vt --test utf8_property: UTF-8 against String::from_utf8_lossy, one U+FFFD per maximal subpart, C1 and DEL dropped, wrapping, in any chunking (ECMA-48 2.3.3's default forms are ci-conformance-table's)"
 needs = []
-wired = false
-why = "not written yet (HAR-70)"
 
 [[check]]
 name = "ci-conformance-table"
@@ -481,12 +473,22 @@ needs = []
 [[check]]
 name = "ci-vt-houdini"
 schedule = "ci"
-command = "vt-houdini's reply vectors, re-authored"
+command = "cargo test -p fux-vt --test houdini: vt-houdini's 20 reply vectors (probe, timeout recovery, 11 basic, 7 CVE), re-authored, each reply the authority's, under the default policy and with every feature on, and no CVE payload echoed"
 needs = []
-wired = false
-why = "not re-authored yet"
+
+[[check]]
+name = "ci-external-corpora"
+schedule = "ci"
+command = "cargo test -p fux-vt --features checks --release --locked --test external_corpora (Ghostty's 4,001 and vt100-rust's 37 fuzz inputs, vendored, under the invariant checker; mosh's 27 with -- --ignored, fetched at decd9b70, never in CI)"
+needs = []
 
 # --- release, and this pass's final report ----------------------------------
+
+[[check]]
+name = "release-libvterm-self"
+schedule = "release"
+command = "FUX_VT_LIBVTERM_HARNESS=HARNESS cargo test -p fux-vt --test libvterm -- --ignored: libvterm passes its own translated tests, 426 of 426"
+needs = ["libvterm 0.3.3's source (compare's run.sh fetches it into ~/.cache/fux-vt-compare), its t/harness.c built: cc -std=c99 -D_XOPEN_SOURCE=600 -Iinclude -Isrc src/*.c t/harness.c -o harness"]
 
 [[check]]
 name = "release-vttest"
