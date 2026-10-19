@@ -2979,7 +2979,10 @@ impl Screen {
             usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
         );
         for y in lines.each() {
-            for x in columns.each() {
+            // A double-width line holds half the columns (DEC STD 070,
+            // 5.6.1): the rectangle stops at its end.
+            let end = g.row_end(y);
+            for x in columns.each().take_while(|x| *x < end) {
                 if let Some(cell) = g.cell(y, x) {
                     sum = sum.wrapping_add(checksum_of(&cell));
                 }
@@ -3038,7 +3041,12 @@ impl Screen {
             return;
         };
         self.break_cluster();
-        let span = (columns.first(), columns.end());
+        // Each row's span, stopping at a double-width line's end (DEC STD
+        // 070, 5.6.1; DECDWL, note 2).
+        let span = |g: &Grid, y: u16| {
+            let end = columns.end().min(g.row_end(y)).max(columns.first());
+            (columns.first(), end)
+        };
         // A fill or an erase of each row's span, its wide glyphs' halves
         // erased first: twice the rectangle's cells (`budget`). DECCRA's
         // copy spends as it goes.
@@ -3062,17 +3070,19 @@ impl Screen {
                     _ => return,
                 };
                 let style = self.pen_style() | self.protect;
-                self.each_row(lines, |g, y, v| g.fill(y, span, c, style, v));
+                self.each_row(lines, |g, y, v| g.fill(y, span(g, y), c, style, v));
             }
             // DECERA: every character a space in the pen's colours, as ED's
             // blanks are.
             b'z' => {
                 let blank = self.blank_style();
-                self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span, Some(blank), v));
+                self.each_row(lines, |g, y, v| {
+                    g.erase_to_spaces(y, span(g, y), Some(blank), v);
+                });
             }
             // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
             // no DECSCA, made spaces in their own attributes.
-            b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span, None, v)),
+            b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span(g, y), None, v)),
             // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
             _ => {
                 let to = self.page_position(p, 5, (1, 1));
@@ -3162,7 +3172,10 @@ impl Screen {
         };
         self.with_grid(|g, _, v| {
             for y in lines.each() {
-                g.restyle(y, span(y), rectangle, v, &mut restyle);
+                // To a double-width line's end (DEC STD 070, 5.6.1).
+                let (start, end) = span(y);
+                let end = end.min(g.row_end(y)).max(start);
+                g.restyle(y, (start, end), rectangle, v, &mut restyle);
             }
         });
     }
