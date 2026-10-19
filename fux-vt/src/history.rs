@@ -229,7 +229,7 @@ impl Clone for Noted {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct History {
     /// The rows, oldest first.
     rows: Ring,
@@ -273,6 +273,44 @@ pub(crate) struct History {
     /// The number of the row to come next when the screen's pictures
     /// were last followed into history (`Screen::track_pictures`).
     followed: Noted,
+}
+
+/// A copy keeps each block's room, as rows fill the newest within it, and
+/// counts again what the ring and the maps it made take, as `Ring`'s copy
+/// does for the ring: a derived copy kept the original's counts beside
+/// storage of other sizes.
+impl Clone for History {
+    fn clone(&self) -> Self {
+        let block = |b: &Vec<Compact>| {
+            let mut copy = Vec::with_capacity(b.capacity());
+            copy.extend_from_slice(b);
+            copy
+        };
+        let mut copy = Self {
+            rows: self.rows.clone(),
+            first_row: self.first_row,
+            older: self.older.iter().map(block).collect(),
+            newest: block(&self.newest),
+            first_block: self.first_block,
+            newest_block: self.newest_block,
+            room_cells: self.room_cells,
+            held: 0,
+            maps: 0,
+            runs: self.runs,
+            texts: self.texts.clone(),
+            linked: self.linked.clone(),
+            renditions: self.renditions.clone(),
+            cells: self.cells,
+            text: self.text,
+            budget: self.budget,
+            charged: self.charged,
+            room: self.room,
+            let_go: self.let_go,
+            followed: self.followed.clone(),
+        };
+        copy.recount();
+        copy
+    }
 }
 
 impl History {

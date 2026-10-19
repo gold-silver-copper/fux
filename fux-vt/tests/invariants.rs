@@ -270,3 +270,19 @@ fn a_resize_keeps_history_charged_for_the_shared_styles() -> Result {
     }
     Ok(())
 }
+
+/// A parser cloned, as a host may keep one (threats.md 1.2), is as sound
+/// as the one it was cloned from: its history counts the storage the copy
+/// holds, not the original's (FA-SCR-H3).
+#[test]
+fn a_cloned_parser_keeps_every_invariant() -> Result {
+    let options = Options::default().set(Feature::Hyperlinks, true);
+    let mut p = Parser::with_options(Size::new(3, 20)?, 1 << 20, options)?;
+    for i in 0..300 {
+        let line = format!("row {i} \u{e9}\u{301} \x1b]8;;http://x/{i}\x07a\x1b]8;;\x07b\r\n");
+        p.process(line.as_bytes())?;
+    }
+    invariants::check(&p);
+    invariants::check(&p.clone());
+    Ok(())
+}
