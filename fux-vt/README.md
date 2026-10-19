@@ -521,17 +521,20 @@ fux-vt's work counters and a counting allocator against it.
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.
-- **The work of one call** (P24): `Parser::process_until_stop`
-  stops after a sequence, as `Stop::Budget`, once 25 M weighted units of
-  work (threats.md 4.4) are spent since its last such stop, over as many
-  calls as that took. What is spent is the work one sequence can multiply:
-  ED, rectangle fills, erases and copies, column edits, scrolls of more
-  than a line, REP, the alignment pattern, checksums, history's searches
-  and sweeps. With what the sequence that crosses it does, a call stays
-  under the 50 M units a 4 KiB call may do at any size the host promises
-  (4095 by 4096 in fux), as long as no one sequence does half of that; the
-  host gives it the rest later. `process_with` doesn't stop: its work is
-  bounded by its bytes alone.
+- **The work of one call** (P24): `Parser::process_until_stop` stops
+  after a sequence, as `Stop::Budget`, once 25 M weighted units of work
+  (threats.md 4.4) are spent since its last such stop, over as many
+  calls as that took. What is spent is the work one sequence can
+  multiply: ED, rectangle fills, erases and copies, column edits,
+  scrolls of more than a line, REP, the alignment pattern, checksums,
+  history's searches and sweeps. With what the sequence that crosses it
+  does, a call stays under the 50 M units a 4 KiB call may do, the
+  weights measured on desk (decision 950); at a pane where one
+  screen-wide sequence (ED, IL, DL, SU, SD, SL, SR, DECIC, DECDC,
+  DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECRQCRA) may cost
+  more than U, the screen leaves it for the next call, which carries it
+  out alone (`Work::ceiling`). The host gives it the rest later.
+  `process_with` doesn't stop: its work is bounded by its bytes alone.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.
