@@ -1876,7 +1876,7 @@ impl Parser {
             && let Some(decoder) = &mut self.sixel
         {
             let screen = &mut self.screen;
-            decoder.push(b'?', &mut |bytes| screen.make_room(bytes));
+            decoder.push(b'?', &mut |bytes, evict| screen.make_room(bytes, evict));
             return;
         }
         self.state = State::Ground;
@@ -1928,8 +1928,9 @@ impl Parser {
                 }
                 State::Sixel => {
                     let screen = &mut self.screen;
-                    let picture = (self.sixel.take())
-                        .and_then(|decoder| decoder.finish(&mut |bytes| screen.make_room(bytes)));
+                    let picture = (self.sixel.take()).and_then(|decoder| {
+                        decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
+                    });
                     if let Some(picture) = picture {
                         let placed = self.screen.place_picture(picture);
                         self.kept(placed);
@@ -1990,7 +1991,7 @@ impl Parser {
                 }
                 if let Some(decoder) = &mut self.sixel {
                     let screen = &mut self.screen;
-                    decoder.push(byte, &mut |bytes| screen.make_room(bytes));
+                    decoder.push(byte, &mut |bytes, evict| screen.make_room(bytes, evict));
                 }
                 return None;
             }
