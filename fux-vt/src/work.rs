@@ -47,6 +47,10 @@ pub struct Work {
     pub prints: u64,
     /// Bytes the key decoder scans, and the bytes it copies.
     pub keys: u64,
+    /// Steps of XParseColor's colour arithmetic: a Newton step of a
+    /// square or cube root, an arithmetic-geometric-mean step of an arc
+    /// tangent, or a step of the TekHVC chroma search (palette/xcms.rs).
+    pub colours: u64,
 }
 
 thread_local! {
@@ -75,6 +79,7 @@ impl Work {
         links: 0,
         prints: 0,
         keys: 0,
+        colours: 0,
     };
 
     /// The most weighted work one call may do: U, 50,000,000 units
@@ -101,7 +106,7 @@ impl Work {
     }
 
     /// Each counter, by name, in the order threats.md 4.1 lists them.
-    pub fn counters(&self) -> [(&'static str, u64); 13] {
+    pub fn counters(&self) -> [(&'static str, u64); 14] {
         [
             ("bytes", self.bytes),
             ("scanned", self.scanned),
@@ -116,11 +121,12 @@ impl Work {
             ("links", self.links),
             ("prints", self.prints),
             ("keys", self.keys),
+            ("colours", self.colours),
         ]
     }
 
     /// Each counter, by name, to write.
-    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 13] {
+    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 14] {
         [
             ("bytes", &mut self.bytes),
             ("scanned", &mut self.scanned),
@@ -135,13 +141,14 @@ impl Work {
             ("links", &mut self.links),
             ("prints", &mut self.prints),
             ("keys", &mut self.keys),
+            ("colours", &mut self.colours),
         ]
     }
 
     /// Each counter's weight, in twentieths of a unit, so that every
     /// weight is whole: threats.md 4.4's frozen weights (P23), in ns per
     /// unit for this machine, times 20.
-    pub const WEIGHTS: [(&'static str, u64); 13] = {
+    pub const WEIGHTS: [(&'static str, u64); 14] = {
         use crate::budget::weight::*;
         [
             ("bytes", bytes),
@@ -157,6 +164,7 @@ impl Work {
             ("links", links),
             ("prints", prints),
             ("keys", keys),
+            ("colours", colours),
         ]
     };
 
@@ -220,6 +228,10 @@ impl Work {
     pub(crate) fn keys(&mut self, n: u64) {
         self.keys = self.keys.saturating_add(n);
     }
+    /// Counts steps of XParseColor's colour arithmetic.
+    pub(crate) fn colours(&mut self, n: u64) {
+        self.colours = self.colours.saturating_add(n);
+    }
 }
 
 #[cfg(test)]
@@ -232,7 +244,7 @@ mod tests {
     #[test]
     fn each_counter_counts_its_own_work_and_is_weighed_by_its_weight() {
         let before = Work::now();
-        let adds: [fn(&mut Work, u64); 13] = [
+        let adds: [fn(&mut Work, u64); 14] = [
             Work::bytes,
             Work::scanned,
             Work::cells,
@@ -246,6 +258,7 @@ mod tests {
             Work::links,
             Work::prints,
             Work::keys,
+            Work::colours,
         ];
         for (i, add) in adds.iter().enumerate() {
             let n = u64::try_from(i).unwrap_or(0).saturating_add(1);
@@ -261,8 +274,9 @@ mod tests {
         }
         assert_eq!(Work::ZERO.cost(), 0);
         // 1 × 20 + 2 × 10 + 3 × 5 + 4 × 20 + 5 × 100 + 6 × 1 + 7 × 5 + 8 × 10
-        // + 9 × 600 + 10 × 300 + 11 × 100 + 12 × 2 + 13 × 20.
-        assert_eq!(done.cost(), 10_540);
+        // + 9 × 600 + 10 × 300 + 11 × 100 + 12 × 2 + 13 × 20
+        // + 14 × weight::colours.
+        assert_eq!(done.cost(), 10_540 + 14 * crate::budget::weight::colours);
         assert_eq!(Work::CEILING, 1_000_000_000);
     }
 }

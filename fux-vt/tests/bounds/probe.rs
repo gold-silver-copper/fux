@@ -496,6 +496,7 @@ fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
         "links" => &mut work.links,
         "prints" => &mut work.prints,
         "keys" => &mut work.keys,
+        "colours" => &mut work.colours,
         _ => return Err(format!("no counter is named {name}")),
     };
     *slot = n;

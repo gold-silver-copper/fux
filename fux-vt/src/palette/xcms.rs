@@ -14,19 +14,46 @@
 //! channel's zero or the other by the last bits of a double, which the
 //! platform's own functions round otherwise. Xcms's quirks are kept with
 //! it: CIELab's `a*` divided by 5 rather than 500, and so on. The
-//! numbers are what `%lf` reads in decimal (no `inf`, `nan` or hex);
-//! one that is not finite, or an `rgbi:` channel outside 0 to 1, makes
-//! the specification unreadable, as do the ranges Xcms itself checks.
+//! numbers are what `%lf` reads in decimal, with Xcms's retry that reads
+//! a comma for the point when the point fails (for a locale's comma).
+//! Departures, each where Xlib reads garbage or hangs: `%lf`'s `inf`,
+//! `nan` and hex forms, and a number that is not finite, are not read
+//! (Xlib's range checks let NaN through); an `rgbi:` channel past 1 is not
+//! read (Xlib's table lookup runs off the table's end and wraps to 16
+//! bits: `rgbi:2/0/0` is red `6a6a` there); one below 0 is 0, as in Xlib.
 //!
-//! The work is bounded per specification: every loop Xcms runs to
-//! convergence stops after a fixed count (Newton's method after 100
-//! steps, the arithmetic-geometric mean after 64), which a finite input
-//! of the ranges read here converges well within, and the chroma search
-//! is Xcms's, 100 steps at most.
+//! The work is counted and bounded. Each step of the arithmetic, a Newton
+//! step of a square or cube root, a step of the arc tangent's
+//! arithmetic-geometric mean or a step of the chroma search, is a
+//! `colours` unit, spent from the call's budget (`budget.rs`). The loops
+//! Xcms runs to convergence stop after a count that changes no answer:
+//! Newton's square root after 600 steps (every positive double takes at
+//! most 541), its cube root after 64 (its arguments are 0.008856 to 1,
+//! at most 11), the mean after 64 (at most 27 for every finite argument
+//! sampled; from 32 on, the answer is Xcms's 10,000 steps' bit for bit);
+//! the chroma search is Xcms's, 100 steps at most. One OSC spends at most
+//! an allowance (`palette.rs`): a specification that reaches it in the
+//! chroma search is unreadable, at most one step past it.
 
 // Xcms's π and its fractions (`cmsTrig.c`, `M_PI`), written to more
 // digits than a double holds: these are the doubles they round to.
 use std::f64::consts::{FRAC_PI_2 as HALF_PI, FRAC_PI_4 as FOURTH_PI, PI, TAU as TWO_PI};
+
+thread_local! {
+    /// The steps of colour arithmetic this thread has taken.
+    static TAKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `n` steps of colour arithmetic.
+fn take(n: u64) {
+    TAKEN.with(|t| t.set(t.get().saturating_add(n)));
+}
+
+/// The steps of colour arithmetic this thread has taken: what an OSC's
+/// allowance is reckoned from.
+pub(super) fn taken() -> u64 {
+    TAKEN.with(std::cell::Cell::get)
+}
 
 /// One step of a channel's intensity table: a device value and the
 /// intensity it gives, as Xcms's `IntensityRec`.
@@ -250,17 +277,26 @@ type Colour = [f64; 3];
 
 /// `spec`, lowered, if it is one of the spaces this module reads: its
 /// device colour, 16 bits a channel (each the 8 bits the screen keeps, in
-/// the high byte).
-pub(super) fn parse(spec: &[u8]) -> Option<[u16; 3]> {
+/// the high byte); not read if the chroma search finds [`taken`] at
+/// `until`. The steps it takes are spent from the call's budget.
+pub(super) fn parse(spec: &[u8], until: u64) -> Option<[u16; 3]> {
+    let before = taken();
+    let colour = read(spec, until);
+    spend!(colours, taken().saturating_sub(before));
+    colour
+}
+
+/// [`parse`]'s reading.
+fn read(spec: &[u8], until: u64) -> Option<[u16; 3]> {
     let colon = spec.iter().position(|b| *b == b':')?;
     let (prefix, rest) = spec.split_at_checked(colon)?;
     let numbers = three(rest.get(1..)?)?;
     let space = |name: &[u8]| prefix.eq_ignore_ascii_case(name);
     if space(b"rgbi") {
-        if numbers.iter().any(|n| !(0.0..=1.0).contains(n)) {
+        if numbers.iter().any(|n| *n > 1.0) {
             return None;
         }
-        return device(numbers);
+        return device(numbers.map(|n| n.max(0.0)));
     }
     let xyz = if space(b"ciexyz") {
         valid_xyz(numbers)?
@@ -277,13 +313,28 @@ pub(super) fn parse(spec: &[u8]) -> Option<[u16; 3]> {
     } else {
         return None;
     };
-    device(intensities(xyz)?)
+    device(intensities(xyz, until)?)
 }
 
 /// `%lf/%lf/%lf`, as `sscanf` reads it: three numbers, each after any
 /// white space, with a `/` straight after each of the first two; what
-/// follows the third is left.
+/// follows the third is left. If that fails, it is read again with each
+/// `.` and `,` swapped, as each Xcms `ParseString` retries.
 fn three(text: &[u8]) -> Option<Colour> {
+    three_once(text).or_else(|| {
+        let swapped: Vec<u8> = (text.iter())
+            .map(|b| match b {
+                b'.' => b',',
+                b',' => b'.',
+                b => *b,
+            })
+            .collect();
+        three_once(&swapped)
+    })
+}
+
+/// [`three`]'s reading, once.
+fn three_once(text: &[u8]) -> Option<Colour> {
     let (a, text) = number(text)?;
     let (b, text) = number(text.strip_prefix(b"/")?)?;
     let (c, _) = number(text.strip_prefix(b"/")?)?;
@@ -570,14 +621,14 @@ fn outside([r, g, b]: Colour) -> bool {
 
 /// The screen's intensities for CIE XYZ, the TekHVC chroma lowered first
 /// if it is out of the gamut (`XcmsCIEXYZToRGBi`, `XcmsTekHVCClipC`).
-fn intensities(xyz: Colour) -> Option<Colour> {
+fn intensities(xyz: Colour, until: u64) -> Option<Colour> {
     let mut rgb = raw(xyz);
     if !rgb.iter().all(|i| i.is_finite()) {
         return None;
     }
     if outside(rgb) {
         let [h, v, _] = uvy_to_hvc(xyz_to_uvy(xyz)?)?;
-        rgb = raw(uvy_to_xyz(hvc_to_uvy(max_chroma(h, v)?)?)?);
+        rgb = raw(uvy_to_xyz(hvc_to_uvy(max_chroma(h, v, until)?)?)?);
         if outside(rgb) {
             return None;
         }
@@ -608,8 +659,8 @@ fn most_chromatic(hue: f64) -> Option<(Colour, Colour)> {
 }
 
 /// The most chroma `hue` has at `value` in the gamut
-/// (`XcmsTekHVCQueryMaxC`).
-fn max_chroma(hue: f64, value: f64) -> Option<Colour> {
+/// (`XcmsTekHVCQueryMaxC`); none once [`taken`] reaches `until`.
+fn max_chroma(hue: f64, value: f64, until: u64) -> Option<Colour> {
     let start = modify([hue, value, 100.0]);
     let ([_, top_v, top_c], top) = most_chromatic(hue)?;
     if value <= top_v {
@@ -622,6 +673,10 @@ fn max_chroma(hue: f64, value: f64) -> Option<Colour> {
     let distance = 100.0 - top_v;
     let mut factor = 1.0;
     for _ in 0..100 {
+        take(1);
+        if taken() >= until {
+            return None;
+        }
         let before = last_v;
         (last_v, last_c) = (v, c);
         let t = (target - top_v) / distance * factor;
@@ -714,13 +769,16 @@ fn square_root(a: f64) -> f64 {
         return 0.0;
     }
     let mut guess = if a > 1.0 { a / 4.0 } else { a * 4.0 };
-    for _ in 0..100 {
+    let mut steps = 0u64;
+    while steps < 600 {
+        steps = steps.saturating_add(1);
         let delta = (guess - a / guess) / 2.0;
         guess -= delta;
         if delta.abs() < guess * DBL_EPSILON || delta.is_nan() {
             break;
         }
     }
+    take(steps);
     guess
 }
 
@@ -736,13 +794,16 @@ fn cube_root(a: f64) -> f64 {
     } else {
         magnitude * 8.0
     };
-    for _ in 0..100 {
+    let mut steps = 0u64;
+    while steps < 64 {
+        steps = steps.saturating_add(1);
         let delta = (guess - magnitude / (guess * guess)) / 3.0;
         guess -= delta;
         if delta.abs() < guess * DBL_EPSILON || delta.is_nan() {
             break;
         }
     }
+    take(steps);
     if a < 0.0 { -guess } else { guess }
 }
 
@@ -857,7 +918,9 @@ fn atan(x: f64) -> f64 {
     let most = if x < 1.0 { x * 0.000001 } else { 0.000001 };
     let (mut a, mut b) = (square_root(1.0 / (1.0 + x * x)), 1.0);
     let (mut a1, mut b1) = (0.0, 0.0);
-    for _ in 0..64 {
+    let mut steps = 0u64;
+    while steps < 64 {
+        steps = steps.saturating_add(1);
         a1 = (a + b) / 2.0;
         b1 = square_root(a1 * b);
         if a1 == b1 || (a1 - b1).abs() < most {
@@ -865,6 +928,7 @@ fn atan(x: f64) -> f64 {
         }
         (a, b) = (a1, b1);
     }
+    take(steps);
     let l = if a1 > b1 { b1 } else { a1 };
     x / (square_root(1.0 + x * x) * l)
 }
@@ -887,7 +951,6 @@ mod tests {
         for bad in [
             "rgbi:1/1",
             "rgbi:2/0/0",
-            "rgbi:-1/0/0",
             "CIEXYZ:0/2/0",
             "CIExyY:2/0/0",
             "CIELab:101/0/0",
@@ -901,11 +964,14 @@ mod tests {
             "CIEXYZ 0/0/0",
             "lab:0/0/0",
         ] {
-            assert_eq!(parse(bad.as_bytes()), None, "{bad}");
+            assert_eq!(parse(bad.as_bytes(), u64::MAX), None, "{bad}");
         }
         // As %lf reads them: white space before a number, an exponent, and
         // anything after the third.
-        assert_eq!(parse(b"rgbi: 1/ 1e0/+1.junk"), parse(b"rgbi:1/1/1"));
+        assert_eq!(
+            parse(b"rgbi: 1/ 1e0/+1.junk", u64::MAX),
+            parse(b"rgbi:1/1/1", u64::MAX)
+        );
     }
 
     /// A chroma far past the gamut still ends inside it, in a bounded
@@ -917,7 +983,7 @@ mod tests {
             "TekHVC:200/99/1e300",
             "CIEuvY:1e300/-1e300/0.5",
         ] {
-            assert!(parse(spec.as_bytes()).is_some(), "{spec}");
+            assert!(parse(spec.as_bytes(), u64::MAX).is_some(), "{spec}");
         }
     }
 }
