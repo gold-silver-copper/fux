@@ -449,7 +449,17 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
              to wait for something first: PANE … wait, then PANE capture"
                 .to_owned()
         }
-        _ => format!("{option} goes on {}", takers(option)),
+        // A command for a new tab's or workspace's shell: typed into it.
+        "command" | "program" | "arg" if matches!(word, "new-tab" | "new-workspace") => format!(
+            "{word} starts a shell, and takes {}; a program starts with run \
+             (`opts str 'CMD' command run`), or `str 'CMD' typed` types it into the shell",
+            own(word)
+        ),
+        _ => format!(
+            "{option} goes on {}; {word} takes {}",
+            takers(option),
+            own(word)
+        ),
     };
     Err(fail(Lang::Unused, format!("takes no {option}: {instead}")))
 }
@@ -769,6 +779,22 @@ pub fn hint(word: &str) -> Option<String> {
     ];
     let (_, used) = taken.iter().find(|(words, _)| words.contains(&word))?;
     Some(format!("it is text: {}", used.replace("{}", word)))
+}
+
+/// The options `word` takes of its own, said as a list: a wait's words
+/// for one that waits, `nothing else` for one that takes none.
+fn own(word: &str) -> String {
+    let (takes, waits) = (help::OPTIONS.iter())
+        .find(|(w, ..)| *w == word)
+        .map_or(("", false), |(_, takes, waits)| (*takes, *waits));
+    let mut own: Vec<&str> = takes.split_whitespace().collect();
+    if waits {
+        own.push("a wait's words");
+    }
+    match own.is_empty() {
+        true => "nothing else".to_owned(),
+        false => crate::words::listed(&own, "and"),
+    }
 }
 
 /// The words that take `option`, listed.

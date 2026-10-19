@@ -59,7 +59,8 @@ Each `fux` is a fresh program.
 Most steps have one of these shapes (UPPER = what you fill in, [] if you
 want it): what a word that acts takes (options, a wait, keys, a mouse event)
 goes on the pane before it; only run, new-tab and new-workspace, which have
-no pane yet, start from opts.
+no pane yet, start from opts. Only run takes a program (command): new-tab and
+new-workspace start a shell, and str 'CMD' typed types a line into it.
 
   fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
   fux %2 INPUT send-keys                type: str T text, str Enter key, …; answers as run does

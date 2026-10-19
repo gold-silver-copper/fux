@@ -269,6 +269,20 @@ fn a_row_erased_whole_ends_the_line_above() -> Result {
     Ok(())
 }
 
+/// Above the top row is history's newest: a line that went on from there
+/// ends once the top row is erased whole (a screen cleared, as `koh
+/// connect` and bash do after a resize), and the next prompt there is a
+/// line of its own.
+#[test]
+fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
+    let mut p = Parser::new(Size::new(2, 10)?, 1000)?;
+    p.process(b"$ echo 0123456789abcde")?;
+    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    p.process(b"\x1b[H\x1b[2J$ ")?;
+    assert!(!above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    Ok(())
+}
+
 /// A rejected resize changes nothing, synchronized output included (the
 /// API's "failing size changes leave the old screen intact"); one that is
 /// taken, or to the same size, ends it, as in Ghostty (threats.md B37).

@@ -81,6 +81,43 @@ fn within(server: &Server, limit: u64, args: &[&str]) -> Result<String, String> 
     Ok(answer)
 }
 
+/// `koh connect` to a `koh serve --local` in a pane of `server`'s, its
+/// remote home's `.bashrc` setting the prompt `remote> `, `after` after
+/// it (`-- PROG`), and `size` among its options: the serve, stopped when
+/// dropped, the pane, and the remote home.
+fn connect(
+    server: &Server,
+    after: &[&str],
+    size: &[&str],
+) -> Result<(Serve, String, std::path::PathBuf), String> {
+    let bin = std::env::var("FUX_KOH").map_err(|_| "FUX_KOH names no koh binary")?;
+    let (local, remote) = (server.dir.join("koh-local"), server.dir.join("koh-remote"));
+    std::fs::create_dir_all(&local).map_err(e)?;
+    std::fs::create_dir_all(&remote).map_err(e)?;
+    std::fs::write(remote.join(".bashrc"), "PS1='remote> '\n").map_err(e)?;
+    let (serve, id, port) = serve(&bin, &local, &remote)?;
+    let mut connect = format!("{bin} connect {id} --direct 127.0.0.1:{port}");
+    for word in after {
+        connect.push(' ');
+        connect.push_str(word);
+    }
+    let home = local.to_string_lossy().into_owned();
+    let config = local.join(".config").to_string_lossy().into_owned();
+    let env = |k, v| ["str", k, "str", v, "env"];
+    let started = server.ok(&[
+        &["opts"][..],
+        &env("HOME", &home),
+        &env("XDG_CONFIG_HOME", &config),
+        // koh warns of a locale that is not UTF-8 first.
+        &env("LANG", "C.UTF-8"),
+        size,
+        &["str", &connect, "command", "run"],
+    ]
+    .concat())?;
+    let pane = started.split_whitespace().next().unwrap_or_default();
+    Ok((serve, pane.to_owned(), remote))
+}
+
 /// A clock on the alternate screen: a frame each 0.3 s, polling its
 /// terminal between them; a key shows, `q` quits, the terminal's modes put
 /// back (else the shell keeps them for the next command).
@@ -95,31 +132,10 @@ const CLOCK: &str = "import os, select, termios, tty\n\
 #[test]
 #[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
 fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
-    let bin = std::env::var("FUX_KOH").map_err(|_| "FUX_KOH names no koh binary")?;
     // A limit short enough to wait past (`wait-done`).
     let server = Server::start("str wait-seconds 5 set")?;
-    let (local, remote) = (server.dir.join("koh-local"), server.dir.join("koh-remote"));
-    std::fs::create_dir_all(&local).map_err(e)?;
-    std::fs::create_dir_all(&remote).map_err(e)?;
-    std::fs::write(remote.join(".bashrc"), "PS1='remote> '\n").map_err(e)?;
+    let (_serve, pane, remote) = connect(&server, &[], &[])?;
     std::fs::write(remote.join("n.txt"), "one\ntwo\nthree\n").map_err(e)?;
-    let (_serve, id, port) = serve(&bin, &local, &remote)?;
-    let connect = format!("{bin} connect {id} --direct 127.0.0.1:{port}");
-    let home = local.to_string_lossy().into_owned();
-    let config = local.join(".config").to_string_lossy().into_owned();
-    let env = |k, v| ["str", k, "str", v, "env"];
-    let started = server.ok(&[
-        &["opts"][..],
-        &env("HOME", &home),
-        &env("XDG_CONFIG_HOME", &config),
-        &["str", &connect, "command", "run"],
-    ]
-    .concat())?;
-    let pane = started
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
     let p = ["str", pane.as_str(), "pane"];
     let line =
         |text: &str, limit| within(&server, limit, &[&p[..], &["str", text, "line"]].concat());
@@ -195,5 +211,50 @@ fn a_remote_shell_through_koh_answers_as_a_local_one() -> Outcome {
     assert!(two.contains("\n2\n"), "{two}");
     let out = line("exit()", 10)?;
     assert!(out.contains("done 0"), "{out}");
+
     Ok(())
+}
+
+/// A program `koh connect` runs that marks no commands (`-- bash
+/// --norc`, no shell of koh's): a line answers `reading` and says no
+/// status can come. Resized narrower, koh paints the screen anew, and the
+/// line typed after is not spliced onto the end of the last, which the
+/// narrower screen pushed into history. Its `exit` is waited for to koh's
+/// end.
+#[test]
+#[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
+fn a_remote_program_with_no_marks_through_koh() -> Outcome {
+    let server = Server::start("")?;
+    let after = ["--", "bash", "--norc", "-i"];
+    let (_serve, pane, _) = connect(&server, &after, &["24", "12", "size"])?;
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "$ ", "wait-text", "wait"]].concat())?;
+    let typed = r#"before=$(stty -g); sleep 0.3; test "$(stty -g)" = "$before" && echo RESTORED"#;
+    let line = || server.ok(&[&p[..], &["str", typed, "line"]].concat());
+    let first = line()?;
+    assert!(
+        head(&first).ends_with(" reading · no status: nothing here marks its commands"),
+        "{first}"
+    );
+    // Narrower twice, as TC-019 of triobench's round 3 went.
+    for size in [["12", "10"], ["7", "12"]] {
+        server.ok(&[&p[..], &size[..], &["resize"]].concat())?;
+        let after = line()?;
+        assert!(after.contains("\nRESTORED\n"), "{after}");
+        // From the line typed on, nothing older.
+        let echo = after.lines().nth(1).unwrap_or_default();
+        assert!(echo.ends_with(&format!("$ {typed}")), "{after}");
+        assert!(
+            !after.lines().any(|l| l.matches("before=").count() > 1),
+            "{after}"
+        );
+    }
+    // It exits: koh closes its link, a while, and ends, which is told.
+    let out = server.ok(&[&p[..], &["str", "exit", "line"]].concat())?;
+    assert!(out.starts_with(&format!("{pane} exited 0")), "{out}");
+    Ok(())
+}
+
+fn head(out: &str) -> &str {
+    out.lines().next().unwrap_or_default()
 }

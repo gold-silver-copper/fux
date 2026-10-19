@@ -75,7 +75,12 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
   probe while no mark came after it and it came after the last input, once
   the screen is quiet a moment after it: a
-  remote pager or REPL answers `reading` as a local one does. A failure prints `fux: CODE: MESSAGE` on stderr,
+  remote pager or REPL answers `reading` as a local one does. A relay that
+  owes a report since the last input (its program may have ended there) is
+  quiet 5s before it is `waiting`, so a remote `exit` answers `exited 0`
+  once koh closes its link. A line read again where nothing marks commands
+  (a plain `sh`, `koh connect SERVER -- sh`) says `· no status: nothing
+  here marks its commands`: no `done` comes. A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
   status is the exit status, while its answer is left (`drop` it, and it
   is 0): 3 the program exited first, 4 the pane closed, 5 the shell
@@ -125,7 +130,9 @@ enough for most work and `fux help agents TOPIC` the rest
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet: they start from `opts`, empty options.
+no pane yet: they start from `opts`, empty options. Only `run` takes a program
+(`command`, `program`): `new-tab` and `new-workspace` start a shell, and
+`str 'make test' typed` types a line into it.
 
 ```sh
 fux opts str web name 120 40 size str './app --verbose' command run

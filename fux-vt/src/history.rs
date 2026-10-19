@@ -854,6 +854,17 @@ impl History {
         }
     }
 
+    /// The newest row's line ends with it, which then takes `version`: the
+    /// screen's top row, that it went on in, was erased whole.
+    pub(crate) fn end_newest_line(&mut self, version: u64) {
+        if let Some(kept) = self.rows.back_mut()
+            && kept.wrapped()
+        {
+            kept.set(WRAPPED, false);
+            kept.version = version;
+        }
+    }
+
     /// Row `index` loses its links, if it has any, and takes `version`.
     pub(crate) fn unlink(&mut self, index: usize, version: u64) {
         if let Some(number) = self.number(index)

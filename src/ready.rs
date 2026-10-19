@@ -15,7 +15,11 @@
 //! machine; the relay can, and says what it does in a state report (`OSC
 //! 133 ; S ; activity=STATE`). Its last report stands in for the probe
 //! while no mark came after it and it came after the last input fux
-//! wrote; the rules below then apply to it as they do to the probe's.
+//! wrote; the rules below then apply to it as they do to the probe's. A
+//! relay reports after each input its program takes (`koh connect` does):
+//! until the report owed comes, the relay itself is probed, and is taken
+//! as waiting only once quiet longer (`OWED`), as its program may have
+//! ended there and the relay be on its way out, closing its link.
 use crate::pane::{Pane, Process};
 use crate::process::{Child, Ended, told};
 use fux_vt::Reported;
@@ -30,6 +34,10 @@ pub const SETTLE: Duration = Duration::from_millis(50);
 pub const QUIET: Duration = Duration::from_secs(1);
 /// How long a quiet screen is taken as settled where nothing else is known.
 pub const GUESS: Duration = Duration::from_millis(300);
+/// How long a relay that owes a report of its program must be quiet to be
+/// taken as waiting: longer than `koh connect` takes to close its link once
+/// the program it runs ended (2s on loopback), so that its end is told.
+pub const OWED: Duration = Duration::from_secs(5);
 /// How long a program that redraws on its own may leave the screen as it
 /// is between frames and still be taken to: longer than `QUIET`, so that a
 /// frame each second (a select timed so) counts.
@@ -97,9 +105,13 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let report = reported(pane);
     let since = (pane.written_at).map_or(pane.changed_at, |at| at.max(pane.changed_at));
     let since = match (report, pane.reported_at) {
-        (Some(_), Some((_, at))) => since.max(at),
+        (Some(_), Some((_, at, _))) => since.max(at),
         _ => since,
     };
+    // A relay owing a report of its program: what it draws meanwhile is
+    // its own (its link closing), no frame of the program's.
+    let owed = owed(pane);
+    let quiet_enough = if owed { OWED } else { QUIET };
     let quiet = now.saturating_duration_since(since);
     // The command the input typed still runs and does not read: at work
     // until it ends or asks. One that took the full screen since it began
@@ -122,6 +134,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     // watches for keys and draws nothing.
     let redraws = |activity| {
         (activity == Activity::Polling || (!command && screen.mode(fux_vt::Mode::AlternateScreen)))
+            && !owed
             && pane.redraws()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
             && quiet >= SETTLE
@@ -142,7 +155,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
         Activity::Polling if command && !editing() => State::Busy,
         // Polling for keys with a time limit: it may draw again on its own
         // (a pause, a clock), so never surely waiting for the agent.
-        Activity::Polling | Activity::Waiting if quiet >= QUIET => State::Waiting,
+        Activity::Polling | Activity::Waiting if quiet >= quiet_enough => State::Waiting,
         // Every thread waits, on what macOS will not say (a sleep or a
         // read): settled once quiet as long as where nothing is known.
         Activity::Idle if quiet >= GUESS && !child.master.keys_unread() => State::Settled,
@@ -187,7 +200,7 @@ pub fn elsewhere(pane: &Pane, now: Instant) -> bool {
 /// pane's own program runs still, as `state` has found.
 fn reported(pane: &Pane) -> Option<Activity> {
     let reported = pane.screen().commands().reported()?;
-    let (_, at) = pane.reported_at?;
+    let (_, at, _) = pane.reported_at?;
     if pane.written_at.is_some_and(|written| written >= at) {
         return None;
     }
@@ -199,6 +212,22 @@ fn reported(pane: &Pane) -> Option<Activity> {
         Reported::Idle => Activity::Idle,
         Reported::Unknown => Activity::Unknown,
     })
+}
+
+/// Whether a relay in `pane` owes a report of its program: its last
+/// report would stand but for input written after it (no mark came
+/// since), and the program that sent it still has the terminal (its
+/// foreground group then).
+pub fn owed(pane: &Pane) -> bool {
+    let Some((_, at, Some(group))) = pane.reported_at else {
+        return false;
+    };
+    let relays = (pane.process.child())
+        .and_then(|child| fuxix::terminal::foreground_group(&child.master))
+        .is_some_and(|now| now == group);
+    pane.screen().commands().reported().is_some()
+        && pane.written_at.is_some_and(|written| written >= at)
+        && relays
 }
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`

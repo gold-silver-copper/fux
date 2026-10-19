@@ -563,9 +563,12 @@ impl Wait {
         if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;
-            let why = match crate::ready::elsewhere(pane, Instant::now()) {
-                true => "not reading its terminal, so fux cannot tell when it waits for input",
-                false => "may be at work",
+            let why = if crate::ready::owed(pane) {
+                "its relay said nothing of its program since your input, as when that ended"
+            } else if crate::ready::elsewhere(pane, Instant::now()) {
+                "not reading its terminal, so fux cannot tell when it waits for input"
+            } else {
+                "may be at work"
             };
             notes.push((
                 format!("{why}: `{id} {word} wait` waits for its end"),
@@ -619,6 +622,19 @@ impl Wait {
                     vec![("highlight", field)],
                 ));
             }
+        }
+        // A line typed that a shell, or a relay's program, reads again
+        // after, where nothing has marked a command (a shell fux did not
+        // start, `koh connect -- sh`): no `done`, and no status, can come.
+        let marked = commands.started > 0 || commands.finished > 0 || commands.prompt;
+        let shell = pane.runs_shell() || commands.report.is_some();
+        let main = !pane.screen().mode(fux_vt::Mode::AlternateScreen);
+        if action && pane.line_ended && state == State::Reading && !marked && shell && main {
+            let field = ("marked", Json::Bool(false));
+            notes.push((
+                "no status: nothing here marks its commands".into(),
+                vec![field],
+            ));
         }
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
@@ -1468,9 +1484,16 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
         .map(|e| e.seq.0)
         .collect();
     let window = screen.window();
-    // A row drawn again to show as it did at the input brings nothing.
+    // A row drawn again to show as it did at the input brings nothing, nor
+    // does one in history then and still, that nothing printed in since
+    // (its line ended, the top row erased under it).
+    let kept = |r: &Row<'_>| {
+        window.place(r).is_none() && !watch.before.contains_key(&r.id()) && !moved.contains(&r.id())
+    };
     let new = |r: &Row<'_>| {
-        (r.version() > start.from.0 && !resized.contains(&r.version()) || moved.contains(&r.id()))
+        !kept(r)
+            && (r.version() > start.from.0 && !resized.contains(&r.version())
+                || moved.contains(&r.id()))
             && (watch.before.get(&r.id())).is_none_or(|(_, was)| {
                 window.place(r).map(|y| (y, crate::pane::shows(r))).as_ref() != Some(was)
             })
