@@ -94,14 +94,6 @@ fn graphics(c: u8) -> Graphics {
     }
 }
 
-/// Whether a call's work past the ceiling is B35's known failure: DECCRA
-/// copying a rectangle of clusters, its text compacted for each cluster
-/// (`tests/bounds/known-failing.txt`, SCR-5), with more than half of the
-/// ceiling its text's (a text unit weighs a twentieth, one of `cost`'s).
-fn known_excess(done: &Work) -> bool {
-    done.text.saturating_mul(2) > Work::CEILING
-}
-
 /// The parsers fed alike, and what the run has fed.
 struct Run {
     whole: Parser,
@@ -132,7 +124,7 @@ impl Run {
                 let done = now.since(last);
                 last = now;
                 assert!(
-                    done.cost() <= Work::CEILING || known_excess(&done),
+                    done.cost() <= Work::CEILING,
                     "a call did {} units, past U: {done:?}",
                     done.cost() / 20
                 );
