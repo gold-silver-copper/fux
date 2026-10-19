@@ -4067,7 +4067,7 @@ mod tests {
         assert_eq!(
             quiet(output(&mut s, "str %2 pane capture json")?),
             concat!(
-                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[0,16],"lines":["a       b \"q\" 界"],"wrap_pending":false,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
+                r#"{"pane":"%2","rows":3,"cols":14,"cursor":[1,2],"lines":["a       b \"q\" 界"],"wrap_pending":false,"program":null,"state":"empty","paused":false,"exited":null,"signal":null,"idle_ms":0,"alt_screen":false,"mouse":false,"mouse_mode":null,"bracketed_paste":false,"pictures":[],"cursor_visible":true,"history_lines":0,"copy_mode":false,"revision":1,"command_running":false,"last_status":null,"bells":0,"notification":null,"cwd":null,"argv":null}"#,
                 "\n"
             )
         );
@@ -4402,12 +4402,12 @@ mod tests {
         Ok(())
     }
 
-    /// A capture's cursor is where it is among the lines printed, past
-    /// them on a blank row trimmed away: none while hidden, outside the
-    /// columns taken, or on the screen not captured; past the columns cut
-    /// and the rows joined, unless `wrapped`.
+    /// A capture's cursor is the screen's row and column, as answers and
+    /// a mouse event count them, whatever its lines join or take: on a
+    /// blank row trimmed away too; none while hidden, or on the screen not
+    /// captured.
     #[test]
-    fn a_captures_cursor_is_among_its_lines() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_captures_cursor_is_the_screens() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
             let json = output(s, &format!("%1 {read} capture json"))?;
@@ -4420,8 +4420,8 @@ mod tests {
         };
         s.output(PaneId::of(1), b"0123456789\x1b[1;6H");
         assert_eq!(cursor(&mut s, "")?, "[0,5]");
-        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,3]");
-        assert_eq!(cursor(&mut s, "0 2 cols")?, "null");
+        assert_eq!(cursor(&mut s, "2 7 cols")?, "[0,5]");
+        assert_eq!(cursor(&mut s, "0 2 cols")?, "[0,5]");
         s.output(PaneId::of(1), b"\x1b[?25l");
         assert_eq!(cursor(&mut s, "")?, "null", "hidden");
         s.output(PaneId::of(1), b"\x1b[?25h\x1b[3;1H");
@@ -4430,14 +4430,14 @@ mod tests {
             PaneId::of(1),
             &[b"\x1b[2J\x1b[H".as_slice(), &[b'A'; 45], b"\r\nBC"].concat(),
         );
-        assert_eq!(cursor(&mut s, "")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
         assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
         s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
         assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
         assert_eq!(cursor(&mut s, "main-screen")?, "null");
         s.output(PaneId::of(1), b"\x1b[?1049l");
         assert_eq!(cursor(&mut s, "alt-screen")?, "null");
-        assert_eq!(cursor(&mut s, "main-screen")?, "[1,2]");
+        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
         let json = output(&mut s, "%1 marks capture json")?;

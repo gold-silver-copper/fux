@@ -138,9 +138,14 @@ matters: after keys that edited a line a program reads (text typed, Left,
 Up, Backspace; at its end too), when text shows under or right of it on its
 row (an editor), or when the keys moved it and nothing else (End). It is
 not said on a blank row, where output left it, nor while the cursor is
-hidden. A capture's state line says it too, whenever it shows on a row
-with text (`%2 reading · cursor 4,7`), as JSON's `cursor` does. A program that exited runs no command: its state is `exited N`
-alone. Keys it never read go nowhere, and are named: `%2 exited 0 · it
+hidden. On a line wrapped at the pane's width, which the answer prints
+joined, it names the rows the line takes: `· cursor 1,13 on rows 0-1
+"> abcdefghij日本語🙂" "klmnopqrstuvwxyz"`. A capture's state line says
+it too, whenever it shows on a row with text (`%2 reading · cursor 4,7`),
+as JSON's `cursor` does. A program that exited runs no command: its state is `exited N`
+alone, and an answer tells it with what it printed once: a later wait
+says `%2 exited 0 · told before: `%2 capture` reads its last screen`.
+Keys it never read go nowhere, and are named: `%2 exited 0 · it
 exited before reading C-q, "ab", which went nowhere` (sent on after the
 key that quit it); through a relay (`koh connect`), which reads them all,
 the keys sent on after the first key or line its program did not say it
@@ -241,8 +246,9 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   event counts them; else a line wrapped is joined whole, as answers print
   it, a path or a word never split, and `rows` takes each line it touches
   whole), `marks`, `styles`,
-  `json` (screen and state: `cursor` among the lines, past them on a blank
-  row, where the state line of text says `· cursor ROW,COL` of the screen; `wrap_pending` when a glyph went into the last column and the next
+  `json` (screen and state: `cursor` the screen's row and column, as the
+  state line's `· cursor ROW,COL` and `wrapped` count them; blanks at a
+  line's end painted, with `styles`, kept; `wrap_pending` when a glyph went into the last column and the next
   goes on the next line, though the cursor shows on that last cell). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in
   whole rows: old text on the row it starts on too), else that full screen if they changed it, else the screen as it is.

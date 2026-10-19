@@ -67,17 +67,22 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         format!("{pane} exited 3\n10 40\nstarted\n"),
         "run answers once it settles: here, once it exits"
     );
-    // A met wait for the exit is 0: the program's status is its state's.
+    // A met wait for the exit is 0: the program's status is its state's;
+    // its exit told already, its output is not said again.
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (ended.status, ended.stdout.as_str()),
-        (0, format!("{pane} exited 3\n10 40\nstarted\n").as_str()),
-        "its state, and what came since it started"
+        (
+            0,
+            format!("{pane} exited 3 · told before: `{pane} capture` reads its last screen\n")
+                .as_str()
+        ),
+        "its state, said once"
     );
     let json = server.ok(&["str", &pane, "pane", "wait-exit", "wait", "json"])?;
     assert!(
         json.starts_with(&format!(
-            r#"{{"pane":"{pane}","state":"exited 3","status":0,"#
+            r#"{{"pane":"{pane}","state":"exited 3","told_before":true,"status":0}}"#
         )),
         "{json}"
     );
@@ -340,7 +345,10 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
             .ok(&["str", &pane, "pane", "wait-exit", "wait"])?
             .lines()
             .next(),
-        Some(format!("{pane} exited 0").as_str())
+        Some(
+            format!("{pane} exited 0 · told before: `{pane} capture` reads its last screen")
+                .as_str()
+        )
     );
     Ok(())
 }
@@ -513,7 +521,9 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(ended.status, 0);
     assert!(
-        ended.stdout.starts_with(&format!("{pane} exited 2\n")),
+        ended
+            .stdout
+            .starts_with(&format!("{pane} exited 2 · told before")),
         "{}",
         ended.stdout
     );
@@ -1325,7 +1335,10 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let kill = server.fux(&["str", "stub", "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (kill.status, kill.stdout.lines().next()),
-        (0, Some("%4 killed by SIGKILL"))
+        (
+            0,
+            Some("%4 killed by SIGKILL · told before: `%4 capture` reads its last screen")
+        )
     );
     // A program that exits first: its last words come with its answer.
     let crash = server.fux(&run(
@@ -1983,9 +1996,58 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     assert_eq!(cut("2", "4")?, " BC\n");
     assert_eq!(cut("0", "1")?, "A\n");
     assert_eq!(cut("19", "19")?, "Z\n");
-    // The cursor, on the empty row after the last line, is past the lines.
+    // The cursor is the screen's: on the empty row after the last line.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""cursor":[2,0],"#), "{json}");
+    assert!(json.contains(r#""cursor":[4,0],"#), "{json}");
+    Ok(())
+}
+
+/// A capture with `styles` keeps blanks at a line's end that are painted,
+/// in JSON's lines and runs as in its text; plain lines trim them. The
+/// cursor is the screen's row and column in JSON as in answers, and an
+/// answer on a line wrapped at the pane's width names the rows it takes.
+/// An exit is told once: a later wait says so, not its output again.
+#[test]
+fn captures_and_answers_agree_on_the_screen() -> Outcome {
+    let server = Server::start("")?;
+    let painted = id(&server.ok(&run(
+        &[],
+        &[
+            "sh",
+            "-c",
+            "printf '\\033[48;2;55;55;55mab     \\033[0m'; exec cat",
+        ],
+    ))?);
+    let styled = server.ok(&["str", &painted, "pane", "styles", "capture", "json"])?;
+    assert!(styled.contains(r#""lines":["ab     "]"#), "{styled}");
+    assert!(
+        styled.contains(r##""styles":[[{"col":0,"len":7,"bg":"#373737"}]]"##),
+        "{styled}"
+    );
+    let plain = server.ok(&["str", &painted, "pane", "capture", "json"])?;
+    assert!(plain.contains(r#""lines":["ab"]"#), "{plain}");
+    let wraps = id(&server.ok(&run(
+        &["10", "4", "size"],
+        &["sh", "-c", "printf abcdefghijklmno; exec cat"],
+    ))?);
+    let json = server.ok(&["str", &wraps, "pane", "capture", "json"])?;
+    assert!(json.contains(r#""cursor":[1,5],"#), "{json}");
+    let typed = server.ok(&["str", &wraps, "pane", "str", "xy", "text", "send-keys"])?;
+    assert!(
+        head(&typed).ends_with(r#" · cursor 1,7 on rows 0-1 "abcdefghij" "klmnoxy""#),
+        "{typed}"
+    );
+    let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
+    let keys = server.ok(&["str", &ends, "pane", "str", "Enter", "key", "send-keys"])?;
+    assert!(
+        keys.starts_with(&format!("{ends} exited 0\n")) && keys.contains("BYE"),
+        "{keys}"
+    );
+    let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert_eq!(
+        again,
+        format!("{ends} exited 0 · told before: `{ends} capture` reads its last screen\n")
+    );
     Ok(())
 }
 
@@ -3066,7 +3128,8 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
     assert_eq!(out.status, 3, "{}", out.stderr);
-    let answer = format!("{pane} exited 2\nLAST");
+    // Its exit told by run, it is not told again with its output.
+    let answer = format!("{pane} exited 2 · told before: `{pane} capture` reads its last screen");
     assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
@@ -4627,7 +4690,10 @@ fn an_exited_program_runs_no_command() -> Outcome {
     let marked = "printf '\\033]133;A\\007$ \\033]133;C\\007'; sleep 0.3; echo bye";
     let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", marked]))?);
     let ended = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
+    assert!(
+        head(&ended).starts_with(&format!("{pane} exited 0 · told before")),
+        "{ended}"
+    );
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
     assert!(json.contains(r#""command_running":false"#), "{json}");
     Ok(())

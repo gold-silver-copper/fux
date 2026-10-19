@@ -41,12 +41,8 @@ pub fn pane(
         Source::Main => !alt,
         Source::Alternate => alt,
     };
-    let (cursor_row, cursor_col) = screen.cursor_position();
-    let cursor_id = (live && screen.mode(Mode::ShowCursor))
-        .then(|| screen.window().row(cursor_row).map(|row| row.id()))
-        .flatten();
-    // Where it is among the lines captured, found as they are made.
-    let mut cursor = None;
+    // Where it is on the screen, as a mouse event and a state line count.
+    let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
     // line each row is part of, and the lines the range touches.
     let line_of: Vec<usize> = read
@@ -107,43 +103,13 @@ pub fn pane(
             }
             None => cells.collect(),
         };
-        // The cursor's cell among these, if it is on this row and in its
-        // columns taken.
-        let at = (Some(row.id()) == cursor_id)
-            .then(|| {
-                let col = usize::from(cursor_col);
-                let col = col
-                    .checked_sub(span.start)
-                    .filter(|_| span.contains(&col))?;
-                match view.cols {
-                    Some((start, end)) if col <= usize::from(end) => {
-                        col.checked_sub(usize::from(start))
-                    }
-                    Some(_) => None,
-                    None => Some(col),
-                }
-            })
-            .flatten();
-        let count = lines.len();
         match lines.last_mut() {
-            Some(last) if wraps => {
-                if let Some(col) = at {
-                    cursor = Some((count.saturating_sub(1), last.len().saturating_add(col)));
-                }
-                last.extend(cells);
-            }
-            _ => {
-                if let Some(col) = at {
-                    cursor = Some((count, col));
-                }
-                lines.push(cells);
-            }
+            Some(last) if wraps => last.extend(cells),
+            _ => lines.push(cells),
         }
         wraps = !view.wrapped && row.wrapped();
     }
     let (rows, cols) = screen.size().into();
-    let cursor =
-        cursor.and_then(|(row, col)| Some((u16::try_from(row).ok()?, u16::try_from(col).ok()?)));
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
     // A glyph went into the last column: the next one goes on the next
     // line, though the cursor shows on this one's last cell.
@@ -443,17 +409,20 @@ fn print(
     // What a selection is drawn with: reverse video, or a background
     // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    // Blanks are trimmed, unless they show: highlighted with `marks`,
-    // styled with `styles` (as SGR; JSON's lines read alike either way, so
-    // the text's lines, trimmed again, are the JSON's). `view.full` keeps
-    // them all.
-    let trim = |lines: &mut Vec<Cells<'_>>, styled: bool| {
+    // A blank's style shows on the screen: a background, reverse video, a
+    // line under or through it. One bold or coloured in front shows none.
+    let painted = |a: &Attributes| {
+        a.background() != Color::Default || a.inverse() || a.underline() || a.strikeout()
+    };
+    // Blanks at a line's end are trimmed, unless they show: highlighted
+    // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
+    // and runs, a painted surface kept whole); plain text trims them all
+    // (blanks, however painted, are no text). `view.full` keeps them all.
+    let trim = |lines: &mut Vec<Cells<'_>>| {
         if view.full {
             return;
         }
-        let shows = |a: &Attributes| {
-            (view.marks && highlighted(a)) || (styled && *a != Attributes::default())
-        };
+        let shows = |a: &Attributes| (view.marks && highlighted(a)) || (view.styles && painted(a));
         for line in lines.iter_mut() {
             while line
                 .last()
@@ -468,12 +437,12 @@ fn print(
     };
     let marks = view.marks.then_some(&highlighted);
     let text = |line: &Cells<'_>, styles: bool| sgr_line(line, marks, styles);
-    trim(&mut lines, view.styles);
+    trim(&mut lines);
     let shown: Vec<String> = lines.iter().map(|l| text(l, view.styles)).collect();
     let mut out = shown.join("\n");
     out.push('\n');
+    // JSON's lines are the text's, trimmed alike.
     let json = state.map(|state| {
-        trim(&mut lines, false);
         // On a blank row trimmed away, it is still where it is: past the
         // lines printed.
         let cursor = cursor.map_or(Json::Null, |(y, x)| {
