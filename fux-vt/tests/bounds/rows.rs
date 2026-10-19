@@ -196,12 +196,22 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // height⌉) filled across the 200 columns, and taken into history by a line
 // feed at B18's 200 + 3 cells (decision 11): at a 10×20 cell 108 × 403 ÷
 // 19 bytes, at most 2,291 cells a byte, and at the smallest, 2×6, 360 ×
-// 403 ÷ 19, at most 7,636 (P5).
+// 403 ÷ 19, at most 7,636 (P5); with P2 1 and 2 as with 0. Portrait,
+// 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19, at most
+// 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (decision 830).
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    let one = repeat(b"\x1bPq\"1;1;4096;2160\x1b\\", 215);
-    let input = repeat(&one, scale.times());
-    for (cell, per_byte, rows) in [((10, 20), 2291, 108), ((2, 6), 7636, 360)] {
+    for (picture, (cell, per_byte, rows)) in [
+        ("\x1bPq\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
+        ("\x1bPq\"1;1;4096;2160\x1b\\", ((2, 6), 7636, 360)),
+        ("\x1bP0;1q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
+        ("\x1bP0;2q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
+        // Portrait: ⌈4,096 ÷ 20⌉ = 205 rows, or 683 at 2×6, each filled
+        // across 200 columns and taken into history at 203 (decision 830).
+        ("\x1bPq\"1;1;2160;4096\x1b\\", ((10, 20), 4349, 205)),
+        ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 14_487, 683)),
+    ] {
+        let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
         let bound = Bound {
             work: &[("pixels", 0, 0, 0)],
             heap: steady(&setup),
@@ -217,8 +227,9 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
             .saturating_mul(per_byte);
         if probe.counted("cells")? > most {
             return Err(format!(
-                "{} cells past {most} at a {cell:?} cell",
-                probe.counted("cells")?
+                "{} cells past {most} at a {cell:?} cell ({})",
+                probe.counted("cells")?,
+                picture.escape_debug()
             ));
         }
         // Each picture covers 200 columns of its rows.
@@ -707,6 +718,9 @@ pub fn b17(scale: Scale, chunk: usize) -> Found {
         bound,
         chunk.max(4096),
         1,
+        // At 100x as at 10x: 3.6 M rows a time already turn the ring and
+        // its maps over 10 times; a hundred would take minutes for no
+        // other state.
         &repeat(&input, scale.times().min(10)),
         |_| Ok(()),
     )
@@ -1009,6 +1023,8 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
 // B24: the key decoder holds at most 258 bytes of an unfinished sequence.
 pub fn b24(scale: Scale, chunk: usize) -> Found {
     let mut input = b("\x1b");
+    // 16 MiB at 100x, not 100: the held ESC decides at the first read, and
+    // what follows is plain keys, the same at any length.
     let a = (1usize << 20).saturating_mul(scale.times()).min(16 << 20);
     input.extend(repeat(b"a", a));
     decoded(&input, chunk, 258, 4 << 10, false)?;
@@ -1486,6 +1502,9 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             continue;
         }
         for (name, sequence) in screen_wide(rows, cols) {
+            // 100x as 10x below fux's largest pane: the work a byte is the
+            // same at every count, and a hundred 4 KiB calls of each
+            // function at 500x500 take an hour.
             let times = if largest { 1 } else { scale.times().min(10) };
             let count = (4096usize.checked_div(sequence.len()).unwrap_or(0)).saturating_mul(times);
             let input = repeat(&sequence, count);
