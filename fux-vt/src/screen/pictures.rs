@@ -88,6 +88,11 @@ pub struct Shown<'a> {
     pub cols: u16,
     /// The rows it covers.
     pub rows: u16,
+    /// Its first rows that are gone: scrolled off the top of a screen or
+    /// a region that keeps no history (DEC STD 070-9, 11.2.4), the rest
+    /// shown below them. Above the screen's top (`row` negative) or on
+    /// it, above a region's top margin, those rows hold none of it.
+    pub cropped: u16,
     /// The width and height in pixels of the cells it was laid out in.
     pub cell: (u16, u16),
 }
@@ -416,18 +421,31 @@ impl Screen {
     /// region that keeps no history, as a picture taller than the rows
     /// below the cursor scrolls its own top off), its rows from its bottom
     /// row up, those gone cropped (DEC STD 070-9, 11.2.4: what scrolls off
-    /// is gone, the rest stays); and the cells read of its rows changed
-    /// since it was last found whole (`threats.md` B09).
+    /// is gone, the rest stays): those above the oldest row kept, or above
+    /// the top margin, which the region's scrolls took; and the cells read
+    /// of its rows changed since it was last found whole (`threats.md`
+    /// B09), and, its top gone, of its first row left, which a row edit
+    /// rather than a scroll may have made another's.
     fn shown<'a>(&'a self, placement: &'a Placement) -> Option<Shown<'a>> {
         let grid = self.grid();
         let last = usize::from(placement.rows.saturating_sub(1));
-        let first = match self.top_index(placement) {
-            Some(first) => i64::try_from(first).ok()?,
+        let (first, cropped) = match self.top_index(placement) {
+            Some(first) => (i64::try_from(first).ok()?, None),
             None => {
-                let bottom = grid.screen_index_of(placement.bottom)?;
-                i64::try_from(bottom)
+                let bottom = i64::try_from(grid.screen_index_of(placement.bottom)?).ok()?;
+                let first = bottom.checked_sub(i64::try_from(last).ok()?)?;
+                let margin = i64::try_from(grid.history_len())
                     .ok()?
-                    .checked_sub(i64::try_from(last).ok()?)?
+                    .saturating_add(i64::from(grid.lines.first()));
+                let kept = if (first..=bottom).contains(&margin) {
+                    margin
+                } else {
+                    first.max(0)
+                };
+                (
+                    first,
+                    Some(usize::try_from(kept.saturating_sub(first)).ok()?),
+                )
             }
         };
         let at = |offset: usize| {
@@ -440,19 +458,12 @@ impl Screen {
             Some(row) if row.id() == placement.bottom => Some(placement.whole_at),
             Some(_) | None => None,
         };
-        for offset in 0..usize::from(placement.rows) {
-            let Some(row) = at(offset) else {
-                // Cropped off the top, or gone past the bottom: only the
-                // first is shown.
-                let cropped = first
-                    .checked_add(i64::try_from(offset).ok()?)
-                    .is_some_and(|index| index < 0);
-                if cropped {
-                    continue;
-                }
-                return None;
-            };
-            if since.is_some_and(|since| row.version() <= since) {
+        let skip = cropped.unwrap_or(0);
+        for offset in skip..usize::from(placement.rows) {
+            // Gone past the bottom: not shown.
+            let row = at(offset)?;
+            let unsure = cropped.is_some() && offset == skip;
+            if !unsure && since.is_some_and(|since| row.version() <= since) {
                 continue;
             }
             work!(cells, across);
@@ -472,6 +483,7 @@ impl Screen {
             col: placement.col,
             cols: across,
             rows: placement.rows,
+            cropped: u16::try_from(skip).ok()?,
             cell: placement.cell,
         })
     }
@@ -511,7 +523,8 @@ impl Screen {
 
     /// 32: each picture shown has its rows, every cell it covers there
     /// holding the placeholder, on the screen in use, but those cropped off
-    /// the top of a screen that kept no history (DEC STD 070-9, 11.2.4).
+    /// the top of a screen or region that kept no history (DEC STD 070-9,
+    /// 11.2.4).
     pub(super) fn check_pictures_shown(&self) -> Result<(), String> {
         let grid = self.grid();
         for shown in self.pictures() {
@@ -519,11 +532,8 @@ impl Screen {
                 .unwrap_or(i64::MAX)
                 .saturating_add(shown.row);
             let across = shown.cols.min(self.size().cols().saturating_sub(shown.col));
-            for offset in 0..i64::from(shown.rows) {
+            for offset in i64::from(shown.cropped)..i64::from(shown.rows) {
                 let index = top.saturating_add(offset);
-                if index < 0 {
-                    continue;
-                }
                 let row = usize::try_from(index).ok().and_then(|i| grid.row_at(i));
                 let whole = row.is_some_and(|row| {
                     (shown.col..shown.col.saturating_add(across)).all(|c| {

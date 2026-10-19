@@ -390,6 +390,7 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
         ("row", Json::Number(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
+        ("cropped", Json::int(shown.cropped)),
         ("cols", Json::int(shown.cols)),
         ("width", Json::int(shown.picture.width())),
         ("height", Json::int(shown.picture.height())),

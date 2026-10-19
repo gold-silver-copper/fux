@@ -138,7 +138,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                 .row
                 .saturating_add(i64::from(shown.rows))
                 .min(i64::from(rect.h()));
-            let start = shown.row.max(0);
+            let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
             let right = shown.col.saturating_add(shown.cols).min(rect.w());
             let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
                 continue;

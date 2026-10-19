@@ -1039,6 +1039,34 @@ fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
     Ok(())
 }
 
+/// What scrolls off a region's top margin is gone too (DEC STD 070-9,
+/// 11.2.4), and the rest of a picture stays: a picture of two rows on the
+/// region's first two, the region scrolled once, keeps its second row on
+/// the region's first, its top cropped (`Shown::cropped`); the row above
+/// the margin, which was never the picture's, is not taken as it, and the
+/// checker reads it so too (the terminal fuzz target, run 39307528271).
+#[test]
+fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1b[2;4r\x1b[1;1Habcd\x1b[2;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\\n\n")?;
+    let shown: Vec<_> = (p.screen().pictures())
+        .map(|s| (s.row, s.rows, s.cropped))
+        .collect();
+    assert_eq!(shown, [(0, 2, 1)]);
+    assert_eq!(lines(&p).first().map(|l| l.trim()), Some("abcd"));
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
 /// A picture being drawn lets another go only for the room it takes: a
 /// doubling of its pixels that could not fit even with every picture gone
 /// lets none go, and the exact growth that fits beside them is taken
