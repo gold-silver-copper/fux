@@ -115,3 +115,41 @@ fn a_frame_read_over_several_turns_is_shown_only_whole() -> Outcome {
         std::thread::sleep(Duration::from_millis(15));
     }
 }
+
+/// A pane drawing frame after frame, each read over several turns, holds
+/// up only itself (threats.md P24): the client is painted the rest of its
+/// screen meanwhile, that pane as it was last painted, never half a frame.
+#[test]
+fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    type_now(
+        &server,
+        "%2",
+        "sleep 2; while :; do printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
+         printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''; done",
+    )?;
+    // Both lines are typed before the frames begin: in an unoptimized
+    // build a turn takes seconds, past a new client's patience for the
+    // server's greeting. HELLO comes once they have.
+    type_now(&server, "%1", "sleep 4; echo HE''LLO")?;
+    let deadline = after(Duration::from_secs(20));
+    loop {
+        client.pump()?;
+        let text = client.text();
+        assert!(
+            !text.contains("XXXXXXXX"),
+            "half a frame was shown:\n{text}"
+        );
+        if text.contains("HELLO") {
+            return Ok(());
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the other pane was not painted:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
