@@ -1231,13 +1231,14 @@ impl Grid {
     /// `wrap`, as a glyph wrapping off live row `row` does: its line goes
     /// on, though it had ended there (`ENDS`).
     pub(crate) fn wrap_onto(&mut self, row: u16, wrapped: bool, version: u64) {
-        self.wrap(row, wrapped, version);
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
-            && m.flags & ENDS != 0
         {
-            m.version = version;
-            m.flags &= !ENDS;
+            let flags = (m.flags & !(WRAPPED | ENDS)) | if wrapped { WRAPPED } else { 0 };
+            if flags != m.flags {
+                m.version = version;
+                m.flags = flags;
+            }
         }
     }
 
