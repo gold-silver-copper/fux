@@ -215,6 +215,11 @@ impl Snapshot {
     /// so comparing two masked snapshots compares only what it can.
     pub fn masked(&self, can: &Can) -> Snapshot {
         let mut s = self.clone();
+        if !can.last_wrapped
+            && let Some(last) = s.screen.last_mut()
+        {
+            last.wrapped = false;
+        }
         for line in &mut s.screen {
             line.wrapped &= can.wrapped;
             line.prompt &= can.prompt;
@@ -894,6 +899,40 @@ pub fn side_by_side_beside(
 #[cfg(test)]
 mod tests {
     use super::{Cell, Field, Line, Snapshot, Style, Width};
+
+    /// An engine that can't tell the last row's soft wrap (xterm's print)
+    /// is not compared on it, and is on every other row's.
+    #[test]
+    fn the_last_rows_soft_wrap_is_compared_where_it_is_told() {
+        let line = |wrapped| Line {
+            unread_from: None,
+            prompt: false,
+            cells: Vec::new(),
+            wrapped,
+        };
+        let fux = Snapshot {
+            screen: vec![line(true), line(true)],
+            ..Snapshot::default()
+        };
+        let other = Snapshot {
+            screen: vec![line(false), line(false)],
+            ..Snapshot::default()
+        };
+        let can = crate::engine::Can {
+            last_wrapped: false,
+            ..crate::engine::Can::ALL
+        };
+        let keys: Vec<String> = super::differences(&fux.masked(&can), &other.masked(&can))
+            .into_iter()
+            .map(|d| d.key)
+            .collect();
+        assert_eq!(keys, ["row 0 soft-wrapped"]);
+        let all = crate::engine::Can::ALL;
+        assert_eq!(
+            super::differences(&fux.masked(&all), &other.masked(&all)).len(),
+            2
+        );
+    }
 
     /// The device's state DA claims is compared where an engine can tell
     /// it, and with no one where it can't (HAR-46): a double-width row, a

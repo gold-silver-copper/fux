@@ -549,9 +549,17 @@ impl Case {
         self.run(panel).is_ok_and(|o| !o.agrees())
     }
 
-    /// Every byte of its output, in order, its resizes left out.
-    pub fn output(&self) -> Vec<u8> {
-        (self.steps.iter())
+    /// The output the engines had been given where `outcome` was judged:
+    /// that of the steps run by then, so that what a later step writes
+    /// does not decide what an earlier one made (the second of two regional
+    /// indicators written apart makes the first no longer alone).
+    pub fn output_judged(&self, outcome: &Outcome) -> Vec<u8> {
+        self.output_until(outcome.step.unwrap_or(self.steps.len()))
+    }
+
+    /// Every byte the first `steps` steps write, in order, resizes left out.
+    fn output_until(&self, steps: usize) -> Vec<u8> {
+        (self.steps.iter().take(steps))
             .flat_map(|s| match s {
                 Step::Output(snippets) => snippets.iter().flat_map(|x| x.bytes.clone()).collect(),
                 Step::Resize(..) => Vec::new(),
@@ -941,6 +949,42 @@ mod tests {
     use crate::snapshot::{self, Cell, Color, Field, Line, Snapshot, Style, Width};
 
     const PEN: Color = Color::Rgb(10, 20, 30);
+
+    /// A departure is looked for in the output given by the step where
+    /// the case was judged, not in what later steps write.
+    #[test]
+    fn the_output_judged_is_that_of_the_steps_run() {
+        let step = |b: &[u8]| {
+            Step::Output(vec![Snippet {
+                family: 0,
+                bytes: b.to_vec(),
+            }])
+        };
+        let case = Case {
+            rows: 1,
+            cols: 2,
+            history: 0,
+            reflow: true,
+            newline_before_resize: true,
+            steps: vec![step("\u{1f1f8}".as_bytes()), step("\u{1f1fa}".as_bytes())],
+            subject: FUX_VT,
+        };
+        let outcome = |step| super::Outcome {
+            step,
+            fux: snapshot::Snapshot::default(),
+            verdicts: Vec::new(),
+            abstained: Vec::new(),
+        };
+        assert_eq!(
+            case.output_judged(&outcome(Some(1))),
+            "\u{1f1f8}".as_bytes()
+        );
+        assert_eq!(case.output_judged(&outcome(Some(0))), b"");
+        assert_eq!(
+            case.output_judged(&outcome(None)),
+            "\u{1f1f8}\u{1f1fa}".as_bytes()
+        );
+    }
 
     /// A random case's RIS begins a write of its own (FA-E2-1): in no
     /// write of the reset family's cases does RIS follow other output.

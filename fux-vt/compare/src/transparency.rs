@@ -110,6 +110,7 @@ pub const SHOWN: Can = Can {
     tab_stops: false,
     renditions: false,
     protection: false,
+    last_wrapped: true,
 };
 
 /// The most the server reads from a pane at once (its read buffer).

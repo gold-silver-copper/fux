@@ -1287,14 +1287,24 @@ pub struct Departure {
 /// family, and resize, which reflows where xterm does not and differs from
 /// Ghostty's reflow by design (its status).
 pub const DEPARTURES: &[(&str, &str, &[Departure])] = &[
-    ("scroll", "xterm", &[BOTTOM_PAST_SCREEN, SCROLL_ZERO]),
+    (
+        "scroll",
+        "xterm",
+        &[BOTTOM_PAST_SCREEN, SCROLL_ZERO, REGION_HISTORY],
+    ),
     ("origin", "xterm", &[BOTTOM_PAST_SCREEN, REGION_HISTORY]),
     ("alternate", "xterm", &[]),
     ("insert-mode", "xterm", &[]),
     (
         "clusters",
         "ghostty",
-        &[LONE_INDICATOR, PREPEND, WIDENED_AT_THE_EDGE],
+        &[
+            LONE_INDICATOR,
+            PREPEND,
+            WIDENED_AT_THE_EDGE,
+            WIDE_ON_ONE_COLUMN,
+            MARK_ON_ONE_COLUMN,
+        ],
     ),
 ];
 
@@ -1363,10 +1373,70 @@ const PREPEND: Departure = Departure {
     fields: &["*"],
 };
 
+/// The grapheme clusters of the text in `bytes`, as fux-vt joins what it
+/// prints (`fux_vt::continues_cluster`), controls and sequences breaking
+/// them (an ESC ends a cluster; what follows it is read as text, which
+/// only adds clusters).
+fn clusters_of(bytes: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut joining = false;
+    for c in chars(bytes) {
+        if c.is_control() {
+            joining = false;
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if joining && fux_vt::continues_cluster(last, c) => last.push(c),
+            _ => out.push(c.to_string()),
+        }
+        joining = true;
+    }
+    out
+}
+
+/// Whether a cluster in `bytes` takes two columns though its first
+/// character takes one or none: a join widened it (VS16, a flag, a
+/// conjunct, an emoji modifier on a narrow base).
+fn widened(bytes: &[u8]) -> bool {
+    clusters_of(bytes).iter().any(|cluster| {
+        fux_vt::str_width(cluster) >= 2
+            && (cluster.chars().next())
+                .and_then(fux_vt::char_width)
+                .is_some_and(|w| w < 2)
+    })
+}
+
 const WIDENED_AT_THE_EDGE: Departure = Departure {
-    why: "a cluster VS16 widens stays narrow in the last column, where Ghostty wraps it (the \
-          family's status)",
-    when: |bytes, _, _| chars(bytes).contains(&'\u{fe0f}'),
+    why: "a cluster a join widens (VS16, a flag, a conjunct) stays narrow in the last column, \
+          as a wide glyph would not fit there, where Ghostty wraps it (the family's status, \
+          README's Grapheme clusters row)",
+    when: |bytes, _, _| widened(bytes),
+    fields: &["*"],
+};
+
+const WIDE_ON_ONE_COLUMN: Departure = Departure {
+    why: "on a one-column screen a glyph or cluster two columns wide is dropped or kept narrow, \
+          as xterm drops a wide glyph there (the `wide` family, decided by xterm), where Ghostty \
+          keeps it with a wrap pending",
+    when: |bytes, _, cols| {
+        cols < 2
+            && clusters_of(bytes)
+                .iter()
+                .any(|cluster| fux_vt::str_width(cluster) >= 2)
+    },
+    fields: &["*"],
+};
+
+const MARK_ON_ONE_COLUMN: Departure = Departure {
+    why: "on a one-column screen a character of no width joins the glyph waiting to wrap, as \
+          UAX #29 (GB9) joins it and xterm, alacritty, libvterm, wezterm, vt100 and tmux do, \
+          where Ghostty drops it",
+    when: |bytes, _, cols| {
+        cols < 2
+            && chars(bytes)
+                .iter()
+                .any(|&c| fux_vt::char_width(c) == Some(0))
+    },
     fields: &["*"],
 };
 
@@ -1468,6 +1538,19 @@ mod tests {
         assert!(lone("a\u{1f1fa}b".as_bytes(), 4, 10));
         assert!(!lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 10));
         assert!(lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 1));
+        let widened = super::WIDENED_AT_THE_EDGE.when;
+        assert!(widened("\u{2764}\u{fe0f}".as_bytes(), 1, 3));
+        assert!(widened("\u{1f44d}\u{1f1fa}\u{1f1f8}".as_bytes(), 1, 3));
+        assert!(widened("aa\u{915}\u{94d}\u{937}".as_bytes(), 3, 3));
+        assert!(!widened("\u{4e00}e\u{301}".as_bytes(), 1, 3));
+        assert!(!widened("\u{1f1fa}a\u{1f1f8}".as_bytes(), 1, 3));
+        let one = super::WIDE_ON_ONE_COLUMN.when;
+        assert!(one("\u{1100}".as_bytes(), 1, 1));
+        assert!(!one("\u{1100}".as_bytes(), 1, 2));
+        assert!(!one("e\u{301}".as_bytes(), 1, 1));
+        let mark = super::MARK_ON_ONE_COLUMN.when;
+        assert!(mark("a\u{300}".as_bytes(), 1, 1));
+        assert!(!mark("a\u{300}".as_bytes(), 1, 2));
         assert!((super::SCROLL_ZERO.when)(b"\x1b[0T", 4, 10));
         assert!(!(super::SCROLL_ZERO.when)(b"\x1b[T\x1b[0S", 4, 10));
         // That each is beside an engine there is, engine.rs's test says:

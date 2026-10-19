@@ -1259,7 +1259,7 @@ fn covering(
     outcome: &case::Outcome,
     departures: &[families::Departure],
 ) -> Option<usize> {
-    let bytes = case.output();
+    let bytes = case.output_judged(outcome);
     departures.iter().position(|d| {
         (d.when)(&bytes, case.rows, case.cols)
             && (outcome.verdicts.iter())

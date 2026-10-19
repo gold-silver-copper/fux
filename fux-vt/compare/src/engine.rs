@@ -128,6 +128,9 @@ pub struct Can {
     pub renditions: bool,
     /// Which cells DECSCA or SPA protects from selective erase.
     pub protection: bool,
+    /// Whether the screen's last row's soft wrap: xterm's print ends that
+    /// row with no LF whether or not it is wrapped.
+    pub last_wrapped: bool,
 }
 
 impl Can {
@@ -169,6 +172,7 @@ impl Can {
         tab_stops: true,
         renditions: true,
         protection: true,
+        last_wrapped: true,
     };
 
     /// What only fux-vt's adapter reads of the device's state (HAR-46):
@@ -222,6 +226,7 @@ impl Can {
             tab_stops: self.tab_stops && other.tab_stops,
             renditions: self.renditions && other.renditions,
             protection: self.protection && other.protection,
+            last_wrapped: self.last_wrapped && other.last_wrapped,
         }
     }
 
@@ -264,6 +269,7 @@ impl Can {
             (self.tab_stops, "tab stops"),
             (self.renditions, "line renditions"),
             (self.protection, "protection"),
+            (self.last_wrapped, "the last row's soft wrap"),
         ];
         fields
             .iter()

@@ -121,6 +121,8 @@ pub const KIND: Kind = Kind {
         // The shape by DECRQSS, the stops by DECTABSR, the renditions in the
         // print; protection it can't tell.
         protection: false,
+        // Its print ends the last row with no LF either way.
+        last_wrapped: false,
         ..Can::ALL
     },
     blanks: Blanks::XTERM,
@@ -603,7 +605,7 @@ impl Xterm {
                 after
             };
         }
-        // The last row has no LF either way.
+        // The last row has no LF either way (`Can::last_wrapped`).
         if let Some(last) = rows.last_mut() {
             last.1 = false;
         }
