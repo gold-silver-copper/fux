@@ -304,10 +304,10 @@ fux-vt/src/grid.rs:1019:29: delete ! in Grid::find_table_style
 fux-vt/src/grid.rs:1028:26: replace || with && in Grid::find_table_style
 fux-vt/src/history.rs:414:9: replace History::charge with ()
 # B11 and B13 [new] P22's memo(place, op): not written (decision 826: no per-grid memo); replaced by a 16-entry memo local to the call in Screen::change_attributes (screen.rs:3135-3154): its reset on a sweep, its hit test and its slot
-fux-vt/src/screen.rs:3538:23: replace != with == in Screen::change_attributes
-fux-vt/src/screen.rs:3542:73: replace == with != in Screen::change_attributes
-fux-vt/src/screen.rs:3549:51: replace % with / in Screen::change_attributes
-fux-vt/src/screen.rs:3549:51: replace % with + in Screen::change_attributes
+fux-vt/src/screen.rs:3545:23: replace != with == in Screen::change_attributes
+fux-vt/src/screen.rs:3549:73: replace == with != in Screen::change_attributes
+fux-vt/src/screen.rs:3556:51: replace % with / in Screen::change_attributes
+fux-vt/src/screen.rs:3556:51: replace % with + in Screen::change_attributes
 # B14 [now] Links::insert's limit (link.rs:297 -> :418); LINK_BYTES = 4 << 20 (link.rs:32)
 fux-vt/src/link.rs:449:39: replace > with == in Links::insert
 fux-vt/src/link.rs:449:39: replace > with < in Links::insert
@@ -631,44 +631,44 @@ fux-vt/src/compact.rs:413:9: replace Text::long_limit -> usize with 0
 fux-vt/src/compact.rs:413:9: replace Text::long_limit -> usize with 1
 
 # B31 [new] TXT-2 append_failed_here: not written. Replaced by `Kept::Full` in the last print's state (screen.rs:2079, `kept = known != Kept::Full`; join stops calling line.append once one failed there, :2082), cleared with the last print by break_cluster (:2152)
-fux-vt/src/screen.rs:2309:30: replace != with == in Screen::join
-fux-vt/src/screen.rs:2312:29: replace && with || in Screen::join
-fux-vt/src/screen.rs:2383:9: replace Screen::break_cluster with ()
+fux-vt/src/screen.rs:2316:30: replace != with == in Screen::join
+fux-vt/src/screen.rs:2319:29: replace && with || in Screen::join
+fux-vt/src/screen.rs:2390:9: replace Screen::break_cluster with ()
 # B31 store_long compacts only when compacting would make room, `live_long() + text.len() <= limit` (compact.rs:585, "threats.md B31")
 fux-vt/src/compact.rs:585:60: replace <= with > in Line<'_, C>::store_long
 
 # B32 to B36 [now] REP: Screen::repeat's body (faf8bf00 screen.rs:1470:9 -> 9a38df95 :1488 -> now :2176)
-fux-vt/src/screen.rs:2409:9: replace Screen::repeat -> Result<(), Error> with Ok(())
+fux-vt/src/screen.rs:2416:9: replace Screen::repeat -> Result<(), Error> with Ok(())
 # B33 and B34 [now] REP: per_row's zero filter (faf8bf00 screen.rs:1478:80 -> :1496 -> now :2184:80)
-fux-vt/src/screen.rs:2446:67: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2446:67: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2446:67: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2453:67: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2453:67: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2453:67: replace > with >= in Screen::copies_needed
 # B33 [now] REP: the ASCII run loop (faf8bf00 screen.rs:1495:25 -> :1513 -> now :2208:25, `while count > 0`)
-fux-vt/src/screen.rs:2496:25: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2496:25: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2496:25: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2503:25: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2503:25: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2503:25: replace > with >= in Screen::copies
 # B33: the other copies' loop (`while count > 0 && !self.stopped`), written since d6cbde3c
-fux-vt/src/screen.rs:2518:21: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2518:21: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2518:21: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2525:21: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2525:21: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2525:21: replace > with >= in Screen::copies
 # B33: REP's copies counted before they are made (Screen::copies_needed, B's 3e6f3c3a), its clamps for a glyph wider than the screen and for a cursor below the region, and the copies a stop leaves (Screen::copies)
-fux-vt/src/screen.rs:2427:9: replace Screen::copies_needed -> usize with 0
-fux-vt/src/screen.rs:2427:9: replace Screen::copies_needed -> usize with 1
-fux-vt/src/screen.rs:2429:18: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2429:18: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2429:18: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2438:36: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2438:36: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2438:36: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2487:22: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2487:22: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2487:22: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2434:9: replace Screen::copies_needed -> usize with 0
+fux-vt/src/screen.rs:2434:9: replace Screen::copies_needed -> usize with 1
+fux-vt/src/screen.rs:2436:18: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2436:18: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2436:18: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2445:36: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2445:36: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2445:36: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2494:22: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2494:22: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2494:22: replace > with >= in Screen::copies
 # B33 [new] repeat_clamp: not written as a function. The clamp is inline in Screen::repeat (screen.rs:2190-2199):
 # `full` from history's row capacity `history_bytes() / 32` (B33's budget / 32 rows), then `count.checked_sub(full)`,
 # which has no operator mutant. Its one mutable site is the `/ 32` of history's row capacity, below; the
 # clamp itself is guarded by bounds/rows.rs b33 (2x10, 1 KiB of history, count 65,535: cells <= 720).
-fux-vt/src/screen.rs:2455:40: replace / with % in Screen::copies_needed
-fux-vt/src/screen.rs:2455:40: replace / with * in Screen::copies_needed
+fux-vt/src/screen.rs:2462:40: replace / with % in Screen::copies_needed
+fux-vt/src/screen.rs:2462:40: replace / with * in Screen::copies_needed
 # B34a [new] joins_full_cluster: written as Printed::full (screen.rs:162, `self.kept == Kept::Full`), which repeat's
 # non-ASCII loop reads at screen.rs:2219 to skip copies once the cluster is full
 fux-vt/src/screen.rs:177:9: replace Printed::full -> bool with true
