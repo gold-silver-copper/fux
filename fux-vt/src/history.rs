@@ -54,6 +54,18 @@ const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
 const LINK_BUCKET: usize = (size_of::<(u64, KeptLinks)>() + 1) * 8 / 7 + 1;
 /// The bytes `History::renditions` takes for each row of its capacity.
 const RENDITION: usize = size_of::<(u64, LineRendition)>();
+/// The bytes `History::behind` takes for each row of its capacity: a
+/// bucket is the row's identity, its `Behind` and the map's control byte.
+const BEHIND_BUCKET: usize = (size_of::<(u64, Behind)>() + 1) * 8 / 7 + 1;
+
+/// A row that came behind (`BEHIND`): its number in the order rows came,
+/// and the key `History::position` ranks it by, the identity of the last
+/// row before it that did not come behind (0 if none).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Behind {
+    number: u64,
+    key: u64,
+}
 
 /// A map by a row's number in the order rows came.
 type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
@@ -111,6 +123,12 @@ const TEXT: u8 = 8;
 /// keeps it, but its line ends with it, the row below erased whole since
 /// (`Row::continues`). History keeps it apart (`ended`).
 pub(crate) const ENDS: u8 = 16;
+/// A screen row's flag: a row above it, here or in history, may have a
+/// larger identity, as one made above it later has (RI, IL, a region's
+/// scroll, a reflow). The others' identities rise from history's oldest
+/// to the screen's last row, so `History::position` finds them by halves;
+/// history notes these apart (`behind`).
+pub(crate) const BEHIND: u8 = 32;
 
 impl Kept {
     /// What `row` is kept as, its cells at `start` in block `block`.
@@ -267,6 +285,10 @@ pub(crate) struct History {
     /// The rows whose line ends with them though soft-wrapped (`ENDS`), by
     /// number, oldest first: as rare.
     ended: VecDeque<u64>,
+    /// The rows that came behind (`BEHIND`), by identity; and some let go
+    /// since, until `keep_behind` next lets them go (`Behind::number`
+    /// before the oldest's).
+    behind: ByRow<Behind>,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
     /// The bytes of the rows' text.
@@ -311,6 +333,7 @@ impl Clone for History {
             linked: self.linked.clone(),
             renditions: self.renditions.clone(),
             ended: self.ended.clone(),
+            behind: self.behind.clone(),
             cells: self.cells,
             text: self.text,
             budget: self.budget,
@@ -379,6 +402,7 @@ impl History {
             .saturating_add(self.linked.capacity().saturating_mul(LINK_BUCKET))
             .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
             .saturating_add(self.ended.capacity().saturating_mul(size_of::<u64>()))
+            .saturating_add(self.behind.capacity().saturating_mul(BEHIND_BUCKET))
     }
     /// The cells a block holds: a block's worth (`BLOCK`), or for a small
     /// budget an eighth of it, so that a block is never most of what
@@ -437,6 +461,7 @@ impl History {
         self.linked = ByRow::default();
         self.renditions = VecDeque::new();
         self.ended = VecDeque::new();
+        self.behind = ByRow::default();
         self.recount();
     }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
@@ -464,10 +489,15 @@ impl History {
                 continue;
             };
             let kept = found.kept;
+            let behind = if old.behind.contains_key(&kept.id.0) {
+                BEHIND
+            } else {
+                0
+            };
             self.push(Arriving {
                 id: kept.id,
                 version: kept.version,
-                flags: found.flags,
+                flags: found.flags | behind,
                 cells: found.cells,
                 width: kept.width(),
             })?;
@@ -553,19 +583,40 @@ impl History {
             links,
         })
     }
-    /// Where the row with identity `id` is, oldest first.
+    /// Where the row with identity `id` is, oldest first: one row read for
+    /// a row that came behind (`behind`), else at most ⌊log2(rows)⌋ + 1 by
+    /// halves (`threats.md` B40). Ranked by its identity, or one that came
+    /// behind by its `key`, the rows rise, and those before a row that did
+    /// not come behind rank below it.
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
-        // A chunk at a time, each a slice searched as such.
-        let mut before = 0usize;
+        if let Some(behind) = self.behind.get(&id.0) {
+            spend!(rows, 1);
+            return self.index_of_number(behind.number);
+        }
+        let (mut low, mut high, mut read) = (0usize, self.rows.len(), 0usize);
         let mut at = None;
-        for slice in self.rows.slices() {
-            if let Some(found) = slice.iter().position(|kept| kept.id == id) {
-                at = before.checked_add(found);
+        while low < high {
+            let mid = low.saturating_add(high.saturating_sub(low) / 2);
+            read = read.saturating_add(1);
+            let Some(kept) = self.rows.get(mid) else {
+                break;
+            };
+            let key = match self.behind.is_empty() {
+                true => None,
+                false => self.behind.get(&kept.id.0).map(|b| b.key),
+            };
+            if key.is_none() && kept.id == id {
+                at = Some(mid);
                 break;
             }
-            before = before.saturating_add(slice.len());
+            // A row behind ranked as `id` is after the row `id` is.
+            if key.unwrap_or(kept.id.0) < id.0 {
+                low = mid.saturating_add(1);
+            } else {
+                high = mid;
+            }
         }
-        spend!(rows, at.map_or(self.rows.len(), |at| at.saturating_add(1)));
+        spend!(rows, read);
         at
     }
     /// The links of each row that has any, with its index, oldest first.
@@ -681,10 +732,58 @@ impl History {
         if (row.flags >> RENDITION_SHIFT) & 3 != 0 {
             self.keep_rendition(LineRendition::from_bits(row.flags >> RENDITION_SHIFT));
         }
-        if row.flags & ENDS != 0 {
-            let _ = self.keep_ended();
+        if row.flags & (ENDS | BEHIND) != 0 {
+            self.keep_marked(row.flags, row.id);
         }
         Ok(())
+    }
+
+    /// Notes what `flags` says of the row pushed last, `id`: that its line
+    /// ends with it (`ENDS`), that it came behind (`BEHIND`). Out of line,
+    /// as most rows are neither.
+    #[cold]
+    #[inline(never)]
+    fn keep_marked(&mut self, flags: u8, id: RowId) {
+        if flags & ENDS != 0 {
+            let _ = self.keep_ended();
+        }
+        if flags & BEHIND != 0 {
+            self.keep_behind(id);
+        }
+    }
+    /// Notes that the row pushed last, `id`, came behind: ranked as the row
+    /// before it is. The rows let go since the notes were last let go go
+    /// first, once they are as many as those kept, and 64.
+    fn keep_behind(&mut self, id: RowId) {
+        let Some(last) = self.rows.len().checked_sub(1) else {
+            return;
+        };
+        let Some(number) = self.number(last) else {
+            return;
+        };
+        let key = last
+            .checked_sub(1)
+            .and_then(|i| self.rows.get(i))
+            .map_or(0, |before| {
+                self.behind.get(&before.id.0).map_or(before.id.0, |b| b.key)
+            });
+        if self.behind.len() >= self.behind.capacity() {
+            let first = self.first_row;
+            self.behind.retain(|_, b| b.number >= first);
+            work!(rows, self.behind.capacity());
+        }
+        // No memory for it: history goes (threats.md 1.3), so that
+        // `position` never ranks a row wrongly.
+        if self.behind.try_reserve(1).is_err() {
+            while !self.rows.is_empty() {
+                self.pop_run();
+            }
+            self.release();
+            crate::degraded();
+            return;
+        }
+        self.behind.insert(id.0, Behind { number, key });
+        self.maps_changed();
     }
 
     /// Notes the rendition of the row pushed last, which is not single
@@ -884,6 +983,9 @@ impl History {
         }
         if shrink(self.ended.capacity(), self.ended.len()) {
             self.ended.shrink_to(self.ended.len());
+        }
+        if shrink(self.behind.capacity(), self.behind.len()) {
+            self.behind.shrink_to(self.behind.len());
         }
         if self.maps_bytes() != self.maps {
             self.recount();
@@ -1121,7 +1223,43 @@ impl History {
             )?;
             after = number.saturating_add(1);
         }
-        Ok(())
+        self.check_behind()
+    }
+
+    /// 20: the rows that did not come behind rise, by identity; each that
+    /// came behind is noted where it is, ranked as the last before it that
+    /// did not (or as one let go, before every such row kept); and the
+    /// other notes are of rows let go.
+    fn check_behind(&self) -> Result<(), String> {
+        let (mut rising, mut key, mut noted) = (None::<u64>, None::<u64>, 0usize);
+        for (i, kept) in self.rows.iter().enumerate() {
+            let id = kept.id.0;
+            match self.behind.get(&id) {
+                Some(behind) => {
+                    let ranked = match rising {
+                        Some(last) => behind.key == last,
+                        None => key.is_none_or(|key| behind.key >= key),
+                    };
+                    crate::check::ensure(Some(behind.number) == self.number(i) && ranked, || {
+                        format!("row {i}, {id}, is noted behind as {behind:?}")
+                    })?;
+                    key = Some(behind.key);
+                    noted = noted.saturating_add(1);
+                }
+                None => {
+                    crate::check::ensure(
+                        rising.is_none_or(|last| last < id) && key.is_none_or(|key| key < id),
+                        || format!("row {i}, {id}, out of order after {rising:?}"),
+                    )?;
+                    (rising, key) = (Some(id), Some(id));
+                }
+            }
+        }
+        let first = self.first_row;
+        let kept = self.behind.values().filter(|b| b.number >= first).count();
+        crate::check::ensure(kept == noted, || {
+            format!("{kept} rows noted behind, {noted} kept")
+        })
     }
 
     /// 21: within the budget, and the most rows and cells a grid holds.
@@ -1163,6 +1301,7 @@ impl History {
                 self.renditions.capacity(),
                 self.renditions.len(),
             ),
+            ("behind", self.behind.capacity(), self.behind.len()),
         ] {
             crate::check::ensure(capacity <= most_room(len), || {
                 format!("the {name} holds room for {capacity}, keeping {len}")
@@ -1228,6 +1367,20 @@ mod faults {
         shows("history.flags", |h| {
             h.renditions
                 .push_back((u64::MAX, LineRendition::DoubleWidth));
+        });
+        shows("history.flags", |h| {
+            h.behind.insert(
+                3,
+                Behind {
+                    number: u64::MAX,
+                    key: 0,
+                },
+            );
+        });
+        shows("history.flags", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.id = RowId(1);
+            }
         });
         shows("history.budget", |h| h.budget = 0);
         shows("history.capacities", |h| h.rows.reserve_more(1000));

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
-use crate::history::{Arriving, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
+use crate::history::{Arriving, BEHIND, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
 use crate::screen::Saved;
 use crate::style::Styles;
@@ -185,7 +185,8 @@ impl Meta {
     }
     /// The row with rendition `rendition`, its other flags kept.
     fn with_rendition(mut self, rendition: LineRendition) -> Self {
-        self.flags = (self.flags & (WRAPPED | PROMPT | ENDS)) | rendition.bits() << RENDITION_SHIFT;
+        self.flags =
+            (self.flags & (WRAPPED | PROMPT | ENDS | BEHIND)) | rendition.bits() << RENDITION_SHIFT;
         self
     }
 }
@@ -412,6 +413,27 @@ pub(crate) struct Grid {
     unmade: bool,
     /// The kitty keyboard flags the program on this screen pushed.
     pub keyboard: KeyboardStack,
+    /// Which rows are known to carry `BEHIND` (`flag_behind`).
+    flagged: Flagged,
+    /// The largest identity of the rows a resize has kept so far
+    /// (`keep_row`).
+    kept_max: u64,
+}
+
+/// What a scroll of the region down to row `bottom` knows of the rows
+/// that carry `BEHIND`, so that scrolling the same region again flags
+/// none anew. A scroll of a region with another bottom forgets it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Flagged {
+    bottom: u16,
+    /// Every row below `bottom` carries it, while the screen's last row is
+    /// this one: rows below the region change only with a scroll of the
+    /// whole screen, which makes a new last row.
+    below: Option<RowId>,
+    /// Every row below row `.0` carries it, while rows `.0` and `bottom`
+    /// are `.1` and `.2`: a scroll up makes a new row at `bottom`, and one
+    /// down another at `.0`.
+    under: Option<(u16, RowId, RowId)>,
 }
 
 /// Which way a scroll moves rows: up, the rows leaving the top going into
@@ -529,6 +551,8 @@ impl Grid {
             narrow: 0,
             unmade: false,
             keyboard: KeyboardStack::default(),
+            flagged: Flagged::default(),
+            kept_max: 0,
         }
     }
 
@@ -568,11 +592,17 @@ impl Grid {
     /// `history`; else on the screen. Past `written` its cells are blank.
     fn keep_row(
         &mut self,
-        meta: Meta,
+        mut meta: Meta,
         (cells, written): (&[Compact], usize),
         (text, links): (Option<Text>, Option<RowLinks>),
         history: bool,
     ) -> Result<(), Error> {
+        // A row kept after one with a larger identity came behind it.
+        if meta.id.0 < self.kept_max {
+            meta.flags |= BEHIND;
+        } else {
+            self.kept_max = meta.id.0;
+        }
         if !history {
             self.push_screen_row(meta, cells, text, links);
             return Ok(());
@@ -1976,6 +2006,14 @@ impl Grid {
         if count == 0 {
             return;
         }
+        if self.flagged.bottom != bottom {
+            self.flagged = Flagged {
+                bottom,
+                ..Flagged::default()
+            };
+        }
+        // Down, the rows at the region's top and bottom before it moves.
+        let ends = (!up).then(|| (self.screen_id(top), self.screen_id(bottom)));
         if count == 1 {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
@@ -2017,6 +2055,71 @@ impl Grid {
         if !self.links.none() {
             self.unlink_rows(region, count, up);
         }
+        match ends {
+            None => self.flag_below(bottom),
+            Some(ends) => self.flag_under(top, count, ends),
+        }
+    }
+
+    /// The identity of the screen's row `row`.
+    fn screen_id(&self, row: u16) -> Option<RowId> {
+        self.slot(row)
+            .and_then(|slot| self.meta.get(slot))
+            .map(|m| m.id)
+    }
+    /// Flags `BEHIND` on rows `from` to the screen's last.
+    fn flag_behind(&mut self, from: u16) {
+        let rows = self.size.rows();
+        work!(rows, rows.saturating_sub(from));
+        for row in from..rows {
+            if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
+                m.flags |= BEHIND;
+            }
+        }
+    }
+    /// After a scroll up of the region down to `bottom`, which made new
+    /// rows in it: the rows below it came behind them.
+    #[inline]
+    fn flag_below(&mut self, bottom: u16) {
+        let last = self.size.rows().saturating_sub(1);
+        if bottom >= last {
+            return;
+        }
+        let at_last = self.screen_id(last);
+        if self.flagged.below != at_last {
+            self.flag_behind(bottom.saturating_add(1));
+            self.flagged.below = at_last;
+        }
+    }
+    /// After a scroll down of `count` rows from `top`, which made them
+    /// anew: every row below the top came behind a row above it. Scrolled
+    /// down by one from the same top again, only the row the last made is
+    /// not flagged yet. `ends` are the rows at `top` and the region's bottom before.
+    #[cold]
+    #[inline(never)]
+    fn flag_under(&mut self, top: u16, count: u16, ends: (Option<RowId>, Option<RowId>)) {
+        let bottom = self.flagged.bottom;
+        let again = match (self.flagged.under, ends) {
+            (Some((under, at_top, at_bottom)), (Some(t), Some(b))) => {
+                count == 1 && under == top && at_top == t && at_bottom == b
+            }
+            _ => false,
+        };
+        // Rows made down from the top are made bottom first: each but the
+        // top one is behind the one above it.
+        let from = top.saturating_add(1);
+        if again {
+            work!(rows, 1);
+            if let Some(m) = self.slot(from).and_then(|slot| self.meta.get_mut(slot)) {
+                m.flags |= BEHIND;
+            }
+        } else {
+            self.flag_behind(from);
+        }
+        self.flagged.under = self
+            .screen_id(top)
+            .zip(self.screen_id(bottom))
+            .map(|(t, b)| (top, t, b));
     }
 
     /// Moves the screen's top row into history, the oldest row there going
@@ -2816,8 +2919,28 @@ impl Grid {
         history.chain(screen)
     }
 
-    /// 7: the order is a permutation of the slots, one a row.
+    /// 7: the order is a permutation of the slots, one a row; and 20, a
+    /// screen row without `BEHIND` has an identity larger than every row's
+    /// above it, in history too.
     fn check_order(&self) -> Result<(), String> {
+        self.check_permutation()?;
+        let history = (0..self.history.len()).filter_map(|i| self.history.kept(i));
+        let mut most = history.map(|kept| kept.id.0).max();
+        for row in 0..self.size.rows() {
+            let Some(m) = self.slot(row).and_then(|slot| self.meta.get(slot)) else {
+                continue;
+            };
+            let rises = most.is_none_or(|most| most < m.id.0);
+            crate::check::ensure(rises || m.flags & BEHIND != 0, || {
+                format!("row {row}, {:?}, is behind {most:?} and not flagged", m.id)
+            })?;
+            most = most.max(Some(m.id.0));
+        }
+        Ok(())
+    }
+
+    /// 7: the order is a permutation of the slots, one a row.
+    fn check_permutation(&self) -> Result<(), String> {
         let rows = usize::from(self.size.rows());
         crate::check::ensure(self.order.len() == rows, || {
             format!("{} rows ordered, {rows} rows", self.order.len())
@@ -3102,6 +3225,12 @@ mod faults {
         shows("grid.order", |g| {
             if let [first, second, ..] = g.order.slots.as_mut_slice() {
                 *first = *second;
+            }
+        })?;
+        // A row above the others made older than they are, none flagged.
+        shows("grid.order", |g| {
+            if let Some(m) = g.slot(0).and_then(|slot| g.meta.get_mut(slot)) {
+                m.id = RowId(u64::MAX);
             }
         })?;
         shows("grid.slots", |g| {

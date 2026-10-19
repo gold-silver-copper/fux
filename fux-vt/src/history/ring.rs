@@ -167,16 +167,6 @@ impl Ring {
     pub(crate) fn back_mut(&mut self) -> Option<&mut Kept> {
         self.last.last_mut()
     }
-    /// The chunks' records, oldest first, a slice a chunk.
-    #[inline]
-    pub(crate) fn slices(&self) -> impl Iterator<Item = &[Kept]> {
-        let head = self.head;
-        (self.full().iter().chain([&self.last]).enumerate()).map(move |(n, chunk)| {
-            chunk
-                .get(if n == 0 { head } else { 0 }..)
-                .unwrap_or_default()
-        })
-    }
     /// The records, oldest first.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Kept> {
         let head = self.head;
