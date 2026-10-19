@@ -15,7 +15,8 @@ use std::sync::Arc;
 /// Printed as a blank.
 pub const PLACEHOLDER: &str = "\u{10EEEE}";
 
-/// The most pictures a screen keeps; a new one past it lets the oldest go.
+/// The most pictures kept, on both screens together; a new one past it
+/// lets one go, those no longer shown first (`Screen::victim`).
 const MAX_PICTURES: usize = 64;
 
 /// The most bytes of pixels a terminal's pictures hold together by
@@ -456,16 +457,11 @@ impl Screen {
 /// The pictures' part of the invariant checker (threats.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
-    /// 30: at most [`MAX_PICTURES`] on each screen, their numbers rising.
+    /// 30: at most [`MAX_PICTURES`] on both screens together, their
+    /// numbers rising.
     pub(super) fn check_picture_count(&self) -> Result<(), String> {
-        for alternate in [false, true] {
-            let on = self
-                .pictures
-                .iter()
-                .filter(|p| p.alternate == alternate)
-                .count();
-            crate::check::ensure(on <= MAX_PICTURES, || format!("{on} pictures on a screen"))?;
-        }
+        let kept = self.pictures.len();
+        crate::check::ensure(kept <= MAX_PICTURES, || format!("{kept} pictures kept"))?;
         let rising =
             (self.pictures.iter().zip(self.pictures.iter().skip(1))).all(|(a, b)| a.id < b.id);
         crate::check::ensure(rising, || "picture numbers out of order".into())
@@ -561,6 +557,16 @@ mod faults {
             many.pictures.extend(placed(id, 4, top));
         }
         assert!(many.check_picture_count().is_err(), "65 pictures");
+        // 33 on each screen: 66 in all.
+        let mut both = screen.clone();
+        for id in 0..66 {
+            let mut picture = placed(id, 4, top);
+            if let Some(p) = picture.as_mut() {
+                p.alternate = id % 2 == 1;
+            }
+            both.pictures.extend(picture);
+        }
+        assert!(both.check_picture_count().is_err(), "33 pictures a screen");
         let mut backwards = screen.clone();
         backwards.pictures.extend(placed(2, 4, top));
         backwards.pictures.extend(placed(1, 4, top));
