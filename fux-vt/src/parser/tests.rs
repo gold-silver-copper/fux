@@ -354,6 +354,7 @@ fn scalar(
         true => start.saturating_add(crate::budget::LIMIT.saturating_sub(parser.spent)),
         false => u64::MAX,
     };
+    (parser.screen.stop_at, parser.screen.stopped) = (parser.end, false);
     for (i, &byte) in bytes.iter().enumerate() {
         let before = parser.state;
         let framed = parser.byte(byte, sink);
@@ -371,14 +372,23 @@ fn scalar(
                 | State::Osc { .. }
         );
         let fed = (0x0a..=0x0c).contains(&byte) && !in_string;
-        let framed = framed.or_else(|| (ended || fed).then(|| parser.over::<true>()).flatten());
+        // And after a printed glyph whose wrap scrolled inside margins
+        // past the budget.
+        let wrapped = std::mem::take(&mut parser.screen.stopped);
+        let framed = framed.or_else(|| {
+            (ended || fed || wrapped)
+                .then(|| parser.over::<true>())
+                .flatten()
+        });
         if until_stop && let Some(stop) = framed {
+            (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
             parser.spend_since(start, stop);
             parser.count_degrades(degrades);
             return Ok(Some((i.saturating_add(1), stop)));
         }
     }
     if until_stop {
+        (parser.screen.stop_at, parser.screen.stopped) = (u64::MAX, false);
         parser.spend_since(start, Stop::Ended);
     }
     parser.count_degrades(degrades);
