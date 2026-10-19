@@ -380,3 +380,36 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
     assert!(moved > 3_000, "{moved} rows changed");
     Ok(())
 }
+
+/// Turning rows that cross the ring's end turns those rows and no others,
+/// as turning them where the ring starts at its top does, each way and
+/// by every count (FA-SIZE-1).
+#[test]
+fn a_rotation_across_the_rings_end_turns_only_its_rows() {
+    for top in 0..6 {
+        for (low, high) in [(0, 5), (1, 4), (2, 5), (3, 4), (0, 0)] {
+            for by in 0..=high - low + 1 {
+                for left in [true, false] {
+                    let mut order = Order {
+                        slots: (0..6).collect(),
+                        top,
+                    };
+                    let mut want: Vec<usize> = order.iter().copied().collect();
+                    if let Some(run) = want.get_mut(low..=high) {
+                        if left {
+                            run.rotate_left(by);
+                        } else {
+                            run.rotate_right(by);
+                        }
+                    }
+                    order.rotate((low, high), by, left);
+                    let got: Vec<usize> = order.iter().copied().collect();
+                    assert_eq!(
+                        got, want,
+                        "top {top}, rows {low}..={high}, by {by}, left {left}"
+                    );
+                }
+            }
+        }
+    }
+}
