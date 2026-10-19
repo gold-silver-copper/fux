@@ -39,23 +39,23 @@ fux-vt/src/screen/pictures.rs:287:44: delete ! in Screen::place_picture
 fux-vt/src/screen/pictures.rs:475:57: replace == with != in Screen::shown
 fux-vt/src/screen/pictures.rs:477:16: delete ! in Screen::shown
 # B01 and B02 [now] overlaps (faf8bf00 :208/:213 -> 9a38df95 :222/:227), now pictures.rs:476/:481: body, four < (cols 9, 18, 31, 41), three && (cols 13, 24, 36)
-fux-vt/src/screen/pictures.rs:623:5: replace overlaps -> bool with true
-fux-vt/src/screen/pictures.rs:623:5: replace overlaps -> bool with false
-fux-vt/src/screen/pictures.rs:628:9: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:628:9: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:628:9: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:628:18: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:628:18: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:628:18: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:628:31: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:628:31: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:628:31: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:628:41: replace < with == in overlaps
-fux-vt/src/screen/pictures.rs:628:41: replace < with > in overlaps
-fux-vt/src/screen/pictures.rs:628:41: replace < with <= in overlaps
-fux-vt/src/screen/pictures.rs:628:13: replace && with || in overlaps
-fux-vt/src/screen/pictures.rs:628:24: replace && with || in overlaps
-fux-vt/src/screen/pictures.rs:628:36: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:627:5: replace overlaps -> bool with true
+fux-vt/src/screen/pictures.rs:627:5: replace overlaps -> bool with false
+fux-vt/src/screen/pictures.rs:632:9: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:632:9: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:632:9: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:632:18: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:632:18: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:632:18: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:632:31: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:632:31: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:632:31: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:632:41: replace < with == in overlaps
+fux-vt/src/screen/pictures.rs:632:41: replace < with > in overlaps
+fux-vt/src/screen/pictures.rs:632:41: replace < with <= in overlaps
+fux-vt/src/screen/pictures.rs:632:13: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:632:24: replace && with || in overlaps
+fux-vt/src/screen/pictures.rs:632:36: replace && with || in overlaps
 # B01 [new] victim(&self) -> Option<usize> (hidden first, then oldest; decision 12): body, plus its hidden test (other screen || not shown) and the non-empty fallback
 fux-vt/src/screen/pictures.rs:321:9: replace Screen::victim -> Option<usize> with None
 fux-vt/src/screen/pictures.rs:321:9: replace Screen::victim -> Option<usize> with Some(0)
