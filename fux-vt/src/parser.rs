@@ -1403,8 +1403,10 @@ impl Parser {
             false => u64::MAX,
         };
         (self.screen.stop_at, self.screen.stopped) = (self.end, false);
-        // A REP the last call stopped in makes its copies left first.
-        if self.screen.repeating() && self.resume::<UNTIL_STOP>() {
+        // What the last call stopped at the budget left goes first: a
+        // screen-wide CSI it held back, carried out in this call's budget,
+        // or a REP's copies, which may stop this one too.
+        if self.screen.left_over() && self.resumed::<UNTIL_STOP>(sink) {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Budget);
             self.count_degrades(degrades);
@@ -2154,6 +2156,21 @@ impl Parser {
         framed
     }
 
+    /// Carries out what the last call stopped at the budget left: the
+    /// screen-wide CSI it held back (`Screen::holds_back`), as its final
+    /// byte would have, its parameters kept, which begins or ends no
+    /// frame; then a REP's copies left (`resume`), and whether they stopped
+    /// this call too.
+    #[inline(never)]
+    fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
+        if let Some((read, len, byte)) = self.screen.held_csi() {
+            let done = self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
+            self.kept(done);
+            self.screen.forget_repeat();
+        }
+        self.screen.repeating() && self.resume::<UNTIL_STOP>()
+    }
+
     /// Carries out the escape sequence whose final byte is `byte`, its
     /// intermediates collected; whether it ended a frame (RIS).
     fn escape_dispatch(
@@ -2187,7 +2204,9 @@ impl Parser {
     /// Carries out the CSI sequence whose final byte is `byte`, its
     /// parameters collected; whether it began a frame (set synchronized
     /// output) or ended one (reset it while set), for
-    /// `Parser::process_until_stop` to stop after.
+    /// `Parser::process_until_stop` to stop after; or, for a screen-wide
+    /// one the screen left for the next call (`Screen::holds_back`), a
+    /// budget stop.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
@@ -2209,13 +2228,19 @@ impl Parser {
         };
         match self.kept(dispatch.map(Some)).unwrap_or(Dispatch::Done) {
             Dispatch::Done => {}
+            // Screen-wide, and left for the next call (`Screen::holds_back`):
+            // its bytes are taken, and the call stops at the budget.
+            Dispatch::Held => {
+                self.screen.hold(intermediates, byte);
+                return Ok(Some(Stop::Budget));
+            }
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
                 match self
                     .screen
                     .other_csi(&self.params, intermediates, byte, &self.options)
                 {
-                    Some(Dispatch::Done) => {}
+                    Some(Dispatch::Done | Dispatch::Held) => {}
                     Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
                     Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
                         params: Params(&self.params),

@@ -344,11 +344,14 @@ impl Probe {
             .fed
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
         // U is the ceiling of a call of 4 KiB, as fux makes them (threats.md
-        // 4.4): a call given more, as `WHOLE` gives it, may do U for each
-        // 4 KiB, as that many calls would.
+        // 4.4), or at a screen where one screen-wide sequence costs more,
+        // that sequence's most, which the parser leaves to a call of its
+        // own (`Work::ceiling`, decision 950): a call given more, as
+        // `WHOLE` gives it, may do that for each 4 KiB, as that many calls
+        // would.
         let cost = done.cost();
         let pieces = u64::try_from(bytes.div_ceil(4096).max(1)).unwrap_or(u64::MAX);
-        let ceiling = Work::CEILING.saturating_mul(pieces);
+        let ceiling = Work::ceiling(self.parser.screen().size()).saturating_mul(pieces);
         if cost > ceiling {
             return Err(format!(
                 "a call of {} bytes did {} weighted units, past {pieces} U = {} ({:?})",
@@ -497,6 +500,9 @@ fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
         "prints" => &mut work.prints,
         "keys" => &mut work.keys,
         "colours" => &mut work.colours,
+        "sums" => &mut work.sums,
+        "spans" => &mut work.spans,
+        "edits" => &mut work.edits,
         _ => return Err(format!("no counter is named {name}")),
     };
     *slot = n;

@@ -1658,7 +1658,8 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
         // the region's span of every row, with its clusters' text, and the
         // wrap of text printed at the bottom margin makes one too, which
         // no sequence does (decision 831). A line feed, one byte: at most
-        // 2 x the screen's cells and R rows of span text.
+        // 3 x the screen's cells (each span's cell read, compared and
+        // written, decision 950) and R rows of span text.
         let n = u64::try_from(setup.cells()).unwrap_or(u64::MAX);
         let r = u64::from(rows);
         let wide = format!("\x1b[?69h\x1b[1;{}s\x1b[{rows};2H", cols.saturating_sub(1));
@@ -1677,7 +1678,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
             ("wrapping text", &narrow, b"x", r.saturating_mul(49 + 128)),
         ] {
             let work: &'static [(&'static str, u64, u64, u64)] = Box::leak(Box::new([
-                ("cells", n.saturating_mul(2), 0, 0),
+                ("cells", n.saturating_mul(3), 0, 0),
                 ("text", text, 0, 0),
             ]));
             let margins = Bound { work, ..bound };

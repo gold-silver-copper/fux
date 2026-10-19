@@ -513,6 +513,21 @@ pub(crate) enum Dispatch {
     Reply(Reply),
     /// Not a sequence the screen implements.
     Unhandled,
+    /// Screen-wide, and left for the next call: it would take the call
+    /// past U (`holds_back`).
+    Held,
+}
+
+/// What a call stopped at the budget left for the next (`Parser::run`).
+#[derive(Clone, Copy, Debug)]
+enum Left {
+    /// A REP's character and the copies of it left when a margin scroll
+    /// stopped it at the budget (`resume_repeat`).
+    Copies(char, usize),
+    /// A screen-wide CSI not carried out (`holds_back`): its intermediates
+    /// (at most two), how many, and its final byte; its parameters are
+    /// the parser's still.
+    Csi([u8; 2], usize, u8),
 }
 
 /// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
@@ -589,11 +604,11 @@ pub struct Screen {
     /// left kept in `copies_left`.
     pub(crate) stop_at: u64,
     pub(crate) stopped: bool,
-    /// A REP's character and the copies of it left when a margin scroll
-    /// stopped it at the budget, made first by the next call
-    /// (`resume_repeat`), so that a call that stops does what one that
+    /// What a call stopped at the budget left, done first by the next
+    /// call: a REP's copies (`resume_repeat`) or a screen-wide CSI
+    /// (`holds_back`), so that a call that stops does what one that
     /// doesn't does.
-    copies_left: Option<(char, usize)>,
+    left: Option<Left>,
     /// Pictures placed on either grid (`pictures`), the last one's number,
     /// and what the host's terminal draws.
     pictures: VecDeque<pictures::Placement>,
@@ -922,7 +937,7 @@ impl Screen {
         Ok(Self {
             stop_at: u64::MAX,
             stopped: false,
-            copies_left: None,
+            left: None,
             primary: Grid::new(size, history, &mut next_id, 1)?,
             // Its cells are made when a program first shows it.
             alternate: Grid::unmade(size, &mut next_id, 1)?,
@@ -2423,11 +2438,12 @@ impl Screen {
         };
         let count = self.copies_needed(c, usize::from(count));
         // The copies skipped cost nothing (threats.md B33). Every copy made
-        // is spent from the call's budget here, a cell for each it writes:
-        // two for a wide glyph.
+        // is spent from the call's budget here, two cells for each it
+        // writes, as printing counts them (the cell looked at and written;
+        // decision 950): four for a wide glyph.
         let width = crate::char_width(c).unwrap_or(1).max(1);
         crate::budget::spend(
-            crate::budget::units(count.saturating_mul(width)),
+            crate::budget::units(count.saturating_mul(width).saturating_mul(2)),
             crate::budget::weight::cells,
         );
         self.copies(c, count)
@@ -2480,15 +2496,63 @@ impl Screen {
     /// The copies a REP stopped at the budget left, made first by the
     /// call after it (`copies_left`).
     pub(crate) fn resume_repeat(&mut self) -> Result<(), Error> {
-        match self.copies_left.take() {
-            Some((c, count)) => self.copies(c, count),
-            None => Ok(()),
+        match self.left.take() {
+            Some(Left::Copies(c, count)) => self.copies(c, count),
+            other => {
+                self.left = other;
+                Ok(())
+            }
         }
     }
 
     /// Whether a REP stopped at the budget left copies to make.
     pub(crate) fn repeating(&self) -> bool {
-        self.copies_left.is_some()
+        matches!(self.left, Some(Left::Copies(..)))
+    }
+
+    /// Whether the last call stopped at the budget left anything.
+    #[inline]
+    pub(crate) fn left_over(&self) -> bool {
+        self.left.is_some()
+    }
+
+    /// Whether to leave a screen-wide sequence for the next call
+    /// (decision 950): in a call of `process_until_stop` that has spent
+    /// since its last budget stop, if what it spent and the most one such
+    /// sequence spends at this size (`budget::sequence_most`) would pass
+    /// the ceiling U. Its bytes are taken and the call stops at the
+    /// budget; the next call carries it out first, in a fresh budget
+    /// (`Parser::run`), so a call does at most U, or one such sequence.
+    #[inline(never)]
+    pub(crate) fn holds_back(&self) -> bool {
+        // The spent since the last budget stop: `stop_at` is where it ends.
+        let spent = (crate::budget::spent())
+            .saturating_add(crate::budget::LIMIT)
+            .saturating_sub(self.stop_at);
+        let most = crate::budget::sequence_most(self.size());
+        self.stop_at != u64::MAX && spent > 0 && spent.saturating_add(most) > crate::budget::CEILING
+    }
+
+    /// Keeps the CSI of `intermediates` and final `byte` that `holds_back`
+    /// left, for the next call.
+    pub(crate) fn hold(&mut self, intermediates: &[u8], byte: u8) {
+        let mut read = [0u8; 2];
+        for (to, from) in read.iter_mut().zip(intermediates) {
+            *to = *from;
+        }
+        self.left = Some(Left::Csi(read, intermediates.len().min(2), byte));
+    }
+
+    /// The CSI a call left, taken: its intermediates, how many, and its
+    /// final byte.
+    pub(crate) fn held_csi(&mut self) -> Option<([u8; 2], usize, u8)> {
+        match self.left.take() {
+            Some(Left::Csi(read, len, byte)) => Some((read, len, byte)),
+            other => {
+                self.left = other;
+                None
+            }
+        }
     }
 
     /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
@@ -2497,7 +2561,7 @@ impl Screen {
     fn copies(&mut self, c: char, mut count: usize) -> Result<(), Error> {
         let stop = |screen: &mut Self, count: usize| {
             if count > 0 {
-                screen.copies_left = Some((c, count));
+                screen.left = Some(Left::Copies(c, count));
             }
         };
         if let Ok(byte) = u8::try_from(c)
@@ -3368,10 +3432,11 @@ impl Screen {
         // right, has "the sequence ... ignored" (DEC STD 070, DECRQCRA):
         // no reply.
         let (lines, columns) = self.rectangle(p, 2)?;
-        spend!(
-            cells,
-            usize::from(lines.len()).saturating_mul(usize::from(columns.len()))
-        );
+        let area = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
+        spend!(cells, area);
+        spend!(sums, area);
+        // The clusters' bytes each cell's checksum reads (`checksum_of`).
+        let mut read = 0usize;
         for y in lines.each() {
             // A double-width line holds half the columns (DEC STD 070,
             // 5.6.1): the rectangle stops at its end.
@@ -3397,10 +3462,12 @@ impl Screen {
                     };
                     sum = sum.wrapping_add(0x20).wrapping_add(rendition);
                 } else if let Some(cell) = g.cell(y, x) {
+                    read = read.saturating_add(cell.contents().len());
                     sum = sum.wrapping_add(checksum_of(&cell));
                 }
             }
         }
+        spend!(text, read);
         let id = p.first(0, 0);
         let checksum = sum.wrapping_neg();
         Some(reply!("\x1bP{id}!~{checksum:04X}\x1b\\"))
@@ -3465,6 +3532,7 @@ impl Screen {
         // copy spends as it goes.
         if byte != b'v' {
             let cells = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
+            spend!(edits, cells);
             let cells = cells.saturating_mul(2);
             crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
         }
@@ -3561,6 +3629,7 @@ impl Screen {
         });
         let cells = cells.fold(0usize, usize::saturating_add);
         crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
+        spend!(edits, cells);
         // The last few styles mapped, and the sweeps they were mapped
         // after: a sweep renumbers styles, and the memo goes.
         let mut memo = [(0u32, 0u32); 16];
@@ -3926,6 +3995,18 @@ impl Screen {
         byte: u8,
         options: &Options,
     ) -> Option<Dispatch> {
+        // SL, SR, DECIC, DECDC, the rectangle edits and DECRQCRA are
+        // screen-wide: one may be left for the next call (`holds_back`).
+        let wide = matches!(
+            (intermediates, byte),
+            (b" ", b'@' | b'A')
+                | (b"'", b'}' | b'~')
+                | (b"$", b'v' | b'x' | b'z' | b'{' | b'r' | b't')
+                | (b"*", b'y')
+        );
+        if wide && self.holds_back() {
+            return Some(Dispatch::Held);
+        }
         // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
             // 0, the default, is a blinking block, as 1 is, kept apart.
@@ -4107,6 +4188,10 @@ impl Screen {
             // algorithms, chapter 5's revision note 12); unhandled if none
             // is known.
             b'J' | b'K' => {
+                // ED is screen-wide: it may be left for the next call.
+                if byte == b'J' && self.holds_back() {
+                    return Ok(Dispatch::Held);
+                }
                 let mut known = false;
                 for group in p.groups() {
                     let mode = group.first().copied().unwrap_or(0);
@@ -4146,6 +4231,10 @@ impl Screen {
             // With left and right margins, only between them, and the
             // cursor goes to the left margin (xterm's `InsertLine`).
             b'L' | b'M' => {
+                // IL and DL are screen-wide: may be left for the next call.
+                if self.holds_back() {
+                    return Ok(Dispatch::Held);
+                }
                 let g = self.grid_mut();
                 if let Some(region) = g.lines.starting_at(row)
                     && g.in_columns()
@@ -4164,6 +4253,10 @@ impl Screen {
             // tracking (ctlseqs, XTHIMOUSE), which fux-vt ignores, not SD.
             b'T' if p.groups().nth(4).is_some() => {}
             b'S' | b'T' => {
+                // SU and SD are screen-wide: may be left for the next call.
+                if self.holds_back() {
+                    return Ok(Dispatch::Held);
+                }
                 let lines = self.grid().lines;
                 let direction = match byte {
                     b'S' => Scroll::Up { history: true },

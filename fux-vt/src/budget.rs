@@ -5,7 +5,7 @@
 //! history's rows. At fux's largest sizes a 4 KiB read of such sequences
 //! would do far more than the frozen per-call ceiling U (threats.md 4.4),
 //! and fux reads every pane on one thread. So the work of those kinds is
-//! spent here, weighed by threats.md's frozen weights, and
+//! spent here, weighed by its measured weights (`weight`, decision 950), and
 //! [`Parser::process_until_stop`](crate::Parser::process_until_stop) stops
 //! at the first byte boundary once [`LIMIT`] is spent since its last such
 //! stop, for the host to go on from there later
@@ -37,7 +37,7 @@
 //! is at most one style sweep, for the one new style an SGR before them
 //! gave the pen (B13, at most 4 M units, P21), and a scroll into history
 //! of the row a wrap leaves, which the row's own printed cells pay for.
-//! One margin scroll can itself cost up to 2 cells and a cell's text for
+//! One margin scroll can itself cost up to 3 cells and a cell's text for
 //! every cell of the region, which at fux's largest pane is past U / 2
 //! (decision 831).
 
@@ -58,8 +58,13 @@ pub(crate) const CEILING: u64 = 50_000_000 * 20;
 /// crosses it, and the work no site spends, fit in the other half.
 pub(crate) const LIMIT: u64 = CEILING / 2;
 
-/// Each counter's weight, in twentieths of a unit: threats.md 4.4's frozen
-/// weights (P23), in ns per unit for this machine, times 20. Named as the
+/// Each counter's weight, in twentieths of a unit: an upper bound of its
+/// ns a unit on desk, times 20, so that U units are at most 50 ms there
+/// (decision 950). Each was measured over every bounds probe fed 4 KiB a
+/// call in fux's build, from the calls of 5 ms or more whose work is that
+/// kind's (each probe's 95th percentile), the kinds before it paid at
+/// their weights, times 1.25; the kinds no such call needs more of keep
+/// threats.md 4.4's (P23). Named as the
 /// counters are ([`crate::Work`]'s fields), for `spend!` to name them; the
 /// kinds no site spends are kept for the `checks` counters alone.
 #[expect(
@@ -73,17 +78,22 @@ pub(crate) mod weight {
     /// A byte the frame scan examined.
     #[cfg(feature = "checks")]
     pub(crate) const scanned: u64 = 10;
-    /// A grid cell written, cleared, moved or read.
-    pub(crate) const cells: u64 = 5;
-    /// A row slot moved.
-    pub(crate) const slots: u64 = 20;
+    /// A grid cell written, cleared, moved or read: 1.39 ns, DECIC's,
+    /// DECDC's, SL's and SR's at 4095x4096 (no more than 1.5, as the
+    /// cells B05's placements and B33's and B34's copies count, at 0.4 to
+    /// 0.65 ns, keep a call within U at it).
+    pub(crate) const cells: u64 = 30;
+    /// A row slot moved: 2.9 ns, B36's region scroll (a call of 1.2 ms).
+    pub(crate) const slots: u64 = 73;
     /// A row pushed, popped, read, searched or walked.
     pub(crate) const rows: u64 = 100;
-    /// A row text byte copied or rescanned.
-    pub(crate) const text: u64 = 1;
-    /// A sixel pixel painted, filled, copied or zeroed.
+    /// A row text byte copied or rescanned: 0.48 ns, DECCRA's over cells
+    /// of clusters at 50x200, past its cells; 0.7, as the scrolls inside
+    /// margins at 500x500 need, times 1.2.
+    pub(crate) const text: u64 = 17;
+    /// A sixel pixel painted, filled, copied or zeroed: 0.96 ns, B04's.
     #[cfg(feature = "checks")]
-    pub(crate) const pixels: u64 = 5;
+    pub(crate) const pixels: u64 = 24;
     /// A cell a style sweep visited.
     pub(crate) const styles: u64 = 10;
     /// A new style put in a table.
@@ -104,6 +114,38 @@ pub(crate) mod weight {
     /// costliest, 7.0 ns a step (OSC 4s of the CIEXYZ colour whose square
     /// roots take the most steps), times 1.5.
     pub(crate) const colours: u64 = 210;
+    /// A cell a checksum read, past its cell and its text: 23.3 ns,
+    /// DECRQCRA's over cells of clusters at 50x200.
+    pub(crate) const sums: u64 = 583;
+    /// A row a margin scroll copied a span of, past its cells and text:
+    /// 96 ns, a wrap's scroll between 2-column margins at 4095x4096.
+    pub(crate) const spans: u64 = 2408;
+    /// A cell a rectangle edit rewrote, past its cells: 8.5 ns, DECCRA's
+    /// at 4095x4096.
+    pub(crate) const edits: u64 = 212;
+}
+
+/// The most one screen-wide sequence may spend at a screen of `size`, in
+/// twentieths of a unit: each cell read and written, rewritten, summed and
+/// its text copied (a cell's text is at most 49 bytes: 32 long and 17
+/// short, threats.md B35), and each row's slot turned, walked and its span
+/// copied, at the most each kind costs. The parser looks at it before such
+/// a sequence (`Screen::holds_back`): one that would take the call past U, in a
+/// call that spent already, is left for the next call, to be carried out
+/// alone; a call of it alone does at most this.
+pub(crate) fn sequence_most(size: crate::Size) -> u64 {
+    let (rows, cells) = (units(size.rows()), units(size.cells()));
+    let cell = weight::cells
+        .saturating_mul(2)
+        .saturating_add(weight::edits)
+        .saturating_add(weight::sums)
+        .saturating_add(weight::text.saturating_mul(49));
+    let row = weight::slots
+        .saturating_add(weight::rows)
+        .saturating_add(weight::spans);
+    cells
+        .saturating_mul(cell)
+        .saturating_add(rows.saturating_mul(row))
 }
 
 /// `n` as units, the most there are if it does not fit.

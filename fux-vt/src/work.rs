@@ -51,6 +51,16 @@ pub struct Work {
     /// square or cube root, an arithmetic-geometric-mean step of an arc
     /// tangent, or a step of the TekHVC chroma search (palette/xcms.rs).
     pub colours: u64,
+    /// Cells DECRQCRA's checksum reads, each decoded with its attributes:
+    /// several times a cell another edit moves or fills costs.
+    pub sums: u64,
+    /// Rows a scroll inside left and right margins copies a span of, each
+    /// a few buffers made, whatever the span's width.
+    pub spans: u64,
+    /// Cells a rectangle edit rewrites one at a time, each read and made
+    /// again: DECCRA's copy, DECFRA's, DECERA's and DECSERA's fills, and
+    /// DECCARA's and DECRARA's attributes.
+    pub edits: u64,
 }
 
 thread_local! {
@@ -80,11 +90,24 @@ impl Work {
         prints: 0,
         keys: 0,
         colours: 0,
+        sums: 0,
+        spans: 0,
+        edits: 0,
     };
 
     /// The most weighted work one call may do: U, 50,000,000 units
     /// (threats.md 4.4, P14), in the twentieths [`Work::cost`] counts.
     pub const CEILING: u64 = crate::budget::CEILING;
+
+    /// The most weighted work one call of `process_until_stop` does at a
+    /// screen of `size`, in twentieths: U, or past it at a screen where
+    /// one screen-wide sequence alone costs more, the most that sequence
+    /// may cost (`budget::sequence_most`): the parser looks before such a
+    /// sequence and leaves it for the next call when it would take the
+    /// call past U, so it is carried out alone (decision 950).
+    pub fn ceiling(size: crate::Size) -> u64 {
+        Self::CEILING.max(crate::budget::sequence_most(size))
+    }
 
     /// The work this thread has done in fux-vt so far.
     pub fn now() -> Self {
@@ -106,7 +129,7 @@ impl Work {
     }
 
     /// Each counter, by name, in the order threats.md 4.1 lists them.
-    pub fn counters(&self) -> [(&'static str, u64); 14] {
+    pub fn counters(&self) -> [(&'static str, u64); 17] {
         [
             ("bytes", self.bytes),
             ("scanned", self.scanned),
@@ -122,11 +145,14 @@ impl Work {
             ("prints", self.prints),
             ("keys", self.keys),
             ("colours", self.colours),
+            ("sums", self.sums),
+            ("spans", self.spans),
+            ("edits", self.edits),
         ]
     }
 
     /// Each counter, by name, to write.
-    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 14] {
+    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 17] {
         [
             ("bytes", &mut self.bytes),
             ("scanned", &mut self.scanned),
@@ -142,13 +168,16 @@ impl Work {
             ("prints", &mut self.prints),
             ("keys", &mut self.keys),
             ("colours", &mut self.colours),
+            ("sums", &mut self.sums),
+            ("spans", &mut self.spans),
+            ("edits", &mut self.edits),
         ]
     }
 
     /// Each counter's weight, in twentieths of a unit, so that every
-    /// weight is whole: threats.md 4.4's frozen weights (P23), in ns per
-    /// unit for this machine, times 20.
-    pub const WEIGHTS: [(&'static str, u64); 14] = {
+    /// weight is whole: an upper bound of its ns a unit on desk, times 20
+    /// (`budget::weight`, decision 950).
+    pub const WEIGHTS: [(&'static str, u64); 17] = {
         use crate::budget::weight::*;
         [
             ("bytes", bytes),
@@ -165,6 +194,9 @@ impl Work {
             ("prints", prints),
             ("keys", keys),
             ("colours", colours),
+            ("sums", sums),
+            ("spans", spans),
+            ("edits", edits),
         ]
     };
 
@@ -232,6 +264,18 @@ impl Work {
     pub(crate) fn colours(&mut self, n: u64) {
         self.colours = self.colours.saturating_add(n);
     }
+    /// Counts cells a checksum read.
+    pub(crate) fn sums(&mut self, n: u64) {
+        self.sums = self.sums.saturating_add(n);
+    }
+    /// Counts rows a margin scroll copied a span of.
+    pub(crate) fn spans(&mut self, n: u64) {
+        self.spans = self.spans.saturating_add(n);
+    }
+    /// Counts cells a rectangle edit rewrote.
+    pub(crate) fn edits(&mut self, n: u64) {
+        self.edits = self.edits.saturating_add(n);
+    }
 }
 
 #[cfg(test)]
@@ -244,7 +288,7 @@ mod tests {
     #[test]
     fn each_counter_counts_its_own_work_and_is_weighed_by_its_weight() {
         let before = Work::now();
-        let adds: [fn(&mut Work, u64); 14] = [
+        let adds: [fn(&mut Work, u64); 17] = [
             Work::bytes,
             Work::scanned,
             Work::cells,
@@ -259,6 +303,9 @@ mod tests {
             Work::prints,
             Work::keys,
             Work::colours,
+            Work::sums,
+            Work::spans,
+            Work::edits,
         ];
         for (i, add) in adds.iter().enumerate() {
             let n = u64::try_from(i).unwrap_or(0).saturating_add(1);
@@ -273,10 +320,12 @@ mod tests {
             assert!(weight > 0, "{name}");
         }
         assert_eq!(Work::ZERO.cost(), 0);
-        // 1 × 20 + 2 × 10 + 3 × 5 + 4 × 20 + 5 × 100 + 6 × 1 + 7 × 5 + 8 × 10
-        // + 9 × 600 + 10 × 300 + 11 × 100 + 12 × 2 + 13 × 20
-        // + 14 × weight::colours.
-        assert_eq!(done.cost(), 10_540 + 14 * crate::budget::weight::colours);
+        // Each counter i (from 1) counted i units: the cost is each times
+        // its own weight, in the order the counters are named.
+        let weighed = (Work::WEIGHTS.iter().zip(1u64..))
+            .map(|((_, weight), i)| i.saturating_mul(*weight))
+            .sum::<u64>();
+        assert_eq!(done.cost(), weighed);
         assert_eq!(Work::CEILING, 1_000_000_000);
     }
 }

@@ -424,6 +424,37 @@ fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
     Ok(())
 }
 
+/// A screen-wide sequence that would take a call that spent already past
+/// U is left for the next call, which carries it out first: at 1000x1000
+/// one such sequence may spend more than U (`budget::sequence_most`), so
+/// after one ED 2 the second is held, its bytes taken, and a budget stop
+/// made; the screen after the next call is the one `process_with` makes.
+/// In context: text before, between and after, the cursor where the text
+/// left it.
+#[test]
+fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(), Error> {
+    let size = Size::of(1000, 1000);
+    assert!(crate::budget::sequence_most(size) > crate::budget::CEILING);
+    let first = b"a\x1b[2Jb\x1b[2J";
+    let mut parser = Parser::new(size, 0)?;
+    let stop = parser.process_until_stop(first, &mut Log::default())?;
+    assert_eq!(stop, Some((first.len(), Stop::Budget)));
+    let shown = |p: &Parser, col: u16| p.screen().cell(0, col).map(|c| c.contents().to_owned());
+    assert_eq!(shown(&parser, 1).as_deref(), Some("b"));
+    assert_eq!(parser.process_until_stop(b"c", &mut Log::default())?, None);
+    let mut whole = Parser::new(size, 0)?;
+    whole.process_with(b"a\x1b[2Jb\x1b[2Jc", &mut Log::default())?;
+    for col in 0..4 {
+        assert_eq!(shown(&parser, col), shown(&whole, col), "column {col}");
+    }
+    assert_eq!(shown(&parser, 2).as_deref(), Some("c"));
+    assert_eq!(
+        parser.screen().cursor_position(),
+        whole.screen().cursor_position()
+    );
+    Ok(())
+}
+
 /// Random options, each on or off.
 fn options(r: &mut Rng) -> Options {
     let features = Feature::ALL.into_iter().filter(|_| r.chance(50));
@@ -829,9 +860,9 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
 /// A scroll of many rows inside a region spends what it does: the region's
 /// slots turned once, not once a row (SCR-8), and the rows brought in. At
 /// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
-/// each, about 20 M twentieths of a unit in all, far under the budget, so
-/// the call takes them without a stop; charged a slot a row a row, each
-/// was 16.8 M slots, and the second stopped it.
+/// each, about 11 M units in all, under the budget's 25 M, so the call
+/// takes them without a stop; charged a slot a row a row, each was 16.8 M
+/// slots, and the first stopped it.
 #[test]
 fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     let mut parser = Parser::new(Size::of(4095, 1), 0)?;
@@ -845,6 +876,7 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
         None
     );
     let spent = crate::budget::spent().saturating_sub(start);
-    assert!(spent <= 100 * (8_190 * 5 + 8_190 * 20), "{spent}");
+    let each = 8_190 * (crate::budget::weight::cells + crate::budget::weight::slots);
+    assert!(spent <= 100 * each, "{spent}");
     Ok(())
 }

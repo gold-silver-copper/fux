@@ -162,6 +162,17 @@ impl Screen {
         // outside them does nothing. Either way the rows keep their
         // identities while the bands move or stack.
         let (mut lifted, mut stacked) = (false, false);
+        // Each band's row filled, and the line feed before it copying a
+        // row into history at the bottom: a picture's few bytes ask for
+        // its rows' cells, which the budget counts here (B05, decision
+        // 950), the cells' own counts aside.
+        let cols = usize::from(self.size().cols());
+        crate::budget::spend(
+            crate::budget::units(
+                usize::from(rows).saturating_mul(cols.saturating_add(usize::from(across))),
+            ),
+            crate::budget::weight::cells,
+        );
         for row in 0..rows {
             if row > 0 && display.is_some() {
                 let g = self.grid_mut();

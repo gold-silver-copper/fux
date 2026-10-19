@@ -1522,6 +1522,7 @@ impl Grid {
                 let mut cells = cells.to_vec();
                 // Each cell read, then written; and the row's text cloned.
                 spend!(cells, cells.len().saturating_mul(2));
+                spend!(edits, cells.len());
                 spend!(text, text.map_or(0, Text::bytes));
                 // The half of a glyph the source's edge cuts.
                 if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
@@ -1819,7 +1820,9 @@ impl Grid {
             .get(span.clone())
             .unwrap_or_default()
             .to_vec();
-        spend!(cells, cells.len().saturating_mul(2));
+        // Each cell read, compared with the one it goes over, and written.
+        spend!(cells, cells.len().saturating_mul(3));
+        spend!(spans, 1);
         // The span's own text, each spilled cell's, not the whole row's:
         // a row of long clusters holds far more than a few cells copy.
         let mut held = String::new();

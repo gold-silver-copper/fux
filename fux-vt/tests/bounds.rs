@@ -320,7 +320,8 @@ bound!("B45", b45_1x, b45_10x, b45_100x);
 
 /// The per-call work budget (`threats.md` P24, decision 6): at fux's
 /// largest pane, 4095×4096, each class of screen-wide function stops a
-/// call at the budget, no call does more than the ceiling U, and the
+/// call at the budget, no call does more than its ceiling (U, or one such
+/// function alone, `Work::ceiling`, decision 950), and the
 /// screen after every call equals that of one call given it all.
 mod budget {
     use fux_vt::{Parser, Size, Stop, Work};
@@ -357,8 +358,8 @@ mod budget {
             let stop = parser.process_until_stop(rest, &mut Deaf)?;
             let done = Work::now().since(before);
             assert!(
-                done.cost() <= Work::CEILING,
-                "{each:?}: a call did {} units, past U: {done:?}",
+                done.cost() <= Work::ceiling(size),
+                "{each:?}: a call did {} units, past its ceiling: {done:?}",
                 done.cost() / 20
             );
             match stop {
@@ -404,8 +405,8 @@ mod budget {
             let stop = parser.process_until_stop(rest, &mut Deaf)?;
             let done = Work::now().since(before);
             assert!(
-                done.cost() <= Work::CEILING,
-                "a call did {} units",
+                done.cost() <= Work::ceiling(size),
+                "a call did {} units, past its ceiling",
                 done.cost() / 20
             );
             match stop {
