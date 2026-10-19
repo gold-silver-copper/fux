@@ -1,4 +1,10 @@
 # Mutants kept as equivalent rather than killed: a name as `cargo mutants
 # --list` prints it, a tab, and why no test can tell it from the code
-# (threats.md 5.1 rule 7). None yet in this list's form: decision 28's
-# four decode.rs mutants are to be written here by their names.
+# (threats.md 5.1 rule 7). Each was reviewed against the code at d6cbde3c
+# (decision 891). Decision 28's four decode.rs mutants are not in the
+# frozen guard set, so they are not listed here.
+fux-vt/src/lib.rs:649:13: replace > with >= in text_cap	the branches differ only at 4 x cells == PRINT_TEXT_FLOOR, where both return 16,384, and the function has no other effect
+fux-vt/src/cell.rs:201:46: replace | with ^ in <impl std::hash::Hash for Attributes>::hash	`u128::from(a) << 64` and `u128::from(b)` (b a u64) share no bit, so | and ^ give the same word to the hasher
+fux-vt/src/bytes.rs:67:23: replace > with >= in ByteQueue::clamp_taken	the two differ only at taken == bytes.len(), where the mutant sets taken to the value it has; the function does nothing else
+fux-vt/src/grid.rs:243:17: replace < with == in Order::rotate	rotate's one caller, Grid::scroll_region (grid.rs:1825), calls it only when count >= 2 after count = count.min(region.len()), so last > first: high > low, where high < low, high == low and high <= low are all false
+fux-vt/src/grid.rs:243:17: replace < with <= in Order::rotate	as for `<` to `==`: every call has high > low (grid.rs:1825, count >= 2 <= region.len()), where high < low and high <= low are both false
