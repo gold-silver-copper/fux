@@ -35,9 +35,13 @@ mkdir -p "$out"
 # palette::answer's mutants); fux's integration tests take minutes a mutant
 # and test the server, not fux-vt. Run by nextest, two at a time each.
 tests=${FUX_MUTANTS_TESTS:-'package(fux-vt) | (package(fux) & kind(lib))'}
-args=(--workspace --test-workspace=true --features fux-vt/checks --jobs 2 --output "$out"
-  --test-tool nextest)
-after=(-- -E "$tests" --test-threads 2)
+# FUX_MUTANTS_JOBS mutants at a time (2 if unset); FUX_MUTANTS_SHARD, as
+# K/N, runs only the Kth of N shards of the selection (for CI's matrix).
+args=(--workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
+  --output "$out" --test-tool nextest)
+# The first failure ends a mutant's tests at once: a test the mutant made
+# hang must not hold up the one that fails.
+after=(-- -E "$tests" --test-threads 2 --max-fail=1:immediate)
 case ${1-} in
   diff)
     ref=${2:-HEAD~1}
@@ -51,6 +55,13 @@ case ${1-} in
     # One alternation of the names, each matched whole.
     re=$(printf '%s\n' "$names" | sed 's/[][\.*^$()+?{}|]/\\&/g; s/.*/^&$/' | paste -sd'|')
     args+=(--re "$re")
+    # cargo-mutants 27.1.0 adds every "delete field" mutant of the files
+    # it looks at whatever --re says: it looks only at the guards' files,
+    # and only the guards are judged below.
+    while read -r file; do
+      args+=(-f "$file")
+    done < <(printf '%s\n' "$names" | cut -d: -f1 | sort -u)
+    printf '%s\n' "$names" >"$out/guards.txt"
     ;;
   *)
     sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -60,17 +71,26 @@ esac
 
 cd "$root"
 cargo mutants --list "${args[@]}" "${after[@]}" >"$out/selected.txt"
-selected=$(wc -l <"$out/selected.txt")
-if ((selected == 0)); then
-  echo "mutants: the selection is empty" >&2
-  exit 1
-fi
 if [[ $1 == guards ]]; then
-  missing=$(printf '%s\n' "$names" | grep -vxF -f "$out/selected.txt" || true)
+  missing=$(grep -vxF -f "$out/selected.txt" "$out/guards.txt" || true)
   if [[ -n $missing ]]; then
     printf 'mutants: guards not generated:\n%s\n' "$missing" >&2
     exit 1
   fi
+fi
+if [[ -n ${FUX_MUTANTS_SHARD-} ]]; then
+  args+=(--shard "$FUX_MUTANTS_SHARD")
+  cargo mutants --list "${args[@]}" "${after[@]}" >"$out/selected.txt"
+fi
+if [[ $1 == guards ]]; then
+  grep -xF -f "$out/guards.txt" "$out/selected.txt" >"$out/judged.txt" || true
+else
+  cp "$out/selected.txt" "$out/judged.txt"
+fi
+selected=$(wc -l <"$out/selected.txt")
+if ((selected == 0)); then
+  echo "mutants: the selection is empty" >&2
+  exit 1
 fi
 echo "mutants: $selected selected"
 
@@ -83,10 +103,11 @@ fi
 # cargo-mutants exits 2 when a mutant is missed, 3 on a timeout: judged below.
 case $status in 0 | 2 | 3) ;; *) echo "mutants: cargo-mutants failed ($status)" >&2; exit 1 ;; esac
 
-python3 - "$out/mutants.out/outcomes.json" "$out/selected.txt" "$equivalent" <<'EOF'
+python3 - "$out/mutants.out/outcomes.json" "$out/judged.txt" "$equivalent" <<'EOF'
 import json, sys
 outcomes = json.load(open(sys.argv[1]))["outcomes"]
 selected = [l.rstrip("\n") for l in open(sys.argv[2]) if l.strip()]
+judged = set(selected)
 equivalent = {}
 for line in open(sys.argv[3]):
     if line.strip() and not line.startswith("#"):
@@ -102,6 +123,8 @@ for o in outcomes:
     if not isinstance(scenario, dict):
         continue  # the baseline
     name = scenario["Mutant"]["name"]
+    if name not in judged:
+        continue  # a mutant cargo-mutants adds beyond the guards
     tried.add(name)
     kind = kinds.get(o["summary"], "unattempted")
     # Only a mutant no test caught can be equivalent: one that timed out
