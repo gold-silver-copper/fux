@@ -78,7 +78,10 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
 
 run      random cases from the families expected to agree (or those named,
          or --all). A case fails where most of the panel differs from
-         fux-vt; every failure is shrunk and printed. Exit 1 if any.
+         fux-vt; every failure is shrunk and printed. Then, unless families
+         are named, the families that differ, a twentieth as many cases
+         each, beside xterm (Ghostty for clusters) by their recorded
+         departures, as verdicts judges them. Exit 1 if any.
 survey   each family alone (with plain text), counting the cases that
          fail, and the smallest of the first: how to see what a family's
          status should be. Exit 1 if a family expected to agree fails.
@@ -616,7 +619,25 @@ fn run(args: &Args) -> Result<bool, String> {
         args.seed,
         started.elapsed().as_secs_f64()
     );
-    Ok(failed == 0 || subject != FUX_VT)
+    // The families that differ are drawn too, a twentieth as many cases
+    // each, judged beside their engine by their recorded departures, as
+    // `verdicts` judges them (HAR-47); unless the families are named, or
+    // the engine can't run here, which is said.
+    let mut departed = true;
+    if subject == FUX_VT && args.families.is_empty() && !args.all {
+        for (name, beside, _) in families::DEPARTURES {
+            let Some(i) = families::find(name).filter(|&i| usable(i, args.reflow)) else {
+                continue;
+            };
+            let Ok(panel) = engines(beside) else {
+                println!("== {name}: not judged, as {beside} cannot run here");
+                continue;
+            };
+            println!("== {name} (by its departures, beside {beside})");
+            departed &= random_judged(args, i, &panel, (count / 20).max(50))?;
+        }
+    }
+    Ok((failed == 0 && departed) || subject != FUX_VT)
 }
 
 fn survey(args: &Args) -> Result<bool, String> {
@@ -1075,7 +1096,6 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
 /// random cases from each with plain text, where the deciding engines' vote
 /// decides (xterm alone outvotes fux-vt wherever it differs).
 fn verdicts(args: &Args) -> Result<bool, String> {
-    let text = families::find("text").ok_or("no text family")?;
     let chosen: Vec<usize> = if args.families.is_empty() {
         (0..FAMILIES.len())
             .filter(|&i| {
@@ -1153,71 +1173,83 @@ fn verdicts(args: &Args) -> Result<bool, String> {
         if alone {
             continue;
         }
-        let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
-        let mut r = Rng::new(args.seed);
-        let (mut judged, mut failed, mut unheard) = (0usize, 0usize, 0usize);
-        let mut shown = false;
-        // A family that differs: its departures from xterm, and how many
-        // cases each covered.
-        let departures = match f.status {
-            Status::Differs(_) => families::departures(f.name).map(|(_, d)| d),
-            Status::Agree | Status::Decided { .. } => None,
-        };
-        let mut made = vec![0usize; departures.map_or(0, <[_]>::len)];
-        // Cases xterm abstains from (SGR 58) are drawn again, up to ten
-        // times as many as asked for.
-        while judged < count && judged.saturating_add(unheard) < count.saturating_mul(10) {
-            let mut case = case::random(&mut r, &set, args.reflow);
-            if departures.is_some() {
-                case.steps = (case.steps.into_iter())
-                    .flat_map(|s| match s {
-                        Step::Output(snippets) => snippets
-                            .into_iter()
-                            .map(|x| Step::Output(vec![x]))
-                            .collect(),
-                        other => vec![other],
-                    })
-                    .collect();
-            }
-            let outcome = case.run(&panel)?;
-            if outcome.verdicts.is_empty() {
-                unheard = unheard.saturating_add(1);
-                continue;
-            }
-            judged = judged.saturating_add(1);
-            if outcome.agrees() {
-                continue;
-            }
-            if let Some(departures) = departures
-                && let Some(at) = covering(&case, &outcome, departures)
-            {
-                if let Some(n) = made.get_mut(at) {
-                    *n = n.saturating_add(1);
-                }
-                continue;
-            }
-            failed = failed.saturating_add(1);
-            if !shown {
-                shown = true;
-                // Shrunk while it still differs where no departure covers.
-                let small = case.shrink_while(4000, |c| {
-                    c.run(&panel).is_ok_and(|o| {
-                        !o.agrees() && departures.is_none_or(|d| covering(c, &o, d).is_none())
-                    })
-                });
-                print!("{}", case::report(&small, &panel, &small.run(&panel)?));
-            }
-        }
-        ok &= failed == 0 && judged > 0;
-        for (d, n) in departures.unwrap_or_default().iter().zip(&made) {
-            println!("   departs in {n} cases: {}", d.why);
-        }
-        println!(
-            "   {failed} of {judged} random cases failed (seed {}); {unheard} more had no verdict",
-            args.seed
-        );
+        ok &= random_judged(args, i, &panel, count)?;
     }
     Ok(ok)
+}
+
+/// `count` random cases of family `i` (with text, unless it is text)
+/// beside `panel`, cases xterm abstains from (SGR 58) drawn again, up to
+/// ten times as many; the first that fails shown, shrunk. A family that
+/// differs is judged by its departures (`families::DEPARTURES`), each
+/// snippet a write of its own: a case passes that a departure covers, and
+/// each departure's count is printed. Whether none failed, of some judged.
+fn random_judged(args: &Args, i: usize, panel: &[usize], count: usize) -> Result<bool, String> {
+    let f = FAMILIES.get(i).ok_or("no such family")?;
+    let text = families::find("text").ok_or("no text family")?;
+    let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
+    let mut r = Rng::new(args.seed);
+    let (mut judged, mut failed, mut unheard) = (0usize, 0usize, 0usize);
+    let mut shown = false;
+    // A family that differs: its departures from xterm, and how many
+    // cases each covered.
+    let departures = match f.status {
+        Status::Differs(_) => families::departures(f.name).map(|(_, d)| d),
+        Status::Agree | Status::Decided { .. } => None,
+    };
+    let mut made = vec![0usize; departures.map_or(0, <[_]>::len)];
+    // Cases xterm abstains from (SGR 58) are drawn again, up to ten
+    // times as many as asked for.
+    while judged < count && judged.saturating_add(unheard) < count.saturating_mul(10) {
+        let mut case = case::random(&mut r, &set, args.reflow);
+        if departures.is_some() {
+            case.steps = (case.steps.into_iter())
+                .flat_map(|s| match s {
+                    Step::Output(snippets) => snippets
+                        .into_iter()
+                        .map(|x| Step::Output(vec![x]))
+                        .collect(),
+                    other => vec![other],
+                })
+                .collect();
+        }
+        let outcome = case.run(panel)?;
+        if outcome.verdicts.is_empty() {
+            unheard = unheard.saturating_add(1);
+            continue;
+        }
+        judged = judged.saturating_add(1);
+        if outcome.agrees() {
+            continue;
+        }
+        if let Some(departures) = departures
+            && let Some(at) = covering(&case, &outcome, departures)
+        {
+            if let Some(n) = made.get_mut(at) {
+                *n = n.saturating_add(1);
+            }
+            continue;
+        }
+        failed = failed.saturating_add(1);
+        if !shown {
+            shown = true;
+            // Shrunk while it still differs where no departure covers.
+            let small = case.shrink_while(4000, |c| {
+                c.run(panel).is_ok_and(|o| {
+                    !o.agrees() && departures.is_none_or(|d| covering(c, &o, d).is_none())
+                })
+            });
+            print!("{}", case::report(&small, panel, &small.run(panel)?));
+        }
+    }
+    for (d, n) in departures.unwrap_or_default().iter().zip(&made) {
+        println!("   departs in {n} cases: {}", d.why);
+    }
+    println!(
+        "   {failed} of {judged} random cases failed (seed {}); {unheard} more had no verdict",
+        args.seed
+    );
+    Ok(failed == 0 && judged > 0)
 }
 
 /// The departure of `departures` that covers how `case` went (`outcome`):
