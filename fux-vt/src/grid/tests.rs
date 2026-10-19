@@ -27,11 +27,11 @@ fn storage_with_history_full_stops_growing_and_a_resize_holds_its_bound() -> Res
     let mut primary = Grid::new(Size::of(24, 80), BUDGET, &mut next, 0)?;
     let alternate = Grid::new(Size::of(24, 80), 0, &mut next, 0)?;
     for version in 1..=10_000 {
-        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
+        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version);
     }
     let plateau = heap(&primary);
     for version in 10_001..=20_000 {
-        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version)?;
+        primary.scroll(Size::of(24, 80).lines(), 1, UP, 0, &mut next, version);
     }
     // The screen's storage as it was, and history's within its budget.
     let now = heap(&primary);
@@ -76,7 +76,7 @@ fn moving_a_row_is_a_removal_then_an_insertion() -> Result<(), Error> {
     let contiguous = Grid::new(Size::of(5, 1), 0, &mut next, 0)?;
     let mut wrapped = Grid::new(Size::of(5, 1), 4, &mut next, 0)?;
     for version in 1..=11 {
-        wrapped.scroll(Size::of(5, 1).lines(), 1, UP, 0, &mut next, version)?;
+        wrapped.scroll(Size::of(5, 1).lines(), 1, UP, 0, &mut next, version);
     }
     let order = &wrapped.order;
     assert!((1..order.len()).contains(&order.top), "the order wraps");
@@ -294,7 +294,7 @@ fn random_grid(r: &mut Rng) -> Result<Grid, Error> {
     if grid.history_bytes() > 0 && r.chance(50) {
         let mut next = max_id(&grid).saturating_add(1);
         let (lines, rows) = (grid.size.lines(), grid.size.rows());
-        grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999)?;
+        grid.scroll(lines, r.small(rows), UP, 0, &mut next, 999);
     }
     let (rows, cols) = grid.size.into();
     for cursor in [&mut grid.cursor, &mut grid.saved.cursor] {
