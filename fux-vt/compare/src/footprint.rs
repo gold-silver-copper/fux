@@ -172,16 +172,17 @@ struct Pieces {
     recordings: Vec<Vec<u8>>,
     next: usize,
     tail: Vec<u8>,
+    /// The recordings as read, kept with their bytes (`content`).
+    _read: Vec<crate::corpus::Recording>,
 }
 
 impl Pieces {
     fn new(name: &str, rows: u16) -> Result<Pieces, String> {
         let tail = scroll_out(rows);
         if name == "corpus" {
-            let recordings: Vec<Vec<u8>> = crate::corpus::recordings(&[])?
-                .iter()
-                .map(crate::corpus::Recording::bytes)
-                .collect();
+            let read = crate::corpus::recordings(&[])?;
+            let recordings: Vec<Vec<u8>> =
+                read.iter().map(crate::corpus::Recording::bytes).collect();
             if recordings.is_empty() {
                 return Err("footprint: the corpus is empty".into());
             }
@@ -192,6 +193,7 @@ impl Pieces {
                 recordings,
                 next: 0,
                 tail,
+                _read: read,
             });
         }
         let make = WORKLOADS
@@ -206,6 +208,7 @@ impl Pieces {
             recordings: Vec::new(),
             next: 0,
             tail,
+            _read: Vec::new(),
         })
     }
 
@@ -296,6 +299,37 @@ impl Measured {
     }
 }
 
+/// `measure`'s bytes at `cols` columns (`count` pieces of a history
+/// measure), and what made them (a workload's pieces, the corpus read),
+/// kept for the child to hold past its second reading: freed before the
+/// first, their pages would be the engine's for free (on Linux, resident
+/// pages a later allocation reuses).
+fn content(
+    measure: &Measure,
+    cols: u16,
+    count: usize,
+) -> Result<(Vec<Vec<u8>>, Option<Pieces>), String> {
+    let mut rng = Rng::new(1);
+    Ok(match measure {
+        Measure::Empty => (Vec::new(), None),
+        Measure::Dense => {
+            let mut out = Vec::new();
+            bench::dense_screen(&mut rng, &mut out, ROWS, cols);
+            (vec![out], None)
+        }
+        Measure::Medium => {
+            let mut out = Vec::new();
+            bench::medium_screen(&mut rng, &mut out, ROWS, cols);
+            (vec![out], None)
+        }
+        Measure::History(name) => {
+            let mut source = Pieces::new(name, ROWS)?;
+            let bytes = (0..count).map(|_| source.next()).collect();
+            (bytes, Some(source))
+        }
+    })
+}
+
 /// The child: `ENGINE MEASURE COLS PIECES`. Prints what it measured as
 /// one line of JSON.
 pub fn child(args: &[String]) -> Result<(), String> {
@@ -311,25 +345,8 @@ pub fn child(args: &[String]) -> Result<(), String> {
         history: HISTORY,
         reflow: true,
     };
-    // The bytes, made before the first reading and held past the second.
-    let mut rng = Rng::new(1);
-    let bytes: Vec<Vec<u8>> = match &measure {
-        Measure::Empty => Vec::new(),
-        Measure::Dense => {
-            let mut out = Vec::new();
-            bench::dense_screen(&mut rng, &mut out, ROWS, cols);
-            vec![out]
-        }
-        Measure::Medium => {
-            let mut out = Vec::new();
-            bench::medium_screen(&mut rng, &mut out, ROWS, cols);
-            vec![out]
-        }
-        Measure::History(name) => {
-            let mut source = Pieces::new(name, ROWS)?;
-            (0..count).map(|_| source.next()).collect()
-        }
-    };
+    // The bytes, and what made them, held past the second reading.
+    let (bytes, made) = content(&measure, cols, count)?;
     let before = memory::read()?;
     let started = Instant::now();
     let mut vt = make(engine, &setup)?;
@@ -348,6 +365,7 @@ pub fn child(args: &[String]) -> Result<(), String> {
     });
     println!("{json}");
     drop(vt);
+    drop(made);
     Ok(())
 }
 
@@ -780,6 +798,26 @@ impl Count {
 #[cfg(test)]
 mod tests {
     use super::{Measure, Pieces, ROWS};
+
+    /// The content a child measures, and what made it, stay held over both
+    /// readings: memory allocated after the first reading reads as grown,
+    /// none of it reused from content freed before (Linux, where freed
+    /// pages stay resident). 8 MiB in small allocations reads as 7.5 at
+    /// least.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_a_child_measures_with_is_held_over_its_readings() -> Result<(), String> {
+        let (bytes, made) = super::content(&Measure::History("corpus".into()), 200, 400)?;
+        let before = crate::memory::read()?;
+        let blocks: Vec<Vec<u8>> = (0..2048)
+            .map(|i| vec![u8::try_from(i % 251).unwrap_or(1); 4096])
+            .collect();
+        let after = crate::memory::read()?;
+        let grown = after.footprint.saturating_sub(before.footprint);
+        assert!(grown >= 15 << 19, "{grown} bytes grew for 8 MiB");
+        drop((blocks, bytes, made));
+        Ok(())
+    }
 
     /// fux-vt's history fills: with 10,000 rows, or, where its rows'
     /// styles take its budget first (every cell its own colours, 200 a
