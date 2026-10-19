@@ -149,3 +149,50 @@ jobs:
           path: ${{ matrix.dir }}/artifacts/${{ matrix.target }}/
           retention-days: 30
           if-no-files-found: ignore
+
+  mutation:
+    name: guard mutants, shard ${{ matrix.shard }} of 12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: cargo-mutants and nextest
+        run: |
+          set -euo pipefail
+          cargo install cargo-mutants --locked --version 27.1.0
+          cargo install cargo-nextest --locked --version 0.9.148
+
+      # The frozen guard set (fux-vt/compare/mutants-guards.txt), a twelfth
+      # of it a job: each mutant built at opt-level 1 (the bounds tests at
+      # opt-level 0 take minutes) and tried against fux-vt's tests but the
+      # `_10x` bounds rows, and fux's unit tests but the one that makes a
+      # 1 GiB buffer. Each test binary may hold 2 GiB, so a guard mutant
+      # that lets memory go unbounded fails its test, not the runner.
+      - name: the guard mutants
+        env:
+          CARGO_PROFILE_DEV_OPT_LEVEL: "1"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: prlimit --data=2147483648 --
+          FUX_MUTANTS_JOBS: "2"
+          FUX_MUTANTS_SHARD: ${{ matrix.shard }}/12
+          FUX_MUTANTS_TESTS: (package(fux-vt) & !test(/_10x$/)) | (package(fux) & kind(lib) & !test(=session::tests::keys_for_several_panes_go_to_all_or_none))
+          FUX_MUTANTS_OUT: ${{ runner.temp }}/mutants
+        run: fux-vt/compare/mutants.sh guards
+
+      - name: the outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutants/mutants.out/*.txt
+          if-no-files-found: ignore
