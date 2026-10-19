@@ -930,6 +930,52 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     Ok(())
 }
 
+/// A picture placed on the bottom margin between left and right margins
+/// scrolls their cells, not the rows (DEC STD 070, 5.4.3), as text there
+/// does: its first band goes up a row with the cells, and the picture is
+/// listed where its cells are, its last row the cursor's (FA-SIX-1).
+#[test]
+fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    p.process(b"\x1b[?69h\x1b[1;5s\x1b[4;3H\x1bPq\"1;1#1;2;100;0;0!8~-!8~\x1b\\")?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols, s.rows))
+        .collect();
+    assert_eq!(shown, [(2, 2, 2, 2)]);
+    let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
+    for row in [2, 3] {
+        assert_eq!(lines(&p).get(row).map(|l| l.trim()), Some(covered.as_str()));
+    }
+    Ok(())
+}
+
+/// A picture taller than a screen that keeps no history scrolls its top
+/// off, which is cropped, the rest shown (DEC STD 070-9, 11.2.4), and the
+/// checker reads it so too (FA-CODEX-6).
+#[test]
+fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
+    let mut p = Parser::with_options(Size::new(1, 2)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bP0;1q\"1;1;1;12~-~\x1b\\")?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.rows)).collect();
+    assert_eq!(shown, [(-1, 2)]);
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
 /// A picture shows while every cell it covers, row by row down from its
 /// top, holds the placeholder: a region scroll that moves part of it past
 /// the rest, or an edit in the call that placed it, takes it away, as
