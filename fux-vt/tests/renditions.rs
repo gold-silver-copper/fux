@@ -223,3 +223,24 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
     assert_eq!(rendition(&p, 0), Some(Single), "ED");
     Ok(())
 }
+
+/// The rectangular area operations stop at a double-width line's end (DEC
+/// STD 070, 5.6.1, and DECDWL, note 2: a line of double-width characters
+/// holds half the columns): DECFRA over the whole width of a doubled line
+/// fills its 5 columns of 10, as DECSWL then shows; DECRQCRA sums those 5.
+#[test]
+fn rectangles_stop_at_a_double_width_lines_end() -> Result {
+    let p = run(4, 10, b"\x1b#6\x1b[88;1;1;1;10$x\x1b#5")?;
+    assert_eq!(line(&p, 0), "XXXXX");
+    let p = run(4, 10, b"\x1b#6\x1b[88;1;1;2;10$x\x1b#5")?;
+    assert_eq!(first(&p, 2), ["XXXXX", "XXXXXXXXXX"]);
+    // Five X's, 0x58 each: the sum's negation, 0x10000 - 5 x 0x58.
+    let options = Options::default().set(Feature::RectangleChecksums, true);
+    let mut p = Parser::with_options(Size::new(4, 10)?, 0, options)?;
+    let mut replies = Vec::new();
+    p.process_with_replies(b"\x1b#6XXXXX\x1b[1;1;1;1;1;10*y", |r| {
+        replies.extend_from_slice(r)
+    })?;
+    assert_eq!(replies, b"\x1bP1!~FE48\x1b\\");
+    Ok(())
+}
