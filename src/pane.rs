@@ -1808,7 +1808,7 @@ fn cursor_line(screen: &Screen) -> Option<RowId> {
 
 /// The first row of the line `row` is on.
 pub fn line_top(mut row: Row<'_>) -> Row<'_> {
-    while let Some(up) = row.above().filter(Row::wrapped) {
+    while let Some(up) = row.above().filter(Row::continues) {
         row = up;
     }
     row

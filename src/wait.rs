@@ -791,7 +791,7 @@ fn cursor(pane: &Pane) -> Option<Note> {
 /// and each row's text.
 fn wrapped_rows(screen: &fux_vt::Screen, row: u16) -> Option<(u16, Vec<String>)> {
     let window = screen.window();
-    let wraps = |y: u16| window.row(y).is_some_and(|r| r.wrapped());
+    let wraps = |y: u16| window.row(y).is_some_and(|r| r.continues());
     let mut from = row;
     while from > 0 && row.saturating_sub(from) < 3 && wraps(from.saturating_sub(1)) {
         from = from.saturating_sub(1);
@@ -1292,13 +1292,13 @@ impl Line {
             let rows = reach.div_ceil(width).saturating_add(1);
             let mut first = at;
             for _ in 0..rows {
-                match first.above().filter(Row::wrapped) {
+                match first.above().filter(Row::continues) {
                     Some(up) => first = up,
                     None => break,
                 }
             }
             let mut line = Line::default();
-            if first.above().is_some_and(|up| up.wrapped()) {
+            if first.above().is_some_and(|up| up.continues()) {
                 line.push(CUT_END, false);
             }
             // Rows after the piece's own, once it is passed.
@@ -1315,7 +1315,7 @@ impl Line {
                     (false, Some(n)) => Some(n.saturating_add(1)),
                     (false, None) => None,
                 };
-                row = r.below().filter(|_| r.wrapped());
+                row = r.below().filter(|_| r.continues());
                 if row.is_some() && after.is_some_and(|n| n >= rows) {
                     line.push(CUT_END, false);
                     return line;

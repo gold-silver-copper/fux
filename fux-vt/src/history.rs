@@ -107,6 +107,10 @@ pub(crate) const PROMPT: u8 = 2;
 pub(crate) const RENDITION_SHIFT: u8 = 2;
 const LINKED: u8 = 4;
 const TEXT: u8 = 8;
+/// A screen row's flag, past its rendition's bits: soft-wrapped, as xterm
+/// keeps it, but its line ends with it, the row below erased whole since
+/// (`Row::continues`). History keeps it apart (`ended`).
+pub(crate) const ENDS: u8 = 16;
 
 impl Kept {
     /// What `row` is kept as, its cells at `start` in block `block`.
@@ -260,6 +264,9 @@ pub(crate) struct History {
     /// The rows that are not single width, by number, oldest first: most
     /// histories have none, and a row's record has no bit to spare.
     renditions: VecDeque<(u64, LineRendition)>,
+    /// The rows whose line ends with them though soft-wrapped (`ENDS`), by
+    /// number, oldest first: as rare.
+    ended: VecDeque<u64>,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
     /// The bytes of the rows' text.
@@ -303,6 +310,7 @@ impl Clone for History {
             texts: self.texts.clone(),
             linked: self.linked.clone(),
             renditions: self.renditions.clone(),
+            ended: self.ended.clone(),
             cells: self.cells,
             text: self.text,
             budget: self.budget,
@@ -370,6 +378,7 @@ impl History {
         (self.texts.capacity().saturating_mul(TEXT_BUCKET))
             .saturating_add(self.linked.capacity().saturating_mul(LINK_BUCKET))
             .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
+            .saturating_add(self.ended.capacity().saturating_mul(size_of::<u64>()))
     }
     /// The cells a block holds: a block's worth (`BLOCK`), or for a small
     /// budget an eighth of it, so that a block is never most of what
@@ -427,6 +436,7 @@ impl History {
         self.texts = ByRow::default();
         self.linked = ByRow::default();
         self.renditions = VecDeque::new();
+        self.ended = VecDeque::new();
         self.recount();
     }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
@@ -531,6 +541,9 @@ impl History {
         let mut flags = kept.flags() & (WRAPPED | PROMPT);
         if !self.renditions.is_empty() {
             flags |= self.rendition_of(number).bits() << RENDITION_SHIFT;
+        }
+        if !self.ended.is_empty() && self.ended.binary_search(&number).is_ok() {
+            flags |= ENDS;
         }
         Some(Found {
             kept,
@@ -665,8 +678,11 @@ impl History {
         self.cells = self.cells.saturating_add(len);
         self.rows
             .push_back(Kept::new(&row, (self.newest_block, start)));
-        if row.flags >> RENDITION_SHIFT != 0 {
+        if (row.flags >> RENDITION_SHIFT) & 3 != 0 {
             self.keep_rendition(LineRendition::from_bits(row.flags >> RENDITION_SHIFT));
+        }
+        if row.flags & ENDS != 0 {
+            let _ = self.keep_ended();
         }
         Ok(())
     }
@@ -684,6 +700,21 @@ impl History {
             self.renditions.push_back((number, rendition));
             self.recount();
         }
+    }
+    /// Notes that the row pushed last, soft-wrapped, ends its line (`ENDS`).
+    #[cold]
+    #[inline(never)]
+    fn keep_ended(&mut self) -> bool {
+        let Some(number) = self.rows.len().checked_sub(1).and_then(|i| self.number(i)) else {
+            return false;
+        };
+        // No memory for it: the line goes on, as xterm's would.
+        let new = self.ended.back() != Some(&number) && self.ended.try_reserve(1).is_ok();
+        if new {
+            self.ended.push_back(number);
+            self.recount();
+        }
+        new
     }
     /// Whether a row kept is not single width.
     pub(crate) fn has_renditions(&self) -> bool {
@@ -709,6 +740,9 @@ impl History {
             .is_some_and(|&(n, _)| n < self.first_row)
         {
             self.renditions.pop_front();
+        }
+        while self.ended.front().is_some_and(|&n| n < self.first_row) {
+            self.ended.pop_front();
         }
         self.maps_changed();
     }
@@ -752,7 +786,7 @@ impl History {
             .wrapping_add(u64::try_from(n).unwrap_or(u64::MAX));
         self.let_go = let_go;
         self.cells = self.cells.saturating_sub(cells);
-        if !self.renditions.is_empty() {
+        if !self.renditions.is_empty() || !self.ended.is_empty() {
             self.drop_renditions();
         }
         let freed = self.rows.advance(n);
@@ -779,7 +813,7 @@ impl History {
         if gone.flags() & (TEXT | LINKED) != 0 {
             self.forget(number, gone.flags());
         }
-        if !self.renditions.is_empty() {
+        if !self.renditions.is_empty() || !self.ended.is_empty() {
             self.drop_renditions();
         }
         let ended = (gone.len() > 0)
@@ -848,6 +882,9 @@ impl History {
         if shrink(self.renditions.capacity(), self.renditions.len()) {
             self.renditions.shrink_to(self.renditions.len());
         }
+        if shrink(self.ended.capacity(), self.ended.len()) {
+            self.ended.shrink_to(self.ended.len());
+        }
         if self.maps_bytes() != self.maps {
             self.recount();
         }
@@ -900,14 +937,25 @@ impl History {
         }
     }
 
+    /// Whether row `index`'s line goes on in the row after: soft-wrapped,
+    /// and not noted ended (`ENDS`).
+    pub(crate) fn continues(&self, index: usize) -> bool {
+        let wrapped = self.kept(index).is_some_and(Kept::wrapped);
+        wrapped
+            && (self.ended.is_empty()
+                || self.number(index).is_none_or(|n| self.ended.binary_search(&n).is_err()))
+    }
     /// The newest row's line ends with it, which then takes `version`: the
-    /// screen's top row, that it went on in, was erased whole.
+    /// screen's top row, that it went on in, was erased whole. It stays
+    /// soft-wrapped, as xterm keeps it (`ENDS`).
     pub(crate) fn end_newest_line(&mut self, version: u64) {
-        if let Some(kept) = self.rows.back_mut()
-            && kept.wrapped()
+        if self.rows.len().checked_sub(1).and_then(|i| self.rows.get(i)).is_some_and(Kept::wrapped)
+            && self.keep_ended()
+            && let Some(kept) = self.rows.back_mut()
         {
-            kept.set(WRAPPED, false);
             kept.version = version;
+            // Its note counts in the budget.
+            self.trim();
         }
     }
 
@@ -1040,6 +1088,21 @@ impl History {
                 )
             },
         )?;
+        // The lines noted ended are of rows kept, oldest first, each
+        // soft-wrapped.
+        let (first, next) = self.numbers();
+        let mut after = first;
+        for &number in &self.ended {
+            let wrapped = number
+                .checked_sub(first)
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| self.rows.get(i))
+                .is_some_and(Kept::wrapped);
+            crate::check::ensure((after..next).contains(&number) && wrapped, || {
+                format!("a line noted ended at row {number} of {first}..{next}")
+            })?;
+            after = number.saturating_add(1);
+        }
         // The renditions noted are of rows kept, oldest first, and none
         // single width.
         let (first, next) = self.numbers();

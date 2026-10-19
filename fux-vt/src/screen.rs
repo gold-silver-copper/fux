@@ -1643,7 +1643,7 @@ impl Screen {
             row < g.size().lines().last() || row == g.lines.last()
         };
         // Set before scrolling so a departing row carries its soft-wrap into history.
-        self.with_grid(|g, _, v| g.wrap(row, wrapped, v));
+        self.with_grid(|g, _, v| g.wrap_onto(row, wrapped, v));
         // With margins, the line feed goes from the column the glyph did
         // not fit in, which says whether it scrolls, then to the left
         // margin (xterm's `WrapLine`).

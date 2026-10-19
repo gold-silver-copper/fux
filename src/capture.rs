@@ -51,7 +51,7 @@ pub fn pane(
             if !*wrapped {
                 *line = line.saturating_add(1);
             }
-            *wrapped = !view.wrapped && row.wrapped();
+            *wrapped = !view.wrapped && row.continues();
             Some(*line)
         })
         .collect();
@@ -107,7 +107,7 @@ pub fn pane(
             Some(last) if wraps => last.extend(cells),
             _ => lines.push(cells),
         }
-        wraps = !view.wrapped && row.wrapped();
+        wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
