@@ -21,7 +21,7 @@ use crate::command::{AnyRef, CaptureView, Source, Until, Wait};
 use crate::id::PaneId;
 use crate::json::Json;
 use crate::log::{Event, Seq};
-use crate::pane::{Before, Pane, Start};
+use crate::pane::{Before, Dropped, Pane, Start};
 use crate::process::Ended;
 use crate::protocol::{End, Reply};
 use crate::ready::{self, State};
@@ -243,7 +243,20 @@ impl Waiting {
             // Its JSON, read at the same moment, for `json` to give.
             outcome.json = form.unwrap_or_default();
             let line = outcome.text.lines().next().unwrap_or_default();
-            outcome.text = format!("{line}\n{read}");
+            // Where the cursor is, as the JSON's `cursor` says it of the
+            // lines read, said of the screen, as a mouse event counts.
+            let live = match view.source {
+                Source::Shown | Source::LastOutput => true,
+                Source::Main => !pane.screen().mode(fux_vt::Mode::AlternateScreen),
+                Source::Alternate => pane.screen().mode(fux_vt::Mode::AlternateScreen),
+            };
+            let on_text = after_text(pane.screen()) || {
+                let (row, col) = pane.screen().cursor_position();
+                within_line(pane.screen(), row, col)
+            };
+            let cursor =
+                (cursor(pane).filter(|_| live && on_text)).map(|(note, _)| format!(" · {note}"));
+            outcome.text = format!("{line}{}\n{read}", cursor.unwrap_or_default());
         }
         Some(outcome)
     }
@@ -501,6 +514,9 @@ impl Wait {
     }
 }
 
+/// How many pieces of input an exited program never read are named.
+const LOST: usize = 5;
+
 /// A note of a state line, or a body, and its JSON fields.
 type Note = (String, Vec<(&'static str, Json<'static>)>);
 
@@ -582,14 +598,18 @@ impl Wait {
         // drawn in reverse video or a background of its own, newly
         // highlighted. A few runs at most: more is a screen drawn anew,
         // shown whole.
-        if action && pane.process.exit_status().is_none() {
+        if action && pane.process.child().is_some() {
             let screen = pane.screen();
             let (row, col) = screen.cursor_position();
-            let said = within_line(screen, row, col) || moved_alone(screen, watch);
-            if screen.mode(fux_vt::Mode::ShowCursor) && said {
-                let at = Json::Array(vec![Json::int(row), Json::int(col)]);
-                notes.push((format!("cursor {row},{col}"), vec![("cursor", at)]));
-            }
+            // A line edited where a program reads it (a line editor, a
+            // REPL), changed: where the cursor is, at the end of it too.
+            let edit = pane.edited
+                && matches!(state, State::Reading | State::Settled)
+                && !screen.mode(fux_vt::Mode::AlternateScreen)
+                && pane.revision != watch.revision
+                && after_text(screen);
+            let said = edit || within_line(screen, row, col) || moved_alone(screen, watch);
+            notes.extend(cursor(pane).filter(|_| said));
             let lit: Vec<_> = (crate::capture::highlights(screen).into_iter())
                 .filter(|l| {
                     !watch
@@ -623,13 +643,14 @@ impl Wait {
                 ));
             }
         }
-        // A line typed that a shell, or a relay's program, reads again
-        // after, where nothing has marked a command (a shell fux did not
-        // start, `koh connect -- sh`): no `done`, and no status, can come.
+        // A line typed that a shell in front reads again after, where
+        // nothing has marked a command (a shell fux did not start, `koh
+        // connect SERVER -- sh`): no `done`, and no status, can come. A
+        // REPL's, a calculator's line is no command a shell could mark.
         let marked = commands.started > 0 || commands.finished > 0 || commands.prompt;
-        let shell = pane.runs_shell() || commands.report.is_some();
         let main = !pane.screen().mode(fux_vt::Mode::AlternateScreen);
-        if action && pane.line_ended && state == State::Reading && !marked && shell && main {
+        let unmarked = action && pane.line_ended && state == State::Reading && !marked && main;
+        if unmarked && pane.shell_in_front() {
             let field = ("marked", Json::Bool(false));
             notes.push((
                 "no status: nothing here marks its commands".into(),
@@ -639,8 +660,31 @@ impl Wait {
         if action && pane.revision == watch.revision && state == State::Reading {
             notes.push(("no change".into(), vec![("no_change", Json::Bool(true))]));
         }
+        // What of the action's input its program, exited, never read.
+        let (lost, field, said) = match &pane.lost {
+            Dropped::Unread(lost) => (
+                lost,
+                "lost",
+                "it exited before reading {}, which went nowhere",
+            ),
+            Dropped::Unanswered(lost) => (
+                lost,
+                "unanswered",
+                "it ended before its relay said its program read {}, which likely went nowhere",
+            ),
+            Dropped::None => (&Vec::new(), "", ""),
+        };
+        if action && !lost.is_empty() {
+            let mut names = lost.iter().take(LOST).cloned().collect::<Vec<_>>();
+            let more = lost.len().saturating_sub(LOST);
+            if more > 0 {
+                names.push(format!("{more} more"));
+            }
+            let list = Json::Array(lost.iter().cloned().map(Json::str).collect());
+            notes.push((said.replace("{}", &names.join(", ")), vec![(field, list)]));
+        }
         let queued = pane.input_queued();
-        if queued > 0 {
+        if queued > 0 && pane.process.exit_status().is_none() {
             notes.push((
                 format!("{queued} bytes unread"),
                 vec![("unread", Json::int(queued))],
@@ -656,6 +700,25 @@ impl Wait {
             .collect::<Vec<_>>()
             .join(" or ")
     }
+}
+
+/// Where the cursor of `pane`'s program is, as a note: its row and column
+/// on the screen, from 0, while its program runs and shows it.
+fn cursor(pane: &Pane) -> Option<Note> {
+    let screen = pane.screen();
+    let shows = pane.process.child().is_some() && screen.mode(fux_vt::Mode::ShowCursor);
+    let (row, col) = screen.cursor_position();
+    let at = Json::Array(vec![Json::int(row), Json::int(col)]);
+    shows.then(|| (format!("cursor {row},{col}"), vec![("cursor", at)]))
+}
+
+/// Whether the screen shows text left of the cursor on its row: at the
+/// end of a line typed or printed, not on a blank row.
+fn after_text(screen: &fux_vt::Screen) -> bool {
+    let (row, col) = screen.cursor_position();
+    let upto = usize::from(col).saturating_add(usize::from(screen.pending_wrap()));
+    (screen.window().row(row))
+        .is_some_and(|r| r.cells().take(upto).any(|c| !c.shown().trim().is_empty()))
 }
 
 /// Whether the screen shows text under the cursor at `row`, `col`, or

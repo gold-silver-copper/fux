@@ -12,7 +12,7 @@ use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::log::Unit;
-use crate::pane::{self, InputQueue, Pane, Process, Runs, Typed, basename};
+use crate::pane::{self, InputQueue, Pane, Process, Runs, Sent, Typed, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
@@ -1161,13 +1161,14 @@ impl Session {
         let mut each = Vec::new();
         for id in self.panes_of(target)? {
             let pane = self.live_pane_mut(id)?;
-            let units = units(pane, inputs);
+            let (units, sent) = units(pane, inputs);
             pane.room_for(&units)?;
-            each.push((id, units));
+            each.push((id, units, sent));
         }
-        for (id, units) in each {
+        for (id, units, sent) in each {
             let pane = self.pane_mut(id)?;
             pane.note_input();
+            pane.sent = sent;
             pane.send(units, Instant::now())?;
         }
         Ok(Reply::default())
@@ -1799,6 +1800,7 @@ impl Session {
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
             Runs::Program(_) => {
+                pane.lose_unread();
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let gone = std::mem::replace(&mut pane.process, Process::Exited(ended));
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
@@ -2412,6 +2414,7 @@ impl Session {
                     }
                 }
                 p.note_input();
+                p.sent = vec![Sent::Named(report.len(), "a mouse event".into())];
                 p.send(vec![(report, Unit::Submit)], Instant::now())?;
                 p.mouse_held = held;
                 Ok(Reply::default())
@@ -3706,13 +3709,15 @@ pub(crate) mod testing {
 /// edit the line in a row another, and each other key, a lone Escape
 /// and a paste each their own. So in `%2 str msg text str Enter key` the Enter is
 /// read alone, as a submit, not as a newline pasted with the text, and
-/// what follows each piece is told apart (`crate::classify`).
-fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
+/// what follows each piece is told apart (`crate::classify`). With them,
+/// each input as an answer names it, should its program not read it.
+fn units(p: &Pane, inputs: &[Input]) -> (Vec<(Vec<u8>, Unit)>, Vec<Sent>) {
     let (mode, bracketed) = (
         p.screen().key_mode(),
         p.screen().mode(fux_vt::Mode::BracketedPaste),
     );
     let mut units: Vec<(Vec<u8>, Unit)> = Vec::new();
+    let mut sent = Vec::new();
     // Whether the last piece takes more, an edit: text, or keys.
     let mut last: Option<bool> = None;
     for input in inputs {
@@ -3720,9 +3725,11 @@ fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
         let unit = match input {
             Input::Key(key) => {
                 crate::encode::key_bytes((*key).into(), mode, &mut bytes);
+                sent.push(Sent::Named(bytes.len(), key.to_string()));
                 crate::command::unit(*key)
             }
             Input::Text(text) => {
+                sent.push(Sent::Text(text.clone()));
                 // A line end in text submits the line, read alone.
                 let mut rest = text.as_str();
                 while let Some(at) = rest.find(['\r', '\n']) {
@@ -3742,6 +3749,7 @@ fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
             }
             Input::Paste(text) => {
                 crate::encode::paste(text, bracketed, &mut bytes);
+                sent.push(Sent::Named(bytes.len(), "a paste".into()));
                 // An edit, bracketed or one line; unbracketed with a line
                 // end, it submits lines.
                 let unit = match bracketed || !text.contains(['\r', '\n']) {
@@ -3760,7 +3768,7 @@ fn units(p: &Pane, inputs: &[Input]) -> Vec<(Vec<u8>, Unit)> {
             last = None;
         }
     }
-    units
+    (units, sent)
 }
 
 /// Adds `bytes`, an edit that is `text` typed or else keys, to the last

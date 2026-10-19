@@ -109,8 +109,9 @@ printed after, in whole rows, so old text on the row it starts on too, else that
 the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `marked` (`false`: a line typed
-that a shell or a relay's program reads again after, where nothing
-marked a command, so no `done` or status comes), `no_change` (`true`: the keys
+that a shell in front reads again after, where nothing marked a
+command, so no `done` or status comes; a relay's program counts as a
+shell only if the relay's words name one, `-- bash -i`), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
 screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that redraws by
@@ -118,14 +119,19 @@ itself read the keys and drew after them; what it draws later may
 differ), `wait_with` (`"wait-exit"` or `"wait-done"`: a pane `waiting`
 that is no full-screen program, maybe at work, blocked off its
 terminal, or a relay that said nothing since the input, and the wait word
-that waits for its end), `cursor` (`[ROW,COL]`
-after keys or a mouse event, when text shows under or right of the cursor
-on its row, or the input moved the cursor alone), `highlight` (after keys
+that waits for its end), `cursor` (`[ROW,COL]` of the screen
+after keys or a mouse event: after a line edited where a program reads
+it, when text shows under or right of the cursor on its row, or when the
+input moved the cursor alone; never while it is hidden or its program
+exited), `highlight` (after keys
 or a mouse event: up to three runs they highlighted anew, each
 `{"row","col","len","text"}`, row and column from 0 as a mouse event counts
 them), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
-counted). A
+counted), `lost` (the program exited: the keys and texts it never read,
+which went nowhere, `["C-q","\"ab\""]`), `unanswered` (a relay ended:
+what it sent on after the first key or line its program did not say it
+read, which likely went nowhere). A
 wait for a text or a bell answers what met it too:
 
 ```json

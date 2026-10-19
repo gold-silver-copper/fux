@@ -249,9 +249,44 @@ fn a_remote_program_with_no_marks_through_koh() -> Outcome {
             "{after}"
         );
     }
-    // It exits: koh closes its link, a while, and ends, which is told.
+    // It exits: koh closes its link, a while, and ends, which is told,
+    // the line that ended it read.
     let out = server.ok(&[&p[..], &["str", "exit", "line"]].concat())?;
-    assert!(out.starts_with(&format!("{pane} exited 0")), "{out}");
+    assert_eq!(head(&out), format!("{pane} exited 0"), "{out}");
+    Ok(())
+}
+
+/// A line editor of its own (a calculator's) `koh connect -- PROG` runs,
+/// no shell: a line it reads again after says nothing of marks, a line
+/// edited says where the cursor is, as a capture does, and a key sent on
+/// after the one that ended it is said to have likely gone nowhere.
+#[test]
+#[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
+fn a_remote_line_editor_through_koh() -> Outcome {
+    let server = Server::start("")?;
+    let calc = "import os, tty\ntty.setraw(0); os.write(1, b'calc> '); line = b''\n\
+                while True:\n\
+                \x20   k = os.read(0, 1)\n\
+                \x20   if k == b'\\x11': break\n\
+                \x20   if k != b'\\r': line += k; os.write(1, k); continue\n\
+                \x20   os.write(1, b'\\r\\n= ' + line + b'\\r\\ncalc> '); line = b''\n";
+    let script = server.dir.join("calc.py");
+    std::fs::write(&script, calc).map_err(e)?;
+    let script = script.to_string_lossy().into_owned();
+    let (_serve, pane, _) = connect(&server, &["--", "python3", &script], &[])?;
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "calc>", "wait-text", "wait"]].concat())?;
+    let read = server.ok(&[&p[..], &["str", "1+2", "line"]].concat())?;
+    assert_eq!(head(&read), format!("{pane} reading"), "{read}");
+    let edited = server.ok(&[&p[..], &["str", "ab", "type"]].concat())?;
+    let at = format!("{pane} reading · cursor 2,8");
+    assert_eq!(head(&edited), at, "{edited}");
+    let read = server.ok(&[&p[..], &["wrapped", "capture"]].concat())?;
+    assert_eq!(head(&read), at, "{read}");
+    let quit = ["str", "C-q", "key", "2", "times", "send-keys"];
+    let out = server.ok(&[&p[..], &quit[..]].concat())?;
+    let lost = "it ended before its relay said its program read C-q, which likely went nowhere";
+    assert_eq!(head(&out), format!("{pane} exited 0 · {lost}"), "{out}");
     Ok(())
 }
 

@@ -102,6 +102,18 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         "{}",
         refused.stderr
     );
+    // Keys sent on after the one that ended it went nowhere, which is said
+    // (where the terminal still holds them as its program exits: Linux).
+    let one = "stty raw -echo; dd bs=1 count=1 2>/dev/null >/dev/null; echo bye";
+    let one = id(&server.ok(&run(&[], &["sh", "-c", one]))?);
+    let keys = ["str", &one, "pane", "str", "C-q", "key", "2", "times"];
+    let lost = server.ok(&[&keys[..], &["str", "ab", "text", "send-keys"]].concat())?;
+    let said = r#" · it exited before reading C-q, "ab", which went nowhere"#;
+    let said = if PROBED { said } else { "" };
+    assert!(
+        head(&lost).starts_with(&format!("{one} exited 0{said}")),
+        "{lost}"
+    );
     // A program that cannot start is refused, saying why.
     let missing = server.fux(&run(&[], &["/no/such/program"]))?;
     assert_eq!(missing.status, 1);
@@ -833,10 +845,11 @@ fn a_relayed_busy_report_holds_the_wait() -> Outcome {
     Ok(())
 }
 
-/// A relay that runs a program that marks no commands (`koh connect --
+/// A relay that runs a shell that marks no commands (`koh connect --
 /// sh`), as a shell fux does not mark: a line it reads again after
 /// answers `reading` (from the relay's report) and says no status can
-/// come. One it owes a report for, its program
+/// come; where no shell is in front (a program the shell runs, a relay's
+/// that is none) that is not said. One it owes a report for, its program
 /// gone, closing its link a while as it polls its terminal (koh's client),
 /// is waited for to its end: `exited 0`, not `waiting`.
 #[test]
@@ -862,7 +875,14 @@ for _ in range(20):
         head(&read).ends_with(" · no status: nothing here marks its commands"),
         "{read}"
     );
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", relay]))?);
+    // A line a program it runs reads is no command.
+    line(&server, &sh, "cat")?;
+    let read = line(&server, &sh, "x")?;
+    assert_eq!(head(&read), format!("{sh} reading"), "{read}");
+    let other = id(&server.ok(&run(&[], &["python3", "-c", relay]))?);
+    let read = line(&server, &other, "true")?;
+    assert_eq!(head(&read), format!("{other} reading"), "{read}");
+    let pane = id(&server.ok(&run(&[], &["python3", "-c", relay, "--", "sh"]))?);
     let read = line(&server, &pane, "true")?;
     assert_eq!(
         head(&read),
@@ -4444,8 +4464,9 @@ fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
 
 /// What plain text hides is said on an action's state line: a selection
 /// its keys highlighted anew (reverse video), where, and the cursor when
-/// text goes on right of it. A highlight that stays, or a cursor at the
-/// end of its line, is not said again.
+/// text goes on right of it, or after a line edited. A highlight that
+/// stays, or a cursor at the end of a line printed, is not said again. A
+/// capture says the cursor too, as JSON does.
 #[test]
 fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome {
     let server = Server::start("")?;
@@ -4471,6 +4492,16 @@ fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome
         format!("{pane} {READING} · cursor 4,3"),
         "{again}"
     );
+    let echo = "import os, tty\ntty.setraw(0); os.write(1, b'> ')\n\
+                while True: os.write(1, os.read(0, 1))\n";
+    let line = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", echo]))?);
+    let edited = server.ok(&["str", &line, "pane", "str", "ab", "type"])?;
+    let at = format!("{line} {READING} · cursor 0,4");
+    assert_eq!(head(&edited), at, "{edited}");
+    for form in [&["capture"][..], &["wrapped", "capture"]] {
+        let read = server.ok(&[&["str", line.as_str(), "pane"][..], form].concat())?;
+        assert_eq!(read, format!("{at}\n> ab\n"));
+    }
     Ok(())
 }
 

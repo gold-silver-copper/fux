@@ -430,6 +430,15 @@ const SHELLS: &[&str] = &[
     "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
 ];
 
+/// Whether `argv` runs a shell taking commands typed at it: no -c and no
+/// script (`bash`, `bash --norc -i`).
+fn takes_commands(argv: &[String]) -> bool {
+    argv.split_first().is_some_and(|(p, args)| {
+        let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
+        interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
+    })
+}
+
 /// A program's file name, or the program as given if it has none.
 pub(crate) fn basename(program: &str) -> String {
     std::path::Path::new(program)
@@ -444,6 +453,29 @@ pub struct Alerts {
     /// Bells and notifications together, as `wait-bell` counts them.
     pub rung: u64,
     pub last: Option<String>,
+}
+
+/// What of an action's input its program, exited, did not read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Dropped {
+    #[default]
+    None,
+    /// Held by fux or in its terminal as it exited: it went nowhere.
+    Unread(Vec<String>),
+    /// A relay's, sent on after the key or line that may have ended its
+    /// program, which its relay never said it read: it likely went
+    /// nowhere.
+    Unanswered(Vec<String>),
+}
+
+/// A piece of an action's input, as an answer names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// Text typed.
+    Text(String),
+    /// Anything else, by its bytes and its name: a key (`C-q`), a paste,
+    /// a mouse event.
+    Named(usize, String),
 }
 
 pub struct Pane {
@@ -490,6 +522,21 @@ pub struct Pane {
     /// The last input typed ended a line (Enter, or text ending in a line
     /// end): what came of it is a command's, if its program marks them.
     pub line_ended: bool,
+    /// The last action's input ended in an edit of the line (text, a cursor
+    /// key): where the cursor is next matters.
+    pub edited: bool,
+    /// The last action's input, each piece's bytes and how it is named
+    /// (`C-q`, `"text"`): what its program had yet to read as it exited.
+    pub sent: Vec<Sent>,
+    /// The bytes of the last action's input written, and how many of
+    /// them had left fux as a relay's state report said its program read
+    /// again (`OSC 133 ; S`, which a relay sends once its program took the
+    /// input): what it read.
+    written: (usize, usize),
+    /// What of the last action's input its program had not read as it
+    /// exited, which went nowhere, or, a relay's, what its relay never
+    /// said it read ([`Pane::lose_unread`]).
+    pub lost: Dropped,
     /// The last state report its program relayed (`OSC 133 ; S`), by where
     /// it came among the marks, when fux read it, and the terminal's
     /// foreground group then: the relay's, while it runs.
@@ -689,6 +736,10 @@ impl Pane {
             changed_at: Instant::now(),
             written_at: None,
             line_ended: false,
+            edited: false,
+            sent: Vec::new(),
+            written: (0, 0),
+            lost: Dropped::default(),
             reported_at: None,
             drew_alone: (0, 0),
             record: log::Log::new(log::JOURNAL_BYTES),
@@ -841,13 +892,18 @@ impl Pane {
         };
         self.input.heard(Instant::now);
         // A report read now, which came after any input written before.
-        let report = self.screen().commands().report.map(|r| r.mark);
-        if let Some(mark) = report
+        let report = self.screen().commands().report;
+        if let Some(fux_vt::Report { mark, activity }) = report
             && Some(mark) != self.reported_at.map(|(mark, ..)| mark)
         {
             let group = (self.process.child())
                 .and_then(|child| fuxix::terminal::foreground_group(&child.master));
             self.reported_at = Some((mark, now, group));
+            // Its program reads again: it read the input that left fux.
+            use fux_vt::Reported::{Idle, Polling, Reading};
+            if matches!(activity, Reading | Polling | Idle) {
+                self.written.1 = self.written.0.saturating_sub(self.input.len());
+            }
         }
         begun
     }
@@ -1084,6 +1140,72 @@ impl Pane {
             .map(|(id, (_, shows))| (*id, *shows))
             .collect();
         self.seen.clear();
+        self.sent.clear();
+        self.written = (0, 0);
+    }
+
+    /// Its program exits: what of the last action's input it had not read
+    /// (still held by fux, or in its terminal) went nowhere. A relay reads
+    /// it all: what it sent on after its program last said it read again,
+    /// past the first key or line (which may have ended it), it never said
+    /// its program read. Named by the last pieces, a text by its end.
+    pub fn lose_unread(&mut self) {
+        let waiting = (self.process.child()).map_or(0, |c| c.master.keys_waiting());
+        let unread = self.input_queued().saturating_add(waiting);
+        let relay = self.screen().commands().report.is_some();
+        let names = |tail: Vec<(bool, String)>| -> Vec<String> {
+            tail.into_iter().map(|(_, name)| name).collect()
+        };
+        self.lost = match (unread, relay) {
+            (0, false) => Dropped::None,
+            (0, true) => {
+                let sent = (self.sent.iter())
+                    .map(|s| match s {
+                        Sent::Text(text) => text.len(),
+                        Sent::Named(len, _) => *len,
+                    })
+                    .fold(0, usize::saturating_add);
+                let mut tail = self
+                    .named_tail(sent.saturating_sub(self.written.1))
+                    .into_iter();
+                // What came up to the first key or line end, and that.
+                let ended = (tail.by_ref()).any(|(ends, _)| ends);
+                match names(tail.collect()) {
+                    after if ended && !after.is_empty() => Dropped::Unanswered(after),
+                    _ => Dropped::None,
+                }
+            }
+            (unread, _) => Dropped::Unread(names(self.named_tail(unread))),
+        };
+    }
+
+    /// The last action's pieces of input its last `bytes` are of, named,
+    /// and whether each ends a line or is a key.
+    fn named_tail(&self, mut bytes: usize) -> Vec<(bool, String)> {
+        let mut named = Vec::new();
+        for sent in self.sent.iter().rev() {
+            if bytes == 0 {
+                break;
+            }
+            let (len, piece) = match sent {
+                Sent::Text(text) => {
+                    let from = text.len().saturating_sub(bytes);
+                    let tail = (text.char_indices())
+                        .find(|(at, _)| *at >= from)
+                        .and_then(|(at, _)| text.get(at..))
+                        .unwrap_or_default();
+                    (
+                        text.len(),
+                        (tail.contains(['\r', '\n']), format!("{tail:?}")),
+                    )
+                }
+                Sent::Named(len, name) => (*len, (true, name.clone())),
+            };
+            named.push(piece);
+            bytes = bytes.saturating_sub(len);
+        }
+        named.reverse();
+        named
     }
 
     /// Sends `units` of input in order, each written once the program took
@@ -1092,6 +1214,9 @@ impl Pane {
     /// as `InputQueue::push` refuses, if they would not fit.
     pub fn send(&mut self, units: Vec<(Vec<u8>, log::Unit)>, now: Instant) -> Result<(), Error> {
         self.room_for(&units)?;
+        self.edited = units
+            .last()
+            .is_some_and(|(_, unit)| *unit == log::Unit::Edit);
         self.pace.waiting.extend(units);
         self.release_paced(now);
         Ok(())
@@ -1222,10 +1347,24 @@ impl Pane {
     pub fn runs_shell(&self) -> bool {
         match &self.runs {
             Runs::Shell => true,
-            Runs::Program(launch) => launch.argv.split_first().is_some_and(|(p, args)| {
-                let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
-                interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
-            }),
+            Runs::Program(launch) => takes_commands(&launch.argv),
+        }
+    }
+
+    /// Whether a shell that could mark commands is in front: the program
+    /// in the terminal's foreground (a job the shell runs, else its own) is
+    /// one, or, a relay's (`koh connect SERVER -- bash`), the program its
+    /// words say it runs is one. A REPL, an editor, a debugger is not.
+    pub fn shell_in_front(&self) -> bool {
+        let relay = self.screen().commands().report.is_some();
+        let argv = match (self.process.job(), &self.runs) {
+            (Some(job), _) => fuxix::process::argv(job).unwrap_or_default(),
+            (None, Runs::Program(launch)) => launch.argv.clone(),
+            (None, Runs::Shell) => return true,
+        };
+        match relay {
+            false => takes_commands(&argv),
+            true => (0..argv.len()).any(|at| argv.get(at..).is_some_and(takes_commands)),
         }
     }
 
@@ -1272,6 +1411,7 @@ impl Pane {
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
+        self.written.0 = self.written.0.saturating_add(bytes.len());
         let _ = self.input.push(&bytes);
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, after(now, gap), escape, exact));
