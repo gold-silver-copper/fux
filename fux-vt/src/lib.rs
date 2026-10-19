@@ -616,45 +616,27 @@ impl Prints {
     /// on where that left off, on its row. Past its caps, nothing more is
     /// added, and it is lost; its room grows by doubling, never past them.
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
-        self.add(row, cols, text.len(), |into| into.push_str(text), false);
-    }
-    /// `push` of ASCII `text`: a short one a byte a character, with no call
-    /// to read it as UTF-8 first, a long one read at once.
-    pub(crate) fn push_ascii(&mut self, row: RowId, cols: Range<u16>, text: &[u8]) {
-        let write = |into: &mut String| match text.len() < 16 {
-            true => into.extend(text.iter().map(|&b| char::from(b & 0x7f))),
-            false => into.push_str(str::from_utf8(text).unwrap_or_default()),
-        };
-        self.add(row, cols, text.len(), write, false);
+        self.add(row, cols, text, false);
     }
     /// Adds `text` joined to the cell at `cols` of `row`'s first column (a
     /// mark, a cluster's next character): to the last run if it took that
     /// cell, its columns grown to `cols`.
     pub(crate) fn join(&mut self, row: RowId, cols: Range<u16>, text: &str) {
-        self.add(row, cols, text.len(), |into| into.push_str(text), true);
+        self.add(row, cols, text, true);
     }
-    /// Adds the `len` bytes of text `write` puts in, at `cols` of `row`.
-    #[inline(always)]
-    fn add(
-        &mut self,
-        row: RowId,
-        cols: Range<u16>,
-        len: usize,
-        write: impl FnOnce(&mut String),
-        joins: bool,
-    ) {
+    fn add(&mut self, row: RowId, cols: Range<u16>, text: &str, joins: bool) {
         // Its room is within its caps: while it lasts, nothing is past them.
         let start = self.text.len();
         // Written as `String` and `Vec` test their room, which then needn't
         // be tested again.
-        let fits = len <= self.text.capacity().wrapping_sub(start)
+        let fits = text.len() <= self.text.capacity().wrapping_sub(start)
             && self.runs.len() != self.runs.capacity();
-        if self.lost || !fits && !self.grow(len) {
+        if self.lost || !fits && !self.grow(text.len()) {
             self.lost = true;
             return;
         }
-        work!(prints, len);
-        write(&mut self.text);
+        work!(prints, text.len());
+        self.text.push_str(text);
         let end = self.text.len();
         match self.runs.last_mut() {
             // It goes on where the last left off, or joins a cell it took.

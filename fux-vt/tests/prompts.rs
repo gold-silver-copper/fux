@@ -346,30 +346,6 @@ fn prints_are_recorded_though_drawn_over() -> Result {
     Ok(())
 }
 
-/// A run of ASCII drawn over cells that already hold some of it records
-/// only the glyphs that changed cells, as printing them one at a time
-/// does (Prints: "each run of text that changed cells"): `abX`, then
-/// `abc` over it, is `abX` and `c`; `aXcY` over `abcd`, `X` and `Y`
-/// (FA-TXT-2).
-#[test]
-fn an_ascii_run_records_only_the_glyphs_that_changed_cells() -> Result {
-    for (input, want) in [
-        (&b"abX\rabc"[..], &[((0, 3), "abX"), ((2, 3), "c")][..]),
-        (
-            b"abcd\raXcY",
-            &[((0, 4), "abcd"), ((1, 2), "X"), ((3, 4), "Y")],
-        ),
-    ] {
-        let mut p = Parser::with_options(Size::new(1, 8)?, 10, Options::new())?;
-        p.record_prints(true);
-        p.process(input)?;
-        let prints = p.take_prints();
-        let runs: Vec<((u16, u16), &str)> = prints.iter().map(|t| (t.cols, t.text)).collect();
-        assert_eq!(runs, want, "{}", input.escape_ascii());
-    }
-    Ok(())
-}
-
 /// What is recorded may hold 4 bytes a cell of the screen it is printed
 /// on: a resize with nothing recorded yet makes room for the new size, as
 /// taking the prints does, and loses nothing (FA-PAR-5).

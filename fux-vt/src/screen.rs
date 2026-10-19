@@ -2439,24 +2439,6 @@ impl Screen {
         {
             return Ok(());
         }
-        if self.prints.is_some() {
-            return self.ascii_recorded(bytes);
-        }
-        self.ascii_runs::<false>(bytes)
-    }
-
-    /// `ascii`'s runs while recording: out of line, so that the runs
-    /// without recording compile apart.
-    #[inline(never)]
-    fn ascii_recorded(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        self.ascii_runs::<true>(bytes)
-    }
-
-    /// `ascii`'s runs of `bytes`, each to the line's end, written whole;
-    /// while `RECORDING`, the glyphs that change cells recorded as they are
-    /// written, as `print` records them.
-    #[inline(always)]
-    fn ascii_runs<const RECORDING: bool>(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
         while let Some((&first, tail)) = bytes.split_first() {
             if self.stopped {
                 self.left = bytes.len();
@@ -2487,18 +2469,16 @@ impl Screen {
             // A run that meets half of a wide glyph, which the general path
             // repairs, is written up to it, and the glyph there printed.
             let written = loop {
-                let version = self.version;
-                let wrote = if RECORDING && let Some(prints) = self.prints.as_mut() {
-                    let g = match self.alternate_active {
-                        true => &mut self.alternate,
-                        false => &mut self.primary,
-                    };
-                    g.write_ascii_recorded((row, col), run, style, version, prints)
-                } else {
-                    self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v))
-                };
-                match wrote {
-                    Written::All | Written::Same => break true,
+                match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
+                    Written::All => {
+                        if self.prints.is_some() {
+                            let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
+                            let text = str::from_utf8(run).unwrap_or_default();
+                            self.printed(row, col..end, text);
+                        }
+                        break true;
+                    }
+                    Written::Same => break true,
                     Written::Before(n) => match run.get(..n) {
                         Some(before) if !before.is_empty() && n < run.len() => run = before,
                         Some(_) | None => break false,
