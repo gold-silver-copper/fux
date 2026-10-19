@@ -1324,9 +1324,12 @@ impl Parser {
     /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
     /// rectangle or a column edit, a scroll, REP, a search of history. It
     /// runs over calls, from one budget stop to the next, so it stops a
-    /// host that cuts its reads small as well; a host stopped this way
-    /// has had at most that much work done since the last stop, plus
-    /// what the sequence that crossed it did.
+    /// host that cuts its reads small as well. The call looks at it after
+    /// each sequence or string, and after each line feed; a host stopped
+    /// this way has had at most that much work done since the last stop,
+    /// plus what the sequence or line feed that crossed it did, plus the
+    /// text and other C0 controls before it, which do a few units a byte
+    /// and at most one style sweep (decision 820).
     ///
     /// [`Parser::process_with`] is this call given the rest again until
     /// none is left: its work has no ceiling but the bytes it is given. As
@@ -1398,7 +1401,12 @@ impl Parser {
                 }
                 self.screen.forget_repeat();
                 remaining = tail;
-                None
+                // A line feed at the bottom margin moves a row's text into
+                // history, spent: up to a row's text a byte (decision 820).
+                match byte {
+                    0x0a..=0x0c => self.over::<UNTIL_STOP>(),
+                    _ => None,
+                }
             } else if ground
                 && byte >= 0x80
                 && let Some(length) = self.text(remaining)
