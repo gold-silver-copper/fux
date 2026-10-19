@@ -96,9 +96,6 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
-/// The most bytes in one write while feeding a workload.
-const PIECE: usize = 1 << 20;
-
 /// On request only: behind a process of its own, it is slower than the
 /// engines in this process.
 pub const KIND: Kind = Kind {
@@ -542,14 +539,15 @@ impl Engine for XtermJs {
         read(&answer)
     }
 
-    /// The whole workload in writes of up to a MiB, none answered but the
-    /// last: Node applies them in order, so its answer means all are done.
-    fn feed(&mut self, bytes: &[u8], _: usize) -> Result<(), String> {
+    /// The whole workload in writes of `chunk` bytes, as every engine is
+    /// fed, none answered but the last: Node applies them in order, so its
+    /// answer means all are done.
+    fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {
         with_node(|node| {
             let mut rest = bytes;
             while !rest.is_empty() {
                 let (now, later) = rest
-                    .split_at_checked(PIECE.min(rest.len()))
+                    .split_at_checked(chunk.max(1).min(rest.len()))
                     .unwrap_or((rest, &[]));
                 self.write(node, now, later.is_empty())?;
                 rest = later;
