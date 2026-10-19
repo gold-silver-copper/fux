@@ -443,8 +443,8 @@ impl Links {
             let row = row.unwrap_or(usize::MAX);
             seen.extend(links.links().map(|link| (link.key(), row, link.cost())));
         }
-        // Each run, each history row's share, each `id` and the sort's
-        // steps, ⌈log2 runs⌉ × runs ÷ 16 (threats.md B16).
+        // Each run, each history row's share, each `id` and the two sorts'
+        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (threats.md B16).
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
         spend!(
@@ -452,7 +452,7 @@ impl Links {
             seen.len()
                 .saturating_add(len)
                 .saturating_add(self.ids.len())
-                .saturating_add(sort)
+                .saturating_add(sort.saturating_mul(2))
         );
         seen.sort_unstable();
         seen.dedup_by(|next, kept| {
@@ -462,23 +462,27 @@ impl Links {
             }
             same
         });
-        // What each history row takes with it when it loses its links: the
-        // links no newer row has.
-        let mut live = 0usize;
-        let mut leaving = vec![0usize; len];
-        for &(_, row, cost) in &seen {
-            live = live.saturating_add(cost);
-            if let Some(leaves) = leaving.get_mut(row) {
-                *leaves = leaves.saturating_add(cost);
-            }
-        }
+        // The history rows lose their links oldest first, each taking the
+        // links no newer row has, until what is left costs half the bound:
+        // the links by their newest row, which only rows with links have,
+        // so that nothing is kept a history row.
+        let mut live = (seen.iter()).fold(0usize, |live, &(_, _, cost)| live.saturating_add(cost));
         let mut lose = 0usize;
-        for leaves in leaving {
-            if live <= LINK_BYTES / 2 {
-                break;
+        if live > LINK_BYTES / 2 {
+            lose = len;
+            seen.sort_unstable_by_key(|&(_, row, _)| row);
+            for leaving in seen.chunk_by(|a, b| a.1 == b.1) {
+                let Some(&(_, row, _)) = leaving.first().filter(|(_, row, _)| *row < len) else {
+                    break;
+                };
+                let cost = (leaving.iter()).fold(0usize, |sum, &(_, _, c)| sum.saturating_add(c));
+                live = live.saturating_sub(cost);
+                if live <= LINK_BYTES / 2 {
+                    lose = row.saturating_add(1);
+                    break;
+                }
             }
-            live = live.saturating_sub(leaves);
-            lose = lose.saturating_add(1);
+            seen.sort_unstable();
         }
         self.held = live;
         self.ids.retain(|ById(link)| {
