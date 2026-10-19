@@ -444,7 +444,8 @@ impl Links {
             seen.extend(links.links().map(|link| (link.key(), row, link.cost())));
         }
         // Each run, each history row's share, each `id` and the two sorts'
-        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (threats.md B16).
+        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (threats.md B16): by key, and
+        // the rows' by row.
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
         spend!(
@@ -468,10 +469,11 @@ impl Links {
         // so that nothing is kept a history row.
         let mut live = (seen.iter()).fold(0usize, |live, &(_, _, cost)| live.saturating_add(cost));
         let mut lose = 0usize;
+        let mut kept = seen.as_mut_slice();
         if live > LINK_BYTES / 2 {
             lose = len;
-            seen.sort_unstable_by_key(|&(_, row, _)| row);
-            for leaving in seen.chunk_by(|a, b| a.1 == b.1) {
+            kept.sort_unstable_by_key(|&(_, row, _)| row);
+            for leaving in kept.chunk_by(|a, b| a.1 == b.1) {
                 let Some(&(_, row, _)) = leaving.first().filter(|(_, row, _)| *row < len) else {
                     break;
                 };
@@ -482,13 +484,16 @@ impl Links {
                     break;
                 }
             }
-            seen.sort_unstable();
+            // The links rows from `lose` on keep, by key again.
+            let from = kept.partition_point(|&(_, row, _)| row < lose);
+            kept = kept.get_mut(from..).unwrap_or_default();
+            kept.sort_unstable();
         }
         self.held = live;
         self.ids.retain(|ById(link)| {
-            let at = seen.binary_search_by_key(&link.key(), |&(key, _, _)| key);
+            let at = kept.binary_search_by_key(&link.key(), |&(key, _, _)| key);
             at.ok()
-                .and_then(|at| seen.get(at))
+                .and_then(|at| kept.get(at))
                 .is_some_and(|&(_, row, _)| row >= lose)
         });
         lose
