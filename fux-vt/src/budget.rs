@@ -64,7 +64,7 @@ pub(crate) const LIMIT: u64 = CEILING / 2;
 /// 4 KiB a call in fux's build, from the calls of 5 ms or more whose work
 /// is that kind's (each probe's 95th percentile), the kinds before it paid
 /// at their weights, times 1.25; the kinds no such call needs more of keep
-/// their earlier weights. Named as the
+/// the weights first frozen for them, before any was measured. Named as the
 /// counters are ([`crate::Work`]'s fields), for `spend!` to name them; the
 /// kinds no site spends are kept for the `checks` counters alone.
 #[expect(
