@@ -565,11 +565,11 @@ fux-vt's work counters and a counting allocator against it.
   bounds reproducer, every corpus recording, and every screen-wide
   sequence on pages written whole (DEC graphics, CJK, styled text,
   clusters of every length, protected text): the worst up to 1000 by 500
-  is 24.0 ms (a bounds reproducer; 21.3 ms on pages written whole,
-  DECRQCRA over 31-byte clusters); at 4095 by 4096 it is 219.7 ms (a
+  is 15.8 ms (a bounds reproducer; 14.0 ms on pages written whole,
+  DECRQCRA over 31-byte clusters); at 4095 by 4096 it is 217.8 ms (a
   scroll inside left and right margins over clusters of mixed lengths),
-  with DECCARA and DECRARA over styled mixed wide text up to 174 ms and
-  DECCRA over clusters up to 172 ms. The corpus's worst is 0.04 ms.
+  with DECCARA and DECRARA over styled mixed wide text up to 180 ms and
+  DECCRA over clusters up to 166 ms. The corpus's worst is 0.04 ms.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on
   the pixels a picture has.
