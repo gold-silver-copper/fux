@@ -280,6 +280,34 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Every guard mutant (fux-vt/compare/mutants-guards.txt) still names a
+  # mutant: a change to a guarded line fails here, by the guard's name, so
+  # its guard is looked at again in the same PR. The mutants themselves run
+  # nightly (fuzz.yml).
+  guards:
+    name: guard mutant names (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: guards
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: cargo-mutants
+        run: cargo install cargo-mutants --locked --version 27.1.0
+
+      - name: The guard names
+        run: fux-vt/compare/mutants.sh check
+
   # The agent benchmark's scripted tier for fux: every task, once, with fux
   # and python3 alone (no tmux, zellij, herdr or claude). A task fux used to
   # pass and fails now is a regression in how scripts and agents drive it.

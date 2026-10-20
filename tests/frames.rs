@@ -84,7 +84,7 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
 }
 
 /// A frame whose reading takes several turns, as one spending more than a
-/// parser call's work budget does (threats.md P24), is shown only once
+/// parser call's work budget does (THREATS.md 4.4), is shown only once
 /// read whole: the client keeps the last frame shown meanwhile ("keep
 /// rendering the last rendered state", the spec's "Rendering"). Each REP
 /// is spent as 65,535 copies: 4,000 of them spend two budgets. A row of
@@ -117,7 +117,7 @@ fn a_frame_read_over_several_turns_is_shown_only_whole() -> Outcome {
 }
 
 /// A pane drawing frame after frame, each read over several turns, holds
-/// up only itself (threats.md P24): the client is painted the rest of its
+/// up only itself (THREATS.md 4.4): the client is painted the rest of its
 /// screen meanwhile, that pane as it was last painted, never half a frame.
 #[test]
 fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {

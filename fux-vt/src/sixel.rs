@@ -43,7 +43,7 @@ pub struct Picture {
 impl Picture {
     /// A picture `width` by `height` of the pixels `rgba`, if they are
     /// exactly that many and each side is at most [`MAX_SIDE`]
-    /// (`threats.md` B07).
+    /// (`THREATS.md` B07).
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Option<Self> {
         fits_rgba(width, height, rgba.len()).then_some(Self {
             width,
@@ -155,7 +155,7 @@ fn offset(x: u32, y: u32, width: u32) -> Option<usize> {
 
 /// A side's room as a picture grows to `needed`: `now` if that holds it,
 /// else twice `now`, or `needed` if more, but never past `most`
-/// (`threats.md` B03).
+/// (`THREATS.md` B03).
 fn next_side(now: u32, needed: u32, most: u32) -> u32 {
     if needed <= now {
         return now;
@@ -237,7 +237,7 @@ impl Decoder {
             // "Sixel color: Contrasting to background" (DEC STD 070-9, 10,
             // the initial states), the background being register 0: xterm
             // 411 starts at register 3 (`graphics_sixel.c`), the VT340's
-            // green, and so does this (SIX-11).
+            // green, and so does this.
             colour: 3,
             command: Command::None,
             numbers: [0; 5],
@@ -259,7 +259,7 @@ impl Decoder {
     /// ignored in it (DEC STD 070, 8.1 and its coding section): one inside a
     /// command does not end it. Before the picture's pixels grow, `room`
     /// is asked for the bytes they then hold at once, the old and the new
-    /// (`threats.md` B01), and whether it may let pictures go for them:
+    /// (`THREATS.md` B01), and whether it may let pictures go for them:
     /// false keeps them as they are.
     pub(crate) fn push(&mut self, byte: u8, room: &mut impl FnMut(usize, bool) -> bool) {
         // C0 controls, space and DEL change nothing: 0x08 to 0x0d have "no
@@ -268,8 +268,9 @@ impl Decoder {
         // the parser's too.
         // GR codes are errors read as GL, "the 8th bit ... set to zero" (DEC
         // STD 070-9, 9.4), a byte at a time, a UTF-8 character's bytes too
-        // (decision 822). C1 codes, which there end sixel mode (9.3), are
-        // no controls in UTF-8, as fux-vt reads its input, and are ignored
+        // (as xterm 411 reads it; README, 'Sixel data is read a byte at a
+        // time'). C1 codes, which there end sixel mode (9.3), are no
+        // controls in UTF-8, as fux-vt reads its input, and are ignored
         // as C0 controls are (9.1); so are SPACE and DELETE, in GL or GR.
         let byte = match byte {
             0x21..=0x7e => byte,
@@ -392,7 +393,7 @@ impl Decoder {
 
     /// Grows the grid to `right` columns and `bottom` rows, cut to what a
     /// picture may keep, and makes room for its pixels, keeping those
-    /// drawn: each side doubling, within its limits (`threats.md` B03).
+    /// drawn: each side doubling, within its limits (`THREATS.md` B03).
     /// It stays as it is when `room` hasn't the bytes for the old pixels
     /// and the new at once, or the memory isn't there. Its size after.
     fn grow(
@@ -559,7 +560,7 @@ impl Decoder {
     }
 }
 
-/// The decoder's part of the invariant checker (threats.md section 6).
+/// The decoder's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Decoder {
     /// 31: the picture being drawn is no larger than a picture may keep,
@@ -822,7 +823,7 @@ mod tests {
     /// then processed as a GL code" (DEC STD 070-9, 9.4): `!3` then 0xFE
     /// is three `~`. C1 codes, which DEC has end sixel mode (9.3), are no
     /// controls in UTF-8 (README), and are ignored as C0 controls are
-    /// (9.1): a repeat count goes on past one (FA-SIX-9).
+    /// (9.1): a repeat count goes on past one.
     #[test]
     fn gr_codes_are_read_as_gl_and_c1_codes_ignored() {
         let pixels = |data: &[u8]| decode(data).map(|p| (p.width(), p.height(), p.rgba.clone()));
@@ -831,7 +832,8 @@ mod tests {
         assert_eq!(pixels(b"#1;2;100;0;0!3\xfe"), three, "GR");
         assert_eq!(pixels(b"#1;2;100;0;0!\x853~"), three, "C1");
         // A UTF-8 character's bytes are GR codes each: `é` is `C` then `)`,
-        // which ends a command and does nothing (decision 822).
+        // which ends a command and does nothing (as xterm 411 reads it;
+        // README, 'Sixel data is read a byte at a time').
         assert_eq!(
             pixels("#1;2;100;0;0\u{e9}".as_bytes()),
             pixels(b"#1;2;100;0;0C)"),
@@ -916,7 +918,7 @@ mod tests {
     }
 
     /// A picture is made only of exactly as many pixels as its size says,
-    /// each side at most `MAX_SIDE` (`threats.md` B07).
+    /// each side at most `MAX_SIDE` (`THREATS.md` B07).
     #[test]
     fn a_picture_is_made_of_exactly_its_pixels() {
         let pixels = |n: usize| vec![0u8; n];
@@ -1011,7 +1013,7 @@ mod tests {
     }
 
     /// A picture grows each side by doubling within what a picture may
-    /// keep (`threats.md` B03): a legal 2,049 by 4,096 one gets room for no
+    /// keep (`THREATS.md` B03): a legal 2,049 by 4,096 one gets room for no
     /// more than `MAX_PIXELS`, never 4,096 by 4,096.
     #[test]
     fn growth_stays_within_what_a_picture_may_keep() {
@@ -1035,7 +1037,7 @@ mod tests {
 
     /// The grid is kept at its own resolution and shown at its aspect: at
     /// 2:1 each sixel row shows as two, so six rows of 4,096 sixels keep
-    /// 4,096 by 6 pixels and show 4,096 by 12 (P3).
+    /// 4,096 by 6 pixels and show 4,096 by 12 (THREATS.md B04).
     #[test]
     fn a_grid_is_kept_at_its_resolution_and_shown_at_its_aspect() {
         let mut decoder = Decoder::new(0, 1);
@@ -1052,7 +1054,7 @@ mod tests {
     }
 }
 
-/// The decoder's check, shown a picture past what one may be (HAR-26).
+/// The decoder's check, shown a picture past what one may be.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     #[test]

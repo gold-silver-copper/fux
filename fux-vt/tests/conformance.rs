@@ -623,7 +623,7 @@ fn rep_writes_what_printing_again_writes() -> Result {
         "\x1b[H\x1b[1m界界",
         // Inside left and right margins, a scroll region, below it on a
         // halved line, with autowrap off, in insert mode and on a halved
-        // line, past the copies that change anything (FA-RE-F-1, F-6, F-7).
+        // line, past the copies that change anything.
         "\x1b[?69h\x1b[2;5s",
         "\x1b[1;2r",
         "\x1b[1;2r\x1b[3;1H\x1b#6",
@@ -1293,7 +1293,8 @@ fn erasing_saved_lines_on_the_alternate_screen_drops_the_main_screens() -> Resul
 /// reversed question mark (SYMBOL FOR SUBSTITUTE FORM TWO), one column, as
 /// xterm 411 shows it (`charproc.c`, `CASE_SUB`). fux-vt shows it inside a
 /// control string too, which SUB ends (3.5.4.4), as xterm does
-/// (decisions.md 4). As a control it is no graphic character for REP.
+/// (README, "SUB shows its error character"). As a control it is no graphic
+/// character for REP.
 #[test]
 fn sub_is_displayed_as_the_error_character() -> Result {
     let sub = "\u{2426}";

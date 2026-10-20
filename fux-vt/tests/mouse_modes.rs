@@ -3,7 +3,7 @@
 //! names them and xterm 411 sends them (button.c `EditorButton` and
 //! `EmitMousePosition`, scrollbar.c `AlternateScroll`, charproc.c's
 //! default translations): each kept, reported by DECRQM, and encoded.
-//! The expected bytes are those functions' (KEY-23).
+//! The expected bytes are those functions'.
 
 use fux_vt::keys::Modifiers;
 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent};

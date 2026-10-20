@@ -232,8 +232,8 @@ pub fn cells_of(text: &str) -> Vec<(String, bool)> {
 }
 
 /// Whether `c` is a Prepend character of no width, which joins no cluster
-/// after it (README, "A character of no width that joins no cluster";
-/// decision 824): UAX #29 joins it to a letter after it (GB9b).
+/// after it (README, "A character of no width that joins no cluster"):
+/// UAX #29 joins it to a letter after it (GB9b).
 fn zero_prepend(c: char) -> bool {
     width(c) == Some(0) && clusters(&format!("{c}a")).len() == 1
 }

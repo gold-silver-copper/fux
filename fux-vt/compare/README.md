@@ -45,20 +45,10 @@ default). Each ends with a summary of its checks and exits 1 if any
 failed, or says so if it ran over its budget. Independent checks run side
 by side, while whatever times itself or counts instructions runs alone.
 
-Every required check is in [`manifest.toml`](manifest.toml): its command,
-what it needs, and its schedule, including those nothing runs yet. A
-command also fails when a check the manifest schedules for it did not run,
-and when it ran one the manifest does not list.
-
-Results (`NAME.json`), logs (`logs/NAME.log`), a stamp for each check
-(`NAME.stamp.json`: the product and harness commits, each the last
-commit that changed fux-vt and fux, or the tools, and `-dirty` if their
-files differ from it; the binary's SHA-256, the exact command, when, how long, the
-exit status) and the fuzz ledger (`fuzz.jsonl`) go to
-`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`. A check's earlier
-results and stamp are removed before it runs. `FUX_PRODUCT_COMMIT` names
-the product when it is not HEAD's (fux-vt at another commit, by a path
-override). The binaries are run from `CARGO_TARGET_DIR` when it is set.
+Results (`NAME.json`), logs (`logs/NAME.log`) and the fuzz log
+(`fuzz.jsonl`) go to `fux-vt/compare/target/harness`, or
+`$FUX_HARNESS_OUT`. A check's earlier results are removed before it runs.
+The binaries are run from `CARGO_TARGET_DIR` when it is set.
 
 The single commands:
 
@@ -284,7 +274,7 @@ After creation and after every step, each engine is read into one
 - cursor position and status reports (`CSI r;c R`, `CSI 0 n`);
 - history: the text and wrap flag of every row fux-vt keeps, against the
   engine's most recent rows;
-- the device's state DA claims (HAR-46), where an engine tells it: the
+- the device's state DA claims, where an engine tells it: the
   cursor's shape (DECSCUSR's Ps; fux-vt's own, the terminal's, is compared
   with no one), the tab stops, each screen row's line rendition, and the
   cells DECSCA or SPA protects. fux-vt's adapter reads all four (the stops
@@ -494,8 +484,7 @@ was recorded applied (`REPLY_CHANGES`, each cited; one no recording shows
 any more fails). A recording whose replies changed otherwise is listed in
 `REPLIES_DIFFER` with why, and fails once it agrees again. So a change to
 DA, DECRQM or the colour replies shows in the corpus.
-`--json FILE` writes the results. The counts are in
-[`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
+`--json FILE` writes the results.
 
 ### The inventory
 
@@ -690,8 +679,6 @@ fux-vt/compare/run.sh esctest --tmux             # also in a real tmux, held to 
   `failure`) and `run_in_one_only`;
 - `mismatches`: what failed the run.
 
-The pass rates are in [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
-
 ## The input encoders
 
 `encoders` holds fux-vt's input encoders (`fux_vt::keys`) beside
@@ -724,7 +711,7 @@ each with the source that decides it, printed with every run:
 | --- | --- |
 | `utf8-button`, `utf8-limit` | ctlseqs: in UTF-8 mouse mode Cb is UTF-8 encoded too, and 2015 is the last position; ghostty writes Cb raw and has no limit |
 | `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key is CSI 27 ; m ; k ~, Shift-letters too, but Ctrl alone on Backspace and Shift alone on a character Ctrl makes no control of (`!`, `)`, `+`), which types its text |
-| `ctrl-alt-question`, `shift-tab`, `ctrl-backspace-bs` | real xterm 411's key bytes (KEY-13, `tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL; Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~; Backspace with Ctrl and another modifier is BS (ESC BS, or CSI 27 ; m ; 8 ~ at modifyOtherKeys 2), where ghostty sends DEL |
+| `ctrl-alt-question`, `shift-tab`, `ctrl-backspace-bs` | real xterm 411's key bytes (`tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL; Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~; Backspace with Ctrl and another modifier is BS (ESC BS, or CSI 27 ; m ; 8 ~ at modifyOtherKeys 2), where ghostty sends DEL |
 | `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
 | `paste-controls` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces; fux-vt passes them as pasted, removing only what would end its bracket |
 | `paste-newline` | xterm 411 (`button.c`): each LF of a paste is sent as CR, bracketed too, as fux-vt sends it; ghostty keeps a bracketed paste's LF |
@@ -782,91 +769,14 @@ footprint beyond the same engine's empty screen, over the rows it holds.
 `--json FILE` writes every measure; `--jobs N` sets how many children run
 at once.
 
-## The conformance ledger
-
-`ledger.json` is one table of checks from every conformance suite that
-runs: each esctest2 test (567, 18 of them skipped by esctest), each named
-case (`cases`) and each corpus recording. Each check carries:
-
-- its **feature**, one of the frozen groups in `features` (an esctest
-  area's function, with the 18 colour-space tests as one feature and every
-  reverse-wrap test as one choice; a named case's family; a recording's
-  program);
-- its **authority**, an id in `authorities`: a standard's document,
-  edition, section and quoted text, with the levels the document gives the
-  function; xterm's ctlseqs at patch 411 where the standards are silent;
-  or `open` where none is known (never "engine-specific", never out of
-  scope);
-- its **level and mode** (esctest's `@vtLevel`, 7-bit or 8-bit controls,
-  options it needs), and its **applicability** (`applies`, `n/a: WHY`, or
-  `skipped: WHY` where the suite does not run it);
-- its **verdict**, how the suite's expectation stands to the authority:
-  `agrees`, `departs` (the suite expects what the text contradicts),
-  `allows` (the text also allows other answers), or `open` (not read);
-  with `follows` or `follows_when` saying which engines do what the text
-  says where the suite does not;
-- the **evidence** for each tag: the area's function, the test's own
-  decorators, its listed reason, `cases::EXPECTED`, a family's authority,
-  or a reading of the test against the quoted text.
-
-`fux-vt-compare ledger --results DIR` scores every engine whose results
-are in `DIR` (esctest's `--json` columns, `cases --json` and `corpus
---json`, one file a subject), on one denominator a suite, four ways:
-
-| Score | What it counts |
-| --- | --- |
-| raw | the checks passed, as the suite reports, over the checks it runs |
-| standard-adjusted | each check scored by its verdict, over the checks that apply: a `departs` check passed is a fail |
-| xterm-compat | the checks passed among those real xterm passes, xterm's own column left out (the corpus is judged by xterm wherever xterm can tell a field, so there it is the raw score) |
-| feature | the features all of whose applying checks pass |
-
-A check an engine has no result for is unavailable: in the denominator,
-never a pass, and counted apart. `--table FILE` writes the whole ledger
-as one Markdown table. `run.sh deep` runs the subjects and the ledger.
-The tags were written by `<notes>/ledger-tools/gen.py` from the area
-tables, esctest's decorators and the lists; from checkpoint 0 on, the
-data file is the record, and a retag shows in the list-diff report.
-
-## The lists and the list-diff report
-
-Every list a comparison judges by is also data: `fux-vt-compare lists
---json FILE` writes them as one JSON, each a map from an entry's id to
-the entry with its `citation` (the reason, section or quote it rests on):
-
-| List | From |
-| --- | --- |
-| `esctest-expected`, `esctest-expected-NAME` | `esctest-expected*.txt`: scope, kind, reason |
-| `corpus-statuses` | `corpus::STATUSES` |
-| `transparency-known` | `transparency::KNOWN`, by name |
-| `families` | `families::FAMILIES`: status, `by`, authority, reason |
-| `cases`, `expected-fields` | `cases::CASES` and `cases::EXPECTED` |
-| `encoder-verdicts` | `encoders::VERDICTS` |
-| `ledger` | `ledger.json`'s tags, by `SUITE:ID`: feature, authority and its section, verdict, applicability |
-
-`run.sh quick` writes them to `lists.json`. Checkpoint 0 freezes them as
-`lists-c0.json`; from then on `fux-vt-compare lists --against
-lists-c0.json [--esctest DIR]` prints, as Markdown for the PR, every
-entry added, removed or changed beside its line in `list-changes.txt`
-(`LIST ID CITATION`), and fails on a change with no line there or a line
-with no change. For a test added to an esctest list it names the engines
-whose esctest JSON in `DIR` has it passing.
-
 ## The scoreboard
 
-`run.sh scoreboard` gathers the last results in `target/harness` into
-`scoreboard.json` and `scoreboard.md` there. It also keeps them in the
-repository:
-
-- [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md): the page for
-  the last commit;
-- `scoreboard/history.jsonl`: one line per commit, replacing the last line
-  if it is the same commit's.
-
-Commit both with the work they measure. It runs nothing itself. Any axis
-whose check has not run says `not run`, and one whose check failed says
-so: a check's results are read only beside its stamp, and only if it
-passed. It exits 1 when the stamps name more than one product commit: a
-column is one product's.
+`fux-vt-compare scoreboard DIR` gathers the results the checks left in DIR
+into `scoreboard.json` and `scoreboard.md` there: a report, which judges
+nothing (the checks themselves fail). compare.yml writes it into the
+run's summary, and keeps the results beside it as the run's artifact;
+`run.sh scoreboard` writes one from the last local runs, in
+`target/harness`. An axis whose check did not run says `not run`.
 
 The axes:
 
@@ -881,11 +791,10 @@ The axes:
   denominator, the corpus beside Ghostty, instructions per byte, memory,
   MB/s): ahead or behind only past the row's floor, a tie within it, and
   unranked with no floor. The floors: exact for counts; the spread of the
-  repeats for instructions, or `floors.json`'s `instructions` share (in
-  percent) when measured apart; two pages over the divisor for memory (a
-  figure whose whole is under a page is under resolution); and
-  `floors.json`'s `mb_per_s` for MB/s, which is unranked without it;
-- each check's stamp.
+  repeats for instructions, at least 0.25%; two pages over the divisor
+  for memory (a figure whose whole is under a page is under resolution);
+  and for MB/s, max(0.25%, the widest deviation of fux-vt's runs from
+  their median).
 
 ## Files
 
@@ -916,9 +825,5 @@ The axes:
 | `src/instructions.rs` | `bench --instructions`, counting a child's instructions by fux-bench's own counter (`bench/src/count.rs`, built into this crate) |
 | `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
 | `src/scoreboard.rs` | `scoreboard` |
-| `src/lists.rs` | `lists`: every judged list as JSON, and the list-diff report |
-| `src/ledger.rs`, `ledger.json` | `ledger`: the conformance ledger's tags, and its four scores |
-| `list-changes.txt` | each change to a judged list since checkpoint 0, with its citation |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
 | `corpus/` | the recordings, their keys, `record.sh`, the man pages they show, and `INVENTORY.md` |
-| `scoreboard/` | the kept scoreboard and its history |

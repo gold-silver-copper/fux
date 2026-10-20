@@ -1,12 +1,8 @@
-//! `scoreboard DIR`: the numbers of the last runs of `run.sh quick`, `full`,
-//! `deep` and `fuzz`, which leave their results in DIR, gathered into
-//! `DIR/scoreboard.json` and rendered as `DIR/scoreboard.md`. An axis whose
-//! results are missing says so; nothing is run here.
-//!
-//! A check's results (`NAME.json`) are read only beside its stamp
-//! (`NAME.stamp.json`, which `harness.sh` writes) and only if it passed: a
-//! failed check's results are never ranked. Every stamp read must name one
-//! product commit, or the scoreboard fails: a column never mixes products.
+//! `scoreboard DIR`: a report of the results the checks left in DIR (each
+//! `NAME.json`, as `run.sh quick`, `full`, `deep`, `fuzz` and compare.yml
+//! write them), gathered into `DIR/scoreboard.json` and rendered as
+//! `DIR/scoreboard.md`. An axis whose results are missing says so; nothing
+//! is run here, and nothing is judged: the checks themselves fail.
 //!
 //! Each ranked row sets fux-vt beside the best other engine that measured
 //! it, with the row's own floor ([`Floor`]): ahead or behind only past it,
@@ -26,31 +22,10 @@ struct Row {
     beside: String,
 }
 
-/// A check's stamp, as `harness.sh` writes it.
-fn stamp(dir: &Path, check: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(dir.join(format!("{check}.stamp.json"))).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-/// The results of `check` (`CHECK.json`), if its stamp says it ran and
-/// passed. A check that failed, or has no stamp, gives none: its results,
-/// if any, are not this run's to rank.
+/// The results of `check` (`CHECK.json`), if it ran.
 fn load(dir: &Path, check: &str) -> Option<Value> {
-    let passed = stamp(dir, check).is_some_and(|s| count(&s, "/exit") == Some(0));
-    if !passed {
-        return None;
-    }
     let text = std::fs::read_to_string(dir.join(format!("{check}.json"))).ok()?;
     serde_json::from_str(&text).ok()
-}
-
-/// How a check's results are missing: not run, or run and failed.
-fn missing(dir: &Path, check: &str) -> String {
-    match stamp(dir, check).and_then(|s| count(&s, "/exit")) {
-        Some(0) => format!("{check}.json unreadable"),
-        Some(code) => format!("failed (exit {code})"),
-        None => MISSING.into(),
-    }
 }
 
 fn number(value: &Value, pointer: &str) -> Option<f64> {
@@ -73,8 +48,7 @@ const MISSING: &str = "not run";
 
 fn conformance(dir: &Path, rows: &mut Vec<Row>) {
     let Some(esctest) = load(dir, "esctest") else {
-        let why = missing(dir, "esctest");
-        rows.push(row("Conformance", "esctest2 pass rate", &why, ""));
+        rows.push(row("Conformance", "esctest2 pass rate", MISSING, ""));
         return;
     };
     let rate = |results: &Value, place: &str| {
@@ -100,7 +74,7 @@ fn real_programs(dir: &Path, rows: &mut Vec<Row>) {
         rows.push(row(
             "Real programs",
             "corpus recordings agreeing",
-            &missing(dir, "corpus"),
+            MISSING,
             "",
         ));
         return;
@@ -129,7 +103,7 @@ fn real_programs(dir: &Path, rows: &mut Vec<Row>) {
 
 fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
     let fux = load(dir, "transparency").map_or_else(
-        || missing(dir, "transparency"),
+        || MISSING.into(),
         |t| {
             let results = t.get("results").and_then(Value::as_array);
             let all = results.map_or(0, Vec::len);
@@ -176,7 +150,7 @@ fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
 
 fn speed(dir: &Path, rows: &mut Vec<Row>) {
     let against = load(dir, "against").map_or_else(
-        || missing(dir, "against"),
+        || MISSING.into(),
         |a| {
             let workloads = a.get("workloads").and_then(Value::as_array);
             let mut changes: Vec<f64> = workloads
@@ -201,7 +175,7 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
     );
     rows.push(row("Speed", "instructions per workload", &against, ""));
     let Some(info) = load(dir, "info") else {
-        rows.push(row("Speed", "MB/s, fux-vt", &missing(dir, "info"), ""));
+        rows.push(row("Speed", "MB/s, fux-vt", MISSING, ""));
         return;
     };
     let ranked = mb_per_s(dir, Some(&info));
@@ -242,7 +216,7 @@ fn feel(dir: &Path, rows: &mut Vec<Row>) {
             ("Latency", "keystroke p50 / p99"),
             ("Footprint", "per pane, idle CPU, bytes per frame"),
         ] {
-            rows.push(row(axis, measure, &missing(dir, "feel"), ""));
+            rows.push(row(axis, measure, MISSING, ""));
         }
         return;
     };
@@ -528,7 +502,7 @@ fn mbs_runs(dir: &Path, info: Option<&Value>) -> Vec<Mbs> {
     }
     let mut checks: Vec<String> = (std::fs::read_dir(dir).into_iter().flatten().flatten())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter_map(|n| n.strip_suffix(".stamp.json").map(str::to_owned))
+        .filter_map(|n| n.strip_suffix(".json").map(str::to_owned))
         .filter(|n| n.starts_with("bench-mbs-"))
         .collect();
     checks.sort();
@@ -580,15 +554,14 @@ fn median(values: &mut [f64]) -> Option<f64> {
     }
 }
 
-/// How MB/s is ranked, as checkpoint 0's scoreboard ranked it.
+/// How MB/s is ranked.
 const MBS_FLOOR: &str =
     "per workload: max(0.25%, the widest deviation of fux-vt's runs from their median)";
 
 /// The MB/s rows of every run there is (`mbs_runs`): higher is better;
 /// each engine's figure the median of its runs, fux-vt's of all its runs
 /// beside every engine, and the floor max(0.25%, the widest deviation of
-/// fux-vt's runs from their median), as checkpoint 0's scoreboard ranks
-/// it.
+/// fux-vt's runs from their median).
 fn mb_per_s(dir: &Path, info: Option<&Value>) -> Vec<Ranked> {
     let runs = mbs_runs(dir, info);
     let mut by: BTreeMap<(&str, &str), BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
@@ -825,37 +798,9 @@ fn memory(footprint: &Value) -> Vec<Ranked> {
     out
 }
 
-/// Every stamp in `dir`, by check, and the product commits they name.
-fn stamps(dir: &Path) -> Result<Vec<Value>, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(check) = name.strip_suffix(".stamp.json") {
-            let stamp = stamp(dir, check).ok_or(format!("{name}: not a stamp"))?;
-            out.push(stamp);
-        }
-    }
-    out.sort_by(|a, b| {
-        let key = |v: &Value| v.get("check").and_then(Value::as_str).map(str::to_owned);
-        key(a).cmp(&key(b))
-    });
-    Ok(out)
-}
-
 pub fn run(rest: &[String]) -> Result<bool, String> {
-    let (dir, keep) = match rest {
-        [dir] => (dir, None),
-        [dir, flag, kept, commit, date] if flag == "--keep" => {
-            (dir, Some((Path::new(kept), commit.as_str(), date.as_str())))
-        }
-        _ => {
-            return Err(
-                "scoreboard takes the directory where run.sh left its results, and \
-                 --keep DIR COMMIT DATE"
-                    .into(),
-            );
-        }
+    let [dir] = rest else {
+        return Err("scoreboard takes the directory the checks left their results in".into());
     };
     let dir = Path::new(dir);
     let mut rows = Vec::new();
@@ -865,14 +810,8 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
     speed(dir, &mut rows);
     feel(dir, &mut rows);
     robustness(dir, &mut rows);
-    let stamps = stamps(dir)?;
-    let field = |s: &Value, key: &str| s.get(key).and_then(Value::as_str).unwrap_or("?").to_owned();
-    let mut products: Vec<String> = stamps.iter().map(|s| field(s, "product")).collect();
-    products.sort();
-    products.dedup();
     let ranked = ranked(dir);
     let json = json!({
-        "product": products,
         "rows": rows.iter().map(|r| json!({
             "axis": r.axis, "measure": r.measure, "fux": r.fux, "beside": r.beside,
         })).collect::<Vec<_>>(),
@@ -880,11 +819,9 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
             "measure": r.measure, "fux-vt": r.fux_vt, "best_other": r.best,
             "floor": r.floor.text(), "standing": r.standing.word(),
         })).collect::<Vec<_>>(),
-        "checks": stamps,
     });
-    let mut md = format!(
-        "# fux scoreboard\n\nProduct: {}.\n\n| Axis | Measure | fux / fux-vt | Beside |\n| --- | --- | --- | --- |\n",
-        products.join(", ")
+    let mut md = String::from(
+        "# fux scoreboard\n\n| Axis | Measure | fux / fux-vt | Beside |\n| --- | --- | --- | --- |\n",
     );
     for r in &rows {
         let _ = writeln!(
@@ -919,21 +856,6 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
             );
         }
     }
-    md.push_str("\n| Check | Product | Harness | Binary SHA-256 | When | Seconds | Exit |\n| --- | --- | --- | --- | --- | --- | --- |\n");
-    for s in &stamps {
-        let short = |v: String| v.get(..12).map_or(v.clone(), str::to_owned);
-        let _ = writeln!(
-            md,
-            "| {} | {} | {} | {} | {} | {} | {} |",
-            field(s, "check"),
-            short(field(s, "product")),
-            short(field(s, "harness")),
-            short(field(s, "binary_sha256")),
-            field(s, "date"),
-            count(s, "/seconds").unwrap_or(0),
-            count(s, "/exit").map_or_else(|| "?".into(), |e| e.to_string()),
-        );
-    }
     let mut text = serde_json::to_string_pretty(&json).map_err(|e| format!("json: {e}"))?;
     text.push('\n');
     let write = |name: &str, body: &str| {
@@ -942,53 +864,8 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
     };
     write("scoreboard.json", &text)?;
     write("scoreboard.md", &md)?;
-    if let Some((kept, commit, date)) = keep {
-        save(kept, commit, date, &md, &json)?;
-    }
     print!("{md}");
-    // A column is one product's: stamps of two products are refused.
-    if products.len() > 1 {
-        eprintln!(
-            "scoreboard: the results are of {} product commits ({}): run them again at one",
-            products.len(),
-            products.join(", ")
-        );
-        return Ok(false);
-    }
     Ok(true)
-}
-
-/// Keeps the scoreboard in `kept`: the Markdown as `SCOREBOARD.md`, and
-/// the rows as a line of `history.jsonl`, replacing the last line if it is
-/// the same commit's.
-fn save(kept: &Path, commit: &str, date: &str, md: &str, json: &Value) -> Result<(), String> {
-    std::fs::create_dir_all(kept).map_err(|e| format!("{}: {e}", kept.display()))?;
-    let at = |name: &str| kept.join(name);
-    let page = format!(
-        "{}\nFor {commit}, {date}, from `fux-vt/compare/run.sh scoreboard`; \
-         `history.jsonl` beside it has a line for each commit it was kept for.\n\n{}",
-        md.lines().next().unwrap_or_default(),
-        md.split_once("\n\n").map_or(md, |(_, rest)| rest),
-    );
-    std::fs::write(at("SCOREBOARD.md"), page)
-        .map_err(|e| format!("{}: {e}", at("SCOREBOARD.md").display()))?;
-    let line = json!({"commit": commit, "date": date, "rows": json.get("rows")});
-    let history = std::fs::read_to_string(at("history.jsonl")).unwrap_or_default();
-    let mut lines: Vec<&str> = history.lines().collect();
-    let same = lines.last().is_some_and(|last| {
-        serde_json::from_str::<Value>(last)
-            .ok()
-            .is_some_and(|v| v.get("commit").and_then(Value::as_str) == Some(commit))
-    });
-    if same {
-        lines.pop();
-    }
-    let line = line.to_string();
-    lines.push(&line);
-    let mut text = lines.join("\n");
-    text.push('\n');
-    std::fs::write(at("history.jsonl"), text)
-        .map_err(|e| format!("{}: {e}", at("history.jsonl").display()))
 }
 
 #[cfg(test)]
@@ -1022,43 +899,6 @@ mod tests {
             assert!(md.contains(&format!("| {axis} |")), "{axis} missing:\n{md}");
         }
         assert!(md.contains(super::MISSING));
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
-
-    /// Kept, the scoreboard's page is the last one, and its history has a
-    /// line for each commit, the last commit's replaced.
-    #[test]
-    fn kept_history_has_a_line_a_commit() -> Result<(), String> {
-        let dir = dir("keep")?;
-        let kept = dir.join("kept");
-        let args = |commit: &str| {
-            [
-                dir.to_string_lossy().into_owned(),
-                "--keep".into(),
-                kept.to_string_lossy().into_owned(),
-                commit.into(),
-                "2026-10-03".into(),
-            ]
-        };
-        for commit in ["a1", "b2", "b2"] {
-            assert!(super::run(&args(commit))?);
-        }
-        let history =
-            std::fs::read_to_string(kept.join("history.jsonl")).map_err(|e| e.to_string())?;
-        let commits: Vec<String> = history
-            .lines()
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .filter_map(|v| v.get("commit")?.as_str().map(str::to_owned))
-            .collect();
-        assert_eq!(commits, ["a1", "b2"]);
-        let page =
-            std::fs::read_to_string(kept.join("SCOREBOARD.md")).map_err(|e| e.to_string())?;
-        assert!(
-            page.starts_with("# fux scoreboard\nFor b2, 2026-10-03"),
-            "{page}"
-        );
-        assert!(page.contains("| Conformance |"), "{page}");
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -1115,51 +955,10 @@ mod tests {
         Ok(())
     }
 
-    /// A stamp for `check` in `dir`, of `product`, with its exit status.
-    fn stamped(dir: &std::path::Path, check: &str, product: &str, exit: u8) -> Result<(), String> {
-        let stamp = json!({"check": check, "product": product, "harness": "h", "binary": "b",
-            "binary_sha256": "s", "command": "c", "date": "d", "seconds": 1, "exit": exit});
-        std::fs::write(dir.join(format!("{check}.stamp.json")), stamp.to_string())
-            .map_err(|e| e.to_string())
-    }
-
-    /// A check that failed has its results kept from the ranking, whatever
-    /// its JSON says; and one with no stamp is not run.
-    #[test]
-    fn a_failed_checks_results_are_not_ranked() -> Result<(), String> {
-        let dir = dir("failed")?;
-        let esctest = json!({"direct": {"passed": 442, "failed": 107, "run": 549}});
-        let ghostty = json!({"direct": {"passed": 345, "failed": 204, "run": 549}});
-        for (check, value) in [("esctest", &esctest), ("esctest-ghostty", &ghostty)] {
-            std::fs::write(dir.join(format!("{check}.json")), value.to_string())
-                .map_err(|e| e.to_string())?;
-        }
-        stamped(&dir, "esctest", "p", 0)?;
-        stamped(&dir, "esctest-ghostty", "p", 0)?;
-        let rows = super::ranked(&dir);
-        let row = rows.first().ok_or("no row")?;
-        assert_eq!(
-            (row.fux_vt.as_str(), row.best.as_str()),
-            ("442", "ghostty 345")
-        );
-        stamped(&dir, "esctest-ghostty", "p", 1)?;
-        let rows = super::ranked(&dir);
-        let row = rows.first().ok_or("no row")?;
-        assert!(
-            matches!(row.standing, super::Standing::Unranked(_)),
-            "{}",
-            row.best
-        );
-        assert_eq!(super::missing(&dir, "esctest-ghostty"), "failed (exit 1)");
-        assert_eq!(super::missing(&dir, "feel"), super::MISSING);
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
-
     /// Instructions per byte are ranked past a floor of at least 0.25%,
     /// whatever the repeats' own spread (0.01% here): 0.1% apart is a tie.
     /// MB/s is read as fux-bench info writes it, by table, and ranked as
-    /// checkpoint 0 ranked it: past max(0.25%, the widest deviation of
+    /// ranked: past max(0.25%, the widest deviation of
     /// fux-vt's runs from their median), here one run's, so 0.25%.
     #[test]
     fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
@@ -1177,7 +976,6 @@ mod tests {
         for (check, value) in [("instructions", &instructions), ("info", &info)] {
             std::fs::write(dir.join(format!("{check}.json")), value.to_string())
                 .map_err(|e| e.to_string())?;
-            stamped(&dir, check, "p", 0)?;
         }
         let rows = super::ranked(&dir);
         let row = |measure: &str| rows.iter().find(|r| r.measure.contains(measure));
@@ -1200,7 +998,6 @@ mod tests {
             let check = format!("bench-mbs-{engine}-synth");
             std::fs::write(dir.join(format!("{check}.json")), doc.to_string())
                 .map_err(|e| e.to_string())?;
-            stamped(&dir, &check, "p", 0)?;
         }
         let rows = super::ranked(&dir);
         let unicode = (rows.iter())
@@ -1214,18 +1011,6 @@ mod tests {
             matches!(unicode.floor, super::Floor::Percent(p) if (p - 100.0 * 5.0 / 105.0).abs() < 1e-9)
         );
         assert_eq!(unicode.standing, super::Standing::Tie);
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
-
-    /// Stamps of two product commits fail the scoreboard.
-    #[test]
-    fn a_column_is_one_products() -> Result<(), String> {
-        let dir = dir("products")?;
-        stamped(&dir, "corpus", "aaaa", 0)?;
-        assert!(super::run(&[dir.to_string_lossy().into_owned()])?);
-        stamped(&dir, "cases", "bbbb", 0)?;
-        assert!(!super::run(&[dir.to_string_lossy().into_owned()])?);
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

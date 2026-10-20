@@ -8,7 +8,7 @@
 //! column or 2; and a spacing mark (General_Category Mc) of
 //! Canonical_Combining_Class 0 it makes 0 (one that is Grapheme_Extend, as
 //! U+09BE BENGALI VOWEL SIGN AA) takes 1, as wcwidth 0.9.2 (ucs-detect's
-//! reference; decision 885) measures it, so a consonant and its spacing
+//! reference) measures it, so a consonant and its spacing
 //! vowel sign take two columns. One of another class stays 0: a spacing
 //! virama (class 9), which joins consonants, as in wcwidth 0.9.2, where
 //! glibc gives it 1; and the Hangul tone marks, the Vietnamese reading

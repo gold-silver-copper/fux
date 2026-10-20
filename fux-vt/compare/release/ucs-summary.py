@@ -57,7 +57,7 @@ def main():
     langs = t["language_results"]
     passed = sorted(k for k, v in langs.items() if v.get("n_errors", 1) == 0)
     print(f"  languages     {len(passed)}/{len(langs)} pass  "
-          "UAX #29 clusters, each as wide as fux-vt's width rule makes it (TXT-9)")
+          "UAX #29 clusters, each as wide as fux-vt's width rule makes it")
     for lang, v in sorted(langs.items()):
         if v.get("n_errors", 1) == 0:
             continue

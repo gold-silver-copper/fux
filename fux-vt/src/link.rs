@@ -492,7 +492,7 @@ impl Links {
             }));
         }
         // Each run, each history row's share, each `id` and the two sorts'
-        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (threats.md B16): by key, and
+        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (THREATS.md B16): by key, and
         // the rows' by row.
         let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
         let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
@@ -592,7 +592,7 @@ impl Links {
     }
 }
 
-/// The links' part of the invariant checker (threats.md section 6).
+/// The links' part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Runs<'_> {
     /// 24: the runs lie inside a row `width` wide, each of a cell or more,
@@ -762,7 +762,7 @@ mod tests {
     }
 }
 
-/// The links' checks, each shown links with their one fault (HAR-26).
+/// The links' checks, each shown links with their one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

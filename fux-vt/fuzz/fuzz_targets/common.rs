@@ -213,7 +213,7 @@ impl Rows {
 }
 
 /// A row whose cells, wrap flag or prompt mark changed has a newer version:
-/// a change is never missed (`threats.md` section 6, 28).
+/// a change is never missed (`THREATS.md` section 6, 28).
 pub fn versions_follow(before: &Rows, after: &Rows) {
     let mut before = before.all.clone();
     before.sort_unstable_by_key(|r| r.0);
@@ -227,7 +227,7 @@ pub fn versions_follow(before: &Rows, after: &Rows) {
     }
 }
 
-/// The change marks are sound by place (`threats.md` section 6, 28): read
+/// The change marks are sound by place (`THREATS.md` section 6, 28): read
 /// from `mark`, taken when the screen's rows were `before`, a reader of
 /// `after`, whose rows are `now`, is told to redraw everything, or
 /// `dirty_live_rows_since` names every place whose row, cells, wrap or
@@ -261,7 +261,7 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
 /// What `Prints` kept since the last take is within its caps: its text cap,
 /// 4 bytes a cell of the screen it was made for (16 KiB at least), which a
 /// resize since, losing what follows, does not make smaller, and 4,096
-/// runs (threats.md B10).
+/// runs (THREATS.md B10).
 pub fn prints_bounded(p: &mut Parser) {
     let (rows, cols) = p.screen().size().into();
     let cells = usize::from(rows).saturating_mul(usize::from(cols));
@@ -283,7 +283,7 @@ pub fn prints_bounded(p: &mut Parser) {
 /// Feeds `piece` to `p` by `process_until_stop`, given again from each
 /// stop, as fux's pane does; at each frame begun, `FrameScan` must find
 /// the frame's end where the parser then ends it, if it ends in `piece`
-/// (threats.md B19, PAR-1's agreement). `each` is called after every call,
+/// (THREATS.md B19). `each` is called after every call,
 /// with the bytes it took.
 pub fn until_stops(p: &mut Parser, piece: &[u8], sink: &mut Record, mut each: impl FnMut(usize)) {
     let (mut left, mut frame) = (piece, None::<(Option<usize>, usize)>);

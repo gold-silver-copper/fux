@@ -431,7 +431,7 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     Ok(())
 }
 
-/// Output that spends a parser call's work budget (threats.md P24) is read
+/// Output that spends a parser call's work budget (THREATS.md 4.4) is read
 /// on the pane's next turns, the rest of it and what came after: the pane
 /// goes on to its end, and the server, with nothing more to read, rests.
 /// Each REP is spent as 65,535 copies: 2,000 of them spend a budget. The

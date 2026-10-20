@@ -1,4 +1,4 @@
-//! History's rows by identity (`threats.md` B40): its rows' identities
+//! History's rows by identity (`THREATS.md` B40): its rows' identities
 //! in spans of consecutive ones, as rows scrolled off a screen mostly
 //! come, each span kept by its first identity. Identities are never
 //! reused, so the spans' identities never overlap, whatever their order:

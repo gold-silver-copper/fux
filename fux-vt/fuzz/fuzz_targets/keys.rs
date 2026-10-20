@@ -135,7 +135,7 @@ fuzz_target!(|data: &[u8]| {
                 text.chars().count()
             );
             // And in bytes: each byte pasted is at most three of the text,
-            // as U+FFFD (`threats.md` B23).
+            // as U+FFFD (`THREATS.md` B23).
             assert!(
                 text.len() <= limit.saturating_mul(3),
                 "{} bytes",

@@ -1,4 +1,4 @@
-//! The work fux-vt does, counted in deterministic units (threats.md 4.1),
+//! The work fux-vt does, counted in deterministic units (THREATS.md 4.1),
 //! with the `checks` feature: what a bound on the work per input byte is
 //! stated in, and checked against by the bounds tests and the fuzz targets.
 //!
@@ -14,7 +14,7 @@
 
 use std::cell::RefCell;
 
-/// Work done, by kind, in units each counter states (threats.md 4.1).
+/// Work done, by kind, in units each counter states (THREATS.md 4.1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
     /// Input bytes examined by the parser's loop and its bulk scans.
@@ -96,7 +96,7 @@ impl Work {
     };
 
     /// The most weighted work one call may do: U, 50,000,000 units
-    /// (threats.md 4.4, P14), in the twentieths [`Work::cost`] counts.
+    /// (THREATS.md 4.4), in the twentieths [`Work::cost`] counts.
     pub const CEILING: u64 = crate::budget::CEILING;
 
     /// The most weighted work one call of `process_until_stop` does at a
@@ -104,7 +104,7 @@ impl Work {
     /// one screen-wide sequence alone costs more, the most that sequence
     /// may cost (`budget::sequence_most`): the parser looks before such a
     /// sequence and leaves it for the next call when it would take the
-    /// call past U, so it is carried out alone (decision 950).
+    /// call past U, so it is carried out alone (THREATS.md 4.4).
     pub fn ceiling(size: crate::Size) -> u64 {
         Self::CEILING.max(crate::budget::sequence_most(size))
     }
@@ -128,7 +128,7 @@ impl Work {
         done
     }
 
-    /// Each counter, by name, in the order threats.md 4.1 lists them.
+    /// Each counter, by name, in the order THREATS.md 4.1 lists them.
     pub fn counters(&self) -> [(&'static str, u64); 17] {
         [
             ("bytes", self.bytes),
@@ -175,8 +175,8 @@ impl Work {
     }
 
     /// Each counter's weight, in twentieths of a unit, so that every
-    /// weight is whole: an upper bound of its ns a unit on desk, times 20
-    /// (`budget::weight`, decision 950).
+    /// weight is whole: an upper bound of its ns a unit on an i5-9600K,
+    /// times 20 (`budget::weight`, THREATS.md 4.4).
     pub const WEIGHTS: [(&'static str, u64); 17] = {
         use crate::budget::weight::*;
         [
@@ -200,7 +200,7 @@ impl Work {
         ]
     };
 
-    /// The weighted work W (threats.md 4.4): each counter times its weight,
+    /// The weighted work W (THREATS.md 4.4): each counter times its weight,
     /// summed, in twentieths of a unit; at most [`Work::CEILING`] a call.
     pub fn cost(&self) -> u64 {
         (self.counters().into_iter().zip(Self::WEIGHTS))
@@ -283,7 +283,7 @@ mod tests {
     use super::Work;
 
     /// Each counter's method adds to its own counter alone, the cost
-    /// weighs each by threats.md's weight, and `since` takes the
+    /// weighs each by THREATS.md 4.4's weights, and `since` takes the
     /// difference: a counter left at 0, or added to another, would show.
     #[test]
     fn each_counter_counts_its_own_work_and_is_weighed_by_its_weight() {

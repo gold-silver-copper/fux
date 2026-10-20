@@ -405,8 +405,8 @@ fn scalar(
 }
 
 /// A line feed carried out in text is a place `process_until_stop` looks
-/// at the budget, as its scroll can move a row's text into history
-/// (decision 820): with the budget spent, a run of LF, VT or FF stops
+/// at the budget, as its scroll can move a row's text into history: with
+/// the budget spent, a run of LF, VT or FF stops
 /// after the first, and one of CR, which moves no row, does not stop.
 #[test]
 fn a_line_feed_stops_at_a_spent_budget() -> Result<(), Error> {
@@ -894,7 +894,7 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
 }
 
 /// A scroll of many rows inside a region spends what it does: the region's
-/// slots turned once, not once a row (SCR-8), and the rows brought in. At
+/// slots turned once, not once a row, and the rows brought in. At
 /// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
 /// each, about 11 M units in all, under the budget's 25 M, so the call
 /// takes them without a stop; charged a slot a row a row, each was 16.8 M

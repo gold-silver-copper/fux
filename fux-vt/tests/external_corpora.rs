@@ -1,5 +1,5 @@
 //! Other terminals' fuzz corpora, replayed through fux-vt with its
-//! invariant checker on (HAR-71): Ghostty's 4,001 AFL++ inputs and
+//! invariant checker on: Ghostty's 4,001 AFL++ inputs and
 //! vt100-rust's 37 seeds, vendored under `external/` (both MIT, each with
 //! its licence), and mosh's 27 libFuzzer seeds (GPL-3.0, so not vendored),
 //! fetched at a pinned commit by the ignored test. `external/SOURCES` says
@@ -19,7 +19,7 @@
 //! three fuzzers make theirs: whole, in fux's 4 KiB reads, and a byte at a
 //! time. The checker (`Parser::check`) and the public API's invariants
 //! (`corpus/invariants.rs`) hold after every read, and the three feeds end
-//! alike (threats.md section 6). A panic or a fault is a fux-vt defect,
+//! alike (THREATS.md section 6). A panic or a fault is a fux-vt defect,
 //! reported with the input's path.
 //!
 //! `cargo test -p fux-vt --features checks --release --test

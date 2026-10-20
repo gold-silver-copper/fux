@@ -25,7 +25,7 @@ use fux_vt::{Feature, Options, Parser, Sink, Size, Stop, Work};
 use super::Heap;
 
 /// How large a probe's input is: its reproducer once, ten times, or a
-/// hundred times (`threats.md` section 2).
+/// hundred times (`THREATS.md` section 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scale {
     Once,
@@ -59,7 +59,7 @@ pub const KEPT: Duration = Duration::from_millis(25);
 /// Probes made in this run, to name each.
 static MADE: AtomicUsize = AtomicUsize::new(0);
 
-/// The chunkings every probe feeds its input at (`threats.md` section 2),
+/// The chunkings every probe feeds its input at (`THREATS.md` section 2),
 /// in bytes a call: and `WHOLE`, all of it in one piece, given again from
 /// each stop.
 pub const CHUNKS: [usize; 4] = [1, 16, 4096, WHOLE];
@@ -88,7 +88,7 @@ pub fn pieces(mut rest: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
 
 /// The parser a probe feeds: its size, its history's budget and its
 /// features. fux's defaults are 50×200 and 8 MiB, with every feature on and
-/// prints recorded (`threats.md` section 2's conventions).
+/// prints recorded (`THREATS.md` section 2).
 #[derive(Clone, Copy, Debug)]
 pub struct Setup {
     pub rows: u16,
@@ -133,7 +133,7 @@ impl Setup {
     }
 }
 
-/// The memory formula's steady state without pictures (`threats.md` 3.1),
+/// The memory formula's steady state without pictures (`THREATS.md` 3.1),
 /// for a parser of `setup`: what a probe that crosses every budget but the
 /// pictures' may hold above the parser as made, and the largest transient
 /// while processing (3.2: the style sweep's or a shrink's, 0.5 × 1.1 × H).
@@ -173,7 +173,7 @@ pub fn steady(setup: &Setup) -> usize {
     steady.saturating_add(transient)
 }
 
-/// What `Prints` may hold for a parser of `setup` (`threats.md` B10): 4
+/// What `Prints` may hold for a parser of `setup` (`THREATS.md` B10): 4
 /// bytes of text a cell, 16 KiB at least, and 4,096 runs of 32 bytes;
 /// 171,072 bytes at the defaults.
 pub fn prints(setup: &Setup) -> usize {
@@ -182,10 +182,10 @@ pub fn prints(setup: &Setup) -> usize {
         .saturating_add(4096 * 32)
 }
 
-/// The picture budget P (`threats.md` P1, decision 8): 96 MiB.
+/// The picture budget P (`THREATS.md` B01): 96 MiB.
 pub const PICTURE_BYTES: usize = 96 << 20;
 
-/// A bound a probe holds to (`threats.md` sections 2 and 4.2): for each
+/// A bound a probe holds to (`THREATS.md` sections 2 and 4.2): for each
 /// counter it names, the most per input byte, per call and per copy of
 /// the reproducer; and the most bytes live above the parser as made.
 /// Every call also does at most the ceiling U of weighted work (4.4).
@@ -196,7 +196,7 @@ pub struct Bound {
 }
 
 /// What a probe counts beyond fux-vt's counters: the reply bytes it was
-/// sent (`threats.md` B28).
+/// sent (`THREATS.md` B28).
 #[derive(Default)]
 struct Replies(u64);
 
@@ -356,10 +356,10 @@ impl Probe {
         self.fed = self
             .fed
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
-        // U is the ceiling of a call of 4 KiB, as fux makes them (threats.md
+        // U is the ceiling of a call of 4 KiB, as fux makes them (THREATS.md
         // 4.4), or at a screen where one screen-wide sequence costs more,
         // that sequence's most, which the parser leaves to a call of its
-        // own (`Work::ceiling`, decision 950): a call given more, as
+        // own (`Work::ceiling`): a call given more, as
         // `WHOLE` gives it, may do that for each 4 KiB, as that many calls
         // would.
         let cost = done.cost();
@@ -422,7 +422,7 @@ impl Probe {
     }
 
     /// Checks that counter `name` counted at least `least`: what the probe
-    /// knows was done (`threats.md` 4.3), so a counter that counts nothing
+    /// knows was done (`THREATS.md` 4.3), so a counter that counts nothing
     /// shows.
     pub fn at_least(&self, name: &str, least: u64) -> Result<(), String> {
         let done = self.counted(name)?;

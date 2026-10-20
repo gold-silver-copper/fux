@@ -137,7 +137,8 @@ pub fn corpus() -> Result<Vec<Recording>, String> {
 pub const PANE_HISTORY_BYTES: usize = 8 << 20;
 
 /// The history rows a budget may hold at the most, as far as a window is
-/// looked up into it: 24 bytes a row, empty (`threats.md` B17), up to 2,000.
+/// looked up into it: 24 bytes a row, empty (`fux-vt/THREATS.md` B17), up
+/// to 2,000.
 fn history_rows(history_bytes: usize) -> usize {
     (history_bytes / 24).min(2_000)
 }

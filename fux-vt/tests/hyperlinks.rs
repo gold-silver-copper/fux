@@ -140,7 +140,7 @@ fn wide_glyphs_blanks_and_marks() -> Result {
 #[test]
 fn links_scroll_with_their_rows() -> Result {
     // Two rows of one cell, 24 bytes a row and 8 a cell, and the links'
-    // map, about 38 bytes a row it has room for (threats.md B17): room for
+    // map, about 38 bytes a row it has room for (THREATS.md B17): room for
     // these, not for the rows below as well.
     let p = parser(
         2,
@@ -300,7 +300,7 @@ fn links_past_their_limits_are_not_opened() -> Result {
 fn links_are_bounded_and_history_loses_them_first() -> Result {
     // History for 4,000 rows of one linked cell: a 24-byte record, an
     // 8-byte cell, its 48-byte run and the links' map's room for it, about
-    // 38 to 76 bytes (threats.md B15, B17), so the links' bound decides.
+    // 38 to 76 bytes (THREATS.md B15, B17), so the links' bound decides.
     let mut p = Parser::with_options(Size::new(4, 4)?, 4000 * 160, LINKS)?;
     let long: String = std::iter::repeat_n('u', 2000).collect();
     // About 2 KiB each: 3000 are past the 4 MiB a screen holds.
@@ -344,7 +344,7 @@ fn screens_and_resets() -> Result {
 
 /// A line made double width loses its cells past its new end (DECDWL,
 /// note 2), and their links with them: a row linked only past its half
-/// has no link left (FA-SCR-G4).
+/// has no link left.
 #[test]
 fn a_line_made_double_width_loses_the_links_past_its_end() -> Result {
     let p = parser(
@@ -367,8 +367,8 @@ fn a_line_made_double_width_loses_the_links_past_its_end() -> Result {
 }
 
 /// A row made double width and then halved again by a resize keeps no
-/// link past its end, as it keeps no cell there (DEC STD 070, 5.6.1;
-/// FA-RE-F-17): 1x8, a link over `abcd`, DECDWL, then 1x4.
+/// link past its end, as it keeps no cell there (DEC STD 070,
+/// 5.6.1): 1x8, a link over `abcd`, DECDWL, then 1x4.
 #[test]
 fn a_resize_drops_the_links_past_a_halved_rows_end() -> Result {
     for reflow in [false, true] {

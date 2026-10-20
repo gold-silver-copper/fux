@@ -538,7 +538,7 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
 /// (`133;C`) and never its end, then reads its terminal, is waited for no
 /// longer than an unmarked one: no action's input began that command, so
 /// `run` and a bare `wait` after it answer once it is quiet, polling its
-/// terminal (`less`), not at their limit (decision 29). Where fux is not
+/// terminal (`less`), not at their limit. Where fux is not
 /// told what it is blocked in (macOS), the quiet pane is `settled`.
 #[test]
 fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {

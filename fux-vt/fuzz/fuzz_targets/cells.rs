@@ -61,7 +61,7 @@ fuzz_target!(|input: (u8, Vec<Op>)| {
             .copied()
             .unwrap_or_default()
     };
-    // A length past what `Cells` holds (64 Mi cells, `threats.md` B39) is
+    // A length past what `Cells` holds (64 Mi cells, `THREATS.md` B39) is
     // refused, by `new` and by `resize`, with nothing changed: the largest
     // `usize` too, which overflowed at BASE.
     if let Some(huge) = HUGE

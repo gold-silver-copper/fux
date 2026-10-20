@@ -134,7 +134,7 @@ fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
     Ok(())
 }
 
-/// Block numbers are 16 bits and wrap (`BLOCKS`, HAR-37): a long-lived
+/// Block numbers are 16 bits and wrap (`BLOCKS`): a long-lived
 /// pane makes 65,536 blocks in about 268 M cells. Numbered from just below
 /// the wrap, rows of a block each read back as they came across it, while
 /// the oldest go past the budget, and the bytes counted stay those held.
@@ -182,7 +182,7 @@ fn block_numbers_wrap() -> Result<(), Error> {
 }
 
 /// A row with one link keeps its run in place: its links cost history
-/// nothing beyond its share of the map (`threats.md` B15), however the row
+/// nothing beyond its share of the map (`THREATS.md` B15), however the row
 /// came by them; one with two links costs the room of its runs.
 #[test]
 fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
@@ -216,7 +216,7 @@ fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
 
 /// The maps are counted at the room their tables were made with: their
 /// entries removed leave the buckets allocated, which `capacity` counts
-/// out (FA-RE-F-9), so what history counts for them stays until the table
+/// out, so what history counts for them stays until the table
 /// is made smaller.
 #[test]
 fn the_maps_are_counted_as_allocated_after_removals() -> Result<(), Error> {

@@ -137,9 +137,9 @@ const HELIX_UNICODE_AT: &[Exception] = &[
 
 /// neovim pushes the kitty keyboard flags 1 and 2 (report event types)
 /// and reads them back; fux-vt keeps only the flags it honours, not 2, as
-/// the kitty spec's "Detection of support" asks (KEY-22, 84fd3fc3), where
+/// the kitty spec's "Detection of support" asks (84fd3fc3), where
 /// Ghostty, alacritty and wezterm, which send release events, keep it.
-const KITTY_FLAGS_KEPT: &str = "fux-vt keeps only the kitty flags it honours, 1 and not report event types (2), as the kitty spec's detection of support asks (KEY-22); Ghostty, alacritty and wezterm keep 2";
+const KITTY_FLAGS_KEPT: &str = "fux-vt keeps only the kitty flags it honours, 1 and not report event types (2), as the kitty spec's detection of support asks; Ghostty, alacritty and wezterm keep 2";
 
 const NVIM_DIAGNOSTICS_AT: &[Exception] = &[Exception {
     steps: (1, 9),
@@ -404,12 +404,12 @@ pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
     (
         "\x1b[?1016;0$y",
         "\x1b[?1016;2$y",
-        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, reset, as ctlseqs (\"Mouse Tracking\") and xterm 411 keep it: KEY-23, 2cc51305",
+        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, reset, as ctlseqs (\"Mouse Tracking\") and xterm 411 keep it",
     ),
 ];
 
 /// The replies that came with XTGETTCAP's answer and XTQMODKEYS's.
-const XTGETTCAP_AND_XTQMODKEYS: &str = "XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded";
+const XTGETTCAP_AND_XTQMODKEYS: &str = "XTGETTCAP is answered, as an invalid request (82983a1d), and XTQMODKEYS (bdf426c5), which went unanswered when it was recorded";
 
 /// The recordings whose replies changed in a way no reply as recorded can
 /// say (a reply given now to a query once left unanswered), and why. One

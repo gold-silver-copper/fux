@@ -138,7 +138,7 @@ impl Screen {
                     self.commands.started = self.commands.started.wrapping_add(1);
                 }
                 self.commands.prompt = false;
-                // Looked for on the screen alone (threats.md B29): a line
+                // Looked for on the screen alone (THREATS.md B29): a line
                 // submitted, or a prompt, scrolled into history by the time
                 // its output starts marks none, and the output starts here.
                 let submitted = (self.submitted.take())

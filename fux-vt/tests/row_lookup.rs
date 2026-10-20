@@ -1,7 +1,7 @@
 //! Finding a row by its identity (`Screen::row_index`, `row_by_id`) after
 //! random scrolls of every kind: line feeds into history, regions scrolled
 //! up and down (RI, IL, DL, SU, SD, DECSTBM), erasing and resizing, which
-//! make rows above older ones (`threats.md` B40). Every row kept is found
+//! make rows above older ones (`THREATS.md` B40). Every row kept is found
 //! where it is, and a row let go is not found. With the `checks` feature,
 //! the checker holds after each step too, invariant 20 among its checks.
 

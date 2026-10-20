@@ -2,7 +2,7 @@
 //! The fast target: a screen of at most 16 by 24 and a few rows of history,
 //! fed each operation whole, a byte at a time and in pieces as fux's pane
 //! reads, the three compared and fux-vt's invariants checked after each
-//! operation (`threats.md` section 6), the byte-at-a-time copy's row
+//! operation (`THREATS.md` section 6), the byte-at-a-time copy's row
 //! versions after every byte. The `deep` target checks them so at large
 //! sizes.
 use fux_vt::{Feature, Identity, Options, Parser, Size};

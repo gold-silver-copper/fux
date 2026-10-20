@@ -7,8 +7,10 @@ stored baseline, and a busy machine moves the counts far less than times. `feel`
 measures wall-clock latency and throughput through real servers, beside
 tmux, zellij and herdr.
 
-CI does not run it; `fux-vt/compare/run.sh full` runs `--against master`, and
-`run.sh deep` runs `feel` and `info`. It forbids fux's lints and builds with
+CI does not run it: a shared runner is too noisy to judge a change of a
+fraction of a percent. The speed gate (below) runs it on a quiet machine;
+`fux-vt/compare/run.sh full` runs `--against master`, and `run.sh deep`
+runs `feel` and `info`. It forbids fux's lints and builds with
 fux's release profile (`lto = "thin"`, `codegen-units = 1`): any other
 inlines differently and changes the counts.
 
@@ -48,6 +50,36 @@ Exit status: 1 if `--against` finds a workload slower past its floor or
 too noisy to judge, or a broad loss by program; 2 on an error, a workload
 the tool cannot judge (broken) or a run that failed among them (the JSON
 names the runs that failed).
+
+## The speed gate
+
+`bench/gate.sh [REF]` is the gate a change passes before it merges: the
+working tree against REF (the latest master by default), on a quiet
+machine, judged by that machine's own floors.
+
+```sh
+cd ~/code/fux && FUX_PERF_CPUS=2-5 FUX_GATE_LOCK=~/.cache/fux-gate.lock bench/gate.sh
+```
+
+- **The machine.** Any Linux machine with `perf` that nothing else is
+  using while it measures, its CPUs at the `performance` governor (the
+  gate refuses another). macOS counts with `/usr/bin/time -l`.
+- **The CPUs.** `FUX_PERF_CPUS` names the CPUs the counts run on: one core
+  type (a machine with two must name one), best ones nothing else is
+  given. Unset, `perf.sh` takes the core type with the most CPUs.
+- **The floors.** The first run on a machine calibrates it (an A/A run,
+  `--calibrate`) into `bench/target/fux-bench/floors-HOST.json`, or the
+  file `FUX_GATE_FLOORS` names; every later run is judged by it.
+  Calibrate again (remove the file) after a change to the machine, its
+  kernel or perf: `--floors` refuses a calibration made otherwise.
+- **The lock.** `FUX_GATE_LOCK` names a file the gate holds a lock on
+  (`flock`), so two gates on one machine never measure at once.
+- **The time.** `FUX_GATE_MINUTES` (10) bounds each measurement.
+
+It exits as `fux-bench --against` does (0 nothing slower, 1 slower, 2 a
+broken floor or an error), 5 for a CPU at another governor, and 124 past
+its time. The JSON is `bench/target/fux-bench/gate.json`, with perf's
+report of every run beside it.
 
 ## The workloads
 

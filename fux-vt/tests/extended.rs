@@ -981,9 +981,8 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
 /// A picture placed on the bottom margin between left and right margins
 /// scrolls their cells, not the rows (DEC STD 070, 5.4.3), as text there
 /// does: its first band goes up a row with the cells, and the picture is
-/// listed where its cells are, its last row the cursor's (FA-SIX-1). So
-/// too when the graphics new lines after its last band scroll them
-/// (FA-RE-B-6).
+/// listed where its cells are, its last row the cursor's. So
+/// too when the graphics new lines after its last band scroll them.
 #[test]
 fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are() -> Result {
     for (at, end, top) in [(4, "", 2), (3, "-", 1), (3, "---", 0)] {
@@ -1020,7 +1019,7 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
 
 /// A picture taller than a screen that keeps no history scrolls its top
 /// off, which is cropped, the rest shown (DEC STD 070-9, 11.2.4), and the
-/// checker reads it so too (FA-CODEX-6).
+/// checker reads it so too.
 #[test]
 fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
     let mut p = Parser::with_options(Size::new(1, 2)?, 0, PICTURES)?;
@@ -1068,7 +1067,8 @@ fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
 }
 
 /// The rows a region's scroll took from a picture stay taken, whatever
-/// margins are set after (decision 962): with the margins reset, as
+/// margins are set after (README, "A picture whose top scrolls off a
+/// region's top margin is cropped there"): with the margins reset, as
 /// programs reset them, the picture of the test above still shows its
 /// second row, its first cropped; and a picture cropped by the top of a
 /// screen that keeps no history keeps the rows that still hold it when a
@@ -1141,8 +1141,8 @@ fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
 
 /// A picture being drawn lets another go only for the room it takes: a
 /// doubling of its pixels that could not fit even with every picture gone
-/// lets none go, and the exact growth that fits beside them is taken
-/// (FA-SIX-4). The budget holds the first picture (4 by 6 pixels, 96
+/// lets none go, and the exact growth that fits beside them is taken.
+/// The budget holds the first picture (4 by 6 pixels, 96
 /// bytes) and the second at 11 by 6 (264), with its 10 by 6 drawn first
 /// (240), but not its doubling to 20 by 6 beside those 240 (720).
 #[test]
@@ -1166,7 +1166,7 @@ fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
 /// aspect ratio makes six pixel rows, so a few bytes could ask for any
 /// number of line feeds (B05). With 8-pixel cells, one band (row 0), then
 /// 3 new lines end on pixel row 23, row 2; 20 would end on row 15, and
-/// stop at 8 (FA-SIX-5).
+/// stop at 8.
 #[test]
 fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
     for (lines, row) in [(3, 2), (20, 8)] {
@@ -1184,7 +1184,7 @@ fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
 }
 
 /// A lowered picture budget holds the pictures kept too, when the one
-/// being drawn is past it alone (FA-RE-B-3): a 100 by 6 picture kept
+/// being drawn is past it alone: a 100 by 6 picture kept
 /// (2,400 bytes) and another of its size being drawn, then a budget of
 /// 1,000: neither is kept.
 #[test]

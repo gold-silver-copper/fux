@@ -307,7 +307,7 @@ fn drop_to_end(
 /// than the end that may begin the marker, it is reported too long, at
 /// once, and dropped from then on. The marker is looked for in `bytes`
 /// where they lie, and only what the paste keeps is copied: a read that
-/// holds many pastes is never copied whole for each (threats.md B23).
+/// holds many pastes is never copied whole for each (THREATS.md B23).
 fn paste<'a>(
     pasted: Pasted,
     bytes: &'a [u8],
@@ -550,7 +550,7 @@ impl Decoder {
     /// (or an ESC that may end a string being dropped): the held sequence
     /// is given from the front of them only what decides it, no more than
     /// the longest held and one byte, past which every sequence is decided
-    /// (threats.md B24, KEY-3); then the rest, whole, where it lies. A
+    /// (THREATS.md B24); then the rest, whole, where it lies. A
     /// sequence what was given begins and leaves held is read again from
     /// where it begins in the read, not copied with the rest; an ESC left
     /// that may end a string being dropped is given the one byte that
@@ -649,7 +649,7 @@ impl Decoder {
     }
 }
 
-/// The key decoder's part of the invariant checker (threats.md section 6).
+/// The key decoder's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Decoder {
     /// 35: an unfinished sequence held is no longer than the longest
@@ -1080,7 +1080,7 @@ fn long_answer(body: &[u8], flush: bool) -> Step {
         Some(end) => Step::Done(end.saturating_add(2), None),
         None if flush => Step::Done(body.len().saturating_add(2), None),
         // Past what is held: the rest of it is dropped as it comes, to its
-        // final byte, however it is split (threats.md B25).
+        // final byte, however it is split (THREATS.md B25).
         None if body.len() > DCS_LIMIT => Step::Overlong {
             bel: false,
             csi: true,
@@ -1557,7 +1557,7 @@ mod tests {
     /// long they take: a well-formed beginning (Unicode 17.0, 3.9, Table
     /// 3-7) has no deadline, and a timeout leaves it waiting, alone or after
     /// an Escape (Alt). A byte that cannot go on with it still gives the
-    /// maximal subpart's U+FFFD at once (FA-KEY-10).
+    /// maximal subpart's U+FFFD at once.
     #[test]
     fn a_character_split_across_reads_waits_for_its_bytes() {
         for (bytes, expected) in [
@@ -2026,7 +2026,7 @@ mod tests {
 
     /// A CSI past its window that an ESC or a control cuts short ends there,
     /// unfinished, and the byte begins what comes next (ECMA-48 5.5), whole
-    /// or split: the Up after a long one is typed (FA-RE-B-8).
+    /// or split: the Up after a long one is typed.
     #[test]
     fn an_over_long_csi_cut_short_by_an_esc_drops_only_itself() {
         let mut long = b"\x1b[".to_vec();
@@ -2320,7 +2320,7 @@ mod tests {
     #[test]
     fn a_key_csi_at_the_end_of_its_window_waits_for_its_final_byte() {
         // A kitty key whose parameters fill the window, 32 bytes, its final
-        // byte in the next read: one key (KEY-8, the window's guard).
+        // byte in the next read: one key (the window's guard).
         let mut d = Decoder::default();
         let mut out = Vec::new();
         let digits: Vec<u8> = std::iter::repeat_n(b'0', 30).chain(*b"97").collect();
@@ -2371,7 +2371,7 @@ mod tests {
             streams.push(([string.as_slice(), b"\xeb"].concat(), vec![]));
         }
         // A `CSI ?` answer past what is held, dropped through its final
-        // byte (KEY-2): at the parent, read in pieces, its digits were typed.
+        // byte: at the parent, read in pieces, its digits were typed.
         let mut answer = b"\x1b[?".to_vec();
         answer.extend(std::iter::repeat_n(b'1', DCS_LIMIT + 20));
         streams.push((
@@ -2392,8 +2392,7 @@ mod tests {
     }
 }
 
-/// The key decoder's checks, each shown a decoder with its one fault
-/// (HAR-26).
+/// The key decoder's checks, each shown a decoder with its one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

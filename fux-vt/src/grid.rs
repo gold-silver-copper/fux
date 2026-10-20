@@ -244,7 +244,7 @@ impl Order {
     /// Turns the slots of rows `low` to `high` by `by`: to the left (each
     /// `by` rows up, the first `by` going to the end), or to the right.
     /// Once, whatever `by`, and only rows `low` to `high`, wherever the
-    /// ring puts them (threats.md B36).
+    /// ring puts them (THREATS.md B36).
     fn rotate(&mut self, (low, high): (usize, usize), by: usize, left: bool) {
         let len = high.wrapping_sub(low).wrapping_add(1);
         if high < low || high >= self.slots.len() || by > len {
@@ -1043,7 +1043,7 @@ impl Grid {
     }
 
     /// Charges the style table's bytes beyond the share of a screen of
-    /// `cells` cells to history's budget (`threats.md` B11).
+    /// `cells` cells to history's budget (`THREATS.md` B11).
     fn charge_styles(&mut self, cells: usize) {
         let share = crate::style::screen_share(cells);
         self.history
@@ -1052,7 +1052,7 @@ impl Grid {
 
     /// Charges the style table's bytes, one more style in it, beyond the
     /// screen's share to history's budget, the oldest rows going to fit
-    /// (`threats.md` B11); whether they fit, with no rows if need be.
+    /// (`THREATS.md` B11); whether they fit, with no rows if need be.
     fn make_style_room(&mut self) -> bool {
         let share = crate::style::screen_share(self.cells.len());
         let after = self.styles.bytes_after_insert().saturating_sub(share);
@@ -1154,7 +1154,7 @@ impl Grid {
     }
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
     /// not: ED erased it. A change of mark gives the row `version`
-    /// (`threats.md` P12): a host redraws what shows the marks.
+    /// (`THREATS.md` section 6, 28): a host redraws what shows the marks.
     pub fn set_prompt(&mut self, row: u16, prompt: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
@@ -1870,7 +1870,7 @@ impl Grid {
     }
 
     /// No room in history for the rows a scroll of the screen takes into
-    /// it: these `count` go as with no history (threats.md 1.3, SCR-10),
+    /// it: these `count` go as with no history (THREATS.md 1.3),
     /// counted. Out of line, as no scroll but a refused one comes here.
     #[cold]
     #[inline(never)]
@@ -2017,7 +2017,7 @@ impl Grid {
         spend!(text, bytes);
         // And the text written into the target row, which its stores count
         // as they go (`Line::copy`), at most what was read: spent here, so
-        // the budget prices what the counters count (decision 969).
+        // the budget prices what the counters count.
         crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
         // A span over itself is as it was.
         let changed = self.with_source(source, target, |line, cells, text| {
@@ -2087,7 +2087,7 @@ impl Grid {
                 }
             }
         } else {
-            // The region's slots turned once, by `count` (threats.md B36),
+            // The region's slots turned once, by `count` (THREATS.md B36),
             // then the rows brought in made anew in the order moving them
             // one at a time would: up, from the first brought in, at the
             // bottom less `count`; down, from the last, at the top.
@@ -2384,8 +2384,8 @@ impl Grid {
                     return Ok(());
                 }
                 // No room for a grid made anew: history goes, and the rows
-                // the grid holds are blanked in place (threats.md 1.3,
-                // SCR-10), counted.
+                // the grid holds are blanked in place (THREATS.md 1.3),
+                // counted.
                 Err(refused) => {
                     if !self.holds_its_rows() {
                         return Err(refused);
@@ -2914,7 +2914,7 @@ mod reflow;
 #[cfg(test)]
 pub(crate) mod tests;
 
-/// The grid's part of the invariant checker (threats.md section 6).
+/// The grid's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Grid {
     /// Runs every check of the grid, its history, styles and links, the
@@ -3214,7 +3214,7 @@ impl Grid {
     }
 }
 
-/// The grid's checks, each shown a grid with its one fault (HAR-26): a
+/// The grid's checks, each shown a grid with its one fault: a
 /// check that stops checking fails here.
 #[cfg(all(test, feature = "checks"))]
 mod faults {

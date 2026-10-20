@@ -173,7 +173,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
 
 /// The sixel data of the pictures a client was last sent, each by its pane,
 /// number, crop and address (`Visible::sixel_key`): a picture that only moves is sent again with the same
-/// data at its new place, encoded once (`threats.md` B08). At most
+/// data at its new place, encoded once (`fux-vt/THREATS.md` B08). At most
 /// `SIXEL_BYTES` are kept; a picture past them is encoded each time it is
 /// sent.
 #[derive(Debug, Default)]
@@ -188,9 +188,9 @@ pub struct Sixels {
 type SixelKey = (PaneId, u64, (u32, u32, u32, u32), usize);
 
 /// The most sixel data a client keeps to send again: 16 MiB, a fixed
-/// bound on what the cache holds per client. At `threats.md` B08's worst,
-/// 12 bytes a pixel, that is the data of 1.4 million pixels (a 1,600 by
-/// 870 picture); a picture of few colours, as most are, encodes to far
+/// bound on what the cache holds per client. At `fux-vt/THREATS.md` B08's
+/// worst, 12 bytes a pixel, that is the data of 1.4 million pixels (a 1,600
+/// by 870 picture); a picture of few colours, as most are, encodes to far
 /// less, so it holds a screenful of them. One past it is not kept but
 /// encoded each time it is sent, its work bounded by B08.
 const SIXEL_BYTES: usize = 16 << 20;
@@ -958,8 +958,9 @@ impl Painted<'_> {
 /// [`compose_view`], each pane part way through a frame shown as `painted`
 /// showed it where it is still in the same place, else blank, so a client
 /// is never painted half a frame; the rest of the screen, fux's bar and
-/// panels over it too, as it is, so one pane holds up no other (threats.md
-/// P24). Its cursor, if focused, is the one painted there, if any.
+/// panels over it too, as it is, so one pane holds up no other
+/// (fux-vt/THREATS.md 4.4). Its cursor, if focused, is the one painted
+/// there, if any.
 pub fn compose_held(
     session: &Session,
     view: &View,
@@ -1927,7 +1928,7 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
 mod tests {
     /// A picture that moves, its crop the same, is encoded once, and sent
     /// at each place with the same data; a new crop is encoded again, and
-    /// a picture no longer shown is let go of (`threats.md` B08).
+    /// a picture no longer shown is let go of (`fux-vt/THREATS.md` B08).
     #[test]
     fn a_moving_picture_is_encoded_once() -> Result<(), String> {
         let rgba: Vec<u8> = std::iter::repeat_n([255, 0, 0, 255], 20 * 12)
@@ -2656,7 +2657,7 @@ mod tests {
     /// A cluster whose width fux-vt makes other than the sum of its
     /// characters' (a VS16 emoji widened, jamo capped at 2) is followed by
     /// a cursor move: a client terminal that measures each character alone
-    /// (xterm, through wcwidth) would put what follows elsewhere (TXT-11).
+    /// (xterm, through wcwidth) would put what follows elsewhere.
     #[test]
     fn a_cluster_measured_otherwise_apart_is_followed_by_a_cursor_move() -> Result<(), String> {
         // A heart VS16 widened, and four leading jamo capped at 2: a client

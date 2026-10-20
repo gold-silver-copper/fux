@@ -215,8 +215,8 @@ fn framed(load: &[u8], n: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    /// A load that ends inside an OSC still shows its marker after it
-    /// (HAR-86): at the parent the OSC took the marker, and the run waited
+    /// A load that ends inside an OSC still shows its marker after it:
+    /// at the parent the OSC took the marker, and the run waited
     /// for it to its limit.
     #[test]
     fn a_load_left_in_a_string_still_shows_its_marker() -> Result<(), String> {

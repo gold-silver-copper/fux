@@ -25,8 +25,6 @@ mod families;
 mod footprint;
 mod instructions;
 mod inventory;
-mod ledger;
-mod lists;
 mod memory;
 mod record;
 mod rng;
@@ -70,9 +68,7 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
-       fux-vt-compare lists [--json FILE] [--against FROZEN] [--esctest DIR]
-       fux-vt-compare ledger [--results DIR] [--json FILE] [--table FILE]
-       fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
+       fux-vt-compare scoreboard DIR
        fux-vt-compare engines
        fux-vt-compare --list
 
@@ -621,7 +617,7 @@ fn run(args: &Args) -> Result<bool, String> {
     );
     // The families that differ are drawn too, a twentieth as many cases
     // each, judged beside their engine by their recorded departures, as
-    // `verdicts` judges them (HAR-47); unless the families are named, or
+    // `verdicts` judges them; unless the families are named, or
     // the engine can't run here, which is said.
     let mut departed = true;
     if subject == FUX_VT && args.families.is_empty() && !args.all {
@@ -1440,7 +1436,7 @@ fn main() -> ExitCode {
             }
         };
     }
-    // `scoreboard` takes its own arguments (`--keep`).
+    // `scoreboard` takes its own arguments.
     if let Some((first, rest)) = argv.split_first()
         && first == "scoreboard"
     {
@@ -1449,30 +1445,6 @@ fn main() -> ExitCode {
             Ok(false) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("fux-vt-compare scoreboard: {e}");
-                ExitCode::from(2)
-            }
-        };
-    }
-    if let Some((first, rest)) = argv.split_first()
-        && first == "ledger"
-    {
-        return match ledger::run(rest) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(e) => {
-                eprintln!("fux-vt-compare ledger: {e}");
-                ExitCode::from(2)
-            }
-        };
-    }
-    if let Some((first, rest)) = argv.split_first()
-        && first == "lists"
-    {
-        return match lists::run(rest) {
-            Ok(true) => ExitCode::SUCCESS,
-            Ok(false) => ExitCode::FAILURE,
-            Err(e) => {
-                eprintln!("fux-vt-compare lists: {e}");
                 ExitCode::from(2)
             }
         };

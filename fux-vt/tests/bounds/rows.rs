@@ -1,4 +1,5 @@
-//! The bound rows of `threats.md` section 2, B01 to B45: each a probe of
+//! The bound rows of `THREATS.md` section 2, B01 to B45 and B34a (B46's
+//! is in `colours.rs`): each a probe of
 //! its reproducer at a scale and a chunking, held to the row's bound
 //! (section 2), work constants (4.2) and memory terms (3.1, 3.2), with a
 //! lower bound on each counter it names (4.3). A row whose code or API is
@@ -206,11 +207,12 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // B05: a declared extent with nothing drawn allocates and paints nothing,
 // and its placement is a row fill: each of its rows (⌈2160 ÷ the cell's
 // height⌉) filled across the 200 columns, and taken into history by a line
-// feed at B18's 200 + 3 cells (decision 11): at a 10×20 cell 108 × 403 ÷
+// feed at B18's 200 + 3 cells (THREATS.md B18): at a 10×20 cell 108 × 403 ÷
 // 19 bytes, at most 2,291 cells a byte, and at the smallest, 2×6, 360 ×
-// 403 ÷ 19, at most 7,636 (P5); with P2 1 and 2 as with 0. Portrait,
-// 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19, at most
-// 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (decision 830).
+// 403 ÷ 19, at most 7,636 (THREATS.md 1.2); with P2 1 and 2 as with 0.
+// Portrait, 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19,
+// at most 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (THREATS.md
+// B05).
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     for (picture, (cell, per_byte, rows)) in [
@@ -219,7 +221,7 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
         ("\x1bP0;1q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
         ("\x1bP0;2q\"1;1;4096;2160\x1b\\", ((10, 20), 2291, 108)),
         // Portrait: ⌈4,096 ÷ 20⌉ = 205 rows, or 683 at 2×6, each filled
-        // across 200 columns and taken into history at 203 (decision 830).
+        // across 200 columns and taken into history at 203 (THREATS.md B05).
         ("\x1bPq\"1;1;2160;4096\x1b\\", ((10, 20), 4349, 205)),
         ("\x1bPq\"1;1;2160;4096\x1b\\", ((2, 6), 14_487, 683)),
     ] {
@@ -260,8 +262,8 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
 pub fn b06(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     // B03's stated peak is a picture's final buffer, 4096 × 2160 × 4 =
-    // 35,389,440 bytes, and half that growing: 53,084,160 (threats.md B03;
-    // decision 14 measured up to 2 × the buffer at the clamp). A clone
+    // 35,389,440 bytes, and half that growing: 53,084,160 (THREATS.md B03:
+    // growth copies up to 2 × the buffer at the clamp). A clone
     // copies the picture drawn, so twice that; this one is a sixel drawn,
     // its copy small (measured 111,112 bytes at 1x).
     let bound = heap(steady(&setup).saturating_add(2 * 53_084_160));
@@ -384,7 +386,7 @@ pub fn b08(scale: Scale, _: usize) -> Found {
     encoded(pixels, Work::now().since(before))
 }
 
-/// The work `encode` may do a crop pixel (`threats.md` B08): it reads each
+/// The work `encode` may do a crop pixel (`THREATS.md` B08): it reads each
 /// pixel twice, for its colours and for its band, and sets at most one
 /// sixel of it.
 const C_ENC: u64 = 3;
@@ -437,7 +439,7 @@ pub fn b09(scale: Scale, chunk: usize) -> Found {
         }
     }
     probe.finish()?;
-    // Tall pictures (FA-SIX-3), 4,096 pixels high, at a cell of 10 by 20
+    // Tall pictures, 4,096 pixels high, at a cell of 10 by 20
     // and of 2 by 6: each placement covers 205 or 683 rows, read when the
     // pictures are listed. Per call, the rows each placement covers, and
     // the term above for a screen of 700 rows.
@@ -539,7 +541,7 @@ fn colours(from: u32, count: u32) -> Vec<u8> {
     out
 }
 
-/// The history term of the formula (`threats.md` 3.1, B17): 1.1 × H +
+/// The history term of the formula (`THREATS.md` 3.1, B17): 1.1 × H +
 /// 64 KiB.
 fn history_term(history: usize) -> usize {
     history
@@ -547,7 +549,7 @@ fn history_term(history: usize) -> usize {
         .saturating_add(64 << 10)
 }
 
-/// The history term and its transients while processing (`threats.md`
+/// The history term and its transients while processing (`THREATS.md`
 /// 3.2: a ring or map growing or shrinking, at most half of it more).
 fn history_peak(history: usize) -> usize {
     let term = history_term(history);
@@ -571,9 +573,8 @@ pub fn b11(scale: Scale, chunk: usize) -> Found {
     })
 }
 
-/// rust-opus's family of styles whose attributes hash alike at BASE
-/// (`collide.py`, `cell.rs`'s `Hash`): `count` SGRs, an `x` each, 100 a
-/// line.
+/// A family of styles whose attributes hashed alike unkeyed (`cell.rs`'s
+/// `Hash`): `count` SGRs, an `x` each, 100 a line.
 fn colliding(count: usize) -> Vec<u8> {
     const M: u64 = u64::MAX;
     let rotl = |x: u64, n: u32| x.rotate_left(n) & M;
@@ -754,7 +755,7 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
         p.at_least("links", 2000)
     })?;
     // The sweep's transient is its links' and their rows', however many
-    // rows history holds besides (FA-SCR-H2): a full history of empty
+    // rows history holds besides: a full history of empty
     // rows, then the links above.
     let setup = Setup::defaults();
     let mut probe = Probe::new(&setup, heap(usize::MAX), chunk.max(16), 1)?;
@@ -842,7 +843,7 @@ pub fn b18(scale: Scale, chunk: usize) -> Found {
 }
 
 // B19: finding where a frame ends reads each byte at most twice:
-// `scanned` at most twice the bytes held and 16 a call (decision 823).
+// `scanned` at most twice the bytes held and 16 a call (THREATS.md B19).
 pub fn b19(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
@@ -883,7 +884,7 @@ pub fn b19(scale: Scale, chunk: usize) -> Found {
     probe.at_least("scanned", u64::try_from(n).unwrap_or(0))?;
     probe.finish()?;
     // A long DECRST that ends the frame, its parameter's leading zeros read
-    // as they come and once (FA-CODEX-5): found at its final byte.
+    // as they come and once: found at its final byte.
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
     let _ = probe.host(0, |p| p.process_until_stop(b"\x1b[?2026h", &mut Sinkless))?;
     let decrst = [b("\x1b[?"), repeat(b"0", n), b("2026l")].concat();
@@ -941,7 +942,7 @@ pub fn b21(scale: Scale, chunk: usize) -> Found {
         &repeat(&one, scale.times()),
         |_| Ok(()),
     )?;
-    // Without `Feature::Pictures`, sixel is a DCS fux-vt ignores (REB-8):
+    // Without `Feature::Pictures`, sixel is a DCS fux-vt ignores:
     // 64 KiB of sixel data cost what any ignored string does.
     let plain = Setup {
         options: (Feature::ALL.into_iter())
@@ -1014,7 +1015,7 @@ fn take(
 /// The key decoder fed `input` at `chunk` bytes a read, its output taken
 /// after each read as a host takes it (and kept if `keep`), its work held
 /// to 2 a byte and `per_read` a read, and what it holds to `most` bytes
-/// beyond its output's own (`threats.md` B23 to B26).
+/// beyond its output's own (`THREATS.md` B23 to B26).
 fn decoded(
     input: &[u8],
     chunk: usize,
@@ -1087,10 +1088,10 @@ pub fn b23(scale: Scale, chunk: usize) -> Found {
     decoded(&input, chunk, 258, most, false)?;
     // A paste at its limit, then an ESC that may begin its end marker: its
     // room stays within the limit + 5, as the checker reads it, however
-    // the bytes are split (FA-CODEX-4).
+    // the bytes are split.
     let full = [b("\x1b[200~"), repeat(b"a", PASTE_LIMIT), b("\x1b")].concat();
     decoded(&full, chunk, 258, most, false)?;
-    // At the limit and one past it (KEY-5): delivered, then refused whole.
+    // At the limit and one past it: delivered, then refused whole.
     for (len, delivered) in [(PASTE_LIMIT, true), (PASTE_LIMIT + 1, false)] {
         let mut one = b("\x1b[200~");
         one.extend(repeat(b"p", len));
@@ -1131,7 +1132,7 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     input.extend(repeat(b"a", a));
     decoded(&input, chunk, 258, 4 << 10, false)?;
     // An ESC that ends a read, held, then reads far longer than any
-    // sequence (KEY-3): the held ESC takes only what decides it.
+    // sequence: the held ESC takes only what decides it.
     let held = [repeat(b"b", 4095).as_slice(), b"\x1b", &repeat(b"a", a)].concat();
     decoded(&held, 4096, 258, 4 << 10, false)?;
     // And when what decides it leaves another ESC held, the 259th byte of
@@ -1161,10 +1162,10 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     ]
     .concat();
     decoded(&quiet, 4096, 258, 1 << 10, false)?;
-    // Answers held while they are expected (FA-KEY-4): a DCS answer at
+    // Answers held while they are expected: a DCS answer at
     // its limit; an OSC answer one past it, its last byte an ESC that may
-    // begin ST; and a `CSI ?` answer at its limit after an Escape (FA-KEY-1).
-    // A read scans and copies what is held: 2 × 258 a read (decision 821).
+    // begin ST; and a `CSI ?` answer at its limit after an Escape.
+    // A read scans and copies what is held: 2 × 258 a read (THREATS.md B24).
     let expecting = || {
         let mut decoder = Decoder::default();
         decoder.expect(Instant::now());
@@ -1185,7 +1186,7 @@ pub fn b24(scale: Scale, chunk: usize) -> Found {
     }
     let osc = [b("\x1b]1"), repeat(b"a", 255), b("\x1b")].concat();
     let csi = [b("\x1b\x1b[?"), repeat(b"1", 255)].concat();
-    // A key CSI past its window after an Escape (FA-RE-B-4).
+    // A key CSI past its window after an Escape.
     let key = [b("\x1b\x1b["), repeat(b"1", 256)].concat();
     for input in [osc, csi, key] {
         decoded_by(expecting(), &input, chunk, 516, 4 << 10, false)?;
@@ -1212,13 +1213,13 @@ pub fn b25(scale: Scale, chunk: usize) -> Found {
         return Err(format!("{} keys typed from an answer", split.keys));
     }
     // Answers past their limit with no end yet, in pieces: held no
-    // longer than 258 bytes (KEY-8's guards on each limit).
+    // longer than 258 bytes.
     for head in ["\x1b]11;", "\x1b[?"] {
         let unended = [b(head), repeat(b"1", 300)].concat();
         decoded(&repeat(&unended, scale.times()), chunk, 258, 4 << 10, false)?;
     }
-    // Each window one past its limit (KEY-5), counted as the decoder counts
-    // it, after the opening (FA-KEY-5): an OSC answer of 129 bytes with its
+    // Each window one past its limit, counted as the decoder counts
+    // it, after the opening: an OSC answer of 129 bytes with its
     // BEL, a DCS of 257 with its ST's ESC while answers are expected, a key
     // CSI of 33 parameter bytes, a `CSI ?` of 257, each then `x`: decoded
     // alike whole and in pieces, and of it only the `x` typed. `n` counts
@@ -1299,7 +1300,7 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
     // makes its answer longest set up first: the most digits a position
     // has (a screen of 8192 columns, the cursor at its end), an identity
     // of `Identity::MAX_LEN` bytes, every rendition and three direct
-    // colours: at most 16 bytes a byte that asked (SCR-12).
+    // colours: at most 16 bytes a byte that asked.
     let half: String = std::iter::repeat_n('n', Identity::MAX_LEN / 2).collect();
     let name: &'static str = Box::leak(half.clone().into_boxed_str());
     let version: &'static str = Box::leak(half.into_boxed_str());
@@ -1404,7 +1405,7 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
 }
 
 // B31: a zero-width character after a full row costs at most 257 text
-// bytes (TXT-2's reproducer).
+// bytes.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
     const BOUND: Bound = Bound {
@@ -1463,7 +1464,7 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         p.at_least("cells", 10_000)
     })?;
     // Inside 2-column margins, where no scroll reaches history: the
-    // copies past the screen's rows' worth are skipped too (FA-RE-F-1).
+    // copies past the screen's rows' worth are skipped too.
     fed(
         &setup,
         bound,
@@ -1491,7 +1492,7 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
 }
 
 // B34: non-ASCII REP costs at most 23,832 cell writes a byte (23,831 as
-// stated, measured at the fix: decisions.md 25).
+// stated; THREATS.md B34).
 pub fn b34(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
@@ -1509,7 +1510,7 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
         p.at_least("cells", 20_000)
     })?;
-    // Inside 2-column margins (FA-RE-F-1), as B33.
+    // Inside 2-column margins, as B33.
     fed(
         &setup,
         bound,
@@ -1523,7 +1524,7 @@ pub fn b34(scale: Scale, chunk: usize) -> Found {
 // B34a: REP of a glyph that joins itself skips the copies that change
 // nothing: at most 12 text bytes and 12 cells a byte, and the filling of
 // the cluster once, each join reading it whole: at most 128 × 43 ÷ 2 =
-// 2,752 text bytes (decisions.md 25).
+// 2,752 text bytes (THREATS.md B34a).
 pub fn b34a(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     const BOUND: Bound = Bound {
@@ -1619,7 +1620,7 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
         // 4 KiB call of each function, in one piece. Its work a byte is
         // B35's at 50x200 and 500x500 already, where the input is
         // repeated; repeated here, the work the bound allows (N / 2 cells
-        // a byte, 8.4 M) takes hours (decisions.md 45).
+        // a byte, 8.4 M) takes hours (40 KiB of DECRQCRA there took 297 s).
         let largest = rows == 4095;
         if largest && chunk != 4096 {
             continue;
@@ -1657,9 +1658,9 @@ pub fn b35(scale: Scale, chunk: usize) -> Found {
         // Scrolls inside left and right margins, set up once: each copies
         // the region's span of every row, with its clusters' text, and the
         // wrap of text printed at the bottom margin makes one too, which
-        // no sequence does (decision 831). A line feed, one byte: at most
+        // no sequence does. A line feed, one byte: at most
         // 3 x the screen's cells (each span's cell read, compared and
-        // written, decision 950) and R rows of span text.
+        // written) and R rows of span text.
         let n = u64::try_from(setup.cells()).unwrap_or(u64::MAX);
         let r = u64::from(rows);
         let wide = format!("\x1b[?69h\x1b[1;{}s\x1b[{rows};2H", cols.saturating_sub(1));
@@ -1733,7 +1734,7 @@ pub fn b36(scale: Scale, chunk: usize) -> Found {
     fed(&setup, bound, chunk, scale.times(), &input, |p| {
         p.at_least("slots", u64::from(rows))
     })?;
-    // A region across the ring's end (FA-SIZE-1): a line feed at the
+    // A region across the ring's end: a line feed at the
     // bottom, with history, turns the ring by one, so the last two rows
     // cross its end; each IL of both there moves at most twice their
     // slots.
@@ -1765,7 +1766,7 @@ pub fn b37(scale: Scale, chunk: usize) -> Found {
     let history = probe.parser.screen().history_len();
     let cells = history.saturating_mul(200).saturating_add(setup.cells());
     // Reflow copies each cell out, pushes it into the new grid and clears
-    // its row: 3 a cell, and a row read and kept a row (decision 11).
+    // its row: 3 a cell, and a row read and kept a row (THREATS.md B37).
     let most = u64::try_from(cells.saturating_add(history).saturating_mul(3)).unwrap_or(u64::MAX);
     let per_call: &'static [(&'static str, u64, u64, u64)] =
         Box::leak(Box::new([("rows", 0, most, 0), ("cells", 0, most, 0)]));
@@ -1825,7 +1826,7 @@ pub fn b39(scale: Scale, _: usize) -> Found {
         match made {
             Ok(Err(fux_vt::Error::Capacity)) => {}
             Ok(other) => return Err(format!("Cells::new({len}) gave {other:?}")),
-            Err(_) => return Err(format!("Cells::new({len}) panics (SCR-11)")),
+            Err(_) => return Err(format!("Cells::new({len}) panics")),
         }
         let mut cells = fux_vt::Cells::new(4).map_err(|e| e.to_string())?;
         let grown = std::panic::catch_unwind(move || {
@@ -1835,7 +1836,7 @@ pub fn b39(scale: Scale, _: usize) -> Found {
         match grown {
             Ok((Err(fux_vt::Error::Capacity), 4)) => {}
             Ok(other) => return Err(format!("resize to {len} gave {other:?}")),
-            Err(_) => return Err(format!("resize to {len} panics (SCR-11)")),
+            Err(_) => return Err(format!("resize to {len} panics")),
         }
     }
     let most = if scale == Scale::Hundred {
@@ -1975,14 +1976,14 @@ pub fn b43(scale: Scale, chunk: usize) -> Found {
 }
 
 // B44: a refused allocation loses only what it was for, and every later
-// byte is read (PAR-3), each site by its degrade (SCR-10).
+// byte is read, each site by its degrade.
 pub fn b44(_: Scale, chunk: usize) -> Found {
     // A prompt mark's fresh line, and a picture's placement, scroll the
     // row into history, whose first block is refused. At BASE the parser
     // stayed in the OSC (`hello` went into it) or in sixel with no
     // decoder (`hello` was swallowed). The picture's graphics new lines
     // take the cursor down a row, past the 20-pixel cell its one band
-    // fits in (SIX-12: the cursor goes where the sixel motion went).
+    // fits in (the cursor goes where the sixel motion went).
     for string in [
         &b"\x1b]133;A\x07"[..],
         b"\x1b]133;A\x1b\\",
@@ -2030,7 +2031,7 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
 
 /// A refusal inside a mode sequence loses only the mode it was for: the
 /// alternate screen 1049 asks room for. Synchronized output, before it or
-/// after it, is set, and the frame it begins is told (FA-PAR-1).
+/// after it, is set, and the frame it begins is told.
 fn modes_past_a_refusal() -> Found {
     struct Quiet;
     impl fux_vt::Sink for Quiet {}
@@ -2058,7 +2059,7 @@ fn modes_past_a_refusal() -> Found {
     Ok(())
 }
 
-/// Each site's degrade (SCR-10), the checker clean after it and the bytes
+/// Each site's degrade, the checker clean after it and the bytes
 /// after it read: a row history has no room for goes as with no history,
 /// the screen scrolling still; a RIS with no room for grids made anew
 /// blanks them in place, history gone, and resets the rest; a refused
@@ -2265,7 +2266,7 @@ pub fn b45(_: Scale, _: usize) -> Found {
     Ok(())
 }
 
-/// Every row, by its name in `threats.md`.
+/// Every row, by its name in `THREATS.md` 2.
 pub const ROWS: &[(&str, Row)] = &[
     ("B01", b01),
     ("B02", b02),
@@ -2335,7 +2336,7 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `threats.md` has: B01 to B46 and B34a.
+/// How many rows `THREATS.md` 2 has: B01 to B46 and B34a.
 pub const COUNT: usize = 47;
 
 const _: () = assert!(ROWS.len() == COUNT);

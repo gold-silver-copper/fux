@@ -1,5 +1,5 @@
 #![no_main]
-//! The deep target (`threats.md` section 6; HAR-25, SIX-21): large state
+//! The deep target (`THREATS.md` section 6): large state
 //! and every host call. Up to 511 by 511 cells and 8 MiB of history, every
 //! `Feature` and pictures drawn, fed up to 1 MiB of output a run by
 //! `process_until_stop` in 4 KiB reads, as fux's pane reads, with each
@@ -76,7 +76,7 @@ const SPLIT_CELLS: usize = 1 << 27;
 const OPS: usize = 128;
 const READS: usize = 4;
 
-/// The work `sixel::encode` may do a crop pixel (`threats.md` B08).
+/// The work `sixel::encode` may do a crop pixel (`THREATS.md` B08).
 const C_ENC: u64 = 3;
 
 /// Whether every item of `items` is equal.

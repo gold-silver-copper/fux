@@ -175,7 +175,7 @@ impl Can {
         last_wrapped: true,
     };
 
-    /// What only fux-vt's adapter reads of the device's state (HAR-46):
+    /// What only fux-vt's adapter reads of the device's state:
     /// for an engine to set where it tells none of it.
     pub const NO_DEVICE: Can = Can {
         cursor_shape: false,
@@ -188,7 +188,7 @@ impl Can {
     /// Every field but the device's state and the last row's soft wrap,
     /// which keep this one's: what a subject that cannot tell those is
     /// judged on when coverage is reckoned (`case::reread`). Only fux-vt
-    /// and xterm read the device (HAR-46), so a subject that can't is
+    /// and xterm read the device, so a subject that can't is
     /// compared without it, rather than unavailable at every point.
     pub const fn device(self) -> Can {
         Can {

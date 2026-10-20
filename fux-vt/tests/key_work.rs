@@ -1,4 +1,4 @@
-//! The key decoder's work on one long read while idle (`threats.md` B24,
+//! The key decoder's work on one long read while idle (`THREATS.md` B24,
 //! B25): it decodes the read once, a byte read once, however many answers
 //! past their windows it holds, and is not cut into pieces of a held
 //! sequence's length, each answer a piece's end cuts decoded again.
@@ -9,7 +9,7 @@ use fux_vt::keys::decode::Decoder;
 
 #[test]
 fn one_long_idle_read_is_decoded_once() {
-    // A hundred `CSI ?` answers, each past its window (KEY-5): 30,400 bytes.
+    // A hundred `CSI ?` answers, each past its window: 30,400 bytes.
     let mut one = b"\x1b[?".to_vec();
     one.extend(std::iter::repeat_n(b'1', 300));
     one.push(b'c');
@@ -30,7 +30,7 @@ fn one_long_idle_read_is_decoded_once() {
 
 /// A read that begins inside an answer held is cut once: what decides the
 /// held answer first, then the rest whole, a sequence the first piece
-/// begins read again where it lies (`threats.md` B24, decision 821): at
+/// begins read again where it lies (`THREATS.md` B24): at
 /// most 2 keys a byte and 2 × 258 a read, each of a hundred over-long
 /// answers' 4 KiB reads.
 #[test]

@@ -1,5 +1,5 @@
 //! The `graphemes` target's frozen seeds (`seeds/graphemes`), the inputs it
-//! found the engine and the model to disagree on (FA-SB-2): a full cell,
+//! found the engine and the model to disagree on: a full cell,
 //! then a character of no width it cannot take, a control, then a modifier,
 //! which begins a cluster of its own after the control (UAX #29, GB5), not
 //! one more character of the full cell's. Each file is read as the target

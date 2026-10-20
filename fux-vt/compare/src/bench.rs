@@ -863,7 +863,7 @@ mod tests {
     /// A recording that resizes is fed at each size it was written at, as
     /// fux-bench feeds it: zsh-resize's parts are its size, then each
     /// resize's, its bytes whole; the corpus all in turn resizes to each
-    /// recording's own size (HAR-78).
+    /// recording's own size.
     #[test]
     fn a_recording_is_fed_at_each_size_it_was_written_at() -> Result<(), String> {
         let recordings = crate::corpus::recordings(&[])?;
@@ -953,7 +953,7 @@ mod tests {
     }
 
     /// A run makes the workloads it times and no other: two named, two
-    /// made, where making every one before choosing took gigabytes (HAR-75).
+    /// made, where making every one before choosing took gigabytes.
     #[test]
     fn choosing_a_workload_makes_no_other() -> Result<(), String> {
         super::MADE.with(|made| made.set(0));

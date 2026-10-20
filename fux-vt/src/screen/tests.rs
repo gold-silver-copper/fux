@@ -328,7 +328,7 @@ fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
 }
 
 /// The pictures hold at most `PICTURE_BYTES` of pixels, the one being
-/// drawn included (`threats.md` B01): 64 pictures of the largest size,
+/// drawn included (`THREATS.md` B01): 64 pictures of the largest size,
 /// 4096 by 2160, drawn to their last pixel, and one more left unfinished.
 #[test]
 fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
@@ -443,7 +443,7 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
 }
 
 /// A screen keeps 64 pictures, the 64th too, and the 65th lets the oldest
-/// go (threats.md B02): each one cell, in a cell of its own.
+/// go (THREATS.md B02): each one cell, in a cell of its own.
 #[test]
 fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -461,7 +461,7 @@ fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Er
 }
 
 /// Pictures exactly at the budget are kept, a byte past it lets the oldest
-/// go, by the budget set as by one drawn (threats.md B01).
+/// go, by the budget set as by one drawn (THREATS.md B01).
 #[test]
 fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -485,7 +485,7 @@ fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), E
 
 /// A picture placed takes the cells it covers from those under it, and
 /// only those: one beside it on any side, its cells touching, stays; one
-/// a cell of it covers goes (threats.md 5.2, `overlaps`).
+/// a cell of it covers goes (THREATS.md section 5, `overlaps`).
 #[test]
 fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -511,7 +511,7 @@ fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
 }
 
 /// A kept picture holds just its pixels, though its room grew by doubling
-/// as it was drawn (threats.md B03; REB-11): the budget counts its room,
+/// as it was drawn (THREATS.md B03): the budget counts its room,
 /// which is then its size. Drawn a column further right a sixel at a
 /// time, to 101 columns of one band (6 positions down).
 #[test]
@@ -529,7 +529,7 @@ fn a_kept_picture_holds_just_its_pixels() -> Result<(), Error> {
 }
 
 /// A picture that only declares its size keeps no pixels for it, however
-/// large (`threats.md` B05): its extent reads as the background (colour
+/// large (`THREATS.md` B05): its extent reads as the background (colour
 /// register 0 for P2 0 and 2) or clear (P2 1), when shown.
 #[test]
 fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
@@ -586,7 +586,8 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     Ok(())
 }
 
-/// A host's cell is taken as at least a sixel band, 2 by 6 pixels (P5).
+/// A host's cell is taken as at least a sixel band, 2 by 6 pixels
+/// (THREATS.md B05).
 #[test]
 fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -610,7 +611,7 @@ fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
 
 /// `Prints` keeps text printed and drawn over within one feed up to its
 /// cap, 16 KiB on a small screen, and past it records nothing more and
-/// says so (`threats.md` B10); a take begins again.
+/// says so (`THREATS.md` B10); a take begins again.
 #[test]
 fn prints_keep_text_drawn_over_up_to_their_cap() -> Result<(), Error> {
     let cap = 16 << 10;
@@ -641,7 +642,7 @@ fn prints_keep_text_drawn_over_up_to_their_cap() -> Result<(), Error> {
 }
 
 /// `Prints` keeps 4,096 runs; the 4,097th is lost. On 50 by 200 its text
-/// may be 4 bytes a cell, 40,000 (`threats.md` B10).
+/// may be 4 bytes a cell, 40,000 (`THREATS.md` B10).
 #[test]
 fn prints_keep_at_most_their_runs() -> Result<(), Error> {
     for (runs, lost) in [(4095, false), (4096, false), (4097, true)] {
@@ -692,7 +693,7 @@ fn printed(bytes: &[&str]) -> Result<Vec<Run>, Error> {
 }
 
 /// Characters that join a cell's cluster are printed, as they change it
-/// (PAR-13, TXT-6; `Prints`: "each run of text that changed cells"): a
+/// (`Prints`: "each run of text that changed cells"): a
 /// combining mark, and a flag's second regional indicator, which widens
 /// its cell; the same however the input is split.
 #[test]
@@ -721,7 +722,7 @@ fn prints_hold_what_joins_a_cluster() -> Result<(), Error> {
     Ok(())
 }
 
-/// The checker's 6a (REB-4): a shell command set aside by a nested
+/// The checker's 6a: a shell command set aside by a nested
 /// program's mark holds both nonces; one dropped from under it shows.
 #[cfg(feature = "checks")]
 #[test]

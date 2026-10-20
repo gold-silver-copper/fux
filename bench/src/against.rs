@@ -951,7 +951,7 @@ mod tests {
     };
 
     /// A workload too noisy to judge fails the gate, as a slower one does:
-    /// inconclusive is said, never passed (HAR-15).
+    /// inconclusive is said, never passed.
     #[test]
     fn a_noisy_workload_fails_the_gate() {
         let run = |v: Verdict| vec![("w".to_owned(), Verdict::Faster), ("x".to_owned(), v)];

@@ -71,7 +71,7 @@ key_encode.zig:2237	legacy	C-c	\x03	agree
 key_encode.zig:2248	legacy	C-Space	\x00	agree
 key_encode.zig:2259	legacy	C-S-BSpace	\x08	agree
 key_encode.zig:2269	legacy	C-M-S-BSpace	\e\x08	agree
-key_encode.zig:2269	legacy mok=2	C-M-S-BSpace	\e[27;8;127~	differs: Backspace's code under modifyOtherKeys with Ctrl is BS, as real xterm 411 sends it (KEY-13, xterm-keys.txt line 1662: C-M-S-BSpace mok=2 \e[27;8;8~); fux: \e[27;8;8~
+key_encode.zig:2269	legacy mok=2	C-M-S-BSpace	\e[27;8;127~	differs: Backspace's code under modifyOtherKeys with Ctrl is BS, as real xterm 411 sends it (xterm-keys.txt line 1662: C-M-S-BSpace mok=2 \e[27;8;8~); fux: \e[27;8;8~
 key_encode.zig:2285	legacy	BSpace	\x7f	agree
 key_encode.zig:2295	legacy	C-BSpace	\x08	agree
 key_encode.zig:2307	legacy bkm	BSpace	\x08	agree
@@ -89,7 +89,7 @@ key_encode.zig:2454	legacy	C-S-M	\e[109;6u	differs: xterm sends the C0 control (
 key_encode.zig:2468	legacy	S-Up	\e[1;2A	agree
 key_encode.zig:2479	legacy	Enter code=57414 mods=0	\x0d	agree
 key_encode.zig:2490	legacy	1 code=57400 mods=0	1	agree
-key_encode.zig:2502	legacy mok=2	C-1 code=57400 mods=4	1	differs: a keypad digit with Ctrl under modifyOtherKeys 2 is the digit modified, as for any key; real xterm's bytes are to settle it (KEY-13); fux: \e[27;5;49~
+key_encode.zig:2502	legacy mok=2	C-1 code=57400 mods=4	1	differs: a keypad digit with Ctrl under modifyOtherKeys 2 is the digit modified, as for any key; real xterm's bytes are to settle it; fux: \e[27;5;49~
 key_encode.zig:2502	legacy keypad mok=2	C-1 code=57400 mods=4	\eO5q	agree
 key_encode.zig:2531	legacy keypad	1 code=57400 mods=0	\eOq	agree
 key_encode.zig:2545	legacy keypad	1 code=57400 mods=128	\eOq	differs: ctlseqs, "PC-Style Function Keys": "Use the NumLock key to override the application mode"; Ghostty keeps the mode; fux: 1

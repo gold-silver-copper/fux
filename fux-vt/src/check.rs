@@ -1,4 +1,4 @@
-//! The invariant checker (threats.md section 6), with the `checks` feature:
+//! The invariant checker (THREATS.md section 6), with the `checks` feature:
 //! [`crate::Parser::check`] asserts every invariant of the parser, both
 //! screens, their history, styles, links, pictures and `Prints` that can be
 //! read from the state alone, and says which checks ran. The invariants
@@ -21,7 +21,7 @@ thread_local! {
 
 /// Refuses the next `n` allocations fux-vt makes room for on this thread
 /// (history's blocks, a grid's cells), as if memory had run out: for the
-/// tests of what a refusal leaves (threats.md B44). With the `checks`
+/// tests of what a refusal leaves (THREATS.md B44). With the `checks`
 /// feature only.
 pub fn refuse_next(n: u32) {
     REFUSE.set(n);

@@ -1,19 +1,17 @@
-//! The safety reproducers as frozen seeds (HAR-28, `threats.md` section 2's
-//! "Seeds"): each defined here once, written as a file (`seeds/*.bin`, and
-//! in the `terminal` and `keys` fuzz targets' formats under
-//! `fuzz/seeds/`; a `terminal` seed past that target's 4 KiB runs in
-//! `deep`'s, if one of its runs holds it), and replayed to check that it
-//! reaches the limit it is for. That holds at BASE and after the fix
-//! alike: the seed exercises the limit. Whether fux-vt stays within it is
-//! the bounds suite's row (`tests/bounds.rs`), which failed at BASE for
-//! every seed here; `bounds/known-failing.txt` names the rows that still
-//! fail.
+//! The safety reproducers as frozen seeds (`THREATS.md` section 2): each
+//! defined here once, written as a file (`seeds/*.bin`, and in the
+//! `terminal` and `keys` fuzz targets' formats under `fuzz/seeds/`; a
+//! `terminal` seed past that target's 4 KiB runs in `deep`'s, if one of
+//! its runs holds it), and replayed to check that it reaches the limit it
+//! is for. The seed exercises the limit; whether fux-vt stays within it is
+//! the bounds suite's row (`tests/bounds.rs`), and
+//! `bounds/known-failing.txt` names the rows that fail.
 //!
 //! A row whose reproducer is a host call (a clone, a picture built or
 //! encoded, a size, a refused allocation, an encoder) has its seed's host
 //! calls in `reaches`, and in `deep`'s format where that target makes the
-//! call. A row with no defect at BASE (a new bound, kept by a guard) says
-//! so, "no defect at BASE: a guard", beside its seed.
+//! call. A row whose bound no defect ever broke (kept by a guard) says so,
+//! "a guard: no defect", beside its seed.
 //!
 //! `cargo test -p fux-vt --features checks --test seeds -- --ignored
 //! write_the_seeds` writes the files from these definitions; a test fails
@@ -28,7 +26,7 @@ use fux_vt::{Event, Feature, Options, Parser, Sink, Size, Work};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 /// The empty rows 8 MiB of history holds: 682 of its ring's chunks of 512
-/// rows (12,288 bytes each, `threats.md` B17), the newest filling and the
+/// rows (12,288 bytes each, `THREATS.md` B17), the newest filling and the
 /// oldest let go once all its rows have gone.
 const FULL: std::ops::RangeInclusive<usize> = 681 * 512 + 1..=682 * 512;
 
@@ -182,7 +180,7 @@ fn seeds() -> Vec<Seed> {
                 out
             },
             // An extent one pixel wider each raster, to the widest: kept
-            // as numbers since SIX-3, so it reaches the widest picture.
+            // as numbers, so it reaches the widest picture.
             reaches: |r| {
                 let (width, height, _) = shown(r);
                 ensure((width, height) == (4096, 2160), || {
@@ -686,9 +684,9 @@ fn seeds() -> Vec<Seed> {
                 out
             },
             // 65 placements, each in a cell of its own: the 65th lets the
-            // oldest go, 64 shown. At BASE
+            // oldest go, 64 shown. Once
             // past its bound at 10x: placing checked every kept picture
-            // through history (SIX-7).
+            // through history.
             reaches: |r| {
                 let (_, _, count) = shown(r);
                 ensure(count == 64, || format!("{count} of 65 shown"))
@@ -703,7 +701,7 @@ fn seeds() -> Vec<Seed> {
             bytes: || b"\x1bPq\"1;1;4096;2160~".to_vec(),
             // A parser cloned mid-picture draws the same picture as the
             // original; a host's copy of a picture outlives its eviction,
-            // which a lowered budget makes. No defect at BASE: a guard.
+            // which a lowered budget makes. A guard: no defect.
             reaches: |r| {
                 let (mut a, mut b) = (r.parser.clone(), r.parser.clone());
                 for p in [&mut a, &mut b] {
@@ -735,8 +733,8 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::None,
             bytes: Vec::new,
             // `Picture::new` takes exactly w × h × 4 bytes and sides up to
-            // 4,096; an empty u32::MAX square, whose crop `encode` never
-            // finished at BASE (SIX-5), is refused. Host calls only: `deep`
+            // 4,096; an empty u32::MAX square, whose crop `encode` once
+            // never finished, is refused. Host calls only: `deep`
             // makes no picture of its own.
             reaches: |_| {
                 let made = |w: u32, h: u32, len: usize| Picture::new(w, h, vec![0; len]).is_some();
@@ -776,7 +774,7 @@ fn seeds() -> Vec<Seed> {
             },
             // Encoded whole within its bound: 12 bytes a pixel and 6 a
             // colour a band, besides the colours' definitions, and C_ENC
-            // = 3 units of work a pixel. No defect at BASE: a guard.
+            // = 3 units of work a pixel. A guard: no defect.
             reaches: |r| {
                 let shown = r.parser.screen().pictures().next().ok_or("no picture")?;
                 let (w, h) = (shown.picture.width(), shown.picture.height());
@@ -810,8 +808,8 @@ fn seeds() -> Vec<Seed> {
                 }
                 out
             },
-            // Past the table's floor with one cell live: a sweep came. At
-            // BASE past its heap bound at 10x (SCR-5).
+            // Past the table's floor with one cell live: a sweep came. Once
+            // past its heap bound at 10x.
             reaches: |r| {
                 ensure(r.work.inserts > 4096 && r.work.styles > 0, || {
                     format!("{} styles, {} swept", r.work.inserts, r.work.styles)
@@ -826,7 +824,7 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::HeldLinks,
             bytes: || repeat(b"\x1b]8;;x\x07y\x1b]8;;\x07", 1000),
             // With 4 MiB of links held, new links make room by a sweep.
-            // No defect at BASE: a guard. The prefix is no fuzz input.
+            // A guard: no defect. The prefix is no fuzz input.
             reaches: |r| {
                 ensure(r.work.links >= 1000, || {
                     format!("{} link steps", r.work.links)
@@ -840,8 +838,8 @@ fn seeds() -> Vec<Seed> {
             size: defaults,
             prefix: Prefix::None,
             bytes: || repeat(b"\n", 5_000),
-            // Each line feed at the bottom a row into history. No defect
-            // at BASE: a guard.
+            // Each line feed at the bottom a row into history. A guard: no
+            // defect.
             reaches: |r| ensure(r.work.rows >= 4_950, || format!("{} rows", r.work.rows)),
             fuzz: Fuzz::Terminal,
         },
@@ -858,7 +856,7 @@ fn seeds() -> Vec<Seed> {
             },
             // Past the parameters kept, the sequence still carried out
             // with those it kept (DEC STD 070: extra parameters are
-            // ignored): bold. No defect at BASE: a guard.
+            // ignored): bold. A guard: no defect.
             reaches: |r| {
                 ensure(r.parser.screen().attributes().bold(), || {
                     "the SGR was not carried out".into()
@@ -872,7 +870,7 @@ fn seeds() -> Vec<Seed> {
             size: defaults,
             prefix: Prefix::None,
             bytes: || repeat(b"a", 64 << 10),
-            // A key an input byte, every one. No defect at BASE: a guard.
+            // A key an input byte, every one. A guard: no defect.
             reaches: |r| {
                 let keys = r
                     .inputs
@@ -896,7 +894,7 @@ fn seeds() -> Vec<Seed> {
             },
             // 33 pushes into a stack of 32 evict the oldest, so 32 pops
             // empty it and reset the flags (the kitty keyboard protocol).
-            // No defect at BASE: a guard.
+            // A guard: no defect.
             reaches: |r| {
                 let flags = r.parser.screen().kitty_keyboard_flags();
                 ensure(flags == 0, || format!("flags {flags} after the pops"))
@@ -914,8 +912,8 @@ fn seeds() -> Vec<Seed> {
                 out
             },
             // Every request answered with the longest pen, each answer
-            // within 16 bytes a byte that asked. No defect at BASE: a
-            // guard.
+            // within 16 bytes a byte that asked. A guard: no
+            // defect.
             reaches: |r| {
                 let longest = r.replies.iter().map(Vec::len).max().unwrap_or(0);
                 ensure(
@@ -932,7 +930,7 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::None,
             bytes: || cluster(64),
             // A cell keeps 128 bytes at most: e and 63 of the 64 marks,
-            // 127 bytes. No defect at BASE: a guard.
+            // 127 bytes. A guard: no defect.
             reaches: |r| {
                 let cell = r.parser.screen().cell(0, 0);
                 let held = cell.map_or(0, |c| c.contents().len());
@@ -948,7 +946,7 @@ fn seeds() -> Vec<Seed> {
             bytes: Vec::new,
             // 64 Mi cells fit, one row more does not, and a 65535 by 65535
             // parser is refused. Host calls only: `deep`'s sides are at
-            // most 511. No defect at BASE: a guard.
+            // most 511. A guard: no defect.
             reaches: |_| {
                 let fits = |rows, cols| Size::new(rows, cols).is_ok_and(fux_vt::fits);
                 let refused =
@@ -967,7 +965,7 @@ fn seeds() -> Vec<Seed> {
             bytes: Vec::new,
             // `Cells::new` and `resize` past 64 Mi cells are refused, and
             // `resize` leaves the cells as they were; `Cells::new(usize::
-            // MAX)` panicked at BASE (SCR-11). Host calls only.
+            // MAX)` once panicked. Host calls only.
             reaches: |_| {
                 let past = [(64 << 20) + 1, usize::MAX];
                 let refused = past.iter().all(|&len| {
@@ -988,8 +986,8 @@ fn seeds() -> Vec<Seed> {
             prefix: Prefix::None,
             bytes: Vec::new,
             // A `push_with` closure that clears the queue under what was
-            // taken, then a push: the queue holds the push. At BASE it
-            // held nothing (PAR-8). Host calls only.
+            // taken, then a push: the queue holds the push. It once
+            // held nothing. Host calls only.
             reaches: |_| {
                 let mut queue = fux_vt::bytes::ByteQueue::default();
                 queue.push(b"abcdef");
@@ -1014,7 +1012,7 @@ fn seeds() -> Vec<Seed> {
                 out
             },
             // A tab stop at every column: a tab from the first goes to
-            // the second. No defect at BASE: a guard.
+            // the second. A guard: no defect.
             reaches: |r| {
                 let cell = r.parser.screen().cell(0, 1);
                 ensure(cell.is_some_and(|c| c.contents() == "X"), || {
@@ -1029,8 +1027,8 @@ fn seeds() -> Vec<Seed> {
             size: defaults,
             prefix: Prefix::None,
             bytes: || repeat(b"\x1b]9;hello\x07", 400),
-            // Each notification an event, none kept. No defect at BASE:
-            // a guard.
+            // Each notification an event, none kept. A guard: no
+            // defect.
             reaches: |r| ensure(r.events == 400, || format!("{} events", r.events)),
             fuzz: Fuzz::Terminal,
         },
@@ -1042,8 +1040,7 @@ fn seeds() -> Vec<Seed> {
             bytes: || b"\x1b]133;A\x07hello".to_vec(),
             // A prompt mark's fresh line scrolls into history, whose first
             // block is refused: one refusal, and the text after it shown.
-            // At BASE `hello` went into the OSC (PAR-3). `deep` refuses
-            // nothing.
+            // `hello` once went into the OSC. `deep` refuses nothing.
             reaches: |r| {
                 text_shows(r, "hello")?;
                 let refused = r.parser.refused();
@@ -1059,8 +1056,8 @@ fn seeds() -> Vec<Seed> {
             bytes: Vec::new,
             // The longest keys: a kitty report of the largest code points
             // with every modifier bit, and an SGR mouse report at the
-            // largest position, each within 64 bytes. BASE stated no
-            // maximum (KEY-4). Host calls only.
+            // largest position, each within 64 bytes, a maximum
+            // once stated nowhere. Host calls only.
             reaches: |_| {
                 use fux_vt::keys::encode::{KeyMode, Report, key_bytes};
                 use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
@@ -1119,9 +1116,8 @@ fn seeds() -> Vec<Seed> {
             },
             // The arithmetic ran, and stopped at the OSC's allowance, a
             // quarter of U in `colours` steps, with one specification's
-            // steps past it. No defect at BASE: a guard (BASE read no
-            // device-independent colour; the arithmetic came, and was
-            // bounded, on vt-best: decision 912).
+            // steps past it. A guard: no defect (the arithmetic came with
+            // its bound; THREATS.md B46).
             reaches: |r| {
                 let weight = (Work::WEIGHTS.iter())
                     .find(|(name, _)| *name == "colours")
@@ -1139,8 +1135,8 @@ fn seeds() -> Vec<Seed> {
     ]
 }
 
-/// rust-opus's family of styles whose attributes hash alike at BASE
-/// (`collide.py`): `count` SGRs, an `x` each, 100 a line.
+/// A family of styles whose attributes hashed alike unkeyed: `count`
+/// SGRs, an `x` each, 100 a line.
 fn colliding(count: usize) -> Vec<u8> {
     let pk = |t: u64, r: u64, g: u64, b: u64| t | r << 8 | g << 16 | b << 24;
     let fg = pk(2, 10, 20, 30);
@@ -1530,7 +1526,7 @@ fn every_seed_reaches_its_limit() -> Result {
 }
 
 /// The files are what the definitions make, and every reproducer has one:
-/// names are unique, and each names a row of `threats.md`.
+/// names are unique, and each names a row of `THREATS.md` 2.
 #[test]
 fn the_seed_files_are_written_as_defined() -> Result {
     let seeds = seeds();

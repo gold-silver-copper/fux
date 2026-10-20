@@ -271,9 +271,9 @@ fn a_resize_keeps_history_charged_for_the_shared_styles() -> Result {
     Ok(())
 }
 
-/// A parser cloned, as a host may keep one (threats.md 1.2), is as sound
+/// A parser cloned, as a host may keep one (THREATS.md 1.2), is as sound
 /// as the one it was cloned from: its history counts the storage the copy
-/// holds, not the original's (FA-SCR-H3).
+/// holds, not the original's.
 #[test]
 fn a_cloned_parser_keeps_every_invariant() -> Result {
     let options = Options::default().set(Feature::Hyperlinks, true);
@@ -289,7 +289,7 @@ fn a_cloned_parser_keeps_every_invariant() -> Result {
 
 /// A style a cloned parser adds is charged to its history for the table
 /// its copy holds, which the clone made at its length, not the room the
-/// shared one had (B11, FA-RE-B-7): more distinct styles than the screen's
+/// shared one had (B11): more distinct styles than the screen's
 /// share holds, then one more on the clone.
 #[test]
 fn a_cloned_parser_charges_the_styles_it_adds() -> Result {

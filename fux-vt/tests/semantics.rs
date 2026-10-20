@@ -301,7 +301,7 @@ fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
 
 /// A rejected resize changes nothing, synchronized output included (the
 /// API's "failing size changes leave the old screen intact"); one that is
-/// taken, or to the same size, ends it, as in Ghostty (threats.md B37).
+/// taken, or to the same size, ends it, as in Ghostty (THREATS.md B37).
 #[test]
 fn a_rejected_resize_leaves_synchronized_output_on() -> Result {
     let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
@@ -696,7 +696,7 @@ fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
 /// is still soft-wrapped (`fux-vt-compare replay --engines all --size 5x1
 /// --history 0 'll' '\e[4T' '\e[2S'`: row 2). A report that xterm ended
 /// it read xterm's printout, whose last row ends with no line feed, as
-/// unwrapped (agent A, HAR-47).
+/// unwrapped.
 #[test]
 fn a_row_scrolled_down_to_the_last_keeps_its_soft_wrap() -> Result {
     let mut p = Parser::new(Size::new(5, 1)?, 0)?;

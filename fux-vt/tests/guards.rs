@@ -1,5 +1,5 @@
 //! Tests that kill the frozen guard mutants no other test kills
-//! (`threats.md` 5.2, `fux-vt/compare/mutants-guards.txt`): each names
+//! (`THREATS.md` section 5, `fux-vt/compare/mutants-guards.txt`): each names
 //! the guard's row and the mutant, and holds the guard's limit at the
 //! input where the mutant differs from it.
 
@@ -137,7 +137,7 @@ fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
 /// What fux-vt's counters charge a DECALN of the whole 50x200 screen
 /// (`Work::cost`) is at least what the budget spends on it, so the stop
 /// comes after ceil(`CEILING` / 2 / that) of them, or later.
-/// The frozen ceiling U (threats.md 4.4, P14), in twentieths of a unit.
+/// The frozen ceiling U (THREATS.md 4.4), in twentieths of a unit.
 #[cfg(feature = "checks")]
 const CEILING: u64 = 50_000_000 * 20;
 
@@ -150,7 +150,7 @@ fn a_call_stops_at_half_the_ceiling_and_not_before() -> Result {
     let before = fux_vt::Work::now();
     p.process(align)?;
     let cost = fux_vt::Work::now().since(before).cost().max(1);
-    // U, the frozen ceiling (threats.md 4.4, P14): 50 M units, in twentieths.
+    // U, the frozen ceiling (THREATS.md 4.4): 50 M units, in twentieths.
     let least = (CEILING / 2).div_ceil(cost);
     let input = times_bytes(align, usize::try_from(least.saturating_mul(4))?);
     let mut p = Parser::new(size, 0)?;

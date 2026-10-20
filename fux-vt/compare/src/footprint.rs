@@ -37,7 +37,7 @@
 //! fux-vt's limit is in bytes: it is given enough for 10,000 full rows, so
 //! it keeps at least those, but where its rows' styles take the budget
 //! first (`dense-cells` at 200 columns, every cell its own colours: styles
-//! count in history's budget, `threats.md` B11), which holds fewer, and
+//! count in history's budget, `fux-vt/THREATS.md` B11), which holds fewer, and
 //! the pieces are as many as fill it that far. Ghostty's limit is in bytes, and prunes whole pages: it is
 //! given [`GHOSTTY_SCROLLBACK`], more than any measure here fills, so it
 //! keeps every row it is fed, a few more than 10,000 where the last piece
@@ -66,7 +66,7 @@ const GHOSTTY_SCROLLBACK: usize = 1 << 30;
 /// Ghostty's own default, as its app sets it: `scrollback-limit`, 50 MB
 /// (`src/config/Config.zig` at the commit run.sh pins), measured beside the
 /// 1 GiB as `ghostty-default`: where a measure fills more, it prunes, and
-/// holds fewer rows (HAR-83).
+/// holds fewer rows.
 const GHOSTTY_DEFAULT: usize = 50_000_000;
 /// The screen's rows.
 const ROWS: u16 = 50;
@@ -247,9 +247,9 @@ impl Pieces {
 
 /// How many pieces of `name` fill fux-vt's history at `cols` columns: to
 /// [`HISTORY`] rows, or, where its rows' styles take its budget first
-/// (every cell its own colours, 200 a row: `threats.md` B11, styles count
-/// in the history budget), until a piece that scrolls rows into it leaves
-/// it no longer: it holds what its budget holds.
+/// (every cell its own colours, 200 a row: `fux-vt/THREATS.md` B11, styles
+/// count in the history budget), until a piece that scrolls rows into it
+/// leaves it no longer: it holds what its budget holds.
 fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
     let setup = Setup {
         rows: ROWS,
@@ -509,7 +509,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
                 .filter(|k| k.in_process)
                 .map(|k| k.name),
         )
-        // Ghostty at its own default too, beside the 1 GiB (HAR-83).
+        // Ghostty at its own default too, beside the 1 GiB.
         .flat_map(|n| match n {
             "ghostty" => vec![n, "ghostty-default"],
             _ => vec![n],
@@ -849,7 +849,7 @@ mod tests {
 
     /// fux-vt's history fills: with 10,000 rows, or, where its rows'
     /// styles take its budget first (every cell its own colours, 200 a
-    /// row: `threats.md` B11), as far as its budget holds.
+    /// row: `fux-vt/THREATS.md` B11), as far as its budget holds.
     #[test]
     fn every_history_measure_fills() -> Result<(), String> {
         for cols in super::WIDTHS {

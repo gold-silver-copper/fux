@@ -380,7 +380,7 @@ fn special_graphics(c: char) -> char {
 /// `text` if it is not inline; its attributes are summed apart
 /// (`rendition_of`), once a run of one style. As xterm 411 counts it by
 /// default (`xtermCheckRect`, `xtermCharSetDec`) but for the cells the
-/// README's RectangleChecksums row lists (decisions.md 964): its character
+/// README's RectangleChecksums row lists: its character
 /// within Latin-1, a DEC Special Graphics or DEC Supplemental glyph past it
 /// as its DEC code (`dec_code`), any other past Latin-1 or below a space as
 /// ESC; its combining marks as they are. The sum is of the character the
@@ -750,7 +750,7 @@ pub struct Screen {
     /// `end`; `u64::MAX` for none), and whether a scroll inside left and
     /// right margins, which a printed glyph's wrap can make, found it
     /// spent: the text being printed stops after that glyph, for the
-    /// parser to stop at (decision 831); a REP stops so too, its copies
+    /// parser to stop at; a REP stops so too, its copies
     /// left kept in `copies_left`.
     pub(crate) stop_at: u64,
     pub(crate) stopped: bool,
@@ -860,7 +860,7 @@ fn joined_text(blank: bool, c: char, buf: &mut [u8; 8]) -> &str {
         .unwrap_or_default()
 }
 
-/// The screen's part of the invariant checker (threats.md section 6).
+/// The screen's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
     /// Checks every invariant of the screen that its state alone shows:
@@ -890,7 +890,7 @@ impl Screen {
 
     /// 6a: a shell command is set aside for a nested program's marks only
     /// while both nonces are required: the shell's, and the nested one its
-    /// programs mark with (threats.md 1.2, REB-4).
+    /// programs mark with (THREATS.md 1.2).
     fn check_nest(&self) -> Result<(), String> {
         crate::check::ensure(
             self.outer.is_none() || (self.mark_nonce.is_some() && self.nested_nonce.is_some()),
@@ -1566,7 +1566,7 @@ impl Screen {
     /// read from their cells; one that changed none is recorded where the
     /// text recorded last ended, and held otherwise. So a run printed over
     /// what it partly was is recorded whole however the output was split,
-    /// and a redraw of what was there alone is not (FA-TXT-2).
+    /// and a redraw of what was there alone is not.
     #[inline]
     fn printed_as(&mut self, changed: bool, row: u16, cols: Range<u16>, text: &str) {
         if !changed {
@@ -1778,7 +1778,7 @@ impl Screen {
         let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
         // It copies the region's cells, as much as a few bytes of text can
-        // ask for at each wrap (decision 831).
+        // ask for at each wrap.
         self.stopped |= crate::budget::spent() >= self.stop_at;
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
@@ -1874,7 +1874,7 @@ impl Screen {
     /// halved to less than it, which nothing past the line's end may take
     /// (DEC STD 070, 5.6.1), as a glyph wider than the screen is not; a
     /// wrap pending is carried out first, as xterm's `dotext` does for a
-    /// glyph it then drops (FA-RE-F-10).
+    /// glyph it then drops.
     #[cold]
     #[inline(never)]
     fn too_wide(&mut self, end: u16, width: u16) -> Result<Option<u16>, Error> {
@@ -2001,8 +2001,8 @@ impl Screen {
             return Ok(());
         }
         if self.extend_cluster(c, properties) {
-            // What joined is printed, over its cell as it is now (PAR-13,
-            // TXT-6), unless the cluster was full.
+            // What joined is printed, over its cell as it is now, unless
+            // the cluster was full.
             if self.prints.is_some()
                 && let Some(Printed { at, kept, .. }) = self.last_print
                 && kept != Kept::Full
@@ -2041,7 +2041,7 @@ impl Screen {
                     let at = usize::from(col);
                     self.link_cells(row, at..at.saturating_add(1), true);
                 }
-                // The mark is printed, over its cell (PAR-13, TXT-6).
+                // The mark is printed, over its cell.
                 if joined && self.prints.is_some() {
                     self.mark_joined(row, col, blank, c);
                 }
@@ -2612,10 +2612,10 @@ impl Screen {
             return Ok(());
         };
         let count = self.copies_needed(c, usize::from(count));
-        // The copies skipped cost nothing (threats.md B33). Every copy made
+        // The copies skipped cost nothing (THREATS.md B33). Every copy made
         // is spent from the call's budget here, two cells for each it
-        // writes, as printing counts them (the cell looked at and written;
-        // decision 950): four for a wide glyph.
+        // writes, as printing counts them (the cell looked at and
+        // written): four for a wide glyph.
         let width = crate::char_width(c).unwrap_or(1).max(1);
         crate::budget::spend(
             crate::budget::units(count.saturating_mul(width).saturating_mul(2)),
@@ -2651,7 +2651,7 @@ impl Screen {
         };
         // History's rows of copies, when a scroll of the whole screen feeds
         // it: each is 24 bytes and 8 a cell, so at least 32, and no more
-        // than a grid may have (threats.md B33: history's bytes read as
+        // than a grid may have (THREATS.md B33: history's bytes read as
         // rows never clamped). Inside margins nothing reaches it.
         let feeds = !g.lr() && g.lines == g.size().lines() && !below;
         let kept = match feeds {
@@ -2692,7 +2692,7 @@ impl Screen {
     }
 
     /// Whether to leave a screen-wide sequence for the next call
-    /// (decision 950): in a call of `process_until_stop` that has spent
+    /// (THREATS.md 4.4): in a call of `process_until_stop` that has spent
     /// since its last budget stop, if what it spent and the most one such
     /// sequence spends at this size (`budget::sequence_most`) would pass
     /// the ceiling U. Its bytes are taken and the call stops at the
@@ -2785,7 +2785,7 @@ impl Screen {
             };
             // A glyph that joins its own cluster, once the cluster is
             // full, drops every copy after: they change nothing, and are
-            // skipped (threats.md B34a).
+            // skipped (THREATS.md B34a).
             if self.last_print.is_some_and(Printed::full) {
                 break;
             }
@@ -3230,7 +3230,7 @@ impl Screen {
                 // Both grids start again: in the storage they have, if both
                 // hold only their live rows at this size, else afresh. With
                 // no room for them afresh, each is cleared, which blanks it
-                // in place if it must (`Grid::clear`, SCR-10).
+                // in place if it must (`Grid::clear`).
                 let recycle = [&self.primary, &self.alternate]
                     .iter()
                     .all(|g| g.recyclable() && g.size() == size);
@@ -4738,8 +4738,7 @@ impl Screen {
                 let read = self.graphics.sixel && matches!(action, 1 | 2 | 4);
                 match n {
                     1 if read => Some(reply!("\x1b[?1;0;256S")),
-                    // The screen's pixels, but no more than the decoder keeps
-                    // (SIX-10).
+                    // The screen's pixels, but no more than the decoder keeps.
                     2 if read && let Some((height, width)) = self.pixel_size() => {
                         let (width, height) = crate::sixel::largest(width, height);
                         Some(reply!("\x1b[?2;0;{width};{height}S"))
@@ -4907,7 +4906,7 @@ impl Screen {
     }
 }
 
-/// The screen's checks, each shown a screen with its one fault (HAR-26).
+/// The screen's checks, each shown a screen with its one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

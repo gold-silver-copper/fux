@@ -1,6 +1,6 @@
 #!/bin/bash
 # Records real xterm 411's bytes for keys with modifyOtherKeys's mask of
-# modifiers to factor out (XTMODKEYS `CSI > 4 ; level : mask m`, KEY-24)
+# modifiers to factor out (XTMODKEYS `CSI > 4 ; level : mask m`)
 # into fux-vt/tests/data/keys/xterm-keys-factored.txt, as run.sh records
 # xterm-keys.txt: xterm on a private Xvfb display (:198), the keys typed
 # through XTest (inject.c), xterm's reads kept by capture.py; the fux keys

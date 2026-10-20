@@ -92,9 +92,9 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | ESC # 3 / 4 / 5 / 6 | DECDHL top and bottom, DECSWL, DECDWL (DEC STD 070, 5.6.1): the cursor's line takes the rendition, `Row::rendition`, and a pending wrap ends (Appendix D.6.1). A line that is not single width is half as long, half the columns rounded down (5.14.1): its cells past that are lost as it is set, the cursor goes back to its last column, as it does when SU, SD or a switch to the other screen brings such a line under it, and printing, CUP, CUF, CHA, HPA, HT, IND, LF, CUU, CUD and DECRC stop there; ICH and DCH move cells up to it, and DECFRA, DECERA, DECSERA, DECCRA's destination, DECCARA, DECRARA and DECRQCRA's sum stop at each row's end (DECDWL, note 2). A wide glyph that such a line is too short for, where it starts or after a wrap onto it, is not printed, as one wider than the screen is not; a mark at a row's start joins the last cell of the halved line above. DECSWL keeps every cell. DECDWL and DECDHL do nothing while DECLRMM is set, and setting DECLRMM makes every line single width (DECLRMM, 5-29). ED makes a line it erases whole single width (note 1), EL, DECSED, DECSEL and DECSTR leave it, DECALN and RIS make every line single width. The rendition goes with its row through scrolls, history and a resize, which loses what is past the row's end at the new width; reflow keeps such a row a line of its own, never joined or split. Other `ESC #` are unhandled. | `renditions::*` |
 | ESC Z | DECID: answered as DA. | `modes::decid_*` |
 | CSI … $ x / z / { / v | The rectangular area operations (DEC STD 070, 5.12.1): DECFRA fills with Pch (32–126 through GL's set, so Special Graphics too; 160–255 Latin-1; others ignored, where xterm takes any character) in the pen, as printing writes it; DECERA makes each character a space in the pen's colours (`bce`), its attributes cleared, unoccupied positions staying so; DECSERA makes each glyph DECSCA does not protect a space in its own attributes, SPA's guarded ones too, empty cells staying empty; DECCRA copies text and attributes, read whole first, clipped at the screen. DECCARA (`$ r`) sets the renditions its parameters after the rectangle name (0 all off, 1, 4, 5, 7, 22, 24, 25, 27, and the colours 30–37, 39, 40–47, 49 of the Color Text Extension), in turn, none or none valid being 0; DECRARA (`$ t`) reverses them (0 all four, 1, 4, 5, 7), none valid ignoring it; neither changes a character, the cursor or the pen. DECSACE (`* x`) selects what they change: 0 and 1 (the default) the stream from the first corner to the second, unoccupied positions left alone; 2 the rectangle, its unoccupied positions made spaces and changed too (DEC STD 070, DECSACE); another Ps is ignored. Rectangles are `Pt ; Pl ; Pb ; Pr` from 1, defaults the whole screen, clamped to it, and in origin mode counted from the top and left margins and still clamped to the page, not to them (DEC STD 070, 5.12.1: "affected by the setting of Origin Mode. This control is not otherwise affected by the margins"), DECCRA's destination too and DECRQCRA's rectangle; one inverted is ignored; pages are ignored. The cursor, a pending wrap and each row's soft wrap stay; a wide glyph DECFRA, DECERA, DECSERA or DECCRA cuts (DECCRA's at the source's edges too) is blanked whole; filled and copied cells lose their links. DA names them, rectangular editing (28), with an identity (see CSI c). | `rectangles::*` |
-| CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y | DECRQCRA, with `Feature::RectangleChecksums`; otherwise unhandled. A rectangle inverted is ignored, with no reply (DEC STD 070, DECRQCRA). The page is ignored, 0 too, as xterm reads it: DEC's "checksum for all page memory" for page 0 is not taken, a departure, as esctest reads every cell it checks with page 0 and a rectangle (decisions.md 47). | `opt_in::rectangle_checksums_*` |
+| CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y | DECRQCRA, with `Feature::RectangleChecksums`; otherwise unhandled. A rectangle inverted is ignored, with no reply (DEC STD 070, DECRQCRA). The page is ignored, 0 too, as xterm reads it: DEC's "checksum for all page memory" for page 0 is not taken, a departure, as esctest reads every cell it checks with page 0 and a rectangle. | `opt_in::rectangle_checksums_*` |
 | OSC, DCS, APC, PM, SOS | Consumed. OSC ends at BEL or ST (ESC `\`), the others at ST; 0x9c is a byte of a UTF-8 character, not ST. CAN and SUB cancel, and SUB then shows its error character. An OSC's payload leaves out the controls a command string cannot hold (ECMA-48 8.3.89 and 5.6 allow BS to CR) and DEL, as Williams's DEC parser model does (xterm 411 shows each as `?`: `1x4 '\e]2;a\x01b\x07'`). Payloads are kept only for an option: OSC with `Events`, `Hyperlinks` or `Palette`; an OSC's first 64 bytes with `PromptMarks` alone; a DECRQSS request's first 4 bytes with `SettingReports`, C0 controls inside it ignored (DEC STD 070, 3.5.4.4). | `conformance::a_control_string_*` |
-| DCS P1 ; P2 ; P3 q … ST | With `Feature::Pictures` only; otherwise ignored, as every DCS fux-vt does not answer. Sixel (DEC STD 070, the VT340's; ctlseqs, "Sixel Graphics"): decoded as it comes into a `sixel::Picture` of RGBA pixels, one kept for each position of the sixel grid and shown as square pixels: a position as tall, to its width, as P1's macro says (2:1 by default; DEC STD 070, 7.1) or the raster attributes' `" Pan ; Pad` (before any sixel, 8.1.2) shows as that many rows, or columns. Sixels past what a picture may keep (4096 positions a side, 4096 by 2160 in all, and the pictures' budget) are not painted, and the picture keeps what fits (11.2.2: sixels past the right margin "are not printed"); it shows at most 4096 pixels a side. Pixels no sixel sets stay clear for P2 1, and take colour register 0, the background, for P2 0 and 2 (7.2), over the picture and the raster attributes' extent, which sixels may draw past; an extent past what a picture may hold is cut to it, as it limits nothing (DEC STD 070, 8.1.2). P3, the grid size, is the screen's one grid, its pixel (7.3). Until a `#` selects a colour, sixels are drawn in colour register 3, the VT340's green, as xterm 411 does (DEC STD 070-9, 10: "Sixel color: Contrasting to background"), not register 0, the background's. The picture is placed at the cursor, a row of cells at a time down from it, scrolling at the bottom and clipped at the right margin (DECSLRM), or the right edge past it (DEC STD 070-9, 11.2.2), the clip kept when the screen widens (with DECSDM, `CSI ? 80 h`, set: at the top left instead, clipped at the bottom, scrolling nothing and the cursor kept, as xterm 411 does; ctlseqs), each cell filled with `PLACEHOLDER`, not printed: no pen, insert mode, cluster or `Prints` reaches it (DEC STD 070-9, 11.1); the cursor ends below the picture when a final graphics new line (`-`) took the last band's motion there (DEC STD 070-9, 11.3: the vertical motion executed), as encoders end, but at most 8 rows below its last row (a new line goes down as many rows as the aspect ratio makes six pixel rows, so a few bytes could ask for any number of line feeds, B05), and otherwise on its last row, as xterm puts it, in its first column. Text or an erase over a picture, or its rows leaving history, lets it go, as does a picture placed over it; scrolling carries it, between left and right margins too (DECLRMM), where a line feed on the bottom margin scrolls only their cells: its rows are then the rows its cells went to, the final graphics new lines' scrolls included, and a picture such a scroll lifts past the region's top, or a line feed outside those margins stacks on one row, has lost bands and is not kept; what scrolls off a screen that keeps no history, or off a region's top margin, is cropped from its top (`Shown::cropped`), the rest shown (DEC STD 070-9, 11.2.4); the two screens keep 64 at most together, those no longer shown let go first, and the pictures of both screens and the one being drawn, as it grows, hold `PICTURE_BYTES` (96 MiB, `Parser::set_picture_bytes`) of pixels at most, those no longer shown let go first, then the oldest; RIS keeps none. Inside it SUB is a blank sixel, CAN ends the picture unplaced, BEL rings and every other C0 control is ignored (DEC STD 070's sixel chapter, 9.1); a GR byte (0xA0 to 0xFF) is read with its 8th bit cleared (9.4), each byte of a UTF-8 character too (`é`, C3 A9, is the sixel `C`, then `)`, which ends a command and does nothing; decision 822), and a C1 byte, no control in UTF-8, is ignored as a C0 control is, where 9.3 has it end sixel mode. The cell size is the host's (`Parser::set_host_graphics`, answering `CSI 14 t` and `CSI 16 t`), at least 2 by 6, else 10 by 20; DA1 says `4` and XTSMGRAPHICS (`CSI ? Pi ; Pa ; Pv S`) answers as xterm 411 does, with its statuses: read, read the maximum or reset give 256 colour registers and the screen's pixels while the host shows sixel, no more than the decoder keeps whole (4096 a side, 4096 by 2160 in all; ctlseqs: "the minimum of the window size and the graphic size"); setting, ReGIS and any request without sixel shown fail (3); an unknown item is 1, an unknown action 2. Read with `Screen::pictures`; `sixel::encode` writes one back. | `extended::*sixel*`, `sixel::tests` |
+| DCS P1 ; P2 ; P3 q … ST | With `Feature::Pictures` only; otherwise ignored, as every DCS fux-vt does not answer. Sixel (DEC STD 070, the VT340's; ctlseqs, "Sixel Graphics"): decoded as it comes into a `sixel::Picture` of RGBA pixels, one kept for each position of the sixel grid and shown as square pixels: a position as tall, to its width, as P1's macro says (2:1 by default; DEC STD 070, 7.1) or the raster attributes' `" Pan ; Pad` (before any sixel, 8.1.2) shows as that many rows, or columns. Sixels past what a picture may keep (4096 positions a side, 4096 by 2160 in all, and the pictures' budget) are not painted, and the picture keeps what fits (11.2.2: sixels past the right margin "are not printed"); it shows at most 4096 pixels a side. Pixels no sixel sets stay clear for P2 1, and take colour register 0, the background, for P2 0 and 2 (7.2), over the picture and the raster attributes' extent, which sixels may draw past; an extent past what a picture may hold is cut to it, as it limits nothing (DEC STD 070, 8.1.2). P3, the grid size, is the screen's one grid, its pixel (7.3). Until a `#` selects a colour, sixels are drawn in colour register 3, the VT340's green, as xterm 411 does (DEC STD 070-9, 10: "Sixel color: Contrasting to background"), not register 0, the background's. The picture is placed at the cursor, a row of cells at a time down from it, scrolling at the bottom and clipped at the right margin (DECSLRM), or the right edge past it (DEC STD 070-9, 11.2.2), the clip kept when the screen widens (with DECSDM, `CSI ? 80 h`, set: at the top left instead, clipped at the bottom, scrolling nothing and the cursor kept, as xterm 411 does; ctlseqs), each cell filled with `PLACEHOLDER`, not printed: no pen, insert mode, cluster or `Prints` reaches it (DEC STD 070-9, 11.1); the cursor ends below the picture when a final graphics new line (`-`) took the last band's motion there (DEC STD 070-9, 11.3: the vertical motion executed), as encoders end, but at most 8 rows below its last row (a new line goes down as many rows as the aspect ratio makes six pixel rows, so a few bytes could ask for any number of line feeds, B05), and otherwise on its last row, as xterm puts it, in its first column. Text or an erase over a picture, or its rows leaving history, lets it go, as does a picture placed over it; scrolling carries it, between left and right margins too (DECLRMM), where a line feed on the bottom margin scrolls only their cells: its rows are then the rows its cells went to, the final graphics new lines' scrolls included, and a picture such a scroll lifts past the region's top, or a line feed outside those margins stacks on one row, has lost bands and is not kept; what scrolls off a screen that keeps no history, or off a region's top margin, is cropped from its top (`Shown::cropped`), the rest shown (DEC STD 070-9, 11.2.4); the two screens keep 64 at most together, those no longer shown let go first, and the pictures of both screens and the one being drawn, as it grows, hold `PICTURE_BYTES` (96 MiB, `Parser::set_picture_bytes`) of pixels at most, those no longer shown let go first, then the oldest; RIS keeps none. Inside it SUB is a blank sixel, CAN ends the picture unplaced, BEL rings and every other C0 control is ignored (DEC STD 070's sixel chapter, 9.1); a GR byte (0xA0 to 0xFF) is read with its 8th bit cleared (9.4), each byte of a UTF-8 character too (`é`, C3 A9, is the sixel `C`, then `)`, which ends a command and does nothing; see "Sixel data is read a byte at a time" in "Where the standards leave the choice"), and a C1 byte, no control in UTF-8, is ignored as a C0 control is, where 9.3 has it end sixel mode. The cell size is the host's (`Parser::set_host_graphics`, answering `CSI 14 t` and `CSI 16 t`), at least 2 by 6, else 10 by 20; DA1 says `4` and XTSMGRAPHICS (`CSI ? Pi ; Pa ; Pv S`) answers as xterm 411 does, with its statuses: read, read the maximum or reset give 256 colour registers and the screen's pixels while the host shows sixel, no more than the decoder keeps whole (4096 a side, 4096 by 2160 in all; ctlseqs: "the minimum of the window size and the graphic size"); setting, ReGIS and any request without sixel shown fail (3); an unknown item is 1, an unknown action 2. Read with `Screen::pictures`; `sixel::encode` writes one back. | `extended::*sixel*`, `sixel::tests` |
 | OSC 133 | With `Feature::PromptMarks` only. `A`, `N`: a fresh line (CR and IND unless in the first column), then the row is marked as a prompt's start (`Row::starts_prompt`); `N` first ends the command running (`Screen::commands`), as a `D` with no status. `P` with `k=i` or no `k`: the row marked, no fresh line. `L`: the fresh line alone. `C` marks where a command's output starts and `D ; status` where it ends and how (`Screen::commands`; `C ; late` places the start after the line the host last submitted, `Parser::note_submit`, or after the prompt's line, either looked for on the screen alone, else at the cursor; `Commands::full_screen`, the start was on the alternate screen; `Commands::started` counts the commands begun, a `C` while one runs beginning none). With `Parser::require_mark_nonce`, a mark counts only with `nonce=NONCE` among its options, or with `nonce=NESTED` while a command the shell marked runs: a program it ran marks commands within it until the shell marks again. `S ; activity=STATE` is a state report, a relay's word for what the program it runs does (STATE `reading`, `polling`, `waiting`, `busy`, `idle` or `unknown`; another is no report): under the same nonce rule (the nested nonce counting while a command the shell marked runs), it is kept as `Commands::report`, and changes no command; `Commands::marks` counts every mark that counts, a report among them, and `Commands::reported` gives the last report's state while no mark came after it. The rest change nothing. The mark moves with its row through scrolling, history and IL/DL, and through a reflow onto the row its first cell goes to; ED erasing the row whole, DECALN and RIS remove it; EL keeps it. A row marked or unmarked takes a new version; one marked as it was keeps its own. | `prompts::*` |
 | Anything else | Ignored; C0 controls inside a CSI still execute. A complete CSI or escape sequence fux-vt does not implement goes to `Sink::unhandled`. Unknown DEC private modes, and sequences cut short by the parser's bounds, are dropped unreported. | `semantics::ignored_sequences_*`, `extended::sequences_*` |
 
@@ -123,7 +123,7 @@ discard by default.
 | `PromptMarks` | OSC 133 (see its row). | `prompts::*` |
 | `Palette` | The colours a program sets, as xterm 411 keeps them. OSC 4 sets or queries palette entries (pairs of number and specification; 256–260 are the special colours, OSC 5's 0–4); OSC 10–19 the dynamic colours, each parameter the next; OSC 104, 105, 110–119 reset them. Specifications: `rgb:R/G/B` (1–4 hex digits a channel) and `#RGB` to `#RRRRGGGGBBBB`; XParseColor's device-independent spaces (`rgbi:`, `CIEXYZ:`, `CIEuvY:`, `CIExyY:`, `CIELab:`, `CIELuv:`, `TekHVC:`) as libX11's Xcms reads them on a screen of its defaults (its Tektronix intensity tables, TekHVC chroma clipping, a comma for the point when the point fails; an `rgbi:` channel below 0 is 0, one past 1, `inf`, `nan` and hex numbers are not read), each OSC spending at most a quarter of U of that arithmetic (`palette::ALLOWANCE`, the `colours` counter), past which a specification that needs the chroma search is unreadable; names are not read. Kept at 8 bits a channel; answered `OSC 4 ; n ; rgb:RRRR/GGGG/BBBB`, each byte twice, ended as asked. OSC 4 and 5 stop at the first bad number or specification; OSC 10–19 skip a bad one; OSC 104 and 105 stop at the first non-number; OSC 110–119 with a parameter do nothing; OSC 105 alone resets every special colour (ctlseqs; xterm 411 resets none). Unset entries are answered with the host's colour for them, where it gave one (`Parser::set_host_palette`, entries 0 to 15, which no reset clears and which change nothing drawn), else with xterm's defaults (16 colours, 6×6×6 cube, grey ramp); unset dynamic colours become `ColorQuery` events with `Events`; unset special colours are not answered. RIS and DECSTR reset the palette only. Read with `Screen::palette_color`, `dynamic_color`, `colors_changed`; the host draws them. | `palette::*`, `palette::xcms::*`, `palette::an_entry_not_set_is_answered_with_the_hosts_colour` |
 | `Pictures` | Sixel (see its row) for a host that draws pictures. Off, a sixel string is read and dropped: nothing is decoded or allocated, its cells hold what the program wrote around it (no `PLACEHOLDER`), the cursor stays, and DA1 and XTSMGRAPHICS say no sixel whatever `Parser::set_host_graphics` says. | `extended::*sixel*`, `screen::tests::pictures_*` |
-| `RectangleChecksums` | DECRQCRA → `DCS Pi ! ~ xxxx ST`, xterm 411's default sum, the VT520's, but for the cells below: each cell's character plus 0x08 hidden, 0x10 underline, 0x20 inverse, 0x40 blink, 0x80 bold, summed in 16 bits and negated. A character past Latin-1 or below a space, and a wide glyph's second half, count as ESC; a Special Graphics or DEC Supplemental glyph past Latin-1 as its DEC code, as xterm 411 sums it (─ 0x1D, π 0xC6, Œ 0x97; `unmap_DEC_Spec_Graphic`, `unmap_DEC_Supp_Graphic`); combining marks are added; an empty cell is a space. A departure from xterm 411, which sums each cell's byte as written in the set it was written from (decisions.md 964, awaiting the owner): fux-vt sums the character a cell shows, so a character U+0080 to U+00FF counts as its Latin-1 code (xterm: from UTF-8, its low seven bits, é 0x69, ° 0x30, and U+00A0 ESC, ÿ 0); a Special Graphics or Supplemental glyph as its DEC code even when it came as UTF-8 (xterm: ESC); Special Graphics' blank (0x5F) as a space (xterm: nothing); a cell after ICH or DCH as what it now holds (xterm: what was first written there); and an empty cell as a space plus its rendition, as esctest reads it (xterm: nothing for a cell never drawn on or erased to the line's end, a space for one ECH or ICH blanked). `Pp` is ignored. The rectangle is one-based, relative to the top and left margins in origin mode, and clamped to the screen whatever the margins (DEC STD 070, 5.12.1); 0 is its whole extent; an inverted one has no reply (DEC STD 070, DECRQCRA: the sequence is ignored). It lets a program read the screen, so fux leaves it off; esctest needs it. | `opt_in::rectangle_checksums_*` |
+| `RectangleChecksums` | DECRQCRA → `DCS Pi ! ~ xxxx ST`, xterm 411's default sum, the VT520's, but for the cells below: each cell's character plus 0x08 hidden, 0x10 underline, 0x20 inverse, 0x40 blink, 0x80 bold, summed in 16 bits and negated. A character past Latin-1 or below a space, and a wide glyph's second half, count as ESC; a Special Graphics or DEC Supplemental glyph past Latin-1 as its DEC code, as xterm 411 sums it (─ 0x1D, π 0xC6, Œ 0x97; `unmap_DEC_Spec_Graphic`, `unmap_DEC_Supp_Graphic`); combining marks are added; an empty cell is a space. A departure from xterm 411, which sums each cell's byte as written in the set it was written from: fux-vt sums the character a cell shows, so a character U+0080 to U+00FF counts as its Latin-1 code (xterm: from UTF-8, its low seven bits, é 0x69, ° 0x30, and U+00A0 ESC, ÿ 0); a Special Graphics or Supplemental glyph as its DEC code even when it came as UTF-8 (xterm: ESC); Special Graphics' blank (0x5F) as a space (xterm: nothing); a cell after ICH or DCH as what it now holds (xterm: what was first written there); and an empty cell as a space plus its rendition, as esctest reads it (xterm: nothing for a cell never drawn on or erased to the line's end, a space for one ECH or ICH blanked). `Pp` is ignored. The rectangle is one-based, relative to the top and left margins in origin mode, and clamped to the screen whatever the margins (DEC STD 070, 5.12.1); 0 is its whole extent; an inverted one has no reply (DEC STD 070, DECRQCRA: the sequence is ignored). It lets a program read the screen, so fux leaves it off; esctest needs it. | `opt_in::rectangle_checksums_*` |
 
 ## Keys
 
@@ -151,7 +151,7 @@ decoded, and what a program asked for, encoded. It needs no option.
   Escape or not, has no deadline: it waits for its bytes, at most 4, as a
   terminal sends a character's bytes together, and a byte that can't
   continue it ends it, one U+FFFD for what came (Unicode 3.9's maximal subparts). Every buffer is
-  bounded (threats.md B23 to B27): a paste keeps at most its limit and 5
+  bounded (THREATS.md B23 to B27): a paste keeps at most its limit and 5
   bytes (65,541 at its 64 KiB default), however many come in one read; an unfinished sequence at most
   258 bytes, a long read giving it only what decides it; an answer past
   its window (OSC 128, DCS 256, each with the BEL or the ESC that begins
@@ -367,7 +367,9 @@ What a program's bytes can make fux-vt hold or do, whatever they are and
 however they are split, under what the host promises. Each line is a row
 of the bounds suite (`tests/bounds.rs`), which feeds its reproducer below,
 at and past the limit, at 1-byte, 16-byte and 4 KiB pieces, and checks
-fux-vt's work counters and a counting allocator against it.
+fux-vt's work counters and a counting allocator against it. The threat
+model, every row with its limit, input and test, and the memory and work
+formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/THREATS.md).
 
 - **Pictures** (B01) keep at most 96 MiB of pixels per terminal
   (`PICTURE_BYTES`, `Parser::set_picture_bytes`), on both screens, the
@@ -449,14 +451,15 @@ fux-vt's work counters and a counting allocator against it.
   screen's cells (5,000 at fux's defaults), uniform fills and clears a
   row's worth; DECCRA and a scroll inside left and right margins copy at
   most 124,100 text bytes a byte at the defaults, each row they write
-  compacted once (decision 831). A scroll inside a region (IL, DL, SU,
+  compacted once (THREATS.md B35). A scroll inside a region (IL, DL, SU,
   SD, and IND and RI at its margins) turns the region's rows once
   whatever the count, which is clamped to the region's rows: it moves at
   most twice the region's rows and clears at most its cells.
 - **Finding a row by its `RowId`** (B40) looks through the screen's rows,
-  then history. Meant to cost a binary search, a history row's lookup
-  scans history: the bounds suite lists it as failing at 1x, 10x and
-  100x (`tests/bounds/known-failing.txt`).
+  then history's index of spans of consecutive ids (`history/spans.rs`):
+  at most the screen's rows and a binary search's, ⌊log2(history rows +
+  1)⌋ + 1, a call. The index's first 256 spans are free (20 KiB a grid);
+  each past them costs 80 bytes of history's budget.
 - **`ByteQueue::push_with`** (B41): its closure may only add bytes; one
   that takes them away leaves a queue that still takes what is pushed
   next.
@@ -468,7 +471,7 @@ fux-vt's work counters and a counting allocator against it.
   colour given device-independently spends from the call's work, and one
   OSC at most a quarter of it (`palette::ALLOWANCE`); past it, a
   specification that needs more is not read (and ends OSC 4 and 5), where
-  xterm reads them all (decision 912).
+  xterm reads them all (THREATS.md B46).
 - **`Prints`** (B10) keeps at most 4 bytes of text a screen cell (16 KiB
   at least) and 4,096 runs between takes, 171,072 bytes at fux's
   defaults. Past that, or after a resize
@@ -478,7 +481,8 @@ fux-vt's work counters and a counting allocator against it.
   printed over themselves just before and just after it on its row,
   however the output is split across reads; a glyph printed over itself
   with nothing changed beside it, a redraw of what was there, is not
-  recorded (decision 825).
+  recorded
+  (`prompts::what_is_recorded_does_not_depend_on_how_the_output_is_split`).
 - **Finding a frame's end** (B19): `FrameScan::end` reads each byte at
   most twice (a CSI's are searched for its final byte, then those of the
   few that may end a frame read), however the frame comes split, a
@@ -520,7 +524,7 @@ fux-vt's work counters and a counting allocator against it.
   part, as a cluster is laid out alone. It is a recorded tailoring of
   UAX #11, which leaves a terminal's widths to it, chosen to match what
   programs laid out with unicode-width expect, and, for spacing marks and
-  Khmer conjuncts, with wcwidth 0.9.2's (ucs-detect, decision 885: 83 of 85 languages,
+  Khmer conjuncts, with wcwidth 0.9.2's (ucs-detect: 83 of 85 languages,
   where unicode-width's rule gives 77; a Tai Tham (Khün) conjunct
   and one Malayalam chillu sequence still differ). Tested against unicode-width 0.2.2 for every code point and
   some 15 M clusters, its departures aside (`unicode::tests`), and
@@ -528,21 +532,21 @@ fux-vt's work counters and a counting allocator against it.
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
   bytes, read to its end however long; its buffer holds at most 65,537,
   and 81,921 while it grows.
-- **The work of one call** (P24): `Parser::process_until_stop` stops
-  as `Stop::Budget`, once 25 M weighted units of work (threats.md 4.4)
+- **The work of one call**: `Parser::process_until_stop` stops
+  as `Stop::Budget`, once 25 M weighted units of work (THREATS.md 4.4)
   are spent since its last such stop, over as many calls as that took.
   It looks where a sequence or a string ends, after a line feed (LF,
   VT, FF) carried out, in text or inside a sequence, and after a glyph
   whose wrap scrolled inside left and right margins, never elsewhere
-  inside a sequence, whichever path read its bytes (decisions 820 and
-  831). What is spent is the work a few bytes can multiply: ED,
+  inside a sequence, whichever path read its bytes (THREATS.md 4.4).
+  What is spent is the work a few bytes can multiply: ED,
   rectangle fills, erases and copies, column edits, scrolls of more
   than a line and scrolls inside margins, a line feed's copy of the row
   it scrolls into history, REP, the alignment pattern, checksums,
   history's searches and sweeps. With what the sequence, line feed or
   wrap that crosses it does, a call stays under the 50 M units a 4 KiB
   call may do, the
-  weights measured on desk (decision 950); at a pane where one
+  weights measured on an i5-9600K (THREATS.md 4.4, the weights); at a pane where one
   screen-wide sequence (ED, IL, DL, SU, SD, SL, SR, DECIC, DECDC,
   DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECRQCRA) may cost
   more than U, the screen leaves it for the next call, which carries it
@@ -558,7 +562,7 @@ fux-vt's work counters and a counting allocator against it.
   byte is left (fux's pane takes a turn for it, as for output waiting).
   `process_with` doesn't stop: its work is bounded by its bytes alone,
   and it sums a checksum's rows in one call.
-- **The time of one call** (decision 969): on desk (an i5-9600K), a
+- **The time of one call**: on an i5-9600K, a
   4 KiB call takes at most 50 ms at sizes up to 1000 by 500, and at most
   250 ms at fux's largest pane, 4095 by 4096. A pane is never larger
   than its terminal, and no program can enlarge one. Measured over every
@@ -612,8 +616,10 @@ fux-vt's work counters and a counting allocator against it.
   xterm.js, tmux and xterm on random cases, recordings of real programs and
   esctest, failing where they outvote it; a family a standard or xterm
   decides is checked by the standard's test or beside xterm
-  (`run.sh verdicts`). Results:
-  [`SCOREBOARD.md`](https://github.com/gold-silver-copper/fux/blob/master/fux-vt/compare/scoreboard/SCOREBOARD.md).
+  (`run.sh verdicts`). `compare.yml` runs it on request and writes a
+  scoreboard of the results into its run's summary.
+- **Speed**: `bench/gate.sh` counts instructions against master on a
+  quiet machine (`bench/README.md`).
 
 ## Where the standards leave the choice
 
@@ -692,3 +698,38 @@ under UTF-8:
   sequence at any character past U+00FF, which would make a sequence's
   meaning hang on how a character was encoded (`1x8 'a\eéxb'`: `ab`
   here and in five engines, `axb` in xterm, avt and xterm.js).
+
+Other readings to keep, each one a later change could take for a bug.
+Each item names the test that holds it:
+
+- **SUB shows its error character.** DEC STD 070 contradicts itself:
+  SUBSTITUTE's own page (p. 5-132, note 2) and the C0 table (5.9.1) show
+  the reversed question mark, but chapter 3's parsing algorithm cancels
+  the sequence and shows nothing. fux-vt follows the function's own page,
+  as xterm 411 does. The other engines drop SUB as they drop CAN, and
+  outvote fux-vt (`1x6 'a\x1ab'`;
+  `conformance::sub_is_displayed_as_the_error_character`).
+- **CAN inside sixel data ends the picture unplaced.** CAN ends a control
+  string "without execution" (DEC STD 070, 3.5.1.2.1). The sixel
+  chapter's "exit Sixel mode" (9.1) says nothing about placing what was
+  drawn. Only ST places it, so a program that cancels a picture shows
+  none (`extended::sub_inside_sixel_is_a_blank_sixel_and_can_ends_it`).
+- **Sixel data is read a byte at a time.** Each byte of a UTF-8
+  character is a GR code, read as its GL code (DEC STD 070-9, 9.4), so
+  `é` (C3 A9) is the sixel `C` and then `)`. xterm 411 reads it the same
+  way: it stops decoding UTF-8 inside control strings (`charproc.c`,
+  `utf8_inparse`). Decoding UTF-8 there would be a departure from xterm,
+  not a fix (`sixel::tests::gr_codes_are_read_as_gl_and_c1_codes_ignored`).
+- **A picture whose top scrolls off a region's top margin is cropped
+  there.** The rest stays shown (DEC STD 070-9, 11.2.4), where xterm 411
+  moves every graphic up whatever the region (`scroll_displayed_graphics`).
+  The crop is recorded when the scroll happens, so margins set or reset
+  later change nothing
+  (`extended::a_picture_whose_top_scrolled_off_a_region_shows_what_is_left`,
+  `extended::a_pictures_crop_is_the_scrolls_not_the_margins_set_after`).
+- **A row scrolled down to the screen's last row keeps its soft wrap**,
+  as xterm 411, alacritty and WezTerm keep it. xterm's printout ends its
+  last row with no line feed, so a comparison that reads the printout sees
+  that row as unwrapped, and it is not (`5x1 --history 0 'll' '\e[4T'
+  '\e[2S'`: row 2 stays soft-wrapped;
+  `semantics::a_row_scrolled_down_to_the_last_keeps_its_soft_wrap`).

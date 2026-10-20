@@ -2098,7 +2098,7 @@ mod tests {
     }
 
     /// A call of the parser that does all the work one may stops the read
-    /// (threats.md P24): the rest of the output, and output read after it,
+    /// (THREATS.md 4.4): the rest of the output, and output read after it,
     /// waits for the pane's next turn, and is read then, the screen ending
     /// as one read of it all leaves it.
     #[test]

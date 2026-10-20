@@ -634,7 +634,7 @@ impl Run {
     /// may hear it but the focused pane of a client with nothing of fux's
     /// open, whose program asked for the mouse. A character begun before it
     /// outlasts the flush, as no deadline cuts a character short (fux-vt's
-    /// README, FA-KEY-10), and the report's ESC ends it as one U+FFFD
+    /// README), and the report's ESC ends it as one U+FFFD
     /// (Unicode 17.0, 3.9, maximal subparts): that key, the first input, is
     /// typed before the report, and what panes hear of it is not the
     /// report's.
