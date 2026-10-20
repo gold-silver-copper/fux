@@ -12,9 +12,11 @@
 #   fux-vt/compare/mutants.sh guards      the frozen guard set: each line of
 #                                         fux-vt/compare/mutants-guards.txt a
 #                                         mutant's name as `--list` prints it
-#   fux-vt/compare/mutants.sh check       only that every guard is generated
-#                                         (a second): run it after moving a
-#                                         guard's line, and fix the name
+#   fux-vt/compare/mutants.sh check       only that every guard is generated,
+#                                         and every mutant listed equivalent
+#                                         is a guard (a second): run it after
+#                                         moving a guard's line, and fix the
+#                                         name in both lists
 #
 # The guards run as the nightly job does: built at opt-level 1, each mutant
 # under a 150-second timeout (FUX_MUTANTS_TIMEOUT), each test binary
@@ -100,6 +102,15 @@ if [[ $1 == guards || $1 == check ]]; then
   missing=$(grep -vxF -f "$out/selected.txt" "$out/guards.txt" || true)
   if [[ -n $missing ]]; then
     printf 'mutants: guards not generated:\n%s\n' "$missing" >&2
+    exit 1
+  fi
+  # Every mutant listed equivalent is a guard, and so generated: a name
+  # left behind when its line moved would excuse nothing, and its guard,
+  # renamed, would be missed.
+  listed=$(grep -v '^#' "$equivalent" | sed '/^$/d' | cut -f1 || true)
+  stale=$(printf '%s\n' "$listed" | sed '/^$/d' | grep -vxF -f "$out/guards.txt" || true)
+  if [[ -n $stale ]]; then
+    printf 'mutants: listed equivalent but not guards:\n%s\n' "$stale" >&2
     exit 1
   fi
 fi
