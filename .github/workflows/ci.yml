@@ -348,7 +348,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      KOH_COMMIT: 5dacdc8b68b5e48b4dc5ff33b806ac50370dfa00
+      KOH_COMMIT: 00336b9d81542d671f10c32f7503af996c9c5ced
     defaults:
       run:
         shell: bash
