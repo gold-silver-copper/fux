@@ -345,6 +345,8 @@ mod budget {
     /// Feeds `input` whole to one parser, and to another by
     /// `process_until_stop`, given the rest again after each stop: each
     /// call under U, the budget stopping some, and the two screens alike.
+    /// A stop may come before a byte is taken, when an edit's rows left
+    /// took the call.
     fn budgeted(each: &str) -> Result {
         let _one = one_at_a_time();
         let input = input(each);
@@ -364,9 +366,12 @@ mod budget {
             );
             match stop {
                 None => break,
-                Some((taken, Stop::Budget)) if taken > 0 => {
+                // A call may take no byte, doing the rows a rectangle edit
+                // left (`Screen::resume_rows`).
+                Some((taken, Stop::Budget)) => {
                     stops = stops.saturating_add(1);
                     rest = rest.get(taken..).unwrap_or_default();
+                    assert!(stops < 100_000, "{each:?}: {stops} stops");
                 }
                 Some(other) => return Err(format!("{each:?}: stopped as {other:?}").into()),
             }

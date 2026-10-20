@@ -2159,9 +2159,9 @@ impl Parser {
     /// Carries out what the last call stopped at the budget left: the
     /// screen-wide CSI it held back (`Screen::holds_back`), as its final
     /// byte would have, its parameters kept, which begins or ends no
-    /// frame; then a DECRQCRA checksum's rows left (`resume_checksum`),
-    /// replied to once summed, or a REP's copies left (`resume`); and
-    /// whether they stopped this call too.
+    /// frame; then the rows a DECRQCRA checksum or a rectangle edit left
+    /// (`resume_rows`), the checksum replied to once summed, or a REP's
+    /// copies left (`resume`); and whether they stopped this call too.
     #[inline(never)]
     fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
         if let Some((read, len, byte)) = self.screen.held_csi() {
@@ -2169,11 +2169,11 @@ impl Parser {
             self.kept(done);
             self.screen.forget_repeat();
         }
-        if let Some(reply) = self.screen.resume_checksum() {
+        if let Some(reply) = self.screen.resume_rows() {
             sink.reply(reply.as_bytes());
         }
-        // Rows of a checksum still left: the budget is spent again.
-        if self.screen.summing() {
+        // Rows still left: the budget is spent again.
+        if self.screen.rows_left() {
             return UNTIL_STOP;
         }
         self.screen.repeating() && self.resume::<UNTIL_STOP>()

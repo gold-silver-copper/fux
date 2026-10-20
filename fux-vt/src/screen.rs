@@ -666,8 +666,38 @@ enum Left {
     /// (at most two), how many, and its final byte; its parameters are
     /// the parser's still.
     Csi([u8; 2], usize, u8),
-    /// A DECRQCRA checksum's rows left to sum (`resume_checksum`).
+    /// A DECRQCRA checksum's rows left to sum (`resume_rows`).
     Sum(Checksum),
+    /// A rectangle edit's rows left to change (`resume_rows`).
+    Edit(Edit),
+}
+
+/// A rectangle edit under way (`Screen::edit_rows`): the rows of its area
+/// left, its columns, and what it does to each row.
+#[derive(Clone, Copy, Debug)]
+struct Edit {
+    lines: Span,
+    columns: Span,
+    change: Change,
+}
+
+/// What a rectangle edit (`Edit`) does.
+#[derive(Clone, Copy, Debug)]
+enum Change {
+    /// DECCARA's renditions, or with `reverse` DECRARA's, the first `count`
+    /// of `ops` (`rendition_change`): with `rectangle` (DECSACE 2) over the
+    /// rectangle, else over the stream of positions from the area's first
+    /// corner, on line `top`, to its second, on line `bottom`.
+    Restyle {
+        ops: [u16; 32],
+        count: usize,
+        reverse: bool,
+        rectangle: bool,
+        top: u16,
+        bottom: u16,
+    },
+    /// DECERA's spaces in the pen's colours, with `all`, or DECSERA's.
+    Erase { all: bool },
 }
 
 /// A DECRQCRA checksum under way (`Screen::sum_rows`): its id, the rows
@@ -3584,7 +3614,7 @@ impl Screen {
     ///
     /// A call of `process_until_stop` sums the rows while its budget lasts
     /// and leaves the rest for the next call, which finishes them first
-    /// and replies (`resume_checksum`): every cell of fux's largest screen,
+    /// and replies (`resume_rows`): every cell of fux's largest screen,
     /// of long clusters, is more than one call may do. Until then the
     /// call stops after it, as at any budget stop, so no later reply comes
     /// first.
@@ -3604,7 +3634,7 @@ impl Screen {
 
     /// Sums `checksum`'s rows, its reply once all are; `None` if the
     /// call's budget was spent first, the rows left kept for the next call
-    /// (`resume_checksum`). At least one row is summed.
+    /// (`resume_rows`). At least one row is summed.
     fn sum_rows(&mut self, mut checksum: Checksum) -> Option<Reply> {
         let g = self.grid();
         let columns = checksum.columns;
@@ -3657,11 +3687,16 @@ impl Screen {
         Some(reply!("\x1bP{id}!~{sum:04X}\x1b\\"))
     }
 
-    /// The rows of a DECRQCRA checksum the last call left, summed first by
-    /// the call after it, and its reply once all are (`sum_rows`).
-    pub(crate) fn resume_checksum(&mut self) -> Option<Reply> {
+    /// The rows of a DECRQCRA checksum (`sum_rows`) or a rectangle edit
+    /// (`edit_rows`) the last call left, done first by the call after it,
+    /// and the checksum's reply once all are summed.
+    pub(crate) fn resume_rows(&mut self) -> Option<Reply> {
         match self.left.take() {
             Some(Left::Sum(checksum)) => self.sum_rows(checksum),
+            Some(Left::Edit(edit)) => {
+                self.edit_rows(edit);
+                None
+            }
             other => {
                 self.left = other;
                 None
@@ -3669,9 +3704,10 @@ impl Screen {
         }
     }
 
-    /// Whether a DECRQCRA checksum stopped at the budget left rows to sum.
-    pub(crate) fn summing(&self) -> bool {
-        matches!(self.left, Some(Left::Sum(..)))
+    /// Whether a DECRQCRA checksum or a rectangle edit stopped at the
+    /// budget left rows to do.
+    pub(crate) fn rows_left(&self) -> bool {
+        matches!(self.left, Some(Left::Sum(..) | Left::Edit(..)))
     }
 
     /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
@@ -3728,10 +3764,10 @@ impl Screen {
             let end = columns.end().min(g.row_end(y)).max(columns.first());
             (columns.first(), end)
         };
-        // A fill or an erase of each row's span, its wide glyphs' halves
-        // erased first: twice the rectangle's cells (`budget`). DECCRA's
-        // copy spends as it goes.
-        if byte != b'v' {
+        // A fill of each row's span, its wide glyphs' halves erased first:
+        // twice the rectangle's cells (`budget`). DECCRA's copy, DECERA and
+        // DECSERA spend as they go.
+        if byte == b'x' {
             let cells = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
             spend!(edits, cells);
             let cells = cells.saturating_mul(2);
@@ -3755,16 +3791,13 @@ impl Screen {
                 self.each_row(lines, |g, y, v| g.fill(y, span(g, y), c, style, v));
             }
             // DECERA: every character a space in the pen's colours, as ED's
-            // blanks are.
-            b'z' => {
-                let blank = self.blank_style();
-                self.each_row(lines, |g, y, v| {
-                    g.erase_to_spaces(y, span(g, y), Some(blank), v);
-                });
-            }
-            // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
-            // no DECSCA, made spaces in their own attributes.
-            b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span(g, y), None, v)),
+            // blanks are; DECSERA: the glyphs DECSCA does not protect, SPA's
+            // guard being no DECSCA, made spaces in their own attributes.
+            b'z' | b'{' => self.edit_rows(Edit {
+                lines,
+                columns,
+                change: Change::Erase { all: byte == b'z' },
+            }),
             // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
             _ => {
                 let to = self.page_position(p, 5, (1, 1));
@@ -3812,55 +3845,124 @@ impl Screen {
         if count == 0 && reverse {
             return;
         }
-        let ops = ops.get(..count.max(1)).unwrap_or_default();
         self.break_cluster();
-        let rectangle = self.terminal.extent == 2;
+        self.edit_rows(Edit {
+            lines,
+            columns,
+            change: Change::Restyle {
+                ops,
+                count: count.max(1),
+                reverse,
+                rectangle: self.terminal.extent == 2,
+                top: lines.first(),
+                bottom: lines.last(),
+            },
+        });
+    }
+
+    /// Carries out `edit`'s rows: in a call of `process_until_stop`, while
+    /// its budget lasts, the rows left kept for the next call, which does
+    /// them first (`resume_rows`), as a DECRQCRA checksum's are
+    /// (`sum_rows`): every cell of fux's largest screen is more than one
+    /// call may change. At least one row is done. Each row keeps its soft
+    /// wrap: a rectangular area operation changes no line's (DEC STD 070,
+    /// 5.12.1), as xterm keeps them.
+    fn edit_rows(&mut self, edit: Edit) {
+        let (lines, columns, stop_at) = (edit.lines, edit.columns, self.stop_at);
         let cols = self.size().cols();
-        let (top, bottom) = (lines.first(), lines.last());
-        let span = |y: u16| match rectangle {
-            true => (columns.first(), columns.end()),
-            false => (
-                if y == top { columns.first() } else { 0 },
-                if y == bottom { columns.end() } else { cols },
-            ),
+        // The rows after `y` if the call's budget is spent.
+        let rest = |y: u16| {
+            let spent = crate::budget::spent() >= stop_at;
+            spent
+                .then(|| lines.starting_at(y.saturating_add(1)))
+                .flatten()
         };
-        let cells = (lines.each()).map(|y| {
-            let (start, end) = span(y);
-            usize::from(end.saturating_sub(start))
-        });
-        let cells = cells.fold(0usize, usize::saturating_add);
-        crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
-        spend!(edits, cells);
-        // The last few styles mapped, and the sweeps they were mapped
-        // after: a sweep renumbers styles, and the memo goes.
-        let mut memo = [(0u32, 0u32); 16];
-        let (mut kept, mut sweeps) = (0usize, None);
-        let mut restyle = |g: &mut Grid, old: u32| {
-            if sweeps != Some(g.sweeps()) {
-                (kept, sweeps) = (0, Some(g.sweeps()));
+        let mut left = None;
+        match edit.change {
+            Change::Restyle {
+                ops,
+                count,
+                reverse,
+                rectangle,
+                top,
+                bottom,
+            } => {
+                let ops = ops.get(..count).unwrap_or_default();
+                let span = |y: u16| match rectangle {
+                    true => (columns.first(), columns.end()),
+                    false => (
+                        if y == top { columns.first() } else { 0 },
+                        if y == bottom { columns.end() } else { cols },
+                    ),
+                };
+                // The last few styles mapped, and the sweeps they were
+                // mapped after: a sweep renumbers styles, and the memo goes.
+                let mut memo = [(0u32, 0u32); 16];
+                let (mut kept, mut sweeps) = (0usize, None);
+                let mut restyle = |g: &mut Grid, old: u32| {
+                    if sweeps != Some(g.sweeps()) {
+                        (kept, sweeps) = (0, Some(g.sweeps()));
+                    }
+                    let seen = memo.get(..kept.min(memo.len())).unwrap_or_default();
+                    if let Some(&(_, new)) = seen.iter().find(|(from, _)| *from == old) {
+                        return new;
+                    }
+                    let styles = g.styles();
+                    let guarded = styles.guarded(old);
+                    let changed =
+                        rendition_change(styles.get(old), ops, reverse).with_guard(guarded);
+                    let new = g.style(changed);
+                    if let Some(slot) = memo.get_mut(kept % 16) {
+                        *slot = (old, new);
+                    }
+                    kept = kept.saturating_add(1);
+                    new
+                };
+                self.with_grid(|g, _, v| {
+                    for y in lines.each() {
+                        let (start, end) = span(y);
+                        let cells = usize::from(end.saturating_sub(start));
+                        crate::budget::spend(
+                            crate::budget::units(cells),
+                            crate::budget::weight::cells,
+                        );
+                        spend!(edits, cells);
+                        // To a double-width line's end (DEC STD 070, 5.6.1).
+                        let end = end.min(g.row_end(y)).max(start);
+                        g.restyle(y, (start, end), rectangle, v, &mut restyle);
+                        left = rest(y);
+                        if left.is_some() {
+                            break;
+                        }
+                    }
+                });
             }
-            let seen = memo.get(..kept.min(memo.len())).unwrap_or_default();
-            if let Some(&(_, new)) = seen.iter().find(|(from, _)| *from == old) {
-                return new;
+            Change::Erase { all } => {
+                let blank = all.then(|| self.blank_style());
+                self.with_grid(|g, _, v| {
+                    for y in lines.each() {
+                        // The span's wide glyphs' halves erased first:
+                        // twice its cells (`budget`).
+                        let cells = usize::from(columns.len());
+                        spend!(edits, cells);
+                        let twice = crate::budget::units(cells.saturating_mul(2));
+                        crate::budget::spend(twice, crate::budget::weight::cells);
+                        // To a double-width line's end (DEC STD 070, 5.6.1).
+                        let end = columns.end().min(g.row_end(y)).max(columns.first());
+                        let wrapped = g.live_wrapped(y);
+                        g.erase_to_spaces(y, (columns.first(), end), blank, v);
+                        g.wrap(y, wrapped, v);
+                        left = rest(y);
+                        if left.is_some() {
+                            break;
+                        }
+                    }
+                });
             }
-            let styles = g.styles();
-            let guarded = styles.guarded(old);
-            let changed = rendition_change(styles.get(old), ops, reverse).with_guard(guarded);
-            let new = g.style(changed);
-            if let Some(slot) = memo.get_mut(kept % 16) {
-                *slot = (old, new);
-            }
-            kept = kept.saturating_add(1);
-            new
-        };
-        self.with_grid(|g, _, v| {
-            for y in lines.each() {
-                // To a double-width line's end (DEC STD 070, 5.6.1).
-                let (start, end) = span(y);
-                let end = end.min(g.row_end(y)).max(start);
-                g.restyle(y, (start, end), rectangle, v, &mut restyle);
-            }
-        });
+        }
+        if let Some(lines) = left {
+            self.left = Some(Left::Edit(Edit { lines, ..edit }));
+        }
     }
 
     /// `f` with the grid shown, each of the rows `lines` and the version,

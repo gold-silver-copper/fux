@@ -413,3 +413,128 @@ fn a_rotation_across_the_rings_end_turns_only_its_rows() {
         }
     }
 }
+
+thread_local! {
+    /// Whether `Grid::restyle` takes the cell-by-cell way it had before it
+    /// went a run at a time (`restyle_per_cell`), to check the two agree.
+    pub(crate) static PER_CELL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl Grid {
+    /// Fresh styles put in the table while the next new one would neither sweep
+    /// it nor find it out of room, so that the next does.
+    pub(crate) fn fill_styles_to_sweep(&mut self) {
+        let cells = self.cells.len().saturating_add(self.history.kept_cells());
+        let share = crate::style::screen_share(self.cells.len());
+        for n in 0..u32::MAX {
+            let room = self.styles.bytes_after_insert().saturating_sub(share);
+            if self.styles.wants_sweep(cells) || self.styles.full() && room > self.history.budget()
+            {
+                return;
+            }
+            let [_, r, g, b] = n.to_be_bytes();
+            let colour = crate::Color::Rgb(crate::Rgb { r, g, b });
+            self.style(Attributes::default().with_underline_color(colour));
+        }
+    }
+    /// `Grid::erase_to_spaces` as it was: a cell at a time unless the
+    /// span holds no half of a wide glyph, the row's halves then repaired.
+    pub(crate) fn erase_to_spaces_per_cell(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        all: Option<u32>,
+        version: u64,
+    ) {
+        let span = usize::from(start)..usize::from(end);
+        work!(cells, span.len());
+        self.mutate_row(row, version, end, |cells| {
+            // A span with no half of a wide glyph, and none protected that
+            // DECSERA would keep, as most are: erased a run at once.
+            if let Some(run) = cells.get_mut(span.clone()) {
+                let plain = match all {
+                    Some(_) => !Compact::any_halves(run),
+                    None => !Compact::any_halves(run) && !run.iter().any(Compact::is_protected),
+                };
+                if plain {
+                    let mut changed = false;
+                    for cell in run.iter_mut() {
+                        let occupied = cell.has_contents();
+                        if occupied {
+                            *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
+                        }
+                        changed |= occupied;
+                    }
+                    return changed;
+                }
+            }
+            // Whether the glyph before is protected.
+            let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
+            let before = before.filter(|_| all.is_none());
+            let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
+            for cell in cells.get_mut(span).into_iter().flatten() {
+                if cell.is_wide_continuation() {
+                    if !kept {
+                        *cell = cell.blanked();
+                        changed = true;
+                    }
+                    continue;
+                }
+                kept = all.is_none() && cell.is_protected();
+                if cell.has_contents() && !kept {
+                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
+                    changed = true;
+                }
+            }
+            repair_wide(cells);
+            changed
+        });
+        if all.is_some() {
+            self.set_link(row, usize::from(start)..usize::from(end), None, version);
+        }
+    }
+
+    /// `Grid::restyle` as it was: `restyle` asked of each cell it changes,
+    /// the cell read when its turn comes.
+    pub(crate) fn restyle_per_cell(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        fill: bool,
+        version: u64,
+        restyle: &mut impl FnMut(&mut Self, u32) -> u32,
+    ) {
+        let Some(slot) = self.slot(row) else {
+            return;
+        };
+        let end = end.min(self.size.cols());
+        let mut changed = false;
+        for col in usize::from(start)..usize::from(end) {
+            let Some(&cell) = self.slice(slot).get(col) else {
+                break;
+            };
+            let occupied = cell.has_contents() || cell.is_wide_continuation();
+            if !occupied && !fill {
+                continue;
+            }
+            let style = restyle(self, cell.style());
+            let Some(at) = self.slice_mut(slot).get_mut(col) else {
+                break;
+            };
+            let new = if occupied {
+                let mut new = *at;
+                new.set_style(style);
+                new
+            } else {
+                Compact::ascii(b' ', style)
+            };
+            if new != *at {
+                *at = new;
+                changed = true;
+            }
+        }
+        if changed {
+            self.changed(slot, usize::from(end), version);
+        }
+    }
+}

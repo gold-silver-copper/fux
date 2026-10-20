@@ -850,3 +850,207 @@ fn rectangle_checksums_of_stored_cells_are_the_sum_cell_by_cell() -> Result<(), 
     }
     Ok(())
 }
+
+/// DECCARA and DECRARA a run of one style at a time, and DECERA, DECSERA,
+/// DECSED and DECSEL a span at a time, leave each grid as the cell-by-cell
+/// ways did, style numbers, versions and table included: two parsers given
+/// the same random output, one going cell by cell (`PER_CELL`), over
+/// glyphs in many styles and fresh truecolours (so the table sweeps
+/// mid-rectangle), wide glyphs, long clusters, double-width and -height
+/// lines, protected glyphs and wide ones (DECSCA and SPA), DECSACE's
+/// stream and rectangle, both screens and resizes.
+#[test]
+fn rectangles_a_run_at_a_time_are_as_cell_by_cell() -> Result<(), Error> {
+    let pieces: &[&[u8]] = &[
+        b"hello",
+        b"ab cd",
+        b"\r\n",
+        b"\x1b[H",
+        b"\x1b[3;4H",
+        b"\x1b[2C",
+        "\u{754c}x\u{4e2d}".as_bytes(),
+        "e\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}\u{307}\u{308}\u{309}".as_bytes(),
+        "a\u{301}".as_bytes(),
+        b"\x1b[1m",
+        b"\x1b[4;7m",
+        b"\x1b[m",
+        b"\x1b[K",
+        b"\x1b[2X",
+        b"\x1b#6",
+        b"\x1b#3",
+        b"\x1b#4",
+        b"\x1b#5",
+        b"\x1b[1\"q",
+        b"\x1b[0\"q",
+        b"\x1bVpro\x1bW",
+        "\x1b[1\"q\u{4e2d}y\u{754c}\x1b[0\"q".as_bytes(),
+        b"\x1b[?J",
+        b"\x1b[?1J",
+        b"\x1b[?2J",
+        b"\x1b[?K",
+        b"\x1b[?1K",
+        b"\x1b[?2K",
+        b"\x1b[2*x",
+        b"\x1b[*x",
+        b"\x1b[?1049h",
+        b"\x1b[?1049l",
+        b"\x1b[S",
+    ];
+    let mut r = crate::test_rng::Rng(0x0ab0_0000_0000_0950);
+    let (mut sweeps, mut runs) = (0u64, 0u32);
+    for case in 0..6u32 {
+        let size = Size::of(r.small(7).saturating_add(2), r.small(14).saturating_add(4));
+        let mut fast = crate::Parser::new(size, 4)?;
+        let mut slow = crate::Parser::new(size, 4)?;
+        for step in 0..6_000u32 {
+            let piece: Vec<u8> = match r.below(10) {
+                0 | 1 => {
+                    // Now and then the table one style short of a sweep,
+                    // so the rectangle's first new style sweeps it.
+                    if r.chance(10) {
+                        for p in [&mut fast, &mut slow] {
+                            let s = p.screen_mut();
+                            s.primary.fill_styles_to_sweep();
+                            s.alternate.fill_styles_to_sweep();
+                        }
+                    }
+                    let ops = (0..r.below(4))
+                        .map(|_| r.pick(&[0, 1, 4, 5, 7, 22, 24, 27, 31, 39, 44, 49, 3]))
+                        .map(|n| format!(";{}", n.unwrap_or(0)))
+                        .collect::<String>();
+                    let (t, l) = (r.small(10), r.small(20));
+                    let (b, w) = (t.saturating_add(r.small(10)), l.saturating_add(r.small(20)));
+                    runs = runs.saturating_add(1);
+                    match r.pick(&['r', 't', 'z', '{']).unwrap_or('r') {
+                        end @ ('r' | 't') => format!("\x1b[{t};{l};{b};{w}{ops}${end}"),
+                        end => format!("\x1b[{t};{l};{b};{w}${end}"),
+                    }
+                    .into_bytes()
+                }
+                2 | 3 => (0..6)
+                    .map(|_| {
+                        let [_, red, green, blue] = r.next().to_le_bytes()[..4] else {
+                            return String::new();
+                        };
+                        format!("\x1b[38;2;{red};{green};{blue}mz")
+                    })
+                    .collect::<String>()
+                    .into_bytes(),
+                4 if r.chance(5) => {
+                    let size =
+                        Size::of(r.small(7).saturating_add(2), r.small(14).saturating_add(4));
+                    fast.resize(size)?;
+                    slow.resize(size)?;
+                    Vec::new()
+                }
+                _ => r.pick(pieces).unwrap_or(b"a").to_vec(),
+            };
+            let before = fast.screen().primary.sweeps() + fast.screen().alternate.sweeps();
+            fast.process(&piece)?;
+            crate::grid::tests::PER_CELL.with(|c| c.set(true));
+            let done = slow.process(&piece);
+            crate::grid::tests::PER_CELL.with(|c| c.set(false));
+            done?;
+            let after = fast.screen().primary.sweeps() + fast.screen().alternate.sweeps();
+            if piece.ends_with(b"$r") || piece.ends_with(b"$t") {
+                sweeps = sweeps.saturating_add(after.saturating_sub(before));
+            }
+            let (a, b) = (fast.screen(), slow.screen());
+            assert!(
+                a.primary.seen() == b.primary.seen() && a.alternate.seen() == b.alternate.seen(),
+                "case {case} step {step}: {:?}",
+                String::from_utf8_lossy(&piece)
+            );
+            assert_eq!(
+                a.primary.style_count(),
+                b.primary.style_count(),
+                "case {case} step {step}"
+            );
+            assert_eq!(a.attributes(), b.attributes(), "case {case} step {step}");
+        }
+    }
+    // The rectangles swept the table now and then, as they must for the
+    // sweep's way to be checked.
+    assert!(sweeps > 0 && runs > 1_000, "{sweeps} sweeps in {runs}");
+    Ok(())
+}
+
+/// No reply: what a test of a rectangle edit's calls reads.
+struct Quiet;
+impl crate::Sink for Quiet {
+    fn reply(&mut self, _: &[u8]) {}
+}
+
+/// A rectangle edit of more cells than a call of `process_until_stop` may
+/// change goes over calls, its rows left for the next call, done first:
+/// DECCARA, DECRARA (both of the stream and, after DECSACE 2, the
+/// rectangle), DECERA and DECSERA, on a page of styles, wide glyphs,
+/// clusters and protected glyphs at 2000x2000, cost past the budget
+/// (`budget::LIMIT`), so the first call stops after the sequence, the
+/// grid left as `process_with` leaves it, which does every row in one
+/// call; the glyph printed after it lands on what the edit made.
+#[test]
+fn a_rectangle_edit_past_the_budget_goes_over_calls() -> Result<(), Error> {
+    let size = Size::of(2000, 2000);
+    let cells = crate::budget::units(4_000_000u32);
+    let cost = cells.saturating_mul(crate::budget::weight::cells + crate::budget::weight::edits);
+    assert!(cost > crate::budget::LIMIT);
+    // A page of E's (DECALN), each row's first columns in styles.
+    let mut page = String::from("\x1b#8");
+    for y in 0..2000u32 {
+        page.push_str(&format!("\x1b[{};1H", y + 1));
+        for x in 0..12u32 {
+            let style = [1, 4, 7, 31]
+                .get(usize::try_from((x + y) % 4).unwrap_or(0))
+                .copied()
+                .unwrap_or(0);
+            let protect = (x / 3 + y) % 2;
+            page.push_str(&format!(
+                "\x1b[0;{style}m\x1b[{protect}\"q\u{4e2d}e\u{301}x"
+            ));
+        }
+    }
+    page.push_str("\x1b[0\"q\x1b[m\x1b[3;7H");
+    let mut written = crate::Parser::new(size, 0)?;
+    written.process(page.as_bytes())?;
+    let sequences: [&[u8]; 6] = [
+        b"\x1b[;;;;1;5$r",
+        b"\x1b[2*x\x1b[2;3;2000;2000;7;31$r",
+        b"\x1b[5;9;2000;2000;1;4$t",
+        b"\x1b[2*x\x1b[;;;;7$t",
+        b"\x1b[;;;$z",
+        b"\x1b[;;;${",
+    ];
+    for sequence in sequences {
+        let input = [sequence, b"\x1b[Hz".as_slice()].concat();
+        let mut whole = written.clone();
+        whole.process(&input)?;
+        // Each row's cells as stored and its wrap, versions apart: a row
+        // changed in a later call has a later one.
+        let cells = |p: &crate::Parser| -> Vec<_> {
+            let g = &p.screen().primary;
+            (0..2000u16)
+                .map(|y| (g.live_wrapped(y), g.live_cells(y).to_vec()))
+                .collect()
+        };
+        let mut parser = written.clone();
+        let first = parser.process_until_stop(&input, &mut Quiet)?;
+        // The first call stops after the sequence, its rows partly done.
+        assert_eq!(
+            first,
+            Some((sequence.len(), crate::Stop::Budget)),
+            "{sequence:?}"
+        );
+        assert!(cells(&parser) != cells(&whole), "{sequence:?}");
+        let mut rest = input.get(sequence.len()..).unwrap_or_default();
+        let mut calls = 1;
+        while let Some((taken, stop)) = parser.process_until_stop(rest, &mut Quiet)? {
+            assert_eq!(stop, crate::Stop::Budget);
+            rest = rest.get(taken..).unwrap_or_default();
+            calls += 1;
+            assert!(calls < 100, "{calls} calls");
+        }
+        assert!(cells(&parser) == cells(&whole), "{sequence:?}");
+    }
+    Ok(())
+}

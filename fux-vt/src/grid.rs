@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, Text};
+use crate::compact::{BLANK, Compact, Line, Restyled, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
@@ -1429,39 +1429,34 @@ impl Grid {
         all: Option<u32>,
         version: u64,
     ) {
+        #[cfg(test)]
+        if tests::PER_CELL.with(std::cell::Cell::get) {
+            return self.erase_to_spaces_per_cell(row, (start, end), all, version);
+        }
         let span = usize::from(start)..usize::from(end);
         work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
-            // A span with no half of a wide glyph, and none protected that
-            // DECSERA would keep, as most are: erased a run at once.
-            if let Some(run) = cells.get_mut(span.clone()) {
-                let plain = match all {
-                    Some(_) => !Compact::any_halves(run),
-                    None => !Compact::any_protected_or_halves(run),
-                };
-                if plain {
-                    return Compact::space_all(run, all);
-                }
-            }
-            // Whether the glyph before is protected.
+            // Whether the glyph before is protected, which keeps its
+            // second half if the span starts there.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
-            let before = before.filter(|_| all.is_none());
-            let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
-            for cell in cells.get_mut(span).into_iter().flatten() {
-                if cell.is_wide_continuation() {
-                    if !kept {
-                        *cell = cell.blanked();
-                        changed = true;
-                    }
-                    continue;
-                }
-                kept = all.is_none() && cell.is_protected();
-                if cell.has_contents() && !kept {
-                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
-                    changed = true;
-                }
+            let kept = before.is_some_and(|c| all.is_none() && c.is_protected());
+            let Some(run) = cells.get_mut(span.clone()) else {
+                return false;
+            };
+            let changed = Compact::erase_run(run, all, kept);
+            // Inside the span a glyph and its second half go or stay
+            // together: only one the span's edges cut may have lost its
+            // other half (`repair_wide`, the rest of the row being whole).
+            let last = span.end.saturating_sub(1);
+            let edges = [
+                span.start.checked_sub(1),
+                Some(span.start),
+                Some(last),
+                Some(span.end),
+            ];
+            for at in edges.into_iter().flatten() {
+                repair_wide_at(cells, at);
             }
-            repair_wide(cells);
             changed
         });
         if all.is_some() {
@@ -1473,9 +1468,15 @@ impl Grid {
     /// screen's row `row`: each occupied cell, a wide glyph's second half
     /// too, takes the style `restyle` gives for its own, and with `fill`
     /// (DECSACE 2) each unoccupied one becomes a space in it first (DEC STD
-    /// 070, DECSACE). Their text, protection and links stay. `restyle`
-    /// may add styles to the table, or sweep it, so each cell is read when
-    /// its turn comes.
+    /// 070, DECSACE). Their text, protection and links stay.
+    ///
+    /// The cells go a run at a time (`Compact::restyle_run`), with the
+    /// styles `restyle` gave lately (`Restyled`); a cell of another style
+    /// asks it again. Asking again for a style it gave would give the same,
+    /// as a style made stays in the table until a sweep. Making one may
+    /// sweep the table, numbering every cell's style anew: the cell it was
+    /// asked for then takes the answer alone, and those given are
+    /// forgotten.
     pub fn restyle(
         &mut self,
         row: u16,
@@ -1484,42 +1485,54 @@ impl Grid {
         version: u64,
         restyle: &mut impl FnMut(&mut Self, u32) -> u32,
     ) {
+        #[cfg(test)]
+        if tests::PER_CELL.with(std::cell::Cell::get) {
+            return self.restyle_per_cell(row, (start, end), fill, version, restyle);
+        }
         let Some(slot) = self.slot(row) else {
             return;
         };
         let end = end.min(self.size.cols());
         work!(cells, end.saturating_sub(start));
-        let mut changed = false;
-        for col in usize::from(start)..usize::from(end) {
-            let Some(&cell) = self.slice(slot).get(col) else {
+        let end = usize::from(end);
+        let (mut col, mut changed) = (usize::from(start), false);
+        let mut given = Restyled::default();
+        loop {
+            // The next cell `restyle` is asked of.
+            let cells = self.slice(slot).get(col..end).unwrap_or_default();
+            let Some(at) = cells.iter().position(|c| fill || occupied(c)) else {
                 break;
             };
-            let occupied = cell.has_contents() || cell.is_wide_continuation();
-            if !occupied && !fill {
-                continue;
-            }
-            let style = restyle(self, cell.style());
-            // Making the style may have swept the table, numbering every
-            // cell's style anew, this one's too: the change is from what
-            // the cell holds now.
-            let Some(at) = self.slice_mut(slot).get_mut(col) else {
+            let Some(old) = cells.get(at).map(Compact::style) else {
                 break;
             };
-            let new = if occupied {
-                let mut new = *at;
-                new.set_style(style);
-                new
-            } else {
-                // An unoccupied cell is never protected: only a glyph is.
-                Compact::ascii(b' ', style)
+            col = col.saturating_add(at);
+            let sweeps = self.sweeps;
+            let new = restyle(self, old);
+            let swept = self.sweeps != sweeps;
+            let Some(cells) = self.slice_mut(slot).get_mut(col..end) else {
+                break;
             };
-            if new != *at {
-                *at = new;
-                changed = true;
-            }
+            let cells = match (swept, cells) {
+                (true, [cell, ..]) => {
+                    given = Restyled::default();
+                    given.give(cell.style(), new);
+                    std::slice::from_mut(cell)
+                }
+                (_, cells) => {
+                    given.give(old, new);
+                    cells
+                }
+            };
+            let (done, run) = match fill {
+                true => Compact::restyle_run::<true>(cells, &given),
+                false => Compact::restyle_run::<false>(cells, &given),
+            };
+            changed |= run;
+            col = col.saturating_add(done.max(1));
         }
         if changed {
-            self.changed(slot, usize::from(end), version);
+            self.changed(slot, end, version);
         }
     }
 
@@ -2744,6 +2757,12 @@ impl Grid {
     }
 }
 
+/// Whether DECCARA and DECRARA change `cell` with DECSACE 0 or 1: a glyph,
+/// or a wide glyph's second half.
+fn occupied(cell: &Compact) -> bool {
+    cell.has_contents() || cell.is_wide_continuation()
+}
+
 /// The column one past `col` if a wrap is pending there, else `col`.
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
@@ -2844,6 +2863,21 @@ fn split_wide(cells: &mut [Compact], at: usize) -> bool {
         *cell = cell.blanked();
     }
     true
+}
+
+/// `repair_wide`'s work on the cell `at` of `cells` alone.
+fn repair_wide_at(cells: &mut [Compact], at: usize) {
+    let next = at.checked_add(1).and_then(|j| cells.get(j));
+    let previous = at.checked_sub(1).and_then(|j| cells.get(j));
+    let (next, previous) = (
+        next.is_some_and(Compact::is_wide_continuation),
+        previous.is_some_and(Compact::is_wide),
+    );
+    if let Some(cell) = cells.get_mut(at)
+        && (cell.is_wide() && !next || cell.is_wide_continuation() && !previous)
+    {
+        *cell = cell.blanked();
+    }
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {

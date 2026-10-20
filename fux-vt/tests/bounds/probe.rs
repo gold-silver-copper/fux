@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use fux_vt::{Feature, Options, Parser, Sink, Size, Work};
+use fux_vt::{Feature, Options, Parser, Sink, Size, Stop, Work};
 
 use super::Heap;
 
@@ -289,7 +289,7 @@ impl Probe {
             std::io::Write::write_all(file, bytes).map_err(|e| e.to_string())?;
         }
         for piece in pieces(bytes, self.chunk) {
-            let mut rest = piece;
+            let (mut rest, mut idle) = (piece, 0u32);
             while !rest.is_empty() {
                 let (before, started) = (Work::now(), Instant::now());
                 let stop = self
@@ -301,7 +301,14 @@ impl Probe {
                 self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
                 let stop = stop?;
                 let taken = stop.map_or(rest.len(), |(taken, _)| taken);
-                if taken == 0 {
+                // A call may stop at the budget before any byte, doing the
+                // rows a checksum or a rectangle edit left (`resume_rows`),
+                // but not for ever.
+                idle = match taken {
+                    0 => idle.saturating_add(1),
+                    _ => 0,
+                };
+                if idle > 10_000 || taken == 0 && !matches!(stop, Some((_, Stop::Budget))) {
                     return Err(format!("a call stopped before any byte: {stop:?}"));
                 }
                 self.parsed = self
