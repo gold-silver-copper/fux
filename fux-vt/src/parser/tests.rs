@@ -455,6 +455,42 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
     Ok(())
 }
 
+/// A DECRQCRA whose rows cost more than a call's budget is summed over
+/// calls of `process_until_stop`: at 1000x1000 its cells cost past the
+/// budget (`budget::LIMIT`), so the first call stops after it, at the
+/// budget, unanswered; the next sums the rows left first and replies
+/// before anything after it is read. The reply is the one `process_with`
+/// gives, which sums every row in one call.
+#[test]
+fn a_checksum_past_the_budget_is_summed_over_calls() -> Result<(), Error> {
+    let size = Size::of(1000, 1000);
+    let options = Options::new().with(Feature::RectangleChecksums);
+    let cells = crate::budget::units(1_000_000u32);
+    let cost = cells.saturating_mul(crate::budget::weight::cells + crate::budget::weight::sums);
+    assert!(cost > crate::budget::LIMIT);
+    let input: &[u8] = b"\x1b[1;1*y\x1b[5n";
+    let mut whole = Parser::with_options(size, 0, options)?;
+    whole.process(b"\x1b#8\x1b[1mab")?;
+    let mut parser = whole.clone();
+    let mut want = Log::default();
+    whole.process_with(input, &mut want)?;
+    let mut got = Log::default();
+    let first = parser.process_until_stop(input, &mut got)?;
+    assert_eq!(first, Some((7, Stop::Budget)));
+    assert!(got.0.is_empty(), "{:?}", got.0);
+    let mut rest = input.get(7..).unwrap_or_default();
+    let mut calls = 1;
+    while let Some((taken, stop)) = parser.process_until_stop(rest, &mut got)? {
+        assert_eq!(stop, Stop::Budget);
+        rest = rest.get(taken..).unwrap_or_default();
+        calls += 1;
+        assert!(calls < 10, "{calls} calls");
+    }
+    assert_eq!(got.0, want.0);
+    assert_eq!(want.0.len(), 2, "{:?}", want.0);
+    Ok(())
+}
+
 /// Random options, each on or off.
 fn options(r: &mut Rng) -> Options {
     let features = Feature::ALL.into_iter().filter(|_| r.chance(50));

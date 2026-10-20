@@ -546,7 +546,10 @@ fux-vt's work counters and a counting allocator against it.
   screen-wide sequence (ED, IL, DL, SU, SD, SL, SR, DECIC, DECDC,
   DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECRQCRA) may cost
   more than U, the screen leaves it for the next call, which carries it
-  out alone (`Work::ceiling`). The host gives it the rest later.
+  out alone (`Work::ceiling`). DECRQCRA's sum stops at the budget
+  between rows: the call stops after it, unanswered, and the next sums
+  the rows left first and replies before reading on. The host gives it
+  the rest later.
   `process_with` doesn't stop: its work is bounded by its bytes alone.
 - **A host's picture** (B07): `sixel::Picture::new` checks the size
   against the pixels, each side at most 4096, so `sixel::encode` works on

@@ -286,6 +286,13 @@ impl Compact {
             word: self.word & KEPT,
         })
     }
+    /// The inline text as one little-endian word, zeros after it; `None`
+    /// for a spilled cell: what a DECRQCRA checksum decodes without
+    /// reading it as UTF-8 (`screen.rs`, `checksum_of`).
+    #[inline]
+    pub(crate) fn inline_word(&self) -> Option<u32> {
+        (!self.is_spilled()).then(|| u32::from_le_bytes(self.text))
+    }
     /// The first character of the inline text; none for a spilled cell.
     #[inline]
     pub(crate) fn first(&self) -> Option<char> {
@@ -377,7 +384,7 @@ impl Text {
     }
     /// `of`'s bytes, unread as UTF-8: what an append copies.
     #[inline]
-    fn bytes_of<'a>(&'a self, cell: &'a Compact) -> &'a [u8] {
+    pub(crate) fn bytes_of<'a>(&'a self, cell: &'a Compact) -> &'a [u8] {
         let Some((start, len)) = cell.locator() else {
             return cell.inline_bytes();
         };

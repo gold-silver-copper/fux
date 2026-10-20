@@ -798,6 +798,11 @@ impl Grid {
     pub fn live_cells(&self, row: u16) -> &[Compact] {
         self.slot(row).map_or(&[], |slot| self.slice(slot))
     }
+    /// A live row's cells as stored, and its text.
+    pub(crate) fn live_cells_and_text(&self, row: u16) -> Option<(&[Compact], &Text)> {
+        let slot = self.slot(row)?;
+        Some((self.slice(slot), self.texts.get(slot)?))
+    }
     /// A live row's cell as stored, for what its halves and whether it
     /// has text say, which need neither its text nor its attributes.
     #[inline]

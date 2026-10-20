@@ -735,3 +735,118 @@ fn the_checker_finds_a_command_set_aside_without_its_nonces() -> Result<(), Erro
     assert!(p.check().faults_of("screen.nest").next().is_some());
     Ok(())
 }
+
+/// The checksum a DECRQCRA reply holds, read cell by cell as a reader
+/// sees each (`Grid::cell`, its text read as UTF-8 and its attributes
+/// whole): what `Screen::rectangle_checksum` summed before it decoded the
+/// stored cells.
+fn checksum_cell_by_cell(p: &crate::Parser, lines: Span, columns: Span) -> u16 {
+    let g = p.screen().grid();
+    let mut sum = 0u16;
+    for y in lines.each() {
+        for x in columns.each().take_while(|x| *x < g.row_end(y)) {
+            let Some(cell) = g.cell(y, x) else {
+                continue;
+            };
+            let mut chars = cell.contents().chars();
+            let base = match chars.next() {
+                None if cell.is_wide_continuation() => ESC,
+                None => 0x20,
+                Some(c) => match u16::try_from(u32::from(c)) {
+                    Ok(code @ 0x20..=0xff) => code,
+                    _ => dec_code(c).map_or(ESC, u16::from),
+                },
+            };
+            let marks = chars.fold(0u16, |sum, c| {
+                sum.wrapping_add(u16::try_from(u32::from(c) & 0xffff).unwrap_or(0))
+            });
+            sum = sum
+                .wrapping_add(base)
+                .wrapping_add(marks)
+                .wrapping_add(rendition_of(cell.attributes()));
+        }
+    }
+    sum.wrapping_neg()
+}
+
+/// DECRQCRA's sum of the stored cells, their text decoded from its bytes
+/// and each style's rendition looked up once a run, is the sum cell by
+/// cell (`checksum_cell_by_cell`), on random screens of styles, wide
+/// glyphs, DEC Special Graphics and Supplemental, CJK, clusters short and
+/// long, blanks and erases, and double-width lines.
+#[test]
+fn rectangle_checksums_of_stored_cells_are_the_sum_cell_by_cell() -> Result<(), Error> {
+    let pieces: [&str; 30] = [
+        "hello",
+        "\r\n",
+        "\u{754c}\u{4e2d}x",
+        "e\u{301}",
+        "a\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}",
+        "\u{1f44d}\u{1f3fd}",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+        "\u{e9}\u{ff}\u{a0}\u{b0}",
+        "\u{152}\u{178}\u{153}\u{3c0}\u{2500}\u{2502}",
+        "\x1b(0`afgjklmnopqrstuvwxyz{|}~_\x1b(B",
+        "\x1b(0lqqk\x1b(B",
+        "\x1b(%5W]wA($\x1b(B",
+        "\x1b[1m",
+        "\x1b[4;7m",
+        "\x1b[5;8m",
+        "\x1b[31;42m",
+        "\x1b[m",
+        "\x1b[K",
+        "\x1b[3X",
+        "\x1b[2@",
+        "\x1b[2P",
+        "\x1b[2J",
+        "\x1b#6",
+        "\x1b#3",
+        "\x1b#5",
+        "\x1b[H",
+        "\x1b[5;7H",
+        "\x1b[3;12H",
+        "\t",
+        "\x07\x01",
+    ];
+    let options = crate::Options::new().with(crate::Feature::RectangleChecksums);
+    let mut r = crate::test_rng::Rng(0x00c5_c5a1);
+    for case in 0..200 {
+        let size = Size::of(1 + r.small(8), 1 + r.small(20));
+        let mut p = crate::Parser::with_options(size, 0, options)?;
+        let mut feed = String::new();
+        for _ in 0..r.below(60) {
+            feed.push_str(r.pick(&pieces).unwrap_or(""));
+        }
+        p.process(feed.as_bytes())?;
+        let (rows, cols) = (size.rows(), size.cols());
+        for _ in 0..8 {
+            let (top, bottom) = {
+                let (a, b) = (r.small(rows), r.small(rows));
+                (a.min(b), a.max(b))
+            };
+            let (left, right) = {
+                let (a, b) = (r.small(cols), r.small(cols));
+                (a.min(b), a.max(b))
+            };
+            let (Some(lines), Some(columns)) = (
+                size.lines().part(top, bottom),
+                size.columns().part(left, right),
+            ) else {
+                continue;
+            };
+            let want = checksum_cell_by_cell(&p, lines, columns);
+            let ask = format!(
+                "\x1b[7;1;{};{};{};{}*y",
+                top + 1,
+                left + 1,
+                bottom + 1,
+                right + 1
+            );
+            let mut replies = Vec::new();
+            p.process_with_replies(ask.as_bytes(), |reply| replies.push(reply.to_vec()))?;
+            let expected = format!("\x1bP7!~{want:04X}\x1b\\").into_bytes();
+            assert_eq!(replies, vec![expected], "case {case}: {feed:?} {ask:?}");
+        }
+    }
+    Ok(())
+}
