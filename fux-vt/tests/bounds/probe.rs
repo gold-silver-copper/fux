@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use fux_vt::{Feature, Options, Parser, Sink, Size, Work};
+use fux_vt::{Feature, Options, Parser, Sink, Size, Stop, Work};
 
 use super::Heap;
 
@@ -289,7 +289,7 @@ impl Probe {
             std::io::Write::write_all(file, bytes).map_err(|e| e.to_string())?;
         }
         for piece in pieces(bytes, self.chunk) {
-            let mut rest = piece;
+            let (mut rest, mut idle) = (piece, 0u32);
             while !rest.is_empty() {
                 let (before, started) = (Work::now(), Instant::now());
                 let stop = self
@@ -301,8 +301,21 @@ impl Probe {
                 self.worst = (self.worst.0.max(done.cost()), self.worst.1.max(took));
                 let stop = stop?;
                 let taken = stop.map_or(rest.len(), |(taken, _)| taken);
-                if taken == 0 {
-                    return Err(format!("a call stopped before any byte: {stop:?}"));
+                // A call may stop at the budget before any byte, doing the
+                // rows a checksum left (`Screen::resume_checksum`), spending
+                // as it goes, and no more often in a row than one sequence's
+                // most work allows (`idle_most`).
+                idle = match taken {
+                    0 => idle.saturating_add(1),
+                    _ => 0,
+                };
+                let size = self.parser.screen().size();
+                let working = matches!(stop, Some((_, Stop::Budget))) && done.cost() > 0;
+                if taken == 0 && (!working || idle > idle_most(size)) {
+                    return Err(format!(
+                        "a call stopped before any byte, {idle} in a row, doing {}: {stop:?}",
+                        done.cost() / 20
+                    ));
                 }
                 self.parsed = self
                     .parsed
@@ -514,4 +527,14 @@ pub fn nonzero(work: Work) -> Vec<(&'static str, u64)> {
     (work.counters().into_iter())
         .filter(|(_, n)| *n > 0)
         .collect()
+}
+
+/// The most calls in a row that may stop at the budget before taking a
+/// byte at a screen of `size`: those that do the rows a checksum left,
+/// each spending past the budget (`Work::CEILING` halved,
+/// `budget::LIMIT`), so no more than the most one such sequence costs
+/// (`Work::ceiling`) allows, and one more.
+pub fn idle_most(size: Size) -> u32 {
+    let calls = Work::ceiling(size) / (Work::CEILING / 2);
+    u32::try_from(calls).unwrap_or(u32::MAX).saturating_add(1)
 }

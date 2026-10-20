@@ -916,3 +916,37 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     assert!(spent <= 100 * each, "{spent}");
     Ok(())
 }
+
+/// A call of no bytes does what the call before left, as one of bytes
+/// does first: a DECRQCRA checksum stopped after its first row as the
+/// output's last sequence goes on in calls of nothing, each a row while
+/// the budget is spent, till the reply comes, the one `process_with`
+/// gives; then `has_work_left` is false and a call of no bytes does
+/// nothing.
+#[test]
+fn a_call_of_no_bytes_does_what_the_last_left() -> Result<(), Error> {
+    let options = Options::new().with(Feature::RectangleChecksums);
+    let sequence = b"\x1b[3;1;1;6;9*y";
+    let mut whole = Parser::with_options(Size::of(6, 9), 0, options)?;
+    whole.process(b"\x1b#8\x1b[1;3Hab\x1b[4mcd")?;
+    let mut split = whole.clone();
+    let mut want = Log::default();
+    whole.process_with(sequence, &mut want)?;
+    let mut got = Log::default();
+    split.spent = crate::budget::LIMIT;
+    let first = split.process_until_stop(sequence, &mut got)?;
+    assert_eq!(first, Some((sequence.len(), Stop::Budget)));
+    assert!(split.has_work_left() && got.0.is_empty(), "{:?}", got.0);
+    let mut calls = 0;
+    while split.has_work_left() {
+        split.spent = crate::budget::LIMIT;
+        let _ = split.process_until_stop(&[], &mut got)?;
+        calls += 1;
+        assert!(calls < 6, "{calls} calls");
+    }
+    assert!(calls > 1, "{calls} calls");
+    assert_eq!(got.0, want.0);
+    assert_eq!(want.0.len(), 1, "{:?}", want.0);
+    assert_eq!(split.process_until_stop(&[], &mut got)?, None);
+    Ok(())
+}

@@ -1344,7 +1344,13 @@ impl Parser {
     /// from a [`Stop::Begun`] on, unread, until [`Parser::frame_scan`]
     /// finds its end; one that reads output as it comes learns from a
     /// [`Stop::Ended`] that the frame is whole. After a [`Stop::Budget`],
-    /// the rest is given again, in a later call.
+    /// the rest is given again, in a later call, and a later call is made
+    /// even if no byte is left, while [`Parser::has_work_left`]: a call may
+    /// stop part way through a DECRQCRA checksum, unanswered, or before a
+    /// screen-wide sequence it left whole, or REP's copies. The next call,
+    /// of any bytes or none, does what is left first, before reading on,
+    /// and stops again if that spends its budget, before taking a byte;
+    /// replies keep their order.
     ///
     /// The budget is half the 50 M weighted units one 4 KiB call may do
     /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
@@ -1370,6 +1376,12 @@ impl Parser {
     ) -> Result<Option<(usize, Stop)>, Error> {
         self.run::<true>(bytes, sink)
     }
+    /// Whether the last call of [`Parser::process_until_stop`] stopped at
+    /// its budget with work of a sequence it took left to do, which the
+    /// next call does first: one is owed, of no bytes if none wait.
+    pub fn has_work_left(&self) -> bool {
+        self.screen.left_over()
+    }
     /// A [`FrameScan`] for the frame [`Parser::process_until_stop`] just
     /// stopped at the start of ([`Stop::Begun`]).
     pub fn frame_scan(&self) -> FrameScan {
@@ -1392,8 +1404,10 @@ impl Parser {
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
+        // No bytes: only what the last call left, if anything, out of the
+        // way of the loop below.
         if bytes.is_empty() {
-            return Ok(None);
+            return self.run_left::<UNTIL_STOP>(sink);
         }
         self.screen.begin();
         let (start, refused) = (crate::budget::spent(), self.refused);
@@ -1506,6 +1520,41 @@ impl Parser {
         }
         work!(bytes, bytes.len());
         self.count_degrades(degrades);
+        match self.refused == refused {
+            true => Ok(None),
+            false => Err(Error::Capacity),
+        }
+    }
+    /// `run` of no bytes: what the last call stopped at the budget left
+    /// (`resumed`), if anything, which may stop this call too, before any
+    /// byte; nothing else.
+    #[cold]
+    #[inline(never)]
+    fn run_left<const UNTIL_STOP: bool>(
+        &mut self,
+        sink: &mut impl Sink,
+    ) -> Result<Option<(usize, Stop)>, Error> {
+        if !self.screen.left_over() {
+            return Ok(None);
+        }
+        self.screen.begin();
+        let (start, refused) = (crate::budget::spent(), self.refused);
+        let degrades = crate::degrades();
+        self.end = match UNTIL_STOP {
+            true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
+            false => u64::MAX,
+        };
+        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        let stopped = self.resumed::<UNTIL_STOP>(sink);
+        (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+        self.count_degrades(degrades);
+        if stopped {
+            self.spend_since(start, Stop::Budget);
+            return Ok(Some((0, Stop::Budget)));
+        }
+        if UNTIL_STOP {
+            self.spend_since(start, Stop::Ended);
+        }
         match self.refused == refused {
             true => Ok(None),
             false => Err(Error::Capacity),

@@ -875,9 +875,13 @@ impl Pane {
     }
 
     /// Whether output waits to be read on the pane's next turn
-    /// ([`Pane::read_unread`]).
+    /// ([`Pane::read_unread`]), or the work of a sequence read already,
+    /// which a call of the parser stopped at its budget before doing
+    /// (`fux_vt::Parser::has_work_left`: a screen-wide sequence it left
+    /// whole, REP's copies, a checksum's rows), any output read since
+    /// waiting behind it.
     pub fn has_unread(&self) -> bool {
-        !self.unread.0.is_empty()
+        !self.unread.0.is_empty() || self.parser.has_work_left()
     }
 
     /// When the pane's next turn to read the output waiting is due, if any
@@ -905,6 +909,15 @@ impl Pane {
         // a frame it begins is timed from now.
         let came = self.unread.1;
         let unread = std::mem::take(&mut self.unread.0);
+        // Only the work of a sequence read already: a call of no bytes does
+        // it, and stops again if that spends its budget.
+        if unread.is_empty() {
+            let mut happened = Vec::new();
+            if self.parse(&[], false, &mut happened).is_some() {
+                self.wait_unread(Vec::new(), came);
+            }
+            return;
+        }
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
@@ -2120,6 +2133,37 @@ mod tests {
         let rows = |p: &fux_vt::Screen| p.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
         assert_eq!(rows(pane.screen()), rows(whole.screen()));
         assert_eq!(first_row(&pane), "Z");
+        Ok(())
+    }
+
+    /// A screen-wide sequence the parser left for its next call, as the
+    /// output's last, all its bytes read, is carried out at the pane's
+    /// next turn: the pane says output waits while it does, though no byte
+    /// does, and the screen ends as one read of it all leaves it. At
+    /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
+    /// (`Screen::holds_back`).
+    #[test]
+    fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on() -> Result<(), Error> {
+        let output = b"\x1b#8\x1b[2J";
+        let mut pane = pane(2000, 2000)?;
+        pane.output(output);
+        assert!(pane.has_unread(), "the sequences were done in one call");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(!pane.has_unread(), "{turns} turns");
+        let mut whole =
+            fux_vt::Parser::with_options(size(2000, 2000), 1 << 10, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size: size(2000, 2000),
+                    source,
+                }
+            })?;
+        let _ = whole.process(output);
+        let (a, b) = (pane.screen(), whole.screen());
+        assert!(a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())));
         Ok(())
     }
 

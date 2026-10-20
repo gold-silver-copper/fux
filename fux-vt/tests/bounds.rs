@@ -345,6 +345,8 @@ mod budget {
     /// Feeds `input` whole to one parser, and to another by
     /// `process_until_stop`, given the rest again after each stop: each
     /// call under U, the budget stopping some, and the two screens alike.
+    /// A stop may come before a byte is taken, when the work a call before
+    /// left took the call, spending as it goes.
     fn budgeted(each: &str) -> Result {
         let _one = one_at_a_time();
         let input = input(each);
@@ -352,7 +354,7 @@ mod budget {
         let mut whole = Parser::new(size, 0)?;
         whole.process(&input)?;
         let mut parser = Parser::new(size, 0)?;
-        let (mut rest, mut stops) = (&input[..], 0u32);
+        let (mut rest, mut stops, mut idle) = (&input[..], 0u32, 0u32);
         while !rest.is_empty() {
             let before = Work::now();
             let stop = parser.process_until_stop(rest, &mut Deaf)?;
@@ -364,9 +366,22 @@ mod budget {
             );
             match stop {
                 None => break,
-                Some((taken, Stop::Budget)) if taken > 0 => {
+                // A call may take no byte, doing what the call before left
+                // (`Parser::resumed`), spending as it goes, no more often
+                // in a row than one sequence's most work allows.
+                Some((taken, Stop::Budget)) => {
                     stops = stops.saturating_add(1);
                     rest = rest.get(taken..).unwrap_or_default();
+                    idle = if taken == 0 {
+                        idle.saturating_add(1)
+                    } else {
+                        0
+                    };
+                    assert!(
+                        idle <= crate::probe::idle_most(size) && (taken > 0 || done.cost() > 0),
+                        "{each:?}: {idle} calls in a row took no byte, the last doing {}",
+                        done.cost() / 20
+                    );
                 }
                 Some(other) => return Err(format!("{each:?}: stopped as {other:?}").into()),
             }
