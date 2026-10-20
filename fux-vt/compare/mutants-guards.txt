@@ -608,34 +608,34 @@ src/ready.rs:140:34: replace || with && in state
 src/ready.rs:140:37: delete ! in state
 
 # B30 [now] cluster text: append's `*end <= CLUSTER_CAPACITY` (compact.rs:400 -> :491); the `cluster_too_long` rewrite was not written. CLUSTER_CAPACITY = 128 is a literal (cell.rs:548), guarded by tests/clusters.rs:243 each_rule_at_the_cluster_limit and compact/tests.rs:76
-fux-vt/src/compact.rs:526:32: replace <= with > in Line<'_, C>::append
+fux-vt/src/compact.rs:909:32: replace <= with > in Line<'_, C>::append
 # B30 [now] store_long's limit (compact.rs:482-495 -> :577-595) and store_short's (compact.rs:510-517 -> :611-618)
-fux-vt/src/compact.rs:613:60: replace > with == in Line<'_, C>::store_long
-fux-vt/src/compact.rs:613:60: replace > with < in Line<'_, C>::store_long
-fux-vt/src/compact.rs:613:60: replace > with >= in Line<'_, C>::store_long
+fux-vt/src/compact.rs:996:60: replace > with == in Line<'_, C>::store_long
+fux-vt/src/compact.rs:996:60: replace > with < in Line<'_, C>::store_long
+fux-vt/src/compact.rs:996:60: replace > with >= in Line<'_, C>::store_long
 # unviable at d6cbde3c (does not build, so no test runs it): dropped: fux-vt/src/compact.rs:579:24: replace && with || in Line<'_, C>::store_long
-fux-vt/src/compact.rs:612:9: replace Line<'_, C>::store_long -> bool with true
-fux-vt/src/compact.rs:612:9: replace Line<'_, C>::store_long -> bool with false
-fux-vt/src/compact.rs:630:27: replace match guard room with true in Line<'_, C>::store_long
-fux-vt/src/compact.rs:630:27: replace match guard room with false in Line<'_, C>::store_long
-fux-vt/src/compact.rs:653:61: replace > with == in Line<'_, C>::store_short
-fux-vt/src/compact.rs:653:61: replace > with < in Line<'_, C>::store_short
-fux-vt/src/compact.rs:653:61: replace > with >= in Line<'_, C>::store_short
-fux-vt/src/compact.rs:646:9: replace Line<'_, C>::store_short with ()
+fux-vt/src/compact.rs:995:9: replace Line<'_, C>::store_long -> bool with true
+fux-vt/src/compact.rs:995:9: replace Line<'_, C>::store_long -> bool with false
+fux-vt/src/compact.rs:1013:27: replace match guard room with true in Line<'_, C>::store_long
+fux-vt/src/compact.rs:1013:27: replace match guard room with false in Line<'_, C>::store_long
+fux-vt/src/compact.rs:1036:61: replace > with == in Line<'_, C>::store_short
+fux-vt/src/compact.rs:1036:61: replace > with < in Line<'_, C>::store_short
+fux-vt/src/compact.rs:1036:61: replace > with >= in Line<'_, C>::store_short
+fux-vt/src/compact.rs:1029:9: replace Line<'_, C>::store_short with ()
 # B30 [now] store_long's room `long.len() + text.len() <= limit` (compact.rs:493 -> :593); the `no_room` rewrite was not written, so only its `>` mutant exists
-fux-vt/src/compact.rs:628:58: replace <= with > in Line<'_, C>::store_long
+fux-vt/src/compact.rs:1011:58: replace <= with > in Line<'_, C>::store_long
 # B30 [now] append's in-place growth checks the same long-text limit, `store.len() + encoded.len() <= room` (compact.rs:518), written since
-fux-vt/src/compact.rs:553:58: replace <= with > in Line<'_, C>::append
+fux-vt/src/compact.rs:936:58: replace <= with > in Line<'_, C>::append
 # B30 [now] Text::long_limit (compact.rs:353 -> :413)
-fux-vt/src/compact.rs:448:9: replace Text::long_limit -> usize with 0
-fux-vt/src/compact.rs:448:9: replace Text::long_limit -> usize with 1
+fux-vt/src/compact.rs:647:9: replace Text::long_limit -> usize with 0
+fux-vt/src/compact.rs:647:9: replace Text::long_limit -> usize with 1
 
 # B31 [new] TXT-2 append_failed_here: not written. Replaced by `Kept::Full` in the last print's state (screen.rs:2079, `kept = known != Kept::Full`; join stops calling line.append once one failed there, :2082), cleared with the last print by break_cluster (:2152)
 fux-vt/src/screen.rs:2492:30: replace != with == in Screen::join
 fux-vt/src/screen.rs:2495:29: replace && with || in Screen::join
 fux-vt/src/screen.rs:2566:9: replace Screen::break_cluster with ()
 # B31 store_long compacts only when compacting would make room, `live_long() + text.len() <= limit` (compact.rs:585, "threats.md B31")
-fux-vt/src/compact.rs:620:60: replace <= with > in Line<'_, C>::store_long
+fux-vt/src/compact.rs:1003:60: replace <= with > in Line<'_, C>::store_long
 
 # B32 to B36 [now] REP: Screen::repeat's body (faf8bf00 screen.rs:1470:9 -> 9a38df95 :1488 -> now :2176)
 fux-vt/src/screen.rs:2592:9: replace Screen::repeat -> Result<(), Error> with Ok(())
@@ -681,9 +681,9 @@ fux-vt/src/screen.rs:177:19: replace == with != in Printed::full
 # Grid::scroll_region (grid.rs:1806, no mutant), and SCR-8's one turn of the region's slots is Order::rotate
 # (grid.rs:240, decision 36); its guards are scroll_region's count==0 / count==1 branches and rotate's range
 # and `by > len` checks, below. Killed by bounds/rows.rs b36 (`slots` bound).
-fux-vt/src/grid.rs:2062:9: replace Grid::scroll_region with ()
-fux-vt/src/grid.rs:2065:18: replace == with != in Grid::scroll_region
-fux-vt/src/grid.rs:2068:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:2074:9: replace Grid::scroll_region with ()
+fux-vt/src/grid.rs:2077:18: replace == with != in Grid::scroll_region
+fux-vt/src/grid.rs:2080:18: replace == with != in Grid::scroll_region
 fux-vt/src/grid.rs:249:9: replace Order::rotate with ()
 # equivalent: rotate's one caller, Grid::scroll_region (grid.rs:1825), calls it only when count >= 2 after count = count.min(region.len()), so last > first: high > low, where high < low, high == low and high <= low are all false (mutants-equivalent.txt)
 fux-vt/src/grid.rs:250:17: replace < with == in Order::rotate
@@ -700,11 +700,11 @@ fux-vt/src/grid.rs:250:57: replace > with >= in Order::rotate
 # parser.rs:1488, left to the parser rows' 1487 item.)
 fux-vt/src/budget.rs:54:44: replace * with +
 fux-vt/src/budget.rs:54:44: replace * with /
-fux-vt/src/budget.rs:154:5: replace units -> u64 with 0
-fux-vt/src/budget.rs:154:5: replace units -> u64 with 1
-fux-vt/src/budget.rs:159:5: replace spend with ()
-fux-vt/src/budget.rs:164:5: replace spent -> u64 with 0
-fux-vt/src/budget.rs:164:5: replace spent -> u64 with 1
+fux-vt/src/budget.rs:156:5: replace units -> u64 with 0
+fux-vt/src/budget.rs:156:5: replace units -> u64 with 1
+fux-vt/src/budget.rs:161:5: replace spend with ()
+fux-vt/src/budget.rs:166:5: replace spent -> u64 with 0
+fux-vt/src/budget.rs:166:5: replace spent -> u64 with 1
 # B35 [new] P20 cached_sum(): not written; DECRQCRA sums every cell each time (Screen::rectangle_checksum,
 # checksum_of) and is bounded per call by the same budget above (decision 45: DECRQCRA at 4095x4096 one call
 # deep). No further mutant.
@@ -788,12 +788,12 @@ fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 0
 fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 1
 fux-vt/src/parser.rs:1568:9: replace Parser::count_degrades with ()
 # B44 [new] let_row_go: written as Grid::scroll_past_history (grid.rs:1646, a row history has no room for goes as with no history)
-fux-vt/src/grid.rs:1830:9: replace Grid::scroll_past_history with ()
+fux-vt/src/grid.rs:1878:9: replace Grid::scroll_past_history with ()
 # B44 [new] blank_in_place: inline in Grid::clear's refused arm (grid.rs:2098-2103), behind Grid::holds_its_rows;
 # RIS's refused fresh grids fall back to Grid::clear (screen.rs:2614-2636)
-fux-vt/src/grid.rs:2378:24: delete ! in Grid::clear
-fux-vt/src/grid.rs:2395:9: replace Grid::holds_its_rows -> bool with true
-fux-vt/src/grid.rs:2395:9: replace Grid::holds_its_rows -> bool with false
+fux-vt/src/grid.rs:2390:24: delete ! in Grid::clear
+fux-vt/src/grid.rs:2407:9: replace Grid::holds_its_rows -> bool with true
+fux-vt/src/grid.rs:2407:9: replace Grid::holds_its_rows -> bool with false
 # B44 [new] stay_primary: not a function; the alternate screen is made before the switch (`self.alternate.make()?`,
 # screen.rs:3304), so a refusal leaves the primary shown (decision 37). Its guard is Grid::make.
 fux-vt/src/grid.rs:480:9: replace Grid::make -> Result<(), Error> with Ok(())
@@ -812,21 +812,21 @@ fux-vt/src/check.rs:78:9: replace Checked::merge with ()
 fux-vt/src/check.rs:120:5: replace ensure -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:727:9: replace Prints::check_cap -> Result<(), String> with Ok(())
 fux-vt/src/lib.rs:742:9: replace Prints::check -> Result<(), String> with Ok(())
-fux-vt/src/compact.rs:468:9: replace Text::check -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2879:9: replace Grid::check with ()
-fux-vt/src/grid.rs:2928:9: replace Grid::check_order -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2949:9: replace Grid::check_slots -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:2972:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3012:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3036:9: replace Grid::check_text -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3046:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3062:9: replace Grid::check_recent -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3087:9: replace Grid::check_versions -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3098:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3116:9: replace Grid::check_margins -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3150:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3157:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
-fux-vt/src/grid.rs:3168:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
+fux-vt/src/compact.rs:851:9: replace Text::check -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2923:9: replace Grid::check with ()
+fux-vt/src/grid.rs:2972:9: replace Grid::check_order -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:2993:9: replace Grid::check_slots -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3016:9: replace Grid::check_blank_past_used -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3056:9: replace Grid::check_wide_pairs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3080:9: replace Grid::check_text -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3090:9: replace Grid::check_style_numbers -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3106:9: replace Grid::check_recent -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3131:9: replace Grid::check_versions -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3142:9: replace Grid::check_cursor -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3160:9: replace Grid::check_margins -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3194:9: replace Grid::check_keyboard -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3201:9: replace Grid::check_link_runs -> Result<(), String> with Ok(())
+fux-vt/src/grid.rs:3212:9: replace Grid::check_links_held -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1072:9: replace History::check with ()
 fux-vt/src/history.rs:1082:9: replace History::check_counts -> Result<(), String> with Ok(())
 fux-vt/src/history.rs:1106:9: replace History::check_blocks -> Result<(), String> with Ok(())
