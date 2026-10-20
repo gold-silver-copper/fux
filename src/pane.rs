@@ -565,6 +565,11 @@ pub struct Pane {
     /// An answer told its program's exit: later ones say so, not its
     /// output again.
     pub exit_told: std::cell::Cell<bool>,
+    /// What runs in it that an answer said is a remote client reporting
+    /// nothing of what it runs there (the program's start, the foreground
+    /// job, and whether it shows a terminal there): said once, until what
+    /// runs changes.
+    pub remote_told: std::cell::Cell<Option<(u64, Option<Pid>, bool)>>,
     /// The last action's input ended in an edit of the line (text, a cursor
     /// key): where the cursor is next matters.
     pub edited: bool,
@@ -576,6 +581,10 @@ pub struct Pane {
     /// again (`OSC 133 ; S`, which a relay sends once its program took the
     /// input): what it read.
     written: (usize, usize),
+    /// Its relay said its program ended having read the input that had
+    /// left fux then (`OSC 133 ; S ; activity=ended`): what of the action's
+    /// input came after went nowhere.
+    relay_ended: bool,
     /// What of the last action's input its program had not read as it
     /// exited, which went nowhere, or, a relay's, what its relay never
     /// said it read ([`Pane::lose_unread`]).
@@ -817,9 +826,11 @@ impl Pane {
             line_ended: false,
             escape_open: false,
             exit_told: std::cell::Cell::new(false),
+            remote_told: std::cell::Cell::new(None),
             edited: false,
             sent: Vec::new(),
             written: (0, 0),
+            relay_ended: false,
             lost: Dropped::default(),
             reported_at: None,
             drew_alone: (0, 0),
@@ -1044,11 +1055,13 @@ impl Pane {
             let group = (self.process.child())
                 .and_then(|child| fuxix::terminal::foreground_group(&child.master));
             self.reported_at = Some((mark, now, group));
-            // Its program reads again: it read the input that left fux.
-            use fux_vt::Reported::{Idle, Polling, Reading};
-            if matches!(activity, Reading | Polling | Idle) {
+            // Its program reads again, or ended having read every key
+            // its relay sent it: it read the input that left fux.
+            use fux_vt::Reported::{Ended, Idle, Polling, Reading};
+            if matches!(activity, Reading | Polling | Idle | Ended) {
                 self.written.1 = self.written.0.saturating_sub(self.input.len());
             }
+            self.relay_ended |= activity == Ended;
         }
         begun
     }
@@ -1287,13 +1300,16 @@ impl Pane {
         self.seen.clear();
         self.sent.clear();
         self.written = (0, 0);
+        self.relay_ended = false;
     }
 
     /// Its program exits: what of the last action's input it had not read
     /// (still held by fux, or in its terminal) went nowhere. A relay reads
     /// it all: what it sent on after its program last said it read again,
     /// past the first key or line (which may have ended it), it never said
-    /// its program read. Named by the last pieces, a text by its end.
+    /// its program read; once it said its program ended having read what it
+    /// had (`ended`), the rest went nowhere. Named by the last pieces, a
+    /// text by its end.
     pub fn lose_unread(&mut self) {
         let waiting = (self.process.child()).map_or(0, |c| c.master.keys_waiting());
         let unread = self.input_queued().saturating_add(waiting);
@@ -1301,18 +1317,21 @@ impl Pane {
         let names = |tail: Vec<(bool, String)>| -> Vec<String> {
             tail.into_iter().map(|(_, name)| name).collect()
         };
+        let sent = (self.sent.iter())
+            .map(|s| match s {
+                Sent::Text(text) => text.len(),
+                Sent::Named(len, _) => *len,
+            })
+            .fold(0, usize::saturating_add);
+        let unconfirmed = sent.saturating_sub(self.written.1);
         self.lost = match (unread, relay) {
+            (_, true) if self.relay_ended => match unconfirmed {
+                0 => Dropped::None,
+                after => Dropped::Unread(names(self.named_tail(after))),
+            },
             (0, false) => Dropped::None,
             (0, true) => {
-                let sent = (self.sent.iter())
-                    .map(|s| match s {
-                        Sent::Text(text) => text.len(),
-                        Sent::Named(len, _) => *len,
-                    })
-                    .fold(0, usize::saturating_add);
-                let mut tail = self
-                    .named_tail(sent.saturating_sub(self.written.1))
-                    .into_iter();
+                let mut tail = self.named_tail(unconfirmed).into_iter();
                 // What came up to the first key or line end, and that.
                 let ended = (tail.by_ref()).any(|(ends, _)| ends);
                 match names(tail.collect()) {

@@ -575,7 +575,10 @@ fn said(id: PaneId, state: String, notes: Vec<Note>, body: Note, end: End) -> Re
     let pane = ("pane", Json::str(id.to_string()));
     let mut fields = vec![pane, ("state", Json::str(state))];
     for (note, said) in notes {
-        line.push_str(&format!(" · {note}"));
+        // A note said before, its fields alone.
+        if !note.is_empty() {
+            line.push_str(&format!(" · {note}"));
+        }
         fields.extend(said);
     }
     fields.push(("status", Json::int(end.status())));
@@ -618,8 +621,9 @@ impl Wait {
         // paste on, as Python's REPL has it): it may well be at work
         // still, to end on its own, which it is waited for so. One blocked
         // off its terminal (on the network: `koh exec`, a download) may as
-        // well wait for input there, which fux cannot see.
-        let waiting = matches!(state, State::Waiting | State::Redrawing);
+        // well wait for input there, which fux cannot see. One that redraws
+        // on its own read every key and drew after them: not at work on them.
+        let waiting = state == State::Waiting;
         let screen = pane.screen();
         let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
         // A remote client that reports nothing of what it runs: fux sees
@@ -629,6 +633,9 @@ impl Wait {
             .flatten();
         if let Some(remote) = &remote {
             let (id, name) = (pane.id, &remote.name);
+            // Said once for what runs there; its fields every time.
+            let runs = Some((pane.starts, pane.process.job(), remote.terminal));
+            let again = pane.remote_told.replace(runs) == runs;
             let (said, word) = match remote.terminal {
                 true => (
                     format!(
@@ -653,7 +660,7 @@ impl Wait {
                 ("remote", Json::str(name.clone())),
                 ("wait_with", Json::str(word)),
             ];
-            notes.push((said, fields));
+            notes.push((if again { String::new() } else { said }, fields));
         } else if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;
@@ -1636,7 +1643,9 @@ fn scrolled_on(pane: &Pane, watch: &Watch) -> Option<usize> {
 /// changed since (on the screen or in history) to its last line with text.
 /// A full-screen program's whole screen; keys that went in on a full screen
 /// the program has since left, what it printed after, else that last full
-/// screen if it drew it since, else the screen as it is.
+/// screen if it drew it since, else the screen as it is. One that ended
+/// there (an editor quit, its program gone over ssh): its last full screen,
+/// which leaving it hid, then what came on the main screen after.
 fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
     let (screen, start) = (pane.screen(), watch.start);
     if screen.mode(fux_vt::Mode::AlternateScreen) {
@@ -1645,6 +1654,15 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
             None => text(pane, marks, false),
         };
     }
+    // Its last full screen, which leaving it hid, if it ended there.
+    let last = (start.on_full && pane.process.exit_status().is_some()).then(|| {
+        let view = CaptureView {
+            marks,
+            source: Source::Alternate,
+            ..CaptureView::default()
+        };
+        crate::capture::pane(pane, None, view, false, false).0
+    });
     // A row changed since, or moved (`Print`).
     let moved: HashSet<RowId> = (pane.record.printed_after(start.from))
         .flat_map(|(_, p)| p.prints.iter().map(|r| r.row))
@@ -1680,15 +1698,24 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
             })
     };
     let Some(first) = screen.rows().find(new) else {
-        return match (screen.alternate_rows().any(|r| new(&r)), start.on_full) {
-            (true, _) => text(pane, marks, true),
-            (false, true) => text(pane, marks, false),
-            (false, false) => String::new(),
+        return match (
+            last,
+            screen.alternate_rows().any(|r| new(&r)),
+            start.on_full,
+        ) {
+            (Some(last), _, _) => last,
+            (None, true, _) => text(pane, marks, true),
+            (None, false, true) => text(pane, marks, false),
+            (None, false, false) => String::new(),
         };
     };
     let from = (screen.row_index(crate::pane::line_top(first).id())).unwrap_or(0);
     let lead = watch.cut(pane).unwrap_or_default();
-    format!("{lead}{}", lines_from(pane, from))
+    format!(
+        "{}{lead}{}",
+        last.unwrap_or_default(),
+        lines_from(pane, from)
+    )
 }
 
 #[cfg(test)]

@@ -125,7 +125,8 @@ that is no full-screen program, maybe at work, blocked off its
 terminal, or a relay that said nothing since the input, and the wait word
 that waits for its end; with `remote`, `"wait-exit"` or `"wait-text"`),
 `remote` (the name of a remote client in front, `"ssh"`, that reports
-nothing of what it runs: its state is the client's, not that program's;
+nothing of what it runs, in every answer, though its text says so once for
+what runs there: its state is the client's, not that program's;
 `wait_with` says how to wait for it: `"wait-exit"` for a command run on
 a pipe there, which the client ends with, `"wait-text"` for a terminal
 there), `cursor_rows` (with `cursor`, on a line wrapped at the pane's width,
@@ -142,9 +143,10 @@ or a mouse event: up to three runs they highlighted anew, each
 them), `unread` (bytes of input fux holds, not yet
 taken by the terminal; what waits in the terminal's own buffers is not
 counted), `lost` (the program exited: the keys and texts it never read,
-which went nowhere, `["C-q","\"ab\""]`), `unanswered` (a relay ended:
-what it sent on after the first key or line its program did not say it
-read, which likely went nowhere). A
+which went nowhere, `["C-q","\"ab\""]`; through a relay that said its
+program ended having read what came before, what came after), `unanswered`
+(a relay ended without saying so: what it sent on after the first key or
+line its program did not say it read, which likely went nowhere). A
 wait for a text or a bell answers what met it too:
 
 ```json
