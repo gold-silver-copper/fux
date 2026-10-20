@@ -16,7 +16,7 @@
 //! NANOSECONDS`), for `fux-vt/compare/worst-feed.sh`.
 use crate::inputs::{self, Recording};
 use crate::model::Setup;
-use fux_vt::{Parser, Size, Work};
+use fux_vt::{Parser, Size, Stop, Work};
 use std::time::{Duration, Instant};
 
 /// A read of a pane's output, as fux takes it from the PTY.
@@ -106,7 +106,7 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
         while !reads.is_empty() {
             let (read, later) = reads.split_at_checked(READ).unwrap_or((reads, &[]));
             reads = later;
-            let mut taken = 0usize;
+            let (mut taken, mut idle) = (0usize, 0u32);
             while let Some(rest) = read.get(taken..).filter(|r| !r.is_empty()) {
                 let (stop, done, took) = cost(|| parser.process_until_stop(rest, &mut Deaf));
                 worst.longest = worst.longest.max(took);
@@ -115,10 +115,13 @@ pub fn feed(recording: &Recording) -> Result<Worst, String> {
                     worst.at = format!("{} at byte {}", recording.name, fed.saturating_add(taken));
                 }
                 // Stopped at a frame's edge or its budget, it is given the
-                // rest; else all of it was taken, or refused (an allocation
-                // past its limits, which a pane takes and goes on from).
+                // rest, again after a budget stop that took no byte (the rows
+                // a checksum or rectangle edit left took the call); else all
+                // of it was taken, or refused (an allocation past its limits,
+                // which a pane takes and goes on from).
                 match stop {
-                    Ok(Some((n, _))) if n > 0 => taken = taken.saturating_add(n),
+                    Ok(Some((n, _))) if n > 0 => (taken, idle) = (taken.saturating_add(n), 0),
+                    Ok(Some((0, Stop::Budget))) if idle < 10_000 => idle = idle.saturating_add(1),
                     Ok(_) | Err(_) => break,
                 }
             }

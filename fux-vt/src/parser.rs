@@ -1344,7 +1344,16 @@ impl Parser {
     /// from a [`Stop::Begun`] on, unread, until [`Parser::frame_scan`]
     /// finds its end; one that reads output as it comes learns from a
     /// [`Stop::Ended`] that the frame is whole. After a [`Stop::Budget`],
-    /// the rest is given again, in a later call.
+    /// the rest is given again, in a later call, and a later call is made
+    /// even if no byte is left, while [`Parser::has_work_left`]: a call may
+    /// stop part way through a DECRQCRA checksum, unanswered, or a DECCARA,
+    /// DECRARA, DECERA or DECSERA, some of its rows done and the others
+    /// not, never a row part done, or before a screen-wide sequence it
+    /// left whole, or REP's copies. The next call, of any bytes or none,
+    /// does what is left first, before reading on, and stops again if that
+    /// spends its budget, before taking a byte; replies keep their order.
+    /// A host that shows the screen between calls may show such a sequence
+    /// part done, as it may show any output part read.
     ///
     /// The budget is half the 50 M weighted units one 4 KiB call may do
     /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
@@ -1370,6 +1379,12 @@ impl Parser {
     ) -> Result<Option<(usize, Stop)>, Error> {
         self.run::<true>(bytes, sink)
     }
+    /// Whether the last call of [`Parser::process_until_stop`] stopped at
+    /// its budget with work of a sequence it took left to do, which the
+    /// next call does first: one is owed, of no bytes if none wait.
+    pub fn has_work_left(&self) -> bool {
+        self.screen.left_over()
+    }
     /// A [`FrameScan`] for the frame [`Parser::process_until_stop`] just
     /// stopped at the start of ([`Stop::Begun`]).
     pub fn frame_scan(&self) -> FrameScan {
@@ -1392,7 +1407,8 @@ impl Parser {
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
-        if bytes.is_empty() {
+        // No bytes, and nothing a call before left: nothing to do.
+        if bytes.is_empty() && !self.screen.left_over() {
             return Ok(None);
         }
         self.screen.begin();

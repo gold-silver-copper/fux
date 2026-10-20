@@ -916,3 +916,124 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
     assert!(spent <= 100 * each, "{spent}");
     Ok(())
 }
+
+/// DECCARA, DECRARA, DECERA, DECSERA and DECRQCRA, fed by
+/// `process_until_stop` with the budget spent before every call, so that
+/// each stops after its first row and every call after does one row more
+/// (`Screen::resume_rows`), leave the screen and give the replies, in
+/// their order, that one call of `process_with` does, on random screens
+/// of styles, wide glyphs, clusters, protected glyphs, double-width lines
+/// and DECSACE's stream and rectangle.
+#[test]
+fn rectangle_edits_stopped_after_every_row_are_one_call() -> Result<(), Error> {
+    let pieces: &[&str] = &[
+        "hello",
+        "ab \u{754c}x\u{4e2d}",
+        "e\u{301}\u{302}",
+        "a\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}",
+        "\r\n",
+        "\x1b[H",
+        "\x1b[2;5H",
+        "\x1b[1m",
+        "\x1b[4;7m",
+        "\x1b[38;2;1;2;3m",
+        "\x1b[m",
+        "\x1b[1\"q",
+        "\x1b[0\"q",
+        "\x1b#6",
+        "\x1b#5",
+        "\x1b[2*x",
+        "\x1b[*x",
+    ];
+    let mut r = Rng(0x0ab0_0000_0000_0951);
+    let options = Options::new().with(Feature::RectangleChecksums);
+    let (mut edits, mut calls) = (0u32, 0u32);
+    for case in 0..300u32 {
+        let size = Size::of(r.small(10).saturating_add(2), r.small(16).saturating_add(4));
+        let mut whole = Parser::with_options(size, 0, options)?;
+        for _ in 0..r.below(80) {
+            whole.process(r.pick(pieces).unwrap_or("a").as_bytes())?;
+        }
+        let (t, l) = (r.small(6), r.small(10));
+        let (b, w) = (t.saturating_add(r.small(10)), l.saturating_add(r.small(16)));
+        let ops = (0..r.below(3))
+            .map(|_| {
+                r.pick(&[0, 1, 4, 5, 7, 24, 31, 44])
+                    .unwrap_or(0)
+                    .to_string()
+            })
+            .map(|n| format!(";{n}"))
+            .collect::<String>();
+        let sequence = match r.below(5) {
+            0 => format!("\x1b[{t};{l};{b};{w}{ops}$r"),
+            1 => format!("\x1b[{t};{l};{b};{w}{ops}$t"),
+            2 => format!("\x1b[{t};{l};{b};{w}$z"),
+            3 => format!("\x1b[{t};{l};{b};{w}${{"),
+            _ => format!("\x1b[7;1;{t};{l};{b};{w}*y"),
+        };
+        let input = format!("{sequence}\x1b[5nz\x1b[1;1;99;99*y");
+        let mut split = whole.clone();
+        let mut want = Log::default();
+        whole.process_with(input.as_bytes(), &mut want)?;
+        let mut got = Log::default();
+        let mut rest = input.as_bytes();
+        for _ in 0..=input.len().saturating_add(usize::from(size.rows())) {
+            split.spent = crate::budget::LIMIT;
+            match split.process_until_stop(rest, &mut got)? {
+                None => break,
+                Some((taken, stop)) => {
+                    assert_eq!(stop, Stop::Budget, "case {case}");
+                    rest = rest.get(taken..).unwrap_or_default();
+                    calls = calls.saturating_add(u32::from(taken == 0));
+                }
+            }
+        }
+        edits = edits.saturating_add(1);
+        assert_eq!(got.0, want.0, "case {case}: {sequence:?}");
+        let (a, b) = (whole.screen(), split.screen());
+        assert_eq!(a.cursor_position(), b.cursor_position(), "case {case}");
+        assert!(
+            a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())),
+            "case {case}: {sequence:?}: the screens differ"
+        );
+    }
+    // Calls that took no byte, each a row a sequence left.
+    assert!(calls > edits, "{calls} calls for {edits} sequences");
+    Ok(())
+}
+
+/// A call of no bytes does what the call before left, as one of bytes
+/// does first: a DECRQCRA checksum or a DECCARA stopped after its first row
+/// as the output's last sequence goes on in calls of nothing, each a row
+/// while the budget is spent, till the reply comes and the screen is as
+/// one call leaves it; then `has_work_left` is false and a call of no
+/// bytes does nothing.
+#[test]
+fn a_call_of_no_bytes_does_what_the_last_left() -> Result<(), Error> {
+    let options = Options::new().with(Feature::RectangleChecksums);
+    for sequence in [&b"\x1b[3;1;1;6;9*y"[..], b"\x1b[;;;;1;7$r"] {
+        let mut whole = Parser::with_options(Size::of(6, 9), 0, options)?;
+        whole.process(b"\x1b#8\x1b[1;3Hab\x1b[4mcd")?;
+        let mut split = whole.clone();
+        let mut want = Log::default();
+        whole.process_with(sequence, &mut want)?;
+        let mut got = Log::default();
+        split.spent = crate::budget::LIMIT;
+        let first = split.process_until_stop(sequence, &mut got)?;
+        assert_eq!(first, Some((sequence.len(), Stop::Budget)));
+        assert!(split.has_work_left() && got.0.is_empty(), "{:?}", got.0);
+        let mut calls = 0;
+        while split.has_work_left() {
+            split.spent = crate::budget::LIMIT;
+            let _ = split.process_until_stop(&[], &mut got)?;
+            calls += 1;
+            assert!(calls < 6, "{calls} calls");
+        }
+        assert!(calls > 1, "{calls} calls");
+        assert_eq!(got.0, want.0);
+        let (a, b) = (whole.screen(), split.screen());
+        assert!(a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())));
+        assert_eq!(split.process_until_stop(&[], &mut got)?, None);
+    }
+    Ok(())
+}

@@ -303,13 +303,19 @@ impl Probe {
                 let taken = stop.map_or(rest.len(), |(taken, _)| taken);
                 // A call may stop at the budget before any byte, doing the
                 // rows a checksum or a rectangle edit left (`resume_rows`),
-                // but not for ever.
+                // spending as it goes, and no more often than one sequence's
+                // most work allows (`idle_most`).
                 idle = match taken {
                     0 => idle.saturating_add(1),
                     _ => 0,
                 };
-                if idle > 10_000 || taken == 0 && !matches!(stop, Some((_, Stop::Budget))) {
-                    return Err(format!("a call stopped before any byte: {stop:?}"));
+                let size = self.parser.screen().size();
+                let working = matches!(stop, Some((_, Stop::Budget))) && done.cost() > 0;
+                if taken == 0 && (!working || idle > idle_most(size)) {
+                    return Err(format!(
+                        "a call stopped before any byte, {idle} in a row, doing {}: {stop:?}",
+                        done.cost() / 20
+                    ));
                 }
                 self.parsed = self
                     .parsed
@@ -521,4 +527,14 @@ pub fn nonzero(work: Work) -> Vec<(&'static str, u64)> {
     (work.counters().into_iter())
         .filter(|(_, n)| *n > 0)
         .collect()
+}
+
+/// The most calls in a row that may stop at the budget before taking a
+/// byte at a screen of `size`: those that do the rows a checksum or a
+/// rectangle edit left, each spending past the budget (`Work::CEILING`
+/// halved, `budget::LIMIT`), so no more than the most one such sequence
+/// costs (`Work::ceiling`) allows, and one more.
+pub fn idle_most(size: Size) -> u32 {
+    let calls = Work::ceiling(size) / (Work::CEILING / 2);
+    u32::try_from(calls).unwrap_or(u32::MAX).saturating_add(1)
 }
