@@ -41,6 +41,9 @@ pub(crate) static NO_TEXT: Text = Text {
     short: Vec::new(),
 };
 
+/// The cells a vector loop takes at once.
+const LANES: usize = 32;
+
 /// The style's number, in `word`.
 const STYLE: u32 = (1 << 28) - 1;
 /// The second half of a wide glyph; and its first. Their bits, shifted
@@ -66,6 +69,38 @@ const _: () = assert!(SHORT == 17 && SPILLED == 1 << 30);
 const SHORT: usize = 17;
 /// The bytes a row's short text first takes room for.
 const FIRST_SHORT: usize = 256;
+
+/// The styles DECCARA or DECRARA gave lately for the styles cells had
+/// (`Grid::restyle`): sixteen, each in the place its style hashes to, a
+/// later one taking an earlier one's.
+pub(crate) struct Restyled([(u32, u32); 16]);
+
+impl Default for Restyled {
+    fn default() -> Self {
+        // No style is `u32::MAX`, past `STYLE`.
+        Self([(u32::MAX, 0); 16])
+    }
+}
+
+impl Restyled {
+    /// Where `style` goes: Fibonacci hashing's top four bits.
+    #[inline]
+    fn place(style: u32) -> usize {
+        usize::try_from(style.wrapping_mul(0x9e37_79b9) >> 28).unwrap_or(0)
+    }
+    /// Style `style` now gives `new`.
+    pub(crate) fn give(&mut self, style: u32, new: u32) {
+        if let Some(slot) = self.0.get_mut(Self::place(style)) {
+            *slot = (style, new);
+        }
+    }
+    /// What style `style` gives, if it was given lately.
+    #[inline]
+    pub(crate) fn of(&self, style: u32) -> Option<u32> {
+        let (from, to) = self.0.get(Self::place(style)).copied()?;
+        (from == style).then_some(to)
+    }
+}
 
 impl Compact {
     /// A blank cell in style `style`.
@@ -138,29 +173,168 @@ impl Compact {
         let text = u32::from_le_bytes(self.text);
         (text & 0xff_ffff, text >> 24, (self.word >> 30) & 1)
     }
-    /// Whether any of `cells` is protected or either half of a wide glyph.
-    pub(crate) fn any_protected_or_halves(cells: &[Self]) -> bool {
-        Self::any_of(cells, PROTECTED | HALVES)
-    }
     /// Whether any of `cells` has a flag of `flags` in its word.
     fn any_of(cells: &[Self], flags: u32) -> bool {
         cells.iter().fold(0, |any, cell| any | cell.word) & flags != 0
     }
-    /// DECSERA's and DECERA's erase of `cells`, which hold no half of a
-    /// wide glyph and, for DECSERA (`all` none), no protected glyph: each
-    /// glyph a space in its own style, or `all`'s, the empty cells left
-    /// empty (`Grid::erase_to_spaces`); whether one changed. A run at once.
-    pub(crate) fn space_all(cells: &mut [Self], all: Option<u32>) -> bool {
+    /// DECCARA's and DECRARA's change of a run of `cells` from the first
+    /// (`Grid::restyle`): each glyph or wide glyph's second half, and with
+    /// `FILL` each unoccupied cell, takes the style `given` gives its own,
+    /// while it gives one, an unoccupied cell becoming a space in it. How
+    /// many cells it went past, and whether one changed. A cell at a time
+    /// with no branch but the run's end.
+    pub(crate) fn restyle_run<const FILL: bool>(
+        cells: &mut [Self],
+        given: &Restyled,
+    ) -> (usize, bool) {
+        let mut changed = 0;
+        for (i, cell) in cells.iter_mut().enumerate() {
+            let [first, ..] = cell.text;
+            let occupied = (first != 0) | (cell.word & (SPILLED | CONTINUATION) != 0);
+            let new = given.of(cell.style());
+            if (FILL | occupied) & new.is_none() {
+                return (i, changed != 0);
+            }
+            let new = new.unwrap_or(0);
+            // As masks, so that a row of halves and glyphs mixed takes no
+            // branch: a glyph keeps its text and takes `new`, an unoccupied
+            // cell becomes `Compact::ascii(b' ', new)` with `FILL` and
+            // stays without.
+            let glyph = u32::from(occupied).wrapping_neg();
+            let (text, word) = (u32::from_le_bytes(cell.text), cell.word);
+            let restyled = (word & !STYLE) | (new & STYLE);
+            let (space, blank) = match FILL {
+                true => (u32::from(b' '), new & (STYLE | PROTECTED)),
+                false => (text, word),
+            };
+            let to = Self {
+                text: ((text & glyph) | (space & !glyph)).to_le_bytes(),
+                word: (restyled & glyph) | (blank & !glyph),
+            };
+            changed |= (to.word ^ word) | (u32::from_le_bytes(to.text) ^ text);
+            *cell = to;
+        }
+        (cells.len(), changed != 0)
+    }
+    /// DECSERA's and DECERA's erase of `cells` (`Grid::erase_to_spaces`):
+    /// each glyph a space in its own style, or `all`'s, the empty cells left
+    /// empty, and a wide glyph's second half blank in its style; without
+    /// `all`, DECSERA's, a protected glyph stays, its second half too, `kept`
+    /// saying whether the glyph before the first cell is. Whether one was
+    /// written. A cell at a time with no branch.
+    pub(crate) fn erase_run(cells: &mut [Self], all: Option<u32>, kept: bool) -> bool {
+        match all {
+            Some(style) => Self::erase_some::<true>(cells, Self::ascii(b' ', style).word, kept),
+            None => Self::erase_some::<false>(cells, 0, kept),
+        }
+    }
+    /// `erase_run` with `ALL` (DECERA's, a space's word `space`) or not
+    /// (DECSERA's).
+    fn erase_some<const ALL: bool>(cells: &mut [Self], space: u32, kept: bool) -> bool {
+        // Most spans hold no half of a wide glyph, nor one protected that
+        // DECSERA keeps: each glyph a space, as fast as the machine goes.
+        let keeps = if ALL { 0 } else { PROTECTED };
+        if Self::any_of(cells, HALVES | keeps) {
+            return Self::erase_spans::<ALL>(cells, space, kept);
+        }
         let mut changed = false;
         for cell in cells.iter_mut() {
             let occupied = cell.has_contents();
-            let space = Self::ascii(b' ', all.unwrap_or(cell.style()));
+            let word = if ALL { space } else { cell.style() };
             if occupied {
-                *cell = space;
+                *cell = Self {
+                    text: [b' ', 0, 0, 0],
+                    word,
+                };
             }
             changed |= occupied;
         }
         changed
+    }
+    /// `erase_run` with `ALL` (DECERA's, spaces' word `space`) or not
+    /// (DECSERA's), its cells' words and text as masks.
+    #[inline(never)]
+    fn erase_spans<const ALL: bool>(cells: &mut [Self], space: u32, kept: bool) -> bool {
+        let (mut kept, mut changed) = (mask(u32::from(kept)), 0);
+        let (chunks, rest) = cells.as_chunks_mut::<LANES>();
+        for chunk in chunks {
+            // The chunk's texts and words apart, so that each step below
+            // goes a lane a cell, as vectors go.
+            let (mut text, mut word) = ([0u32; LANES], [0u32; LANES]);
+            for ((t, w), cell) in text.iter_mut().zip(&mut word).zip(chunk.iter()) {
+                (*t, *w) = (u32::from_le_bytes(cell.text), cell.word);
+            }
+            let second = word.map(|w| mask(u32::from(w & CONTINUATION != 0)));
+            let protected = word.map(|w| mask(u32::from(!ALL & (w & PROTECTED != 0))));
+            // Each cell's neighbour before: the first's is the kept glyph
+            // before the chunk.
+            let (mut second_before, mut protected_before) = ([0; LANES], [kept; LANES]);
+            for (to, from) in second_before.iter_mut().skip(1).zip(&second) {
+                *to = *from;
+            }
+            for (to, from) in protected_before.iter_mut().skip(1).zip(&protected) {
+                *to = *from;
+            }
+            // Two second halves in a row, which a grid never holds: the
+            // cell before a second half is then no glyph to keep it by,
+            // and the chunk goes a cell at a time.
+            let twice = (second.iter().zip(&second_before)).fold(0, |a, (s, b)| a | (s & b));
+            if twice != 0 {
+                let (wrote, last) = Self::erase_cells::<ALL>(chunk, space, kept);
+                (changed, kept) = (changed | wrote, last);
+                continue;
+            }
+            // A second half goes or stays with its glyph, the cell before.
+            let mut keeps = [0u32; LANES];
+            for (((k, s), p), b) in keeps
+                .iter_mut()
+                .zip(&second)
+                .zip(&protected)
+                .zip(&protected_before)
+            {
+                *k = (s & b) | (!s & p);
+            }
+            for (((cell, &t), &w), (&s, &k)) in chunk
+                .iter_mut()
+                .zip(&text)
+                .zip(&word)
+                .zip(second.iter().zip(&keeps))
+            {
+                let occupied = mask(u32::from((t & 0xff != 0) | (w & SPILLED != 0)));
+                let writes = !k & (s | occupied);
+                // A second half blank in its style, a glyph a space.
+                let spaced = if ALL { space } else { w & STYLE };
+                let to_word = (w & STYLE & s) | (spaced & !s);
+                let to_text = u32::from(b' ') & !s;
+                changed |= writes;
+                *cell = Self {
+                    text: ((to_text & writes) | (t & !writes)).to_le_bytes(),
+                    word: (to_word & writes) | (w & !writes),
+                };
+                kept = k;
+            }
+        }
+        let (wrote, _) = Self::erase_cells::<ALL>(rest, space, kept);
+        (changed | wrote) != 0
+    }
+    /// `erase_spans` a cell at a time, from `kept`, a mask; whether one was
+    /// written, as a mask, and whether the last was kept.
+    fn erase_cells<const ALL: bool>(cells: &mut [Self], space: u32, mut kept: u32) -> (u32, u32) {
+        let mut changed = 0;
+        for cell in cells.iter_mut() {
+            let (t, w) = (u32::from_le_bytes(cell.text), cell.word);
+            let s = mask(u32::from(w & CONTINUATION != 0));
+            kept = (kept & s) | (!s & mask(u32::from(!ALL & (w & PROTECTED != 0))));
+            let writes = !kept & (s | mask(u32::from((t & 0xff != 0) | (w & SPILLED != 0))));
+            let spaced = if ALL { space } else { w & STYLE };
+            let to_word = (w & STYLE & s) | (spaced & !s);
+            changed |= writes;
+            *cell = Self {
+                text: (((u32::from(b' ') & !s) & writes) | (t & !writes)).to_le_bytes(),
+                word: (to_word & writes) | (w & !writes),
+            };
+        }
+        (changed, kept)
     }
     /// A blank cell in style 0, the halves `halves` says ([`CellRef`]'s).
     #[inline]

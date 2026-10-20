@@ -850,3 +850,140 @@ fn rectangle_checksums_of_stored_cells_are_the_sum_cell_by_cell() -> Result<(), 
     }
     Ok(())
 }
+
+/// DECCARA and DECRARA a run of one style at a time, and DECERA, DECSERA,
+/// DECSED and DECSEL a span at a time, leave each grid as the cell-by-cell
+/// ways did, style numbers, versions and table included: two parsers given
+/// the same random output, one going cell by cell (`PER_CELL`), over
+/// glyphs in many styles and fresh truecolours (so the table sweeps
+/// mid-rectangle), wide glyphs, long clusters, double-width and -height
+/// lines, protected glyphs and wide ones (DECSCA and SPA), DECSACE's
+/// stream and rectangle, both screens and resizes.
+#[test]
+fn rectangles_a_run_at_a_time_are_as_cell_by_cell() -> Result<(), Error> {
+    let pieces: &[&[u8]] = &[
+        b"hello",
+        b"ab cd",
+        b"\r\n",
+        b"\x1b[H",
+        b"\x1b[3;4H",
+        b"\x1b[2C",
+        "\u{754c}x\u{4e2d}".as_bytes(),
+        "e\u{301}\u{302}\u{303}\u{304}\u{305}\u{306}\u{307}\u{308}\u{309}".as_bytes(),
+        "a\u{301}".as_bytes(),
+        b"\x1b[1m",
+        b"\x1b[4;7m",
+        b"\x1b[m",
+        b"\x1b[K",
+        b"\x1b[2X",
+        b"\x1b#6",
+        b"\x1b#3",
+        b"\x1b#4",
+        b"\x1b#5",
+        b"\x1b[1\"q",
+        b"\x1b[0\"q",
+        b"\x1bVpro\x1bW",
+        "\x1b[1\"q\u{4e2d}y\u{754c}\x1b[0\"q".as_bytes(),
+        "\u{4e2d}e\u{301}x\x1b[1\"q\u{754c}\u{4e2d}a\u{301}\x1b[0\"q\u{754c}y".as_bytes(),
+        b"\x1b[?J",
+        b"\x1b[?1J",
+        b"\x1b[?2J",
+        b"\x1b[?K",
+        b"\x1b[?1K",
+        b"\x1b[?2K",
+        b"\x1b[2*x",
+        b"\x1b[*x",
+        b"\x1b[?1049h",
+        b"\x1b[?1049l",
+        b"\x1b[S",
+    ];
+    let mut r = crate::test_rng::Rng(0x0ab0_0000_0000_0950);
+    let (mut sweeps, mut runs) = (0u64, 0u32);
+    // Rows narrow and, every other case, wider than a vector loop's
+    // chunk of cells (`compact::LANES`), so that both ways are taken.
+    let sized = |r: &mut crate::test_rng::Rng, case: u32| {
+        let cols = match case % 2 {
+            0 => r.small(14).saturating_add(4),
+            _ => r.small(90).saturating_add(34),
+        };
+        Size::of(r.small(7).saturating_add(2), cols)
+    };
+    for case in 0..8u32 {
+        let size = sized(&mut r, case);
+        let mut fast = crate::Parser::new(size, 4)?;
+        let mut slow = crate::Parser::new(size, 4)?;
+        for step in 0..6_000u32 {
+            let piece: Vec<u8> = match r.below(10) {
+                0 | 1 => {
+                    // Now and then the table one style short of a sweep,
+                    // so the rectangle's first new style sweeps it.
+                    if r.chance(10) {
+                        for p in [&mut fast, &mut slow] {
+                            let s = p.screen_mut();
+                            s.primary.fill_styles_to_sweep();
+                            s.alternate.fill_styles_to_sweep();
+                        }
+                    }
+                    let ops = (0..r.below(4))
+                        .map(|_| r.pick(&[0, 1, 4, 5, 7, 22, 24, 27, 31, 39, 44, 49, 3]))
+                        .map(|n| format!(";{}", n.unwrap_or(0)))
+                        .collect::<String>();
+                    let cols = fast.screen().size().cols().saturating_add(4);
+                    let (t, l) = (r.small(10), r.small(cols));
+                    let (b, w) = (
+                        t.saturating_add(r.small(10)),
+                        l.saturating_add(r.small(cols)),
+                    );
+                    runs = runs.saturating_add(1);
+                    match r.pick(&['r', 't', 'z', '{']).unwrap_or('r') {
+                        end @ ('r' | 't') => format!("\x1b[{t};{l};{b};{w}{ops}${end}"),
+                        end => format!("\x1b[{t};{l};{b};{w}${end}"),
+                    }
+                    .into_bytes()
+                }
+                2 | 3 => (0..6)
+                    .map(|_| {
+                        let [_, red, green, blue] = r.next().to_le_bytes()[..4] else {
+                            return String::new();
+                        };
+                        format!("\x1b[38;2;{red};{green};{blue}mz")
+                    })
+                    .collect::<String>()
+                    .into_bytes(),
+                4 if r.chance(5) => {
+                    let size = sized(&mut r, case);
+                    fast.resize(size)?;
+                    slow.resize(size)?;
+                    Vec::new()
+                }
+                _ => r.pick(pieces).unwrap_or(b"a").to_vec(),
+            };
+            let before = fast.screen().primary.sweeps() + fast.screen().alternate.sweeps();
+            fast.process(&piece)?;
+            crate::grid::tests::PER_CELL.with(|c| c.set(true));
+            let done = slow.process(&piece);
+            crate::grid::tests::PER_CELL.with(|c| c.set(false));
+            done?;
+            let after = fast.screen().primary.sweeps() + fast.screen().alternate.sweeps();
+            if piece.ends_with(b"$r") || piece.ends_with(b"$t") {
+                sweeps = sweeps.saturating_add(after.saturating_sub(before));
+            }
+            let (a, b) = (fast.screen(), slow.screen());
+            assert!(
+                a.primary.seen() == b.primary.seen() && a.alternate.seen() == b.alternate.seen(),
+                "case {case} step {step}: {:?}",
+                String::from_utf8_lossy(&piece)
+            );
+            assert_eq!(
+                a.primary.style_count(),
+                b.primary.style_count(),
+                "case {case} step {step}"
+            );
+            assert_eq!(a.attributes(), b.attributes(), "case {case} step {step}");
+        }
+    }
+    // The rectangles swept the table now and then, as they must for the
+    // sweep's way to be checked.
+    assert!(sweeps > 0 && runs > 1_000, "{sweeps} sweeps in {runs}");
+    Ok(())
+}
