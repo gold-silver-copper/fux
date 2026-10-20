@@ -62,7 +62,7 @@ if [[ ${1-} == guards ]]; then
 fi
 # FUX_MUTANTS_JOBS mutants at a time (2 if unset); FUX_MUTANTS_SHARD, as
 # K/N, runs only the Kth of N shards of the selection (for CI's matrix).
-args=(--workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
+args=(--colors never --workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
   --output "$out" --test-tool nextest --timeout "${FUX_MUTANTS_TIMEOUT:-150}"
   --build-timeout "${FUX_MUTANTS_BUILD_TIMEOUT:-600}")
 # The first failure ends a mutant's tests at once: a test the mutant made
