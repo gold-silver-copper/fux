@@ -1624,6 +1624,12 @@ impl Grid {
         spend!(cells, cells.len().saturating_mul(2));
         spend!(edits, cells.len());
         spend!(text, text.map_or(0, Text::bytes));
+        // And the text written into the target row, counted by its stores
+        // as they go, at most the row's: spent here too.
+        crate::budget::spend(
+            crate::budget::units(text.map_or(0, Text::bytes)),
+            crate::budget::weight::text,
+        );
         let text = text.cloned().unwrap_or_default();
         // The half of a glyph the source's edge cuts.
         if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
@@ -1982,6 +1988,13 @@ impl Grid {
                 .collect()
         };
         spend!(text, held.len());
+        // And the text written into the target row, which its stores count
+        // as they go (`Line::set`), at most what was held: spent here, so
+        // the budget prices what the counters count (decision 969).
+        crate::budget::spend(
+            crate::budget::units(held.len()),
+            crate::budget::weight::text,
+        );
         let text_of = |i: usize| texts.get(i).and_then(|r| held.get(r.clone())).unwrap_or("");
         let mut changed = false;
         if let Some(mut line) = self.line(target) {

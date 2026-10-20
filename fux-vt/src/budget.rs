@@ -87,10 +87,12 @@ pub(crate) mod weight {
     pub(crate) const slots: u64 = 73;
     /// A row pushed, popped, read, searched or walked.
     pub(crate) const rows: u64 = 100;
-    /// A row text byte copied or rescanned: 0.48 ns, DECCRA's over cells
-    /// of clusters at 50x200, past its cells; 0.7, as the scrolls inside
-    /// margins at 500x500 need, times 1.2.
-    pub(crate) const text: u64 = 17;
+    /// A row text byte copied or rescanned: 1.06 ns, a scroll inside left
+    /// and right margins over rows of 17-byte clusters at 1000x500, which
+    /// spends each byte of the span's text twice, read and written
+    /// (2.12 ns a byte read, decision 969), past its cells and spans, times
+    /// 1.2.
+    pub(crate) const text: u64 = 26;
     /// A sixel pixel painted, filled, copied or zeroed: 0.96 ns, B04's.
     #[cfg(feature = "checks")]
     pub(crate) const pixels: u64 = 24;
