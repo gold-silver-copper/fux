@@ -582,22 +582,57 @@ impl Part {
 /// and bytes of it.
 type Place = (bool, std::ops::Range<usize>);
 
-/// Where the text of `cells` is in their row's, if every one is a cluster
-/// of more than four bytes in one part, each's text right after the one's
-/// before it: that part (`long`) and those bytes. A pass of word
-/// arithmetic, with no branch a cell; none for no cells.
+/// All ones for 1, none for 0.
+#[inline(always)]
+fn mask(bit: u32) -> u32 {
+    0u32.wrapping_sub(bit)
+}
+
+/// Where the text of the clusters among `cells` is in their row's, if
+/// each is of more than four bytes, all in one part, each's text right
+/// after the one's before it, and none more than a cell from the one
+/// before it, as wide glyphs or glyphs between clusters leave them: that
+/// part (`long`) and those bytes. A pass of word arithmetic over each
+/// cell and the two before it, with no branch a cell.
 fn run_of(cells: &[Compact]) -> Option<Place> {
-    let (first, last) = (cells.first()?, cells.last()?);
-    let (start, len, spilled) = first.shape();
-    let mut odd = (spilled ^ 1) | u32::from(len <= 4);
-    for (a, b) in cells.iter().zip(cells.iter().skip(1)) {
-        let ((start, len, _), (next, len_b, spilled)) = (a.shape(), b.shape());
-        odd |= (spilled ^ 1) | u32::from(len_b <= 4) | (start.wrapping_add(len) ^ next);
-        odd |= u32::from(len > 17) ^ u32::from(len_b > 17);
+    let first = cells.iter().position(Compact::is_spilled)?;
+    let last = cells.iter().rposition(Compact::is_spilled)?;
+    let ((start, len, _), (at, end, _)) = (cells.get(first)?.shape(), cells.get(last)?.shape());
+    let long = len > 17;
+    let mut odd = 0;
+    for cell in cells {
+        let (_, len, spilled) = cell.shape();
+        odd |= mask(spilled) & (u32::from(len <= 4) | u32::from((len > 17) != long));
     }
-    let (end, len_last, _) = last.shape();
-    let bytes = usize::try_from(start).ok()?..usize::try_from(end.wrapping_add(len_last)).ok()?;
-    (odd == 0).then_some((len > 17, bytes))
+    let bytes = usize::try_from(start).ok()?..usize::try_from(at.wrapping_add(end)).ok()?;
+    let cells = cells.get(first..=last)?;
+    // Every cell a cluster, as most often: each's text follows the one's
+    // before it.
+    if cells.iter().fold(SPILLED, |all, cell| all & cell.word) != 0 {
+        for (one, cell) in cells.iter().zip(cells.iter().skip(1)) {
+            let ((at, _, _), (one, len, _)) = (cell.shape(), one.shape());
+            odd |= at ^ one.wrapping_add(len);
+        }
+        return (odd == 0).then_some((long, bytes));
+    }
+    // Else from the first on, each cluster's text follows the one's a cell
+    // or two before it, which there is.
+    let (head, ones, twos) = shifted(cells);
+    if let Some([one, cell]) = cells
+        .get(..2)
+        .and_then(|two| <[Compact; 2]>::try_from(two).ok())
+    {
+        let ((at, _, spilled), (one, len, _)) = (cell.shape(), one.shape());
+        odd |= mask(spilled) & (at ^ one.wrapping_add(len));
+    }
+    for ((cell, one), two) in head.iter().zip(ones).zip(twos) {
+        let ((at, _, spilled), (one, one_len, after_one), (two, two_len, after_two)) =
+            (cell.shape(), one.shape(), two.shape());
+        let before = mask(after_one);
+        let after = (one.wrapping_add(one_len) & before) | (two.wrapping_add(two_len) & !before);
+        odd |= mask(spilled) & ((at ^ after) | ((after_one | after_two) ^ 1));
+    }
+    (odd == 0).then_some((long, bytes))
 }
 
 /// `run_of` for `cells` and the cells `olds` they go over, each a cluster
@@ -624,6 +659,12 @@ fn runs_over(cells: &[Compact], olds: &[Compact]) -> Option<(Place, Place, bool)
     };
     let (source, target) = (bytes(start, end)?, bytes(at, to)?);
     (odd == 0).then_some(((len > 17, source), (len > 17, target), words != 0))
+}
+
+/// `cells` from the third on, from the second on, and all.
+fn shifted(cells: &[Compact]) -> (&[Compact], &[Compact], &[Compact]) {
+    let from = |n: usize| cells.get(n..).unwrap_or_default();
+    (from(2), from(1), cells)
 }
 
 /// The text's part of the invariant checker (threats.md section 6, 13).
@@ -1053,10 +1094,10 @@ impl Line<'_> {
         short.flush(&from.short, &mut self.text.short);
         long.flush(&from.long, &mut self.text.long);
     }
-    /// `write` of cells that are clusters whose text is one run of a part
-    /// of `from` (`run_of`) and fits whole: each cell's text where those
-    /// before it put it, moved by as much, and the run appended at once.
-    /// Whether it was so.
+    /// `write` of cells whose clusters' text is one run of a part of `from`
+    /// (`run_of`) that fits whole: each cluster's text where those before
+    /// it put it, moved by as much, and the run appended at once. Whether
+    /// it was so.
     fn write_runs(&mut self, at: usize, cells: &[Compact], from: &Text) -> bool {
         let Some((long, bytes)) = run_of(cells) else {
             return false;
@@ -1085,6 +1126,8 @@ impl Line<'_> {
         // left as it is: no start passes 24 bits.
         let by = by.wrapping_sub(source);
         for (slot, cell) in slots.iter_mut().zip(cells) {
+            let (_, _, spilled) = cell.shape();
+            let by = by & mask(spilled);
             let text = u32::from_le_bytes(cell.text).wrapping_add(by).to_le_bytes();
             *slot = Compact {
                 text,
@@ -1174,27 +1217,32 @@ impl Line<'_> {
         true
     }
 
-    /// `copy` of cells that are clusters whose text is one run of a part
-    /// of `from`, over cells that are clusters as long whose text is one
-    /// run of that part of this row's (`runs_over`): the cells' words and
-    /// the runs compared and written at once. Whether a cell changed, if it
-    /// was so.
+    /// `copy` of cells whose clusters' text is one run of a part of `from`,
+    /// each over a cluster as long, their text one run of that part of this
+    /// row's (`runs_over`): the cells and the runs compared and written at
+    /// once. Whether a cell changed, if it was so.
     fn copy_runs(&mut self, at: usize, cells: &[Compact], from: &Text) -> Option<bool> {
         let olds = self.cells.get_mut(at..at.checked_add(cells.len())?)?;
-        let ((long, source), (_, target), words) = runs_over(cells, olds)?;
+        let ((long, source), (_, target), changes) = runs_over(cells, olds)?;
         let text = from.part(long).get(source)?;
         let held = self.text.part_mut(long).get_mut(target)?;
         // Each cell its cluster's halves and style, its text where the old
         // one's is; and the run over theirs.
-        for (old, cell) in olds.iter_mut().zip(cells).filter(|_| words) {
-            old.word = cell.word;
+        for (old, cell) in olds.iter_mut().zip(cells).filter(|_| changes) {
+            *old = match cell.is_spilled() {
+                true => Compact {
+                    text: old.text,
+                    word: cell.word,
+                },
+                false => *cell,
+            };
         }
         work!(text, text.len());
         let differs = text != &held[..];
         if differs {
             let _ = crate::copy_from(held, text);
         }
-        Some(words || differs)
+        Some(changes || differs)
     }
 }
 
