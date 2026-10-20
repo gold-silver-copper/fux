@@ -59,6 +59,7 @@ pub(crate) const PROTECTED: u32 = 1 << 31;
 /// the text is.
 const KEPT: u32 = STYLE | HALVES | PROTECTED;
 const _: () = assert!(HALVES >> 22 == CellRef::HALVES as u32);
+const _: () = assert!(SHORT == 17 && SPILLED == 1 << 30);
 
 /// The longest cluster a short one is. A long cluster the row has no room
 /// for is cut to this.
@@ -119,6 +120,23 @@ impl Compact {
     /// Whether any of `cells` keeps its text in its row's (`Text`).
     pub(crate) fn any_spilled(cells: &[Self]) -> bool {
         Self::any_of(cells, SPILLED)
+    }
+    /// The bytes of text `cells` keep in their row's (`Text`), as their
+    /// locators say: a sum without a branch a cell.
+    pub(crate) fn spilled_bytes(cells: &[Self]) -> usize {
+        let bytes = (cells.iter()).fold(0u32, |bytes, cell| {
+            let (_, len, spilled) = cell.shape();
+            bytes.wrapping_add(len & 0u32.wrapping_sub(spilled))
+        });
+        usize::try_from(bytes).unwrap_or(usize::MAX)
+    }
+    /// The cell in words, for passes of word arithmetic over runs of
+    /// cells: where its text starts, its length, as `locator` reads them
+    /// for a spilled cell, and 1 if it is spilled.
+    #[inline(always)]
+    fn shape(&self) -> (u32, u32, u32) {
+        let text = u32::from_le_bytes(self.text);
+        (text & 0xff_ffff, text >> 24, (self.word >> 30) & 1)
     }
     /// Whether any of `cells` is protected or either half of a wide glyph.
     pub(crate) fn any_protected_or_halves(cells: &[Self]) -> bool {
@@ -208,6 +226,7 @@ impl Compact {
     /// Whether the cell, of a row whose text is `text`, holds what `other`
     /// holds, its text being `held`: the same text, halves, style and
     /// protection.
+    #[cfg(test)]
     pub(crate) fn holds(&self, text: &Text, other: &Self, held: &str) -> bool {
         if !self.is_spilled() && !other.is_spilled() {
             return self == other;
@@ -301,6 +320,12 @@ impl Compact {
         let [a, b, c, len] = self.text;
         let start = usize::try_from(u32::from_le_bytes([a, b, c, 0])).ok()?;
         Some((start, usize::from(len)))
+    }
+    /// Where a spilled cell's text starts in its part of its row's text.
+    #[inline]
+    fn start(&self) -> usize {
+        let [a, b, c, _] = self.text;
+        usize::try_from(u32::from_le_bytes([a, b, c, 0])).unwrap_or(usize::MAX)
     }
     /// Where a long cluster's text is in its row's long text (`long`), or
     /// a short one's in its short text.
@@ -449,6 +474,149 @@ impl Text {
     fn short_limit(cells: usize) -> usize {
         cells.saturating_mul(SHORT)
     }
+    /// The long clusters' part (`long`), or the short ones'.
+    fn part(&self, long: bool) -> &Vec<u8> {
+        if long { &self.long } else { &self.short }
+    }
+    fn part_mut(&mut self, long: bool) -> &mut Vec<u8> {
+        if long {
+            &mut self.long
+        } else {
+            &mut self.short
+        }
+    }
+}
+
+/// Text taken from one row's to another's a cell at a time, joined while
+/// each cell's follows the last's on both sides, to be compared and copied
+/// as one run: `len` bytes from `from` in one row's part `long` to `to` in
+/// the other's.
+#[derive(Clone, Copy, Default)]
+struct Run {
+    long: bool,
+    from: usize,
+    to: usize,
+    len: usize,
+}
+
+impl Run {
+    /// Whether a cell's text, from `from` to `to` in part `long`, follows
+    /// the run's on both sides.
+    #[inline]
+    fn follows(&self, long: bool, from: usize, to: usize) -> bool {
+        self.long == long
+            && self.from.saturating_add(self.len) == from
+            && self.to.saturating_add(self.len) == to
+    }
+    /// Writes the run's bytes in `from` over those in `to` where they
+    /// differ: whether they did; none if either side is not there.
+    fn copy(&self, from: &Text, to: &mut Text) -> Option<bool> {
+        let source = (from.part(self.long)).get(self.from..self.from.saturating_add(self.len))?;
+        let target = (to.part_mut(self.long)).get_mut(self.to..self.to.saturating_add(self.len))?;
+        work!(text, source.len());
+        Some(source != target && crate::copy_from(target, source).is_some())
+    }
+}
+
+/// A part of a row's text that `Line::write` appends clusters to from
+/// another row's: its `limit`, the `end` of the other's, the bytes `from`
+/// to `to` of the other's not yet appended, and the bytes it will hold
+/// once they are (`held`).
+#[derive(Clone, Copy)]
+struct Part {
+    limit: usize,
+    end: usize,
+    from: usize,
+    to: usize,
+    held: usize,
+}
+
+impl Part {
+    fn new(limit: usize, end: usize, held: usize) -> Self {
+        Self {
+            limit,
+            end,
+            from: 0,
+            to: 0,
+            held,
+        }
+    }
+    /// Takes the `len` bytes of a cluster from `start` of `from` into the
+    /// run, if they fit, as `store_short` and `store_long` would store
+    /// them without compacting (a text of four bytes or fewer they would
+    /// keep inline): where they will be. The run so far goes into `to`
+    /// first if they do not follow it.
+    #[inline(always)]
+    fn take(&mut self, start: usize, len: usize, from: &[u8], to: &mut Vec<u8>) -> Option<u32> {
+        let end = start.saturating_add(len);
+        let held = self.held.saturating_add(len);
+        if len <= 4 || end > self.end || held > self.limit {
+            return None;
+        }
+        let first = u32::try_from(self.held).ok()?;
+        if self.to != start {
+            self.flush(from, to);
+            self.from = start;
+        }
+        (self.to, self.held) = (end, held);
+        Some(first)
+    }
+    /// Appends the run's bytes of `from` to `to`.
+    fn flush(&mut self, from: &[u8], to: &mut Vec<u8>) {
+        if let Some(bytes) = from.get(self.from..self.to) {
+            work!(text, bytes.len());
+            to.extend_from_slice(bytes);
+        }
+        (self.from, self.to) = (0, 0);
+    }
+}
+
+/// A part of a row's text, the long clusters' (`true`) or the short ones',
+/// and bytes of it.
+type Place = (bool, std::ops::Range<usize>);
+
+/// Where the text of `cells` is in their row's, if every one is a cluster
+/// of more than four bytes in one part, each's text right after the one's
+/// before it: that part (`long`) and those bytes. A pass of word
+/// arithmetic, with no branch a cell; none for no cells.
+fn run_of(cells: &[Compact]) -> Option<Place> {
+    let (first, last) = (cells.first()?, cells.last()?);
+    let (start, len, spilled) = first.shape();
+    let mut odd = (spilled ^ 1) | u32::from(len <= 4);
+    for (a, b) in cells.iter().zip(cells.iter().skip(1)) {
+        let ((start, len, _), (next, len_b, spilled)) = (a.shape(), b.shape());
+        odd |= (spilled ^ 1) | u32::from(len_b <= 4) | (start.wrapping_add(len) ^ next);
+        odd |= u32::from(len > 17) ^ u32::from(len_b > 17);
+    }
+    let (end, len_last, _) = last.shape();
+    let bytes = usize::try_from(start).ok()?..usize::try_from(end.wrapping_add(len_last)).ok()?;
+    (odd == 0).then_some((len > 17, bytes))
+}
+
+/// `run_of` for `cells` and the cells `olds` they go over, each a cluster
+/// as long as the one it goes over: each's part and bytes, and whether a
+/// cell's word differs from the one's it goes over.
+fn runs_over(cells: &[Compact], olds: &[Compact]) -> Option<(Place, Place, bool)> {
+    let (first, last) = (cells.first()?, cells.last()?);
+    let (old_first, old_last) = (olds.first()?, olds.last()?);
+    let shapes = |cell: &Compact, old: &Compact| (cell.shape(), old.shape(), cell.word ^ old.word);
+    let ((start, len, spilled), (at, held, kept), word) = shapes(first, old_first);
+    let (mut odd, mut words) = ((spilled & kept) ^ 1 | (len ^ held), word);
+    let pairs = (cells.iter().zip(olds)).zip(cells.iter().skip(1).zip(olds.iter().skip(1)));
+    for ((a, x), (b, y)) in pairs {
+        let (((start, len, _), (at, _, _), _), ((next, len_b, spilled), (to, held, kept), word)) =
+            (shapes(a, x), shapes(b, y));
+        odd |= (spilled & kept) ^ 1 | (len_b ^ held);
+        odd |= (start.wrapping_add(len) ^ next) | (at.wrapping_add(len) ^ to);
+        odd |= u32::from(len > 17) ^ u32::from(len_b > 17);
+        words |= word;
+    }
+    let ((end, len_last, _), (to, _, _), _) = shapes(last, old_last);
+    let bytes = |start: u32, end: u32| {
+        Some(usize::try_from(start).ok()?..usize::try_from(end.wrapping_add(len_last)).ok()?)
+    };
+    let (source, target) = (bytes(start, end)?, bytes(at, to)?);
+    (odd == 0).then_some(((len > 17, source), (len > 17, target), words != 0))
 }
 
 /// The text's part of the invariant checker (threats.md section 6, 13).
@@ -611,7 +779,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             // that leaves no room either, compacting would copy it all for
             // nothing (threats.md B31).
             if self.live_long().saturating_add(text.len()) <= limit {
-                self.compact(true);
+                self.compact(true, 0..0);
             }
         }
         let long = &mut self.text.long;
@@ -648,7 +816,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
                 *slot = slot.blanked();
             }
-            self.compact(false);
+            self.compact(false, 0..0);
         }
         let short = &mut self.text.short;
         if let (Ok(start), Ok(len), Some(slot)) = (
@@ -677,7 +845,10 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     }
 
     /// Whether cell `i` holds text of `len` bytes in the row's text, which
-    /// a cluster as long can take over where it lies (`replace`).
+    /// a cluster as long can take over where it lies (`replace`): with
+    /// `replace`, the copy a cell at a time that the tests hold
+    /// `Line::copy`'s runs to.
+    #[cfg(test)]
     pub(crate) fn replaces(&self, i: usize, len: usize) -> bool {
         (self.cells.get(i))
             .and_then(|c| c.as_ref().locator())
@@ -687,6 +858,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// over the text the cell holds, as long (`replaces`): no room taken,
     /// so no compaction, as a copy of clusters over clusters of their size
     /// would otherwise need (B35).
+    #[cfg(test)]
     pub(crate) fn replace(&mut self, i: usize, cell: Compact, text: &str) {
         let Some((start, len)) = (self.cells.get(i)).and_then(|c| c.as_ref().locator()) else {
             return;
@@ -713,32 +885,41 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// row's text holds that is dead, and no write compacts the row again
     /// (DECCRA, B35).
     pub(crate) fn clear_for(&mut self, span: std::ops::Range<usize>) {
-        let cells = self.cells.get_mut(span).unwrap_or_default();
+        let cells = self.cells.get_mut(span.clone()).unwrap_or_default();
         for cell in cells.iter_mut().map(AsMut::as_mut) {
             *cell = cell.blanked();
         }
+        let _ = self.clear_outside(span);
+    }
+    /// `clear_for` but for blanking the span, whose cells are left as they
+    /// were, for the caller to write or blank them all: the text the other
+    /// cells hold kept, and the row's text as it was given back, where the
+    /// span's cells find theirs.
+    pub(crate) fn clear_outside(&mut self, span: std::ops::Range<usize>) -> Text {
+        let mut old = Text::default();
         for long in [true, false] {
-            let store = if long {
-                &self.text.long
-            } else {
-                &self.text.short
-            };
-            if !store.is_empty() {
-                self.compact(long);
+            if !self.text.part(long).is_empty() {
+                *old.part_mut(long) = self.compact(long, span.clone());
             }
         }
+        old
     }
 
-    /// Keeps only the text of long clusters (`long`), or of short ones,
-    /// relocating their cells.
-    fn compact(&mut self, long: bool) {
+    /// Keeps only the text of long clusters (`long`), or of short ones, of
+    /// the cells outside `skip`, relocating their cells; the part as it
+    /// was.
+    fn compact(&mut self, long: bool, skip: std::ops::Range<usize>) -> Vec<u8> {
         let store = if long {
             &mut self.text.long
         } else {
             &mut self.text.short
         };
         let old = std::mem::take(store);
-        for cell in self.cells.iter_mut().map(AsMut::as_mut) {
+        let (head, rest) = (self.cells)
+            .split_at_mut_checked(skip.start.min(self.cells.len()))
+            .unwrap_or_default();
+        let tail = rest.get_mut(skip.len()..).unwrap_or_default();
+        for cell in head.iter_mut().chain(tail).map(AsMut::as_mut) {
             let Some(range) = cell.spilled(long) else {
                 continue;
             };
@@ -753,6 +934,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
         // What it copied: the text the cells hold.
         spend!(text, store.len());
+        old
     }
 
     /// The text of `cells`, whose text is in `old`, stored again within
@@ -797,6 +979,215 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         self.cells
             .get(i)
             .map_or("", |cell| self.text.of(cell.as_ref()))
+    }
+}
+
+/// What a grid's row does with cells another row's text holds.
+impl Line<'_> {
+    /// Writes `cells` over the cells `span`, after `clear_outside(span)`,
+    /// their text in `from`: as `clear_for` then `write` would.
+    pub(crate) fn write_over(
+        &mut self,
+        span: std::ops::Range<usize>,
+        cells: &[Compact],
+        from: &Text,
+    ) {
+        if span.len() == cells.len() && self.write_runs(span.start, cells, from) {
+            return;
+        }
+        let at = span.start;
+        let blank = self.cells.get_mut(span).unwrap_or_default();
+        for cell in blank {
+            *cell = cell.blanked();
+        }
+        self.write(at, cells, from);
+    }
+    /// Writes `cells` from cell `at` on, their text in `from`, another
+    /// row's: each as `set` writes a cluster and as stored otherwise. The
+    /// text of clusters that follow one another in `from` goes in a run at
+    /// once while it fits, where `set` would append each.
+    pub(crate) fn write(&mut self, at: usize, cells: &[Compact], from: &Text) {
+        let width = self.cells.len();
+        let short = Part::new(
+            Text::short_limit(width),
+            from.short.len(),
+            self.text.short.len(),
+        );
+        let long = Part::new(
+            Text::long_limit(width),
+            from.long.len(),
+            self.text.long.len(),
+        );
+        let mut parts = [short, long];
+        for (i, &cell) in (at..).zip(cells) {
+            let Some(slot) = self.cells.get_mut(i) else {
+                break;
+            };
+            if !cell.is_spilled() {
+                *slot = cell;
+                continue;
+            }
+            let [.., n] = cell.text;
+            let (start, len) = (cell.start(), usize::from(n));
+            let [short, long] = &mut parts;
+            // Each part on its own, so that what each keeps stays in
+            // registers.
+            let taken = if len > SHORT {
+                long.take(start, len, &from.long, &mut self.text.long)
+            } else {
+                short.take(start, len, &from.short, &mut self.text.short)
+            };
+            match taken {
+                Some(first) => *slot = cell.with_spilled(first, n),
+                None => parts = self.set_from(i, cell, from, parts),
+            }
+        }
+        let [mut short, mut long] = parts;
+        short.flush(&from.short, &mut self.text.short);
+        long.flush(&from.long, &mut self.text.long);
+    }
+    /// `write` of cells that are clusters whose text is one run of a part
+    /// of `from` (`run_of`) and fits whole: each cell's text where those
+    /// before it put it, moved by as much, and the run appended at once.
+    /// Whether it was so.
+    fn write_runs(&mut self, at: usize, cells: &[Compact], from: &Text) -> bool {
+        let Some((long, bytes)) = run_of(cells) else {
+            return false;
+        };
+        let width = self.cells.len();
+        let limit = if long {
+            Text::long_limit(width)
+        } else {
+            Text::short_limit(width)
+        };
+        let held = self.text.part(long).len();
+        let end = held.saturating_add(bytes.len());
+        let (Some(text), Ok(by), Ok(source)) = (
+            from.part(long).get(bytes.clone()),
+            u32::try_from(held),
+            u32::try_from(bytes.start),
+        ) else {
+            return false;
+        };
+        let slots = (at.checked_add(cells.len())).and_then(|stop| self.cells.get_mut(at..stop));
+        // Every start in 24 bits, as `with_spilled` stores it.
+        let Some(slots) = slots.filter(|_| end <= limit && end < 1 << 24) else {
+            return false;
+        };
+        // Each start moves from `bytes`' to `held`'s, its length above it
+        // left as it is: no start passes 24 bits.
+        let by = by.wrapping_sub(source);
+        for (slot, cell) in slots.iter_mut().zip(cells) {
+            let text = u32::from_le_bytes(cell.text).wrapping_add(by).to_le_bytes();
+            *slot = Compact {
+                text,
+                word: cell.word,
+            };
+        }
+        work!(text, text.len());
+        self.text.part_mut(long).extend_from_slice(text);
+        true
+    }
+    /// `write`'s cluster that does not fit as it is: what is pending goes
+    /// in first, then `set` stores it.
+    #[cold]
+    #[inline(never)]
+    fn set_from(&mut self, i: usize, cell: Compact, from: &Text, parts: [Part; 2]) -> [Part; 2] {
+        let [mut short, mut long] = parts;
+        short.flush(&from.short, &mut self.text.short);
+        long.flush(&from.long, &mut self.text.long);
+        self.set(i, cell, from.of(&cell));
+        (short.held, long.held) = (self.text.short.len(), self.text.long.len());
+        [short, long]
+    }
+
+    /// Copies `cells`, their text in `from`, another row's, over cells
+    /// `at` on, as a margin scroll copies a span: whether a cell changed.
+    /// While each cluster goes over one as long, its text is written where
+    /// that one's lies, which needs no room, a run of them at once and
+    /// only where it differs; at the first that does not, the span is
+    /// cleared and written whole (`clear_for`, `write`), as the row may
+    /// have no room left.
+    pub(crate) fn copy(&mut self, at: usize, cells: &[Compact], from: &Text) -> bool {
+        if let Some(changed) = self.copy_runs(at, cells, from) {
+            return changed;
+        }
+        let span = at..at.saturating_add(cells.len());
+        let Some(olds) = self.cells.get_mut(span.clone()) else {
+            return false;
+        };
+        let mut changed = false;
+        let mut run = Run::default();
+        let mut in_place = true;
+        for (cell, slot) in cells.iter().zip(olds.iter_mut()) {
+            let old = *slot;
+            if !cell.is_spilled() {
+                if *cell != old {
+                    (*slot, changed) = (*cell, true);
+                }
+                continue;
+            }
+            let ([.., len], [.., was]) = (cell.text, old.text);
+            if !old.is_spilled() || len != was {
+                in_place = false;
+                break;
+            }
+            let (source, target, long) = (cell.start(), old.start(), usize::from(len) > SHORT);
+            let len = usize::from(len);
+            // The cell's halves and style, its text where the old one's is.
+            let new = Compact {
+                text: old.text,
+                word: (cell.word & KEPT) | SPILLED,
+            };
+            if new != old {
+                (*slot, changed) = (new, true);
+            }
+            if run.follows(long, source, target) {
+                run.len = run.len.saturating_add(len);
+                continue;
+            }
+            let Some(differed) = run.copy(from, self.text) else {
+                in_place = false;
+                break;
+            };
+            changed |= differed;
+            run = Run {
+                long,
+                from: source,
+                to: target,
+                len,
+            };
+        }
+        if in_place && let Some(differed) = run.copy(from, self.text) {
+            return changed | differed;
+        }
+        // The cells written so far are written again with the rest.
+        let _ = self.clear_outside(span.clone());
+        self.write_over(span, cells, from);
+        true
+    }
+
+    /// `copy` of cells that are clusters whose text is one run of a part
+    /// of `from`, over cells that are clusters as long whose text is one
+    /// run of that part of this row's (`runs_over`): the cells' words and
+    /// the runs compared and written at once. Whether a cell changed, if it
+    /// was so.
+    fn copy_runs(&mut self, at: usize, cells: &[Compact], from: &Text) -> Option<bool> {
+        let olds = self.cells.get_mut(at..at.checked_add(cells.len())?)?;
+        let ((long, source), (_, target), words) = runs_over(cells, olds)?;
+        let text = from.part(long).get(source)?;
+        let held = self.text.part_mut(long).get_mut(target)?;
+        // Each cell its cluster's halves and style, its text where the old
+        // one's is; and the run over theirs.
+        for (old, cell) in olds.iter_mut().zip(cells).filter(|_| words) {
+            old.word = cell.word;
+        }
+        work!(text, text.len());
+        let differs = text != &held[..];
+        if differs {
+            let _ = crate::copy_from(held, text);
+        }
+        Some(words || differs)
     }
 }
 
