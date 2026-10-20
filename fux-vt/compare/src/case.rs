@@ -175,17 +175,159 @@ fn blank(snapshot: &Snapshot, y: usize, x: usize) -> bool {
         .is_some_and(snapshot::Cell::is_blank)
 }
 
+/// Where the subject fails the named case `name` of the family at
+/// `family`, judged at a step from `subject`, the snapshot of the engine
+/// `subject_engine`, and the panel's `verdicts`; empty if it passes.
+///
+/// In a family that does not differ by a decision, the case is judged on
+/// every field by the panel's vote, and a case recorded as differing
+/// (`cases::DIFFERING`) only where its record says it does.
+///
+/// In a family a standard decides, the case's expected fields
+/// ([`cases::EXPECTED`]) judge what the section settles: each one the
+/// subject can tell must have its expected value, whatever the engines
+/// do. The deciding engines (`by`) judge the rest, by their vote, so an
+/// engine that departs from the section never outvotes it, and with no
+/// deciders the section alone judges. A family xterm decides is judged by
+/// its deciders' vote, and any other by the whole panel's. An error if a
+/// case of a family a standard decides has no expected fields, or one
+/// names a field no snapshot has. The expected fields, and whether a case
+/// recorded as differing still differs, are judged `at_end` only, after
+/// the case's last step; the deciders never judge what the section settles.
+///
+/// [`cases::EXPECTED`]: crate::cases::EXPECTED
+pub fn judged(
+    family: usize,
+    name: &str,
+    subject_engine: usize,
+    subject: &Snapshot,
+    verdicts: &[Verdict],
+    at_end: bool,
+) -> Result<Vec<String>, String> {
+    let Some(families::Status::Decided { by, authority, .. }) =
+        FAMILIES.get(family).map(|f| f.status)
+    else {
+        // A named case is judged on every field: one recorded as
+        // differing (`cases::DIFFERING`) only where its record says, and
+        // it must still differ there.
+        let outvoted = outvoted_on(verdicts);
+        let Some(record) = crate::cases::differing(name) else {
+            return Ok(outvoted);
+        };
+        let covered = |key: &String| record.on.iter().any(|p| families::glob(p, key));
+        let mut out = Vec::new();
+        if at_end && !outvoted.iter().any(covered) {
+            out.push(format!(
+                "{name}: recorded as differing ({}), but no longer does: remove its record",
+                record.on.join(", ")
+            ));
+        }
+        out.extend(outvoted.into_iter().filter(|k| !covered(k)));
+        return Ok(out);
+    };
+    let deciders: Vec<Verdict> = verdicts
+        .iter()
+        .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
+        .cloned()
+        .collect();
+    let mut out = Vec::new();
+    let mut settled: &[(&str, &str)] = &[];
+    if let families::Authority::Standard { .. } = authority {
+        let expected = crate::cases::expected(name).ok_or(format!(
+            "{name}: its family's section decides, and it has no expected fields"
+        ))?;
+        let can = engine::kind(subject_engine).map_or(engine::Can::ALL, |k| k.can);
+        // The fields are what the section leaves after the last step.
+        for &(key, value) in expected.fields.iter().filter(|_| at_end) {
+            let (field, got) =
+                snapshot::read(subject, key).ok_or(format!("{name}: no field {key:?}"))?;
+            if field.told_by(&can) && got != value {
+                out.push(format!(
+                    "{key}: {} gives {value:?}, {} {got:?}",
+                    expected.section,
+                    engine::name(subject_engine)
+                ));
+            }
+        }
+        settled = expected.fields;
+    }
+    out.extend(
+        outvoted_on(&deciders)
+            .into_iter()
+            .filter(|key| !settled.iter().any(|(k, _)| snapshot::covers(k, key))),
+    );
+    Ok(out)
+}
+
+/// Runs the named case `name`, of the family at `family`, beside `panel`,
+/// judging it as [`judged`] does after every step, and stopping at the
+/// first step it fails. The outcome there (at the end if it never fails),
+/// where it fails (empty: it passes), and whether that is the last step.
+pub fn judge_named(
+    case: &Case,
+    panel: &[usize],
+    family: usize,
+    name: &str,
+) -> Result<(Outcome, Vec<String>, bool), String> {
+    let last = case.steps.len();
+    let at = std::cell::Cell::new(0usize);
+    let error = std::cell::RefCell::new(None);
+    let outcome = case.run_judged(panel, true, |base, verdicts| {
+        let i = at.get();
+        at.set(i.saturating_add(1));
+        match judged(family, name, case.subject, base, verdicts, i == last) {
+            Ok(failures) => !failures.is_empty(),
+            Err(e) => {
+                *error.borrow_mut() = Some(e);
+                true
+            }
+        }
+    })?;
+    if let Some(e) = error.into_inner() {
+        return Err(e);
+    }
+    let at_end = outcome.step.is_none_or(|s| s == last);
+    let failures = judged(
+        family,
+        name,
+        case.subject,
+        &outcome.fux,
+        &outcome.verdicts,
+        at_end,
+    )?;
+    Ok((outcome, failures, at_end))
+}
+
 fn outvoted(verdicts: &[Verdict]) -> bool {
     !outvoted_on(verdicts).is_empty()
 }
 
-/// What a panic said, from its payload.
+std::thread_local! {
+    /// Where this thread last panicked, as the panic hook saw it.
+    static PANICKED_AT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The panic hook compare runs with: it prints nothing (an engine's panic
+/// costs its vote and is reported where it is caught, `guarded`), but
+/// keeps where it happened, so the report names its file and line.
+pub fn note_panic(info: &std::panic::PanicHookInfo<'_>) {
+    let at = info
+        .location()
+        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
+    let _ = PANICKED_AT.try_with(|cell| cell.replace(at));
+}
+
+/// What a panic said, from its payload, and where it was.
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
+    let said = payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic".to_owned())
+        .unwrap_or_else(|| "a panic".to_owned());
+    match PANICKED_AT.try_with(|cell| cell.take()).ok().flatten() {
+        Some(at) => format!("{said} (at {at})"),
+        None => said,
+    }
 }
 
 /// Calls into an engine, turning a panic into an error, so one engine's
@@ -208,6 +350,34 @@ pub fn verdict(subject: usize, base: &Snapshot, engine: usize, snapshot: Snapsho
         differences: snapshot::differences(&base.masked(&can), &snapshot.masked(&can)),
         snapshot,
     }
+}
+
+/// `verdicts` compared again without the subject's mask: each engine's on
+/// every field it can tell, the subject's `base` read as it is. A field the
+/// subject cannot tell then differs wherever an engine shows it, so the
+/// judgement of these verdicts, less that of `verdicts`, is what the
+/// subject could not be judged on: coverage unavailable, not a pass. The
+/// device's state and the last row's wrap, which only fux-vt and xterm
+/// read, stay masked as `subject` masks them (`Can::device`): no other
+/// engine tells them, so they are left out of its comparison rather than
+/// making every point unavailable.
+pub fn reread(base: &Snapshot, verdicts: &[Verdict], subject: usize) -> Vec<Verdict> {
+    let device = engine::kind(subject)
+        .map_or(engine::Can::ALL, |k| k.can)
+        .device();
+    verdicts
+        .iter()
+        .map(|v| {
+            let can = engine::kind(v.engine)
+                .map_or(engine::Can::ALL, |k| k.can)
+                .and(device);
+            Verdict {
+                engine: v.engine,
+                differences: snapshot::differences(&base.masked(&can), &v.snapshot.masked(&can)),
+                snapshot: v.snapshot.clone(),
+            }
+        })
+        .collect()
 }
 
 /// The same step judged with another subject: `to`, an engine of
@@ -263,7 +433,8 @@ impl Running {
 
     /// The subject's snapshot and each engine's verdict beside it. The
     /// subject is asked for the case's rows of history (fux-vt gives all it
-    /// keeps, whatever is asked), the engines for as many as it gave.
+    /// keeps, whatever is asked), the engines for the case's or as many as
+    /// it gave, the more: a subject that lost rows it should keep differs.
     fn compare(&mut self) -> Result<(Snapshot, Vec<Verdict>), String> {
         let subject = engine::name(self.subject);
         let history = self.history;
@@ -272,7 +443,7 @@ impl Running {
         let mut kept = Vec::with_capacity(self.engines.len());
         for (index, mut engine) in std::mem::take(&mut self.engines) {
             engine::kind(index).ok_or("no such engine")?;
-            match guarded(|| engine.snapshot(fux.history.len())) {
+            match guarded(|| engine.snapshot(history.max(fux.history.len()))) {
                 Ok(snapshot) => {
                     verdicts.push(verdict(self.subject, &fux, index, snapshot));
                     kept.push((index, engine));
@@ -387,6 +558,24 @@ impl Case {
         self.run(panel).is_ok_and(|o| !o.agrees())
     }
 
+    /// The output the engines had been given where `outcome` was judged:
+    /// that of the steps run by then, so that what a later step writes
+    /// does not decide what an earlier one made (the second of two regional
+    /// indicators written apart makes the first no longer alone).
+    pub fn output_judged(&self, outcome: &Outcome) -> Vec<u8> {
+        self.output_until(outcome.step.unwrap_or(self.steps.len()))
+    }
+
+    /// Every byte the first `steps` steps write, in order, resizes left out.
+    fn output_until(&self, steps: usize) -> Vec<u8> {
+        (self.steps.iter().take(steps))
+            .flat_map(|s| match s {
+                Step::Output(snippets) => snippets.iter().flat_map(|x| x.bytes.clone()).collect(),
+                Step::Resize(..) => Vec::new(),
+            })
+            .collect()
+    }
+
     /// The families the case's output comes from, by name, each once.
     pub fn families(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = Vec::new();
@@ -452,6 +641,12 @@ impl Case {
     /// then snippets, then bytes, and making the screen smaller, as long as
     /// it keeps differing; at most `budget` runs.
     pub fn shrink(&self, panel: &[usize], budget: usize) -> Case {
+        self.shrink_while(budget, |c| c.differs(panel))
+    }
+
+    /// The case shrunk as [`Case::shrink`] does, keeping each cut while
+    /// `keep` holds of it (it still differs; it still fails with an error).
+    pub fn shrink_while(&self, budget: usize, keep: impl Fn(&Case) -> bool) -> Case {
         let mut best = self.clone();
         let runs = std::cell::Cell::new(0usize);
         let try_it = |candidate: Case, best: &mut Case| -> bool {
@@ -459,7 +654,7 @@ impl Case {
                 return false;
             }
             runs.set(runs.get().saturating_add(1));
-            if candidate.differs(panel) {
+            if keep(&candidate) {
                 *best = candidate;
                 true
             } else {
@@ -623,6 +818,26 @@ fn size(r: &mut Rng, small: usize, large: usize) -> u16 {
     u16::try_from(n).unwrap_or(1)
 }
 
+/// A write's snippets as writes, a new one begun at each RIS: xterm 411
+/// clears its saved lines on RIS (VTReset, then ReallyReset's "clear
+/// savedLines"), and then ClearScreen's ScrollJump does the scroll its jump
+/// scroll held back from the same write, putting a row back into history,
+/// where fux-vt, as xterm means to, keeps none (`replay --engines xterm
+/// --size 1x1 --history 3 '-l\ec'`; as two writes, xterm agrees).
+fn ris_alone(snippets: Vec<Snippet>) -> Vec<Step> {
+    let mut steps: Vec<Vec<Snippet>> = vec![Vec::new()];
+    for snippet in snippets {
+        let starts = snippet.bytes == b"\x1bc" && steps.last().is_some_and(|s| !s.is_empty());
+        if starts {
+            steps.push(Vec::new());
+        }
+        if let Some(last) = steps.last_mut() {
+            last.push(snippet);
+        }
+    }
+    steps.into_iter().map(Step::Output).collect()
+}
+
 /// A random case drawing output from `families` (indices into
 /// [`FAMILIES`]); resizes come only from the resize family.
 pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
@@ -644,19 +859,18 @@ pub fn random(r: &mut Rng, families: &[usize], reflow: bool) -> Case {
         .filter(|&f| FAMILIES.get(f).is_some_and(|f| f.name != families::RESIZE))
         .collect();
     let steps = (0..r.below(10).saturating_add(1))
-        .map(|_| {
+        .flat_map(|_| {
             if resizes && (output.is_empty() || r.chance(15)) {
-                Step::Resize(size(r, 8, 40), size(r, 16, 100))
+                vec![Step::Resize(size(r, 8, 40), size(r, 16, 100))]
             } else {
-                Step::Output(
-                    (0..r.below(10).saturating_add(1))
-                        .filter_map(|_| {
-                            let family = *r.pick(&output)?;
-                            let bytes = (FAMILIES.get(family)?.generate)(r);
-                            Some(Snippet { family, bytes })
-                        })
-                        .collect(),
-                )
+                let snippets: Vec<Snippet> = (0..r.below(10).saturating_add(1))
+                    .filter_map(|_| {
+                        let family = *r.pick(&output)?;
+                        let bytes = (FAMILIES.get(family)?.generate)(r);
+                        Some(Snippet { family, bytes })
+                    })
+                    .collect();
+                ris_alone(snippets)
             }
         })
         .collect();
@@ -745,6 +959,65 @@ mod tests {
 
     const PEN: Color = Color::Rgb(10, 20, 30);
 
+    /// A departure is looked for in the output given by the step where
+    /// the case was judged, not in what later steps write.
+    #[test]
+    fn the_output_judged_is_that_of_the_steps_run() {
+        let step = |b: &[u8]| {
+            Step::Output(vec![Snippet {
+                family: 0,
+                bytes: b.to_vec(),
+            }])
+        };
+        let case = Case {
+            rows: 1,
+            cols: 2,
+            history: 0,
+            reflow: true,
+            newline_before_resize: true,
+            steps: vec![step("\u{1f1f8}".as_bytes()), step("\u{1f1fa}".as_bytes())],
+            subject: FUX_VT,
+        };
+        let outcome = |step| super::Outcome {
+            step,
+            fux: snapshot::Snapshot::default(),
+            verdicts: Vec::new(),
+            abstained: Vec::new(),
+        };
+        assert_eq!(
+            case.output_judged(&outcome(Some(1))),
+            "\u{1f1f8}".as_bytes()
+        );
+        assert_eq!(case.output_judged(&outcome(Some(0))), b"");
+        assert_eq!(
+            case.output_judged(&outcome(None)),
+            "\u{1f1f8}\u{1f1fa}".as_bytes()
+        );
+    }
+
+    /// A random case's RIS begins a write of its own (FA-E2-1): in no
+    /// write of the reset family's cases does RIS follow other output.
+    #[test]
+    fn ris_is_written_alone_in_random_cases() {
+        let families = [
+            crate::families::find("reset"),
+            crate::families::find("text"),
+        ];
+        let families: Vec<usize> = families.into_iter().flatten().collect();
+        let mut r = crate::rng::Rng::new(1);
+        let mut seen = 0usize;
+        for _ in 0..500 {
+            for step in super::random(&mut r, &families, true).steps {
+                if let Step::Output(snippets) = step {
+                    let ris = snippets.iter().position(|s| s.bytes == b"\x1bc");
+                    assert!(ris.is_none_or(|i| i == 0), "{snippets:?}");
+                    seen = seen.saturating_add(usize::from(ris.is_some()));
+                }
+            }
+        }
+        assert!(seen > 100, "{seen}");
+    }
+
     /// A screen of one cell: its text, foreground and whether it is bold.
     fn screen(text: &str, fg: Color, bold: bool) -> Snapshot {
         let style = Style {
@@ -813,6 +1086,255 @@ mod tests {
             ["cell (0,0) fg"]
         );
         Ok(())
+    }
+
+    /// A screen of plain text rows, `cols` wide, with the cursor at `at`
+    /// and a wrap pending or not.
+    fn text(rows: &[&str], cols: usize, at: (u16, u16), pending_wrap: bool) -> Snapshot {
+        let screen = rows
+            .iter()
+            .map(|row| {
+                let mut cells: Vec<Cell> = row
+                    .chars()
+                    .map(|c| Cell::new(&c.to_string(), Width::Narrow, Style::default()))
+                    .collect();
+                cells.resize(cols, Cell::new("", Width::Narrow, Style::default()));
+                Line {
+                    cells,
+                    wrapped: false,
+                    prompt: false,
+                    unread_from: None,
+                }
+            })
+            .collect();
+        Snapshot {
+            rows: u16::try_from(rows.len()).unwrap_or(0),
+            cols: u16::try_from(cols).unwrap_or(0),
+            cursor: at,
+            pending_wrap,
+            autowrap: true,
+            cursor_visible: true,
+            screen,
+            ..Snapshot::default()
+        }
+    }
+
+    /// In a family a standard decides, the section's expected fields judge
+    /// what it settles and the deciders the rest: xterm keeping a wrap
+    /// pending through ED (the standard: ED ends it, and the next glyph
+    /// sets it again in the last column) outvotes no one, while fux-vt
+    /// departing from the section fails whatever xterm does, and xterm
+    /// still decides a field the section leaves open. Under the rule
+    /// before (`cases`: xterm's vote alone), the first passed only if
+    /// xterm agreed. A family no engine follows (`pending-wrap`) is judged
+    /// by its section with no engine beside it.
+    #[test]
+    fn a_decided_family_is_judged_by_its_section_before_its_deciders() -> Result<(), String> {
+        let xterm = engine::find("xterm").ok_or("no xterm")?;
+        let erase = crate::families::find("erase").ok_or("no erase family")?;
+        let name = "ed-ends-a-pending-wrap";
+        let follows = text(&["abcdX", ""], 5, (0, 4), true);
+        let verdict = |fux: &Snapshot, other: Snapshot| Verdict {
+            engine: xterm,
+            differences: snapshot::differences(fux, &other),
+            snapshot: other,
+        };
+        let departs = verdict(&follows, text(&["abcdX", ""], 5, (0, 4), false));
+        let judged = |fux: &Snapshot, verdicts: &[Verdict]| {
+            super::judged(erase, name, FUX_VT, fux, verdicts, true)
+        };
+        assert_eq!(
+            judged(&follows, std::slice::from_ref(&departs))?,
+            Vec::<String>::new()
+        );
+        let reverted = text(&["abcdX", ""], 5, (0, 4), false);
+        let agrees = verdict(&reverted, reverted.clone());
+        let failures = judged(&reverted, &[agrees])?;
+        assert_eq!(failures.len(), 1);
+        assert!(
+            failures
+                .iter()
+                .all(|f| f.starts_with("pending wrap: DEC STD 070"))
+        );
+        let mut bold = follows.clone();
+        if let Some(cell) = bold.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.style.bold = true;
+        }
+        assert_eq!(
+            judged(&follows, &[verdict(&follows, bold)])?,
+            ["cell (0,0) bold"]
+        );
+        let wrap = crate::families::find("pending-wrap").ok_or("no pending-wrap family")?;
+        let el = "el-while-wrap-pending";
+        let erased = text(&["abcd"], 5, (0, 4), false);
+        assert_eq!(
+            super::judged(wrap, el, FUX_VT, &erased, &[], true)?,
+            Vec::<String>::new()
+        );
+        let kept = text(&["abcde"], 5, (0, 4), true);
+        assert_eq!(super::judged(wrap, el, FUX_VT, &kept, &[], true)?.len(), 2);
+        assert!(super::judged(wrap, "no-such-case", FUX_VT, &erased, &[], true).is_err());
+        Ok(())
+    }
+
+    /// A named case of a family that differs is judged on every field, as
+    /// one that agrees is (at the parent, `cases` printed "fails" and
+    /// passed): a DECSTBM case outvoted on the cursor fails. One recorded
+    /// as differing passes only on its recorded fields, and fails once it
+    /// no longer differs there.
+    #[test]
+    fn a_named_case_of_a_family_that_differs_must_agree() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let scroll = crate::families::find("scroll").ok_or("no scroll family")?;
+        let resize = crate::families::find("resize").ok_or("no resize family")?;
+        let fux = text(&["abc"], 5, (0, 3), false);
+        let verdict = |other: Snapshot| Verdict {
+            engine: ghostty,
+            differences: snapshot::differences(&fux, &other),
+            snapshot: other,
+        };
+        let moved = verdict(text(&["abc"], 5, (0, 0), false));
+        let judged =
+            |family, name, v: &[Verdict]| super::judged(family, name, FUX_VT, &fux, v, true);
+        assert_eq!(
+            judged(
+                scroll,
+                "decstbm-homes-to-the-origin",
+                std::slice::from_ref(&moved)
+            )?,
+            ["cursor"]
+        );
+        let saved = "reflow-moves-the-saved-cursor";
+        assert_eq!(
+            judged(resize, saved, std::slice::from_ref(&moved))?,
+            Vec::<String>::new()
+        );
+        let agrees = verdict(fux.clone());
+        let stale = judged(resize, saved, &[agrees])?;
+        assert!(
+            stale.iter().all(|f| f.contains("no longer does")) && stale.len() == 1,
+            "{stale:?}"
+        );
+        let other = verdict(text(&["abc"], 5, (0, 3), true));
+        assert_eq!(judged(resize, saved, &[other])?.len(), 2);
+        Ok(())
+    }
+
+    /// libvterm cannot tell dim: judged as the subject, a dim cell Ghostty
+    /// shows is compared with no one, so it agrees, by abstaining. Read
+    /// again without its mask, it differs there: coverage unavailable, not
+    /// a pass (at the parent such a point counted as agreeing).
+    #[test]
+    fn a_field_the_subject_cannot_tell_is_unavailable_not_a_pass() -> Result<(), String> {
+        let libvterm = engine::find("libvterm").ok_or("no libvterm")?;
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let mut dim = text(&["a"], 1, (0, 1), false);
+        if let Some(cell) = dim.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.style.dim = true;
+        }
+        let base = text(&["a"], 1, (0, 1), false);
+        let verdicts = vec![super::verdict(libvterm, &base, ghostty, dim)];
+        assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
+        let again = super::reread(&base, &verdicts, ghostty);
+        assert_eq!(outvoted_on(&again), ["cell (0,0) dim"]);
+        Ok(())
+    }
+
+    /// A subject that can't tell the device's state (HAR-46: the cursor's
+    /// shape, the tab stops, the line renditions, protection) agrees, read
+    /// again for coverage, where it agrees on everything else: those
+    /// fields are left out of its comparison, not counted unavailable at
+    /// every point (as they were, so Ghostty's corpus agreed on none).
+    #[test]
+    fn the_device_state_a_subject_cannot_tell_leaves_it_available() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let base = text(&["a"], 1, (0, 1), false);
+        let mut told = text(&["a"], 1, (0, 1), false);
+        told.device = snapshot::Device {
+            cursor_shape: 2,
+            tab_stops: vec![8, 16],
+            renditions: vec![1],
+            protected: vec![(0, 0)],
+        };
+        let verdicts = vec![super::verdict(ghostty, &base, FUX_VT, told)];
+        assert_eq!(outvoted_on(&verdicts), Vec::<String>::new());
+        let again = super::reread(&base, &verdicts, ghostty);
+        assert_eq!(outvoted_on(&again), Vec::<String>::new());
+        // fux-vt as the subject still is judged on them.
+        let fux = super::reread(&base, &verdicts, FUX_VT);
+        assert!(!outvoted_on(&fux).is_empty());
+        Ok(())
+    }
+
+    /// A named case is judged after every step: one that differs midway
+    /// and agrees at its end fails at the step it differs (judged at its
+    /// end alone, as `cases` did, it passed). Ghostty keeps synchronized
+    /// output through DECSTR, fux-vt ends it; resetting it agrees again.
+    #[test]
+    fn a_named_case_is_judged_after_every_step() -> Result<(), String> {
+        let ghostty = engine::find("ghostty").ok_or("no ghostty")?;
+        let sync = crate::families::find("sync").ok_or("no sync family")?;
+        let step = |bytes: &[u8]| {
+            Step::Output(vec![Snippet {
+                family: sync,
+                bytes: bytes.to_vec(),
+            }])
+        };
+        let case = Case {
+            rows: 1,
+            cols: 4,
+            history: 0,
+            reflow: true,
+            newline_before_resize: false,
+            steps: vec![step(b"\x1b[?2026h\x1b[!p"), step(b"\x1b[?2026l")],
+            subject: FUX_VT,
+        };
+        let at_end = case.run_until(&[ghostty], false)?;
+        assert!(at_end.agrees());
+        let (outcome, failures, last) = super::judge_named(&case, &[ghostty], sync, "midway")?;
+        assert_eq!(outcome.step, Some(1));
+        assert_eq!(failures, ["synchronized output"]);
+        assert!(!last);
+        Ok(())
+    }
+
+    /// A caught panic says where it was, the hook keeping its location (at
+    /// the parent the hook dropped it); a case shrinks while what it is
+    /// kept for still holds of it, as for a case that errs.
+    #[test]
+    fn a_panic_names_its_place_and_a_failing_case_shrinks() {
+        std::panic::set_hook(Box::new(super::note_panic));
+        // A panic as an engine's would be: an assertion that fails.
+        let caught = super::guarded(|| -> Result<(), String> {
+            let one = "a".len();
+            assert!(one == 2, "boom");
+            Ok(())
+        });
+        assert!(caught.is_err_and(|e| e.contains("boom (at ") && e.contains(".rs:")));
+        let text = |bytes: &[u8]| Snippet {
+            family: usize::MAX,
+            bytes: bytes.to_vec(),
+        };
+        let case = Case {
+            rows: 1,
+            cols: 4,
+            history: 0,
+            reflow: true,
+            newline_before_resize: false,
+            steps: vec![
+                Step::Output(vec![text(b"abc"), text(b"X")]),
+                Step::Output(vec![text(b"defgh")]),
+            ],
+            subject: FUX_VT,
+        };
+        let has_x = |c: &Case| {
+            c.steps.iter().any(|s| match s {
+                Step::Output(snippets) => snippets.iter().any(|n| n.bytes.contains(&b'X')),
+                Step::Resize(..) => false,
+            })
+        };
+        let small = case.shrink_while(100, has_x);
+        assert_eq!(small.steps, vec![Step::Output(vec![text(b"X")])]);
     }
 
     /// A one-step case of `rows` by `cols` with `subject` judged.

@@ -262,8 +262,17 @@ macro_rules! text_wire {
             fn put(&self, out: &mut Vec<u8>) {
                 self.to_string().put(out);
             }
+            /// Only the text `put` writes for the value: another
+            /// spelling of it (`S-.` for `.`) would decode to a value
+            /// that encodes to other bytes.
             fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-                String::get(r)?.parse().map_err(|_| Error::Bad($sigil))
+                let text = String::get(r)?;
+                let value: Self = text.parse().map_err(|_| Error::Bad($sigil))?;
+                if value.to_string() == text {
+                    Ok(value)
+                } else {
+                    Err(Error::Bad($sigil))
+                }
             }
         }
     };
@@ -487,6 +496,19 @@ mod tests {
         assert!(buttons.iter().all(|b| !b.reported().is_wheel()));
         let ways = [Wheel::Up, Wheel::Down, Wheel::Left, Wheel::Right];
         assert!(ways.iter().all(|w| w.reported().is_wheel()));
+    }
+
+    /// A value written as text reads back only from the text it writes:
+    /// `S-.` names the key `.` too, but decoded it would encode as `.`,
+    /// so a frame would not encode to the bytes it came from (the
+    /// `protocol` fuzz target's
+    /// `fuzz/corpus/protocol/regression-a-key-spelled-otherwise`).
+    #[test]
+    fn a_value_written_as_text_reads_back_only_from_that_text() {
+        let text = |t: &str| encode(&t.to_owned());
+        assert!(KeyPress::get(&mut Reader::new(&text("S-."))).is_err());
+        let dot = KeyPress::get(&mut Reader::new(&text("."))).ok();
+        assert_eq!(dot.map(|k| encode(&k)), Some(text(".")));
     }
 
     /// A variable's name from the wire is one a shell takes, as from the

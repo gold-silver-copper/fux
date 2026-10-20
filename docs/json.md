@@ -31,7 +31,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `mouse` | its program asked for mouse reports |
 | `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"other"` (a mode fux does not name), or `null` |
 | `bracketed_paste` | its program asked for bracketed paste |
-| `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, `width` by `height` pixels |
+| `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |

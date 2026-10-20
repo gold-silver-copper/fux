@@ -2,8 +2,18 @@
 //! `deep` and `fuzz`, which leave their results in DIR, gathered into
 //! `DIR/scoreboard.json` and rendered as `DIR/scoreboard.md`. An axis whose
 //! results are missing says so; nothing is run here.
+//!
+//! A check's results (`NAME.json`) are read only beside its stamp
+//! (`NAME.stamp.json`, which `harness.sh` writes) and only if it passed: a
+//! failed check's results are never ranked. Every stamp read must name one
+//! product commit, or the scoreboard fails: a column never mixes products.
+//!
+//! Each ranked row sets fux-vt beside the best other engine that measured
+//! it, with the row's own floor ([`Floor`]): ahead or behind only past it,
+//! a tie within it, and unranked where no floor was measured.
 
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -16,16 +26,31 @@ struct Row {
     beside: String,
 }
 
-fn load(dir: &Path, name: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(dir.join(name)).ok()?;
+/// A check's stamp, as `harness.sh` writes it.
+fn stamp(dir: &Path, check: &str) -> Option<Value> {
+    let text = std::fs::read_to_string(dir.join(format!("{check}.stamp.json"))).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-/// The stamp `run.sh` leaves beside each check: the commit, when, how long,
-/// and its exit status.
-fn stamp(dir: &Path, check: &str) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join(format!("{check}.stamp"))).ok()?;
-    Some(text.trim().to_owned())
+/// The results of `check` (`CHECK.json`), if its stamp says it ran and
+/// passed. A check that failed, or has no stamp, gives none: its results,
+/// if any, are not this run's to rank.
+fn load(dir: &Path, check: &str) -> Option<Value> {
+    let passed = stamp(dir, check).is_some_and(|s| count(&s, "/exit") == Some(0));
+    if !passed {
+        return None;
+    }
+    let text = std::fs::read_to_string(dir.join(format!("{check}.json"))).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// How a check's results are missing: not run, or run and failed.
+fn missing(dir: &Path, check: &str) -> String {
+    match stamp(dir, check).and_then(|s| count(&s, "/exit")) {
+        Some(0) => format!("{check}.json unreadable"),
+        Some(code) => format!("failed (exit {code})"),
+        None => MISSING.into(),
+    }
 }
 
 fn number(value: &Value, pointer: &str) -> Option<f64> {
@@ -47,19 +72,19 @@ fn percent(part: u64, whole: u64) -> String {
 const MISSING: &str = "not run";
 
 fn conformance(dir: &Path, rows: &mut Vec<Row>) {
-    let Some(esctest) = load(dir, "esctest.json") else {
-        rows.push(row("Conformance", "esctest2 pass rate", MISSING, ""));
+    let Some(esctest) = load(dir, "esctest") else {
+        let why = missing(dir, "esctest");
+        rows.push(row("Conformance", "esctest2 pass rate", &why, ""));
         return;
     };
     let rate = |results: &Value, place: &str| {
-        let passed = count(results, &format!("/{place}/passed"))?;
-        let failed = count(results, &format!("/{place}/failed"))?;
-        Some(percent(passed, passed.saturating_add(failed)))
+        let (passed, run) = passed(results, &format!("/{place}"))?;
+        Some(percent(passed, run))
     };
     let fux = rate(&esctest, "direct").unwrap_or_else(|| MISSING.into());
     // `deep`'s run in a fux pane has a file of its own, which `full`'s
     // direct run leaves alone.
-    let beside = load(dir, "esctest-in-fux.json")
+    let beside = load(dir, "esctest-in-fux")
         .and_then(|in_fux| rate(&in_fux, "in_fux"))
         .map_or_else(String::new, |r| format!("in a fux pane: {r}"));
     rows.push(row(
@@ -71,11 +96,11 @@ fn conformance(dir: &Path, rows: &mut Vec<Row>) {
 }
 
 fn real_programs(dir: &Path, rows: &mut Vec<Row>) {
-    let Some(corpus) = load(dir, "corpus.json") else {
+    let Some(corpus) = load(dir, "corpus") else {
         rows.push(row(
             "Real programs",
             "corpus recordings agreeing",
-            MISSING,
+            &missing(dir, "corpus"),
             "",
         ));
         return;
@@ -103,8 +128,8 @@ fn real_programs(dir: &Path, rows: &mut Vec<Row>) {
 }
 
 fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
-    let fux = load(dir, "transparency.json").map_or_else(
-        || MISSING.into(),
+    let fux = load(dir, "transparency").map_or_else(
+        || missing(dir, "transparency"),
         |t| {
             let results = t.get("results").and_then(Value::as_array);
             let all = results.map_or(0, Vec::len);
@@ -123,7 +148,7 @@ fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
             )
         },
     );
-    let beside = load(dir, "multiplexers.json")
+    let beside = load(dir, "multiplexers")
         .and_then(|m| m.get("results").and_then(Value::as_array).cloned())
         .map(|results| {
             results
@@ -150,8 +175,8 @@ fn multiplexer(dir: &Path, rows: &mut Vec<Row>) {
 }
 
 fn speed(dir: &Path, rows: &mut Vec<Row>) {
-    let against = load(dir, "against.json").map_or_else(
-        || MISSING.into(),
+    let against = load(dir, "against").map_or_else(
+        || missing(dir, "against"),
         |a| {
             let workloads = a.get("workloads").and_then(Value::as_array);
             let mut changes: Vec<f64> = workloads
@@ -175,35 +200,25 @@ fn speed(dir: &Path, rows: &mut Vec<Row>) {
         },
     );
     rows.push(row("Speed", "instructions per workload", &against, ""));
-    let Some(info) = load(dir, "info.json") else {
-        rows.push(row("Speed", "MB/s, fux-vt", MISSING, ""));
+    let Some(info) = load(dir, "info") else {
+        rows.push(row("Speed", "MB/s, fux-vt", &missing(dir, "info"), ""));
         return;
     };
-    let workloads = info
-        .get("engines_mb_per_s")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let fastest = workloads
-        .values()
-        .filter(|w| {
-            let fux = number(w, "/fux-vt").unwrap_or(0.0);
-            ["/ghostty", "/alacritty"]
-                .iter()
-                .all(|other| number(w, other).unwrap_or(0.0) <= fux)
-        })
+    let ranked = mb_per_s(dir, Some(&info));
+    let first = (ranked.iter())
+        .filter(|r| r.standing == Standing::Ahead)
         .count();
     let mbs = |engine: &str| {
-        number(&info, &format!("/engines_mb_per_s/corpus/{engine}"))
-            .map_or_else(|| "?".into(), |v| format!("{v:.0}"))
+        let at = format!("/engines_mb_per_s/equal-budget, in process/corpus/{engine}");
+        number(&info, &at).map_or_else(|| "?".into(), |v| format!("{v:.0}"))
     };
     rows.push(row(
         "Speed",
-        "MB/s on the corpus",
+        "MB/s on the corpus, equal budget, in process",
         &format!(
-            "{} (fastest on {fastest} of {} workloads)",
+            "{} (first on {first} of {} workloads; floor {MBS_FLOOR})",
             mbs("fux-vt"),
-            workloads.len()
+            ranked.len()
         ),
         &format!("Ghostty {}, alacritty {}", mbs("ghostty"), mbs("alacritty")),
     ));
@@ -222,12 +237,12 @@ fn per_mux(feel: &Value, what: &dyn Fn(&Value, &str) -> Option<String>) -> (Stri
 }
 
 fn feel(dir: &Path, rows: &mut Vec<Row>) {
-    let Some(feel) = load(dir, "feel.json") else {
+    let Some(feel) = load(dir, "feel") else {
         for (axis, measure) in [
             ("Latency", "keystroke p50 / p99"),
             ("Footprint", "per pane, idle CPU, bytes per frame"),
         ] {
-            rows.push(row(axis, measure, MISSING, ""));
+            rows.push(row(axis, measure, &missing(dir, "feel"), ""));
         }
         return;
     };
@@ -235,7 +250,13 @@ fn feel(dir: &Path, rows: &mut Vec<Row>) {
         let (fux, beside) = per_mux(&feel, &|f, m| {
             let p50 = number(f, &format!("/latency/{m}/{setup}/p50_ms"))?;
             let p99 = number(f, &format!("/latency/{m}/{setup}/p99_ms"))?;
-            Some(format!("{p50:.2} / {p99:.2} ms"))
+            let keys = |k: &str| count(f, &format!("/latency/{m}/{setup}/{k}")).unwrap_or(0);
+            Some(format!(
+                "{p50:.2} / {p99:.2} ms ({} of {} keys, {} timed out)",
+                keys("completed"),
+                keys("attempted"),
+                keys("timed_out")
+            ))
         });
         rows.push(row(
             "Latency",
@@ -347,122 +368,303 @@ fn row(axis: &'static str, measure: &str, fux: &str, beside: &str) -> Row {
     }
 }
 
-/// The checks `run.sh` stamps, in the order the commands run them.
-const CHECKS: &[&str] = &[
-    "corpus",
-    "transparency",
-    "random",
-    "cases",
-    "oracle",
-    "random-wide",
-    "random-no-reflow",
-    "esctest",
-    "against",
-    "verdicts-1",
-    "esctest-in-fux",
-    "multiplexers",
-    "feel",
-    "info",
-];
+/// A row's floor: how far apart two figures must be before one is ahead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Floor {
+    /// A count, the same on every run: any difference.
+    Exact,
+    /// A share of the best other figure, measured (A/A, or the spread of
+    /// the row's own repeats).
+    Percent(f64),
+    /// An amount: the measure's resolution (a page of memory, over what it
+    /// is divided by).
+    Absolute(f64),
+    /// None measured: the row is not ranked.
+    Unknown(&'static str),
+}
 
-/// `scoreboard DIR [--keep KEPT COMMIT DATE]`: with `--keep`, the
-/// scoreboard is also kept in the repository, in KEPT: `SCOREBOARD.md`, the
-/// last, and `history.jsonl`, a line per commit (a commit's line is
-/// replaced if it is the last).
-/// Where fux-vt stands beside Ghostty's core on one axis.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+impl Floor {
+    fn text(self) -> String {
+        match self {
+            Floor::Exact => "exact".into(),
+            Floor::Percent(p) => format!("{p:.2}%"),
+            Floor::Absolute(a) => format!("{a:.1}"),
+            Floor::Unknown(why) => format!("unknown: {why}"),
+        }
+    }
+}
+
+/// Where fux-vt stands beside the best other engine on a row.
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Standing {
+    /// Better by more than the floor.
     Ahead,
-    Level,
+    /// Within the floor.
+    Tie,
+    /// Worse by more than the floor.
     Behind,
+    /// Not ranked, and why: no floor, no other engine, or another
+    /// denominator.
+    Unranked(String),
 }
 
 impl Standing {
-    /// fux-vt's figure beside Ghostty's, level within 1%.
-    fn of(fux_vt: f64, ghostty: f64, higher_is_better: bool) -> Self {
-        let (better, worse) = if higher_is_better {
-            (fux_vt, ghostty)
+    fn word(&self) -> String {
+        match self {
+            Self::Ahead => "ahead".into(),
+            Self::Tie => "tie".into(),
+            Self::Behind => "behind".into(),
+            Self::Unranked(why) => format!("unranked: {why}"),
+        }
+    }
+
+    /// fux-vt's figure beside the best other's, with `floor`.
+    fn of(fux_vt: f64, best: f64, lower_is_better: bool, floor: Floor) -> Self {
+        let gap = if lower_is_better {
+            best - fux_vt
         } else {
-            (ghostty, fux_vt)
+            fux_vt - best
         };
-        if (fux_vt - ghostty).abs() <= ghostty.abs().max(fux_vt.abs()) * 0.01 {
-            Self::Level
-        } else if better > worse {
+        let allowed = match floor {
+            Floor::Exact => 0.0,
+            Floor::Percent(p) => best.abs() * p / 100.0,
+            Floor::Absolute(a) => a,
+            Floor::Unknown(why) => return Self::Unranked(why.into()),
+        };
+        if gap.abs() <= allowed {
+            Self::Tie
+        } else if gap > 0.0 {
             Self::Ahead
         } else {
             Self::Behind
         }
     }
-
-    fn word(self) -> &'static str {
-        match self {
-            Self::Ahead => "ahead",
-            Self::Level => "level",
-            Self::Behind => "behind",
-        }
-    }
 }
 
-/// One axis of fux-vt beside Ghostty's core (libghostty-vt).
-struct Versus {
-    axis: String,
+/// A ranked row: fux-vt's figure, the best other engine's, the floor, and
+/// where fux-vt stands.
+struct Ranked {
+    measure: String,
     fux_vt: String,
-    ghostty: String,
+    best: String,
+    floor: Floor,
     standing: Standing,
 }
 
-fn versus(
-    axis: String,
-    (fux_vt, ghostty): (f64, f64),
-    higher_is_better: bool,
+/// The row `measure` from each engine's figure in `figures`: fux-vt beside
+/// the best of the others, `shown` as text; `None` if fux-vt has none.
+fn rank(
+    measure: String,
+    figures: &[(String, f64)],
+    lower_is_better: bool,
+    floor: Floor,
     shown: &dyn Fn(f64) -> String,
-) -> Versus {
-    Versus {
-        axis,
+) -> Option<Ranked> {
+    let fux_vt = figures.iter().find(|(e, _)| e == "fux-vt")?.1;
+    let better = |a: f64, b: f64| if lower_is_better { a < b } else { a > b };
+    let best = figures
+        .iter()
+        .filter(|(e, v)| e != "fux-vt" && v.is_finite())
+        .fold(None::<&(String, f64)>, |best, x| match best {
+            Some(b) if !better(x.1, b.1) => Some(b),
+            _ => Some(x),
+        });
+    let (best, standing) = match best {
+        Some((engine, value)) => (
+            format!("{engine} {}", shown(*value)),
+            Standing::of(fux_vt, *value, lower_is_better, floor),
+        ),
+        None => (
+            "–".into(),
+            Standing::Unranked("no other engine measured it".into()),
+        ),
+    };
+    Some(Ranked {
+        measure,
         fux_vt: shown(fux_vt),
-        ghostty: shown(ghostty),
-        standing: Standing::of(fux_vt, ghostty, higher_is_better),
-    }
+        best,
+        floor,
+        standing,
+    })
 }
 
-/// A pass rate's figures, from esctest's JSON for a run: passed of run.
+/// A pass count and its denominator, from esctest's JSON for a run.
 fn passed(results: &Value, pointer: &str) -> Option<(u64, u64)> {
     let passed = count(results, &format!("{pointer}/passed"))?;
-    let failed = count(results, &format!("{pointer}/failed"))?;
-    Some((passed, passed.saturating_add(failed)))
+    let run = count(results, &format!("{pointer}/run"))?;
+    Some((passed, run))
 }
 
-fn rate((passed, run): (u64, u64)) -> f64 {
-    if run == 0 {
-        return 0.0;
+/// The least floor a share is ranked past: the speed method's
+/// (speed-method.md), however steady a run's repeats.
+const FLOOR_MIN_PERCENT: f64 = 0.25;
+
+/// One run's MB/s, by table (`RETENTION, in process`), workload and
+/// engine.
+type Mbs = BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>;
+
+/// The MB/s of each run there is: `fux-bench info`'s (by table, workload
+/// and engine), and each `bench-mbs-*` check's (`fux-vt-compare bench
+/// --json`, an engine beside fux-vt), of checks that ran and passed. A
+/// measure whose contract failed is left out.
+fn mbs_runs(dir: &Path, info: Option<&Value>) -> Vec<Mbs> {
+    let mut runs = Vec::new();
+    if let Some(info) = info {
+        let mut run = Mbs::new();
+        for (table, workloads) in (info.get("engines_mb_per_s").and_then(Value::as_object))
+            .into_iter()
+            .flatten()
+        {
+            for (name, engines) in workloads.as_object().into_iter().flatten() {
+                for (engine, v) in engines.as_object().into_iter().flatten() {
+                    if let Some(v) = v.as_f64() {
+                        let row = run.entry(table.clone()).or_default().entry(name.clone());
+                        row.or_default().insert(engine.clone(), v);
+                    }
+                }
+            }
+        }
+        runs.push(run);
     }
-    (passed as f64) / (run as f64) * 100.0
+    let mut checks: Vec<String> = (std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|n| n.strip_suffix(".stamp.json").map(str::to_owned))
+        .filter(|n| n.starts_with("bench-mbs-"))
+        .collect();
+    checks.sort();
+    for doc in checks.iter().filter_map(|check| load(dir, check)) {
+        let mut run = Mbs::new();
+        for table in (doc.get("tables").and_then(Value::as_array))
+            .into_iter()
+            .flatten()
+        {
+            let retention = table
+                .get("retention")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let place = match table.get("in_process").and_then(Value::as_bool) {
+                Some(false) => "own process",
+                _ => "in process",
+            };
+            for w in (table.get("workloads").and_then(Value::as_array))
+                .into_iter()
+                .flatten()
+            {
+                let name = w.get("name").and_then(Value::as_str).unwrap_or("?");
+                for (engine, cell) in (w.get("engines").and_then(Value::as_object))
+                    .into_iter()
+                    .flatten()
+                {
+                    let failed = cell.get("contract_failed").and_then(Value::as_bool) == Some(true);
+                    if let (Some(v), false) = (number(cell, "/mb_per_s"), failed) {
+                        let row = run.entry(format!("{retention}, {place}")).or_default();
+                        row.entry(name.to_owned())
+                            .or_default()
+                            .insert(engine.clone(), v);
+                    }
+                }
+            }
+        }
+        runs.push(run);
+    }
+    runs
 }
 
-/// Every axis the last runs measured both fux-vt and Ghostty's core on:
-/// conformance, real programs, instructions per byte and memory.
-fn beside_ghostty(dir: &Path) -> Vec<Versus> {
+/// The median of `values`, which are not empty.
+fn median(values: &mut [f64]) -> Option<f64> {
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    match values.len() % 2 {
+        1 => values.get(mid).copied(),
+        _ => Some((values.get(mid.checked_sub(1)?)? + values.get(mid)?) / 2.0),
+    }
+}
+
+/// How MB/s is ranked, as checkpoint 0's scoreboard ranked it.
+const MBS_FLOOR: &str =
+    "per workload: max(0.25%, the widest deviation of fux-vt's runs from their median)";
+
+/// The MB/s rows of every run there is (`mbs_runs`): higher is better;
+/// each engine's figure the median of its runs, fux-vt's of all its runs
+/// beside every engine, and the floor max(0.25%, the widest deviation of
+/// fux-vt's runs from their median), as checkpoint 0's scoreboard ranks
+/// it.
+fn mb_per_s(dir: &Path, info: Option<&Value>) -> Vec<Ranked> {
+    let runs = mbs_runs(dir, info);
+    let mut by: BTreeMap<(&str, &str), BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
+    for run in &runs {
+        for (table, workloads) in run {
+            for (name, engines) in workloads {
+                for (engine, v) in engines {
+                    let row = by.entry((table.as_str(), name.as_str())).or_default();
+                    row.entry(engine.as_str()).or_default().push(*v);
+                }
+            }
+        }
+    }
+    by.into_iter()
+        .filter_map(|((table, name), engines)| {
+            let fux = engines.get("fux-vt")?.clone();
+            let mut sorted = fux.clone();
+            let middle = median(&mut sorted)?;
+            let widest = (fux.iter())
+                .map(|v| (v / middle - 1.0).abs() * 100.0)
+                .fold(FLOOR_MIN_PERCENT, f64::max);
+            let figures: Vec<(String, f64)> = engines
+                .into_iter()
+                .filter(|(e, _)| !e.starts_with("fux-vt+"))
+                .filter_map(|(e, mut v)| Some((e.to_owned(), median(&mut v)?)))
+                .collect();
+            rank(
+                format!("MB/s ({table}): {name}"),
+                &figures,
+                false,
+                Floor::Percent(widest),
+                &|v| format!("{v:.1}"),
+            )
+        })
+        .collect()
+}
+
+/// esctest's engines: each run's JSON, and where in it each terminal is.
+const ESCTEST_RUNS: &[(&str, &str, &str)] = &[
+    ("esctest", "/direct", "fux-vt"),
+    ("esctest-ghostty", "/direct", "ghostty"),
+    ("esctest-alacritty", "/direct", "alacritty"),
+    ("esctest-libvterm", "/direct", "libvterm"),
+    ("esctest-avt", "/direct", "avt"),
+    ("esctest-wezterm", "/direct", "wezterm"),
+    ("esctest-vt100", "/direct", "vt100"),
+];
+
+/// Every row the last runs ranked fux-vt on beside the other engines:
+/// conformance, real programs, instructions per byte, memory, MB/s.
+fn ranked(dir: &Path) -> Vec<Ranked> {
     let mut out = Vec::new();
-    let percent = |v: f64| format!("{v:.1}%");
-    if let (Some(fux_vt), Some(ghostty)) = (
-        load(dir, "esctest.json").and_then(|e| passed(&e, "/direct")),
-        load(dir, "esctest-ghostty.json").and_then(|e| {
-            ["/ghostty", "/direct", ""]
-                .iter()
-                .find_map(|pointer| passed(&e, pointer))
-        }),
-    ) {
-        out.push(versus(
-            format!(
-                "esctest2 pass rate ({}/{} and {}/{})",
-                fux_vt.0, fux_vt.1, ghostty.0, ghostty.1
-            ),
-            (rate(fux_vt), rate(ghostty)),
-            true,
-            &percent,
-        ));
+    // esctest: every engine library on one denominator; xterm, the
+    // reference, is not one of them.
+    let runs: Vec<(&str, (u64, u64))> = ESCTEST_RUNS
+        .iter()
+        .filter_map(|(check, pointer, engine)| {
+            Some((*engine, passed(&load(dir, check)?, pointer)?))
+        })
+        .collect();
+    if let Some(&(_, (_, run))) = runs.iter().find(|(e, _)| *e == "fux-vt") {
+        let figures: Vec<(String, f64)> = runs
+            .iter()
+            .map(|(e, (p, _))| ((*e).to_owned(), *p as f64))
+            .collect();
+        let one = runs.iter().all(|(_, (_, r))| *r == run);
+        let measure = format!("esctest2 tests passed, of {run}");
+        let shown = |v: f64| format!("{v:.0}");
+        if let Some(mut row) = rank(measure, &figures, false, Floor::Exact, &shown) {
+            if !one {
+                row.standing = Standing::Unranked("the engines' denominators differ".into());
+            }
+            out.push(row);
+        }
     }
-    if let Some(corpus) = load(dir, "corpus-ghostty.json") {
+    if let Some(corpus) = load(dir, "corpus-ghostty") {
         let pairs = [
             (
                 "corpus recordings agreeing with xterm",
@@ -477,83 +679,168 @@ fn beside_ghostty(dir: &Path) -> Vec<Versus> {
                 "/points",
             ),
         ];
-        for (axis, fux_vt, ghostty, all) in pairs {
+        for (measure, fux_vt, ghostty, all) in pairs {
             if let (Some(a), Some(b), Some(all)) = (
                 count(&corpus, fux_vt),
                 count(&corpus, ghostty),
                 count(&corpus, all),
             ) {
-                let of = |n: f64| format!("{n:.0} of {all}");
-                out.push(versus(axis.to_owned(), (a as f64, b as f64), true, &of));
+                let figures = [
+                    ("fux-vt".to_owned(), a as f64),
+                    ("ghostty".to_owned(), b as f64),
+                ];
+                let shown = |n: f64| format!("{n:.0} of {all}");
+                out.extend(rank(measure.into(), &figures, false, Floor::Exact, &shown));
             }
         }
     }
-    if let Some(instructions) = load(dir, "instructions.json") {
+    if let Some(instructions) = load(dir, "instructions") {
         for workload in instructions
             .get("workloads")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
         {
+            // A workload has a row for each retention: each is named so.
             let name = workload.get("name").and_then(Value::as_str).unwrap_or("?");
-            let per_byte = |engine: &str| number(workload, &format!("/engines/{engine}/per_byte"));
-            if let (Some(a), Some(b)) = (per_byte("fux-vt"), per_byte("ghostty")) {
-                out.push(versus(
-                    format!("instructions per byte: {name}"),
-                    (a, b),
-                    false,
-                    &|v| format!("{v:.1}"),
-                ));
-            }
+            let name = match workload.get("retention").and_then(Value::as_str) {
+                Some(retention) => format!("{name} ({retention})"),
+                None => name.to_owned(),
+            };
+            let engines = workload.get("engines").and_then(Value::as_object);
+            let figures: Vec<(String, f64)> = engines
+                .into_iter()
+                .flatten()
+                .filter_map(|(e, v)| Some((e.clone(), number(v, "/per_byte")?)))
+                .collect();
+            // The spread of fux-vt's repeats, and of the best other's, the
+            // speed method's least floor at least.
+            let noise = |e: &str| {
+                engines
+                    .and_then(|m| m.get(e))
+                    .and_then(|v| number(v, "/noise_percent"))
+            };
+            let Some(row) = rank(
+                format!("instructions per byte: {name}"),
+                &figures,
+                true,
+                Floor::Unknown(""),
+                &|v| format!("{v:.1}"),
+            ) else {
+                continue;
+            };
+            let best = row.best.split_once(' ').map_or("", |(e, _)| e).to_owned();
+            let floor = match (noise("fux-vt"), noise(&best)) {
+                (Some(a), Some(b)) => Floor::Percent(a.max(b).max(FLOOR_MIN_PERCENT)),
+                _ => Floor::Unknown("no spread measured"),
+            };
+            out.extend(rank(row.measure, &figures, true, floor, &|v| {
+                format!("{v:.1}")
+            }));
         }
     }
-    if let Some(footprint) = load(dir, "footprint.json") {
-        let measures: Vec<&Value> = footprint
-            .get("measures")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .collect();
-        let find = |engine: &str, measure: &str, cols: u64| {
-            measures.iter().copied().find(|m| {
-                m.get("engine").and_then(Value::as_str) == Some(engine)
-                    && m.get("measure").and_then(Value::as_str) == Some(measure)
-                    && count(m, "/cols") == Some(cols)
-            })
-        };
-        let mut names: Vec<&str> = measures
-            .iter()
-            .filter_map(|m| m.get("measure").and_then(Value::as_str))
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        for cols in [80, 200] {
-            for name in &names {
-                let figure = |engine: &str| {
-                    let m = find(engine, name, cols)?;
-                    number(m, "/per_history_row/footprint")
-                        .or_else(|| number(m, "/footprint_per_cell"))
-                };
-                let what = if name.starts_with("history:") {
-                    "bytes per history row"
-                } else {
-                    "bytes per cell, a screen"
-                };
-                if let (Some(a), Some(b)) = (figure("fux-vt"), figure("ghostty")) {
-                    out.push(versus(
-                        format!(
-                            "memory, {what}: {}, {cols} columns",
-                            name.strip_prefix("history:").unwrap_or(name)
-                        ),
-                        (a, b),
-                        false,
-                        &|v| format!("{v:.0} B"),
-                    ));
-                }
+    if let Some(footprint) = load(dir, "footprint") {
+        out.extend(memory(&footprint));
+    }
+    out.extend(mb_per_s(dir, load(dir, "info").as_ref()));
+    out
+}
+
+/// The memory rows, from `footprint`: bytes per history row and per cell,
+/// lower is better. The counter reads whole pages, before and after, so
+/// the floor is two pages over what the figure is divided by; a figure
+/// whose whole is under a page is under resolution, and not ranked.
+fn memory(footprint: &Value) -> Vec<Ranked> {
+    const PAGE: f64 = 4096.0;
+    let measures: Vec<&Value> = footprint
+        .get("measures")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut names: Vec<&str> = measures
+        .iter()
+        .filter_map(|m| m.get("measure").and_then(Value::as_str))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut out = Vec::new();
+    for cols in [80, 200] {
+        for name in &names {
+            let mine = || {
+                measures.iter().copied().filter(move |m| {
+                    m.get("measure").and_then(Value::as_str) == Some(name)
+                        && count(m, "/cols") == Some(cols)
+                })
+            };
+            let history = name.starts_with("history:");
+            let figures: Vec<(String, f64)> = mine()
+                .filter_map(|m| {
+                    let engine = m.get("engine").and_then(Value::as_str)?.to_owned();
+                    let figure = if history {
+                        number(m, "/per_history_row/footprint")?
+                    } else {
+                        number(m, "/footprint_per_cell")?
+                    };
+                    Some((engine, figure))
+                })
+                .collect();
+            let divisor = mine()
+                .find(|m| m.get("engine").and_then(Value::as_str) == Some("fux-vt"))
+                .and_then(|m| {
+                    if history {
+                        number(m, "/history_rows")
+                    } else {
+                        Some(number(m, "/rows")? * number(m, "/cols")?)
+                    }
+                })
+                .filter(|d| *d > 0.0);
+            let floor = divisor.map_or(Floor::Unknown("no divisor"), |d| {
+                Floor::Absolute(2.0 * PAGE / d)
+            });
+            let what = if history {
+                "bytes per history row"
+            } else {
+                "bytes per cell, a screen"
+            };
+            let measure = format!(
+                "memory, {what}: {}, {cols} columns",
+                name.strip_prefix("history:").unwrap_or(name)
+            );
+            let Some(mut row) = rank(measure, &figures, true, floor, &|v| format!("{v:.0} B"))
+            else {
+                continue;
+            };
+            let whole = |v: f64| divisor.map_or(0.0, |d| (v * d).abs());
+            let fux_vt = figures
+                .iter()
+                .find(|(e, _)| e == "fux-vt")
+                .map_or(0.0, |f| f.1);
+            if whole(fux_vt) < PAGE {
+                row.standing = Standing::Unranked("under resolution (under a page)".into());
             }
+            out.push(row);
         }
     }
     out
+}
+
+/// Every stamp in `dir`, by check, and the product commits they name.
+fn stamps(dir: &Path) -> Result<Vec<Value>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(check) = name.strip_suffix(".stamp.json") {
+            let stamp = stamp(dir, check).ok_or(format!("{name}: not a stamp"))?;
+            out.push(stamp);
+        }
+    }
+    out.sort_by(|a, b| {
+        let key = |v: &Value| v.get("check").and_then(Value::as_str).map(str::to_owned);
+        key(a).cmp(&key(b))
+    });
+    Ok(out)
 }
 
 pub fn run(rest: &[String]) -> Result<bool, String> {
@@ -578,23 +865,26 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
     speed(dir, &mut rows);
     feel(dir, &mut rows);
     robustness(dir, &mut rows);
-    let stamps: Vec<(&str, String)> = CHECKS
-        .iter()
-        .filter_map(|c| stamp(dir, c).map(|s| (*c, s)))
-        .collect();
-    let ghostty = beside_ghostty(dir);
+    let stamps = stamps(dir)?;
+    let field = |s: &Value, key: &str| s.get(key).and_then(Value::as_str).unwrap_or("?").to_owned();
+    let mut products: Vec<String> = stamps.iter().map(|s| field(s, "product")).collect();
+    products.sort();
+    products.dedup();
+    let ranked = ranked(dir);
     let json = json!({
+        "product": products,
         "rows": rows.iter().map(|r| json!({
             "axis": r.axis, "measure": r.measure, "fux": r.fux, "beside": r.beside,
         })).collect::<Vec<_>>(),
-        "beside_ghostty": ghostty.iter().map(|v| json!({
-            "axis": v.axis, "fux-vt": v.fux_vt, "ghostty": v.ghostty,
-            "standing": v.standing.word(),
+        "ranked": ranked.iter().map(|r| json!({
+            "measure": r.measure, "fux-vt": r.fux_vt, "best_other": r.best,
+            "floor": r.floor.text(), "standing": r.standing.word(),
         })).collect::<Vec<_>>(),
-        "checks": stamps.iter().map(|(c, s)| json!({"check": c, "stamp": s})).collect::<Vec<_>>(),
+        "checks": stamps,
     });
-    let mut md = String::from(
-        "# fux scoreboard\n\n| Axis | Measure | fux / fux-vt | Beside |\n| --- | --- | --- | --- |\n",
+    let mut md = format!(
+        "# fux scoreboard\n\nProduct: {}.\n\n| Axis | Measure | fux / fux-vt | Beside |\n| --- | --- | --- | --- |\n",
+        products.join(", ")
     );
     for r in &rows {
         let _ = writeln!(
@@ -603,30 +893,46 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
             r.axis, r.measure, r.fux, r.beside
         );
     }
-    if !ghostty.is_empty() {
-        let level = ghostty
+    if !ranked.is_empty() {
+        let of = |s: &Standing| ranked.iter().filter(|r| r.standing == *s).count();
+        let unranked = ranked
             .iter()
-            .filter(|v| v.standing != Standing::Behind)
+            .filter(|r| matches!(r.standing, Standing::Unranked(_)))
             .count();
         let _ = write!(
             md,
-            "\n## fux-vt beside Ghostty's core (libghostty-vt)\n\nAhead or level on {level} of {}.\n\n| Axis | fux-vt | Ghostty | |\n| --- | --- | --- | --- |\n",
-            ghostty.len()
+            "\n## fux-vt beside the best other engine\n\nAhead on {} of {}, tied on {}, behind on {}, unranked on {unranked}.\n\n| Measure | fux-vt | Best other | Floor | |\n| --- | --- | --- | --- | --- |\n",
+            of(&Standing::Ahead),
+            ranked.len(),
+            of(&Standing::Tie),
+            of(&Standing::Behind),
         );
-        for v in &ghostty {
+        for r in &ranked {
             let _ = writeln!(
                 md,
-                "| {} | {} | {} | {} |",
-                v.axis,
-                v.fux_vt,
-                v.ghostty,
-                v.standing.word()
+                "| {} | {} | {} | {} | {} |",
+                r.measure,
+                r.fux_vt,
+                r.best,
+                r.floor.text(),
+                r.standing.word()
             );
         }
     }
-    md.push_str("\n| Check | Commit, when, how long, exit |\n| --- | --- |\n");
-    for (check, s) in &stamps {
-        let _ = writeln!(md, "| {check} | {s} |");
+    md.push_str("\n| Check | Product | Harness | Binary SHA-256 | When | Seconds | Exit |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+    for s in &stamps {
+        let short = |v: String| v.get(..12).map_or(v.clone(), str::to_owned);
+        let _ = writeln!(
+            md,
+            "| {} | {} | {} | {} | {} | {} | {} |",
+            field(s, "check"),
+            short(field(s, "product")),
+            short(field(s, "harness")),
+            short(field(s, "binary_sha256")),
+            field(s, "date"),
+            count(s, "/seconds").unwrap_or(0),
+            count(s, "/exit").map_or_else(|| "?".into(), |e| e.to_string()),
+        );
     }
     let mut text = serde_json::to_string_pretty(&json).map_err(|e| format!("json: {e}"))?;
     text.push('\n');
@@ -640,6 +946,15 @@ pub fn run(rest: &[String]) -> Result<bool, String> {
         save(kept, commit, date, &md, &json)?;
     }
     print!("{md}");
+    // A column is one product's: stamps of two products are refused.
+    if products.len() > 1 {
+        eprintln!(
+            "scoreboard: the results are of {} product commits ({}): run them again at one",
+            products.len(),
+            products.join(", ")
+        );
+        return Ok(false);
+    }
     Ok(true)
 }
 
@@ -748,16 +1063,171 @@ mod tests {
         Ok(())
     }
 
-    /// fux-vt beside Ghostty: lower is better for costs, higher for rates,
-    /// level within 1%.
+    /// Beside the best other engine: lower is better for costs, higher for
+    /// counts; a tie within the floor, ahead or behind past it, unranked
+    /// with no floor.
     #[test]
-    fn standing_beside_ghostty() {
-        use super::Standing;
-        assert_eq!(Standing::of(10.0, 20.0, false), Standing::Ahead);
-        assert_eq!(Standing::of(20.0, 10.0, false), Standing::Behind);
-        assert_eq!(Standing::of(100.0, 100.5, false), Standing::Level);
-        assert_eq!(Standing::of(90.0, 60.0, true), Standing::Ahead);
-        assert_eq!(Standing::of(60.0, 90.0, true), Standing::Behind);
+    fn standing_beside_the_best_other() -> Result<(), String> {
+        use super::{Floor, Standing};
+        assert_eq!(
+            Standing::of(10.0, 20.0, true, Floor::Exact),
+            Standing::Ahead
+        );
+        assert_eq!(
+            Standing::of(20.0, 10.0, true, Floor::Exact),
+            Standing::Behind
+        );
+        assert_eq!(
+            Standing::of(442.0, 442.0, false, Floor::Exact),
+            Standing::Tie
+        );
+        assert_eq!(
+            Standing::of(443.0, 442.0, false, Floor::Exact),
+            Standing::Ahead
+        );
+        assert_eq!(
+            Standing::of(100.0, 100.2, true, Floor::Percent(0.25)),
+            Standing::Tie
+        );
+        assert_eq!(
+            Standing::of(100.0, 101.0, true, Floor::Percent(0.25)),
+            Standing::Ahead
+        );
+        assert_eq!(
+            Standing::of(10.0, 12.0, true, Floor::Absolute(4.0)),
+            Standing::Tie
+        );
+        assert!(matches!(
+            Standing::of(1.0, 2.0, false, Floor::Unknown("x")),
+            Standing::Unranked(_)
+        ));
+        let figures = [
+            ("ghostty".to_owned(), 14.9),
+            ("fux-vt".to_owned(), 13.0),
+            ("alacritty".to_owned(), 13.1),
+        ];
+        let row = super::rank("x".into(), &figures, true, Floor::Percent(0.25), &|v| {
+            format!("{v:.1}")
+        })
+        .ok_or("no row")?;
+        assert_eq!(row.best, "alacritty 13.1");
+        assert_eq!(row.standing, Standing::Ahead);
+        Ok(())
+    }
+
+    /// A stamp for `check` in `dir`, of `product`, with its exit status.
+    fn stamped(dir: &std::path::Path, check: &str, product: &str, exit: u8) -> Result<(), String> {
+        let stamp = json!({"check": check, "product": product, "harness": "h", "binary": "b",
+            "binary_sha256": "s", "command": "c", "date": "d", "seconds": 1, "exit": exit});
+        std::fs::write(dir.join(format!("{check}.stamp.json")), stamp.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    /// A check that failed has its results kept from the ranking, whatever
+    /// its JSON says; and one with no stamp is not run.
+    #[test]
+    fn a_failed_checks_results_are_not_ranked() -> Result<(), String> {
+        let dir = dir("failed")?;
+        let esctest = json!({"direct": {"passed": 442, "failed": 107, "run": 549}});
+        let ghostty = json!({"direct": {"passed": 345, "failed": 204, "run": 549}});
+        for (check, value) in [("esctest", &esctest), ("esctest-ghostty", &ghostty)] {
+            std::fs::write(dir.join(format!("{check}.json")), value.to_string())
+                .map_err(|e| e.to_string())?;
+        }
+        stamped(&dir, "esctest", "p", 0)?;
+        stamped(&dir, "esctest-ghostty", "p", 0)?;
+        let rows = super::ranked(&dir);
+        let row = rows.first().ok_or("no row")?;
+        assert_eq!(
+            (row.fux_vt.as_str(), row.best.as_str()),
+            ("442", "ghostty 345")
+        );
+        stamped(&dir, "esctest-ghostty", "p", 1)?;
+        let rows = super::ranked(&dir);
+        let row = rows.first().ok_or("no row")?;
+        assert!(
+            matches!(row.standing, super::Standing::Unranked(_)),
+            "{}",
+            row.best
+        );
+        assert_eq!(super::missing(&dir, "esctest-ghostty"), "failed (exit 1)");
+        assert_eq!(super::missing(&dir, "feel"), super::MISSING);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Instructions per byte are ranked past a floor of at least 0.25%,
+    /// whatever the repeats' own spread (0.01% here): 0.1% apart is a tie.
+    /// MB/s is read as fux-bench info writes it, by table, and ranked as
+    /// checkpoint 0 ranked it: past max(0.25%, the widest deviation of
+    /// fux-vt's runs from their median), here one run's, so 0.25%.
+    #[test]
+    fn rows_are_ranked_past_the_floors_their_tools_measure() -> Result<(), String> {
+        let dir = dir("floors")?;
+        let instructions = json!({"workloads": [{"name": "ascii", "retention": "equal-budget", "engines": {
+            "fux-vt": {"per_byte": 100.0, "noise_percent": 0.01},
+            "ghostty": {"per_byte": 100.1, "noise_percent": 0.01},
+        }}, {"name": "ascii", "retention": "equal-retention", "engines": {
+            "fux-vt": {"per_byte": 90.0, "noise_percent": 0.01},
+            "ghostty": {"per_byte": 100.0, "noise_percent": 0.01},
+        }}]});
+        let info = json!({"engines_mb_per_s": {"equal-budget, in process": {
+            "ascii": {"fux-vt": 210.5, "ghostty": 180.0},
+        }}});
+        for (check, value) in [("instructions", &instructions), ("info", &info)] {
+            std::fs::write(dir.join(format!("{check}.json")), value.to_string())
+                .map_err(|e| e.to_string())?;
+            stamped(&dir, check, "p", 0)?;
+        }
+        let rows = super::ranked(&dir);
+        let row = |measure: &str| rows.iter().find(|r| r.measure.contains(measure));
+        let per_byte = row("instructions per byte: ascii (equal-budget)").ok_or("no budget row")?;
+        assert_eq!(per_byte.standing, super::Standing::Tie);
+        let none =
+            row("instructions per byte: ascii (equal-retention)").ok_or("no retention row")?;
+        assert_eq!(none.standing, super::Standing::Ahead);
+        let mbs = row("MB/s").ok_or("no MB/s row")?;
+        assert!(mbs.measure.contains("equal-budget, in process") && mbs.measure.contains("ascii"));
+        assert_eq!(mbs.standing, super::Standing::Ahead);
+        assert_eq!(mbs.floor, super::Floor::Percent(0.25));
+        // With each engine's own run beside it, fux-vt's runs of 100 and 110
+        // (their median 105) widen the floor to 4.76%: Ghostty's 104 ties.
+        for (engine, fux, theirs) in [("ghostty", 100.0, 104.0), ("alacritty", 110.0, 50.0)] {
+            let doc = json!({"kind": "fux-vt-compare bench", "tables": [{"retention": "equal-retention",
+                "in_process": true, "workloads": [{"name": "unicode", "engines": {
+                    "fux-vt": {"mb_per_s": fux}, engine: {"mb_per_s": theirs},
+                    "fux-vt+prints": {"mb_per_s": 1.0}}}]}]});
+            let check = format!("bench-mbs-{engine}-synth");
+            std::fs::write(dir.join(format!("{check}.json")), doc.to_string())
+                .map_err(|e| e.to_string())?;
+            stamped(&dir, &check, "p", 0)?;
+        }
+        let rows = super::ranked(&dir);
+        let unicode = (rows.iter())
+            .find(|r| r.measure == "MB/s (equal-retention, in process): unicode")
+            .ok_or("no unicode row")?;
+        assert_eq!(
+            (unicode.fux_vt.as_str(), unicode.best.as_str()),
+            ("105.0", "ghostty 104.0")
+        );
+        assert!(
+            matches!(unicode.floor, super::Floor::Percent(p) if (p - 100.0 * 5.0 / 105.0).abs() < 1e-9)
+        );
+        assert_eq!(unicode.standing, super::Standing::Tie);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Stamps of two product commits fail the scoreboard.
+    #[test]
+    fn a_column_is_one_products() -> Result<(), String> {
+        let dir = dir("products")?;
+        stamped(&dir, "corpus", "aaaa", 0)?;
+        assert!(super::run(&[dir.to_string_lossy().into_owned()])?);
+        stamped(&dir, "cases", "bbbb", 0)?;
+        assert!(!super::run(&[dir.to_string_lossy().into_owned()])?);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// Fuzz time counts from the last crash on.

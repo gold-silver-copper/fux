@@ -430,3 +430,71 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
     eprintln!("slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident");
     Ok(())
 }
+
+/// Output that spends a parser call's work budget (threats.md P24) is read
+/// on the pane's next turns, the rest of it and what came after: the pane
+/// goes on to its end, and the server, with nothing more to read, rests.
+/// Each REP is spent as 65,535 copies: 2,000 of them spend a budget. The
+/// wait is asked first: an unoptimized build spends seconds on a budget,
+/// past a client's patience for the server's greeting.
+#[test]
+fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
+    let _alone = alone();
+    let server = Server::start("")?;
+    let pid = server.pid().ok_or("the server's pid")?;
+    let code = "sleep 1; printf 'X\\033[65535b%.0s' $(seq 2000); echo; echo DO''NE; sleep 30";
+    let pane = server
+        .ok(&[
+            "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "0", "timeout",
+            "run",
+        ])?
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let done = server.fux(&[
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "DONE",
+        "wait-text",
+        "60",
+        "timeout",
+        "wait",
+    ])?;
+    assert_eq!(done.status, 0, "{}", done.stderr);
+    std::thread::sleep(Duration::from_millis(300));
+    let before = cpu_seconds(pid)?;
+    std::thread::sleep(Duration::from_secs(1));
+    let cpu = cpu_seconds(pid)? - before;
+    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
+    Ok(())
+}
+
+/// A program that prints past a read budget and exits at once is told
+/// exited with all it printed on its screen: `run`'s answer, which tells
+/// the exit once (#198), has its last line. 4,000 REPs of 65,535 spend
+/// two budgets.
+#[test]
+fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
+    let _alone = alone();
+    let server = Server::start("")?;
+    let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
+    let out = server.fux(&[
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "60", "timeout",
+        "run",
+    ])?;
+    assert!(
+        out.stdout.contains("exited 0"),
+        "{}{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("DONE"),
+        "no DONE in the answer: {}",
+        out.stderr
+    );
+    Ok(())
+}

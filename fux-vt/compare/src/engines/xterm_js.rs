@@ -92,10 +92,9 @@ use serde_json::Value;
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-
-/// The most bytes in one write while feeding a workload.
-const PIECE: usize = 1 << 20;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 /// On request only: behind a process of its own, it is slower than the
 /// engines in this process.
@@ -107,7 +106,7 @@ pub const KIND: Kind = Kind {
         kitty_keyboard_flags: false,
         in_band_resize: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -151,9 +150,16 @@ fn available() -> Result<(), String> {
 struct Node {
     child: Child,
     input: BufWriter<ChildStdin>,
-    output: BufReader<ChildStdout>,
+    /// Node's answers, a line each, read by a thread of their own so a
+    /// wait for one can end ([`ANSWER_WAIT`]).
+    answers: Receiver<std::io::Result<String>>,
     next: u64,
 }
+
+/// The longest node may take to answer a request (a workload's write
+/// with its acknowledgement takes seconds): past it, node is stopped, the
+/// request fails, and the next terminal starts a new node.
+const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 thread_local! {
     static NODE: RefCell<Option<Node>> = const { RefCell::new(None) };
@@ -162,19 +168,39 @@ thread_local! {
 impl Node {
     fn start() -> Result<Node, String> {
         let script = package().join("engine.mjs");
-        let mut child = Command::new("node")
+        let child = Command::new("node")
             .arg(&script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("starting node {}: {e}", script.display()))?;
+        Node::from_child(child)
+    }
+
+    /// A node process started with its stdin and stdout piped.
+    fn from_child(mut child: Child) -> Result<Node, String> {
         let input = child.stdin.take().ok_or("node: no stdin")?;
         let output = child.stdout.take().ok_or("node: no stdout")?;
+        let (send, answers) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("xterm.js answers".into())
+            .spawn(move || {
+                let mut output = BufReader::new(output);
+                loop {
+                    let mut line = String::new();
+                    let read = output.read_line(&mut line);
+                    let done = matches!(read, Ok(0) | Err(_));
+                    if send.send(read.map(|_| line)).is_err() || done {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| format!("node's answers: {e}"))?;
         Ok(Node {
             child,
             input: BufWriter::with_capacity(1 << 16, input),
-            output: BufReader::new(output),
+            answers,
             next: 0,
         })
     }
@@ -189,18 +215,28 @@ impl Node {
 
     /// Sends a request and reads its answer.
     fn ask(&mut self, line: &str) -> Result<Value, String> {
+        self.ask_within(line, ANSWER_WAIT)
+    }
+
+    /// Sends a request and reads its answer, waiting at most `wait`.
+    fn ask_within(&mut self, line: &str, wait: Duration) -> Result<Value, String> {
         self.send(line)?;
         self.input
             .flush()
             .map_err(|e| format!("writing to node: {e}"))?;
-        let mut answer = String::new();
-        let read = self
-            .output
-            .read_line(&mut answer)
-            .map_err(|e| format!("reading from node: {e}"))?;
-        if read == 0 {
-            return Err("node exited".into());
-        }
+        let answer = match self.answers.recv_timeout(wait) {
+            Ok(Ok(line)) if !line.is_empty() => line,
+            Ok(Ok(_)) | Err(RecvTimeoutError::Disconnected) => return Err("node exited".into()),
+            Ok(Err(e)) => return Err(format!("reading from node: {e}")),
+            Err(RecvTimeoutError::Timeout) => {
+                // Stopped, so the next terminal starts another.
+                let _ = self.child.kill();
+                return Err(format!(
+                    "node gave no answer within {} ms",
+                    wait.as_millis()
+                ));
+            }
+        };
         let value: Value =
             serde_json::from_str(&answer).map_err(|e| format!("node's answer: {e}"))?;
         if value.get("ok").and_then(Value::as_bool) == Some(true) {
@@ -457,6 +493,7 @@ fn read(v: &Value) -> Result<Snapshot, String> {
             .iter()
             .map(history_row)
             .collect::<Result<_, _>>()?,
+        device: Default::default(),
     })
 }
 
@@ -503,19 +540,76 @@ impl Engine for XtermJs {
         read(&answer)
     }
 
-    /// The whole workload in writes of up to a MiB, none answered but the
-    /// last: Node applies them in order, so its answer means all are done.
-    fn feed(&mut self, bytes: &[u8], _: usize) -> Result<(), String> {
+    /// The whole workload in writes of `chunk` bytes, as every engine is
+    /// fed, none answered but the last: Node applies them in order, so its
+    /// answer means all are done.
+    fn feed(&mut self, bytes: &[u8], chunk: usize) -> Result<(), String> {
         with_node(|node| {
-            let mut rest = bytes;
-            while !rest.is_empty() {
-                let (now, later) = rest
-                    .split_at_checked(PIECE.min(rest.len()))
-                    .unwrap_or((rest, &[]));
-                self.write(node, now, later.is_empty())?;
-                rest = later;
+            for (now, ack) in writes(bytes, chunk) {
+                self.write(node, now, ack)?;
             }
             Ok(())
         })
+    }
+}
+
+/// [`XtermJs::feed`]'s writes of `bytes`: `chunk` bytes each, and whether
+/// it is answered (the last alone).
+fn writes(bytes: &[u8], chunk: usize) -> impl Iterator<Item = (&[u8], bool)> {
+    let mut rest = bytes;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (now, later) = rest
+            .split_at_checked(chunk.max(1).min(rest.len()))
+            .unwrap_or((rest, &[]));
+        rest = later;
+        Some((now, later.is_empty()))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// A request node never answers fails once its wait is over, and the
+    /// process is stopped, so the next terminal starts another (at the
+    /// parent the read waited for ever).
+    #[test]
+    fn a_request_never_answered_fails_in_time() -> Result<(), String> {
+        let child = Command::new("sh")
+            .args(["-c", "cat >/dev/null"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let mut node = super::Node::from_child(child)?;
+        let started = Instant::now();
+        let failed = node.ask_within("{}", Duration::from_millis(200));
+        assert!(failed.is_err_and(|e| e.contains("no answer within 200 ms")));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let mut exited = false;
+        for _ in 0..50 {
+            if !matches!(node.child.try_wait(), Ok(None)) {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(exited, "node was not stopped");
+        Ok(())
+    }
+
+    /// xterm.js is fed in the chunk every engine is fed, not a MiB a
+    /// write: 10 KiB at 4096 is three writes, the last alone answered.
+    #[test]
+    fn xterm_js_is_fed_in_the_chunk_every_engine_is_fed() {
+        let bytes = vec![b'x'; 10 << 10];
+        let got: Vec<(usize, bool)> = super::writes(&bytes, 4096)
+            .map(|(w, ack)| (w.len(), ack))
+            .collect();
+        assert_eq!(got, [(4096, false), (4096, false), (2048, true)]);
     }
 }

@@ -4,7 +4,6 @@
 //! keyboard flag stacks behave as plain stacks.
 
 use fux_vt::{Cells, Feature, Options, Parser, Size};
-use unicode_width::UnicodeWidthChar;
 #[path = "corpus/graphemes.rs"]
 mod graphemes;
 #[path = "corpus/models.rs"]
@@ -44,7 +43,7 @@ impl Rng {
 
 // Printing and grapheme clusters.
 
-fn character(r: &mut Rng, first: bool) -> char {
+fn character(r: &mut Rng) -> char {
     loop {
         let c = if r.chance(85) {
             r.pick(graphemes::CHARACTERS).unwrap_or('a')
@@ -52,7 +51,7 @@ fn character(r: &mut Rng, first: bool) -> char {
             let p = u32::try_from(r.below(0x3_0000)).unwrap_or(0x61);
             char::from_u32(p).unwrap_or('a')
         };
-        if printable(c) && (!first || c.width().is_some_and(|w| w > 0)) {
+        if printable(c) {
             return c;
         }
     }
@@ -67,7 +66,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
     let mut r = Rng(0x6ea9_5e61_0000_0001);
     let mut checked = 0usize;
     for case in 0..20_000 {
-        let text: String = (0..r.upto(40)).map(|i| character(&mut r, i == 0)).collect();
+        let text: String = (0..r.upto(40)).map(|_| character(&mut r)).collect();
         let expected = cells_of(&text);
         let columns = expected.iter().fold(0usize, |sum, (_, wide)| {
             sum.saturating_add(if *wide { 2 } else { 1 })
@@ -124,19 +123,31 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
 }
 
 /// U+17D8 KHMER SIGN BEYYAL, three columns wide by unicode-width, takes one
-/// narrow cell and the two after it blank: what follows lands where
-/// unicode-width lays it out, as it did in 0.1.5.
+/// column, as in xterm 411 and glibc (threats.md B32: a cell holds 1 or 2):
+/// over text, it leaves none of it stale, and in a region of 2 columns
+/// it is printed, the cursor 1 on.
 #[test]
-fn a_three_column_character_takes_a_cell_and_two_blanks() -> Result {
+fn the_three_column_character_takes_one_column() -> Result {
     let mut parser = Parser::new(Size::new(2, 10)?, 0)?;
     parser.process("a\u{17D8}b".as_bytes())?;
     let screen = parser.screen();
     let cell = |col| screen.cell(0, col).map(|c| (c.contents(), c.is_wide()));
     assert_eq!(cell(1), Some(("\u{17D8}", false)));
-    assert_eq!(cell(2), Some(("", false)));
-    assert_eq!(cell(3), Some(("", false)));
-    assert_eq!(cell(4), Some(("b", false)));
-    assert_eq!(screen.cursor_position(), (0, 5));
+    assert_eq!(cell(2), Some(("b", false)));
+    assert_eq!(screen.cursor_position(), (0, 3));
+    let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
+    parser.process("XYZW\r\u{17D8}".as_bytes())?;
+    assert_eq!(
+        parser.screen().window().row(0).map(|r| r.cells_text()),
+        Some("\u{17D8}YZW      ".into())
+    );
+    assert_eq!(parser.screen().cursor_position(), (0, 1));
+    let mut parser = Parser::new(Size::new(1, 10)?, 0)?;
+    parser.process("\x1b[?69h\x1b[1;2s\u{17D8}x".as_bytes())?;
+    assert_eq!(
+        parser.screen().window().row(0).map(|r| r.cells_text()),
+        Some("\u{17D8}x        ".into())
+    );
     Ok(())
 }
 
@@ -256,9 +267,9 @@ fn cells_agree_with_a_plain_list_of_cells() -> Result {
     let mut edits = 0usize;
     for _ in 0..1_500 {
         let len = r.upto(6);
-        let mut cells = Cells::new(len);
+        let mut cells = Cells::new(len).unwrap_or_default();
         let mut model = vec![Model::blank(); len];
-        let mut other = Cells::new(4);
+        let mut other = Cells::new(4).unwrap_or_default();
         for _ in 0..60 {
             let i = r.below(model.len().saturating_add(1));
             let text = texts.get(r.below(texts.len())).cloned().unwrap_or_default();
@@ -312,8 +323,11 @@ fn kitty_keyboard_flags_agree_with_two_plain_stacks() -> Result {
         let mut log = String::new();
         for _ in 0..80 {
             let n = r.below(40);
-            // A flags number's bits past the spec's five mean nothing.
-            let flags = u8::try_from(n & 0x1f).unwrap_or(u8::MAX);
+            // A flags number's bits past the spec's five mean nothing, and
+            // report event types (2) isn't kept: fux sends no repeats or
+            // releases, and the spec's "Detection of support" has a
+            // terminal report only the flags it honours.
+            let flags = u8::try_from(n & 0b1_1101).unwrap_or(u8::MAX);
             let stack = if alternate {
                 &mut secondary
             } else {

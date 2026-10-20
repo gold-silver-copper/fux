@@ -19,12 +19,12 @@ bench = false
 fux-vt = { path = ".." }
 # The reference: Ghostty's terminal core, built from source by Zig. `run.sh`
 # pins the Ghostty commit and the Zig toolchain it is built with.
-libghostty-vt = { version = "=0.2.2", default-features = false }
+libghostty-vt = { version = "=0.2.2", default-features = false, optional = true }
 # The other engines run in this process.
-alacritty_terminal = "=0.26.0"
-avt = "=0.18.0"
-vt100 = "=0.16.2"
-wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "cab25161054c50fd6c705db4ceefef0f1e5a9575", package = "wezterm-term" }
+alacritty_terminal = { version = "=0.26.0", optional = true }
+avt = { version = "=0.18.0", optional = true }
+vt100 = { version = "=0.16.2", optional = true }
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "cab25161054c50fd6c705db4ceefef0f1e5a9575", package = "wezterm-term", optional = true }
 # The recorder's PTY and process session, as fux's own.
 fuxix = { path = "../../fuxix" }
 # The recorder types keys as fux gives them to a pane: decoded as fux reads
@@ -32,7 +32,20 @@ fuxix = { path = "../../fuxix" }
 fux = { path = "../.." }
 # Reading the engines that run as their own processes.
 serde_json = "1"
-unicode-width = "0.2"
+# Pinned, as fux-vt's own tests pin it: the adapter's width rule for tmux.
+unicode-width = "=0.2.2"
+# The data limit compare sets on itself (main.rs, `limit_data`), so a
+# runaway engine fails an allocation instead of taking the machine.
+libc = "0.2"
+
+[features]
+default = ["engines"]
+# The engines built into this process: Ghostty's core (Zig), libvterm
+# (build.rs), alacritty, avt, wezterm and vt100. Without them
+# (`--no-default-features`) fux-vt-compare builds with cargo alone, and
+# runs what needs no other engine (`esctest` against fux-vt); the others
+# say they were not built.
+engines = ["dep:libghostty-vt", "dep:alacritty_terminal", "dep:avt", "dep:vt100", "dep:wezterm-term"]
 
 [build-dependencies]
 # libvterm, compiled from its release source (run.sh fetches it).

@@ -29,12 +29,14 @@
 //! resized it, and a recording where that differs has the reason in its
 //! status.
 //!
-//! Each recording has a status, like a family's: expected to agree, or
-//! differing for a recorded reason. `corpus` fails if one expected to
-//! agree does not.
+//! Each recording has its exceptions (`STATUSES`): none where it is
+//! expected to agree, else each difference it is expected to show, by the
+//! recorded steps it shows at, the fields, and why. The comparison goes on
+//! past an exception to the recording's end, and `corpus` fails on a
+//! difference no exception covers, on an exception that no longer occurs,
+//! and on a recording with no status.
 use crate::case::{self, Case, Snippet, Step, Verdict};
 use crate::engine::{self, ENGINES, FUX_VT};
-use crate::families::Status;
 use crate::snapshot::{self, Field};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -77,122 +79,547 @@ const ALTERNATE_RESIZE: &str = "Leaving the alternate screen after it shrank, wi
     --no-reflow '\\e[?1049h\\e[34;1H' resize:10x40 resize:40x120 '\\e[?1049lX'`). Every step \
     before the last agrees.";
 
-/// What is expected of each recording; one not listed here is reported as
-/// new, and fails.
-pub const STATUSES: &[(&str, Status)] = &[
-    ("bash", Status::Agree),
-    ("bash-complete", Status::Agree),
-    ("bash-history", Status::Agree),
-    ("bash-small", Status::Agree),
-    ("bat-diff", Status::Agree),
-    ("bat-markdown", Status::Agree),
-    ("bat-page", Status::Agree),
-    ("btop", Status::Agree),
-    ("btop-small", Status::Agree),
-    ("cargo-build", Status::Agree),
-    ("cargo-errors", Status::Agree),
-    ("cargo-test", Status::Agree),
-    ("clang-errors", Status::Agree),
-    ("claude", Status::Differs(CLAUDE_TITLE)),
-    ("claude-ghostty", Status::Differs(CLAUDE_TITLE)),
-    ("claude-main", Status::Differs(CLAUDE_TITLE)),
-    ("claude-resize", Status::Differs(CLAUDE_TITLE)),
-    ("claude-small", Status::Differs(CLAUDE_TITLE)),
-    ("delta-diff", Status::Agree),
-    ("delta-log", Status::Agree),
-    ("delta-show", Status::Agree),
-    ("delta-wide", Status::Agree),
-    ("emacs-dired", Status::Agree),
-    ("emacs-mx", Status::Agree),
-    ("emacs-resize", Status::Agree),
-    ("emacs-scroll", Status::Agree),
-    ("emacs-split", Status::Agree),
-    ("fish", Status::Agree),
-    ("fish-complete", Status::Agree),
-    ("fish-history", Status::Agree),
-    ("fish-small", Status::Agree),
-    ("fzf", Status::Agree),
-    ("fzf-height", Status::Agree),
-    ("fzf-multi", Status::Agree),
-    ("fzf-preview", Status::Agree),
-    ("fzf-small", Status::Agree),
-    ("git-add-p", Status::Agree),
-    ("git-diff", Status::Agree),
-    ("git-graph", Status::Agree),
-    ("gls", Status::Agree),
-    ("gls-long", Status::Agree),
-    ("gls-wide", Status::Agree),
-    ("helix", Status::Agree),
-    ("helix-picker", Status::Agree),
-    ("helix-resize", Status::Agree),
-    ("helix-select", Status::Agree),
-    ("helix-small", Status::Agree),
-    ("helix-unicode", Status::Differs(CLUSTERS)),
-    ("htop", Status::Agree),
-    ("htop-small", Status::Agree),
-    ("htop-tree", Status::Agree),
-    ("lazygit", Status::Agree),
-    ("lazygit-small", Status::Agree),
-    ("lazygit-stage", Status::Agree),
-    ("less", Status::Agree),
-    ("less-chop", Status::Agree),
-    ("less-color", Status::Agree),
-    ("less-small", Status::Differs(CLUSTERS)),
-    ("man", Status::Agree),
-    ("man-long", Status::Agree),
-    ("man-small", Status::Agree),
-    ("man-tables", Status::Agree),
-    ("man-wide", Status::Agree),
-    ("mc", Status::Agree),
-    ("mc-small", Status::Agree),
-    ("micro-edit", Status::Agree),
-    ("micro-small", Status::Differs(CLUSTERS)),
-    ("micro-split", Status::Agree),
-    ("ncdu", Status::Agree),
-    ("nnn", Status::Agree),
-    ("nnn-detail", Status::Agree),
-    ("npm-install", Status::Agree),
-    ("nvim-diagnostics", Status::Agree),
-    ("nvim-diff", Status::Agree),
-    ("nvim-help", Status::Agree),
-    ("nvim-insert", Status::Agree),
-    ("nvim-netrw", Status::Agree),
-    ("nvim-resize", Status::Agree),
-    ("nvim-scroll", Status::Agree),
-    ("nvim-search", Status::Agree),
-    ("nvim-small", Status::Agree),
-    ("nvim-split", Status::Agree),
-    ("nvim-tabs", Status::Agree),
-    ("nvim-terminal", Status::Agree),
-    ("nvim-unicode", Status::Differs(CLUSTERS)),
-    ("nvim-visual", Status::Agree),
-    ("nvim-wide", Status::Agree),
-    ("pico", Status::Agree),
-    ("ranger", Status::Agree),
-    ("tig", Status::Agree),
-    ("tig-blame", Status::Agree),
-    ("tig-tree", Status::Agree),
-    ("tmux", Status::Agree),
-    ("tmux-copy", Status::Agree),
-    ("tmux-resize", Status::Differs(ALTERNATE_RESIZE)),
-    ("tmux-small", Status::Agree),
-    ("tmux-vim", Status::Agree),
-    ("top", Status::Agree),
-    ("vim", Status::Agree),
-    ("vim-diff", Status::Agree),
-    ("vim-help", Status::Agree),
-    ("vim-insert", Status::Agree),
-    ("vim-resize", Status::Agree),
-    ("vim-small", Status::Agree),
-    ("vim-terminal", Status::Agree),
-    ("vim-unicode", Status::Differs(CLUSTERS)),
-    ("zellij", Status::Agree),
-    ("zellij-small", Status::Agree),
-    ("zsh", Status::Agree),
-    ("zsh-history", Status::Agree),
-    ("zsh-menu", Status::Agree),
-    ("zsh-resize", Status::Differs(REFLOW)),
-    ("zsh-small", Status::Agree),
+/// A difference a recording is expected to show: where, on what, and why.
+pub struct Exception {
+    /// The recorded steps it shows at, first and last, counted as a
+    /// report counts them ("after step N of M": 1 is the program's start).
+    pub steps: (usize, usize),
+    /// The fields, as a difference's key (`cell (3,4) text`, `title`),
+    /// with `*` standing for any run of characters.
+    pub field: &'static str,
+    pub reason: &'static str,
+}
+
+impl Exception {
+    /// Whether it covers a failure on `key` after the recorded step `step`.
+    pub fn covers(&self, step: usize, key: &str) -> bool {
+        (self.steps.0..=self.steps.1).contains(&step) && crate::families::glob(self.field, key)
+    }
+}
+
+/// claude's title, at its last step.
+const CLAUDE_AT: &[Exception] = &[Exception {
+    steps: (3, 3),
+    field: "title",
+    reason: CLAUDE_TITLE,
+}];
+
+/// claude-resize's title, at its last step.
+const CLAUDE_RESIZE_AT: &[Exception] = &[Exception {
+    steps: (5, 5),
+    field: "title",
+    reason: CLAUDE_TITLE,
+}];
+
+/// helix-unicode's clusters, from its start: the cells and the styles they move.
+const HELIX_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// neovim pushes the kitty keyboard flags 1 and 2 (report event types)
+/// and reads them back; fux-vt keeps only the flags it honours, not 2, as
+/// the kitty spec's "Detection of support" asks (KEY-22, 84fd3fc3), where
+/// Ghostty, alacritty and wezterm, which send release events, keep it.
+const KITTY_FLAGS_KEPT: &str = "fux-vt keeps only the kitty flags it honours, 1 and not report event types (2), as the kitty spec's detection of support asks (KEY-22); Ghostty, alacritty and wezterm keep 2";
+
+const NVIM_DIAGNOSTICS_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_DIFF_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_HELP_AT: &[Exception] = &[Exception {
+    steps: (1, 7),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_INSERT_AT: &[Exception] = &[Exception {
+    steps: (1, 13),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_NETRW_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_RESIZE_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SCROLL_AT: &[Exception] = &[Exception {
+    steps: (1, 10),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SEARCH_AT: &[Exception] = &[Exception {
+    steps: (1, 10),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SMALL_AT: &[Exception] = &[Exception {
+    steps: (1, 8),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_SPLIT_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_TABS_AT: &[Exception] = &[Exception {
+    steps: (1, 7),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_TERMINAL_AT: &[Exception] = &[Exception {
+    steps: (1, 9),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_VISUAL_AT: &[Exception] = &[Exception {
+    steps: (1, 18),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+const NVIM_WIDE_AT: &[Exception] = &[Exception {
+    steps: (1, 6),
+    field: "kitty keyboard flags",
+    reason: KITTY_FLAGS_KEPT,
+}];
+
+/// nvim-unicode's clusters, from its start: the cells and the styles they move.
+const NVIM_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 12),
+        field: "kitty keyboard flags",
+        reason: KITTY_FLAGS_KEPT,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// vim-unicode's clusters, from its start.
+const VIM_UNICODE_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 11),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+];
+
+/// micro-small's clusters, from its start: the cells and the styles they move.
+const MICRO_SMALL_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) fg",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 6),
+        field: "cell (*) bg",
+        reason: CLUSTERS,
+    },
+];
+
+/// less-small's clusters, on the pages that show them.
+const LESS_SMALL_AT: &[Exception] = &[
+    Exception {
+        steps: (1, 3),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (1, 3),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (6, 6),
+        field: "cell (*) text",
+        reason: CLUSTERS,
+    },
+    Exception {
+        steps: (6, 6),
+        field: "cell (*) width",
+        reason: CLUSTERS,
+    },
+];
+
+/// tmux-resize's `[exited]`, at its last step.
+const TMUX_RESIZE_AT: &[Exception] = &[
+    Exception {
+        steps: (12, 12),
+        field: "cell (*) text",
+        reason: ALTERNATE_RESIZE,
+    },
+    Exception {
+        steps: (12, 12),
+        field: "cursor",
+        reason: ALTERNATE_RESIZE,
+    },
+];
+
+/// zsh-resize's line shown twice after each shrink, and the history its reflow keeps.
+const ZSH_RESIZE_AT: &[Exception] = &[
+    Exception {
+        steps: (3, 4),
+        field: "cell (*) text",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "cell (*) fg",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "cursor",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (3, 4),
+        field: "row 1 soft-wrapped",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cell (*) text",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cell (*) fg",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 8),
+        field: "cursor",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 9),
+        field: "history row *",
+        reason: REFLOW,
+    },
+    Exception {
+        steps: (8, 9),
+        field: "history rows kept",
+        reason: REFLOW,
+    },
+];
+
+/// How fux-vt's replies have changed since the recordings were made: a
+/// reply as recorded (`was`), as fux-vt gives it now, and the change that
+/// made it, cited. Each is applied to every recording's replies before
+/// they are compared with fux-vt's now (`record::replies_now`), so any
+/// other change to DA, DECRQM or the colour replies shows in the corpus;
+/// one that no recording shows any more fails.
+pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
+    (
+        "\x1b[?62;22c",
+        "\x1b[?62;6;21;22;28c",
+        "DA1 names selective erase (6), horizontal scrolling (21) and rectangular editing (28): a218350c and the commits before it",
+    ),
+    (
+        "\x1b[?2027;0$y",
+        "\x1b[?2027;3$y",
+        "mode 2027 (grapheme clusters) is permanently set: 3a6bda6a",
+    ),
+    (
+        "\x1b[?69;0$y",
+        "\x1b[?69;2$y",
+        "DECLRMM (69) is a mode fux-vt knows, reset: f9a18914",
+    ),
+    (
+        "\x1b[?1016;0$y",
+        "\x1b[?1016;2$y",
+        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, reset, as ctlseqs (\"Mouse Tracking\") and xterm 411 keep it: KEY-23, 2cc51305",
+    ),
+];
+
+/// The replies that came with XTGETTCAP's answer and XTQMODKEYS's.
+const XTGETTCAP_AND_XTQMODKEYS: &str = "XTGETTCAP is answered, as an invalid request (PAR-15, 82983a1d), and XTQMODKEYS (KEY-14, bdf426c5), which went unanswered when it was recorded";
+
+/// The recordings whose replies changed in a way no reply as recorded can
+/// say (a reply given now to a query once left unanswered), and why. One
+/// that agrees again fails.
+pub const REPLIES_DIFFER: &[(&str, &str)] = &[
+    ("fish", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-complete", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-history", XTGETTCAP_AND_XTQMODKEYS),
+    ("fish-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("lazygit-stage", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-diagnostics", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-diff", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-help", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-insert", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-netrw", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-resize", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-scroll", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-search", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-split", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-tabs", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-terminal", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-unicode", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-visual", XTGETTCAP_AND_XTQMODKEYS),
+    ("nvim-wide", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-diff", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-help", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-insert", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-resize", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-small", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-terminal", XTGETTCAP_AND_XTQMODKEYS),
+    ("vim-unicode", XTGETTCAP_AND_XTQMODKEYS),
+    (
+        "zellij",
+        "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded",
+    ),
+    (
+        "zellij-small",
+        "zellij asks OSC 4 for each of its 256 colours; fux's panes answer them now (Feature::Palette, src/pane.rs), where they answered none when it was recorded",
+    ),
+];
+
+/// fux-vt's replies `now` beside those a recording kept (`then`), as
+/// they are compared: versions as `VERSION`, and the recorded replies with
+/// every change since ([`REPLY_CHANGES`]) applied; and which changes were.
+fn replies_beside(now: &[u8], then: &[u8]) -> (String, String, Vec<usize>) {
+    let now = unversioned(now);
+    let mut then = unversioned(then);
+    let mut used = Vec::new();
+    for (i, (was, is, _)) in REPLY_CHANGES.iter().enumerate() {
+        if then.contains(was) {
+            used.push(i);
+            then = then.replace(was, is);
+        }
+    }
+    (now, then, used)
+}
+
+/// A reply's version numbers, which change with every release, as
+/// `VERSION`: XTVERSION's `fux X.Y.Z` and DA2's version parameter. What a
+/// reply says otherwise is compared.
+pub fn unversioned(replies: &[u8]) -> String {
+    let text = String::from_utf8_lossy(replies).into_owned();
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = [rest.find("fux "), rest.find("\x1b[>1;")]
+        .into_iter()
+        .flatten()
+        .min()
+    {
+        let (head, tail) = rest.split_at_checked(at).unwrap_or((rest, ""));
+        out.push_str(head);
+        let (lead, digits) = if let Some(t) = tail.strip_prefix("fux ") {
+            ("fux ", t)
+        } else {
+            ("\x1b[>1;", tail.get(5..).unwrap_or_default())
+        };
+        out.push_str(lead);
+        out.push_str("VERSION");
+        let end = digits
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(digits.len());
+        rest = digits.get(end..).unwrap_or_default();
+    }
+    out.push_str(rest);
+    out
+}
+
+/// No exception: the recording is expected to agree.
+const AGREE: &[Exception] = &[];
+
+/// What is expected of each recording: its exceptions, none if it is to
+/// agree. One not listed here is reported as new, and fails.
+pub const STATUSES: &[(&str, &[Exception])] = &[
+    ("bash", AGREE),
+    ("bash-complete", AGREE),
+    ("bash-history", AGREE),
+    ("bash-small", AGREE),
+    ("bat-diff", AGREE),
+    ("bat-markdown", AGREE),
+    ("bat-page", AGREE),
+    ("btop", AGREE),
+    ("btop-small", AGREE),
+    ("cargo-build", AGREE),
+    ("cargo-errors", AGREE),
+    ("cargo-test", AGREE),
+    ("clang-errors", AGREE),
+    ("claude", CLAUDE_AT),
+    ("claude-ghostty", CLAUDE_AT),
+    ("claude-main", CLAUDE_AT),
+    ("claude-resize", CLAUDE_RESIZE_AT),
+    ("claude-small", CLAUDE_AT),
+    ("delta-diff", AGREE),
+    ("delta-log", AGREE),
+    ("delta-show", AGREE),
+    ("delta-wide", AGREE),
+    ("emacs-dired", AGREE),
+    ("emacs-mx", AGREE),
+    ("emacs-resize", AGREE),
+    ("emacs-scroll", AGREE),
+    ("emacs-split", AGREE),
+    ("fish", AGREE),
+    ("fish-complete", AGREE),
+    ("fish-history", AGREE),
+    ("fish-small", AGREE),
+    ("fzf", AGREE),
+    ("fzf-height", AGREE),
+    ("fzf-multi", AGREE),
+    ("fzf-preview", AGREE),
+    ("fzf-small", AGREE),
+    ("git-add-p", AGREE),
+    ("git-diff", AGREE),
+    ("git-graph", AGREE),
+    ("gls", AGREE),
+    ("gls-long", AGREE),
+    ("gls-wide", AGREE),
+    ("helix", AGREE),
+    ("helix-picker", AGREE),
+    ("helix-resize", AGREE),
+    ("helix-select", AGREE),
+    ("helix-small", AGREE),
+    ("helix-unicode", HELIX_UNICODE_AT),
+    ("htop", AGREE),
+    ("htop-small", AGREE),
+    ("htop-tree", AGREE),
+    ("lazygit", AGREE),
+    ("lazygit-small", AGREE),
+    ("lazygit-stage", AGREE),
+    ("less", AGREE),
+    ("less-chop", AGREE),
+    ("less-color", AGREE),
+    ("less-small", LESS_SMALL_AT),
+    ("man", AGREE),
+    ("man-long", AGREE),
+    ("man-small", AGREE),
+    ("man-tables", AGREE),
+    ("man-wide", AGREE),
+    ("mc", AGREE),
+    ("mc-small", AGREE),
+    ("micro-edit", AGREE),
+    ("micro-small", MICRO_SMALL_AT),
+    ("micro-split", AGREE),
+    ("ncdu", AGREE),
+    ("nnn", AGREE),
+    ("nnn-detail", AGREE),
+    ("npm-install", AGREE),
+    ("nvim-diagnostics", NVIM_DIAGNOSTICS_AT),
+    ("nvim-diff", NVIM_DIFF_AT),
+    ("nvim-help", NVIM_HELP_AT),
+    ("nvim-insert", NVIM_INSERT_AT),
+    ("nvim-netrw", NVIM_NETRW_AT),
+    ("nvim-resize", NVIM_RESIZE_AT),
+    ("nvim-scroll", NVIM_SCROLL_AT),
+    ("nvim-search", NVIM_SEARCH_AT),
+    ("nvim-small", NVIM_SMALL_AT),
+    ("nvim-split", NVIM_SPLIT_AT),
+    ("nvim-tabs", NVIM_TABS_AT),
+    ("nvim-terminal", NVIM_TERMINAL_AT),
+    ("nvim-unicode", NVIM_UNICODE_AT),
+    ("nvim-visual", NVIM_VISUAL_AT),
+    ("nvim-wide", NVIM_WIDE_AT),
+    ("pico", AGREE),
+    ("ranger", AGREE),
+    ("tig", AGREE),
+    ("tig-blame", AGREE),
+    ("tig-tree", AGREE),
+    ("tmux", AGREE),
+    ("tmux-copy", AGREE),
+    ("tmux-resize", TMUX_RESIZE_AT),
+    ("tmux-small", AGREE),
+    ("tmux-vim", AGREE),
+    ("top", AGREE),
+    ("vim", AGREE),
+    ("vim-diff", AGREE),
+    ("vim-help", AGREE),
+    ("vim-insert", AGREE),
+    ("vim-resize", AGREE),
+    ("vim-small", AGREE),
+    ("vim-terminal", AGREE),
+    ("vim-unicode", VIM_UNICODE_AT),
+    ("zellij", AGREE),
+    ("zellij-small", AGREE),
+    ("zsh", AGREE),
+    ("zsh-history", AGREE),
+    ("zsh-menu", AGREE),
+    ("zsh-resize", ZSH_RESIZE_AT),
+    ("zsh-small", AGREE),
 ];
 
 /// A recording, as `record` saved it.
@@ -204,10 +631,16 @@ pub struct Recording {
     pub cols: u16,
     /// Each step's keys (escaped, as typed) and the output after them.
     pub steps: Vec<(String, Vec<u8>)>,
+    /// What fux-vt answered the program while it was recorded, in order
+    /// (`record`), escaped in the JSON's `replies`.
+    pub replies: Vec<u8>,
     /// The steps that resized the terminal (`!resize` in the keys) rather
     /// than typing: the step's index and the new size, rows and columns.
     /// The step's output is what the program wrote after the resize.
     pub resizes: Vec<(usize, u16, u16)>,
+    /// `--chunk N`: each step's output given, and judged, N bytes at a
+    /// time, not whole (none: whole).
+    pub chunk: Option<usize>,
 }
 
 impl Recording {
@@ -219,6 +652,23 @@ impl Recording {
             .collect()
     }
 
+    /// What the program wrote, at each size the terminal had as it wrote
+    /// it: from its first size, a new one at each step that resized it.
+    /// fux-bench's `Recording::segments` makes the same.
+    pub fn segments(&self) -> Vec<(u16, u16, Vec<u8>)> {
+        let mut out = Vec::new();
+        let (mut rows, mut cols, mut bytes) = (self.rows, self.cols, Vec::new());
+        for (i, (_, output)) in self.steps.iter().enumerate() {
+            if let Some((r, c)) = self.resize_at(i) {
+                out.push((rows, cols, std::mem::take(&mut bytes)));
+                (rows, cols) = (r, c);
+            }
+            bytes.extend_from_slice(output);
+        }
+        out.push((rows, cols, bytes));
+        out
+    }
+
     /// The size the terminal is resized to before step `index`'s output,
     /// if that step resized it.
     pub fn resize_at(&self, index: usize) -> Option<(u16, u16)> {
@@ -228,14 +678,34 @@ impl Recording {
             .map(|&(_, rows, cols)| (rows, cols))
     }
 
+    /// Step `index`'s output in the pieces the case gives it: whole, or
+    /// [`Recording::chunk`] bytes at a time; one, empty, for none.
+    fn pieces(&self, index: usize) -> Vec<Vec<u8>> {
+        let output = self.steps.get(index).map_or(&[][..], |(_, b)| b.as_slice());
+        match self.chunk.filter(|&n| n > 0 && output.len() > n) {
+            None => vec![output.to_vec()],
+            Some(n) => {
+                let (mut out, mut rest) = (Vec::new(), output);
+                while !rest.is_empty() {
+                    let (piece, later) = rest.split_at_checked(n).unwrap_or((rest, &[]));
+                    out.push(piece.to_vec());
+                    rest = later;
+                }
+                out
+            }
+        }
+    }
+
     /// The step recorded (counted from 0) that the case's step `index`
     /// belongs to, as `Outcome::step` counts them: none for 0, before any
     /// step, the program's start for 1. A step that resized is two in the
-    /// case, the resize and the output after it.
+    /// case, the resize and the output after it (or more, one for each
+    /// piece of its output under `--chunk`).
     pub fn recorded_step(&self, index: usize) -> Option<usize> {
         let mut case_steps = 0usize;
         for i in 0..self.steps.len() {
-            let these = if self.resize_at(i).is_some() { 2 } else { 1 };
+            let resized = usize::from(self.resize_at(i).is_some());
+            let these = resized.saturating_add(self.pieces(i).len());
             case_steps = case_steps.saturating_add(these);
             if index > 0 && case_steps >= index {
                 return Some(i);
@@ -252,7 +722,9 @@ impl Recording {
         std::iter::once(true)
             .chain((0..self.steps.len()).flat_map(|i| {
                 let resized = self.resize_at(i).map(|_| false);
-                resized.into_iter().chain([true])
+                resized
+                    .into_iter()
+                    .chain(std::iter::repeat_n(true, self.pieces(i).len()))
             }))
             .collect()
     }
@@ -270,14 +742,18 @@ impl Recording {
                 .steps
                 .iter()
                 .enumerate()
-                .flat_map(|(i, (_, bytes))| {
+                .flat_map(|(i, _)| {
                     let resize = self
                         .resize_at(i)
                         .map(|(rows, cols)| Step::Resize(rows, cols));
-                    resize.into_iter().chain([Step::Output(vec![Snippet {
-                        family: usize::MAX,
-                        bytes: bytes.clone(),
-                    }])])
+                    resize
+                        .into_iter()
+                        .chain(self.pieces(i).into_iter().map(|bytes| {
+                            Step::Output(vec![Snippet {
+                                family: usize::MAX,
+                                bytes,
+                            }])
+                        }))
                 })
                 .collect(),
             subject: FUX_VT,
@@ -359,8 +835,11 @@ fn load(path: &Path) -> Result<Recording, String> {
         version: string("version")?,
         rows: dimension(0)?,
         cols: dimension(1)?,
+        replies: crate::escape::unescape(&string("replies")?)
+            .map_err(|e| format!("{}: replies: {e}", path.display()))?,
         steps,
         resizes,
+        chunk: None,
     })
 }
 
@@ -535,24 +1014,109 @@ fn report(recording: &Recording, subject: usize, outcome: &case::Outcome) -> Str
     out
 }
 
-fn status(name: &str) -> Option<Status> {
+fn status(name: &str) -> Option<&'static [Exception]> {
     STATUSES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
-/// Runs a recording's case as `corpus` judges it, stopping where the
-/// subject first fails.
-fn first_failure(
+/// How a recording went against its exceptions.
+struct Excepted {
+    /// The outcome: where the subject first fails on a field no exception
+    /// covers (none: it never does, and the run went to the end).
+    outcome: case::Outcome,
+    /// Each failure an exception covered, by recorded step, field and the
+    /// exception's index.
+    covered: Vec<(usize, String, usize)>,
+}
+
+impl Excepted {
+    /// Whether it agreed everywhere, no exception needed.
+    fn agrees(&self) -> bool {
+        self.outcome.agrees() && self.covered.is_empty()
+    }
+
+    /// The exceptions that never occurred (none, if it stopped early: a
+    /// later step might have shown them).
+    fn stale<'a>(&self, exceptions: &'a [Exception]) -> Vec<&'a Exception> {
+        if !self.outcome.agrees() {
+            return Vec::new();
+        }
+        exceptions
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.covered.iter().any(|(_, _, e)| e == i))
+            .map(|(_, e)| e)
+            .collect()
+    }
+}
+
+/// Each engine that abstained in `outcome`, with its class
+/// (`engine::abstention`) and why, for the JSON; and why the recording
+/// went unjudged, if xterm, which decides, abstained for anything but a
+/// limit of its adapter's (from then on the vote alone would judge, so the
+/// run is not whole).
+fn abstentions(outcome: &case::Outcome) -> (Vec<serde_json::Value>, Option<String>) {
+    let xterm = engine::find("xterm");
+    let mut unjudged = None;
+    let each = outcome
+        .abstained
+        .iter()
+        .map(|(i, why)| {
+            let class = engine::abstention(why);
+            if Some(*i) == xterm && class != "adapter-limited" {
+                unjudged = Some(format!("xterm, which decides, abstained ({class}): {why}"));
+            }
+            serde_json::json!({ "engine": engine::name(*i), "class": class, "why": why })
+        })
+        .collect();
+    (each, unjudged)
+}
+
+/// Sorts the failures after the recorded step `step` by the exception
+/// covering each, noting each covered one in `covered`: whether any is
+/// covered by none.
+fn sort(
+    step: usize,
+    failures: Vec<String>,
+    exceptions: &[Exception],
+    covered: &mut Vec<(usize, String, usize)>,
+) -> bool {
+    let mut uncovered = false;
+    for key in failures {
+        match exceptions.iter().position(|e| e.covers(step, &key)) {
+            Some(e) => covered.push((step, key, e)),
+            None => uncovered = true,
+        }
+    }
+    uncovered
+}
+
+/// Runs a recording's case as `corpus` judges it, through every judged
+/// point: a failure an exception covers is noted and the run goes on; it
+/// stops where the subject first fails on a field none covers.
+fn judge_excepted(
     recording: &Recording,
     case: &Case,
     panel: &[usize],
-) -> Result<case::Outcome, String> {
+    exceptions: &[Exception],
+) -> Result<Excepted, String> {
     // `run_judged` judges once before the steps and once after each.
     let judged = recording.judged();
     let at = std::cell::Cell::new(0usize);
-    case.run_judged(panel, true, |_, v| {
+    let covered = std::cell::RefCell::new(Vec::new());
+    let outcome = case.run_judged(panel, true, |_, v| {
         let i = at.get();
         at.set(i.saturating_add(1));
-        judged.get(i).copied().unwrap_or(true) && !failures(v).is_empty()
+        if !judged.get(i).copied().unwrap_or(true) {
+            return false;
+        }
+        let step = recording
+            .recorded_step(i)
+            .map_or(0, |r| r.saturating_add(1));
+        sort(step, failures(v), exceptions, &mut covered.borrow_mut())
+    })?;
+    Ok(Excepted {
+        outcome,
+        covered: covered.into_inner(),
     })
 }
 
@@ -566,72 +1130,138 @@ pub fn run(
     names: &[String],
     show: bool,
     json: Option<&str>,
+    chunk: Option<usize>,
 ) -> Result<bool, String> {
+    let recordings: Vec<Recording> = (recordings(names)?.into_iter())
+        .map(|r| Recording { chunk, ..r })
+        .collect();
     if subject != FUX_VT {
-        return run_subject(subject, panel, names, show, json);
+        return run_subject(subject, panel, &recordings, !names.is_empty(), show, json);
     }
-    let recordings = recordings(names)?;
     let names_of: Vec<&str> = panel.iter().map(|&i| engine::name(i)).collect();
     println!("engines: {}", names_of.join(" "));
     let started = Instant::now();
     let mut ok = true;
     let (mut agree, mut differ) = (0usize, 0usize);
     let mut results = Vec::new();
+    // The reply changes some recording shows.
+    let mut shown_changes = BTreeSet::new();
     for recording in &recordings {
         let case = recording.case();
-        let outcome = first_failure(recording, &case, panel)?;
         let expected = status(&recording.name);
+        let exceptions = expected.unwrap_or_default();
+        // An error (an engine or the subject failing) fails the recording,
+        // named; the run goes on to the others.
+        let run = match judge_excepted(recording, &case, panel, exceptions) {
+            Ok(run) => run,
+            Err(e) => {
+                ok = false;
+                differ = differ.saturating_add(1);
+                println!("ERROR    {}: {e}", recording.name);
+                results.push(serde_json::json!({ "recording": recording.name, "error": e }));
+                continue;
+            }
+        };
+        let outcome = &run.outcome;
+        let stale = run.stale(exceptions);
         let label = format!(
             "{} ({} steps, {} bytes)",
             recording.name,
             recording.steps.len(),
             recording.bytes().len()
         );
-        results.push(serde_json::json!({
-            "recording": recording.name,
-            "agrees": outcome.agrees(),
-            "recorded": match &expected {
-                Some(Status::Differs(why) | Status::Decided { why, .. }) => Some(why.to_string()),
-                _ => None,
-            },
-        }));
-        match (outcome.agrees(), expected) {
-            (true, Some(Status::Agree)) => {
-                agree = agree.saturating_add(1);
-                println!("ok       {label}   {}", marks(&outcome));
-            }
-            (true, Some(_)) => {
-                agree = agree.saturating_add(1);
-                println!(
-                    "agrees   {label} (recorded as differing)   {}",
-                    marks(&outcome)
-                );
-            }
-            (true, None) => {
+        let reasons: BTreeSet<&str> = exceptions.iter().map(|e| e.reason).collect();
+        let (abstained, unjudged) = abstentions(outcome);
+        // What fux-vt answers the program now, beside what it answered,
+        // with the changes since it was recorded applied.
+        let (now, then, used) =
+            replies_beside(&crate::record::replies_now(recording)?, &recording.replies);
+        shown_changes.extend(used);
+        let replies_agree = now == then;
+        let listed = REPLIES_DIFFER.iter().find(|(n, _)| *n == recording.name);
+        match (replies_agree, listed) {
+            (true, None) | (false, Some(_)) => {}
+            (false, None) => {
                 ok = false;
-                agree = agree.saturating_add(1);
                 println!(
-                    "NEW      {label} (agrees; no status recorded)   {}",
-                    marks(&outcome)
+                    "REPLIES  {label}: fux-vt answers {:?}, where it answered {:?}",
+                    crate::escape::escape(now.as_bytes()),
+                    crate::escape::escape(then.as_bytes())
                 );
             }
-            (false, Some(Status::Differs(why) | Status::Decided { why, .. })) => {
-                differ = differ.saturating_add(1);
-                println!("differs  {label}: {why}   {}", marks(&outcome));
-                if !names.is_empty() {
-                    print!("{}", report(recording, FUX_VT, &outcome));
+            (true, Some((_, why))) => {
+                ok = false;
+                println!(
+                    "REPLIES  {label}: listed as replying otherwise ({why}), and agrees: remove it"
+                );
+            }
+        }
+        results.push(serde_json::json!({
+            // The program, so recordings of one program count once (the
+            // speed method's sign test groups them).
+            "program": recording.program,
+            "replies_agree": replies_agree,
+            "abstained": abstained,
+            "unjudged": unjudged,
+            "recording": recording.name,
+            "agrees": run.agrees(),
+            "excepted": outcome.agrees() && stale.is_empty(),
+            "covered": run.covered.len(),
+            "recorded": (!reasons.is_empty()).then(|| reasons.iter().copied().collect::<Vec<_>>().join(" ")),
+        }));
+        if run.agrees() {
+            agree = agree.saturating_add(1);
+        } else {
+            differ = differ.saturating_add(1);
+        }
+        if let Some(why) = &unjudged {
+            ok = false;
+            println!("UNJUDGED {label}: {why}");
+        }
+        match (expected, outcome.agrees(), stale.is_empty()) {
+            (None, ..) => {
+                ok = false;
+                println!(
+                    "NEW      {label} ({}; no status recorded)   {}",
+                    if run.agrees() { "agrees" } else { "differs" },
+                    marks(outcome)
+                );
+                if !outcome.agrees() {
+                    print!("{}", report(recording, FUX_VT, outcome));
                 }
             }
-            (false, expected) => {
+            (Some(_), true, true) if run.agrees() => {
+                println!("ok       {label}   {}", marks(outcome));
+            }
+            (Some(_), true, true) => {
+                println!(
+                    "differs  {label}, as its {} exceptions say: {}",
+                    exceptions.len(),
+                    reasons.iter().copied().collect::<Vec<_>>().join(" ")
+                );
+                if !names.is_empty() {
+                    for (step, key, e) in &run.covered {
+                        println!("  after step {step}: {key} (exception {e})");
+                    }
+                }
+            }
+            (Some(_), true, false) => {
                 ok = false;
-                differ = differ.saturating_add(1);
-                let why = if expected.is_none() {
-                    "no status recorded"
-                } else {
-                    "expected to agree"
-                };
-                println!("FAIL     {label} ({why})   {}", marks(&outcome));
-                print!("{}", report(recording, FUX_VT, &outcome));
+                println!("FAIL     {label}: an exception no longer occurs");
+                for e in stale {
+                    println!(
+                        "  steps {}-{}, {}: {}",
+                        e.steps.0, e.steps.1, e.field, e.reason
+                    );
+                }
+            }
+            (Some(_), false, _) => {
+                ok = false;
+                println!(
+                    "FAIL     {label} (a difference no exception covers)   {}",
+                    marks(outcome)
+                );
+                print!("{}", report(recording, FUX_VT, outcome));
             }
         }
         if show {
@@ -641,11 +1271,22 @@ pub fn run(
             }
         }
     }
+    if names.is_empty() {
+        for (i, (was, is, why)) in REPLY_CHANGES.iter().enumerate() {
+            if !shown_changes.contains(&i) {
+                ok = false;
+                println!(
+                    "REPLIES  the change {was:?} to {is:?} ({why}) shows in no recording: remove it"
+                );
+            }
+        }
+    }
     let seconds = started.elapsed().as_secs_f64();
     println!("{agree} recordings agree, {differ} differ ({seconds:.1}s)");
     if let Some(path) = json {
         let value = serde_json::json!({
             "check": "corpus",
+            "settings": engine::settings(names_of.iter().copied()),
             "engines": names_of,
             "recordings": recordings.len(),
             "agree": agree,
@@ -665,7 +1306,8 @@ pub fn run(
 /// The recordings judged with another engine as the subject, as fux-vt is
 /// judged: xterm decides what it can tell, the panel (where fux-vt now
 /// votes) the rest. The statuses are fux-vt's, so none is applied: each
-/// recording's outcome is reported, and only an error fails.
+/// recording's outcome is reported, and only an error, or a recording
+/// xterm could not judge (see `abstentions`), fails.
 ///
 /// Every recording runs to its end, and at each judged point fux-vt is
 /// judged too, on the same screens, with the subject voting in its place:
@@ -674,30 +1316,43 @@ pub fn run(
 fn run_subject(
     subject: usize,
     panel: &[usize],
-    names: &[String],
+    recordings: &[Recording],
+    named: bool,
     show: bool,
     json: Option<&str>,
 ) -> Result<bool, String> {
-    let recordings = recordings(names)?;
     let name = engine::name(subject);
     let names_of: Vec<&str> = panel.iter().map(|&i| engine::name(i)).collect();
     println!("subject: {name}, judged as fux-vt is (fux-vt's statuses are not applied)");
     println!("engines: {}", names_of.join(" "));
     let started = Instant::now();
     let mut scores = [Score::default(), Score::default()];
+    // Whether xterm judged every recording (see `abstentions`).
+    let mut whole = true;
     let mut results = Vec::new();
     let (mut fux_ahead, mut subject_ahead) = (Vec::new(), Vec::new());
-    for recording in &recordings {
+    for recording in recordings {
         let case = Case {
             subject,
             ..recording.case()
         };
-        let (points, outcome) = judge_both(recording, &case, panel)?;
+        let (points, outcome) = match judge_both(recording, &case, panel) {
+            Ok(both) => both,
+            Err(e) => {
+                whole = false;
+                println!("ERROR    {}: {e}", recording.name);
+                results.push(serde_json::json!({ "recording": recording.name, "error": e }));
+                continue;
+            }
+        };
         let mine: Vec<Option<&[(String, Field)]>> =
             points.iter().map(|p| Some(p.subject.as_slice())).collect();
         let fux: Vec<Option<&[(String, Field)]>> =
             points.iter().map(|p| p.fux.as_deref()).collect();
-        let judged = [Judged::of(&points, &mine), Judged::of(&points, &fux)];
+        let judged = [
+            Judged::of(&points, &mine, true),
+            Judged::of(&points, &fux, false),
+        ];
         for (score, j) in scores.iter_mut().zip(&judged) {
             score.add(j, points.len());
         }
@@ -711,6 +1366,11 @@ fn run_subject(
             points.len()
         );
         match &me.first {
+            None if me.points_unavailable > 0 => println!(
+                "unavail. {label}: {} points on fields {name} cannot tell   {}",
+                me.points_unavailable,
+                marks(&outcome)
+            ),
             None => println!("agrees   {label}   {}", marks(&outcome)),
             Some((step, keys)) => {
                 println!(
@@ -719,9 +1379,9 @@ fn run_subject(
                     listed(keys),
                     marks(&outcome)
                 );
-                if !names.is_empty() {
-                    let first = first_failure(recording, &case, panel)?;
-                    print!("{}", report(recording, subject, &first));
+                if named {
+                    let first = judge_excepted(recording, &case, panel, &[])?;
+                    print!("{}", report(recording, subject, &first.outcome));
                 }
             }
         }
@@ -738,10 +1398,18 @@ fn run_subject(
             p.fux.as_ref().map(|f| alone(f, &p.subject))
         });
         let [jm, jf] = &judged;
+        let (abstained, unjudged) = abstentions(&outcome);
+        if let Some(why) = &unjudged {
+            whole = false;
+            println!("UNJUDGED {}: {why}", recording.name);
+        }
         results.push(serde_json::json!({
             "recording": recording.name,
+            "program": recording.program,
             "points": points.len(),
             "subject": jm.json(recording),
+            "abstained": abstained,
+            "unjudged": unjudged,
             "fux-vt": jf.json(recording),
         }));
         fux_ahead.extend(alone_mine);
@@ -750,8 +1418,14 @@ fn run_subject(
     let seconds = started.elapsed().as_secs_f64();
     let [mine, fux] = &scores;
     println!(
-        "{name}: {} recordings agree, {} differ; {} of {} points agree ({seconds:.1}s)",
-        mine.agree, mine.differ, mine.points_agree, mine.points
+        "{name}: {} recordings agree, {} differ, {} unavailable; {} of {} points agree, {} \
+         unavailable ({seconds:.1}s)",
+        mine.agree,
+        mine.differ,
+        mine.unavailable,
+        mine.points_agree,
+        mine.points,
+        mine.points_unavailable
     );
     println!(
         "fux-vt, judged on the same screens with {name} voting in its place: {} recordings \
@@ -789,13 +1463,16 @@ fn run_subject(
     if let Some(path) = json {
         let value = serde_json::json!({
             "check": "corpus",
+            "settings": engine::settings(names_of.iter().copied()),
             "subject": name,
             "engines": names_of,
             "recordings": recordings.len(),
             "agree": mine.agree,
             "differ": mine.differ,
+            "unavailable": mine.unavailable,
             "points": mine.points,
             "points_agree": mine.points_agree,
+            "points_unavailable": mine.points_unavailable,
             "fux-vt": {
                 "agree": fux.agree,
                 "differ": fux.differ,
@@ -813,7 +1490,7 @@ fn run_subject(
         text.push('\n');
         std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
     }
-    Ok(true)
+    Ok(whole)
 }
 
 /// One judged comparison of a recording: the case's step (as
@@ -823,6 +1500,9 @@ fn run_subject(
 struct Point {
     step: usize,
     subject: Vec<(String, Field)>,
+    /// The fields the subject cannot tell where the judge would have
+    /// failed it (`case::reread`): unavailable, so the point is no pass.
+    unavailable: Vec<String>,
     fux: Option<Vec<(String, Field)>>,
 }
 
@@ -844,30 +1524,49 @@ fn judge_both(
             return false;
         }
         let subject = failing_fields(verdicts);
+        let unavailable = failures(&case::reread(base, verdicts, case.subject))
+            .into_iter()
+            .filter(|key| !subject.iter().any(|(k, _)| k == key))
+            .collect();
         let fux = case::rejudge(case.subject, base, verdicts, FUX_VT)
             .map(|(_, theirs)| failing_fields(&theirs));
         let fails = !subject.is_empty();
-        points.borrow_mut().push(Point { step, subject, fux });
+        points.borrow_mut().push(Point {
+            step,
+            subject,
+            unavailable,
+            fux,
+        });
         fails
     })?;
     Ok((points.into_inner(), outcome))
 }
 
-/// How one subject did on one recording: the points it agrees at, and
-/// where it first fails and on what (none if it never does).
+/// How one subject did on one recording: the points it agrees at, those
+/// it could not be judged at (a field it cannot tell, where the judge would
+/// have decided: `Point::unavailable`), and where it first fails and on
+/// what (none if it never does). Every subject is judged at the same
+/// points, on the same fields: one it cannot tell is unavailable there,
+/// never a pass.
 struct Judged {
     points_agree: usize,
+    points_unavailable: usize,
     first: Option<(usize, Vec<String>)>,
 }
 
 impl Judged {
     /// From each point's failures for this subject (none: it abstained,
-    /// which counts as failing).
-    fn of(points: &[Point], failed: &[Option<&[(String, Field)]>]) -> Judged {
+    /// which counts as failing), and, for the subject (`unavailable`),
+    /// the fields it could not be judged on.
+    fn of(points: &[Point], failed: &[Option<&[(String, Field)]>], unavailable: bool) -> Judged {
         let mut points_agree = 0usize;
+        let mut points_unavailable = 0usize;
         let mut first = None;
         for (point, failed) in points.iter().zip(failed) {
             match failed {
+                Some([]) if unavailable && !point.unavailable.is_empty() => {
+                    points_unavailable = points_unavailable.saturating_add(1);
+                }
                 Some([]) => points_agree = points_agree.saturating_add(1),
                 Some(keys) if first.is_none() => {
                     first = Some((point.step, keys.iter().map(|(k, _)| k.clone()).collect()));
@@ -878,14 +1577,22 @@ impl Judged {
         }
         Judged {
             points_agree,
+            points_unavailable,
             first,
         }
     }
 
+    /// Whether it agreed at every point, none of them unavailable.
+    fn agrees(&self) -> bool {
+        self.first.is_none() && self.points_unavailable == 0
+    }
+
     fn json(&self, recording: &Recording) -> serde_json::Value {
         serde_json::json!({
-            "agrees": self.first.is_none(),
+            "agrees": self.agrees(),
+            "unavailable": self.first.is_none() && self.points_unavailable > 0,
             "points_agree": self.points_agree,
+            "points_unavailable": self.points_unavailable,
             "first": self.first.as_ref().map(|(step, keys)| serde_json::json!({
                 "at": place(recording, Some(*step)),
                 "fails_on": keys,
@@ -899,19 +1606,27 @@ impl Judged {
 struct Score {
     agree: usize,
     differ: usize,
+    /// Recordings it never failed, at a point where it could not be judged.
+    unavailable: usize,
     points: usize,
     points_agree: usize,
+    points_unavailable: usize,
 }
 
 impl Score {
     fn add(&mut self, judged: &Judged, points: usize) {
-        if judged.first.is_none() {
+        if judged.agrees() {
             self.agree = self.agree.saturating_add(1);
+        } else if judged.first.is_none() {
+            self.unavailable = self.unavailable.saturating_add(1);
         } else {
             self.differ = self.differ.saturating_add(1);
         }
         self.points = self.points.saturating_add(points);
         self.points_agree = self.points_agree.saturating_add(judged.points_agree);
+        self.points_unavailable = self
+            .points_unavailable
+            .saturating_add(judged.points_unavailable);
     }
 }
 
@@ -1030,6 +1745,177 @@ fn listed(keys: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A recording's replies are compared with fux-vt's now, versions
+    /// aside and with each change since recorded applied: a DA1 reply as
+    /// recorded matches the one fux-vt gives since a218350c, a DA2 of
+    /// another version matches, and a DA1 reply no change covers does not
+    /// (at the parent the replies were never compared).
+    #[test]
+    fn replies_are_compared_with_the_changes_since_recorded() {
+        let (now, then, used) = super::replies_beside(
+            b"\x1b[>1;2700;0c\x1b[?62;6;21;22;28c\x1bP>|fux 0.27.0\x1b\\",
+            b"\x1b[>1;1700;0c\x1b[?62;22c\x1bP>|fux 0.17.0\x1b\\",
+        );
+        assert_eq!(now, then);
+        assert_eq!(used, [0]);
+        let (now, then, _) = super::replies_beside(b"\x1b[?65;1c", b"\x1b[?62;22c");
+        assert_ne!(now, then);
+        assert_eq!(
+            super::unversioned(b"fux 1.2.3 \x1b[>1;99;0c"),
+            "fux VERSION \x1b[>1;VERSION;0c"
+        );
+        assert_eq!(
+            super::unversioned(b"\x1b[>1;99;0c fux 1.2.3"),
+            "\x1b[>1;VERSION;0c fux VERSION"
+        );
+    }
+
+    /// Every subject is judged at the same points: one where it fails
+    /// nothing but could not be judged on a field is unavailable, neither
+    /// a pass nor a failure, and a recording with such a point does not
+    /// agree. fux-vt's side, judged on what it tells, is unaffected.
+    #[test]
+    fn a_point_the_subject_cannot_be_judged_at_is_no_pass() {
+        let point = |step, unavailable: &[&str]| super::Point {
+            step,
+            subject: Vec::new(),
+            unavailable: unavailable.iter().map(|u| (*u).to_owned()).collect(),
+            fux: Some(Vec::new()),
+        };
+        let points = [point(1, &[]), point(2, &["cell (0,0) dim"]), point(3, &[])];
+        let none: &[(String, crate::snapshot::Field)] = &[];
+        let failed = [Some(none), Some(none), Some(none)];
+        let subject = super::Judged::of(&points, &failed, true);
+        assert_eq!((subject.points_agree, subject.points_unavailable), (2, 1));
+        assert!(!subject.agrees() && subject.first.is_none());
+        let fux = super::Judged::of(&points, &failed, false);
+        assert_eq!((fux.points_agree, fux.points_unavailable), (3, 0));
+        assert!(fux.agrees());
+    }
+
+    /// xterm, which decides, abstaining for a limit of its adapter's (SGR
+    /// 58) leaves the vote to judge, as the module says; abstaining for
+    /// anything else (a print that never came) leaves the recording
+    /// unjudged. At the parent both left the vote to judge, marked only
+    /// `!xterm`. Another engine's abstention unjudges nothing.
+    #[test]
+    fn a_recording_xterm_could_not_judge_is_unjudged() -> Result<(), String> {
+        let xterm = crate::engine::find("xterm").ok_or("no xterm")?;
+        let ghostty = crate::engine::find("ghostty").ok_or("no ghostty")?;
+        let outcome = |abstained: Vec<(usize, String)>| crate::case::Outcome {
+            step: None,
+            fux: crate::snapshot::Snapshot::default(),
+            verdicts: Vec::new(),
+            abstained,
+        };
+        let limited = format!("{}xterm has no SGR 58", crate::engine::CANNOT);
+        let (each, unjudged) = super::abstentions(&outcome(vec![(xterm, limited)]));
+        assert_eq!(unjudged, None);
+        assert_eq!(
+            each.first()
+                .and_then(|e| e.get("class"))
+                .and_then(|c| c.as_str()),
+            Some("adapter-limited")
+        );
+        let late = "xterm: the print did not arrive".to_owned();
+        let (_, unjudged) = super::abstentions(&outcome(vec![(xterm, late.clone())]));
+        assert!(unjudged.is_some_and(|u| u.contains("infrastructure")));
+        let (_, unjudged) = super::abstentions(&outcome(vec![(ghostty, late)]));
+        assert_eq!(unjudged, None);
+        assert_eq!(crate::engine::abstention("panicked: at the edge"), "engine");
+        Ok(())
+    }
+
+    /// zsh-resize's points as its exceptions read them: the reflow's
+    /// differences at steps 3, 4 and 8, and its history at 8 and 9, are
+    /// covered, and the run goes on past them; a difference on another
+    /// field or at another step is covered by none, even after the covered
+    /// ones (at the parent, a recording that differs passed whatever
+    /// differed after its first difference); an exception that never
+    /// occurs is stale; `*` stands for any run of characters.
+    #[test]
+    fn an_exception_covers_its_steps_and_fields_and_no_other() {
+        let exceptions = super::ZSH_RESIZE_AT;
+        let mut covered = Vec::new();
+        let points = [
+            (3, vec!["cell (1,4) text", "cursor", "row 1 soft-wrapped"]),
+            (4, vec!["cell (2,0) fg"]),
+            (
+                8,
+                vec![
+                    "cell (0,0) text",
+                    "history row 12 from the newest",
+                    "history rows kept",
+                ],
+            ),
+            (9, vec!["history row 29 from the newest soft-wrapped"]),
+        ];
+        for (step, keys) in &points {
+            let keys = keys.iter().map(|k| (*k).to_owned()).collect();
+            assert!(
+                !super::sort(*step, keys, exceptions, &mut covered),
+                "step {step}"
+            );
+        }
+        assert_eq!(covered.len(), 8);
+        let later = |step: usize, key: &str| {
+            super::sort(step, vec![key.to_owned()], exceptions, &mut Vec::new())
+        };
+        assert!(later(9, "cell (3,3) text"));
+        assert!(later(5, "cursor"));
+        assert!(later(8, "title"));
+        let used: std::collections::BTreeSet<usize> = covered.iter().map(|c| c.2).collect();
+        let stale: Vec<usize> = (0..exceptions.len())
+            .filter(|i| !used.contains(i))
+            .collect();
+        assert_eq!(stale, [5, 6]);
+        assert!(crate::families::glob("cell (*) text", "cell (12,3) text"));
+        assert!(!crate::families::glob("cell (*) text", "cell (12,3) width"));
+        assert!(crate::families::glob(
+            "history row *",
+            "history row 3 from the newest"
+        ));
+        assert!(!crate::families::glob("history row *", "history rows kept"));
+        assert!(
+            crate::families::glob("title", "title") && !crate::families::glob("title", "titles")
+        );
+    }
+
+    /// Every recording's bytes are the ones recorded: each `.bin` has its
+    /// SHA-256 in `SHA256SUMS`, and it matches.
+    #[test]
+    fn every_recording_is_its_recorded_bytes() -> Result<(), String> {
+        let dir = super::dir();
+        let sums = std::fs::read_to_string(dir.join("SHA256SUMS")).map_err(|e| e.to_string())?;
+        let mut listed = std::collections::BTreeMap::new();
+        for line in sums.lines() {
+            let (hash, name) = line
+                .split_once("  ")
+                .ok_or(format!("SHA256SUMS: {line:?}"))?;
+            listed.insert(name.to_owned(), hash.to_owned());
+        }
+        let mut bins = 0usize;
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().is_none_or(|x| x != "bin") {
+                continue;
+            }
+            bins = bins.saturating_add(1);
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+            assert_eq!(
+                listed.get(&name),
+                Some(&crate::bench::sha256(&bytes)?),
+                "{name}"
+            );
+        }
+        assert_eq!(bins, listed.len());
+        Ok(())
+    }
+
     #[test]
     fn every_recording_loads_with_a_status() -> Result<(), String> {
         let all = super::recordings(&[])?;
@@ -1050,6 +1936,32 @@ mod tests {
     /// A step that resized is two steps of the case: the resize, then the
     /// output after it.
     #[test]
+    fn a_step_chunked_is_judged_after_each_piece() {
+        let recording = super::Recording {
+            name: "r".into(),
+            program: "p".into(),
+            version: "v".into(),
+            rows: 4,
+            cols: 10,
+            steps: vec![
+                (String::new(), b"abcde".to_vec()),
+                ("j".into(), b"f".to_vec()),
+            ],
+            replies: Vec::new(),
+            resizes: vec![(1, 3, 8)],
+            chunk: Some(2),
+        };
+        // Before any step; "ab", "cd", "e"; the resize; "f".
+        assert_eq!(recording.case().steps.len(), 5);
+        assert_eq!(recording.judged(), [true, true, true, true, false, true]);
+        let recorded: Vec<Option<usize>> = (0..=5).map(|s| recording.recorded_step(s)).collect();
+        assert_eq!(
+            recorded,
+            [None, Some(0), Some(0), Some(0), Some(1), Some(1)]
+        );
+    }
+
+    #[test]
     fn a_resize_is_its_own_step_of_the_case() {
         let recording = super::Recording {
             name: "r".into(),
@@ -1063,7 +1975,9 @@ mod tests {
                 (String::new(), b"c".to_vec()),
                 ("k".into(), b"d".to_vec()),
             ],
+            replies: Vec::new(),
             resizes: vec![(2, 3, 8)],
+            chunk: None,
         };
         let case = recording.case();
         assert_eq!(case.steps.len(), 5);

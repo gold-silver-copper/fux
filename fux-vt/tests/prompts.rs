@@ -306,6 +306,23 @@ fn a_late_start_follows_the_line_submitted_last() -> Result {
     Ok(())
 }
 
+/// A late `C` looks for its prompt, and for the line submitted, on the
+/// screen alone (threats.md B29): one whose prompt and line scrolled into
+/// history starts its output at the cursor, where a `C` would, rather than
+/// after a prompt it would read all history to find.
+#[test]
+fn a_late_start_past_the_screen_starts_at_the_cursor() -> Result {
+    let mut p = Parser::with_options(Size::new(3, 20)?, 1 << 16, MARKS)?;
+    p.process(b"\x1b]133;A\x07$ cat\r\n")?;
+    p.note_submit();
+    p.process(b"one\r\ntwo\r\nthree\r\nfour")?;
+    p.process(b"\x1b]133;C;late\x07\x1b]133;D;0\x07")?;
+    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
+    let cursor = p.screen().window().row(2).map(|r| r.id());
+    assert_eq!((Some(start.row), start.col), (cursor, 4));
+    Ok(())
+}
+
 /// While recording, every run printed that changed cells is kept, with
 /// its row and columns, though drawn over in the same output; a redraw
 /// of the same text is none.
@@ -326,6 +343,57 @@ fn prints_are_recorded_though_drawn_over() -> Result {
         [(row(1), (0, 5), "READY"), (row(1), (0, 9), "xxxxxbold")]
     );
     assert!(p.take_prints().is_empty());
+    Ok(())
+}
+
+/// What is recorded is what was printed, however the output is split
+/// across calls: `OUT0016` printed over `OUT0011`, whole or a byte a
+/// call, or split inside, is recorded as `OUT0016`, as fux's text waits
+/// need (its oracle, mode full, seed 5: FA-TXT-2); a glyph left as it was
+/// goes with the text printed beside it, before or after, and a redraw of
+/// it all is none, however split; text that is not ASCII and REP's copies
+/// the same.
+#[test]
+fn what_is_recorded_does_not_depend_on_how_the_output_is_split() -> Result {
+    for (before, then, printed) in [
+        ("OUT0011", "OUT0016", "OUT0016"),
+        ("OUT0016", "OUT0016", ""),
+        ("OUT0011X", "OUT0016X", "OUT0016X"),
+        ("\u{e9}t\u{e9}1", "\u{e9}t\u{e9}2", "\u{e9}t\u{e9}2"),
+        ("aaab", "a\x1b[3b", "aaaa"),
+        ("aaaa", "a\x1b[3b", ""),
+        ("\u{e9}\u{e9}x", "\u{e9}\x1b[2b", "\u{e9}\u{e9}\u{e9}"),
+    ] {
+        let recorded = |pieces: &[&[u8]]| -> Result<String> {
+            let mut p = Parser::with_options(Size::new(2, 12)?, 0, Options::new())?;
+            p.process(format!("{before}\r").as_bytes())?;
+            p.record_prints(true);
+            for piece in pieces {
+                p.process(piece)?;
+            }
+            let prints = p.take_prints();
+            Ok(prints.iter().map(|t| t.text).collect())
+        };
+        let whole = recorded(&[then.as_bytes()])?;
+        let bytes: Vec<&[u8]> = then.as_bytes().iter().map(std::slice::from_ref).collect();
+        let (head, tail) = then.as_bytes().split_at_checked(3).ok_or("short")?;
+        assert_eq!(recorded(&bytes)?, whole, "{then:?} a byte a call");
+        assert_eq!(recorded(&[head, tail])?, whole, "{then:?} split");
+        assert_eq!(whole, printed, "{before:?} then {then:?}");
+    }
+    Ok(())
+}
+
+/// What is recorded may hold 4 bytes a cell of the screen it is printed
+/// on: a resize with nothing recorded yet makes room for the new size, as
+/// taking the prints does, and loses nothing (FA-PAR-5).
+#[test]
+fn a_resize_with_nothing_recorded_keeps_room_for_the_new_size() -> Result {
+    let mut p = Parser::with_options(Size::new(10, 10)?, 10, Options::new())?;
+    p.record_prints(true);
+    p.resize(Size::new(200, 100)?)?;
+    let prints = p.take_prints();
+    assert_eq!((prints.cap(), prints.lost()), (4 * 200 * 100, false));
     Ok(())
 }
 
@@ -350,5 +418,39 @@ fn a_tick_falls_between_pieces() -> Result {
         .map(|r| r.version())
         .ok_or("no row")?;
     assert!(first < tick && tick < second);
+    Ok(())
+}
+
+/// A row's prompt mark is part of what a host redraws from (`threats.md`
+/// P12, section 6's invariant 28): marking a row, or taking its mark away,
+/// gives it a new version, and the mark shows in `dirty_rows_since`; a
+/// mark that stays as it was changes nothing.
+#[test]
+fn a_prompt_mark_changes_its_row_s_version() -> Result {
+    let mut p = Parser::with_options(Size::new(4, 10)?, 0, MARKS)?;
+    p.process(b"\x1b[2;1H")?;
+    let version = |p: &Parser| p.screen().rows().nth(1).map(|r| r.version());
+    let dirty = |p: &Parser, mark| {
+        (p.screen().dirty_rows_since(mark))
+            .map(|r| r.index())
+            .collect::<Vec<_>>()
+    };
+    let (before, mark) = (version(&p), p.screen().mark());
+    // A at the first column: no fresh line, the blank row marked.
+    p.process(b"\x1b]133;A\x07")?;
+    assert!(p.screen().starts_prompt(1));
+    assert!(version(&p) > before, "marked with no new version");
+    assert_eq!(dirty(&p, mark), [1]);
+    // P with no `k`: the row marked again, as it was.
+    let (before, mark) = (version(&p), p.screen().mark());
+    p.process(b"\x1b]133;P\x07")?;
+    assert_eq!(version(&p), before, "a mark as it was changed the row");
+    assert_eq!(dirty(&p, mark), Vec::<usize>::new());
+    // ED 2 takes it away from the blank row: a change of its own.
+    let (before, mark) = (version(&p), p.screen().mark());
+    p.process(b"\x1b[2J")?;
+    assert!(!p.screen().starts_prompt(1));
+    assert!(version(&p) > before, "unmarked with no new version");
+    assert!(dirty(&p, mark).contains(&1));
     Ok(())
 }

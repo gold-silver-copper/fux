@@ -1,0 +1,138 @@
+# Ghostty src/input/key_encode.zig (MIT, Mitchell Hashimoto), its encoding
+# tests as fux-vt's encoder sees them: source, mode, key, the bytes Ghostty
+# expects, verdict. Ghostty leaves Alt sending ESC (DEC mode 1036) off by
+# default; fux models xterm's metaSendsEscape, Alt an ESC before the key.
+# Blocks of Ghostty internals (KittySequence formatting, its ctrlSeq helper,
+# macOS option-as-alt) are left out.
+key_encode.zig:1250	kitty=1	a	abcd	na: a key event carrying several characters of text, which a fux key, one character, cannot
+key_encode.zig:1263	kitty=1	a	a	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=1	Enter	\x0d	agree
+key_encode.zig:1277	kitty=1	BSpace	\x7f	agree
+key_encode.zig:1277	kitty=1 bkm	BSpace	\x7f	differs: the kitty spec: Enter, Tab and Backspace "still generate the same bytes as in legacy mode", DECBKM's with it; Ghostty: "Kitty does not support DECBKM"; fux: \x08
+key_encode.zig:1277	kitty=1	Tab	\x09	agree
+key_encode.zig:1277	kitty=3	Enter	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=3	BSpace	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=3	Tab	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=11	Enter	\e[13;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=11	BSpace	\e[127;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1277	kitty=11	Tab	\e[9;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1371	kitty=1	S-BSpace mods=1	\e[127;2u	agree
+key_encode.zig:1386	kitty=1	M-BSpace mods=2	\e[127;3u	agree
+key_encode.zig:1402	kitty=1	S-Enter mods=1	\e[13;2u	agree
+key_encode.zig:1415	kitty=1	S-Tab mods=1	\e[9;2u	agree
+key_encode.zig:1428	kitty=31	Enter	\e[13u	agree
+key_encode.zig:1444	kitty=31	? mods=4	\e[57442;5u	na: a key fux has no Key for (control_left)
+key_encode.zig:1460	kitty=31	? mods=4	\e[57442;5:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1481	kitty=1	Delete	\e[3~	agree
+key_encode.zig:1492	kitty=1	S-a mods=1	none	na: a key composed by an input method, which reaches fux as its text
+key_encode.zig:1505	kitty=9	? mods=1	\e[57441;2u	na: a key composed by an input method, which reaches fux as its text
+key_encode.zig:1518	kitty=31	?	\xc3\xbb	na: a key fux has no Key for (unidentified)
+key_encode.zig:1540	kitty=23	? mods=1	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1540	kitty=31	? mods=1	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1562	kitty=23	? mods=1	!	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1581	kitty=5	S-A code=97 mods=1	\e[97:65;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code", and a key that types text with Shift alone is text, not an escape code, without report all keys (8); fux: A
+key_encode.zig:1598	kitty=5	S-A code=65 base=97 mods=1	\e[65::97;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code", and a key that types text with Shift alone is text, not an escape code, without report all keys (8); fux: A
+key_encode.zig:1619	kitty=29	J code=106 mods=64	\e[106;65;74u	agree
+key_encode.zig:1638	kitty=29	: code=59 mods=1	\e[59:58;2;58u	agree
+key_encode.zig:1657	kitty=29	ч code=1095 base=59	\e[1095::59;;1095u	agree
+key_encode.zig:1676	kitty=29	S-Ч code=1095 base=59 mods=1	\e[1095:1063:59;2;1063u	agree
+key_encode.zig:1695	kitty=29	Ч code=1095 base=59 mods=64	\e[1095::59;65;1063u	agree
+key_encode.zig:1714	kitty=31	C-[ code=337 base=91 mods=4	\e[337::91;5:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1737	kitty=1	Up	\e[A	agree
+key_encode.zig:1750	kitty=5	S-Tab mods=1	\e[9;2u	agree
+key_encode.zig:1763	kitty=5	?	none	na: a key fux has no Key for (shift_left)
+key_encode.zig:1776	kitty=9	?	\e[57441u	na: a key fux has no Key for (shift_left)
+key_encode.zig:1857	kitty=29	C-j code=106 mods=4	\e[106;5u	agree
+key_encode.zig:1876	kitty=29	S-J code=106 mods=1	\e[106:74;2;74u	agree
+key_encode.zig:1895	kitty=31	S-J code=106 mods=1	\e[106:74;2:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+key_encode.zig:1917	kitty=13	Delete	\e[3~	agree
+key_encode.zig:1934	kitty=13	Enter code=13	A	na: an event whose text is not its key's, which Ghostty's input layer makes and no client terminal sends fux
+key_encode.zig:1951	kitty=31	1 code=57400 mods=0	\e[57400;;49u	differs: fux sends a keypad key the terminal named as it named it, without its associated text (16): a gap, recorded; fux: \e[57400u
+key_encode.zig:1971	kitty=31	BSpace code=13	none	na: an event whose text is not its key's, which Ghostty's input layer makes and no client terminal sends fux
+key_encode.zig:1990	legacy	BSpace	none	na: an event whose text is not its key's, which Ghostty's input layer makes and no client terminal sends fux
+key_encode.zig:2001	kitty=31	BSpace	\e[127u	agree
+key_encode.zig:2019	kitty=31 bkm	BSpace	\e[127u	agree
+key_encode.zig:2038	legacy	Enter	A	na: an event whose text is not its key's, which Ghostty's input layer makes and no client terminal sends fux
+key_encode.zig:2049	legacy	Escape	A	na: an event whose text is not its key's, which Ghostty's input layer makes and no client terminal sends fux
+key_encode.zig:2060	legacy	M-Escape	\e\e	agree
+key_encode.zig:2060	legacy mok=2	M-Escape	\e[27;3;27~	agree
+key_encode.zig:2082	legacy	C-_	\x1f	agree
+key_encode.zig:2093	legacy	C-M-c	\e\x03	agree
+key_encode.zig:2104	legacy	M-c	\ec	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2118	legacy	M-e	\ee	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2132	legacy	?	\e\xc3\xa9	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2132	legacy	?	\e\xc5\x91	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2132	legacy	?	\e\xe7\x95\x8c	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2132	legacy	?	\e\xf0\x9f\x98\x80	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2161	legacy	?	\e\xe7\x95\x8c	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2175	legacy	?	\e\xf0\x9f\x98\x80	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2223	legacy	M-ф	\e\xd1\x84	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2237	legacy	C-c	\x03	agree
+key_encode.zig:2248	legacy	C-Space	\x00	agree
+key_encode.zig:2259	legacy	C-S-BSpace	\x08	agree
+key_encode.zig:2269	legacy	C-M-S-BSpace	\e\x08	agree
+key_encode.zig:2269	legacy mok=2	C-M-S-BSpace	\e[27;8;127~	differs: Backspace's code under modifyOtherKeys with Ctrl is BS, as real xterm 411 sends it (KEY-13, xterm-keys.txt line 1662: C-M-S-BSpace mok=2 \e[27;8;8~); fux: \e[27;8;8~
+key_encode.zig:2285	legacy	BSpace	\x7f	agree
+key_encode.zig:2295	legacy	C-BSpace	\x08	agree
+key_encode.zig:2307	legacy bkm	BSpace	\x08	agree
+key_encode.zig:2317	legacy bkm	C-BSpace	\x7f	agree
+key_encode.zig:2329	legacy mok=2	C-S-H	\e[27;6;72~	differs: a legacy client terminal's Ctrl-Shift-H arrives as Ctrl-H (KeyPress folds a control letter's case), so the Shift is not there to send; fux: \e[27;5;104~
+key_encode.zig:2342	legacy mok=2	C-p	\e[27;5;112~	agree
+key_encode.zig:2355	legacy	C-p	\x10	agree
+key_encode.zig:2366	legacy mok=2	C-S-H	\e[27;6;72~	differs: a legacy client terminal's Ctrl-Shift-H arrives as Ctrl-H (KeyPress folds a control letter's case), so the Shift is not there to send; fux: \e[27;5;104~
+key_encode.zig:2380	legacy mok=2	M-8	\e[27;3;56~	na: macOS option-as-alt, a client terminal's own setting
+key_encode.zig:2411	legacy	C-i	\e[105;5u	differs: xterm sends the C0 control (ctlseqs, "Alt and Meta Keys": Ctrl with a letter is its control character); Ghostty sends CSI u in legacy mode, its own choice; fux: \x09
+key_encode.zig:2411	legacy	C-m	\e[109;5u	differs: xterm sends the C0 control (ctlseqs, "Alt and Meta Keys": Ctrl with a letter is its control character); Ghostty sends CSI u in legacy mode, its own choice; fux: \x0d
+key_encode.zig:2411	legacy	C-[	\e[91;5u	differs: xterm sends the C0 control (ctlseqs, "Alt and Meta Keys": Ctrl with a letter is its control character); Ghostty sends CSI u in legacy mode, its own choice; fux: \e
+key_encode.zig:2411	legacy	C-@	\e[64;5u	differs: xterm sends the C0 control (ctlseqs, "Alt and Meta Keys": Ctrl with a letter is its control character); Ghostty sends CSI u in legacy mode, its own choice; fux: \x00
+key_encode.zig:2454	legacy	C-S-M	\e[109;6u	differs: xterm sends the C0 control (ctlseqs, "Alt and Meta Keys": Ctrl with a letter is its control character); Ghostty sends CSI u in legacy mode, its own choice; fux: \x0d
+key_encode.zig:2468	legacy	S-Up	\e[1;2A	agree
+key_encode.zig:2479	legacy	Enter code=57414 mods=0	\x0d	agree
+key_encode.zig:2490	legacy	1 code=57400 mods=0	1	agree
+key_encode.zig:2502	legacy mok=2	C-1 code=57400 mods=4	1	differs: a keypad digit with Ctrl under modifyOtherKeys 2 is the digit modified, as for any key; real xterm's bytes are to settle it (KEY-13); fux: \e[27;5;49~
+key_encode.zig:2502	legacy keypad mok=2	C-1 code=57400 mods=4	\eO5q	agree
+key_encode.zig:2531	legacy keypad	1 code=57400 mods=0	\eOq	agree
+key_encode.zig:2545	legacy keypad	1 code=57400 mods=128	\eOq	differs: ctlseqs, "PC-Style Function Keys": "Use the NumLock key to override the application mode"; Ghostty keeps the mode; fux: 1
+key_encode.zig:2559	legacy keypad	1 code=57400 mods=0	1	na: Ghostty's mode 1035 (ignore the keypad with Num Lock), which fux does not keep
+key_encode.zig:2574	legacy	C-F1	\e[1;5P	agree
+key_encode.zig:2574	legacy	C-F2	\e[1;5Q	agree
+key_encode.zig:2574	legacy	C-F3	\e[13;5~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); Ghostty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;5R
+key_encode.zig:2574	legacy	C-F4	\e[1;5S	agree
+key_encode.zig:2574	legacy	C-F5	\e[15;5~	agree
+key_encode.zig:2633	legacy	F13	\e[25~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F13	\e[25;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F14	\e[26~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F14	\e[26;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F15	\e[28~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F15	\e[28;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F16	\e[29~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F16	\e[29;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F17	\e[31~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F17	\e[31;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F18	\e[32~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F18	\e[32;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F19	\e[33~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F19	\e[33;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F20	\e[34~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F20	\e[34;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F21	\e[42~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F21	\e[42;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F22	\e[43~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F22	\e[43;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F23	\e[44~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F23	\e[44;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F24	\e[45~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F24	\e[45;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy	F25	\e[46~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2633	legacy mok=2	C-F25	\e[46;5~	differs: F13 and above send nothing in the legacy modes: xterm's PC-style keyboard has no F13 (its F13 is Shift-F1); Ghostty sends the VT220's numbers; fux: none
+key_encode.zig:2681	legacy	?	\e[28~	na: a key fux has no Key for (help)
+key_encode.zig:2681	legacy mok=2	?	\e[28;5~	na: a key fux has no Key for (help)
+key_encode.zig:2681	legacy	?	\e[29~	na: a key fux has no Key for (context_menu)
+key_encode.zig:2681	legacy mok=2	?	\e[29;5~	na: a key fux has no Key for (context_menu)
+key_encode.zig:2718	legacy	S-Tab	\e[Z	agree
+key_encode.zig:2731	legacy	S-Tab	\e[Z	agree
+key_encode.zig:2744	legacy	C-ő	\e[337;5u	na: a key of a layout other than US, whose code Ghostty's input layer gives
+key_encode.zig:2757	legacy	b	none	na: Super with a letter on macOS, where Ghostty sends no text; elsewhere it sends the text, as fux
+key_encode.zig:2770	legacy	S-B	none	na: Super with a letter on macOS, where Ghostty sends no text; elsewhere it sends the text, as fux
+key_encode.zig:2783	legacy	BSpace	\x7f	agree
+key_encode.zig:2794	legacy bkm	BSpace	\x08	agree

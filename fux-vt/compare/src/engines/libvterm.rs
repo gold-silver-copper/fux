@@ -77,7 +77,9 @@
 //!   the screen: `--size 3x3 '\e[3;3H\e7' resize:2x2 '\e8X'`.
 //! - Not caught: DECDWL in a one-column terminal makes rows of width 0,
 //!   and the cursor goes to column -1, which the adapter reports as an
-//!   error: `--size 1x1 '\e#6\e[I'`. No generator writes DECDWL.
+//!   error: `--size 1x1 '\e#6\e[I'`. Only the `renditions` family's
+//!   generator writes DECDWL, and its test alone decides it, so no random
+//!   run draws it unless asked for by `--family`.
 //!
 //! Its quirks and choices, where Ghostty agrees with fux-vt and libvterm
 //! does not, with the same command:
@@ -154,7 +156,7 @@ pub const KIND: Kind = Kind {
         link_uri: false,
         link_group: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks::XTERM,
     panel: true,
@@ -291,11 +293,12 @@ impl Engine for Libvterm {
             reports: snapshot::reports(t.replies()),
             screen,
             history,
+            device: Default::default(),
         })
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.term.replies().to_vec()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.term.replies().to_vec())
     }
 }
 

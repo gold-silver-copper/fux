@@ -172,6 +172,23 @@ impl Classes {
         runs
     }
 
+    /// The bytes of `piece` from `from` on, which `classify` told as `runs`,
+    /// were not read (a parser call stopped before them): what of them it
+    /// took for the kernel's echo is looked for again, first, when they are.
+    pub fn unread(&mut self, piece: &[u8], runs: &[(usize, Origin)], from: usize) {
+        let mut start = 0usize;
+        let mut echoed = Vec::new();
+        for &(end, origin) in runs {
+            if origin == Origin::Echo {
+                echoed.extend_from_slice(piece.get(start.max(from)..end).unwrap_or_default());
+            }
+            start = end;
+        }
+        for byte in echoed.into_iter().rev() {
+            self.pending.push_front(byte);
+        }
+    }
+
     /// What `print`, which came from `origin` and went on the line that
     /// starts at `line()` (found only if asked), may be the echo of: none
     /// (output); everything (the kernel's echo, or a shell fux marks

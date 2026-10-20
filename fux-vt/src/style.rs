@@ -20,15 +20,15 @@
 //! floor that grows with the grid, the grid sweeps it (`Grid::sweep`): it
 //! marks the styles its cells use, keeps those, in the order they had, and
 //! writes their new numbers into its cells. A sweep reads every cell, but
-//! comes only after as many new styles as there were in use, and at least
-//! an eighth of the grid's cells, so a style costs a few cell reads however
-//! many there are. No reader sees a style's number.
+//! after one that keeps L styles the next comes only after max(floor − L,
+//! L) new ones, at least half the floor, which is an eighth of the grid's
+//! cells or more: so a style costs a few cell reads however many there
+//! are (`threats.md` B13). No reader sees a style's number.
 
 use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasher, Hasher, RandomState};
 
 use crate::Attributes;
-use crate::history::SlotHasher;
 
 /// The bit of a style's number that says it is in the table.
 pub(crate) const TABLE: u32 = 1 << 27;
@@ -41,13 +41,85 @@ pub(crate) const MAX_STYLES: usize = 1 << 27;
 const FLOOR: usize = 4096;
 
 /// A grid's table of styles: their attributes by place, and each one's
-/// place by its attributes.
-#[derive(Clone, Debug, Default)]
+/// place by its attributes, found by a keyed hash ([`Keyed`]), so that a
+/// program can't choose styles that collide (`threats.md` B12). Probes per
+/// insert are expected O(1); the ceiling is the table's length, which a
+/// sweep bounds (B13).
+#[derive(Clone, Default)]
 pub(crate) struct Styles {
     table: Vec<Attributes>,
-    places: HashMap<Attributes, u32, BuildHasherDefault<SlotHasher>>,
+    places: HashMap<Attributes, u32, Keyed>,
     /// How many styles were in use when the table was last swept.
     live: usize,
+}
+
+/// The tables' hasher. Zero-sized: its keys are `keys()`'s, a static
+/// drawn once a process from std's random keys, so a program sees neither
+/// them nor any hash, and a table carries none. Each word hashed is folded
+/// in by one 128-bit multiply by a key (as foldhash does), rather than by
+/// SipHash's rounds, which cost the SGR path several percent.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Keyed;
+
+/// The process's keys: the seed, and the key, odd so that no word folds
+/// to nothing.
+fn keys() -> (u64, u64) {
+    static KEYS: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    *KEYS.get_or_init(|| {
+        let random = RandomState::new();
+        (random.hash_one(0u64), random.hash_one(1u64) | 1)
+    })
+}
+
+impl BuildHasher for Keyed {
+    type Hasher = KeyedHasher;
+    fn build_hasher(&self) -> KeyedHasher {
+        let (state, key) = keys();
+        KeyedHasher { state, key }
+    }
+}
+
+/// A hash being made with the tables' keys ([`Keyed`]).
+pub(crate) struct KeyedHasher {
+    state: u64,
+    key: u64,
+}
+
+/// The halves of `x × y`, folded: every bit of both reaches each.
+fn folded(x: u64, y: u64) -> u64 {
+    let full = u128::from(x).wrapping_mul(u128::from(y));
+    let [low, high] = [full, full >> 64].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+    low.unwrap_or(0) ^ high.unwrap_or(0)
+}
+
+impl Hasher for KeyedHasher {
+    fn finish(&self) -> u64 {
+        self.state
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_u64(u64::from(*byte));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.state = folded(self.state ^ n, self.key);
+    }
+    /// Both halves at once, each masked by a key, folded in one multiply.
+    fn write_u128(&mut self, n: u128) {
+        let [high, low] = [n >> 64, n].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+        self.state = folded(high.unwrap_or(0) ^ self.state, low.unwrap_or(0) ^ self.key);
+    }
+}
+
+/// The table and its count, not `places`, whose order is the hasher's keys'
+/// and says nothing the table doesn't.
+impl std::fmt::Debug for Styles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Styles")
+            .field("table", &self.table)
+            .field("live", &self.live)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Styles {
@@ -84,16 +156,39 @@ impl Styles {
         self.table.len()
     }
 
+    /// The bytes the table takes: its entries' room and its map's buckets.
+    pub(crate) fn bytes(&self) -> usize {
+        table_bytes(self.table.capacity(), self.places.capacity())
+    }
+
+    /// Whether one more style grows its room, the entries' or the map's.
+    pub(crate) fn full(&self) -> bool {
+        self.table.len() == self.table.capacity() || self.places.len() == self.places.capacity()
+    }
+
+    /// The bytes it takes once one more style is in: each room doubled if
+    /// full.
+    pub(crate) fn bytes_after_insert(&self) -> usize {
+        let grown = |len: usize, room: usize| match len < room {
+            true => room,
+            false => room.saturating_mul(2).max(4),
+        };
+        table_bytes(
+            grown(self.table.len(), self.table.capacity()),
+            grown(self.places.len(), self.places.capacity()),
+        )
+    }
+
     /// The number of the style with `attributes`, if the table has it.
     pub(crate) fn find(&self, attributes: Attributes) -> Option<u32> {
         self.places.get(&attributes).map(|place| place | TABLE)
     }
 
     /// Whether the table is to be swept before another style is added:
-    /// it has twice the styles in use at the last sweep, and more than the
-    /// floor, which is at least an eighth of `cells`, the cells the grid
-    /// holds, so a sweep comes after at least that many new styles; or it
-    /// is full.
+    /// it has twice the styles in use at the last sweep, L, and the floor,
+    /// at least an eighth of `cells`, the cells the grid holds, so a sweep
+    /// comes after max(floor − L, L) new styles, at least half the floor;
+    /// or it is full.
     pub(crate) fn wants_sweep(&self, cells: usize) -> bool {
         let floor = FLOOR.max(cells / 8);
         let len = self.table.len();
@@ -116,7 +211,20 @@ impl Styles {
     /// style's number becomes; a style let go becomes 0.
     pub(crate) fn retain(&mut self, used: &[bool]) -> Vec<u32> {
         let table = std::mem::take(&mut self.table);
-        self.places.clear();
+        // Room for twice the styles kept, as many as the next sweep lets in
+        // past the floor: a map with more is made anew, as one cleared
+        // keeps its buckets, and its bytes count (B11).
+        let room = used
+            .iter()
+            .filter(|used| **used)
+            .count()
+            .saturating_mul(2)
+            .max(FLOOR);
+        if self.places.capacity() > room {
+            self.places = HashMap::with_capacity_and_hasher(room, Keyed);
+        } else {
+            self.places.clear();
+        }
         let used = used.iter().chain(std::iter::repeat(&false));
         let renumber = (table.iter().zip(used))
             .map(|(attributes, used)| match used {
@@ -129,10 +237,133 @@ impl Styles {
     }
 }
 
+/// The bytes of a table of `entries` entries' room and a map of `room`
+/// places' room: the entries, and each bucket's place and control byte, a
+/// map's buckets being its room's power of two past 8 for each 7.
+fn table_bytes(entries: usize, room: usize) -> usize {
+    let buckets = match room {
+        0 => 0,
+        1..=7 => room.saturating_add(1).next_power_of_two(),
+        _ => (room.saturating_mul(8) / 7).next_power_of_two(),
+    };
+    let bucket = size_of::<(Attributes, u32)>().saturating_add(1);
+    (entries.saturating_mul(size_of::<Attributes>())).saturating_add(buckets.saturating_mul(bucket))
+}
+
+/// The bytes a screen of `cells` cells may keep in its style table beside
+/// history's budget: a table of twice its cells' styles, or the floor's
+/// (`threats.md` B11, S(2N)).
+pub(crate) fn screen_share(cells: usize) -> usize {
+    let entries = cells.saturating_mul(2).max(FLOOR).next_power_of_two();
+    table_bytes(entries, entries.saturating_mul(7) / 8)
+}
+
+/// The table's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Styles {
+    /// 15 and 16: each style is found at its place, no other, and the
+    /// table holds at most [`MAX_STYLES`].
+    pub(crate) fn check(&self) -> Result<(), String> {
+        crate::check::ensure(
+            self.places.len() == self.table.len() && self.table.len() <= MAX_STYLES,
+            || {
+                format!(
+                    "{} places for {} styles",
+                    self.places.len(),
+                    self.table.len()
+                )
+            },
+        )?;
+        for (place, attributes) in self.table.iter().enumerate() {
+            let found = self
+                .places
+                .get(attributes)
+                .and_then(|p| usize::try_from(*p).ok());
+            crate::check::ensure(found == Some(place), || {
+                format!("style {place} is found at {found:?}")
+            })?;
+        }
+        crate::check::ensure(self.live <= self.table.len(), || {
+            format!("{} styles live of {}", self.live, self.table.len())
+        })
+    }
+
+    /// 15: no more than [`SPREAD`] styles share a place in `places` by
+    /// `hash` (the table's own hash, [`Keyed`]): a program that can't see
+    /// the keys can't make styles collide (`threats.md` B12), so the most
+    /// a place gets is a few, as for random hashes, where one fold of
+    /// both words, unkeyed, gave every style of a chosen family one place.
+    pub(crate) fn check_spread(&self, hash: impl Fn(&Attributes) -> u64) -> Result<(), String> {
+        // The places a table of them holds: 8 for each 7 it has room for.
+        let places = (self.places.capacity().saturating_mul(8) / 7)
+            .max(1)
+            .next_power_of_two();
+        let mask = u64::try_from(places.saturating_sub(1)).unwrap_or(u64::MAX);
+        let mut shared = vec![0u32; places];
+        let mut most = 0;
+        for attributes in &self.table {
+            let at = usize::try_from(hash(attributes) & mask).unwrap_or(0);
+            if let Some(count) = shared.get_mut(at) {
+                *count = count.saturating_add(1);
+                most = most.max(*count);
+            }
+        }
+        crate::check::ensure(most <= SPREAD, || {
+            format!("{most} styles share a place of {places}")
+        })
+    }
+}
+
+/// The most styles a place of the table may get by the hash
+/// (`Styles::check_spread`): random hashes of a table's styles give a few,
+/// and the chance of more than 64 is nil.
+#[cfg(feature = "checks")]
+const SPREAD: u32 = 64;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{Blink, Color, UnderlineStyle};
+
+    /// A hasher that keeps the words it is given.
+    #[derive(Default)]
+    struct Recording(Vec<u64>);
+
+    impl std::hash::Hasher for Recording {
+        fn finish(&self) -> u64 {
+            0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.extend(bytes.iter().map(|b| u64::from(*b)));
+        }
+        fn write_u64(&mut self, n: u64) {
+            self.0.push(n);
+        }
+        fn write_u128(&mut self, n: u128) {
+            let [high, low] = [n >> 64, n].map(|h| u64::try_from(h & u128::from(u64::MAX)));
+            self.0.extend([high.unwrap_or(0), low.unwrap_or(0)]);
+        }
+    }
+
+    /// What `attributes` write to a hasher, a word at a time.
+    fn written(attributes: Attributes) -> Vec<u64> {
+        let mut hasher = Recording::default();
+        std::hash::Hash::hash(&attributes, &mut hasher);
+        hasher.0
+    }
+
+    /// Attributes write both their words, whole, to the hasher, so two that
+    /// differ write differently, and a keyed hash leaves no family a
+    /// program could choose to collide. At BASE they wrote one word, `a ^
+    /// b.rotate_left(23)` mixed, which rust-opus's family of 32,768 styles
+    /// shares (`threats.md` B12).
+    #[test]
+    fn attributes_hash_both_their_words() {
+        for (a, b) in [(direct(1), direct(2)), (direct(7), direct(200))] {
+            assert_eq!(written(a), [a.bits().0, a.bits().1]);
+            assert_ne!(written(a), written(b));
+        }
+    }
 
     /// A style no number holds: a direct colour.
     fn direct(n: u8) -> Attributes {
@@ -260,5 +491,40 @@ mod tests {
         let used = vec![true; styles.len()];
         styles.retain(&used);
         assert!(!styles.wants_sweep(0));
+    }
+}
+
+/// The table's check, shown a table with its one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+    use crate::Color;
+
+    #[test]
+    fn a_style_found_at_another_place_is_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..4u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check(), Ok(()));
+        if let Some(place) = styles.places.values_mut().next() {
+            *place = place.wrapping_add(1) % 4;
+        }
+        assert!(styles.check().is_err());
+        styles.places.clear();
+        assert!(styles.check().is_err());
+    }
+
+    /// Styles that hash alike are a fault of the spread: 65 at one place.
+    #[test]
+    fn styles_that_hash_alike_are_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..65u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check_spread(|a| Keyed.hash_one(a)), Ok(()));
+        assert!(styles.check_spread(|_| 7).is_err());
     }
 }

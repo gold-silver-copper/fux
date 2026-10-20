@@ -426,9 +426,14 @@ fn row(cols: u16, bytes: &[u8]) -> Result<String> {
 /// LS3 (`ESC o`) invoke them into GL until another shift, SI or SO among
 /// them; SS2 (`ESC N`) and SS3 (`ESC O`) invoke G2 or G3 for the next
 /// graphic character alone. DECSC saves them with G0 and G1, and RIS
-/// designates ASCII again.
+/// designates ASCII again. A single shift is no state DECSC saves (DEC STD
+/// 070, DECSC: the designations and the sets in GL and GR; ECMA-35, 9.4: it
+/// applies to the next graphic character only), so DECRC neither brings a
+/// spent one back nor takes a pending one away.
 #[test]
 fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
+    assert_eq!(row(6, b"\x1b*0\x1bN\x1b7q\x1b8q")?, "q");
+    assert_eq!(row(6, b"\x1b*0\x1b7\x1bN\x1b8q")?, "\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bnqq\x0fq")?, "\u{2500}\u{2500}q");
     assert_eq!(row(6, b"\x1b+0\x1boxx\x0ex")?, "\u{2502}\u{2502}x");
     assert_eq!(row(6, b"\x1b*0\x1bNqq")?, "\u{2500}q");
@@ -436,6 +441,54 @@ fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
     assert_eq!(row(6, b"\x1b(0\x1b*B\x1bNqq")?, "q\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bn\x1b7\x0f\x1b8q")?, "\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bn\x1bcq")?, "q");
+    Ok(())
+}
+
+/// DECSCL (DEC STD 070, DECSCL): `CSI 61 " p` and `CSI 62 " p` select
+/// level 1 or 2, each with a soft reset (note 3); a level fux-vt does not
+/// support is ignored (note 4). A soft reset at level 1 designates ASCII
+/// into all four sets (3.6.4.1), at level 2 DEC Supplemental into G2 and
+/// G3 (3.6.4.2); RIS starts level 2 again. The level gates no function.
+#[test]
+fn decscl_selects_a_level_with_a_soft_reset() -> Result {
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[61\"pX")?, "Xb");
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[62;1\"pX")?, "Xb");
+    assert_eq!(row(4, b"\x1b[4hab\r\x1b[64\"pX")?, "Xab");
+    assert_eq!(row(4, b"\x1b[61\"p\x1bNA")?, "A");
+    assert_eq!(row(4, b"\x1b[61\"p\x1b[!p\x1bNA")?, "A");
+    assert_eq!(row(4, b"\x1b[61\"p\x1b[62\"p\x1bNA")?, "\u{c1}");
+    assert_eq!(row(4, b"\x1b[61\"p\x1bc\x1bNA")?, "\u{c1}");
+    // Level 1 executes what level 2 does: no function is gated.
+    assert_eq!(row(4, b"\x1b[61\"pab\x1b[1;1H\x1b[2X")?, "");
+    Ok(())
+}
+
+/// DEC Supplemental Graphics (DEC STD 070, 5.8.1: required at levels 2 to
+/// 4): SCS designates it with `% 5`, and with `<`, the user-preferred
+/// supplemental set, which is DEC Supplemental (SCS; 3.6.3). At level 2,
+/// G2 and G3 hold it at power-up and after a soft reset (DEC STD 070,
+/// 3.6.4.2: "the DEC Supplemental graphics set in G2 and G3"), so SS2 and
+/// LS2 reach it with no designation, where xterm has ASCII there. Its characters are the DEC Multinational set's right
+/// half (the VT330 and VT340 manual, Figure 2-5): Latin-1's 0x80 above,
+/// but ¤ at 0x28, Œ at 0x57, Ÿ at 0x5d, œ at 0x77 and ÿ at 0x7d, and the
+/// positions it leaves empty (0x24, 0x26, 0x2c to 0x2f, 0x34, 0x38, 0x3e,
+/// 0x50, 0x5e, 0x70 and 0x7e) show U+2426, the reversed question mark.
+#[test]
+fn dec_supplemental_graphics_is_in_g2_and_g3_at_level_2() -> Result {
+    assert_eq!(row(6, b"\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1bOa\x1bnbc")?, "\u{e1}\u{e2}\u{e3}");
+    assert_eq!(row(6, b"\x1b*B\x1bNA")?, "A");
+    assert_eq!(row(6, b"\x1b*B\x1b*<\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1b*B\x1b[!p\x1bNA")?, "\u{c1}");
+    assert_eq!(row(6, b"\x1b*B\x1bc\x1bNA")?, "\u{c1}");
+    assert_eq!(row(4, b"\x1b)%5\x0e\x21\x7e\x0f!")?, "\u{a1}\u{2426}!");
+    let all = b"\x1b(%5\x28\x57\x5d\x77\x7d\x5f\x24\x50\x2c\x2f";
+    assert_eq!(
+        row(12, all)?,
+        "\u{a4}\u{152}\u{178}\u{153}\u{ff}\u{df}\u{2426}\u{2426}\u{2426}\u{2426}"
+    );
+    // Other sets are ASCII, % 6 (Portuguese) among them.
+    assert_eq!(row(4, b"\x1b(%6a")?, "a");
     Ok(())
 }
 
@@ -542,6 +595,79 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     Ok(())
 }
 
+/// REP's copies of a glyph write what printing it again writes, and a
+/// host that records prints is told of the same cells: over blanks, over
+/// the same glyph, and over wide glyphs either half of which a copy lands
+/// on, wrapping and scrolling.
+#[test]
+fn rep_writes_what_printing_again_writes() -> Result {
+    fn fed(bytes: &[u8]) -> Result<(Parser, Vec<(String, u16)>)> {
+        let mut parser = Parser::new(Size::new(3, 7)?, 1 << 10)?;
+        parser.record_prints(true);
+        parser.process(bytes)?;
+        let mut cells: Vec<_> = (parser.take_prints().iter())
+            .flat_map(|p| {
+                let row = format!("{:?}", p.row);
+                (p.cols.0..p.cols.1).map(move |col| (row.clone(), col))
+            })
+            .collect();
+        cells.sort();
+        cells.dedup();
+        Ok((parser, cells))
+    }
+    for before in [
+        "",
+        "\x1b[H界界界界界界",
+        "\x1b[Ha界b界界界界",
+        "\x1b[Héééé",
+        "\x1b[H\x1b[1m界界",
+        // Inside left and right margins, a scroll region, below it on a
+        // halved line, with autowrap off, in insert mode and on a halved
+        // line, past the copies that change anything (FA-RE-F-1, F-6, F-7).
+        "\x1b[?69h\x1b[2;5s",
+        "\x1b[1;2r",
+        "\x1b[1;2r\x1b[3;1H\x1b#6",
+        "\x1b[?7l",
+        "\x1b[Habc\x1b[4h",
+        "\x1b[H\x1b#6",
+    ] {
+        for glyph in ["é", "界", "x"] {
+            for at in ["\x1b[H", "\x1b[1;2H", "\x1b[2;7H", "\x1b[3;3H"] {
+                for count in [1, 2, 5, 6, 7, 13, 40, 300, 1000] {
+                    let start = format!("{before}{before}\x1b[m{at}{glyph}");
+                    let rep = fed(format!("{start}\x1b[{count}b").as_bytes())?;
+                    let again = {
+                        let copies: String = std::iter::repeat_n(glyph, count).collect();
+                        fed(format!("{start}{copies}").as_bytes())?
+                    };
+                    let case = format!("{start:?} REP {count}");
+                    assert_eq!(lines(&rep.0), lines(&again.0), "{case}");
+                    let (a, b) = (rep.0.screen(), again.0.screen());
+                    assert_eq!(a.cursor_position(), b.cursor_position(), "{case}");
+                    assert_eq!(a.pending_wrap(), b.pending_wrap(), "{case}");
+                    // The screen's rows: history keeps what its budget lets,
+                    // trimmed in steps, which fewer copies may meet apart.
+                    let shown = |s: &fux_vt::Screen| -> Vec<Vec<String>> {
+                        let rows: Vec<_> = s.rows().collect();
+                        let first = rows.len().saturating_sub(3);
+                        let rows = rows.get(first..).unwrap_or_default();
+                        rows.iter()
+                            .map(|r| r.cells().map(|c| format!("{c:?}")).collect())
+                            .collect()
+                    };
+                    assert_eq!(shown(a), shown(b), "{case}: the cells differ");
+                    // Prints, while no copy is skipped: those skipped would
+                    // have been printed on rows scrolled away.
+                    if count <= 7 {
+                        assert_eq!(rep.1, again.1, "{case}: the prints differ");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// DECSTBM (DEC STD 070, 5-25): margins with the top above the bottom
 /// are set and the cursor goes home, obeying DECOM: the first line with
 /// DECOM reset, the top margin with it set (note 1); other margins are
@@ -630,6 +756,27 @@ fn replies(rows: u16, cols: u16, identity: bool, bytes: &[u8]) -> Result<Vec<Str
     Ok(replies)
 }
 
+/// DECREQTPARM (the VT100 User Guide, chapter 3, DECREQTPARM): the
+/// VT100 that DA claims without an identity answers a request, `sol` 0 or
+/// none and 1, with DECREPTPARM, a report, `sol` 2 or 3, of xterm's fixed
+/// parameters (ctlseqs, `CSI Ps x`: no parity, 8 bits, 128 for each
+/// speed, clock multiplier 1, no flags). Another `sol` is no request. With
+/// an identity, DA's VT220 does not answer it: xterm answers "if ... xterm
+/// is emulating VT100" alone.
+#[test]
+fn decreqtparm_is_answered_as_a_vt100_answers_it() -> Result {
+    assert_eq!(
+        replies(2, 8, false, b"\x1b[x\x1b[0x\x1b[1x\x1b[2x\x1b[3x")?,
+        [
+            "\x1b[2;1;1;128;128;1;0x",
+            "\x1b[2;1;1;128;128;1;0x",
+            "\x1b[3;1;1;128;128;1;0x"
+        ]
+    );
+    assert!(replies(2, 8, true, b"\x1b[x\x1b[1x")?.is_empty());
+    Ok(())
+}
+
 /// CPR and DECXCPR count the line as CUP addresses it: from the top
 /// margin with DECOM set, "relative to the origin of the current
 /// scrolling region (the Top and Left Margin)", from the screen's top
@@ -637,9 +784,11 @@ fn replies(rows: u16, cols: u16, identity: bool, bytes: &[u8]) -> Result<Vec<Str
 /// algorithms, pages 5-53 to 5-56; the VT100 User Guide, chapter 3, CPR:
 /// "The numbering of lines depends on the state of the Origin Mode";
 /// xterm's charproc.c, `CASE_CPR`). Without left and right margins the
-/// column is the screen's (with them, see `margins.rs`). A cursor waiting to wrap keeps its column
-/// rule, one past the last column, or the last with an identity, in
-/// either mode. Expected values are xterm's (`fux-vt-compare replay
+/// column is the screen's (with them, see `margins.rs`). A cursor waiting
+/// to wrap reports its column, the last, with an identity or without:
+/// CPR reports "the active presentation position" (ECMA-48 8.3.14), "the
+/// Active Line and Active Column" (DEC STD 070, CPR, p. 5-53), and the Last
+/// Column Flag is a flag, not a column (Appendix D.6.1). Expected values are xterm's (`fux-vt-compare replay
 /// --engines all --size 12x10 '\e[6;11r\e[?6h\e[2d\e[6n'`: Ghostty,
 /// WezTerm and avt agree; alacritty, libvterm, xterm.js and tmux report
 /// from the screen's top).
@@ -661,7 +810,7 @@ fn cursor_reports_count_lines_from_the_top_margin_in_origin_mode() -> Result {
     }
     // At the last column, waiting to wrap, in the region's second line.
     let wrap = b"\x1b[6;11r\x1b[?6h\x1b[2;1H0123456789\x1b[6n";
-    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;11R"]);
+    assert_eq!(replies(12, 10, false, wrap)?, ["\x1b[2;10R"]);
     assert_eq!(replies(12, 10, true, wrap)?, ["\x1b[2;10R"]);
     // DECSC kept the cursor above where the margins now begin: its line
     // would be negative. xterm's subtraction wraps (it reports 65532),
@@ -695,8 +844,9 @@ fn ind_and_nel_feed_a_line() -> Result {
 /// list them) and by a resize, as xterm keeps them. HT and CHT stop at the
 /// last column when no stop is left, CBT at the first. TBC 0 clears the
 /// stop at the cursor and 3 every stop, the two DEC STD 070 (TBC) defines;
-/// the others, which ECMA-48 defines for stops kept line by line, do
-/// nothing, as in xterm. With a wrap pending CBT moves back from the last
+/// of the others, which ECMA-48 defines (8.3.154), 2 and 5 clear every
+/// stop too (`tbc_acts_on_each_of_its_parameters`), where xterm does
+/// nothing. With a wrap pending CBT moves back from the last
 /// column, the active position (ECMA-48 8.3.7), and so ends the wrap, as
 /// DEC STD 070 (Appendix D.6.1) ends it for a control that may move the
 /// cursor; xterm moves it but keeps the wrap. Expected values are xterm's
@@ -711,7 +861,7 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
     assert_eq!(row(10, b"abc\x1b[5ZX")?, "Xbc");
     assert_eq!(row(20, b"\x1b[3g\x1bc\tX")?, "        X");
     assert_eq!(row(20, b"\x1b[3g\x1b[!p\tX")?, "                   X");
-    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\x1b[2g\x1b[5g\r\tX")?, "    X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[5G\x1bH\x1b[1g\x1b[4g\r\tX")?, "    X");
     let p = run(1, 20, b"\x1b[3g\x1b[5G\x1bH\x1b[?1049h\r\tX")?;
     assert_eq!(lines(&p), ["    X"]);
     // A resize keeps them, and the columns it adds have a reset's.
@@ -735,12 +885,69 @@ fn tab_stops_are_set_cleared_and_kept() -> Result {
 
 /// TBC with several parameters acts on each in turn (DEC STD 070, TBC,
 /// p. 5-66, whose algorithm loops over every parameter, and its revision
-/// note 11): `CSI 0 ; 3 g` clears every stop, and in `CSI 5 ; 0 g` the 0
-/// still clears the stop at the cursor, though 5 does nothing.
+/// note 11): `CSI 0 ; 3 g` clears every stop, and in `CSI 1 ; 0 g` the 0
+/// still clears the stop at the cursor, though 1 (the line tabulation stop,
+/// of which there are none) does nothing. ECMA-48 8.3.154 gives 2 ("all
+/// character tabulation stops in the active line", and under TSM's
+/// MULTIPLE, which fux-vt keeps for good, every line's) and 5 ("all
+/// tabulation stops") too, each clearing every stop.
 #[test]
 fn tbc_acts_on_each_of_its_parameters() -> Result {
     assert_eq!(row(20, b"\x1b[0;3g\tX")?, "                   X");
-    assert_eq!(row(20, b"\x1b[9G\x1b[5;0g\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[9G\x1b[1;0g\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[2g\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[5g\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[4g\tX")?, "        X");
+    Ok(())
+}
+
+/// The cheap functions (ECMA-48): HPB (8.3.58, `CSI Pn j`) moves the cursor
+/// back n columns and VPB (8.3.159, `CSI Pn k`) up n lines, each ending a
+/// pending wrap (DEC STD 070, D.6.1, cursor movement); CTC (8.3.17, `CSI
+/// Ps W`) sets a character tabulation stop at the cursor (0), clears it (2),
+/// or clears every one (4, the active line's, under TSM's MULTIPLE every
+/// line's; and 5), the line tabulation stops (1, 3, 6) being none; TSR
+/// (8.3.156, `CSI Pn SP d`) clears the stop at column n, and with no
+/// parameter, which it has no default for, does nothing. DECST8C (ctlseqs,
+/// `CSI ? 5 W`) sets a stop every 8 columns again. `CSI` with 5 parameters
+/// and `T` is xterm's mouse highlight tracking (ctlseqs, XTHIMOUSE), which
+/// fux-vt ignores, not SD.
+#[test]
+fn hpb_vpb_ctc_tsr_and_decst8c() -> Result {
+    assert_eq!(row(10, b"\x1b[5Gab\x1b[2jX")?, "    Xb");
+    let p = run(3, 4, b"\x1b[3;2H\x1b[2kX")?;
+    assert_eq!(lines(&p), [" X", "", ""]);
+    let p = run(2, 3, b"abc\x1b[jX")?;
+    assert_eq!(lines(&p), ["aXc", ""]);
+    assert_eq!(row(20, b"\x1b[5G\x1b[W\r\tX")?, "    X");
+    assert_eq!(row(20, b"\x1b[9G\x1b[2W\r\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[4W\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[5W\tX")?, "                   X");
+    assert_eq!(row(20, b"\x1b[1;3;6W\tX")?, "        X");
+    assert_eq!(row(20, b"\x1b[9 d\tX")?, "                X");
+    assert_eq!(row(20, b"\x1b[ d\tX")?, "        X");
+    assert_eq!(row(20, b"\x1b[3g\x1b[?5W\tX")?, "        X");
+    let p = run(3, 2, b"a\r\nb\x1b[1;2;3;4;5T")?;
+    assert_eq!(lines(&p), ["a", "b", ""]);
+    Ok(())
+}
+
+/// Mode 41 (ctlseqs, `CSI ? 41 h`, more(1)'s fix): set, HT with a wrap
+/// pending carries the wrap out first, then goes to the next stop (xterm's
+/// `TabNext` with its `curses` resource), so a line exactly as wide as the
+/// screen followed by a tab draws the tab. Reset, as by default, HT ends a
+/// pending wrap without carrying it out (DEC STD 070, Appendix D.6.1, which
+/// lists HT), where xterm keeps the wrap pending: ctlseqs describes only
+/// the set state, and DEC decides HT's.
+#[test]
+fn mode_41_has_ht_carry_out_a_pending_wrap() -> Result {
+    let p = run(2, 10, b"\x1b[?41h0123456789\tX")?;
+    assert_eq!(lines(&p), ["0123456789", "        X"]);
+    assert!(!p.screen().row_wrapped(0));
+    let p = run(2, 10, b"0123456789\tX")?;
+    assert_eq!(lines(&p), ["012345678X", ""]);
+    let p = run(2, 10, b"\x1b[?41h\x1b[?41l0123456789\tX")?;
+    assert_eq!(lines(&p), ["012345678X", ""]);
     Ok(())
 }
 
@@ -1072,6 +1279,191 @@ fn erasing_saved_lines_on_the_alternate_screen_drops_the_main_screens() -> Resul
         p.process(b"\x1b[?1049l")?;
         assert_eq!(p.screen().history_len(), 0, "{clear:?}");
         assert_eq!(lines(&p), ["c", "d"], "{clear:?}");
+    }
+    Ok(())
+}
+
+/// DEC STD 070, SUBSTITUTE (p. 5-132, levels 1-4): SUB "is processed by
+/// placing a reversed question mark in the display at the Active
+/// Position", as `insert_or_replace_character` places a glyph; note 2:
+/// within an escape or control sequence "the sequence in progress [is]
+/// aborted and the Substitute control function ... executed instead". The
+/// C0 table (5.9.1, p. 5-129) agrees: "The error character (reverse
+/// question mark) is displayed", where CAN displays none. U+2426 is the
+/// reversed question mark (SYMBOL FOR SUBSTITUTE FORM TWO), one column, as
+/// xterm 411 shows it (`charproc.c`, `CASE_SUB`). fux-vt shows it inside a
+/// control string too, which SUB ends (3.5.4.4), as xterm does
+/// (decisions.md 4). As a control it is no graphic character for REP.
+#[test]
+fn sub_is_displayed_as_the_error_character() -> Result {
+    let sub = "\u{2426}";
+    // In ground, inside an escape sequence, a CSI and a control string.
+    assert_eq!(lines(&run(1, 6, b"a\x1ab")?), [format!("a{sub}b")]);
+    for cut in [
+        &b"\x1b("[..],
+        b"\x1b[1",
+        b"\x1b[?25",
+        b"\x1b]0;x",
+        b"\x1bPq#1",
+        b"\x1b_x",
+    ] {
+        let bytes = [cut, b"\x1ac"].concat();
+        let p = run(1, 6, &bytes)?;
+        assert_eq!(lines(&p), [format!("{sub}c")], "{:?}", bytes.escape_ascii());
+    }
+    // CAN aborts without a glyph.
+    assert_eq!(lines(&run(1, 6, b"\x1b[1\x18c")?), ["c"]);
+    // A character cut short by SUB is U+FFFD, then SUB's glyph (Unicode
+    // 3.9's maximal subpart).
+    assert_eq!(
+        lines(&run(1, 6, b"\xe2\x82\x1a")?),
+        [format!("\u{fffd}{sub}")]
+    );
+    // It is placed as a glyph is: the cursor moves on, a pending wrap is
+    // carried out, IRM inserts it, and no character set maps it.
+    let p = run(2, 3, b"abc\x1a")?;
+    assert_eq!(lines(&p), ["abc".to_owned(), sub.to_owned()]);
+    assert_eq!(p.screen().cursor_position(), (1, 1));
+    assert_eq!(lines(&run(1, 4, b"ab\r\x1b[4h\x1a")?), [format!("{sub}ab")]);
+    assert_eq!(
+        lines(&run(1, 4, b"\x1b(0\x1aq")?),
+        [format!("{sub}\u{2500}")]
+    );
+    // A single shift waits on past it, for the next graphic character.
+    assert_eq!(
+        lines(&run(1, 4, b"\x1b*0\x1bN\x1aq")?),
+        [format!("{sub}\u{2500}")]
+    );
+    // REP after it repeats nothing.
+    assert_eq!(lines(&run(1, 6, b"X\x1a\x1b[3b")?), [format!("X{sub}")]);
+    Ok(())
+}
+
+/// The Unicode Standard 17.0, 3.9, "U+FFFD Substitution of Maximal
+/// Subparts", Tables 3-8 to 3-11 (`data/utf8-substitution.txt`, their rows
+/// as data): each table's bytes print its "Output" row, a U+FFFD a column,
+/// whether they come whole (the parser's run of text), one byte a call (its
+/// state between calls) or split in two anywhere.
+#[test]
+fn utf8_tables_3_8_to_3_11_substitute_maximal_subparts() -> Result {
+    let tables = include_str!("data/utf8-substitution.txt");
+    let hex = |field: &str| -> Vec<u32> {
+        (field.split_whitespace())
+            .filter_map(|h| u32::from_str_radix(h, 16).ok())
+            .collect()
+    };
+    let mut checked = 0;
+    for line in tables.lines().filter(|l| !l.starts_with('#')) {
+        let mut fields = line.split(';');
+        let (Some(table), Some(bytes), Some(output)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!("a line of three fields: {line}").into());
+        };
+        let bytes: Vec<u8> = hex(bytes)
+            .into_iter()
+            .filter_map(|b| u8::try_from(b).ok())
+            .collect();
+        let want: String = hex(output).into_iter().filter_map(char::from_u32).collect();
+        let shown = |p: &Parser| lines(p).concat().trim_end().to_owned();
+        let whole = run(1, 20, &bytes)?;
+        assert_eq!(shown(&whole), want, "Table {table}, whole");
+        let mut p = Parser::new(Size::new(1, 20)?, 0)?;
+        for byte in &bytes {
+            p.process(std::slice::from_ref(byte))?;
+        }
+        assert_eq!(shown(&p), want, "Table {table}, a byte a call");
+        for at in 1..bytes.len() {
+            let (head, tail) = bytes.split_at_checked(at).ok_or("a split past the end")?;
+            let mut p = Parser::new(Size::new(1, 20)?, 0)?;
+            p.process(head)?;
+            p.process(tail)?;
+            assert_eq!(shown(&p), want, "Table {table}, split at {at}");
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+    Ok(())
+}
+
+/// A cluster that becomes two columns wide (VS16) takes the cell under
+/// the cursor as its second half, as a glyph printed wide would: under
+/// IRM it is inserted, what is there moving right (ECMA-48 7.2.10, INSERT:
+/// "the graphic symbol ... is inserted at the active presentation
+/// position"; the README's IRM row); the second half takes the open link
+/// (OSC 8); and a wide glyph whose first half it took keeps its second as
+/// a blank in the pen's colours, as `print` repairs a glyph it cuts.
+#[test]
+fn a_cluster_widened_is_placed_as_a_wide_glyph() -> Result {
+    let heart = "\u{2764}\u{fe0f}";
+    let cells = |p: &Parser| -> Vec<String> {
+        (0..p.screen().size().cols())
+            .filter_map(|x| p.screen().cell(0, x))
+            .map(|c| c.contents().to_owned())
+            .collect()
+    };
+    let p = run(1, 6, format!("\x1b[4hab\r{heart}").as_bytes())?;
+    assert_eq!(cells(&p), [heart, "", "a", "b", "", ""]);
+    assert!(
+        p.screen()
+            .cell(0, 1)
+            .is_some_and(|c| c.is_wide_continuation())
+    );
+    let mut p = Parser::with_options(
+        Size::new(1, 6)?,
+        0,
+        Options::new().with(Feature::Hyperlinks),
+    )?;
+    p.process(format!("\x1b]8;;u\x1b\\{heart}").as_bytes())?;
+    let row = p.screen().rows().last().ok_or("a row")?;
+    let link = |x: usize| row.link(x).map(|l| l.uri().to_owned());
+    assert_eq!(
+        (link(0), link(1)),
+        (Some("u".to_owned()), Some("u".to_owned()))
+    );
+    let p = run(1, 6, format!("x\u{4e00}\r\x1b[41m{heart}").as_bytes())?;
+    assert_eq!(cells(&p), [heart, "", "", "", "", ""]);
+    let orphan = p.screen().cell(0, 2).ok_or("cell 2")?;
+    assert_eq!(orphan.bgcolor(), Color::Idx(1));
+    Ok(())
+}
+
+/// DEC STD 070, 3.5.1.2.1: "the receipt of CAN causes immediate
+/// termination, without execution, of any sequence in progress. The CAN
+/// character itself receives no further processing. The characters
+/// following the CAN are ... interpreted normally." 3.5.1.2.3: "If an
+/// Escape (ESC, 1/11) is embedded in an escape or control sequence, the
+/// sequence is canceled and a new sequence begins with that ESC." And
+/// 3.5.4.4, for control strings: "the control codes CAN (1/8), SUB (1/10),
+/// ESC (1/11), or any C1 control will also terminate control strings".
+/// So, in every state the parser can be in, CAN then `c` shows `c` alone in
+/// the first column, and ESC beginning `CSI 3 C` moves three columns
+/// first. (SUB in every state is `sub_is_displayed_as_the_error_character`.)
+#[test]
+fn can_and_esc_end_a_sequence_in_every_state() -> Result {
+    for cut in [
+        &b"\x1b"[..],
+        b"\x1b(",
+        b"\x1b#",
+        b"\x1b[",
+        b"\x1b[1",
+        b"\x1b[?25",
+        b"\x1b[1;2$",
+        b"\x1b[1<",
+        b"\x1bP",
+        b"\x1bP1;2",
+        b"\x1bP$qm",
+        b"\x1bP1<x",
+        b"\x1b]0;x",
+        b"\x1b]8;;u",
+        b"\x1b_x",
+        b"\x1b^x",
+        b"\x1bXx",
+    ] {
+        let can = run(1, 6, &[cut, b"\x18c"].concat())?;
+        assert_eq!(lines(&can), ["c"], "CAN after {:?}", cut.escape_ascii());
+        let esc = run(1, 6, &[cut, b"\x1b[3Cc"].concat())?;
+        assert_eq!(lines(&esc), ["   c"], "ESC after {:?}", cut.escape_ascii());
     }
     Ok(())
 }

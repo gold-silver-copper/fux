@@ -1,5 +1,7 @@
-# Fetched by fetch.sh; only the index and the script are committed.
+# Fetched by fetch.sh; only the index, the script and the Unicode sums are
+# committed.
 *
 !.gitignore
 !README.md
 !fetch.sh
+!unicode.sha256

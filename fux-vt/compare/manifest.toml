@@ -1,0 +1,565 @@
+# Every check fux-vt's evidence needs: what it runs, what it needs, and
+# when it runs. `harness.sh` reads it: a command (quick, full, deep, fuzz)
+# fails when a check scheduled for it did not run, and when it runs a check
+# that is not here. A check with `wired = false` cannot run yet: it is
+# listed so that its absence is counted, never forgotten.
+#
+# A check is:
+#
+#   name      the name harness.sh gives it (a trailing * matches a family:
+#             verdicts-1, verdicts-2, ...); its results are NAME.json and
+#             NAME.stamp.json in the harness's output
+#   schedule  quick, full or deep (harness.sh; full runs quick's, deep
+#             full's and fuzz's), fuzz (harness.sh fuzz), ci (every PR),
+#             compare (.github/workflows/compare.yml, on request), nightly
+#             (.github/workflows/fuzz.yml), or release
+#   command   what runs, from the repository's root
+#   needs     what must be installed or fetched for it
+#   wired     false while nothing runs it, with `why`
+#
+# The format is a subset of TOML that harness.sh reads line by line: one
+# `key = value` a line, strings in double quotes, arrays on one line.
+
+# --- quick ------------------------------------------------------------------
+
+[[check]]
+name = "corpus"
+schedule = "quick"
+command = "fux-vt-compare corpus --json corpus.json"
+needs = ["xterm 411", "Xvfb", "node (xterm.js)", "tmux"]
+
+[[check]]
+name = "corpus-ghostty"
+schedule = "quick"
+command = "fux-vt-compare corpus --subject ghostty --json corpus-ghostty.json"
+needs = ["xterm 411", "Xvfb", "Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "transparency"
+schedule = "quick"
+command = "fux-vt-compare transparency --json transparency.json"
+needs = ["fux built"]
+
+[[check]]
+name = "random"
+schedule = "quick"
+command = "fux-vt-compare run --cases 2000"
+needs = []
+
+[[check]]
+name = "cases"
+schedule = "quick"
+command = "fux-vt-compare cases --json cases.json"
+needs = ["xterm 411", "Xvfb", "node (xterm.js)", "tmux"]
+
+[[check]]
+name = "encoders"
+schedule = "quick"
+command = "fux-vt-compare encoders"
+needs = ["Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "lists"
+schedule = "quick"
+command = "fux-vt-compare lists --json lists.json"
+needs = []
+
+[[check]]
+name = "lists-diff"
+schedule = "quick"
+command = "fux-vt-compare lists --against fux-vt/compare/lists-c0.json --esctest DIR (citations: fux-vt/compare/list-changes.txt)"
+needs = ["lists-c0.json, checkpoint 0's lists"]
+
+[[check]]
+name = "oracle"
+schedule = "quick"
+command = "diff/oracle.sh REF --threads N"
+needs = ["git history with REF"]
+
+# --- full -------------------------------------------------------------------
+
+[[check]]
+name = "random-wide"
+schedule = "full"
+command = "fux-vt-compare run --cases 20000"
+needs = []
+
+[[check]]
+name = "random-no-reflow"
+schedule = "full"
+command = "fux-vt-compare run --cases 20000 --no-reflow"
+needs = []
+
+[[check]]
+name = "esctest"
+schedule = "full"
+command = "fux-vt-compare esctest --jobs N --json esctest.json"
+needs = ["references/xterm/esctest2 at 2798f121 (references/fetch.sh)", "python3"]
+
+[[check]]
+name = "esctest-ghostty"
+schedule = "full"
+command = "fux-vt-compare esctest --jobs N --terminal ghostty --beside fux-vt --json esctest-ghostty.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "Zig 0.16 and Ghostty"]
+
+[[check]]
+name = "against"
+schedule = "full"
+command = "fux-bench --against REF --jobs N --repeats 15 --json against.json"
+needs = ["perf (instructions:u)", "git history with REF"]
+
+[[check]]
+name = "footprint"
+schedule = "full"
+command = "fux-vt-compare footprint --jobs N --json footprint.json"
+needs = []
+
+[[check]]
+name = "instructions"
+schedule = "full"
+command = "fux-vt-compare bench --instructions --jobs N --repeats 5 --json instructions.json"
+needs = ["perf (instructions:u)"]
+
+# --- deep -------------------------------------------------------------------
+
+[[check]]
+name = "verdicts-*"
+schedule = "deep"
+command = "fux-vt-compare verdicts --seed SEED (seeds 1 to FUX_DEEP_SEEDS)"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "random-day-*"
+schedule = "deep"
+command = "fux-vt-compare run --seed YYYYMMDD --cases 20000 (the day's seed, printed, to replay what it finds)"
+needs = []
+
+[[check]]
+name = "cases-subject-*"
+schedule = "deep"
+command = "fux-vt-compare cases --subject ENGINE --json cases-subject-ENGINE.json (ghostty, alacritty, libvterm, avt, wezterm, vt100)"
+needs = ["xterm 411", "Xvfb", "Zig 0.16 and Ghostty (run.sh)"]
+
+[[check]]
+name = "corpus-subject-*"
+schedule = "deep"
+command = "fux-vt-compare corpus --subject ENGINE --json corpus-subject-ENGINE.json (alacritty, libvterm, avt, wezterm, vt100)"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "ledger"
+schedule = "deep"
+command = "fux-vt-compare ledger --results OUT --json ledger-scores.json --table ledger.md"
+needs = ["the esctest, cases and corpus results of the same run"]
+
+[[check]]
+name = "esctest-in-fux"
+schedule = "deep"
+command = "fux-vt-compare esctest --in-fux --jobs N --json esctest-in-fux.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "fux built"]
+
+[[check]]
+name = "esctest-xterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --xterm --jobs N --json esctest-xterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "xterm 411", "Xvfb"]
+
+[[check]]
+name = "esctest-alacritty"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal alacritty --unlisted --jobs N --json esctest-alacritty.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-libvterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal libvterm --unlisted --jobs N --json esctest-libvterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3", "libvterm 0.3.3 (run.sh)"]
+
+[[check]]
+name = "esctest-avt"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal avt --unlisted --jobs N --json esctest-avt.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-wezterm"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal wezterm --unlisted --jobs N --json esctest-wezterm.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-vt100"
+schedule = "deep"
+command = "fux-vt-compare esctest --terminal vt100 --unlisted --jobs N --json esctest-vt100.json"
+needs = ["references/xterm/esctest2 at 2798f121", "python3"]
+
+[[check]]
+name = "esctest-tmux"
+schedule = "deep"
+command = "fux-vt-compare esctest --tmux --jobs N --json esctest-tmux.json"
+needs = ["tmux"]
+
+[[check]]
+name = "multiplexers"
+schedule = "deep"
+command = "fux-vt-compare transparency --multiplexers --json multiplexers.json"
+needs = ["tmux", "zellij", "herdr"]
+
+[[check]]
+name = "feel"
+schedule = "deep"
+command = "fux-bench feel --json feel.json"
+needs = ["fux built", "tmux", "zellij", "herdr"]
+
+[[check]]
+name = "info"
+schedule = "deep"
+command = "fux-bench info --json info.json"
+needs = []
+
+# --- fuzz -------------------------------------------------------------------
+
+[[check]]
+name = "fuzz-oracle-pin"
+schedule = "fuzz"
+command = "diff/oracle.sh --pin REF"
+needs = ["git history with REF"]
+
+[[check]]
+name = "fuzz-build-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-build-fux-vt-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir fux-vt/fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-build-diff-fuzz"
+schedule = "fuzz"
+command = "cargo +nightly fuzz build --fuzz-dir diff/fuzz -O -a"
+needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
+
+[[check]]
+name = "fuzz-oracle-seeds"
+schedule = "fuzz"
+command = "diff/oracle.sh REF --seeds diff/fuzz/corpus/oracle --cases 1000 --streams 5"
+needs = []
+
+[[check]]
+name = "fuzz-protocol"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run protocol --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-paint"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run paint --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-layout"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run layout --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-config"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run config --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-session"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run session --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_tokens"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_tokens --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_run"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_run --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-fuxth_pause"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run fuxth_pause --fuzz-dir fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-terminal"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run terminal --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-deep"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run deep --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-keys"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run keys --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-graphemes"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run graphemes --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-cells"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run cells --fuzz-dir fux-vt/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "fuzz-oracle"
+schedule = "fuzz"
+command = "cargo +nightly fuzz run oracle --fuzz-dir diff/fuzz -O -a -- OPTIONS (its line of fux-vt/compare/fuzz-options.txt)"
+needs = ["nightly Rust", "cargo-fuzz", "the oracle's pin"]
+
+# --- compare.yml, on request ------------------------------------------------
+
+[[check]]
+name = "workflow-compare-unicode-tables"
+schedule = "compare"
+command = "fetch the pinned Unicode files by SHA-256, cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode, git diff --exit-code"
+needs = ["the Unicode 17.0.0 files from unicode.org"]
+
+[[check]]
+name = "workflow-compare-cases"
+schedule = "compare"
+command = "fux-vt/compare/run.sh cases"
+needs = ["xterm 411 built from its tarball", "Xvfb", "tmux"]
+
+[[check]]
+name = "workflow-compare-random"
+schedule = "compare"
+command = "fux-vt/compare/run.sh --cases 20000"
+needs = []
+
+[[check]]
+name = "workflow-compare-verdicts"
+schedule = "compare"
+command = "fux-vt/compare/run.sh verdicts"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "workflow-compare-encoders"
+schedule = "compare"
+command = "fux-vt/compare/run.sh encoders"
+needs = []
+
+[[check]]
+name = "workflow-compare-esctest"
+schedule = "compare"
+command = "fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt: Ghostty's core and fux-vt, each held to its list"
+needs = ["esctest2 at the commit references/fetch.sh pins", "python3", "Zig 0.16 and Ghostty"]
+
+[[check]]
+name = "workflow-compare-corpus"
+schedule = "compare"
+command = "fux-vt/compare/run.sh corpus: the recordings beside xterm and the panel"
+needs = ["xterm 411", "Xvfb"]
+
+[[check]]
+name = "workflow-compare-transparency"
+schedule = "compare"
+command = "fux-vt/compare/run.sh transparency: each recording directly and through fux"
+needs = []
+
+[[check]]
+name = "workflow-compare-footprint"
+schedule = "compare"
+command = "fux-vt/compare/run.sh footprint: each in-process engine's memory"
+needs = []
+
+[[check]]
+name = "workflow-compare-bench"
+schedule = "compare"
+command = "fux-vt/compare/run.sh bench --engines in-process --mb 2: every engine in this process takes every workload (a shared runner's MB/s measure nothing)"
+needs = []
+
+# --- nightly (fuzz.yml) -----------------------------------------------------
+
+[[check]]
+name = "nightly-fuzz-replay"
+schedule = "nightly"
+command = "cargo +nightly fuzz run TARGET --fuzz-dir fuzz -O -a fuzz/corpus/TARGET -- -runs=0, for each of fux's targets (fuzz/), every one listed in fuzz-options.txt"
+needs = ["nightly Rust", "cargo-fuzz"]
+
+[[check]]
+name = "nightly-fuzz-explore"
+schedule = "nightly"
+command = "cargo +nightly fuzz run TARGET -O -a -- -max_total_time=300, each a job: fux-vt's five targets (terminal, deep, keys, graphemes, cells) and the oracle (diff/fuzz), from their corpus, seeds and what earlier nights found (an Actions cache)"
+needs = ["nightly Rust", "cargo-fuzz", "an Actions cache"]
+
+[[check]]
+name = "nightly-mutation"
+schedule = "nightly"
+command = "fux-vt/compare/mutants.sh guards"
+needs = ["cargo-mutants 27.1.0", "cargo-nextest", "fux-vt/compare/mutants-guards.txt"]
+
+[[check]]
+name = "nightly-mosh-corpus"
+schedule = "nightly"
+command = "cargo test -p fux-vt --features checks --release --locked --test external_corpora moshs_fuzz_corpus -- --ignored"
+needs = ["the network at run time (mosh's seeds are fetched at their pin)"]
+
+# --- every PR (ci.yml) ------------------------------------------------------
+
+[[check]]
+name = "ci-esctest"
+schedule = "ci"
+command = "cargo run --release --no-default-features --manifest-path fux-vt/compare/Cargo.toml -- esctest: esctest2 against fux-vt alone, compare built without the engines it links, held to esctest-expected.txt"
+needs = ["esctest2 at the commit references/fetch.sh pins, fetched once and kept in an Actions cache keyed by it (GPL: run, never vendored)", "python3"]
+
+[[check]]
+name = "ci-wraptest"
+schedule = "ci"
+command = "cargo test -p fux-vt --test wraptest: wraptest's 25 checks, re-authored as bytes, CPR and screen, against DEC STD 070 Appendix D.6.1 (25 agree)"
+needs = []
+
+[[check]]
+name = "ci-xtermjs-fixtures"
+schedule = "ci"
+command = "cargo test -p fux-vt --test xtermjs: xterm.js 991857a1's 76 escape-sequence fixtures, vendored (MIT), at 25x80 through ONLCR (65 agree, 11 differ as recorded)"
+needs = []
+
+[[check]]
+name = "ci-libvterm-tests"
+schedule = "ci"
+command = "cargo test -p fux-vt --test libvterm: libvterm 0.3.3's t/*.test, vendored in fux-vt/tests/data/libvterm, their 426 screen and cursor assertions translated (the first 384 and 69screen_reflow's 42); fux-vt passes 417 (375 of the 384), the 9 others listed with their reasons in expected.txt"
+needs = []
+
+[[check]]
+name = "ci-bounds"
+schedule = "ci"
+command = "cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds (ci.yml, under an 8 GiB data limit)"
+needs = []
+
+[[check]]
+name = "ci-properties"
+schedule = "ci"
+command = "cargo test -p fux-vt --test utf8_property: UTF-8 against String::from_utf8_lossy, one U+FFFD per maximal subpart, C1 and DEL dropped, wrapping, in any chunking (ECMA-48 2.3.3's default forms are ci-conformance-table's)"
+needs = []
+
+[[check]]
+name = "ci-conformance-table"
+schedule = "ci"
+command = "cargo test -p fux-vt --test table: every function's status, its probe, its tests, the README's tests, ECMA-48 2.3.3's default forms, and CONFORMANCE.md"
+needs = []
+
+[[check]]
+name = "ci-unicode-files"
+schedule = "ci"
+command = "cargo test -p fux-vt --test ucd (GraphemeBreakTest, NormalizationTest, emoji-test, emoji-variation-sequences through the parser) and conformance::utf8_tables_3_8_to_3_11_substitute_maximal_subparts (3.9's tables)"
+needs = []
+
+[[check]]
+name = "ci-libtermkey"
+schedule = "ci"
+command = "cargo test -p fux-vt --test input_suites libtermkey_decoding: libtermkey 0.22's decoding cases and the key names both read (37 agree, 7 differ as recorded, 15 not applicable)"
+needs = []
+
+[[check]]
+name = "ci-tmux-input-keys"
+schedule = "ci"
+command = "cargo test -p fux-vt --test input_suites tmux_input_keys: tmux's input-keys.sh, its 507 cases (474 agree, 3 differ as recorded, 30 not applicable)"
+needs = []
+
+[[check]]
+name = "ci-ghostty-key-encode"
+schedule = "ci"
+command = "cargo test -p fux-vt --test input_suites ghostty_key_encode: Ghostty's key_encode.zig, 132 encodings of its 79 key tests (48 agree, 41 differ as recorded, 43 not applicable)"
+needs = []
+
+[[check]]
+name = "ci-kitty-keys"
+schedule = "ci"
+command = "cargo test -p fux-vt --test input_suites kitty_keys: kitty's keys.py, re-authored as facts, 584 encodings (553 agree, 13 differ as recorded, 18 not applicable)"
+needs = []
+
+[[check]]
+name = "ci-rio-sixel"
+schedule = "ci"
+command = "cargo test -p fux-vt --test sixel_pairs (rio's three pairs, vendored in fux-vt/tests/data/rio-sixel)"
+needs = []
+
+[[check]]
+name = "ci-vt-houdini"
+schedule = "ci"
+command = "cargo test -p fux-vt --test houdini: vt-houdini's 20 reply vectors (probe, timeout recovery, 11 basic, 7 CVE), re-authored, each reply the authority's, under the default policy and with every feature on, and no CVE payload echoed"
+needs = []
+
+[[check]]
+name = "ci-external-corpora"
+schedule = "ci"
+command = "cargo test -p fux-vt --features checks --release --locked --test external_corpora (Ghostty's 4,001 and vt100-rust's 37 fuzz inputs, vendored, under the invariant checker; mosh's 27 with -- --ignored, fetched at decd9b70, never in CI)"
+needs = []
+
+# --- release, and this pass's final report ----------------------------------
+
+[[check]]
+name = "release-libvterm-self"
+schedule = "release"
+command = "FUX_VT_LIBVTERM_HARNESS=HARNESS cargo test -p fux-vt --test libvterm -- --ignored: libvterm passes its own translated tests, 426 of 426"
+needs = ["libvterm 0.3.3's source (compare's run.sh fetches it into ~/.cache/fux-vt-compare), its t/harness.c built: cc -std=c99 -D_XOPEN_SOURCE=600 -Iinclude -Isrc src/*.c t/harness.c -o harness"]
+
+[[check]]
+name = "release-vttest"
+schedule = "release"
+command = "fux-vt/compare/release/vttest.sh fux OUT, then vttest.sh xterm OUT: vttest 2.7 live at 24x80.80 in a fux pane (FUX's build) and in real xterm 411 under Xvfb, walked by release/vttest.keys through vttest's own command file, its self-checks counted from its log by release/vttest.py; fux-vt's beside fux-vt/compare/vttest-expected.txt (about 5 minutes each)"
+needs = ["vttest 20251205 (references/fetch.sh, or VTTEST_TGZ)", "a C compiler", "fux built in release (FUX)", "xterm 411", "Xvfb"]
+
+[[check]]
+name = "release-ucs-detect"
+schedule = "release"
+command = "fux-vt/compare/release/ucs-detect.sh OUT fux 81: ucs-detect 2.3.8 in a fux pane (FUX's build), each category scored beside its authority, the failing languages with why; exit 1 below 81 of 85 languages (about 1 minute)"
+needs = ["ucs-detect 2.3.8 and wcwidth 0.9.2 by pip install --target (UCS_DETECT_PY)", "fux built in release (FUX)"]
+
+[[check]]
+name = "release-census-payloads"
+schedule = "release"
+command = "fux-vt-compare bench --engines ENGINE census, and bench --instructions --engines ENGINE --jobs N --repeats 5 census, each engine beside fux-vt (kitty's benchmark is among the payloads)"
+needs = ["perf (instructions:u)", "the census payload data (bench/payloads)"]
+
+[[check]]
+name = "release-alacritty-ref"
+schedule = "release"
+command = "fux-vt/compare/release/refs.sh OUT: alacritty's ref tests (54214706) and JediTerm's test data (1b354a63), fetched pinned into references/suites/, in a fux pane and in real xterm 411, scored beside each suite's own screens and xterm's; exit 1 on a difference from xterm that release/refs-expected.txt does not list (about 1 minute)"
+needs = ["xterm 411", "Xvfb", "git and the network for the first fetch", "fux built in release (FUX)"]
+
+[[check]]
+name = "release-xterm-keys"
+schedule = "release"
+command = "fux-vt/compare/xterm-keys/run.sh (about 6 minutes; rewrites tests/data/keys/xterm-keys.txt, git diff --exit-code it), then cargo test -p fux-vt --test input_suites xterm_keys, which every PR runs on the recorded bytes"
+needs = ["xterm 411", "Xvfb", "libXtst", "a C compiler"]
+
+[[check]]
+name = "release-bounds-100x"
+schedule = "release"
+command = "cargo test -p fux-vt --features checks --release --locked --test bounds -- --ignored --test-threads=1 (under a 2 GiB cap: systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=0)"
+needs = ["systemd-run --user, or another memory cap"]
+
+[[check]]
+name = "release-conformance-table"
+schedule = "release"
+command = "cargo run --manifest-path fux-vt/gen/Cargo.toml -- catalogue references, then cargo test -p fux-vt --test table, and git diff --exit-code fux-vt/tests/data/conformance.txt fux-vt/CONFORMANCE.md"
+needs = ["the references (references/fetch.sh)", "pdftotext (poppler)"]

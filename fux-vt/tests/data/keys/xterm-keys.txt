@@ -1,0 +1,2430 @@
+# Real xterm 411's bytes for each key fux names, typed through XTest into
+# xterm on a private Xvfb display (fux-vt/compare/xterm-keys/run.sh), with the
+# configuration fux-vt models: Alt as Meta, metaSendsEscape and eightBitInput
+# off (so Meta sends an ESC before the key), the backarrow key DEL, a PC
+# keyboard (sunKeyboard off). xterm decides legacy key bytes where ctlseqs
+# is silent (README): source, mode, key, xterm's bytes, verdict.
+xterm 411 - a	legacy	a code=97 mods=0	a	agree
+xterm 411 S a	legacy	A code=97 mods=1	A	agree
+xterm 411 C a	legacy	C-a code=97 mods=4	\x01	agree
+xterm 411 M a	legacy	M-a code=97 mods=2	\ea	agree
+xterm 411 CS a	legacy	C-A code=97 mods=5	\x01	agree
+xterm 411 CM a	legacy	C-M-a code=97 mods=6	\e\x01	agree
+xterm 411 MS a	legacy	M-A code=97 mods=3	\eA	agree
+xterm 411 CMS a	legacy	C-M-A code=97 mods=7	\e\x01	agree
+xterm 411 - b	legacy	b code=98 mods=0	b	agree
+xterm 411 S b	legacy	B code=98 mods=1	B	agree
+xterm 411 C b	legacy	C-b code=98 mods=4	\x02	agree
+xterm 411 M b	legacy	M-b code=98 mods=2	\eb	agree
+xterm 411 CS b	legacy	C-B code=98 mods=5	\x02	agree
+xterm 411 CM b	legacy	C-M-b code=98 mods=6	\e\x02	agree
+xterm 411 MS b	legacy	M-B code=98 mods=3	\eB	agree
+xterm 411 CMS b	legacy	C-M-B code=98 mods=7	\e\x02	agree
+xterm 411 - c	legacy	c code=99 mods=0	c	agree
+xterm 411 S c	legacy	C code=99 mods=1	C	agree
+xterm 411 C c	legacy	C-c code=99 mods=4	\x03	agree
+xterm 411 M c	legacy	M-c code=99 mods=2	\ec	agree
+xterm 411 CS c	legacy	C-C code=99 mods=5	\x03	agree
+xterm 411 CM c	legacy	C-M-c code=99 mods=6	\e\x03	agree
+xterm 411 MS c	legacy	M-C code=99 mods=3	\eC	agree
+xterm 411 CMS c	legacy	C-M-C code=99 mods=7	\e\x03	agree
+xterm 411 - d	legacy	d code=100 mods=0	d	agree
+xterm 411 S d	legacy	D code=100 mods=1	D	agree
+xterm 411 C d	legacy	C-d code=100 mods=4	\x04	agree
+xterm 411 M d	legacy	M-d code=100 mods=2	\ed	agree
+xterm 411 CS d	legacy	C-D code=100 mods=5	\x04	agree
+xterm 411 CM d	legacy	C-M-d code=100 mods=6	\e\x04	agree
+xterm 411 MS d	legacy	M-D code=100 mods=3	\eD	agree
+xterm 411 CMS d	legacy	C-M-D code=100 mods=7	\e\x04	agree
+xterm 411 - e	legacy	e code=101 mods=0	e	agree
+xterm 411 S e	legacy	E code=101 mods=1	E	agree
+xterm 411 C e	legacy	C-e code=101 mods=4	\x05	agree
+xterm 411 M e	legacy	M-e code=101 mods=2	\ee	agree
+xterm 411 CS e	legacy	C-E code=101 mods=5	\x05	agree
+xterm 411 CM e	legacy	C-M-e code=101 mods=6	\e\x05	agree
+xterm 411 MS e	legacy	M-E code=101 mods=3	\eE	agree
+xterm 411 CMS e	legacy	C-M-E code=101 mods=7	\e\x05	agree
+xterm 411 - f	legacy	f code=102 mods=0	f	agree
+xterm 411 S f	legacy	F code=102 mods=1	F	agree
+xterm 411 C f	legacy	C-f code=102 mods=4	\x06	agree
+xterm 411 M f	legacy	M-f code=102 mods=2	\ef	agree
+xterm 411 CS f	legacy	C-F code=102 mods=5	\x06	agree
+xterm 411 CM f	legacy	C-M-f code=102 mods=6	\e\x06	agree
+xterm 411 MS f	legacy	M-F code=102 mods=3	\eF	agree
+xterm 411 CMS f	legacy	C-M-F code=102 mods=7	\e\x06	agree
+xterm 411 - g	legacy	g code=103 mods=0	g	agree
+xterm 411 S g	legacy	G code=103 mods=1	G	agree
+xterm 411 C g	legacy	C-g code=103 mods=4	\x07	agree
+xterm 411 M g	legacy	M-g code=103 mods=2	\eg	agree
+xterm 411 CS g	legacy	C-G code=103 mods=5	\x07	agree
+xterm 411 CM g	legacy	C-M-g code=103 mods=6	\e\x07	agree
+xterm 411 MS g	legacy	M-G code=103 mods=3	\eG	agree
+xterm 411 CMS g	legacy	C-M-G code=103 mods=7	\e\x07	agree
+xterm 411 - h	legacy	h code=104 mods=0	h	agree
+xterm 411 S h	legacy	H code=104 mods=1	H	agree
+xterm 411 C h	legacy	C-h code=104 mods=4	\x08	agree
+xterm 411 M h	legacy	M-h code=104 mods=2	\eh	agree
+xterm 411 CS h	legacy	C-H code=104 mods=5	\x08	agree
+xterm 411 CM h	legacy	C-M-h code=104 mods=6	\e\x08	agree
+xterm 411 MS h	legacy	M-H code=104 mods=3	\eH	agree
+xterm 411 CMS h	legacy	C-M-H code=104 mods=7	\e\x08	agree
+xterm 411 - i	legacy	i code=105 mods=0	i	agree
+xterm 411 S i	legacy	I code=105 mods=1	I	agree
+xterm 411 C i	legacy	C-i code=105 mods=4	\x09	agree
+xterm 411 M i	legacy	M-i code=105 mods=2	\ei	agree
+xterm 411 CS i	legacy	C-I code=105 mods=5	\x09	agree
+xterm 411 CM i	legacy	C-M-i code=105 mods=6	\e\x09	agree
+xterm 411 MS i	legacy	M-I code=105 mods=3	\eI	agree
+xterm 411 CMS i	legacy	C-M-I code=105 mods=7	\e\x09	agree
+xterm 411 - j	legacy	j code=106 mods=0	j	agree
+xterm 411 S j	legacy	J code=106 mods=1	J	agree
+xterm 411 C j	legacy	C-j code=106 mods=4	\x0a	agree
+xterm 411 M j	legacy	M-j code=106 mods=2	\ej	agree
+xterm 411 CS j	legacy	C-J code=106 mods=5	\x0a	agree
+xterm 411 CM j	legacy	C-M-j code=106 mods=6	\e\x0a	agree
+xterm 411 MS j	legacy	M-J code=106 mods=3	\eJ	agree
+xterm 411 CMS j	legacy	C-M-J code=106 mods=7	\e\x0a	agree
+xterm 411 - k	legacy	k code=107 mods=0	k	agree
+xterm 411 S k	legacy	K code=107 mods=1	K	agree
+xterm 411 C k	legacy	C-k code=107 mods=4	\x0b	agree
+xterm 411 M k	legacy	M-k code=107 mods=2	\ek	agree
+xterm 411 CS k	legacy	C-K code=107 mods=5	\x0b	agree
+xterm 411 CM k	legacy	C-M-k code=107 mods=6	\e\x0b	agree
+xterm 411 MS k	legacy	M-K code=107 mods=3	\eK	agree
+xterm 411 CMS k	legacy	C-M-K code=107 mods=7	\e\x0b	agree
+xterm 411 - l	legacy	l code=108 mods=0	l	agree
+xterm 411 S l	legacy	L code=108 mods=1	L	agree
+xterm 411 C l	legacy	C-l code=108 mods=4	\x0c	agree
+xterm 411 M l	legacy	M-l code=108 mods=2	\el	agree
+xterm 411 CS l	legacy	C-L code=108 mods=5	\x0c	agree
+xterm 411 CM l	legacy	C-M-l code=108 mods=6	\e\x0c	agree
+xterm 411 MS l	legacy	M-L code=108 mods=3	\eL	agree
+xterm 411 CMS l	legacy	C-M-L code=108 mods=7	\e\x0c	agree
+xterm 411 - m	legacy	m code=109 mods=0	m	agree
+xterm 411 S m	legacy	M code=109 mods=1	M	agree
+xterm 411 C m	legacy	C-m code=109 mods=4	\x0d	agree
+xterm 411 M m	legacy	M-m code=109 mods=2	\em	agree
+xterm 411 CS m	legacy	C-M code=109 mods=5	\x0d	agree
+xterm 411 CM m	legacy	C-M-m code=109 mods=6	\e\x0d	agree
+xterm 411 MS m	legacy	M-M code=109 mods=3	\eM	agree
+xterm 411 CMS m	legacy	C-M-M code=109 mods=7	\e\x0d	agree
+xterm 411 - n	legacy	n code=110 mods=0	n	agree
+xterm 411 S n	legacy	N code=110 mods=1	N	agree
+xterm 411 C n	legacy	C-n code=110 mods=4	\x0e	agree
+xterm 411 M n	legacy	M-n code=110 mods=2	\en	agree
+xterm 411 CS n	legacy	C-N code=110 mods=5	\x0e	agree
+xterm 411 CM n	legacy	C-M-n code=110 mods=6	\e\x0e	agree
+xterm 411 MS n	legacy	M-N code=110 mods=3	\eN	agree
+xterm 411 CMS n	legacy	C-M-N code=110 mods=7	\e\x0e	agree
+xterm 411 - o	legacy	o code=111 mods=0	o	agree
+xterm 411 S o	legacy	O code=111 mods=1	O	agree
+xterm 411 C o	legacy	C-o code=111 mods=4	\x0f	agree
+xterm 411 M o	legacy	M-o code=111 mods=2	\eo	agree
+xterm 411 CS o	legacy	C-O code=111 mods=5	\x0f	agree
+xterm 411 CM o	legacy	C-M-o code=111 mods=6	\e\x0f	agree
+xterm 411 MS o	legacy	M-O code=111 mods=3	\eO	agree
+xterm 411 CMS o	legacy	C-M-O code=111 mods=7	\e\x0f	agree
+xterm 411 - p	legacy	p code=112 mods=0	p	agree
+xterm 411 S p	legacy	P code=112 mods=1	P	agree
+xterm 411 C p	legacy	C-p code=112 mods=4	\x10	agree
+xterm 411 M p	legacy	M-p code=112 mods=2	\ep	agree
+xterm 411 CS p	legacy	C-P code=112 mods=5	\x10	agree
+xterm 411 CM p	legacy	C-M-p code=112 mods=6	\e\x10	agree
+xterm 411 MS p	legacy	M-P code=112 mods=3	\eP	agree
+xterm 411 CMS p	legacy	C-M-P code=112 mods=7	\e\x10	agree
+xterm 411 - q	legacy	q code=113 mods=0	q	agree
+xterm 411 S q	legacy	Q code=113 mods=1	Q	agree
+xterm 411 C q	legacy	C-q code=113 mods=4	\x11	agree
+xterm 411 M q	legacy	M-q code=113 mods=2	\eq	agree
+xterm 411 CS q	legacy	C-Q code=113 mods=5	\x11	agree
+xterm 411 CM q	legacy	C-M-q code=113 mods=6	\e\x11	agree
+xterm 411 MS q	legacy	M-Q code=113 mods=3	\eQ	agree
+xterm 411 CMS q	legacy	C-M-Q code=113 mods=7	\e\x11	agree
+xterm 411 - r	legacy	r code=114 mods=0	r	agree
+xterm 411 S r	legacy	R code=114 mods=1	R	agree
+xterm 411 C r	legacy	C-r code=114 mods=4	\x12	agree
+xterm 411 M r	legacy	M-r code=114 mods=2	\er	agree
+xterm 411 CS r	legacy	C-R code=114 mods=5	\x12	agree
+xterm 411 CM r	legacy	C-M-r code=114 mods=6	\e\x12	agree
+xterm 411 MS r	legacy	M-R code=114 mods=3	\eR	agree
+xterm 411 CMS r	legacy	C-M-R code=114 mods=7	\e\x12	agree
+xterm 411 - s	legacy	s code=115 mods=0	s	agree
+xterm 411 S s	legacy	S code=115 mods=1	S	agree
+xterm 411 C s	legacy	C-s code=115 mods=4	\x13	agree
+xterm 411 M s	legacy	M-s code=115 mods=2	\es	agree
+xterm 411 CS s	legacy	C-S code=115 mods=5	\x13	agree
+xterm 411 CM s	legacy	C-M-s code=115 mods=6	\e\x13	agree
+xterm 411 MS s	legacy	M-S code=115 mods=3	\eS	agree
+xterm 411 CMS s	legacy	C-M-S code=115 mods=7	\e\x13	agree
+xterm 411 - t	legacy	t code=116 mods=0	t	agree
+xterm 411 S t	legacy	T code=116 mods=1	T	agree
+xterm 411 C t	legacy	C-t code=116 mods=4	\x14	agree
+xterm 411 M t	legacy	M-t code=116 mods=2	\et	agree
+xterm 411 CS t	legacy	C-T code=116 mods=5	\x14	agree
+xterm 411 CM t	legacy	C-M-t code=116 mods=6	\e\x14	agree
+xterm 411 MS t	legacy	M-T code=116 mods=3	\eT	agree
+xterm 411 CMS t	legacy	C-M-T code=116 mods=7	\e\x14	agree
+xterm 411 - u	legacy	u code=117 mods=0	u	agree
+xterm 411 S u	legacy	U code=117 mods=1	U	agree
+xterm 411 C u	legacy	C-u code=117 mods=4	\x15	agree
+xterm 411 M u	legacy	M-u code=117 mods=2	\eu	agree
+xterm 411 CS u	legacy	C-U code=117 mods=5	\x15	agree
+xterm 411 CM u	legacy	C-M-u code=117 mods=6	\e\x15	agree
+xterm 411 MS u	legacy	M-U code=117 mods=3	\eU	agree
+xterm 411 CMS u	legacy	C-M-U code=117 mods=7	\e\x15	agree
+xterm 411 - v	legacy	v code=118 mods=0	v	agree
+xterm 411 S v	legacy	V code=118 mods=1	V	agree
+xterm 411 C v	legacy	C-v code=118 mods=4	\x16	agree
+xterm 411 M v	legacy	M-v code=118 mods=2	\ev	agree
+xterm 411 CS v	legacy	C-V code=118 mods=5	\x16	agree
+xterm 411 CM v	legacy	C-M-v code=118 mods=6	\e\x16	agree
+xterm 411 MS v	legacy	M-V code=118 mods=3	\eV	agree
+xterm 411 CMS v	legacy	C-M-V code=118 mods=7	\e\x16	agree
+xterm 411 - w	legacy	w code=119 mods=0	w	agree
+xterm 411 S w	legacy	W code=119 mods=1	W	agree
+xterm 411 C w	legacy	C-w code=119 mods=4	\x17	agree
+xterm 411 M w	legacy	M-w code=119 mods=2	\ew	agree
+xterm 411 CS w	legacy	C-W code=119 mods=5	\x17	agree
+xterm 411 CM w	legacy	C-M-w code=119 mods=6	\e\x17	agree
+xterm 411 MS w	legacy	M-W code=119 mods=3	\eW	agree
+xterm 411 CMS w	legacy	C-M-W code=119 mods=7	\e\x17	agree
+xterm 411 - x	legacy	x code=120 mods=0	x	agree
+xterm 411 S x	legacy	X code=120 mods=1	X	agree
+xterm 411 C x	legacy	C-x code=120 mods=4	\x18	agree
+xterm 411 M x	legacy	M-x code=120 mods=2	\ex	agree
+xterm 411 CS x	legacy	C-X code=120 mods=5	\x18	agree
+xterm 411 CM x	legacy	C-M-x code=120 mods=6	\e\x18	agree
+xterm 411 MS x	legacy	M-X code=120 mods=3	\eX	agree
+xterm 411 CMS x	legacy	C-M-X code=120 mods=7	\e\x18	agree
+xterm 411 - y	legacy	y code=121 mods=0	y	agree
+xterm 411 S y	legacy	Y code=121 mods=1	Y	agree
+xterm 411 C y	legacy	C-y code=121 mods=4	\x19	agree
+xterm 411 M y	legacy	M-y code=121 mods=2	\ey	agree
+xterm 411 CS y	legacy	C-Y code=121 mods=5	\x19	agree
+xterm 411 CM y	legacy	C-M-y code=121 mods=6	\e\x19	agree
+xterm 411 MS y	legacy	M-Y code=121 mods=3	\eY	agree
+xterm 411 CMS y	legacy	C-M-Y code=121 mods=7	\e\x19	agree
+xterm 411 - z	legacy	z code=122 mods=0	z	agree
+xterm 411 S z	legacy	Z code=122 mods=1	Z	agree
+xterm 411 C z	legacy	C-z code=122 mods=4	\x1a	agree
+xterm 411 M z	legacy	M-z code=122 mods=2	\ez	agree
+xterm 411 CS z	legacy	C-Z code=122 mods=5	\x1a	agree
+xterm 411 CM z	legacy	C-M-z code=122 mods=6	\e\x1a	agree
+xterm 411 MS z	legacy	M-Z code=122 mods=3	\eZ	agree
+xterm 411 CMS z	legacy	C-M-Z code=122 mods=7	\e\x1a	agree
+xterm 411 - 0	legacy	0 code=48 mods=0	0	agree
+xterm 411 S 0	legacy	) code=48 mods=1	)	agree
+xterm 411 C 0	legacy	C-0 code=48 mods=4	0	agree
+xterm 411 M 0	legacy	M-0 code=48 mods=2	\e0	agree
+xterm 411 CS 0	legacy	C-) code=48 mods=5	)	agree
+xterm 411 CM 0	legacy	C-M-0 code=48 mods=6	\e0	agree
+xterm 411 MS 0	legacy	M-) code=48 mods=3	\e)	agree
+xterm 411 CMS 0	legacy	C-M-) code=48 mods=7	\e)	agree
+xterm 411 - 1	legacy	1 code=49 mods=0	1	agree
+xterm 411 S 1	legacy	! code=49 mods=1	!	agree
+xterm 411 C 1	legacy	C-1 code=49 mods=4	1	agree
+xterm 411 M 1	legacy	M-1 code=49 mods=2	\e1	agree
+xterm 411 CS 1	legacy	C-! code=49 mods=5	!	agree
+xterm 411 CM 1	legacy	C-M-1 code=49 mods=6	\e1	agree
+xterm 411 MS 1	legacy	M-! code=49 mods=3	\e!	agree
+xterm 411 CMS 1	legacy	C-M-! code=49 mods=7	\e!	agree
+xterm 411 - 2	legacy	2 code=50 mods=0	2	agree
+xterm 411 S 2	legacy	@ code=50 mods=1	@	agree
+xterm 411 C 2	legacy	C-2 code=50 mods=4	\x00	agree
+xterm 411 M 2	legacy	M-2 code=50 mods=2	\e2	agree
+xterm 411 CS 2	legacy	C-@ code=50 mods=5	\x00	agree
+xterm 411 CM 2	legacy	C-M-2 code=50 mods=6	\e\x00	agree
+xterm 411 MS 2	legacy	M-@ code=50 mods=3	\e@	agree
+xterm 411 CMS 2	legacy	C-M-@ code=50 mods=7	\e\x00	agree
+xterm 411 - 3	legacy	3 code=51 mods=0	3	agree
+xterm 411 S 3	legacy	# code=51 mods=1	#	agree
+xterm 411 C 3	legacy	C-3 code=51 mods=4	\e	agree
+xterm 411 M 3	legacy	M-3 code=51 mods=2	\e3	agree
+xterm 411 CS 3	legacy	C-# code=51 mods=5	#	agree
+xterm 411 CM 3	legacy	C-M-3 code=51 mods=6	\e\e	agree
+xterm 411 MS 3	legacy	M-# code=51 mods=3	\e#	agree
+xterm 411 CMS 3	legacy	C-M-# code=51 mods=7	\e#	agree
+xterm 411 - 4	legacy	4 code=52 mods=0	4	agree
+xterm 411 S 4	legacy	$ code=52 mods=1	$	agree
+xterm 411 C 4	legacy	C-4 code=52 mods=4	\x1c	agree
+xterm 411 M 4	legacy	M-4 code=52 mods=2	\e4	agree
+xterm 411 CS 4	legacy	C-$ code=52 mods=5	$	agree
+xterm 411 CM 4	legacy	C-M-4 code=52 mods=6	\e\x1c	agree
+xterm 411 MS 4	legacy	M-$ code=52 mods=3	\e$	agree
+xterm 411 CMS 4	legacy	C-M-$ code=52 mods=7	\e$	agree
+xterm 411 - 5	legacy	5 code=53 mods=0	5	agree
+xterm 411 S 5	legacy	% code=53 mods=1	%	agree
+xterm 411 C 5	legacy	C-5 code=53 mods=4	\x1d	agree
+xterm 411 M 5	legacy	M-5 code=53 mods=2	\e5	agree
+xterm 411 CS 5	legacy	C-% code=53 mods=5	%	agree
+xterm 411 CM 5	legacy	C-M-5 code=53 mods=6	\e\x1d	agree
+xterm 411 MS 5	legacy	M-% code=53 mods=3	\e%	agree
+xterm 411 CMS 5	legacy	C-M-% code=53 mods=7	\e%	agree
+xterm 411 - 6	legacy	6 code=54 mods=0	6	agree
+xterm 411 S 6	legacy	^ code=54 mods=1	^	agree
+xterm 411 C 6	legacy	C-6 code=54 mods=4	\x1e	agree
+xterm 411 M 6	legacy	M-6 code=54 mods=2	\e6	agree
+xterm 411 CS 6	legacy	C-^ code=54 mods=5	\x1e	agree
+xterm 411 CM 6	legacy	C-M-6 code=54 mods=6	\e\x1e	agree
+xterm 411 MS 6	legacy	M-^ code=54 mods=3	\e^	agree
+xterm 411 CMS 6	legacy	C-M-^ code=54 mods=7	\e\x1e	agree
+xterm 411 - 7	legacy	7 code=55 mods=0	7	agree
+xterm 411 S 7	legacy	& code=55 mods=1	&	agree
+xterm 411 C 7	legacy	C-7 code=55 mods=4	\x1f	agree
+xterm 411 M 7	legacy	M-7 code=55 mods=2	\e7	agree
+xterm 411 CS 7	legacy	C-& code=55 mods=5	&	agree
+xterm 411 CM 7	legacy	C-M-7 code=55 mods=6	\e\x1f	agree
+xterm 411 MS 7	legacy	M-& code=55 mods=3	\e&	agree
+xterm 411 CMS 7	legacy	C-M-& code=55 mods=7	\e&	agree
+xterm 411 - 8	legacy	8 code=56 mods=0	8	agree
+xterm 411 S 8	legacy	* code=56 mods=1	*	agree
+xterm 411 C 8	legacy	C-8 code=56 mods=4	\x7f	agree
+xterm 411 M 8	legacy	M-8 code=56 mods=2	\e8	agree
+xterm 411 CS 8	legacy	C-* code=56 mods=5	*	agree
+xterm 411 CM 8	legacy	C-M-8 code=56 mods=6	\e\x7f	agree
+xterm 411 MS 8	legacy	M-* code=56 mods=3	\e*	agree
+xterm 411 CMS 8	legacy	C-M-* code=56 mods=7	\e*	agree
+xterm 411 - 9	legacy	9 code=57 mods=0	9	agree
+xterm 411 S 9	legacy	( code=57 mods=1	(	agree
+xterm 411 C 9	legacy	C-9 code=57 mods=4	9	agree
+xterm 411 M 9	legacy	M-9 code=57 mods=2	\e9	agree
+xterm 411 CS 9	legacy	C-( code=57 mods=5	(	agree
+xterm 411 CM 9	legacy	C-M-9 code=57 mods=6	\e9	agree
+xterm 411 MS 9	legacy	M-( code=57 mods=3	\e(	agree
+xterm 411 CMS 9	legacy	C-M-( code=57 mods=7	\e(	agree
+xterm 411 - grave	legacy	` code=96 mods=0	`	agree
+xterm 411 S grave	legacy	~ code=96 mods=1	~	agree
+xterm 411 C grave	legacy	C-` code=96 mods=4	\x00	agree
+xterm 411 M grave	legacy	M-` code=96 mods=2	\e`	agree
+xterm 411 CS grave	legacy	C-~ code=96 mods=5	\x1e	agree
+xterm 411 CM grave	legacy	C-M-` code=96 mods=6	\e\x00	agree
+xterm 411 MS grave	legacy	M-~ code=96 mods=3	\e~	agree
+xterm 411 CMS grave	legacy	C-M-~ code=96 mods=7	\e\x1e	agree
+xterm 411 - minus	legacy	- code=45 mods=0	-	agree
+xterm 411 S minus	legacy	_ code=45 mods=1	_	agree
+xterm 411 C minus	legacy	C-- code=45 mods=4	-	agree
+xterm 411 M minus	legacy	M-- code=45 mods=2	\e-	agree
+xterm 411 CS minus	legacy	C-_ code=45 mods=5	\x1f	agree
+xterm 411 CM minus	legacy	C-M-- code=45 mods=6	\e-	agree
+xterm 411 MS minus	legacy	M-_ code=45 mods=3	\e_	agree
+xterm 411 CMS minus	legacy	C-M-_ code=45 mods=7	\e\x1f	agree
+xterm 411 - equal	legacy	= code=61 mods=0	=	agree
+xterm 411 S equal	legacy	+ code=61 mods=1	+	agree
+xterm 411 C equal	legacy	C-= code=61 mods=4	=	agree
+xterm 411 M equal	legacy	M-= code=61 mods=2	\e=	agree
+xterm 411 CS equal	legacy	C-+ code=61 mods=5	+	agree
+xterm 411 CM equal	legacy	C-M-= code=61 mods=6	\e=	agree
+xterm 411 MS equal	legacy	M-+ code=61 mods=3	\e+	agree
+xterm 411 CMS equal	legacy	C-M-+ code=61 mods=7	\e+	agree
+xterm 411 - bracketleft	legacy	[ code=91 mods=0	[	agree
+xterm 411 S bracketleft	legacy	{ code=91 mods=1	{	agree
+xterm 411 C bracketleft	legacy	C-[ code=91 mods=4	\e	agree
+xterm 411 M bracketleft	legacy	M-[ code=91 mods=2	\e[	agree
+xterm 411 CS bracketleft	legacy	C-{ code=91 mods=5	\e	agree
+xterm 411 CM bracketleft	legacy	C-M-[ code=91 mods=6	\e\e	agree
+xterm 411 MS bracketleft	legacy	M-{ code=91 mods=3	\e{	agree
+xterm 411 CMS bracketleft	legacy	C-M-{ code=91 mods=7	\e\e	agree
+xterm 411 - bracketright	legacy	] code=93 mods=0	]	agree
+xterm 411 S bracketright	legacy	} code=93 mods=1	}	agree
+xterm 411 C bracketright	legacy	C-] code=93 mods=4	\x1d	agree
+xterm 411 M bracketright	legacy	M-] code=93 mods=2	\e]	agree
+xterm 411 CS bracketright	legacy	C-} code=93 mods=5	\x1d	agree
+xterm 411 CM bracketright	legacy	C-M-] code=93 mods=6	\e\x1d	agree
+xterm 411 MS bracketright	legacy	M-} code=93 mods=3	\e}	agree
+xterm 411 CMS bracketright	legacy	C-M-} code=93 mods=7	\e\x1d	agree
+xterm 411 - backslash	legacy	\ code=92 mods=0	\\	agree
+xterm 411 S backslash	legacy	| code=92 mods=1	|	agree
+xterm 411 C backslash	legacy	C-\ code=92 mods=4	\x1c	agree
+xterm 411 M backslash	legacy	M-\ code=92 mods=2	\e\\	agree
+xterm 411 CS backslash	legacy	C-| code=92 mods=5	\x1c	agree
+xterm 411 CM backslash	legacy	C-M-\ code=92 mods=6	\e\x1c	agree
+xterm 411 MS backslash	legacy	M-| code=92 mods=3	\e|	agree
+xterm 411 CMS backslash	legacy	C-M-| code=92 mods=7	\e\x1c	agree
+xterm 411 - semicolon	legacy	; code=59 mods=0	;	agree
+xterm 411 S semicolon	legacy	: code=59 mods=1	:	agree
+xterm 411 C semicolon	legacy	C-; code=59 mods=4	;	agree
+xterm 411 M semicolon	legacy	M-; code=59 mods=2	\e;	agree
+xterm 411 CS semicolon	legacy	C-: code=59 mods=5	:	agree
+xterm 411 CM semicolon	legacy	C-M-; code=59 mods=6	\e;	agree
+xterm 411 MS semicolon	legacy	M-: code=59 mods=3	\e:	agree
+xterm 411 CMS semicolon	legacy	C-M-: code=59 mods=7	\e:	agree
+xterm 411 - apostrophe	legacy	' code=39 mods=0	'	agree
+xterm 411 S apostrophe	legacy	" code=39 mods=1	"	agree
+xterm 411 C apostrophe	legacy	C-' code=39 mods=4	'	agree
+xterm 411 M apostrophe	legacy	M-' code=39 mods=2	\e'	agree
+xterm 411 CS apostrophe	legacy	C-" code=39 mods=5	"	agree
+xterm 411 CM apostrophe	legacy	C-M-' code=39 mods=6	\e'	agree
+xterm 411 MS apostrophe	legacy	M-" code=39 mods=3	\e"	agree
+xterm 411 CMS apostrophe	legacy	C-M-" code=39 mods=7	\e"	agree
+xterm 411 - comma	legacy	, code=44 mods=0	,	agree
+xterm 411 S comma	legacy	< code=44 mods=1	<	agree
+xterm 411 C comma	legacy	C-, code=44 mods=4	,	agree
+xterm 411 M comma	legacy	M-, code=44 mods=2	\e,	agree
+xterm 411 CS comma	legacy	C-< code=44 mods=5	<	agree
+xterm 411 CM comma	legacy	C-M-, code=44 mods=6	\e,	agree
+xterm 411 MS comma	legacy	M-< code=44 mods=3	\e<	agree
+xterm 411 CMS comma	legacy	C-M-< code=44 mods=7	\e<	agree
+xterm 411 - period	legacy	. code=46 mods=0	.	agree
+xterm 411 S period	legacy	> code=46 mods=1	>	agree
+xterm 411 C period	legacy	C-. code=46 mods=4	.	agree
+xterm 411 M period	legacy	M-. code=46 mods=2	\e.	agree
+xterm 411 CS period	legacy	C-> code=46 mods=5	>	agree
+xterm 411 CM period	legacy	C-M-. code=46 mods=6	\e.	agree
+xterm 411 MS period	legacy	M-> code=46 mods=3	\e>	agree
+xterm 411 CMS period	legacy	C-M-> code=46 mods=7	\e>	agree
+xterm 411 - slash	legacy	/ code=47 mods=0	/	agree
+xterm 411 S slash	legacy	? code=47 mods=1	?	agree
+xterm 411 C slash	legacy	C-/ code=47 mods=4	\x1f	agree
+xterm 411 M slash	legacy	M-/ code=47 mods=2	\e/	agree
+xterm 411 CS slash	legacy	C-? code=47 mods=5	\x7f	agree
+xterm 411 CM slash	legacy	C-M-/ code=47 mods=6	\e\x1f	agree
+xterm 411 MS slash	legacy	M-? code=47 mods=3	\e?	agree
+xterm 411 CMS slash	legacy	C-M-? code=47 mods=7	\e?	agree
+xterm 411 - space	legacy	Space code=32 mods=0	 	agree
+xterm 411 S space	legacy	Space code=32 mods=1	 	agree
+xterm 411 C space	legacy	C-Space code=32 mods=4	\x00	agree
+xterm 411 M space	legacy	M-Space code=32 mods=2	\e 	agree
+xterm 411 CS space	legacy	C-Space code=32 mods=5	\x00	agree
+xterm 411 CM space	legacy	C-M-Space code=32 mods=6	\e\x00	agree
+xterm 411 MS space	legacy	M-Space code=32 mods=3	\e 	agree
+xterm 411 CMS space	legacy	C-M-Space code=32 mods=7	\e\x00	agree
+xterm 411 - Return	legacy	Enter code=13 mods=0	\x0d	agree
+xterm 411 S Return	legacy	S-Enter code=13 mods=1	\x0d	agree
+xterm 411 C Return	legacy	C-Enter code=13 mods=4	\x0d	agree
+xterm 411 M Return	legacy	M-Enter code=13 mods=2	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CS Return	legacy	C-S-Enter code=13 mods=5	\x0d	agree
+xterm 411 CM Return	legacy	C-M-Enter code=13 mods=6	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 MS Return	legacy	M-S-Enter code=13 mods=3	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CMS Return	legacy	C-M-S-Enter code=13 mods=7	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 - Tab	legacy	Tab code=9 mods=0	\x09	agree
+xterm 411 S Tab	legacy	S-Tab code=9 mods=1	\e[Z	agree
+xterm 411 C Tab	legacy	C-Tab code=9 mods=4	\x09	agree
+xterm 411 M Tab	legacy	M-Tab code=9 mods=2	\e\x09	agree
+xterm 411 CS Tab	legacy	C-S-Tab code=9 mods=5	\e[Z	agree
+xterm 411 CM Tab	legacy	C-M-Tab code=9 mods=6	\e\x09	agree
+xterm 411 MS Tab	legacy	M-S-Tab code=9 mods=3	\e[Z	agree
+xterm 411 CMS Tab	legacy	C-M-S-Tab code=9 mods=7	\e[Z	agree
+xterm 411 - Escape	legacy	Escape code=27 mods=0	\e	agree
+xterm 411 S Escape	legacy	S-Escape code=27 mods=1	\e	agree
+xterm 411 C Escape	legacy	C-Escape code=27 mods=4	\e	agree
+xterm 411 M Escape	legacy	M-Escape code=27 mods=2	\e\e	agree
+xterm 411 CS Escape	legacy	C-S-Escape code=27 mods=5	\e	agree
+xterm 411 CM Escape	legacy	C-M-Escape code=27 mods=6	\e\e	agree
+xterm 411 MS Escape	legacy	M-S-Escape code=27 mods=3	\e\e	agree
+xterm 411 CMS Escape	legacy	C-M-S-Escape code=27 mods=7	\e\e	agree
+xterm 411 - BackSpace	legacy	BSpace code=127 mods=0	\x7f	agree
+xterm 411 S BackSpace	legacy	S-BSpace code=127 mods=1	\x7f	agree
+xterm 411 C BackSpace	legacy	C-BSpace code=127 mods=4	\x08	agree
+xterm 411 M BackSpace	legacy	M-BSpace code=127 mods=2	\e\x7f	agree
+xterm 411 CS BackSpace	legacy	C-S-BSpace code=127 mods=5	\x08	agree
+xterm 411 CM BackSpace	legacy	C-M-BSpace code=127 mods=6	\e\x08	agree
+xterm 411 MS BackSpace	legacy	M-S-BSpace code=127 mods=3	\e\x7f	agree
+xterm 411 CMS BackSpace	legacy	C-M-S-BSpace code=127 mods=7	\e\x08	agree
+xterm 411 - Delete	legacy	Delete mods=0	\e[3~	agree
+xterm 411 S Delete	legacy	S-Delete mods=1	\e[3;2~	agree
+xterm 411 C Delete	legacy	C-Delete mods=4	\e[3;5~	agree
+xterm 411 M Delete	legacy	M-Delete mods=2	\e[3;3~	agree
+xterm 411 CS Delete	legacy	C-S-Delete mods=5	\e[3;6~	agree
+xterm 411 CM Delete	legacy	C-M-Delete mods=6	\e[3;7~	agree
+xterm 411 MS Delete	legacy	M-S-Delete mods=3	\e[3;4~	agree
+xterm 411 CMS Delete	legacy	C-M-S-Delete mods=7	\e[3;8~	agree
+xterm 411 - Insert	legacy	Insert mods=0	\e[2~	agree
+xterm 411 S Insert	legacy	S-Insert mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Insert	legacy	C-Insert mods=4	\e[2;5~	agree
+xterm 411 M Insert	legacy	M-Insert mods=2	\e[2;3~	agree
+xterm 411 CS Insert	legacy	C-S-Insert mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Insert	legacy	C-M-Insert mods=6	\e[2;7~	agree
+xterm 411 MS Insert	legacy	M-S-Insert mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Insert	legacy	C-M-S-Insert mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Up	legacy	Up mods=0	\e[A	agree
+xterm 411 S Up	legacy	S-Up mods=1	\e[1;2A	agree
+xterm 411 C Up	legacy	C-Up mods=4	\e[1;5A	agree
+xterm 411 M Up	legacy	M-Up mods=2	\e[1;3A	agree
+xterm 411 CS Up	legacy	C-S-Up mods=5	\e[1;6A	agree
+xterm 411 CM Up	legacy	C-M-Up mods=6	\e[1;7A	agree
+xterm 411 MS Up	legacy	M-S-Up mods=3	\e[1;4A	agree
+xterm 411 CMS Up	legacy	C-M-S-Up mods=7	\e[1;8A	agree
+xterm 411 - Down	legacy	Down mods=0	\e[B	agree
+xterm 411 S Down	legacy	S-Down mods=1	\e[1;2B	agree
+xterm 411 C Down	legacy	C-Down mods=4	\e[1;5B	agree
+xterm 411 M Down	legacy	M-Down mods=2	\e[1;3B	agree
+xterm 411 CS Down	legacy	C-S-Down mods=5	\e[1;6B	agree
+xterm 411 CM Down	legacy	C-M-Down mods=6	\e[1;7B	agree
+xterm 411 MS Down	legacy	M-S-Down mods=3	\e[1;4B	agree
+xterm 411 CMS Down	legacy	C-M-S-Down mods=7	\e[1;8B	agree
+xterm 411 - Left	legacy	Left mods=0	\e[D	agree
+xterm 411 S Left	legacy	S-Left mods=1	\e[1;2D	agree
+xterm 411 C Left	legacy	C-Left mods=4	\e[1;5D	agree
+xterm 411 M Left	legacy	M-Left mods=2	\e[1;3D	agree
+xterm 411 CS Left	legacy	C-S-Left mods=5	\e[1;6D	agree
+xterm 411 CM Left	legacy	C-M-Left mods=6	\e[1;7D	agree
+xterm 411 MS Left	legacy	M-S-Left mods=3	\e[1;4D	agree
+xterm 411 CMS Left	legacy	C-M-S-Left mods=7	\e[1;8D	agree
+xterm 411 - Right	legacy	Right mods=0	\e[C	agree
+xterm 411 S Right	legacy	S-Right mods=1	\e[1;2C	agree
+xterm 411 C Right	legacy	C-Right mods=4	\e[1;5C	agree
+xterm 411 M Right	legacy	M-Right mods=2	\e[1;3C	agree
+xterm 411 CS Right	legacy	C-S-Right mods=5	\e[1;6C	agree
+xterm 411 CM Right	legacy	C-M-Right mods=6	\e[1;7C	agree
+xterm 411 MS Right	legacy	M-S-Right mods=3	\e[1;4C	agree
+xterm 411 CMS Right	legacy	C-M-S-Right mods=7	\e[1;8C	agree
+xterm 411 - Home	legacy	Home mods=0	\e[H	agree
+xterm 411 S Home	legacy	S-Home mods=1	\e[1;2H	agree
+xterm 411 C Home	legacy	C-Home mods=4	\e[1;5H	agree
+xterm 411 M Home	legacy	M-Home mods=2	\e[1;3H	agree
+xterm 411 CS Home	legacy	C-S-Home mods=5	\e[1;6H	agree
+xterm 411 CM Home	legacy	C-M-Home mods=6	\e[1;7H	agree
+xterm 411 MS Home	legacy	M-S-Home mods=3	\e[1;4H	agree
+xterm 411 CMS Home	legacy	C-M-S-Home mods=7	\e[1;8H	agree
+xterm 411 - End	legacy	End mods=0	\e[F	agree
+xterm 411 S End	legacy	S-End mods=1	\e[1;2F	agree
+xterm 411 C End	legacy	C-End mods=4	\e[1;5F	agree
+xterm 411 M End	legacy	M-End mods=2	\e[1;3F	agree
+xterm 411 CS End	legacy	C-S-End mods=5	\e[1;6F	agree
+xterm 411 CM End	legacy	C-M-End mods=6	\e[1;7F	agree
+xterm 411 MS End	legacy	M-S-End mods=3	\e[1;4F	agree
+xterm 411 CMS End	legacy	C-M-S-End mods=7	\e[1;8F	agree
+xterm 411 - Prior	legacy	PageUp mods=0	\e[5~	agree
+xterm 411 S Prior	legacy	S-PageUp mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Prior	legacy	C-PageUp mods=4	\e[5;5~	agree
+xterm 411 M Prior	legacy	M-PageUp mods=2	\e[5;3~	agree
+xterm 411 CS Prior	legacy	C-S-PageUp mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Prior	legacy	C-M-PageUp mods=6	\e[5;7~	agree
+xterm 411 MS Prior	legacy	M-S-PageUp mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Prior	legacy	C-M-S-PageUp mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Next	legacy	PageDown mods=0	\e[6~	agree
+xterm 411 S Next	legacy	S-PageDown mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Next	legacy	C-PageDown mods=4	\e[6;5~	agree
+xterm 411 M Next	legacy	M-PageDown mods=2	\e[6;3~	agree
+xterm 411 CS Next	legacy	C-S-PageDown mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Next	legacy	C-M-PageDown mods=6	\e[6;7~	agree
+xterm 411 MS Next	legacy	M-S-PageDown mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Next	legacy	C-M-S-PageDown mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - F1	legacy	F1 mods=0	\eOP	agree
+xterm 411 S F1	legacy	S-F1 mods=1	\e[1;2P	agree
+xterm 411 C F1	legacy	C-F1 mods=4	\e[1;5P	agree
+xterm 411 M F1	legacy	M-F1 mods=2	\e[1;3P	agree
+xterm 411 CS F1	legacy	C-S-F1 mods=5	\e[1;6P	agree
+xterm 411 CM F1	legacy	C-M-F1 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F1	legacy	M-S-F1 mods=3	\e[1;4P	agree
+xterm 411 CMS F1	legacy	C-M-S-F1 mods=7	\e[1;8P	agree
+xterm 411 - F2	legacy	F2 mods=0	\eOQ	agree
+xterm 411 S F2	legacy	S-F2 mods=1	\e[1;2Q	agree
+xterm 411 C F2	legacy	C-F2 mods=4	\e[1;5Q	agree
+xterm 411 M F2	legacy	M-F2 mods=2	\e[1;3Q	agree
+xterm 411 CS F2	legacy	C-S-F2 mods=5	\e[1;6Q	agree
+xterm 411 CM F2	legacy	C-M-F2 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F2	legacy	M-S-F2 mods=3	\e[1;4Q	agree
+xterm 411 CMS F2	legacy	C-M-S-F2 mods=7	\e[1;8Q	agree
+xterm 411 - F3	legacy	F3 mods=0	\eOR	agree
+xterm 411 S F3	legacy	S-F3 mods=1	\e[1;2R	agree
+xterm 411 C F3	legacy	C-F3 mods=4	\e[1;5R	agree
+xterm 411 M F3	legacy	M-F3 mods=2	\e[1;3R	agree
+xterm 411 CS F3	legacy	C-S-F3 mods=5	\e[1;6R	agree
+xterm 411 CM F3	legacy	C-M-F3 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F3	legacy	M-S-F3 mods=3	\e[1;4R	agree
+xterm 411 CMS F3	legacy	C-M-S-F3 mods=7	\e[1;8R	agree
+xterm 411 - F4	legacy	F4 mods=0	\eOS	agree
+xterm 411 S F4	legacy	S-F4 mods=1	\e[1;2S	agree
+xterm 411 C F4	legacy	C-F4 mods=4	\e[1;5S	agree
+xterm 411 M F4	legacy	M-F4 mods=2	\e[1;3S	agree
+xterm 411 CS F4	legacy	C-S-F4 mods=5	\e[1;6S	agree
+xterm 411 CM F4	legacy	C-M-F4 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F4	legacy	M-S-F4 mods=3	\e[1;4S	agree
+xterm 411 CMS F4	legacy	C-M-S-F4 mods=7	\e[1;8S	agree
+xterm 411 - F5	legacy	F5 mods=0	\e[15~	agree
+xterm 411 S F5	legacy	S-F5 mods=1	\e[15;2~	agree
+xterm 411 C F5	legacy	C-F5 mods=4	\e[15;5~	agree
+xterm 411 M F5	legacy	M-F5 mods=2	\e[15;3~	agree
+xterm 411 CS F5	legacy	C-S-F5 mods=5	\e[15;6~	agree
+xterm 411 CM F5	legacy	C-M-F5 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F5	legacy	M-S-F5 mods=3	\e[15;4~	agree
+xterm 411 CMS F5	legacy	C-M-S-F5 mods=7	\e[15;8~	agree
+xterm 411 - F6	legacy	F6 mods=0	\e[17~	agree
+xterm 411 S F6	legacy	S-F6 mods=1	\e[17;2~	agree
+xterm 411 C F6	legacy	C-F6 mods=4	\e[17;5~	agree
+xterm 411 M F6	legacy	M-F6 mods=2	\e[17;3~	agree
+xterm 411 CS F6	legacy	C-S-F6 mods=5	\e[17;6~	agree
+xterm 411 CM F6	legacy	C-M-F6 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F6	legacy	M-S-F6 mods=3	\e[17;4~	agree
+xterm 411 CMS F6	legacy	C-M-S-F6 mods=7	\e[17;8~	agree
+xterm 411 - F7	legacy	F7 mods=0	\e[18~	agree
+xterm 411 S F7	legacy	S-F7 mods=1	\e[18;2~	agree
+xterm 411 C F7	legacy	C-F7 mods=4	\e[18;5~	agree
+xterm 411 M F7	legacy	M-F7 mods=2	\e[18;3~	agree
+xterm 411 CS F7	legacy	C-S-F7 mods=5	\e[18;6~	agree
+xterm 411 CM F7	legacy	C-M-F7 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F7	legacy	M-S-F7 mods=3	\e[18;4~	agree
+xterm 411 CMS F7	legacy	C-M-S-F7 mods=7	\e[18;8~	agree
+xterm 411 - F8	legacy	F8 mods=0	\e[19~	agree
+xterm 411 S F8	legacy	S-F8 mods=1	\e[19;2~	agree
+xterm 411 C F8	legacy	C-F8 mods=4	\e[19;5~	agree
+xterm 411 M F8	legacy	M-F8 mods=2	\e[19;3~	agree
+xterm 411 CS F8	legacy	C-S-F8 mods=5	\e[19;6~	agree
+xterm 411 CM F8	legacy	C-M-F8 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F8	legacy	M-S-F8 mods=3	\e[19;4~	agree
+xterm 411 CMS F8	legacy	C-M-S-F8 mods=7	\e[19;8~	agree
+xterm 411 - F9	legacy	F9 mods=0	\e[20~	agree
+xterm 411 S F9	legacy	S-F9 mods=1	\e[20;2~	agree
+xterm 411 C F9	legacy	C-F9 mods=4	\e[20;5~	agree
+xterm 411 M F9	legacy	M-F9 mods=2	\e[20;3~	agree
+xterm 411 CS F9	legacy	C-S-F9 mods=5	\e[20;6~	agree
+xterm 411 CM F9	legacy	C-M-F9 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F9	legacy	M-S-F9 mods=3	\e[20;4~	agree
+xterm 411 CMS F9	legacy	C-M-S-F9 mods=7	\e[20;8~	agree
+xterm 411 - F10	legacy	F10 mods=0	\e[21~	agree
+xterm 411 S F10	legacy	S-F10 mods=1	\e[21;2~	agree
+xterm 411 C F10	legacy	C-F10 mods=4	\e[21;5~	agree
+xterm 411 M F10	legacy	M-F10 mods=2	\e[21;3~	agree
+xterm 411 CS F10	legacy	C-S-F10 mods=5	\e[21;6~	agree
+xterm 411 CM F10	legacy	C-M-F10 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F10	legacy	M-S-F10 mods=3	\e[21;4~	agree
+xterm 411 CMS F10	legacy	C-M-S-F10 mods=7	\e[21;8~	agree
+xterm 411 - F11	legacy	F11 mods=0	\e[23~	agree
+xterm 411 S F11	legacy	S-F11 mods=1	\e[23;2~	agree
+xterm 411 C F11	legacy	C-F11 mods=4	\e[23;5~	agree
+xterm 411 M F11	legacy	M-F11 mods=2	\e[23;3~	agree
+xterm 411 CS F11	legacy	C-S-F11 mods=5	\e[23;6~	agree
+xterm 411 CM F11	legacy	C-M-F11 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F11	legacy	M-S-F11 mods=3	\e[23;4~	agree
+xterm 411 CMS F11	legacy	C-M-S-F11 mods=7	\e[23;8~	agree
+xterm 411 - F12	legacy	F12 mods=0	\e[24~	agree
+xterm 411 S F12	legacy	S-F12 mods=1	\e[24;2~	agree
+xterm 411 C F12	legacy	C-F12 mods=4	\e[24;5~	agree
+xterm 411 M F12	legacy	M-F12 mods=2	\e[24;3~	agree
+xterm 411 CS F12	legacy	C-S-F12 mods=5	\e[24;6~	agree
+xterm 411 CM F12	legacy	C-M-F12 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F12	legacy	M-S-F12 mods=3	\e[24;4~	agree
+xterm 411 CMS F12	legacy	C-M-S-F12 mods=7	\e[24;8~	agree
+xterm 411 - Up	legacy app	Up mods=0	\eOA	agree
+xterm 411 S Up	legacy app	S-Up mods=1	\e[1;2A	agree
+xterm 411 C Up	legacy app	C-Up mods=4	\e[1;5A	agree
+xterm 411 M Up	legacy app	M-Up mods=2	\e[1;3A	agree
+xterm 411 CS Up	legacy app	C-S-Up mods=5	\e[1;6A	agree
+xterm 411 CM Up	legacy app	C-M-Up mods=6	\e[1;7A	agree
+xterm 411 MS Up	legacy app	M-S-Up mods=3	\e[1;4A	agree
+xterm 411 CMS Up	legacy app	C-M-S-Up mods=7	\e[1;8A	agree
+xterm 411 - Down	legacy app	Down mods=0	\eOB	agree
+xterm 411 S Down	legacy app	S-Down mods=1	\e[1;2B	agree
+xterm 411 C Down	legacy app	C-Down mods=4	\e[1;5B	agree
+xterm 411 M Down	legacy app	M-Down mods=2	\e[1;3B	agree
+xterm 411 CS Down	legacy app	C-S-Down mods=5	\e[1;6B	agree
+xterm 411 CM Down	legacy app	C-M-Down mods=6	\e[1;7B	agree
+xterm 411 MS Down	legacy app	M-S-Down mods=3	\e[1;4B	agree
+xterm 411 CMS Down	legacy app	C-M-S-Down mods=7	\e[1;8B	agree
+xterm 411 - Left	legacy app	Left mods=0	\eOD	agree
+xterm 411 S Left	legacy app	S-Left mods=1	\e[1;2D	agree
+xterm 411 C Left	legacy app	C-Left mods=4	\e[1;5D	agree
+xterm 411 M Left	legacy app	M-Left mods=2	\e[1;3D	agree
+xterm 411 CS Left	legacy app	C-S-Left mods=5	\e[1;6D	agree
+xterm 411 CM Left	legacy app	C-M-Left mods=6	\e[1;7D	agree
+xterm 411 MS Left	legacy app	M-S-Left mods=3	\e[1;4D	agree
+xterm 411 CMS Left	legacy app	C-M-S-Left mods=7	\e[1;8D	agree
+xterm 411 - Right	legacy app	Right mods=0	\eOC	agree
+xterm 411 S Right	legacy app	S-Right mods=1	\e[1;2C	agree
+xterm 411 C Right	legacy app	C-Right mods=4	\e[1;5C	agree
+xterm 411 M Right	legacy app	M-Right mods=2	\e[1;3C	agree
+xterm 411 CS Right	legacy app	C-S-Right mods=5	\e[1;6C	agree
+xterm 411 CM Right	legacy app	C-M-Right mods=6	\e[1;7C	agree
+xterm 411 MS Right	legacy app	M-S-Right mods=3	\e[1;4C	agree
+xterm 411 CMS Right	legacy app	C-M-S-Right mods=7	\e[1;8C	agree
+xterm 411 - Home	legacy app	Home mods=0	\eOH	agree
+xterm 411 S Home	legacy app	S-Home mods=1	\e[1;2H	agree
+xterm 411 C Home	legacy app	C-Home mods=4	\e[1;5H	agree
+xterm 411 M Home	legacy app	M-Home mods=2	\e[1;3H	agree
+xterm 411 CS Home	legacy app	C-S-Home mods=5	\e[1;6H	agree
+xterm 411 CM Home	legacy app	C-M-Home mods=6	\e[1;7H	agree
+xterm 411 MS Home	legacy app	M-S-Home mods=3	\e[1;4H	agree
+xterm 411 CMS Home	legacy app	C-M-S-Home mods=7	\e[1;8H	agree
+xterm 411 - End	legacy app	End mods=0	\eOF	agree
+xterm 411 S End	legacy app	S-End mods=1	\e[1;2F	agree
+xterm 411 C End	legacy app	C-End mods=4	\e[1;5F	agree
+xterm 411 M End	legacy app	M-End mods=2	\e[1;3F	agree
+xterm 411 CS End	legacy app	C-S-End mods=5	\e[1;6F	agree
+xterm 411 CM End	legacy app	C-M-End mods=6	\e[1;7F	agree
+xterm 411 MS End	legacy app	M-S-End mods=3	\e[1;4F	agree
+xterm 411 CMS End	legacy app	C-M-S-End mods=7	\e[1;8F	agree
+xterm 411 - BackSpace	legacy bkm	BSpace code=127 mods=0	\x08	agree
+xterm 411 S BackSpace	legacy bkm	S-BSpace code=127 mods=1	\x08	agree
+xterm 411 C BackSpace	legacy bkm	C-BSpace code=127 mods=4	\x7f	agree
+xterm 411 M BackSpace	legacy bkm	M-BSpace code=127 mods=2	\e\x08	agree
+xterm 411 CS BackSpace	legacy bkm	C-S-BSpace code=127 mods=5	\x7f	agree
+xterm 411 CM BackSpace	legacy bkm	C-M-BSpace code=127 mods=6	\e\x7f	agree
+xterm 411 MS BackSpace	legacy bkm	M-S-BSpace code=127 mods=3	\e\x08	agree
+xterm 411 CMS BackSpace	legacy bkm	C-M-S-BSpace code=127 mods=7	\e\x7f	agree
+xterm 411 - a	legacy mok=1	a code=97 mods=0	a	agree
+xterm 411 S a	legacy mok=1	A code=97 mods=1	A	agree
+xterm 411 C a	legacy mok=1	C-a code=97 mods=4	\x01	agree
+xterm 411 M a	legacy mok=1	M-a code=97 mods=2	\ea	agree
+xterm 411 CS a	legacy mok=1	C-A code=97 mods=5	\x01	agree
+xterm 411 CM a	legacy mok=1	C-M-a code=97 mods=6	\e\x01	agree
+xterm 411 MS a	legacy mok=1	M-A code=97 mods=3	\eA	agree
+xterm 411 CMS a	legacy mok=1	C-M-A code=97 mods=7	\e\x01	agree
+xterm 411 - b	legacy mok=1	b code=98 mods=0	b	agree
+xterm 411 S b	legacy mok=1	B code=98 mods=1	B	agree
+xterm 411 C b	legacy mok=1	C-b code=98 mods=4	\x02	agree
+xterm 411 M b	legacy mok=1	M-b code=98 mods=2	\eb	agree
+xterm 411 CS b	legacy mok=1	C-B code=98 mods=5	\x02	agree
+xterm 411 CM b	legacy mok=1	C-M-b code=98 mods=6	\e\x02	agree
+xterm 411 MS b	legacy mok=1	M-B code=98 mods=3	\eB	agree
+xterm 411 CMS b	legacy mok=1	C-M-B code=98 mods=7	\e\x02	agree
+xterm 411 - c	legacy mok=1	c code=99 mods=0	c	agree
+xterm 411 S c	legacy mok=1	C code=99 mods=1	C	agree
+xterm 411 C c	legacy mok=1	C-c code=99 mods=4	\x03	agree
+xterm 411 M c	legacy mok=1	M-c code=99 mods=2	\ec	agree
+xterm 411 CS c	legacy mok=1	C-C code=99 mods=5	\x03	agree
+xterm 411 CM c	legacy mok=1	C-M-c code=99 mods=6	\e\x03	agree
+xterm 411 MS c	legacy mok=1	M-C code=99 mods=3	\eC	agree
+xterm 411 CMS c	legacy mok=1	C-M-C code=99 mods=7	\e\x03	agree
+xterm 411 - d	legacy mok=1	d code=100 mods=0	d	agree
+xterm 411 S d	legacy mok=1	D code=100 mods=1	D	agree
+xterm 411 C d	legacy mok=1	C-d code=100 mods=4	\x04	agree
+xterm 411 M d	legacy mok=1	M-d code=100 mods=2	\ed	agree
+xterm 411 CS d	legacy mok=1	C-D code=100 mods=5	\x04	agree
+xterm 411 CM d	legacy mok=1	C-M-d code=100 mods=6	\e\x04	agree
+xterm 411 MS d	legacy mok=1	M-D code=100 mods=3	\eD	agree
+xterm 411 CMS d	legacy mok=1	C-M-D code=100 mods=7	\e\x04	agree
+xterm 411 - e	legacy mok=1	e code=101 mods=0	e	agree
+xterm 411 S e	legacy mok=1	E code=101 mods=1	E	agree
+xterm 411 C e	legacy mok=1	C-e code=101 mods=4	\x05	agree
+xterm 411 M e	legacy mok=1	M-e code=101 mods=2	\ee	agree
+xterm 411 CS e	legacy mok=1	C-E code=101 mods=5	\x05	agree
+xterm 411 CM e	legacy mok=1	C-M-e code=101 mods=6	\e\x05	agree
+xterm 411 MS e	legacy mok=1	M-E code=101 mods=3	\eE	agree
+xterm 411 CMS e	legacy mok=1	C-M-E code=101 mods=7	\e\x05	agree
+xterm 411 - f	legacy mok=1	f code=102 mods=0	f	agree
+xterm 411 S f	legacy mok=1	F code=102 mods=1	F	agree
+xterm 411 C f	legacy mok=1	C-f code=102 mods=4	\x06	agree
+xterm 411 M f	legacy mok=1	M-f code=102 mods=2	\ef	agree
+xterm 411 CS f	legacy mok=1	C-F code=102 mods=5	\x06	agree
+xterm 411 CM f	legacy mok=1	C-M-f code=102 mods=6	\e\x06	agree
+xterm 411 MS f	legacy mok=1	M-F code=102 mods=3	\eF	agree
+xterm 411 CMS f	legacy mok=1	C-M-F code=102 mods=7	\e\x06	agree
+xterm 411 - g	legacy mok=1	g code=103 mods=0	g	agree
+xterm 411 S g	legacy mok=1	G code=103 mods=1	G	agree
+xterm 411 C g	legacy mok=1	C-g code=103 mods=4	\x07	agree
+xterm 411 M g	legacy mok=1	M-g code=103 mods=2	\eg	agree
+xterm 411 CS g	legacy mok=1	C-G code=103 mods=5	\x07	agree
+xterm 411 CM g	legacy mok=1	C-M-g code=103 mods=6	\e\x07	agree
+xterm 411 MS g	legacy mok=1	M-G code=103 mods=3	\eG	agree
+xterm 411 CMS g	legacy mok=1	C-M-G code=103 mods=7	\e\x07	agree
+xterm 411 - h	legacy mok=1	h code=104 mods=0	h	agree
+xterm 411 S h	legacy mok=1	H code=104 mods=1	H	agree
+xterm 411 C h	legacy mok=1	C-h code=104 mods=4	\x08	agree
+xterm 411 M h	legacy mok=1	M-h code=104 mods=2	\eh	agree
+xterm 411 CS h	legacy mok=1	C-H code=104 mods=5	\x08	agree
+xterm 411 CM h	legacy mok=1	C-M-h code=104 mods=6	\e\x08	agree
+xterm 411 MS h	legacy mok=1	M-H code=104 mods=3	\eH	agree
+xterm 411 CMS h	legacy mok=1	C-M-H code=104 mods=7	\e\x08	agree
+xterm 411 - i	legacy mok=1	i code=105 mods=0	i	agree
+xterm 411 S i	legacy mok=1	I code=105 mods=1	I	agree
+xterm 411 C i	legacy mok=1	C-i code=105 mods=4	\x09	agree
+xterm 411 M i	legacy mok=1	M-i code=105 mods=2	\ei	agree
+xterm 411 CS i	legacy mok=1	C-I code=105 mods=5	\x09	agree
+xterm 411 CM i	legacy mok=1	C-M-i code=105 mods=6	\e\x09	agree
+xterm 411 MS i	legacy mok=1	M-I code=105 mods=3	\eI	agree
+xterm 411 CMS i	legacy mok=1	C-M-I code=105 mods=7	\e\x09	agree
+xterm 411 - j	legacy mok=1	j code=106 mods=0	j	agree
+xterm 411 S j	legacy mok=1	J code=106 mods=1	J	agree
+xterm 411 C j	legacy mok=1	C-j code=106 mods=4	\x0a	agree
+xterm 411 M j	legacy mok=1	M-j code=106 mods=2	\ej	agree
+xterm 411 CS j	legacy mok=1	C-J code=106 mods=5	\x0a	agree
+xterm 411 CM j	legacy mok=1	C-M-j code=106 mods=6	\e\x0a	agree
+xterm 411 MS j	legacy mok=1	M-J code=106 mods=3	\eJ	agree
+xterm 411 CMS j	legacy mok=1	C-M-J code=106 mods=7	\e\x0a	agree
+xterm 411 - k	legacy mok=1	k code=107 mods=0	k	agree
+xterm 411 S k	legacy mok=1	K code=107 mods=1	K	agree
+xterm 411 C k	legacy mok=1	C-k code=107 mods=4	\x0b	agree
+xterm 411 M k	legacy mok=1	M-k code=107 mods=2	\ek	agree
+xterm 411 CS k	legacy mok=1	C-K code=107 mods=5	\x0b	agree
+xterm 411 CM k	legacy mok=1	C-M-k code=107 mods=6	\e\x0b	agree
+xterm 411 MS k	legacy mok=1	M-K code=107 mods=3	\eK	agree
+xterm 411 CMS k	legacy mok=1	C-M-K code=107 mods=7	\e\x0b	agree
+xterm 411 - l	legacy mok=1	l code=108 mods=0	l	agree
+xterm 411 S l	legacy mok=1	L code=108 mods=1	L	agree
+xterm 411 C l	legacy mok=1	C-l code=108 mods=4	\x0c	agree
+xterm 411 M l	legacy mok=1	M-l code=108 mods=2	\el	agree
+xterm 411 CS l	legacy mok=1	C-L code=108 mods=5	\x0c	agree
+xterm 411 CM l	legacy mok=1	C-M-l code=108 mods=6	\e\x0c	agree
+xterm 411 MS l	legacy mok=1	M-L code=108 mods=3	\eL	agree
+xterm 411 CMS l	legacy mok=1	C-M-L code=108 mods=7	\e\x0c	agree
+xterm 411 - m	legacy mok=1	m code=109 mods=0	m	agree
+xterm 411 S m	legacy mok=1	M code=109 mods=1	M	agree
+xterm 411 C m	legacy mok=1	C-m code=109 mods=4	\x0d	agree
+xterm 411 M m	legacy mok=1	M-m code=109 mods=2	\em	agree
+xterm 411 CS m	legacy mok=1	C-M code=109 mods=5	\x0d	agree
+xterm 411 CM m	legacy mok=1	C-M-m code=109 mods=6	\e\x0d	agree
+xterm 411 MS m	legacy mok=1	M-M code=109 mods=3	\eM	agree
+xterm 411 CMS m	legacy mok=1	C-M-M code=109 mods=7	\e\x0d	agree
+xterm 411 - n	legacy mok=1	n code=110 mods=0	n	agree
+xterm 411 S n	legacy mok=1	N code=110 mods=1	N	agree
+xterm 411 C n	legacy mok=1	C-n code=110 mods=4	\x0e	agree
+xterm 411 M n	legacy mok=1	M-n code=110 mods=2	\en	agree
+xterm 411 CS n	legacy mok=1	C-N code=110 mods=5	\x0e	agree
+xterm 411 CM n	legacy mok=1	C-M-n code=110 mods=6	\e\x0e	agree
+xterm 411 MS n	legacy mok=1	M-N code=110 mods=3	\eN	agree
+xterm 411 CMS n	legacy mok=1	C-M-N code=110 mods=7	\e\x0e	agree
+xterm 411 - o	legacy mok=1	o code=111 mods=0	o	agree
+xterm 411 S o	legacy mok=1	O code=111 mods=1	O	agree
+xterm 411 C o	legacy mok=1	C-o code=111 mods=4	\x0f	agree
+xterm 411 M o	legacy mok=1	M-o code=111 mods=2	\eo	agree
+xterm 411 CS o	legacy mok=1	C-O code=111 mods=5	\x0f	agree
+xterm 411 CM o	legacy mok=1	C-M-o code=111 mods=6	\e\x0f	agree
+xterm 411 MS o	legacy mok=1	M-O code=111 mods=3	\eO	agree
+xterm 411 CMS o	legacy mok=1	C-M-O code=111 mods=7	\e\x0f	agree
+xterm 411 - p	legacy mok=1	p code=112 mods=0	p	agree
+xterm 411 S p	legacy mok=1	P code=112 mods=1	P	agree
+xterm 411 C p	legacy mok=1	C-p code=112 mods=4	\x10	agree
+xterm 411 M p	legacy mok=1	M-p code=112 mods=2	\ep	agree
+xterm 411 CS p	legacy mok=1	C-P code=112 mods=5	\x10	agree
+xterm 411 CM p	legacy mok=1	C-M-p code=112 mods=6	\e\x10	agree
+xterm 411 MS p	legacy mok=1	M-P code=112 mods=3	\eP	agree
+xterm 411 CMS p	legacy mok=1	C-M-P code=112 mods=7	\e\x10	agree
+xterm 411 - q	legacy mok=1	q code=113 mods=0	q	agree
+xterm 411 S q	legacy mok=1	Q code=113 mods=1	Q	agree
+xterm 411 C q	legacy mok=1	C-q code=113 mods=4	\x11	agree
+xterm 411 M q	legacy mok=1	M-q code=113 mods=2	\eq	agree
+xterm 411 CS q	legacy mok=1	C-Q code=113 mods=5	\x11	agree
+xterm 411 CM q	legacy mok=1	C-M-q code=113 mods=6	\e\x11	agree
+xterm 411 MS q	legacy mok=1	M-Q code=113 mods=3	\eQ	agree
+xterm 411 CMS q	legacy mok=1	C-M-Q code=113 mods=7	\e\x11	agree
+xterm 411 - r	legacy mok=1	r code=114 mods=0	r	agree
+xterm 411 S r	legacy mok=1	R code=114 mods=1	R	agree
+xterm 411 C r	legacy mok=1	C-r code=114 mods=4	\x12	agree
+xterm 411 M r	legacy mok=1	M-r code=114 mods=2	\er	agree
+xterm 411 CS r	legacy mok=1	C-R code=114 mods=5	\x12	agree
+xterm 411 CM r	legacy mok=1	C-M-r code=114 mods=6	\e\x12	agree
+xterm 411 MS r	legacy mok=1	M-R code=114 mods=3	\eR	agree
+xterm 411 CMS r	legacy mok=1	C-M-R code=114 mods=7	\e\x12	agree
+xterm 411 - s	legacy mok=1	s code=115 mods=0	s	agree
+xterm 411 S s	legacy mok=1	S code=115 mods=1	S	agree
+xterm 411 C s	legacy mok=1	C-s code=115 mods=4	\x13	agree
+xterm 411 M s	legacy mok=1	M-s code=115 mods=2	\es	agree
+xterm 411 CS s	legacy mok=1	C-S code=115 mods=5	\x13	agree
+xterm 411 CM s	legacy mok=1	C-M-s code=115 mods=6	\e\x13	agree
+xterm 411 MS s	legacy mok=1	M-S code=115 mods=3	\eS	agree
+xterm 411 CMS s	legacy mok=1	C-M-S code=115 mods=7	\e\x13	agree
+xterm 411 - t	legacy mok=1	t code=116 mods=0	t	agree
+xterm 411 S t	legacy mok=1	T code=116 mods=1	T	agree
+xterm 411 C t	legacy mok=1	C-t code=116 mods=4	\x14	agree
+xterm 411 M t	legacy mok=1	M-t code=116 mods=2	\et	agree
+xterm 411 CS t	legacy mok=1	C-T code=116 mods=5	\x14	agree
+xterm 411 CM t	legacy mok=1	C-M-t code=116 mods=6	\e\x14	agree
+xterm 411 MS t	legacy mok=1	M-T code=116 mods=3	\eT	agree
+xterm 411 CMS t	legacy mok=1	C-M-T code=116 mods=7	\e\x14	agree
+xterm 411 - u	legacy mok=1	u code=117 mods=0	u	agree
+xterm 411 S u	legacy mok=1	U code=117 mods=1	U	agree
+xterm 411 C u	legacy mok=1	C-u code=117 mods=4	\x15	agree
+xterm 411 M u	legacy mok=1	M-u code=117 mods=2	\eu	agree
+xterm 411 CS u	legacy mok=1	C-U code=117 mods=5	\x15	agree
+xterm 411 CM u	legacy mok=1	C-M-u code=117 mods=6	\e\x15	agree
+xterm 411 MS u	legacy mok=1	M-U code=117 mods=3	\eU	agree
+xterm 411 CMS u	legacy mok=1	C-M-U code=117 mods=7	\e\x15	agree
+xterm 411 - v	legacy mok=1	v code=118 mods=0	v	agree
+xterm 411 S v	legacy mok=1	V code=118 mods=1	V	agree
+xterm 411 C v	legacy mok=1	C-v code=118 mods=4	\x16	agree
+xterm 411 M v	legacy mok=1	M-v code=118 mods=2	\ev	agree
+xterm 411 CS v	legacy mok=1	C-V code=118 mods=5	\x16	agree
+xterm 411 CM v	legacy mok=1	C-M-v code=118 mods=6	\e\x16	agree
+xterm 411 MS v	legacy mok=1	M-V code=118 mods=3	\eV	agree
+xterm 411 CMS v	legacy mok=1	C-M-V code=118 mods=7	\e\x16	agree
+xterm 411 - w	legacy mok=1	w code=119 mods=0	w	agree
+xterm 411 S w	legacy mok=1	W code=119 mods=1	W	agree
+xterm 411 C w	legacy mok=1	C-w code=119 mods=4	\x17	agree
+xterm 411 M w	legacy mok=1	M-w code=119 mods=2	\ew	agree
+xterm 411 CS w	legacy mok=1	C-W code=119 mods=5	\x17	agree
+xterm 411 CM w	legacy mok=1	C-M-w code=119 mods=6	\e\x17	agree
+xterm 411 MS w	legacy mok=1	M-W code=119 mods=3	\eW	agree
+xterm 411 CMS w	legacy mok=1	C-M-W code=119 mods=7	\e\x17	agree
+xterm 411 - x	legacy mok=1	x code=120 mods=0	x	agree
+xterm 411 S x	legacy mok=1	X code=120 mods=1	X	agree
+xterm 411 C x	legacy mok=1	C-x code=120 mods=4	\x18	agree
+xterm 411 M x	legacy mok=1	M-x code=120 mods=2	\ex	agree
+xterm 411 CS x	legacy mok=1	C-X code=120 mods=5	\x18	agree
+xterm 411 CM x	legacy mok=1	C-M-x code=120 mods=6	\e\x18	agree
+xterm 411 MS x	legacy mok=1	M-X code=120 mods=3	\eX	agree
+xterm 411 CMS x	legacy mok=1	C-M-X code=120 mods=7	\e\x18	agree
+xterm 411 - y	legacy mok=1	y code=121 mods=0	y	agree
+xterm 411 S y	legacy mok=1	Y code=121 mods=1	Y	agree
+xterm 411 C y	legacy mok=1	C-y code=121 mods=4	\x19	agree
+xterm 411 M y	legacy mok=1	M-y code=121 mods=2	\ey	agree
+xterm 411 CS y	legacy mok=1	C-Y code=121 mods=5	\x19	agree
+xterm 411 CM y	legacy mok=1	C-M-y code=121 mods=6	\e\x19	agree
+xterm 411 MS y	legacy mok=1	M-Y code=121 mods=3	\eY	agree
+xterm 411 CMS y	legacy mok=1	C-M-Y code=121 mods=7	\e\x19	agree
+xterm 411 - z	legacy mok=1	z code=122 mods=0	z	agree
+xterm 411 S z	legacy mok=1	Z code=122 mods=1	Z	agree
+xterm 411 C z	legacy mok=1	C-z code=122 mods=4	\x1a	agree
+xterm 411 M z	legacy mok=1	M-z code=122 mods=2	\ez	agree
+xterm 411 CS z	legacy mok=1	C-Z code=122 mods=5	\x1a	agree
+xterm 411 CM z	legacy mok=1	C-M-z code=122 mods=6	\e\x1a	agree
+xterm 411 MS z	legacy mok=1	M-Z code=122 mods=3	\eZ	agree
+xterm 411 CMS z	legacy mok=1	C-M-Z code=122 mods=7	\e\x1a	agree
+xterm 411 - 0	legacy mok=1	0 code=48 mods=0	0	agree
+xterm 411 S 0	legacy mok=1	) code=48 mods=1	)	agree
+xterm 411 C 0	legacy mok=1	C-0 code=48 mods=4	\e[27;5;48~	agree
+xterm 411 M 0	legacy mok=1	M-0 code=48 mods=2	\e0	agree
+xterm 411 CS 0	legacy mok=1	C-) code=48 mods=5	\e[27;6;41~	agree
+xterm 411 CM 0	legacy mok=1	C-M-0 code=48 mods=6	\e[27;7;48~	agree
+xterm 411 MS 0	legacy mok=1	M-) code=48 mods=3	\e)	agree
+xterm 411 CMS 0	legacy mok=1	C-M-) code=48 mods=7	\e[27;8;41~	agree
+xterm 411 - 1	legacy mok=1	1 code=49 mods=0	1	agree
+xterm 411 S 1	legacy mok=1	! code=49 mods=1	!	agree
+xterm 411 C 1	legacy mok=1	C-1 code=49 mods=4	\e[27;5;49~	agree
+xterm 411 M 1	legacy mok=1	M-1 code=49 mods=2	\e1	agree
+xterm 411 CS 1	legacy mok=1	C-! code=49 mods=5	\e[27;6;33~	agree
+xterm 411 CM 1	legacy mok=1	C-M-1 code=49 mods=6	\e[27;7;49~	agree
+xterm 411 MS 1	legacy mok=1	M-! code=49 mods=3	\e!	agree
+xterm 411 CMS 1	legacy mok=1	C-M-! code=49 mods=7	\e[27;8;33~	agree
+xterm 411 - 2	legacy mok=1	2 code=50 mods=0	2	agree
+xterm 411 S 2	legacy mok=1	@ code=50 mods=1	@	agree
+xterm 411 C 2	legacy mok=1	C-2 code=50 mods=4	\x00	agree
+xterm 411 M 2	legacy mok=1	M-2 code=50 mods=2	\e2	agree
+xterm 411 CS 2	legacy mok=1	C-@ code=50 mods=5	\x00	agree
+xterm 411 CM 2	legacy mok=1	C-M-2 code=50 mods=6	\e[27;7;50~	agree
+xterm 411 MS 2	legacy mok=1	M-@ code=50 mods=3	\e@	agree
+xterm 411 CMS 2	legacy mok=1	C-M-@ code=50 mods=7	\e\x00	agree
+xterm 411 - 3	legacy mok=1	3 code=51 mods=0	3	agree
+xterm 411 S 3	legacy mok=1	# code=51 mods=1	#	agree
+xterm 411 C 3	legacy mok=1	C-3 code=51 mods=4	\e	agree
+xterm 411 M 3	legacy mok=1	M-3 code=51 mods=2	\e3	agree
+xterm 411 CS 3	legacy mok=1	C-# code=51 mods=5	\e[27;6;35~	agree
+xterm 411 CM 3	legacy mok=1	C-M-3 code=51 mods=6	\e[27;7;51~	agree
+xterm 411 MS 3	legacy mok=1	M-# code=51 mods=3	\e#	agree
+xterm 411 CMS 3	legacy mok=1	C-M-# code=51 mods=7	\e[27;8;35~	agree
+xterm 411 - 4	legacy mok=1	4 code=52 mods=0	4	agree
+xterm 411 S 4	legacy mok=1	$ code=52 mods=1	$	agree
+xterm 411 C 4	legacy mok=1	C-4 code=52 mods=4	\x1c	agree
+xterm 411 M 4	legacy mok=1	M-4 code=52 mods=2	\e4	agree
+xterm 411 CS 4	legacy mok=1	C-$ code=52 mods=5	\e[27;6;36~	agree
+xterm 411 CM 4	legacy mok=1	C-M-4 code=52 mods=6	\e[27;7;52~	agree
+xterm 411 MS 4	legacy mok=1	M-$ code=52 mods=3	\e$	agree
+xterm 411 CMS 4	legacy mok=1	C-M-$ code=52 mods=7	\e[27;8;36~	agree
+xterm 411 - 5	legacy mok=1	5 code=53 mods=0	5	agree
+xterm 411 S 5	legacy mok=1	% code=53 mods=1	%	agree
+xterm 411 C 5	legacy mok=1	C-5 code=53 mods=4	\x1d	agree
+xterm 411 M 5	legacy mok=1	M-5 code=53 mods=2	\e5	agree
+xterm 411 CS 5	legacy mok=1	C-% code=53 mods=5	\e[27;6;37~	agree
+xterm 411 CM 5	legacy mok=1	C-M-5 code=53 mods=6	\e[27;7;53~	agree
+xterm 411 MS 5	legacy mok=1	M-% code=53 mods=3	\e%	agree
+xterm 411 CMS 5	legacy mok=1	C-M-% code=53 mods=7	\e[27;8;37~	agree
+xterm 411 - 6	legacy mok=1	6 code=54 mods=0	6	agree
+xterm 411 S 6	legacy mok=1	^ code=54 mods=1	^	agree
+xterm 411 C 6	legacy mok=1	C-6 code=54 mods=4	\x1e	agree
+xterm 411 M 6	legacy mok=1	M-6 code=54 mods=2	\e6	agree
+xterm 411 CS 6	legacy mok=1	C-^ code=54 mods=5	\x1e	agree
+xterm 411 CM 6	legacy mok=1	C-M-6 code=54 mods=6	\e[27;7;54~	agree
+xterm 411 MS 6	legacy mok=1	M-^ code=54 mods=3	\e^	agree
+xterm 411 CMS 6	legacy mok=1	C-M-^ code=54 mods=7	\e\x1e	agree
+xterm 411 - 7	legacy mok=1	7 code=55 mods=0	7	agree
+xterm 411 S 7	legacy mok=1	& code=55 mods=1	&	agree
+xterm 411 C 7	legacy mok=1	C-7 code=55 mods=4	\x1f	agree
+xterm 411 M 7	legacy mok=1	M-7 code=55 mods=2	\e7	agree
+xterm 411 CS 7	legacy mok=1	C-& code=55 mods=5	\e[27;6;38~	agree
+xterm 411 CM 7	legacy mok=1	C-M-7 code=55 mods=6	\e[27;7;55~	agree
+xterm 411 MS 7	legacy mok=1	M-& code=55 mods=3	\e&	agree
+xterm 411 CMS 7	legacy mok=1	C-M-& code=55 mods=7	\e[27;8;38~	agree
+xterm 411 - 8	legacy mok=1	8 code=56 mods=0	8	agree
+xterm 411 S 8	legacy mok=1	* code=56 mods=1	*	agree
+xterm 411 C 8	legacy mok=1	C-8 code=56 mods=4	\x7f	agree
+xterm 411 M 8	legacy mok=1	M-8 code=56 mods=2	\e8	agree
+xterm 411 CS 8	legacy mok=1	C-* code=56 mods=5	\e[27;6;42~	agree
+xterm 411 CM 8	legacy mok=1	C-M-8 code=56 mods=6	\e[27;7;56~	agree
+xterm 411 MS 8	legacy mok=1	M-* code=56 mods=3	\e*	agree
+xterm 411 CMS 8	legacy mok=1	C-M-* code=56 mods=7	\e[27;8;42~	agree
+xterm 411 - 9	legacy mok=1	9 code=57 mods=0	9	agree
+xterm 411 S 9	legacy mok=1	( code=57 mods=1	(	agree
+xterm 411 C 9	legacy mok=1	C-9 code=57 mods=4	\e[27;5;57~	agree
+xterm 411 M 9	legacy mok=1	M-9 code=57 mods=2	\e9	agree
+xterm 411 CS 9	legacy mok=1	C-( code=57 mods=5	\e[27;6;40~	agree
+xterm 411 CM 9	legacy mok=1	C-M-9 code=57 mods=6	\e[27;7;57~	agree
+xterm 411 MS 9	legacy mok=1	M-( code=57 mods=3	\e(	agree
+xterm 411 CMS 9	legacy mok=1	C-M-( code=57 mods=7	\e[27;8;40~	agree
+xterm 411 - grave	legacy mok=1	` code=96 mods=0	`	agree
+xterm 411 S grave	legacy mok=1	~ code=96 mods=1	~	agree
+xterm 411 C grave	legacy mok=1	C-` code=96 mods=4	\x00	agree
+xterm 411 M grave	legacy mok=1	M-` code=96 mods=2	\e`	agree
+xterm 411 CS grave	legacy mok=1	C-~ code=96 mods=5	\x1e	agree
+xterm 411 CM grave	legacy mok=1	C-M-` code=96 mods=6	\e\x00	agree
+xterm 411 MS grave	legacy mok=1	M-~ code=96 mods=3	\e~	agree
+xterm 411 CMS grave	legacy mok=1	C-M-~ code=96 mods=7	\e\x1e	agree
+xterm 411 - minus	legacy mok=1	- code=45 mods=0	-	agree
+xterm 411 S minus	legacy mok=1	_ code=45 mods=1	_	agree
+xterm 411 C minus	legacy mok=1	C-- code=45 mods=4	\e[27;5;45~	agree
+xterm 411 M minus	legacy mok=1	M-- code=45 mods=2	\e-	agree
+xterm 411 CS minus	legacy mok=1	C-_ code=45 mods=5	\x1f	agree
+xterm 411 CM minus	legacy mok=1	C-M-- code=45 mods=6	\e[27;7;45~	agree
+xterm 411 MS minus	legacy mok=1	M-_ code=45 mods=3	\e_	agree
+xterm 411 CMS minus	legacy mok=1	C-M-_ code=45 mods=7	\e\x1f	agree
+xterm 411 - equal	legacy mok=1	= code=61 mods=0	=	agree
+xterm 411 S equal	legacy mok=1	+ code=61 mods=1	+	agree
+xterm 411 C equal	legacy mok=1	C-= code=61 mods=4	\e[27;5;61~	agree
+xterm 411 M equal	legacy mok=1	M-= code=61 mods=2	\e=	agree
+xterm 411 CS equal	legacy mok=1	C-+ code=61 mods=5	\e[27;6;43~	agree
+xterm 411 CM equal	legacy mok=1	C-M-= code=61 mods=6	\e[27;7;61~	agree
+xterm 411 MS equal	legacy mok=1	M-+ code=61 mods=3	\e+	agree
+xterm 411 CMS equal	legacy mok=1	C-M-+ code=61 mods=7	\e[27;8;43~	agree
+xterm 411 - bracketleft	legacy mok=1	[ code=91 mods=0	[	agree
+xterm 411 S bracketleft	legacy mok=1	{ code=91 mods=1	{	agree
+xterm 411 C bracketleft	legacy mok=1	C-[ code=91 mods=4	\e	agree
+xterm 411 M bracketleft	legacy mok=1	M-[ code=91 mods=2	\e[	agree
+xterm 411 CS bracketleft	legacy mok=1	C-{ code=91 mods=5	\e	agree
+xterm 411 CM bracketleft	legacy mok=1	C-M-[ code=91 mods=6	\e\e	agree
+xterm 411 MS bracketleft	legacy mok=1	M-{ code=91 mods=3	\e{	agree
+xterm 411 CMS bracketleft	legacy mok=1	C-M-{ code=91 mods=7	\e\e	agree
+xterm 411 - bracketright	legacy mok=1	] code=93 mods=0	]	agree
+xterm 411 S bracketright	legacy mok=1	} code=93 mods=1	}	agree
+xterm 411 C bracketright	legacy mok=1	C-] code=93 mods=4	\x1d	agree
+xterm 411 M bracketright	legacy mok=1	M-] code=93 mods=2	\e]	agree
+xterm 411 CS bracketright	legacy mok=1	C-} code=93 mods=5	\x1d	agree
+xterm 411 CM bracketright	legacy mok=1	C-M-] code=93 mods=6	\e\x1d	agree
+xterm 411 MS bracketright	legacy mok=1	M-} code=93 mods=3	\e}	agree
+xterm 411 CMS bracketright	legacy mok=1	C-M-} code=93 mods=7	\e\x1d	agree
+xterm 411 - backslash	legacy mok=1	\ code=92 mods=0	\\	agree
+xterm 411 S backslash	legacy mok=1	| code=92 mods=1	|	agree
+xterm 411 C backslash	legacy mok=1	C-\ code=92 mods=4	\x1c	agree
+xterm 411 M backslash	legacy mok=1	M-\ code=92 mods=2	\e\\	agree
+xterm 411 CS backslash	legacy mok=1	C-| code=92 mods=5	\x1c	agree
+xterm 411 CM backslash	legacy mok=1	C-M-\ code=92 mods=6	\e\x1c	agree
+xterm 411 MS backslash	legacy mok=1	M-| code=92 mods=3	\e|	agree
+xterm 411 CMS backslash	legacy mok=1	C-M-| code=92 mods=7	\e\x1c	agree
+xterm 411 - semicolon	legacy mok=1	; code=59 mods=0	;	agree
+xterm 411 S semicolon	legacy mok=1	: code=59 mods=1	:	agree
+xterm 411 C semicolon	legacy mok=1	C-; code=59 mods=4	\e[27;5;59~	agree
+xterm 411 M semicolon	legacy mok=1	M-; code=59 mods=2	\e;	agree
+xterm 411 CS semicolon	legacy mok=1	C-: code=59 mods=5	\e[27;6;58~	agree
+xterm 411 CM semicolon	legacy mok=1	C-M-; code=59 mods=6	\e[27;7;59~	agree
+xterm 411 MS semicolon	legacy mok=1	M-: code=59 mods=3	\e:	agree
+xterm 411 CMS semicolon	legacy mok=1	C-M-: code=59 mods=7	\e[27;8;58~	agree
+xterm 411 - apostrophe	legacy mok=1	' code=39 mods=0	'	agree
+xterm 411 S apostrophe	legacy mok=1	" code=39 mods=1	"	agree
+xterm 411 C apostrophe	legacy mok=1	C-' code=39 mods=4	\e[27;5;39~	agree
+xterm 411 M apostrophe	legacy mok=1	M-' code=39 mods=2	\e'	agree
+xterm 411 CS apostrophe	legacy mok=1	C-" code=39 mods=5	\e[27;6;34~	agree
+xterm 411 CM apostrophe	legacy mok=1	C-M-' code=39 mods=6	\e[27;7;39~	agree
+xterm 411 MS apostrophe	legacy mok=1	M-" code=39 mods=3	\e"	agree
+xterm 411 CMS apostrophe	legacy mok=1	C-M-" code=39 mods=7	\e[27;8;34~	agree
+xterm 411 - comma	legacy mok=1	, code=44 mods=0	,	agree
+xterm 411 S comma	legacy mok=1	< code=44 mods=1	<	agree
+xterm 411 C comma	legacy mok=1	C-, code=44 mods=4	\e[27;5;44~	agree
+xterm 411 M comma	legacy mok=1	M-, code=44 mods=2	\e,	agree
+xterm 411 CS comma	legacy mok=1	C-< code=44 mods=5	\e[27;6;60~	agree
+xterm 411 CM comma	legacy mok=1	C-M-, code=44 mods=6	\e[27;7;44~	agree
+xterm 411 MS comma	legacy mok=1	M-< code=44 mods=3	\e<	agree
+xterm 411 CMS comma	legacy mok=1	C-M-< code=44 mods=7	\e[27;8;60~	agree
+xterm 411 - period	legacy mok=1	. code=46 mods=0	.	agree
+xterm 411 S period	legacy mok=1	> code=46 mods=1	>	agree
+xterm 411 C period	legacy mok=1	C-. code=46 mods=4	\e[27;5;46~	agree
+xterm 411 M period	legacy mok=1	M-. code=46 mods=2	\e.	agree
+xterm 411 CS period	legacy mok=1	C-> code=46 mods=5	\e[27;6;62~	agree
+xterm 411 CM period	legacy mok=1	C-M-. code=46 mods=6	\e[27;7;46~	agree
+xterm 411 MS period	legacy mok=1	M-> code=46 mods=3	\e>	agree
+xterm 411 CMS period	legacy mok=1	C-M-> code=46 mods=7	\e[27;8;62~	agree
+xterm 411 - slash	legacy mok=1	/ code=47 mods=0	/	agree
+xterm 411 S slash	legacy mok=1	? code=47 mods=1	?	agree
+xterm 411 C slash	legacy mok=1	C-/ code=47 mods=4	\x1f	agree
+xterm 411 M slash	legacy mok=1	M-/ code=47 mods=2	\e/	agree
+xterm 411 CS slash	legacy mok=1	C-? code=47 mods=5	\e[27;6;63~	agree
+xterm 411 CM slash	legacy mok=1	C-M-/ code=47 mods=6	\e[27;7;47~	agree
+xterm 411 MS slash	legacy mok=1	M-? code=47 mods=3	\e?	agree
+xterm 411 CMS slash	legacy mok=1	C-M-? code=47 mods=7	\e[27;8;63~	agree
+xterm 411 - space	legacy mok=1	Space code=32 mods=0	 	agree
+xterm 411 S space	legacy mok=1	Space code=32 mods=1	 	agree
+xterm 411 C space	legacy mok=1	C-Space code=32 mods=4	\x00	agree
+xterm 411 M space	legacy mok=1	M-Space code=32 mods=2	\e 	agree
+xterm 411 CS space	legacy mok=1	C-Space code=32 mods=5	\x00	agree
+xterm 411 CM space	legacy mok=1	C-M-Space code=32 mods=6	\e[27;7;32~	agree
+xterm 411 MS space	legacy mok=1	M-Space code=32 mods=3	\e 	agree
+xterm 411 CMS space	legacy mok=1	C-M-Space code=32 mods=7	\e[27;8;32~	agree
+xterm 411 - Return	legacy mok=1	Enter code=13 mods=0	\x0d	agree
+xterm 411 S Return	legacy mok=1	S-Enter code=13 mods=1	\e[27;2;13~	agree
+xterm 411 C Return	legacy mok=1	C-Enter code=13 mods=4	\e[27;5;13~	agree
+xterm 411 M Return	legacy mok=1	M-Enter code=13 mods=2	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CS Return	legacy mok=1	C-S-Enter code=13 mods=5	\e[27;6;13~	agree
+xterm 411 CM Return	legacy mok=1	C-M-Enter code=13 mods=6	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 MS Return	legacy mok=1	M-S-Enter code=13 mods=3	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CMS Return	legacy mok=1	C-M-S-Enter code=13 mods=7	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 - Tab	legacy mok=1	Tab code=9 mods=0	\x09	agree
+xterm 411 S Tab	legacy mok=1	S-Tab code=9 mods=1	\e[Z	agree
+xterm 411 C Tab	legacy mok=1	C-Tab code=9 mods=4	\e[27;5;9~	agree
+xterm 411 M Tab	legacy mok=1	M-Tab code=9 mods=2	\e\x09	agree
+xterm 411 CS Tab	legacy mok=1	C-S-Tab code=9 mods=5	\e[Z	agree
+xterm 411 CM Tab	legacy mok=1	C-M-Tab code=9 mods=6	\e\x09	agree
+xterm 411 MS Tab	legacy mok=1	M-S-Tab code=9 mods=3	\e[Z	agree
+xterm 411 CMS Tab	legacy mok=1	C-M-S-Tab code=9 mods=7	\e[Z	agree
+xterm 411 - Escape	legacy mok=1	Escape code=27 mods=0	\e	agree
+xterm 411 S Escape	legacy mok=1	S-Escape code=27 mods=1	\e	agree
+xterm 411 C Escape	legacy mok=1	C-Escape code=27 mods=4	\e	agree
+xterm 411 M Escape	legacy mok=1	M-Escape code=27 mods=2	\e\e	agree
+xterm 411 CS Escape	legacy mok=1	C-S-Escape code=27 mods=5	\e	agree
+xterm 411 CM Escape	legacy mok=1	C-M-Escape code=27 mods=6	\e[27;7;27~	agree
+xterm 411 MS Escape	legacy mok=1	M-S-Escape code=27 mods=3	\e[27;4;27~	agree
+xterm 411 CMS Escape	legacy mok=1	C-M-S-Escape code=27 mods=7	\e[27;8;27~	agree
+xterm 411 - BackSpace	legacy mok=1	BSpace code=127 mods=0	\x7f	agree
+xterm 411 S BackSpace	legacy mok=1	S-BSpace code=127 mods=1	\x7f	agree
+xterm 411 C BackSpace	legacy mok=1	C-BSpace code=127 mods=4	\x08	agree
+xterm 411 M BackSpace	legacy mok=1	M-BSpace code=127 mods=2	\e\x7f	agree
+xterm 411 CS BackSpace	legacy mok=1	C-S-BSpace code=127 mods=5	\x08	agree
+xterm 411 CM BackSpace	legacy mok=1	C-M-BSpace code=127 mods=6	\e\x08	agree
+xterm 411 MS BackSpace	legacy mok=1	M-S-BSpace code=127 mods=3	\e\x7f	agree
+xterm 411 CMS BackSpace	legacy mok=1	C-M-S-BSpace code=127 mods=7	\e\x08	agree
+xterm 411 - Delete	legacy mok=1	Delete mods=0	\e[3~	agree
+xterm 411 S Delete	legacy mok=1	S-Delete mods=1	\e[3;2~	agree
+xterm 411 C Delete	legacy mok=1	C-Delete mods=4	\e[3;5~	agree
+xterm 411 M Delete	legacy mok=1	M-Delete mods=2	\e[3;3~	agree
+xterm 411 CS Delete	legacy mok=1	C-S-Delete mods=5	\e[3;6~	agree
+xterm 411 CM Delete	legacy mok=1	C-M-Delete mods=6	\e[3;7~	agree
+xterm 411 MS Delete	legacy mok=1	M-S-Delete mods=3	\e[3;4~	agree
+xterm 411 CMS Delete	legacy mok=1	C-M-S-Delete mods=7	\e[3;8~	agree
+xterm 411 - Insert	legacy mok=1	Insert mods=0	\e[2~	agree
+xterm 411 S Insert	legacy mok=1	S-Insert mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Insert	legacy mok=1	C-Insert mods=4	\e[2;5~	agree
+xterm 411 M Insert	legacy mok=1	M-Insert mods=2	\e[2;3~	agree
+xterm 411 CS Insert	legacy mok=1	C-S-Insert mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Insert	legacy mok=1	C-M-Insert mods=6	\e[2;7~	agree
+xterm 411 MS Insert	legacy mok=1	M-S-Insert mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Insert	legacy mok=1	C-M-S-Insert mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Up	legacy mok=1	Up mods=0	\e[A	agree
+xterm 411 S Up	legacy mok=1	S-Up mods=1	\e[1;2A	agree
+xterm 411 C Up	legacy mok=1	C-Up mods=4	\e[1;5A	agree
+xterm 411 M Up	legacy mok=1	M-Up mods=2	\e[1;3A	agree
+xterm 411 CS Up	legacy mok=1	C-S-Up mods=5	\e[1;6A	agree
+xterm 411 CM Up	legacy mok=1	C-M-Up mods=6	\e[1;7A	agree
+xterm 411 MS Up	legacy mok=1	M-S-Up mods=3	\e[1;4A	agree
+xterm 411 CMS Up	legacy mok=1	C-M-S-Up mods=7	\e[1;8A	agree
+xterm 411 - Down	legacy mok=1	Down mods=0	\e[B	agree
+xterm 411 S Down	legacy mok=1	S-Down mods=1	\e[1;2B	agree
+xterm 411 C Down	legacy mok=1	C-Down mods=4	\e[1;5B	agree
+xterm 411 M Down	legacy mok=1	M-Down mods=2	\e[1;3B	agree
+xterm 411 CS Down	legacy mok=1	C-S-Down mods=5	\e[1;6B	agree
+xterm 411 CM Down	legacy mok=1	C-M-Down mods=6	\e[1;7B	agree
+xterm 411 MS Down	legacy mok=1	M-S-Down mods=3	\e[1;4B	agree
+xterm 411 CMS Down	legacy mok=1	C-M-S-Down mods=7	\e[1;8B	agree
+xterm 411 - Left	legacy mok=1	Left mods=0	\e[D	agree
+xterm 411 S Left	legacy mok=1	S-Left mods=1	\e[1;2D	agree
+xterm 411 C Left	legacy mok=1	C-Left mods=4	\e[1;5D	agree
+xterm 411 M Left	legacy mok=1	M-Left mods=2	\e[1;3D	agree
+xterm 411 CS Left	legacy mok=1	C-S-Left mods=5	\e[1;6D	agree
+xterm 411 CM Left	legacy mok=1	C-M-Left mods=6	\e[1;7D	agree
+xterm 411 MS Left	legacy mok=1	M-S-Left mods=3	\e[1;4D	agree
+xterm 411 CMS Left	legacy mok=1	C-M-S-Left mods=7	\e[1;8D	agree
+xterm 411 - Right	legacy mok=1	Right mods=0	\e[C	agree
+xterm 411 S Right	legacy mok=1	S-Right mods=1	\e[1;2C	agree
+xterm 411 C Right	legacy mok=1	C-Right mods=4	\e[1;5C	agree
+xterm 411 M Right	legacy mok=1	M-Right mods=2	\e[1;3C	agree
+xterm 411 CS Right	legacy mok=1	C-S-Right mods=5	\e[1;6C	agree
+xterm 411 CM Right	legacy mok=1	C-M-Right mods=6	\e[1;7C	agree
+xterm 411 MS Right	legacy mok=1	M-S-Right mods=3	\e[1;4C	agree
+xterm 411 CMS Right	legacy mok=1	C-M-S-Right mods=7	\e[1;8C	agree
+xterm 411 - Home	legacy mok=1	Home mods=0	\e[H	agree
+xterm 411 S Home	legacy mok=1	S-Home mods=1	\e[1;2H	agree
+xterm 411 C Home	legacy mok=1	C-Home mods=4	\e[1;5H	agree
+xterm 411 M Home	legacy mok=1	M-Home mods=2	\e[1;3H	agree
+xterm 411 CS Home	legacy mok=1	C-S-Home mods=5	\e[1;6H	agree
+xterm 411 CM Home	legacy mok=1	C-M-Home mods=6	\e[1;7H	agree
+xterm 411 MS Home	legacy mok=1	M-S-Home mods=3	\e[1;4H	agree
+xterm 411 CMS Home	legacy mok=1	C-M-S-Home mods=7	\e[1;8H	agree
+xterm 411 - End	legacy mok=1	End mods=0	\e[F	agree
+xterm 411 S End	legacy mok=1	S-End mods=1	\e[1;2F	agree
+xterm 411 C End	legacy mok=1	C-End mods=4	\e[1;5F	agree
+xterm 411 M End	legacy mok=1	M-End mods=2	\e[1;3F	agree
+xterm 411 CS End	legacy mok=1	C-S-End mods=5	\e[1;6F	agree
+xterm 411 CM End	legacy mok=1	C-M-End mods=6	\e[1;7F	agree
+xterm 411 MS End	legacy mok=1	M-S-End mods=3	\e[1;4F	agree
+xterm 411 CMS End	legacy mok=1	C-M-S-End mods=7	\e[1;8F	agree
+xterm 411 - Prior	legacy mok=1	PageUp mods=0	\e[5~	agree
+xterm 411 S Prior	legacy mok=1	S-PageUp mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Prior	legacy mok=1	C-PageUp mods=4	\e[5;5~	agree
+xterm 411 M Prior	legacy mok=1	M-PageUp mods=2	\e[5;3~	agree
+xterm 411 CS Prior	legacy mok=1	C-S-PageUp mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Prior	legacy mok=1	C-M-PageUp mods=6	\e[5;7~	agree
+xterm 411 MS Prior	legacy mok=1	M-S-PageUp mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Prior	legacy mok=1	C-M-S-PageUp mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Next	legacy mok=1	PageDown mods=0	\e[6~	agree
+xterm 411 S Next	legacy mok=1	S-PageDown mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Next	legacy mok=1	C-PageDown mods=4	\e[6;5~	agree
+xterm 411 M Next	legacy mok=1	M-PageDown mods=2	\e[6;3~	agree
+xterm 411 CS Next	legacy mok=1	C-S-PageDown mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Next	legacy mok=1	C-M-PageDown mods=6	\e[6;7~	agree
+xterm 411 MS Next	legacy mok=1	M-S-PageDown mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Next	legacy mok=1	C-M-S-PageDown mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - F1	legacy mok=1	F1 mods=0	\eOP	agree
+xterm 411 S F1	legacy mok=1	S-F1 mods=1	\e[1;2P	agree
+xterm 411 C F1	legacy mok=1	C-F1 mods=4	\e[1;5P	agree
+xterm 411 M F1	legacy mok=1	M-F1 mods=2	\e[1;3P	agree
+xterm 411 CS F1	legacy mok=1	C-S-F1 mods=5	\e[1;6P	agree
+xterm 411 CM F1	legacy mok=1	C-M-F1 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F1	legacy mok=1	M-S-F1 mods=3	\e[1;4P	agree
+xterm 411 CMS F1	legacy mok=1	C-M-S-F1 mods=7	\e[1;8P	agree
+xterm 411 - F2	legacy mok=1	F2 mods=0	\eOQ	agree
+xterm 411 S F2	legacy mok=1	S-F2 mods=1	\e[1;2Q	agree
+xterm 411 C F2	legacy mok=1	C-F2 mods=4	\e[1;5Q	agree
+xterm 411 M F2	legacy mok=1	M-F2 mods=2	\e[1;3Q	agree
+xterm 411 CS F2	legacy mok=1	C-S-F2 mods=5	\e[1;6Q	agree
+xterm 411 CM F2	legacy mok=1	C-M-F2 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F2	legacy mok=1	M-S-F2 mods=3	\e[1;4Q	agree
+xterm 411 CMS F2	legacy mok=1	C-M-S-F2 mods=7	\e[1;8Q	agree
+xterm 411 - F3	legacy mok=1	F3 mods=0	\eOR	agree
+xterm 411 S F3	legacy mok=1	S-F3 mods=1	\e[1;2R	agree
+xterm 411 C F3	legacy mok=1	C-F3 mods=4	\e[1;5R	agree
+xterm 411 M F3	legacy mok=1	M-F3 mods=2	\e[1;3R	agree
+xterm 411 CS F3	legacy mok=1	C-S-F3 mods=5	\e[1;6R	agree
+xterm 411 CM F3	legacy mok=1	C-M-F3 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F3	legacy mok=1	M-S-F3 mods=3	\e[1;4R	agree
+xterm 411 CMS F3	legacy mok=1	C-M-S-F3 mods=7	\e[1;8R	agree
+xterm 411 - F4	legacy mok=1	F4 mods=0	\eOS	agree
+xterm 411 S F4	legacy mok=1	S-F4 mods=1	\e[1;2S	agree
+xterm 411 C F4	legacy mok=1	C-F4 mods=4	\e[1;5S	agree
+xterm 411 M F4	legacy mok=1	M-F4 mods=2	\e[1;3S	agree
+xterm 411 CS F4	legacy mok=1	C-S-F4 mods=5	\e[1;6S	agree
+xterm 411 CM F4	legacy mok=1	C-M-F4 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F4	legacy mok=1	M-S-F4 mods=3	\e[1;4S	agree
+xterm 411 CMS F4	legacy mok=1	C-M-S-F4 mods=7	\e[1;8S	agree
+xterm 411 - F5	legacy mok=1	F5 mods=0	\e[15~	agree
+xterm 411 S F5	legacy mok=1	S-F5 mods=1	\e[15;2~	agree
+xterm 411 C F5	legacy mok=1	C-F5 mods=4	\e[15;5~	agree
+xterm 411 M F5	legacy mok=1	M-F5 mods=2	\e[15;3~	agree
+xterm 411 CS F5	legacy mok=1	C-S-F5 mods=5	\e[15;6~	agree
+xterm 411 CM F5	legacy mok=1	C-M-F5 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F5	legacy mok=1	M-S-F5 mods=3	\e[15;4~	agree
+xterm 411 CMS F5	legacy mok=1	C-M-S-F5 mods=7	\e[15;8~	agree
+xterm 411 - F6	legacy mok=1	F6 mods=0	\e[17~	agree
+xterm 411 S F6	legacy mok=1	S-F6 mods=1	\e[17;2~	agree
+xterm 411 C F6	legacy mok=1	C-F6 mods=4	\e[17;5~	agree
+xterm 411 M F6	legacy mok=1	M-F6 mods=2	\e[17;3~	agree
+xterm 411 CS F6	legacy mok=1	C-S-F6 mods=5	\e[17;6~	agree
+xterm 411 CM F6	legacy mok=1	C-M-F6 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F6	legacy mok=1	M-S-F6 mods=3	\e[17;4~	agree
+xterm 411 CMS F6	legacy mok=1	C-M-S-F6 mods=7	\e[17;8~	agree
+xterm 411 - F7	legacy mok=1	F7 mods=0	\e[18~	agree
+xterm 411 S F7	legacy mok=1	S-F7 mods=1	\e[18;2~	agree
+xterm 411 C F7	legacy mok=1	C-F7 mods=4	\e[18;5~	agree
+xterm 411 M F7	legacy mok=1	M-F7 mods=2	\e[18;3~	agree
+xterm 411 CS F7	legacy mok=1	C-S-F7 mods=5	\e[18;6~	agree
+xterm 411 CM F7	legacy mok=1	C-M-F7 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F7	legacy mok=1	M-S-F7 mods=3	\e[18;4~	agree
+xterm 411 CMS F7	legacy mok=1	C-M-S-F7 mods=7	\e[18;8~	agree
+xterm 411 - F8	legacy mok=1	F8 mods=0	\e[19~	agree
+xterm 411 S F8	legacy mok=1	S-F8 mods=1	\e[19;2~	agree
+xterm 411 C F8	legacy mok=1	C-F8 mods=4	\e[19;5~	agree
+xterm 411 M F8	legacy mok=1	M-F8 mods=2	\e[19;3~	agree
+xterm 411 CS F8	legacy mok=1	C-S-F8 mods=5	\e[19;6~	agree
+xterm 411 CM F8	legacy mok=1	C-M-F8 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F8	legacy mok=1	M-S-F8 mods=3	\e[19;4~	agree
+xterm 411 CMS F8	legacy mok=1	C-M-S-F8 mods=7	\e[19;8~	agree
+xterm 411 - F9	legacy mok=1	F9 mods=0	\e[20~	agree
+xterm 411 S F9	legacy mok=1	S-F9 mods=1	\e[20;2~	agree
+xterm 411 C F9	legacy mok=1	C-F9 mods=4	\e[20;5~	agree
+xterm 411 M F9	legacy mok=1	M-F9 mods=2	\e[20;3~	agree
+xterm 411 CS F9	legacy mok=1	C-S-F9 mods=5	\e[20;6~	agree
+xterm 411 CM F9	legacy mok=1	C-M-F9 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F9	legacy mok=1	M-S-F9 mods=3	\e[20;4~	agree
+xterm 411 CMS F9	legacy mok=1	C-M-S-F9 mods=7	\e[20;8~	agree
+xterm 411 - F10	legacy mok=1	F10 mods=0	\e[21~	agree
+xterm 411 S F10	legacy mok=1	S-F10 mods=1	\e[21;2~	agree
+xterm 411 C F10	legacy mok=1	C-F10 mods=4	\e[21;5~	agree
+xterm 411 M F10	legacy mok=1	M-F10 mods=2	\e[21;3~	agree
+xterm 411 CS F10	legacy mok=1	C-S-F10 mods=5	\e[21;6~	agree
+xterm 411 CM F10	legacy mok=1	C-M-F10 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F10	legacy mok=1	M-S-F10 mods=3	\e[21;4~	agree
+xterm 411 CMS F10	legacy mok=1	C-M-S-F10 mods=7	\e[21;8~	agree
+xterm 411 - F11	legacy mok=1	F11 mods=0	\e[23~	agree
+xterm 411 S F11	legacy mok=1	S-F11 mods=1	\e[23;2~	agree
+xterm 411 C F11	legacy mok=1	C-F11 mods=4	\e[23;5~	agree
+xterm 411 M F11	legacy mok=1	M-F11 mods=2	\e[23;3~	agree
+xterm 411 CS F11	legacy mok=1	C-S-F11 mods=5	\e[23;6~	agree
+xterm 411 CM F11	legacy mok=1	C-M-F11 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F11	legacy mok=1	M-S-F11 mods=3	\e[23;4~	agree
+xterm 411 CMS F11	legacy mok=1	C-M-S-F11 mods=7	\e[23;8~	agree
+xterm 411 - F12	legacy mok=1	F12 mods=0	\e[24~	agree
+xterm 411 S F12	legacy mok=1	S-F12 mods=1	\e[24;2~	agree
+xterm 411 C F12	legacy mok=1	C-F12 mods=4	\e[24;5~	agree
+xterm 411 M F12	legacy mok=1	M-F12 mods=2	\e[24;3~	agree
+xterm 411 CS F12	legacy mok=1	C-S-F12 mods=5	\e[24;6~	agree
+xterm 411 CM F12	legacy mok=1	C-M-F12 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F12	legacy mok=1	M-S-F12 mods=3	\e[24;4~	agree
+xterm 411 CMS F12	legacy mok=1	C-M-S-F12 mods=7	\e[24;8~	agree
+xterm 411 - a	legacy mok=2	a code=97 mods=0	a	agree
+xterm 411 S a	legacy mok=2	A code=97 mods=1	\e[27;2;65~	agree
+xterm 411 C a	legacy mok=2	C-a code=97 mods=4	\e[27;5;97~	agree
+xterm 411 M a	legacy mok=2	M-a code=97 mods=2	\e[27;3;97~	agree
+xterm 411 CS a	legacy mok=2	C-A code=97 mods=5	\e[27;6;65~	agree
+xterm 411 CM a	legacy mok=2	C-M-a code=97 mods=6	\e[27;7;97~	agree
+xterm 411 MS a	legacy mok=2	M-A code=97 mods=3	\e[27;4;65~	agree
+xterm 411 CMS a	legacy mok=2	C-M-A code=97 mods=7	\e[27;8;65~	agree
+xterm 411 - b	legacy mok=2	b code=98 mods=0	b	agree
+xterm 411 S b	legacy mok=2	B code=98 mods=1	\e[27;2;66~	agree
+xterm 411 C b	legacy mok=2	C-b code=98 mods=4	\e[27;5;98~	agree
+xterm 411 M b	legacy mok=2	M-b code=98 mods=2	\e[27;3;98~	agree
+xterm 411 CS b	legacy mok=2	C-B code=98 mods=5	\e[27;6;66~	agree
+xterm 411 CM b	legacy mok=2	C-M-b code=98 mods=6	\e[27;7;98~	agree
+xterm 411 MS b	legacy mok=2	M-B code=98 mods=3	\e[27;4;66~	agree
+xterm 411 CMS b	legacy mok=2	C-M-B code=98 mods=7	\e[27;8;66~	agree
+xterm 411 - c	legacy mok=2	c code=99 mods=0	c	agree
+xterm 411 S c	legacy mok=2	C code=99 mods=1	\e[27;2;67~	agree
+xterm 411 C c	legacy mok=2	C-c code=99 mods=4	\e[27;5;99~	agree
+xterm 411 M c	legacy mok=2	M-c code=99 mods=2	\e[27;3;99~	agree
+xterm 411 CS c	legacy mok=2	C-C code=99 mods=5	\e[27;6;67~	agree
+xterm 411 CM c	legacy mok=2	C-M-c code=99 mods=6	\e[27;7;99~	agree
+xterm 411 MS c	legacy mok=2	M-C code=99 mods=3	\e[27;4;67~	agree
+xterm 411 CMS c	legacy mok=2	C-M-C code=99 mods=7	\e[27;8;67~	agree
+xterm 411 - d	legacy mok=2	d code=100 mods=0	d	agree
+xterm 411 S d	legacy mok=2	D code=100 mods=1	\e[27;2;68~	agree
+xterm 411 C d	legacy mok=2	C-d code=100 mods=4	\e[27;5;100~	agree
+xterm 411 M d	legacy mok=2	M-d code=100 mods=2	\e[27;3;100~	agree
+xterm 411 CS d	legacy mok=2	C-D code=100 mods=5	\e[27;6;68~	agree
+xterm 411 CM d	legacy mok=2	C-M-d code=100 mods=6	\e[27;7;100~	agree
+xterm 411 MS d	legacy mok=2	M-D code=100 mods=3	\e[27;4;68~	agree
+xterm 411 CMS d	legacy mok=2	C-M-D code=100 mods=7	\e[27;8;68~	agree
+xterm 411 - e	legacy mok=2	e code=101 mods=0	e	agree
+xterm 411 S e	legacy mok=2	E code=101 mods=1	\e[27;2;69~	agree
+xterm 411 C e	legacy mok=2	C-e code=101 mods=4	\e[27;5;101~	agree
+xterm 411 M e	legacy mok=2	M-e code=101 mods=2	\e[27;3;101~	agree
+xterm 411 CS e	legacy mok=2	C-E code=101 mods=5	\e[27;6;69~	agree
+xterm 411 CM e	legacy mok=2	C-M-e code=101 mods=6	\e[27;7;101~	agree
+xterm 411 MS e	legacy mok=2	M-E code=101 mods=3	\e[27;4;69~	agree
+xterm 411 CMS e	legacy mok=2	C-M-E code=101 mods=7	\e[27;8;69~	agree
+xterm 411 - f	legacy mok=2	f code=102 mods=0	f	agree
+xterm 411 S f	legacy mok=2	F code=102 mods=1	\e[27;2;70~	agree
+xterm 411 C f	legacy mok=2	C-f code=102 mods=4	\e[27;5;102~	agree
+xterm 411 M f	legacy mok=2	M-f code=102 mods=2	\e[27;3;102~	agree
+xterm 411 CS f	legacy mok=2	C-F code=102 mods=5	\e[27;6;70~	agree
+xterm 411 CM f	legacy mok=2	C-M-f code=102 mods=6	\e[27;7;102~	agree
+xterm 411 MS f	legacy mok=2	M-F code=102 mods=3	\e[27;4;70~	agree
+xterm 411 CMS f	legacy mok=2	C-M-F code=102 mods=7	\e[27;8;70~	agree
+xterm 411 - g	legacy mok=2	g code=103 mods=0	g	agree
+xterm 411 S g	legacy mok=2	G code=103 mods=1	\e[27;2;71~	agree
+xterm 411 C g	legacy mok=2	C-g code=103 mods=4	\e[27;5;103~	agree
+xterm 411 M g	legacy mok=2	M-g code=103 mods=2	\e[27;3;103~	agree
+xterm 411 CS g	legacy mok=2	C-G code=103 mods=5	\e[27;6;71~	agree
+xterm 411 CM g	legacy mok=2	C-M-g code=103 mods=6	\e[27;7;103~	agree
+xterm 411 MS g	legacy mok=2	M-G code=103 mods=3	\e[27;4;71~	agree
+xterm 411 CMS g	legacy mok=2	C-M-G code=103 mods=7	\e[27;8;71~	agree
+xterm 411 - h	legacy mok=2	h code=104 mods=0	h	agree
+xterm 411 S h	legacy mok=2	H code=104 mods=1	\e[27;2;72~	agree
+xterm 411 C h	legacy mok=2	C-h code=104 mods=4	\e[27;5;104~	agree
+xterm 411 M h	legacy mok=2	M-h code=104 mods=2	\e[27;3;104~	agree
+xterm 411 CS h	legacy mok=2	C-H code=104 mods=5	\e[27;6;72~	agree
+xterm 411 CM h	legacy mok=2	C-M-h code=104 mods=6	\e[27;7;104~	agree
+xterm 411 MS h	legacy mok=2	M-H code=104 mods=3	\e[27;4;72~	agree
+xterm 411 CMS h	legacy mok=2	C-M-H code=104 mods=7	\e[27;8;72~	agree
+xterm 411 - i	legacy mok=2	i code=105 mods=0	i	agree
+xterm 411 S i	legacy mok=2	I code=105 mods=1	\e[27;2;73~	agree
+xterm 411 C i	legacy mok=2	C-i code=105 mods=4	\e[27;5;105~	agree
+xterm 411 M i	legacy mok=2	M-i code=105 mods=2	\e[27;3;105~	agree
+xterm 411 CS i	legacy mok=2	C-I code=105 mods=5	\e[27;6;73~	agree
+xterm 411 CM i	legacy mok=2	C-M-i code=105 mods=6	\e[27;7;105~	agree
+xterm 411 MS i	legacy mok=2	M-I code=105 mods=3	\e[27;4;73~	agree
+xterm 411 CMS i	legacy mok=2	C-M-I code=105 mods=7	\e[27;8;73~	agree
+xterm 411 - j	legacy mok=2	j code=106 mods=0	j	agree
+xterm 411 S j	legacy mok=2	J code=106 mods=1	\e[27;2;74~	agree
+xterm 411 C j	legacy mok=2	C-j code=106 mods=4	\e[27;5;106~	agree
+xterm 411 M j	legacy mok=2	M-j code=106 mods=2	\e[27;3;106~	agree
+xterm 411 CS j	legacy mok=2	C-J code=106 mods=5	\e[27;6;74~	agree
+xterm 411 CM j	legacy mok=2	C-M-j code=106 mods=6	\e[27;7;106~	agree
+xterm 411 MS j	legacy mok=2	M-J code=106 mods=3	\e[27;4;74~	agree
+xterm 411 CMS j	legacy mok=2	C-M-J code=106 mods=7	\e[27;8;74~	agree
+xterm 411 - k	legacy mok=2	k code=107 mods=0	k	agree
+xterm 411 S k	legacy mok=2	K code=107 mods=1	\e[27;2;75~	agree
+xterm 411 C k	legacy mok=2	C-k code=107 mods=4	\e[27;5;107~	agree
+xterm 411 M k	legacy mok=2	M-k code=107 mods=2	\e[27;3;107~	agree
+xterm 411 CS k	legacy mok=2	C-K code=107 mods=5	\e[27;6;75~	agree
+xterm 411 CM k	legacy mok=2	C-M-k code=107 mods=6	\e[27;7;107~	agree
+xterm 411 MS k	legacy mok=2	M-K code=107 mods=3	\e[27;4;75~	agree
+xterm 411 CMS k	legacy mok=2	C-M-K code=107 mods=7	\e[27;8;75~	agree
+xterm 411 - l	legacy mok=2	l code=108 mods=0	l	agree
+xterm 411 S l	legacy mok=2	L code=108 mods=1	\e[27;2;76~	agree
+xterm 411 C l	legacy mok=2	C-l code=108 mods=4	\e[27;5;108~	agree
+xterm 411 M l	legacy mok=2	M-l code=108 mods=2	\e[27;3;108~	agree
+xterm 411 CS l	legacy mok=2	C-L code=108 mods=5	\e[27;6;76~	agree
+xterm 411 CM l	legacy mok=2	C-M-l code=108 mods=6	\e[27;7;108~	agree
+xterm 411 MS l	legacy mok=2	M-L code=108 mods=3	\e[27;4;76~	agree
+xterm 411 CMS l	legacy mok=2	C-M-L code=108 mods=7	\e[27;8;76~	agree
+xterm 411 - m	legacy mok=2	m code=109 mods=0	m	agree
+xterm 411 S m	legacy mok=2	M code=109 mods=1	\e[27;2;77~	agree
+xterm 411 C m	legacy mok=2	C-m code=109 mods=4	\e[27;5;109~	agree
+xterm 411 M m	legacy mok=2	M-m code=109 mods=2	\e[27;3;109~	agree
+xterm 411 CS m	legacy mok=2	C-M code=109 mods=5	\e[27;6;77~	agree
+xterm 411 CM m	legacy mok=2	C-M-m code=109 mods=6	\e[27;7;109~	agree
+xterm 411 MS m	legacy mok=2	M-M code=109 mods=3	\e[27;4;77~	agree
+xterm 411 CMS m	legacy mok=2	C-M-M code=109 mods=7	\e[27;8;77~	agree
+xterm 411 - n	legacy mok=2	n code=110 mods=0	n	agree
+xterm 411 S n	legacy mok=2	N code=110 mods=1	\e[27;2;78~	agree
+xterm 411 C n	legacy mok=2	C-n code=110 mods=4	\e[27;5;110~	agree
+xterm 411 M n	legacy mok=2	M-n code=110 mods=2	\e[27;3;110~	agree
+xterm 411 CS n	legacy mok=2	C-N code=110 mods=5	\e[27;6;78~	agree
+xterm 411 CM n	legacy mok=2	C-M-n code=110 mods=6	\e[27;7;110~	agree
+xterm 411 MS n	legacy mok=2	M-N code=110 mods=3	\e[27;4;78~	agree
+xterm 411 CMS n	legacy mok=2	C-M-N code=110 mods=7	\e[27;8;78~	agree
+xterm 411 - o	legacy mok=2	o code=111 mods=0	o	agree
+xterm 411 S o	legacy mok=2	O code=111 mods=1	\e[27;2;79~	agree
+xterm 411 C o	legacy mok=2	C-o code=111 mods=4	\e[27;5;111~	agree
+xterm 411 M o	legacy mok=2	M-o code=111 mods=2	\e[27;3;111~	agree
+xterm 411 CS o	legacy mok=2	C-O code=111 mods=5	\e[27;6;79~	agree
+xterm 411 CM o	legacy mok=2	C-M-o code=111 mods=6	\e[27;7;111~	agree
+xterm 411 MS o	legacy mok=2	M-O code=111 mods=3	\e[27;4;79~	agree
+xterm 411 CMS o	legacy mok=2	C-M-O code=111 mods=7	\e[27;8;79~	agree
+xterm 411 - p	legacy mok=2	p code=112 mods=0	p	agree
+xterm 411 S p	legacy mok=2	P code=112 mods=1	\e[27;2;80~	agree
+xterm 411 C p	legacy mok=2	C-p code=112 mods=4	\e[27;5;112~	agree
+xterm 411 M p	legacy mok=2	M-p code=112 mods=2	\e[27;3;112~	agree
+xterm 411 CS p	legacy mok=2	C-P code=112 mods=5	\e[27;6;80~	agree
+xterm 411 CM p	legacy mok=2	C-M-p code=112 mods=6	\e[27;7;112~	agree
+xterm 411 MS p	legacy mok=2	M-P code=112 mods=3	\e[27;4;80~	agree
+xterm 411 CMS p	legacy mok=2	C-M-P code=112 mods=7	\e[27;8;80~	agree
+xterm 411 - q	legacy mok=2	q code=113 mods=0	q	agree
+xterm 411 S q	legacy mok=2	Q code=113 mods=1	\e[27;2;81~	agree
+xterm 411 C q	legacy mok=2	C-q code=113 mods=4	\e[27;5;113~	agree
+xterm 411 M q	legacy mok=2	M-q code=113 mods=2	\e[27;3;113~	agree
+xterm 411 CS q	legacy mok=2	C-Q code=113 mods=5	\e[27;6;81~	agree
+xterm 411 CM q	legacy mok=2	C-M-q code=113 mods=6	\e[27;7;113~	agree
+xterm 411 MS q	legacy mok=2	M-Q code=113 mods=3	\e[27;4;81~	agree
+xterm 411 CMS q	legacy mok=2	C-M-Q code=113 mods=7	\e[27;8;81~	agree
+xterm 411 - r	legacy mok=2	r code=114 mods=0	r	agree
+xterm 411 S r	legacy mok=2	R code=114 mods=1	\e[27;2;82~	agree
+xterm 411 C r	legacy mok=2	C-r code=114 mods=4	\e[27;5;114~	agree
+xterm 411 M r	legacy mok=2	M-r code=114 mods=2	\e[27;3;114~	agree
+xterm 411 CS r	legacy mok=2	C-R code=114 mods=5	\e[27;6;82~	agree
+xterm 411 CM r	legacy mok=2	C-M-r code=114 mods=6	\e[27;7;114~	agree
+xterm 411 MS r	legacy mok=2	M-R code=114 mods=3	\e[27;4;82~	agree
+xterm 411 CMS r	legacy mok=2	C-M-R code=114 mods=7	\e[27;8;82~	agree
+xterm 411 - s	legacy mok=2	s code=115 mods=0	s	agree
+xterm 411 S s	legacy mok=2	S code=115 mods=1	\e[27;2;83~	agree
+xterm 411 C s	legacy mok=2	C-s code=115 mods=4	\e[27;5;115~	agree
+xterm 411 M s	legacy mok=2	M-s code=115 mods=2	\e[27;3;115~	agree
+xterm 411 CS s	legacy mok=2	C-S code=115 mods=5	\e[27;6;83~	agree
+xterm 411 CM s	legacy mok=2	C-M-s code=115 mods=6	\e[27;7;115~	agree
+xterm 411 MS s	legacy mok=2	M-S code=115 mods=3	\e[27;4;83~	agree
+xterm 411 CMS s	legacy mok=2	C-M-S code=115 mods=7	\e[27;8;83~	agree
+xterm 411 - t	legacy mok=2	t code=116 mods=0	t	agree
+xterm 411 S t	legacy mok=2	T code=116 mods=1	\e[27;2;84~	agree
+xterm 411 C t	legacy mok=2	C-t code=116 mods=4	\e[27;5;116~	agree
+xterm 411 M t	legacy mok=2	M-t code=116 mods=2	\e[27;3;116~	agree
+xterm 411 CS t	legacy mok=2	C-T code=116 mods=5	\e[27;6;84~	agree
+xterm 411 CM t	legacy mok=2	C-M-t code=116 mods=6	\e[27;7;116~	agree
+xterm 411 MS t	legacy mok=2	M-T code=116 mods=3	\e[27;4;84~	agree
+xterm 411 CMS t	legacy mok=2	C-M-T code=116 mods=7	\e[27;8;84~	agree
+xterm 411 - u	legacy mok=2	u code=117 mods=0	u	agree
+xterm 411 S u	legacy mok=2	U code=117 mods=1	\e[27;2;85~	agree
+xterm 411 C u	legacy mok=2	C-u code=117 mods=4	\e[27;5;117~	agree
+xterm 411 M u	legacy mok=2	M-u code=117 mods=2	\e[27;3;117~	agree
+xterm 411 CS u	legacy mok=2	C-U code=117 mods=5	\e[27;6;85~	agree
+xterm 411 CM u	legacy mok=2	C-M-u code=117 mods=6	\e[27;7;117~	agree
+xterm 411 MS u	legacy mok=2	M-U code=117 mods=3	\e[27;4;85~	agree
+xterm 411 CMS u	legacy mok=2	C-M-U code=117 mods=7	\e[27;8;85~	agree
+xterm 411 - v	legacy mok=2	v code=118 mods=0	v	agree
+xterm 411 S v	legacy mok=2	V code=118 mods=1	\e[27;2;86~	agree
+xterm 411 C v	legacy mok=2	C-v code=118 mods=4	\e[27;5;118~	agree
+xterm 411 M v	legacy mok=2	M-v code=118 mods=2	\e[27;3;118~	agree
+xterm 411 CS v	legacy mok=2	C-V code=118 mods=5	\e[27;6;86~	agree
+xterm 411 CM v	legacy mok=2	C-M-v code=118 mods=6	\e[27;7;118~	agree
+xterm 411 MS v	legacy mok=2	M-V code=118 mods=3	\e[27;4;86~	agree
+xterm 411 CMS v	legacy mok=2	C-M-V code=118 mods=7	\e[27;8;86~	agree
+xterm 411 - w	legacy mok=2	w code=119 mods=0	w	agree
+xterm 411 S w	legacy mok=2	W code=119 mods=1	\e[27;2;87~	agree
+xterm 411 C w	legacy mok=2	C-w code=119 mods=4	\e[27;5;119~	agree
+xterm 411 M w	legacy mok=2	M-w code=119 mods=2	\e[27;3;119~	agree
+xterm 411 CS w	legacy mok=2	C-W code=119 mods=5	\e[27;6;87~	agree
+xterm 411 CM w	legacy mok=2	C-M-w code=119 mods=6	\e[27;7;119~	agree
+xterm 411 MS w	legacy mok=2	M-W code=119 mods=3	\e[27;4;87~	agree
+xterm 411 CMS w	legacy mok=2	C-M-W code=119 mods=7	\e[27;8;87~	agree
+xterm 411 - x	legacy mok=2	x code=120 mods=0	x	agree
+xterm 411 S x	legacy mok=2	X code=120 mods=1	\e[27;2;88~	agree
+xterm 411 C x	legacy mok=2	C-x code=120 mods=4	\e[27;5;120~	agree
+xterm 411 M x	legacy mok=2	M-x code=120 mods=2	\e[27;3;120~	agree
+xterm 411 CS x	legacy mok=2	C-X code=120 mods=5	\e[27;6;88~	agree
+xterm 411 CM x	legacy mok=2	C-M-x code=120 mods=6	\e[27;7;120~	agree
+xterm 411 MS x	legacy mok=2	M-X code=120 mods=3	\e[27;4;88~	agree
+xterm 411 CMS x	legacy mok=2	C-M-X code=120 mods=7	\e[27;8;88~	agree
+xterm 411 - y	legacy mok=2	y code=121 mods=0	y	agree
+xterm 411 S y	legacy mok=2	Y code=121 mods=1	\e[27;2;89~	agree
+xterm 411 C y	legacy mok=2	C-y code=121 mods=4	\e[27;5;121~	agree
+xterm 411 M y	legacy mok=2	M-y code=121 mods=2	\e[27;3;121~	agree
+xterm 411 CS y	legacy mok=2	C-Y code=121 mods=5	\e[27;6;89~	agree
+xterm 411 CM y	legacy mok=2	C-M-y code=121 mods=6	\e[27;7;121~	agree
+xterm 411 MS y	legacy mok=2	M-Y code=121 mods=3	\e[27;4;89~	agree
+xterm 411 CMS y	legacy mok=2	C-M-Y code=121 mods=7	\e[27;8;89~	agree
+xterm 411 - z	legacy mok=2	z code=122 mods=0	z	agree
+xterm 411 S z	legacy mok=2	Z code=122 mods=1	\e[27;2;90~	agree
+xterm 411 C z	legacy mok=2	C-z code=122 mods=4	\e[27;5;122~	agree
+xterm 411 M z	legacy mok=2	M-z code=122 mods=2	\e[27;3;122~	agree
+xterm 411 CS z	legacy mok=2	C-Z code=122 mods=5	\e[27;6;90~	agree
+xterm 411 CM z	legacy mok=2	C-M-z code=122 mods=6	\e[27;7;122~	agree
+xterm 411 MS z	legacy mok=2	M-Z code=122 mods=3	\e[27;4;90~	agree
+xterm 411 CMS z	legacy mok=2	C-M-Z code=122 mods=7	\e[27;8;90~	agree
+xterm 411 - 0	legacy mok=2	0 code=48 mods=0	0	agree
+xterm 411 S 0	legacy mok=2	) code=48 mods=1	)	agree
+xterm 411 C 0	legacy mok=2	C-0 code=48 mods=4	\e[27;5;48~	agree
+xterm 411 M 0	legacy mok=2	M-0 code=48 mods=2	\e[27;3;48~	agree
+xterm 411 CS 0	legacy mok=2	C-) code=48 mods=5	\e[27;6;41~	agree
+xterm 411 CM 0	legacy mok=2	C-M-0 code=48 mods=6	\e[27;7;48~	agree
+xterm 411 MS 0	legacy mok=2	M-) code=48 mods=3	\e[27;4;41~	agree
+xterm 411 CMS 0	legacy mok=2	C-M-) code=48 mods=7	\e[27;8;41~	agree
+xterm 411 - 1	legacy mok=2	1 code=49 mods=0	1	agree
+xterm 411 S 1	legacy mok=2	! code=49 mods=1	!	agree
+xterm 411 C 1	legacy mok=2	C-1 code=49 mods=4	\e[27;5;49~	agree
+xterm 411 M 1	legacy mok=2	M-1 code=49 mods=2	\e[27;3;49~	agree
+xterm 411 CS 1	legacy mok=2	C-! code=49 mods=5	\e[27;6;33~	agree
+xterm 411 CM 1	legacy mok=2	C-M-1 code=49 mods=6	\e[27;7;49~	agree
+xterm 411 MS 1	legacy mok=2	M-! code=49 mods=3	\e[27;4;33~	agree
+xterm 411 CMS 1	legacy mok=2	C-M-! code=49 mods=7	\e[27;8;33~	agree
+xterm 411 - 2	legacy mok=2	2 code=50 mods=0	2	agree
+xterm 411 S 2	legacy mok=2	@ code=50 mods=1	\e[27;2;64~	agree
+xterm 411 C 2	legacy mok=2	C-2 code=50 mods=4	\e[27;5;50~	agree
+xterm 411 M 2	legacy mok=2	M-2 code=50 mods=2	\e[27;3;50~	agree
+xterm 411 CS 2	legacy mok=2	C-@ code=50 mods=5	\e[27;6;64~	agree
+xterm 411 CM 2	legacy mok=2	C-M-2 code=50 mods=6	\e[27;7;50~	agree
+xterm 411 MS 2	legacy mok=2	M-@ code=50 mods=3	\e[27;4;64~	agree
+xterm 411 CMS 2	legacy mok=2	C-M-@ code=50 mods=7	\e[27;8;64~	agree
+xterm 411 - 3	legacy mok=2	3 code=51 mods=0	3	agree
+xterm 411 S 3	legacy mok=2	# code=51 mods=1	#	agree
+xterm 411 C 3	legacy mok=2	C-3 code=51 mods=4	\e[27;5;51~	agree
+xterm 411 M 3	legacy mok=2	M-3 code=51 mods=2	\e[27;3;51~	agree
+xterm 411 CS 3	legacy mok=2	C-# code=51 mods=5	\e[27;6;35~	agree
+xterm 411 CM 3	legacy mok=2	C-M-3 code=51 mods=6	\e[27;7;51~	agree
+xterm 411 MS 3	legacy mok=2	M-# code=51 mods=3	\e[27;4;35~	agree
+xterm 411 CMS 3	legacy mok=2	C-M-# code=51 mods=7	\e[27;8;35~	agree
+xterm 411 - 4	legacy mok=2	4 code=52 mods=0	4	agree
+xterm 411 S 4	legacy mok=2	$ code=52 mods=1	$	agree
+xterm 411 C 4	legacy mok=2	C-4 code=52 mods=4	\e[27;5;52~	agree
+xterm 411 M 4	legacy mok=2	M-4 code=52 mods=2	\e[27;3;52~	agree
+xterm 411 CS 4	legacy mok=2	C-$ code=52 mods=5	\e[27;6;36~	agree
+xterm 411 CM 4	legacy mok=2	C-M-4 code=52 mods=6	\e[27;7;52~	agree
+xterm 411 MS 4	legacy mok=2	M-$ code=52 mods=3	\e[27;4;36~	agree
+xterm 411 CMS 4	legacy mok=2	C-M-$ code=52 mods=7	\e[27;8;36~	agree
+xterm 411 - 5	legacy mok=2	5 code=53 mods=0	5	agree
+xterm 411 S 5	legacy mok=2	% code=53 mods=1	%	agree
+xterm 411 C 5	legacy mok=2	C-5 code=53 mods=4	\e[27;5;53~	agree
+xterm 411 M 5	legacy mok=2	M-5 code=53 mods=2	\e[27;3;53~	agree
+xterm 411 CS 5	legacy mok=2	C-% code=53 mods=5	\e[27;6;37~	agree
+xterm 411 CM 5	legacy mok=2	C-M-5 code=53 mods=6	\e[27;7;53~	agree
+xterm 411 MS 5	legacy mok=2	M-% code=53 mods=3	\e[27;4;37~	agree
+xterm 411 CMS 5	legacy mok=2	C-M-% code=53 mods=7	\e[27;8;37~	agree
+xterm 411 - 6	legacy mok=2	6 code=54 mods=0	6	agree
+xterm 411 S 6	legacy mok=2	^ code=54 mods=1	\e[27;2;94~	agree
+xterm 411 C 6	legacy mok=2	C-6 code=54 mods=4	\e[27;5;54~	agree
+xterm 411 M 6	legacy mok=2	M-6 code=54 mods=2	\e[27;3;54~	agree
+xterm 411 CS 6	legacy mok=2	C-^ code=54 mods=5	\e[27;6;94~	agree
+xterm 411 CM 6	legacy mok=2	C-M-6 code=54 mods=6	\e[27;7;54~	agree
+xterm 411 MS 6	legacy mok=2	M-^ code=54 mods=3	\e[27;4;94~	agree
+xterm 411 CMS 6	legacy mok=2	C-M-^ code=54 mods=7	\e[27;8;94~	agree
+xterm 411 - 7	legacy mok=2	7 code=55 mods=0	7	agree
+xterm 411 S 7	legacy mok=2	& code=55 mods=1	&	agree
+xterm 411 C 7	legacy mok=2	C-7 code=55 mods=4	\e[27;5;55~	agree
+xterm 411 M 7	legacy mok=2	M-7 code=55 mods=2	\e[27;3;55~	agree
+xterm 411 CS 7	legacy mok=2	C-& code=55 mods=5	\e[27;6;38~	agree
+xterm 411 CM 7	legacy mok=2	C-M-7 code=55 mods=6	\e[27;7;55~	agree
+xterm 411 MS 7	legacy mok=2	M-& code=55 mods=3	\e[27;4;38~	agree
+xterm 411 CMS 7	legacy mok=2	C-M-& code=55 mods=7	\e[27;8;38~	agree
+xterm 411 - 8	legacy mok=2	8 code=56 mods=0	8	agree
+xterm 411 S 8	legacy mok=2	* code=56 mods=1	*	agree
+xterm 411 C 8	legacy mok=2	C-8 code=56 mods=4	\e[27;5;56~	agree
+xterm 411 M 8	legacy mok=2	M-8 code=56 mods=2	\e[27;3;56~	agree
+xterm 411 CS 8	legacy mok=2	C-* code=56 mods=5	\e[27;6;42~	agree
+xterm 411 CM 8	legacy mok=2	C-M-8 code=56 mods=6	\e[27;7;56~	agree
+xterm 411 MS 8	legacy mok=2	M-* code=56 mods=3	\e[27;4;42~	agree
+xterm 411 CMS 8	legacy mok=2	C-M-* code=56 mods=7	\e[27;8;42~	agree
+xterm 411 - 9	legacy mok=2	9 code=57 mods=0	9	agree
+xterm 411 S 9	legacy mok=2	( code=57 mods=1	(	agree
+xterm 411 C 9	legacy mok=2	C-9 code=57 mods=4	\e[27;5;57~	agree
+xterm 411 M 9	legacy mok=2	M-9 code=57 mods=2	\e[27;3;57~	agree
+xterm 411 CS 9	legacy mok=2	C-( code=57 mods=5	\e[27;6;40~	agree
+xterm 411 CM 9	legacy mok=2	C-M-9 code=57 mods=6	\e[27;7;57~	agree
+xterm 411 MS 9	legacy mok=2	M-( code=57 mods=3	\e[27;4;40~	agree
+xterm 411 CMS 9	legacy mok=2	C-M-( code=57 mods=7	\e[27;8;40~	agree
+xterm 411 - grave	legacy mok=2	` code=96 mods=0	`	agree
+xterm 411 S grave	legacy mok=2	~ code=96 mods=1	\e[27;2;126~	agree
+xterm 411 C grave	legacy mok=2	C-` code=96 mods=4	\e[27;5;96~	agree
+xterm 411 M grave	legacy mok=2	M-` code=96 mods=2	\e[27;3;96~	agree
+xterm 411 CS grave	legacy mok=2	C-~ code=96 mods=5	\e[27;6;126~	agree
+xterm 411 CM grave	legacy mok=2	C-M-` code=96 mods=6	\e[27;7;96~	agree
+xterm 411 MS grave	legacy mok=2	M-~ code=96 mods=3	\e[27;4;126~	agree
+xterm 411 CMS grave	legacy mok=2	C-M-~ code=96 mods=7	\e[27;8;126~	agree
+xterm 411 - minus	legacy mok=2	- code=45 mods=0	-	agree
+xterm 411 S minus	legacy mok=2	_ code=45 mods=1	\e[27;2;95~	agree
+xterm 411 C minus	legacy mok=2	C-- code=45 mods=4	\e[27;5;45~	agree
+xterm 411 M minus	legacy mok=2	M-- code=45 mods=2	\e[27;3;45~	agree
+xterm 411 CS minus	legacy mok=2	C-_ code=45 mods=5	\e[27;6;95~	agree
+xterm 411 CM minus	legacy mok=2	C-M-- code=45 mods=6	\e[27;7;45~	agree
+xterm 411 MS minus	legacy mok=2	M-_ code=45 mods=3	\e[27;4;95~	agree
+xterm 411 CMS minus	legacy mok=2	C-M-_ code=45 mods=7	\e[27;8;95~	agree
+xterm 411 - equal	legacy mok=2	= code=61 mods=0	=	agree
+xterm 411 S equal	legacy mok=2	+ code=61 mods=1	+	agree
+xterm 411 C equal	legacy mok=2	C-= code=61 mods=4	\e[27;5;61~	agree
+xterm 411 M equal	legacy mok=2	M-= code=61 mods=2	\e[27;3;61~	agree
+xterm 411 CS equal	legacy mok=2	C-+ code=61 mods=5	\e[27;6;43~	agree
+xterm 411 CM equal	legacy mok=2	C-M-= code=61 mods=6	\e[27;7;61~	agree
+xterm 411 MS equal	legacy mok=2	M-+ code=61 mods=3	\e[27;4;43~	agree
+xterm 411 CMS equal	legacy mok=2	C-M-+ code=61 mods=7	\e[27;8;43~	agree
+xterm 411 - bracketleft	legacy mok=2	[ code=91 mods=0	[	agree
+xterm 411 S bracketleft	legacy mok=2	{ code=91 mods=1	\e[27;2;123~	agree
+xterm 411 C bracketleft	legacy mok=2	C-[ code=91 mods=4	\e[27;5;91~	agree
+xterm 411 M bracketleft	legacy mok=2	M-[ code=91 mods=2	\e[27;3;91~	agree
+xterm 411 CS bracketleft	legacy mok=2	C-{ code=91 mods=5	\e[27;6;123~	agree
+xterm 411 CM bracketleft	legacy mok=2	C-M-[ code=91 mods=6	\e[27;7;91~	agree
+xterm 411 MS bracketleft	legacy mok=2	M-{ code=91 mods=3	\e[27;4;123~	agree
+xterm 411 CMS bracketleft	legacy mok=2	C-M-{ code=91 mods=7	\e[27;8;123~	agree
+xterm 411 - bracketright	legacy mok=2	] code=93 mods=0	]	agree
+xterm 411 S bracketright	legacy mok=2	} code=93 mods=1	\e[27;2;125~	agree
+xterm 411 C bracketright	legacy mok=2	C-] code=93 mods=4	\e[27;5;93~	agree
+xterm 411 M bracketright	legacy mok=2	M-] code=93 mods=2	\e[27;3;93~	agree
+xterm 411 CS bracketright	legacy mok=2	C-} code=93 mods=5	\e[27;6;125~	agree
+xterm 411 CM bracketright	legacy mok=2	C-M-] code=93 mods=6	\e[27;7;93~	agree
+xterm 411 MS bracketright	legacy mok=2	M-} code=93 mods=3	\e[27;4;125~	agree
+xterm 411 CMS bracketright	legacy mok=2	C-M-} code=93 mods=7	\e[27;8;125~	agree
+xterm 411 - backslash	legacy mok=2	\ code=92 mods=0	\\	agree
+xterm 411 S backslash	legacy mok=2	| code=92 mods=1	\e[27;2;124~	agree
+xterm 411 C backslash	legacy mok=2	C-\ code=92 mods=4	\e[27;5;92~	agree
+xterm 411 M backslash	legacy mok=2	M-\ code=92 mods=2	\e[27;3;92~	agree
+xterm 411 CS backslash	legacy mok=2	C-| code=92 mods=5	\e[27;6;124~	agree
+xterm 411 CM backslash	legacy mok=2	C-M-\ code=92 mods=6	\e[27;7;92~	agree
+xterm 411 MS backslash	legacy mok=2	M-| code=92 mods=3	\e[27;4;124~	agree
+xterm 411 CMS backslash	legacy mok=2	C-M-| code=92 mods=7	\e[27;8;124~	agree
+xterm 411 - semicolon	legacy mok=2	; code=59 mods=0	;	agree
+xterm 411 S semicolon	legacy mok=2	: code=59 mods=1	:	agree
+xterm 411 C semicolon	legacy mok=2	C-; code=59 mods=4	\e[27;5;59~	agree
+xterm 411 M semicolon	legacy mok=2	M-; code=59 mods=2	\e[27;3;59~	agree
+xterm 411 CS semicolon	legacy mok=2	C-: code=59 mods=5	\e[27;6;58~	agree
+xterm 411 CM semicolon	legacy mok=2	C-M-; code=59 mods=6	\e[27;7;59~	agree
+xterm 411 MS semicolon	legacy mok=2	M-: code=59 mods=3	\e[27;4;58~	agree
+xterm 411 CMS semicolon	legacy mok=2	C-M-: code=59 mods=7	\e[27;8;58~	agree
+xterm 411 - apostrophe	legacy mok=2	' code=39 mods=0	'	agree
+xterm 411 S apostrophe	legacy mok=2	" code=39 mods=1	"	agree
+xterm 411 C apostrophe	legacy mok=2	C-' code=39 mods=4	\e[27;5;39~	agree
+xterm 411 M apostrophe	legacy mok=2	M-' code=39 mods=2	\e[27;3;39~	agree
+xterm 411 CS apostrophe	legacy mok=2	C-" code=39 mods=5	\e[27;6;34~	agree
+xterm 411 CM apostrophe	legacy mok=2	C-M-' code=39 mods=6	\e[27;7;39~	agree
+xterm 411 MS apostrophe	legacy mok=2	M-" code=39 mods=3	\e[27;4;34~	agree
+xterm 411 CMS apostrophe	legacy mok=2	C-M-" code=39 mods=7	\e[27;8;34~	agree
+xterm 411 - comma	legacy mok=2	, code=44 mods=0	,	agree
+xterm 411 S comma	legacy mok=2	< code=44 mods=1	<	agree
+xterm 411 C comma	legacy mok=2	C-, code=44 mods=4	\e[27;5;44~	agree
+xterm 411 M comma	legacy mok=2	M-, code=44 mods=2	\e[27;3;44~	agree
+xterm 411 CS comma	legacy mok=2	C-< code=44 mods=5	\e[27;6;60~	agree
+xterm 411 CM comma	legacy mok=2	C-M-, code=44 mods=6	\e[27;7;44~	agree
+xterm 411 MS comma	legacy mok=2	M-< code=44 mods=3	\e[27;4;60~	agree
+xterm 411 CMS comma	legacy mok=2	C-M-< code=44 mods=7	\e[27;8;60~	agree
+xterm 411 - period	legacy mok=2	. code=46 mods=0	.	agree
+xterm 411 S period	legacy mok=2	> code=46 mods=1	>	agree
+xterm 411 C period	legacy mok=2	C-. code=46 mods=4	\e[27;5;46~	agree
+xterm 411 M period	legacy mok=2	M-. code=46 mods=2	\e[27;3;46~	agree
+xterm 411 CS period	legacy mok=2	C-> code=46 mods=5	\e[27;6;62~	agree
+xterm 411 CM period	legacy mok=2	C-M-. code=46 mods=6	\e[27;7;46~	agree
+xterm 411 MS period	legacy mok=2	M-> code=46 mods=3	\e[27;4;62~	agree
+xterm 411 CMS period	legacy mok=2	C-M-> code=46 mods=7	\e[27;8;62~	agree
+xterm 411 - slash	legacy mok=2	/ code=47 mods=0	/	agree
+xterm 411 S slash	legacy mok=2	? code=47 mods=1	?	agree
+xterm 411 C slash	legacy mok=2	C-/ code=47 mods=4	\e[27;5;47~	agree
+xterm 411 M slash	legacy mok=2	M-/ code=47 mods=2	\e[27;3;47~	agree
+xterm 411 CS slash	legacy mok=2	C-? code=47 mods=5	\e[27;6;63~	agree
+xterm 411 CM slash	legacy mok=2	C-M-/ code=47 mods=6	\e[27;7;47~	agree
+xterm 411 MS slash	legacy mok=2	M-? code=47 mods=3	\e[27;4;63~	agree
+xterm 411 CMS slash	legacy mok=2	C-M-? code=47 mods=7	\e[27;8;63~	agree
+xterm 411 - space	legacy mok=2	Space code=32 mods=0	 	agree
+xterm 411 S space	legacy mok=2	Space code=32 mods=1	\e[27;2;32~	agree
+xterm 411 C space	legacy mok=2	C-Space code=32 mods=4	\e[27;5;32~	agree
+xterm 411 M space	legacy mok=2	M-Space code=32 mods=2	\e[27;3;32~	agree
+xterm 411 CS space	legacy mok=2	C-Space code=32 mods=5	\e[27;6;32~	agree
+xterm 411 CM space	legacy mok=2	C-M-Space code=32 mods=6	\e[27;7;32~	agree
+xterm 411 MS space	legacy mok=2	M-Space code=32 mods=3	\e[27;4;32~	agree
+xterm 411 CMS space	legacy mok=2	C-M-Space code=32 mods=7	\e[27;8;32~	agree
+xterm 411 - Return	legacy mok=2	Enter code=13 mods=0	\x0d	agree
+xterm 411 S Return	legacy mok=2	S-Enter code=13 mods=1	\e[27;2;13~	agree
+xterm 411 C Return	legacy mok=2	C-Enter code=13 mods=4	\e[27;5;13~	agree
+xterm 411 M Return	legacy mok=2	M-Enter code=13 mods=2	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CS Return	legacy mok=2	C-S-Enter code=13 mods=5	\e[27;6;13~	agree
+xterm 411 CM Return	legacy mok=2	C-M-Enter code=13 mods=6	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 MS Return	legacy mok=2	M-S-Enter code=13 mods=3	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CMS Return	legacy mok=2	C-M-S-Enter code=13 mods=7	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 - Tab	legacy mok=2	Tab code=9 mods=0	\x09	agree
+xterm 411 S Tab	legacy mok=2	S-Tab code=9 mods=1	\e[Z	agree
+xterm 411 C Tab	legacy mok=2	C-Tab code=9 mods=4	\e[27;5;9~	agree
+xterm 411 M Tab	legacy mok=2	M-Tab code=9 mods=2	\e[27;3;9~	agree
+xterm 411 CS Tab	legacy mok=2	C-S-Tab code=9 mods=5	\e[27;6;9~	agree
+xterm 411 CM Tab	legacy mok=2	C-M-Tab code=9 mods=6	\e[27;7;9~	agree
+xterm 411 MS Tab	legacy mok=2	M-S-Tab code=9 mods=3	\e[27;4;9~	agree
+xterm 411 CMS Tab	legacy mok=2	C-M-S-Tab code=9 mods=7	\e[27;8;9~	agree
+xterm 411 - Escape	legacy mok=2	Escape code=27 mods=0	\e	agree
+xterm 411 S Escape	legacy mok=2	S-Escape code=27 mods=1	\e[27;2;27~	agree
+xterm 411 C Escape	legacy mok=2	C-Escape code=27 mods=4	\e[27;5;27~	agree
+xterm 411 M Escape	legacy mok=2	M-Escape code=27 mods=2	\e[27;3;27~	agree
+xterm 411 CS Escape	legacy mok=2	C-S-Escape code=27 mods=5	\e[27;6;27~	agree
+xterm 411 CM Escape	legacy mok=2	C-M-Escape code=27 mods=6	\e[27;7;27~	agree
+xterm 411 MS Escape	legacy mok=2	M-S-Escape code=27 mods=3	\e[27;4;27~	agree
+xterm 411 CMS Escape	legacy mok=2	C-M-S-Escape code=27 mods=7	\e[27;8;27~	agree
+xterm 411 - BackSpace	legacy mok=2	BSpace code=127 mods=0	\x7f	agree
+xterm 411 S BackSpace	legacy mok=2	S-BSpace code=127 mods=1	\e[27;2;127~	agree
+xterm 411 C BackSpace	legacy mok=2	C-BSpace code=127 mods=4	\x08	agree
+xterm 411 M BackSpace	legacy mok=2	M-BSpace code=127 mods=2	\e[27;3;127~	agree
+xterm 411 CS BackSpace	legacy mok=2	C-S-BSpace code=127 mods=5	\e[27;6;8~	agree
+xterm 411 CM BackSpace	legacy mok=2	C-M-BSpace code=127 mods=6	\e[27;7;8~	agree
+xterm 411 MS BackSpace	legacy mok=2	M-S-BSpace code=127 mods=3	\e[27;4;127~	agree
+xterm 411 CMS BackSpace	legacy mok=2	C-M-S-BSpace code=127 mods=7	\e[27;8;8~	agree
+xterm 411 - Delete	legacy mok=2	Delete mods=0	\e[3~	agree
+xterm 411 S Delete	legacy mok=2	S-Delete mods=1	\e[3;2~	agree
+xterm 411 C Delete	legacy mok=2	C-Delete mods=4	\e[3;5~	agree
+xterm 411 M Delete	legacy mok=2	M-Delete mods=2	\e[3;3~	agree
+xterm 411 CS Delete	legacy mok=2	C-S-Delete mods=5	\e[3;6~	agree
+xterm 411 CM Delete	legacy mok=2	C-M-Delete mods=6	\e[3;7~	agree
+xterm 411 MS Delete	legacy mok=2	M-S-Delete mods=3	\e[3;4~	agree
+xterm 411 CMS Delete	legacy mok=2	C-M-S-Delete mods=7	\e[3;8~	agree
+xterm 411 - Insert	legacy mok=2	Insert mods=0	\e[2~	agree
+xterm 411 S Insert	legacy mok=2	S-Insert mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Insert	legacy mok=2	C-Insert mods=4	\e[2;5~	agree
+xterm 411 M Insert	legacy mok=2	M-Insert mods=2	\e[2;3~	agree
+xterm 411 CS Insert	legacy mok=2	C-S-Insert mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Insert	legacy mok=2	C-M-Insert mods=6	\e[2;7~	agree
+xterm 411 MS Insert	legacy mok=2	M-S-Insert mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Insert	legacy mok=2	C-M-S-Insert mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Up	legacy mok=2	Up mods=0	\e[A	agree
+xterm 411 S Up	legacy mok=2	S-Up mods=1	\e[1;2A	agree
+xterm 411 C Up	legacy mok=2	C-Up mods=4	\e[1;5A	agree
+xterm 411 M Up	legacy mok=2	M-Up mods=2	\e[1;3A	agree
+xterm 411 CS Up	legacy mok=2	C-S-Up mods=5	\e[1;6A	agree
+xterm 411 CM Up	legacy mok=2	C-M-Up mods=6	\e[1;7A	agree
+xterm 411 MS Up	legacy mok=2	M-S-Up mods=3	\e[1;4A	agree
+xterm 411 CMS Up	legacy mok=2	C-M-S-Up mods=7	\e[1;8A	agree
+xterm 411 - Down	legacy mok=2	Down mods=0	\e[B	agree
+xterm 411 S Down	legacy mok=2	S-Down mods=1	\e[1;2B	agree
+xterm 411 C Down	legacy mok=2	C-Down mods=4	\e[1;5B	agree
+xterm 411 M Down	legacy mok=2	M-Down mods=2	\e[1;3B	agree
+xterm 411 CS Down	legacy mok=2	C-S-Down mods=5	\e[1;6B	agree
+xterm 411 CM Down	legacy mok=2	C-M-Down mods=6	\e[1;7B	agree
+xterm 411 MS Down	legacy mok=2	M-S-Down mods=3	\e[1;4B	agree
+xterm 411 CMS Down	legacy mok=2	C-M-S-Down mods=7	\e[1;8B	agree
+xterm 411 - Left	legacy mok=2	Left mods=0	\e[D	agree
+xterm 411 S Left	legacy mok=2	S-Left mods=1	\e[1;2D	agree
+xterm 411 C Left	legacy mok=2	C-Left mods=4	\e[1;5D	agree
+xterm 411 M Left	legacy mok=2	M-Left mods=2	\e[1;3D	agree
+xterm 411 CS Left	legacy mok=2	C-S-Left mods=5	\e[1;6D	agree
+xterm 411 CM Left	legacy mok=2	C-M-Left mods=6	\e[1;7D	agree
+xterm 411 MS Left	legacy mok=2	M-S-Left mods=3	\e[1;4D	agree
+xterm 411 CMS Left	legacy mok=2	C-M-S-Left mods=7	\e[1;8D	agree
+xterm 411 - Right	legacy mok=2	Right mods=0	\e[C	agree
+xterm 411 S Right	legacy mok=2	S-Right mods=1	\e[1;2C	agree
+xterm 411 C Right	legacy mok=2	C-Right mods=4	\e[1;5C	agree
+xterm 411 M Right	legacy mok=2	M-Right mods=2	\e[1;3C	agree
+xterm 411 CS Right	legacy mok=2	C-S-Right mods=5	\e[1;6C	agree
+xterm 411 CM Right	legacy mok=2	C-M-Right mods=6	\e[1;7C	agree
+xterm 411 MS Right	legacy mok=2	M-S-Right mods=3	\e[1;4C	agree
+xterm 411 CMS Right	legacy mok=2	C-M-S-Right mods=7	\e[1;8C	agree
+xterm 411 - Home	legacy mok=2	Home mods=0	\e[H	agree
+xterm 411 S Home	legacy mok=2	S-Home mods=1	\e[1;2H	agree
+xterm 411 C Home	legacy mok=2	C-Home mods=4	\e[1;5H	agree
+xterm 411 M Home	legacy mok=2	M-Home mods=2	\e[1;3H	agree
+xterm 411 CS Home	legacy mok=2	C-S-Home mods=5	\e[1;6H	agree
+xterm 411 CM Home	legacy mok=2	C-M-Home mods=6	\e[1;7H	agree
+xterm 411 MS Home	legacy mok=2	M-S-Home mods=3	\e[1;4H	agree
+xterm 411 CMS Home	legacy mok=2	C-M-S-Home mods=7	\e[1;8H	agree
+xterm 411 - End	legacy mok=2	End mods=0	\e[F	agree
+xterm 411 S End	legacy mok=2	S-End mods=1	\e[1;2F	agree
+xterm 411 C End	legacy mok=2	C-End mods=4	\e[1;5F	agree
+xterm 411 M End	legacy mok=2	M-End mods=2	\e[1;3F	agree
+xterm 411 CS End	legacy mok=2	C-S-End mods=5	\e[1;6F	agree
+xterm 411 CM End	legacy mok=2	C-M-End mods=6	\e[1;7F	agree
+xterm 411 MS End	legacy mok=2	M-S-End mods=3	\e[1;4F	agree
+xterm 411 CMS End	legacy mok=2	C-M-S-End mods=7	\e[1;8F	agree
+xterm 411 - Prior	legacy mok=2	PageUp mods=0	\e[5~	agree
+xterm 411 S Prior	legacy mok=2	S-PageUp mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Prior	legacy mok=2	C-PageUp mods=4	\e[5;5~	agree
+xterm 411 M Prior	legacy mok=2	M-PageUp mods=2	\e[5;3~	agree
+xterm 411 CS Prior	legacy mok=2	C-S-PageUp mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Prior	legacy mok=2	C-M-PageUp mods=6	\e[5;7~	agree
+xterm 411 MS Prior	legacy mok=2	M-S-PageUp mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Prior	legacy mok=2	C-M-S-PageUp mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Next	legacy mok=2	PageDown mods=0	\e[6~	agree
+xterm 411 S Next	legacy mok=2	S-PageDown mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Next	legacy mok=2	C-PageDown mods=4	\e[6;5~	agree
+xterm 411 M Next	legacy mok=2	M-PageDown mods=2	\e[6;3~	agree
+xterm 411 CS Next	legacy mok=2	C-S-PageDown mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Next	legacy mok=2	C-M-PageDown mods=6	\e[6;7~	agree
+xterm 411 MS Next	legacy mok=2	M-S-PageDown mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Next	legacy mok=2	C-M-S-PageDown mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - F1	legacy mok=2	F1 mods=0	\eOP	agree
+xterm 411 S F1	legacy mok=2	S-F1 mods=1	\e[1;2P	agree
+xterm 411 C F1	legacy mok=2	C-F1 mods=4	\e[1;5P	agree
+xterm 411 M F1	legacy mok=2	M-F1 mods=2	\e[1;3P	agree
+xterm 411 CS F1	legacy mok=2	C-S-F1 mods=5	\e[1;6P	agree
+xterm 411 CM F1	legacy mok=2	C-M-F1 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F1	legacy mok=2	M-S-F1 mods=3	\e[1;4P	agree
+xterm 411 CMS F1	legacy mok=2	C-M-S-F1 mods=7	\e[1;8P	agree
+xterm 411 - F2	legacy mok=2	F2 mods=0	\eOQ	agree
+xterm 411 S F2	legacy mok=2	S-F2 mods=1	\e[1;2Q	agree
+xterm 411 C F2	legacy mok=2	C-F2 mods=4	\e[1;5Q	agree
+xterm 411 M F2	legacy mok=2	M-F2 mods=2	\e[1;3Q	agree
+xterm 411 CS F2	legacy mok=2	C-S-F2 mods=5	\e[1;6Q	agree
+xterm 411 CM F2	legacy mok=2	C-M-F2 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F2	legacy mok=2	M-S-F2 mods=3	\e[1;4Q	agree
+xterm 411 CMS F2	legacy mok=2	C-M-S-F2 mods=7	\e[1;8Q	agree
+xterm 411 - F3	legacy mok=2	F3 mods=0	\eOR	agree
+xterm 411 S F3	legacy mok=2	S-F3 mods=1	\e[1;2R	agree
+xterm 411 C F3	legacy mok=2	C-F3 mods=4	\e[1;5R	agree
+xterm 411 M F3	legacy mok=2	M-F3 mods=2	\e[1;3R	agree
+xterm 411 CS F3	legacy mok=2	C-S-F3 mods=5	\e[1;6R	agree
+xterm 411 CM F3	legacy mok=2	C-M-F3 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F3	legacy mok=2	M-S-F3 mods=3	\e[1;4R	agree
+xterm 411 CMS F3	legacy mok=2	C-M-S-F3 mods=7	\e[1;8R	agree
+xterm 411 - F4	legacy mok=2	F4 mods=0	\eOS	agree
+xterm 411 S F4	legacy mok=2	S-F4 mods=1	\e[1;2S	agree
+xterm 411 C F4	legacy mok=2	C-F4 mods=4	\e[1;5S	agree
+xterm 411 M F4	legacy mok=2	M-F4 mods=2	\e[1;3S	agree
+xterm 411 CS F4	legacy mok=2	C-S-F4 mods=5	\e[1;6S	agree
+xterm 411 CM F4	legacy mok=2	C-M-F4 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F4	legacy mok=2	M-S-F4 mods=3	\e[1;4S	agree
+xterm 411 CMS F4	legacy mok=2	C-M-S-F4 mods=7	\e[1;8S	agree
+xterm 411 - F5	legacy mok=2	F5 mods=0	\e[15~	agree
+xterm 411 S F5	legacy mok=2	S-F5 mods=1	\e[15;2~	agree
+xterm 411 C F5	legacy mok=2	C-F5 mods=4	\e[15;5~	agree
+xterm 411 M F5	legacy mok=2	M-F5 mods=2	\e[15;3~	agree
+xterm 411 CS F5	legacy mok=2	C-S-F5 mods=5	\e[15;6~	agree
+xterm 411 CM F5	legacy mok=2	C-M-F5 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F5	legacy mok=2	M-S-F5 mods=3	\e[15;4~	agree
+xterm 411 CMS F5	legacy mok=2	C-M-S-F5 mods=7	\e[15;8~	agree
+xterm 411 - F6	legacy mok=2	F6 mods=0	\e[17~	agree
+xterm 411 S F6	legacy mok=2	S-F6 mods=1	\e[17;2~	agree
+xterm 411 C F6	legacy mok=2	C-F6 mods=4	\e[17;5~	agree
+xterm 411 M F6	legacy mok=2	M-F6 mods=2	\e[17;3~	agree
+xterm 411 CS F6	legacy mok=2	C-S-F6 mods=5	\e[17;6~	agree
+xterm 411 CM F6	legacy mok=2	C-M-F6 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F6	legacy mok=2	M-S-F6 mods=3	\e[17;4~	agree
+xterm 411 CMS F6	legacy mok=2	C-M-S-F6 mods=7	\e[17;8~	agree
+xterm 411 - F7	legacy mok=2	F7 mods=0	\e[18~	agree
+xterm 411 S F7	legacy mok=2	S-F7 mods=1	\e[18;2~	agree
+xterm 411 C F7	legacy mok=2	C-F7 mods=4	\e[18;5~	agree
+xterm 411 M F7	legacy mok=2	M-F7 mods=2	\e[18;3~	agree
+xterm 411 CS F7	legacy mok=2	C-S-F7 mods=5	\e[18;6~	agree
+xterm 411 CM F7	legacy mok=2	C-M-F7 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F7	legacy mok=2	M-S-F7 mods=3	\e[18;4~	agree
+xterm 411 CMS F7	legacy mok=2	C-M-S-F7 mods=7	\e[18;8~	agree
+xterm 411 - F8	legacy mok=2	F8 mods=0	\e[19~	agree
+xterm 411 S F8	legacy mok=2	S-F8 mods=1	\e[19;2~	agree
+xterm 411 C F8	legacy mok=2	C-F8 mods=4	\e[19;5~	agree
+xterm 411 M F8	legacy mok=2	M-F8 mods=2	\e[19;3~	agree
+xterm 411 CS F8	legacy mok=2	C-S-F8 mods=5	\e[19;6~	agree
+xterm 411 CM F8	legacy mok=2	C-M-F8 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F8	legacy mok=2	M-S-F8 mods=3	\e[19;4~	agree
+xterm 411 CMS F8	legacy mok=2	C-M-S-F8 mods=7	\e[19;8~	agree
+xterm 411 - F9	legacy mok=2	F9 mods=0	\e[20~	agree
+xterm 411 S F9	legacy mok=2	S-F9 mods=1	\e[20;2~	agree
+xterm 411 C F9	legacy mok=2	C-F9 mods=4	\e[20;5~	agree
+xterm 411 M F9	legacy mok=2	M-F9 mods=2	\e[20;3~	agree
+xterm 411 CS F9	legacy mok=2	C-S-F9 mods=5	\e[20;6~	agree
+xterm 411 CM F9	legacy mok=2	C-M-F9 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F9	legacy mok=2	M-S-F9 mods=3	\e[20;4~	agree
+xterm 411 CMS F9	legacy mok=2	C-M-S-F9 mods=7	\e[20;8~	agree
+xterm 411 - F10	legacy mok=2	F10 mods=0	\e[21~	agree
+xterm 411 S F10	legacy mok=2	S-F10 mods=1	\e[21;2~	agree
+xterm 411 C F10	legacy mok=2	C-F10 mods=4	\e[21;5~	agree
+xterm 411 M F10	legacy mok=2	M-F10 mods=2	\e[21;3~	agree
+xterm 411 CS F10	legacy mok=2	C-S-F10 mods=5	\e[21;6~	agree
+xterm 411 CM F10	legacy mok=2	C-M-F10 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F10	legacy mok=2	M-S-F10 mods=3	\e[21;4~	agree
+xterm 411 CMS F10	legacy mok=2	C-M-S-F10 mods=7	\e[21;8~	agree
+xterm 411 - F11	legacy mok=2	F11 mods=0	\e[23~	agree
+xterm 411 S F11	legacy mok=2	S-F11 mods=1	\e[23;2~	agree
+xterm 411 C F11	legacy mok=2	C-F11 mods=4	\e[23;5~	agree
+xterm 411 M F11	legacy mok=2	M-F11 mods=2	\e[23;3~	agree
+xterm 411 CS F11	legacy mok=2	C-S-F11 mods=5	\e[23;6~	agree
+xterm 411 CM F11	legacy mok=2	C-M-F11 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F11	legacy mok=2	M-S-F11 mods=3	\e[23;4~	agree
+xterm 411 CMS F11	legacy mok=2	C-M-S-F11 mods=7	\e[23;8~	agree
+xterm 411 - F12	legacy mok=2	F12 mods=0	\e[24~	agree
+xterm 411 S F12	legacy mok=2	S-F12 mods=1	\e[24;2~	agree
+xterm 411 C F12	legacy mok=2	C-F12 mods=4	\e[24;5~	agree
+xterm 411 M F12	legacy mok=2	M-F12 mods=2	\e[24;3~	agree
+xterm 411 CS F12	legacy mok=2	C-S-F12 mods=5	\e[24;6~	agree
+xterm 411 CM F12	legacy mok=2	C-M-F12 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F12	legacy mok=2	M-S-F12 mods=3	\e[24;4~	agree
+xterm 411 CMS F12	legacy mok=2	C-M-S-F12 mods=7	\e[24;8~	agree
+xterm 411 - a	legacy mok=3	a code=97 mods=0	\e[27;1;97~	agree
+xterm 411 S a	legacy mok=3	A code=97 mods=1	\e[27;2;65~	agree
+xterm 411 C a	legacy mok=3	C-a code=97 mods=4	\e[27;5;97~	agree
+xterm 411 M a	legacy mok=3	M-a code=97 mods=2	\e[27;3;97~	agree
+xterm 411 CS a	legacy mok=3	C-A code=97 mods=5	\e[27;6;65~	agree
+xterm 411 CM a	legacy mok=3	C-M-a code=97 mods=6	\e[27;7;97~	agree
+xterm 411 MS a	legacy mok=3	M-A code=97 mods=3	\e[27;4;65~	agree
+xterm 411 CMS a	legacy mok=3	C-M-A code=97 mods=7	\e[27;8;65~	agree
+xterm 411 - b	legacy mok=3	b code=98 mods=0	\e[27;1;98~	agree
+xterm 411 S b	legacy mok=3	B code=98 mods=1	\e[27;2;66~	agree
+xterm 411 C b	legacy mok=3	C-b code=98 mods=4	\e[27;5;98~	agree
+xterm 411 M b	legacy mok=3	M-b code=98 mods=2	\e[27;3;98~	agree
+xterm 411 CS b	legacy mok=3	C-B code=98 mods=5	\e[27;6;66~	agree
+xterm 411 CM b	legacy mok=3	C-M-b code=98 mods=6	\e[27;7;98~	agree
+xterm 411 MS b	legacy mok=3	M-B code=98 mods=3	\e[27;4;66~	agree
+xterm 411 CMS b	legacy mok=3	C-M-B code=98 mods=7	\e[27;8;66~	agree
+xterm 411 - c	legacy mok=3	c code=99 mods=0	\e[27;1;99~	agree
+xterm 411 S c	legacy mok=3	C code=99 mods=1	\e[27;2;67~	agree
+xterm 411 C c	legacy mok=3	C-c code=99 mods=4	\e[27;5;99~	agree
+xterm 411 M c	legacy mok=3	M-c code=99 mods=2	\e[27;3;99~	agree
+xterm 411 CS c	legacy mok=3	C-C code=99 mods=5	\e[27;6;67~	agree
+xterm 411 CM c	legacy mok=3	C-M-c code=99 mods=6	\e[27;7;99~	agree
+xterm 411 MS c	legacy mok=3	M-C code=99 mods=3	\e[27;4;67~	agree
+xterm 411 CMS c	legacy mok=3	C-M-C code=99 mods=7	\e[27;8;67~	agree
+xterm 411 - d	legacy mok=3	d code=100 mods=0	\e[27;1;100~	agree
+xterm 411 S d	legacy mok=3	D code=100 mods=1	\e[27;2;68~	agree
+xterm 411 C d	legacy mok=3	C-d code=100 mods=4	\e[27;5;100~	agree
+xterm 411 M d	legacy mok=3	M-d code=100 mods=2	\e[27;3;100~	agree
+xterm 411 CS d	legacy mok=3	C-D code=100 mods=5	\e[27;6;68~	agree
+xterm 411 CM d	legacy mok=3	C-M-d code=100 mods=6	\e[27;7;100~	agree
+xterm 411 MS d	legacy mok=3	M-D code=100 mods=3	\e[27;4;68~	agree
+xterm 411 CMS d	legacy mok=3	C-M-D code=100 mods=7	\e[27;8;68~	agree
+xterm 411 - e	legacy mok=3	e code=101 mods=0	\e[27;1;101~	agree
+xterm 411 S e	legacy mok=3	E code=101 mods=1	\e[27;2;69~	agree
+xterm 411 C e	legacy mok=3	C-e code=101 mods=4	\e[27;5;101~	agree
+xterm 411 M e	legacy mok=3	M-e code=101 mods=2	\e[27;3;101~	agree
+xterm 411 CS e	legacy mok=3	C-E code=101 mods=5	\e[27;6;69~	agree
+xterm 411 CM e	legacy mok=3	C-M-e code=101 mods=6	\e[27;7;101~	agree
+xterm 411 MS e	legacy mok=3	M-E code=101 mods=3	\e[27;4;69~	agree
+xterm 411 CMS e	legacy mok=3	C-M-E code=101 mods=7	\e[27;8;69~	agree
+xterm 411 - f	legacy mok=3	f code=102 mods=0	\e[27;1;102~	agree
+xterm 411 S f	legacy mok=3	F code=102 mods=1	\e[27;2;70~	agree
+xterm 411 C f	legacy mok=3	C-f code=102 mods=4	\e[27;5;102~	agree
+xterm 411 M f	legacy mok=3	M-f code=102 mods=2	\e[27;3;102~	agree
+xterm 411 CS f	legacy mok=3	C-F code=102 mods=5	\e[27;6;70~	agree
+xterm 411 CM f	legacy mok=3	C-M-f code=102 mods=6	\e[27;7;102~	agree
+xterm 411 MS f	legacy mok=3	M-F code=102 mods=3	\e[27;4;70~	agree
+xterm 411 CMS f	legacy mok=3	C-M-F code=102 mods=7	\e[27;8;70~	agree
+xterm 411 - g	legacy mok=3	g code=103 mods=0	\e[27;1;103~	agree
+xterm 411 S g	legacy mok=3	G code=103 mods=1	\e[27;2;71~	agree
+xterm 411 C g	legacy mok=3	C-g code=103 mods=4	\e[27;5;103~	agree
+xterm 411 M g	legacy mok=3	M-g code=103 mods=2	\e[27;3;103~	agree
+xterm 411 CS g	legacy mok=3	C-G code=103 mods=5	\e[27;6;71~	agree
+xterm 411 CM g	legacy mok=3	C-M-g code=103 mods=6	\e[27;7;103~	agree
+xterm 411 MS g	legacy mok=3	M-G code=103 mods=3	\e[27;4;71~	agree
+xterm 411 CMS g	legacy mok=3	C-M-G code=103 mods=7	\e[27;8;71~	agree
+xterm 411 - h	legacy mok=3	h code=104 mods=0	\e[27;1;104~	agree
+xterm 411 S h	legacy mok=3	H code=104 mods=1	\e[27;2;72~	agree
+xterm 411 C h	legacy mok=3	C-h code=104 mods=4	\e[27;5;104~	agree
+xterm 411 M h	legacy mok=3	M-h code=104 mods=2	\e[27;3;104~	agree
+xterm 411 CS h	legacy mok=3	C-H code=104 mods=5	\e[27;6;72~	agree
+xterm 411 CM h	legacy mok=3	C-M-h code=104 mods=6	\e[27;7;104~	agree
+xterm 411 MS h	legacy mok=3	M-H code=104 mods=3	\e[27;4;72~	agree
+xterm 411 CMS h	legacy mok=3	C-M-H code=104 mods=7	\e[27;8;72~	agree
+xterm 411 - i	legacy mok=3	i code=105 mods=0	\e[27;1;105~	agree
+xterm 411 S i	legacy mok=3	I code=105 mods=1	\e[27;2;73~	agree
+xterm 411 C i	legacy mok=3	C-i code=105 mods=4	\e[27;5;105~	agree
+xterm 411 M i	legacy mok=3	M-i code=105 mods=2	\e[27;3;105~	agree
+xterm 411 CS i	legacy mok=3	C-I code=105 mods=5	\e[27;6;73~	agree
+xterm 411 CM i	legacy mok=3	C-M-i code=105 mods=6	\e[27;7;105~	agree
+xterm 411 MS i	legacy mok=3	M-I code=105 mods=3	\e[27;4;73~	agree
+xterm 411 CMS i	legacy mok=3	C-M-I code=105 mods=7	\e[27;8;73~	agree
+xterm 411 - j	legacy mok=3	j code=106 mods=0	\e[27;1;106~	agree
+xterm 411 S j	legacy mok=3	J code=106 mods=1	\e[27;2;74~	agree
+xterm 411 C j	legacy mok=3	C-j code=106 mods=4	\e[27;5;106~	agree
+xterm 411 M j	legacy mok=3	M-j code=106 mods=2	\e[27;3;106~	agree
+xterm 411 CS j	legacy mok=3	C-J code=106 mods=5	\e[27;6;74~	agree
+xterm 411 CM j	legacy mok=3	C-M-j code=106 mods=6	\e[27;7;106~	agree
+xterm 411 MS j	legacy mok=3	M-J code=106 mods=3	\e[27;4;74~	agree
+xterm 411 CMS j	legacy mok=3	C-M-J code=106 mods=7	\e[27;8;74~	agree
+xterm 411 - k	legacy mok=3	k code=107 mods=0	\e[27;1;107~	agree
+xterm 411 S k	legacy mok=3	K code=107 mods=1	\e[27;2;75~	agree
+xterm 411 C k	legacy mok=3	C-k code=107 mods=4	\e[27;5;107~	agree
+xterm 411 M k	legacy mok=3	M-k code=107 mods=2	\e[27;3;107~	agree
+xterm 411 CS k	legacy mok=3	C-K code=107 mods=5	\e[27;6;75~	agree
+xterm 411 CM k	legacy mok=3	C-M-k code=107 mods=6	\e[27;7;107~	agree
+xterm 411 MS k	legacy mok=3	M-K code=107 mods=3	\e[27;4;75~	agree
+xterm 411 CMS k	legacy mok=3	C-M-K code=107 mods=7	\e[27;8;75~	agree
+xterm 411 - l	legacy mok=3	l code=108 mods=0	\e[27;1;108~	agree
+xterm 411 S l	legacy mok=3	L code=108 mods=1	\e[27;2;76~	agree
+xterm 411 C l	legacy mok=3	C-l code=108 mods=4	\e[27;5;108~	agree
+xterm 411 M l	legacy mok=3	M-l code=108 mods=2	\e[27;3;108~	agree
+xterm 411 CS l	legacy mok=3	C-L code=108 mods=5	\e[27;6;76~	agree
+xterm 411 CM l	legacy mok=3	C-M-l code=108 mods=6	\e[27;7;108~	agree
+xterm 411 MS l	legacy mok=3	M-L code=108 mods=3	\e[27;4;76~	agree
+xterm 411 CMS l	legacy mok=3	C-M-L code=108 mods=7	\e[27;8;76~	agree
+xterm 411 - m	legacy mok=3	m code=109 mods=0	\e[27;1;109~	agree
+xterm 411 S m	legacy mok=3	M code=109 mods=1	\e[27;2;77~	agree
+xterm 411 C m	legacy mok=3	C-m code=109 mods=4	\e[27;5;109~	agree
+xterm 411 M m	legacy mok=3	M-m code=109 mods=2	\e[27;3;109~	agree
+xterm 411 CS m	legacy mok=3	C-M code=109 mods=5	\e[27;6;77~	agree
+xterm 411 CM m	legacy mok=3	C-M-m code=109 mods=6	\e[27;7;109~	agree
+xterm 411 MS m	legacy mok=3	M-M code=109 mods=3	\e[27;4;77~	agree
+xterm 411 CMS m	legacy mok=3	C-M-M code=109 mods=7	\e[27;8;77~	agree
+xterm 411 - n	legacy mok=3	n code=110 mods=0	\e[27;1;110~	agree
+xterm 411 S n	legacy mok=3	N code=110 mods=1	\e[27;2;78~	agree
+xterm 411 C n	legacy mok=3	C-n code=110 mods=4	\e[27;5;110~	agree
+xterm 411 M n	legacy mok=3	M-n code=110 mods=2	\e[27;3;110~	agree
+xterm 411 CS n	legacy mok=3	C-N code=110 mods=5	\e[27;6;78~	agree
+xterm 411 CM n	legacy mok=3	C-M-n code=110 mods=6	\e[27;7;110~	agree
+xterm 411 MS n	legacy mok=3	M-N code=110 mods=3	\e[27;4;78~	agree
+xterm 411 CMS n	legacy mok=3	C-M-N code=110 mods=7	\e[27;8;78~	agree
+xterm 411 - o	legacy mok=3	o code=111 mods=0	\e[27;1;111~	agree
+xterm 411 S o	legacy mok=3	O code=111 mods=1	\e[27;2;79~	agree
+xterm 411 C o	legacy mok=3	C-o code=111 mods=4	\e[27;5;111~	agree
+xterm 411 M o	legacy mok=3	M-o code=111 mods=2	\e[27;3;111~	agree
+xterm 411 CS o	legacy mok=3	C-O code=111 mods=5	\e[27;6;79~	agree
+xterm 411 CM o	legacy mok=3	C-M-o code=111 mods=6	\e[27;7;111~	agree
+xterm 411 MS o	legacy mok=3	M-O code=111 mods=3	\e[27;4;79~	agree
+xterm 411 CMS o	legacy mok=3	C-M-O code=111 mods=7	\e[27;8;79~	agree
+xterm 411 - p	legacy mok=3	p code=112 mods=0	\e[27;1;112~	agree
+xterm 411 S p	legacy mok=3	P code=112 mods=1	\e[27;2;80~	agree
+xterm 411 C p	legacy mok=3	C-p code=112 mods=4	\e[27;5;112~	agree
+xterm 411 M p	legacy mok=3	M-p code=112 mods=2	\e[27;3;112~	agree
+xterm 411 CS p	legacy mok=3	C-P code=112 mods=5	\e[27;6;80~	agree
+xterm 411 CM p	legacy mok=3	C-M-p code=112 mods=6	\e[27;7;112~	agree
+xterm 411 MS p	legacy mok=3	M-P code=112 mods=3	\e[27;4;80~	agree
+xterm 411 CMS p	legacy mok=3	C-M-P code=112 mods=7	\e[27;8;80~	agree
+xterm 411 - q	legacy mok=3	q code=113 mods=0	\e[27;1;113~	agree
+xterm 411 S q	legacy mok=3	Q code=113 mods=1	\e[27;2;81~	agree
+xterm 411 C q	legacy mok=3	C-q code=113 mods=4	\e[27;5;113~	agree
+xterm 411 M q	legacy mok=3	M-q code=113 mods=2	\e[27;3;113~	agree
+xterm 411 CS q	legacy mok=3	C-Q code=113 mods=5	\e[27;6;81~	agree
+xterm 411 CM q	legacy mok=3	C-M-q code=113 mods=6	\e[27;7;113~	agree
+xterm 411 MS q	legacy mok=3	M-Q code=113 mods=3	\e[27;4;81~	agree
+xterm 411 CMS q	legacy mok=3	C-M-Q code=113 mods=7	\e[27;8;81~	agree
+xterm 411 - r	legacy mok=3	r code=114 mods=0	\e[27;1;114~	agree
+xterm 411 S r	legacy mok=3	R code=114 mods=1	\e[27;2;82~	agree
+xterm 411 C r	legacy mok=3	C-r code=114 mods=4	\e[27;5;114~	agree
+xterm 411 M r	legacy mok=3	M-r code=114 mods=2	\e[27;3;114~	agree
+xterm 411 CS r	legacy mok=3	C-R code=114 mods=5	\e[27;6;82~	agree
+xterm 411 CM r	legacy mok=3	C-M-r code=114 mods=6	\e[27;7;114~	agree
+xterm 411 MS r	legacy mok=3	M-R code=114 mods=3	\e[27;4;82~	agree
+xterm 411 CMS r	legacy mok=3	C-M-R code=114 mods=7	\e[27;8;82~	agree
+xterm 411 - s	legacy mok=3	s code=115 mods=0	\e[27;1;115~	agree
+xterm 411 S s	legacy mok=3	S code=115 mods=1	\e[27;2;83~	agree
+xterm 411 C s	legacy mok=3	C-s code=115 mods=4	\e[27;5;115~	agree
+xterm 411 M s	legacy mok=3	M-s code=115 mods=2	\e[27;3;115~	agree
+xterm 411 CS s	legacy mok=3	C-S code=115 mods=5	\e[27;6;83~	agree
+xterm 411 CM s	legacy mok=3	C-M-s code=115 mods=6	\e[27;7;115~	agree
+xterm 411 MS s	legacy mok=3	M-S code=115 mods=3	\e[27;4;83~	agree
+xterm 411 CMS s	legacy mok=3	C-M-S code=115 mods=7	\e[27;8;83~	agree
+xterm 411 - t	legacy mok=3	t code=116 mods=0	\e[27;1;116~	agree
+xterm 411 S t	legacy mok=3	T code=116 mods=1	\e[27;2;84~	agree
+xterm 411 C t	legacy mok=3	C-t code=116 mods=4	\e[27;5;116~	agree
+xterm 411 M t	legacy mok=3	M-t code=116 mods=2	\e[27;3;116~	agree
+xterm 411 CS t	legacy mok=3	C-T code=116 mods=5	\e[27;6;84~	agree
+xterm 411 CM t	legacy mok=3	C-M-t code=116 mods=6	\e[27;7;116~	agree
+xterm 411 MS t	legacy mok=3	M-T code=116 mods=3	\e[27;4;84~	agree
+xterm 411 CMS t	legacy mok=3	C-M-T code=116 mods=7	\e[27;8;84~	agree
+xterm 411 - u	legacy mok=3	u code=117 mods=0	\e[27;1;117~	agree
+xterm 411 S u	legacy mok=3	U code=117 mods=1	\e[27;2;85~	agree
+xterm 411 C u	legacy mok=3	C-u code=117 mods=4	\e[27;5;117~	agree
+xterm 411 M u	legacy mok=3	M-u code=117 mods=2	\e[27;3;117~	agree
+xterm 411 CS u	legacy mok=3	C-U code=117 mods=5	\e[27;6;85~	agree
+xterm 411 CM u	legacy mok=3	C-M-u code=117 mods=6	\e[27;7;117~	agree
+xterm 411 MS u	legacy mok=3	M-U code=117 mods=3	\e[27;4;85~	agree
+xterm 411 CMS u	legacy mok=3	C-M-U code=117 mods=7	\e[27;8;85~	agree
+xterm 411 - v	legacy mok=3	v code=118 mods=0	\e[27;1;118~	agree
+xterm 411 S v	legacy mok=3	V code=118 mods=1	\e[27;2;86~	agree
+xterm 411 C v	legacy mok=3	C-v code=118 mods=4	\e[27;5;118~	agree
+xterm 411 M v	legacy mok=3	M-v code=118 mods=2	\e[27;3;118~	agree
+xterm 411 CS v	legacy mok=3	C-V code=118 mods=5	\e[27;6;86~	agree
+xterm 411 CM v	legacy mok=3	C-M-v code=118 mods=6	\e[27;7;118~	agree
+xterm 411 MS v	legacy mok=3	M-V code=118 mods=3	\e[27;4;86~	agree
+xterm 411 CMS v	legacy mok=3	C-M-V code=118 mods=7	\e[27;8;86~	agree
+xterm 411 - w	legacy mok=3	w code=119 mods=0	\e[27;1;119~	agree
+xterm 411 S w	legacy mok=3	W code=119 mods=1	\e[27;2;87~	agree
+xterm 411 C w	legacy mok=3	C-w code=119 mods=4	\e[27;5;119~	agree
+xterm 411 M w	legacy mok=3	M-w code=119 mods=2	\e[27;3;119~	agree
+xterm 411 CS w	legacy mok=3	C-W code=119 mods=5	\e[27;6;87~	agree
+xterm 411 CM w	legacy mok=3	C-M-w code=119 mods=6	\e[27;7;119~	agree
+xterm 411 MS w	legacy mok=3	M-W code=119 mods=3	\e[27;4;87~	agree
+xterm 411 CMS w	legacy mok=3	C-M-W code=119 mods=7	\e[27;8;87~	agree
+xterm 411 - x	legacy mok=3	x code=120 mods=0	\e[27;1;120~	agree
+xterm 411 S x	legacy mok=3	X code=120 mods=1	\e[27;2;88~	agree
+xterm 411 C x	legacy mok=3	C-x code=120 mods=4	\e[27;5;120~	agree
+xterm 411 M x	legacy mok=3	M-x code=120 mods=2	\e[27;3;120~	agree
+xterm 411 CS x	legacy mok=3	C-X code=120 mods=5	\e[27;6;88~	agree
+xterm 411 CM x	legacy mok=3	C-M-x code=120 mods=6	\e[27;7;120~	agree
+xterm 411 MS x	legacy mok=3	M-X code=120 mods=3	\e[27;4;88~	agree
+xterm 411 CMS x	legacy mok=3	C-M-X code=120 mods=7	\e[27;8;88~	agree
+xterm 411 - y	legacy mok=3	y code=121 mods=0	\e[27;1;121~	agree
+xterm 411 S y	legacy mok=3	Y code=121 mods=1	\e[27;2;89~	agree
+xterm 411 C y	legacy mok=3	C-y code=121 mods=4	\e[27;5;121~	agree
+xterm 411 M y	legacy mok=3	M-y code=121 mods=2	\e[27;3;121~	agree
+xterm 411 CS y	legacy mok=3	C-Y code=121 mods=5	\e[27;6;89~	agree
+xterm 411 CM y	legacy mok=3	C-M-y code=121 mods=6	\e[27;7;121~	agree
+xterm 411 MS y	legacy mok=3	M-Y code=121 mods=3	\e[27;4;89~	agree
+xterm 411 CMS y	legacy mok=3	C-M-Y code=121 mods=7	\e[27;8;89~	agree
+xterm 411 - z	legacy mok=3	z code=122 mods=0	\e[27;1;122~	agree
+xterm 411 S z	legacy mok=3	Z code=122 mods=1	\e[27;2;90~	agree
+xterm 411 C z	legacy mok=3	C-z code=122 mods=4	\e[27;5;122~	agree
+xterm 411 M z	legacy mok=3	M-z code=122 mods=2	\e[27;3;122~	agree
+xterm 411 CS z	legacy mok=3	C-Z code=122 mods=5	\e[27;6;90~	agree
+xterm 411 CM z	legacy mok=3	C-M-z code=122 mods=6	\e[27;7;122~	agree
+xterm 411 MS z	legacy mok=3	M-Z code=122 mods=3	\e[27;4;90~	agree
+xterm 411 CMS z	legacy mok=3	C-M-Z code=122 mods=7	\e[27;8;90~	agree
+xterm 411 - 0	legacy mok=3	0 code=48 mods=0	\e[27;1;48~	agree
+xterm 411 S 0	legacy mok=3	) code=48 mods=1	\e[27;2;41~	agree
+xterm 411 C 0	legacy mok=3	C-0 code=48 mods=4	\e[27;5;48~	agree
+xterm 411 M 0	legacy mok=3	M-0 code=48 mods=2	\e[27;3;48~	agree
+xterm 411 CS 0	legacy mok=3	C-) code=48 mods=5	\e[27;6;41~	agree
+xterm 411 CM 0	legacy mok=3	C-M-0 code=48 mods=6	\e[27;7;48~	agree
+xterm 411 MS 0	legacy mok=3	M-) code=48 mods=3	\e[27;4;41~	agree
+xterm 411 CMS 0	legacy mok=3	C-M-) code=48 mods=7	\e[27;8;41~	agree
+xterm 411 - 1	legacy mok=3	1 code=49 mods=0	\e[27;1;49~	agree
+xterm 411 S 1	legacy mok=3	! code=49 mods=1	\e[27;2;33~	agree
+xterm 411 C 1	legacy mok=3	C-1 code=49 mods=4	\e[27;5;49~	agree
+xterm 411 M 1	legacy mok=3	M-1 code=49 mods=2	\e[27;3;49~	agree
+xterm 411 CS 1	legacy mok=3	C-! code=49 mods=5	\e[27;6;33~	agree
+xterm 411 CM 1	legacy mok=3	C-M-1 code=49 mods=6	\e[27;7;49~	agree
+xterm 411 MS 1	legacy mok=3	M-! code=49 mods=3	\e[27;4;33~	agree
+xterm 411 CMS 1	legacy mok=3	C-M-! code=49 mods=7	\e[27;8;33~	agree
+xterm 411 - 2	legacy mok=3	2 code=50 mods=0	\e[27;1;50~	agree
+xterm 411 S 2	legacy mok=3	@ code=50 mods=1	\e[27;2;64~	agree
+xterm 411 C 2	legacy mok=3	C-2 code=50 mods=4	\e[27;5;50~	agree
+xterm 411 M 2	legacy mok=3	M-2 code=50 mods=2	\e[27;3;50~	agree
+xterm 411 CS 2	legacy mok=3	C-@ code=50 mods=5	\e[27;6;64~	agree
+xterm 411 CM 2	legacy mok=3	C-M-2 code=50 mods=6	\e[27;7;50~	agree
+xterm 411 MS 2	legacy mok=3	M-@ code=50 mods=3	\e[27;4;64~	agree
+xterm 411 CMS 2	legacy mok=3	C-M-@ code=50 mods=7	\e[27;8;64~	agree
+xterm 411 - 3	legacy mok=3	3 code=51 mods=0	\e[27;1;51~	agree
+xterm 411 S 3	legacy mok=3	# code=51 mods=1	\e[27;2;35~	agree
+xterm 411 C 3	legacy mok=3	C-3 code=51 mods=4	\e[27;5;51~	agree
+xterm 411 M 3	legacy mok=3	M-3 code=51 mods=2	\e[27;3;51~	agree
+xterm 411 CS 3	legacy mok=3	C-# code=51 mods=5	\e[27;6;35~	agree
+xterm 411 CM 3	legacy mok=3	C-M-3 code=51 mods=6	\e[27;7;51~	agree
+xterm 411 MS 3	legacy mok=3	M-# code=51 mods=3	\e[27;4;35~	agree
+xterm 411 CMS 3	legacy mok=3	C-M-# code=51 mods=7	\e[27;8;35~	agree
+xterm 411 - 4	legacy mok=3	4 code=52 mods=0	\e[27;1;52~	agree
+xterm 411 S 4	legacy mok=3	$ code=52 mods=1	\e[27;2;36~	agree
+xterm 411 C 4	legacy mok=3	C-4 code=52 mods=4	\e[27;5;52~	agree
+xterm 411 M 4	legacy mok=3	M-4 code=52 mods=2	\e[27;3;52~	agree
+xterm 411 CS 4	legacy mok=3	C-$ code=52 mods=5	\e[27;6;36~	agree
+xterm 411 CM 4	legacy mok=3	C-M-4 code=52 mods=6	\e[27;7;52~	agree
+xterm 411 MS 4	legacy mok=3	M-$ code=52 mods=3	\e[27;4;36~	agree
+xterm 411 CMS 4	legacy mok=3	C-M-$ code=52 mods=7	\e[27;8;36~	agree
+xterm 411 - 5	legacy mok=3	5 code=53 mods=0	\e[27;1;53~	agree
+xterm 411 S 5	legacy mok=3	% code=53 mods=1	\e[27;2;37~	agree
+xterm 411 C 5	legacy mok=3	C-5 code=53 mods=4	\e[27;5;53~	agree
+xterm 411 M 5	legacy mok=3	M-5 code=53 mods=2	\e[27;3;53~	agree
+xterm 411 CS 5	legacy mok=3	C-% code=53 mods=5	\e[27;6;37~	agree
+xterm 411 CM 5	legacy mok=3	C-M-5 code=53 mods=6	\e[27;7;53~	agree
+xterm 411 MS 5	legacy mok=3	M-% code=53 mods=3	\e[27;4;37~	agree
+xterm 411 CMS 5	legacy mok=3	C-M-% code=53 mods=7	\e[27;8;37~	agree
+xterm 411 - 6	legacy mok=3	6 code=54 mods=0	\e[27;1;54~	agree
+xterm 411 S 6	legacy mok=3	^ code=54 mods=1	\e[27;2;94~	agree
+xterm 411 C 6	legacy mok=3	C-6 code=54 mods=4	\e[27;5;54~	agree
+xterm 411 M 6	legacy mok=3	M-6 code=54 mods=2	\e[27;3;54~	agree
+xterm 411 CS 6	legacy mok=3	C-^ code=54 mods=5	\e[27;6;94~	agree
+xterm 411 CM 6	legacy mok=3	C-M-6 code=54 mods=6	\e[27;7;54~	agree
+xterm 411 MS 6	legacy mok=3	M-^ code=54 mods=3	\e[27;4;94~	agree
+xterm 411 CMS 6	legacy mok=3	C-M-^ code=54 mods=7	\e[27;8;94~	agree
+xterm 411 - 7	legacy mok=3	7 code=55 mods=0	\e[27;1;55~	agree
+xterm 411 S 7	legacy mok=3	& code=55 mods=1	\e[27;2;38~	agree
+xterm 411 C 7	legacy mok=3	C-7 code=55 mods=4	\e[27;5;55~	agree
+xterm 411 M 7	legacy mok=3	M-7 code=55 mods=2	\e[27;3;55~	agree
+xterm 411 CS 7	legacy mok=3	C-& code=55 mods=5	\e[27;6;38~	agree
+xterm 411 CM 7	legacy mok=3	C-M-7 code=55 mods=6	\e[27;7;55~	agree
+xterm 411 MS 7	legacy mok=3	M-& code=55 mods=3	\e[27;4;38~	agree
+xterm 411 CMS 7	legacy mok=3	C-M-& code=55 mods=7	\e[27;8;38~	agree
+xterm 411 - 8	legacy mok=3	8 code=56 mods=0	\e[27;1;56~	agree
+xterm 411 S 8	legacy mok=3	* code=56 mods=1	\e[27;2;42~	agree
+xterm 411 C 8	legacy mok=3	C-8 code=56 mods=4	\e[27;5;56~	agree
+xterm 411 M 8	legacy mok=3	M-8 code=56 mods=2	\e[27;3;56~	agree
+xterm 411 CS 8	legacy mok=3	C-* code=56 mods=5	\e[27;6;42~	agree
+xterm 411 CM 8	legacy mok=3	C-M-8 code=56 mods=6	\e[27;7;56~	agree
+xterm 411 MS 8	legacy mok=3	M-* code=56 mods=3	\e[27;4;42~	agree
+xterm 411 CMS 8	legacy mok=3	C-M-* code=56 mods=7	\e[27;8;42~	agree
+xterm 411 - 9	legacy mok=3	9 code=57 mods=0	\e[27;1;57~	agree
+xterm 411 S 9	legacy mok=3	( code=57 mods=1	\e[27;2;40~	agree
+xterm 411 C 9	legacy mok=3	C-9 code=57 mods=4	\e[27;5;57~	agree
+xterm 411 M 9	legacy mok=3	M-9 code=57 mods=2	\e[27;3;57~	agree
+xterm 411 CS 9	legacy mok=3	C-( code=57 mods=5	\e[27;6;40~	agree
+xterm 411 CM 9	legacy mok=3	C-M-9 code=57 mods=6	\e[27;7;57~	agree
+xterm 411 MS 9	legacy mok=3	M-( code=57 mods=3	\e[27;4;40~	agree
+xterm 411 CMS 9	legacy mok=3	C-M-( code=57 mods=7	\e[27;8;40~	agree
+xterm 411 - grave	legacy mok=3	` code=96 mods=0	\e[27;1;96~	agree
+xterm 411 S grave	legacy mok=3	~ code=96 mods=1	\e[27;2;126~	agree
+xterm 411 C grave	legacy mok=3	C-` code=96 mods=4	\e[27;5;96~	agree
+xterm 411 M grave	legacy mok=3	M-` code=96 mods=2	\e[27;3;96~	agree
+xterm 411 CS grave	legacy mok=3	C-~ code=96 mods=5	\e[27;6;126~	agree
+xterm 411 CM grave	legacy mok=3	C-M-` code=96 mods=6	\e[27;7;96~	agree
+xterm 411 MS grave	legacy mok=3	M-~ code=96 mods=3	\e[27;4;126~	agree
+xterm 411 CMS grave	legacy mok=3	C-M-~ code=96 mods=7	\e[27;8;126~	agree
+xterm 411 - minus	legacy mok=3	- code=45 mods=0	\e[27;1;45~	agree
+xterm 411 S minus	legacy mok=3	_ code=45 mods=1	\e[27;2;95~	agree
+xterm 411 C minus	legacy mok=3	C-- code=45 mods=4	\e[27;5;45~	agree
+xterm 411 M minus	legacy mok=3	M-- code=45 mods=2	\e[27;3;45~	agree
+xterm 411 CS minus	legacy mok=3	C-_ code=45 mods=5	\e[27;6;95~	agree
+xterm 411 CM minus	legacy mok=3	C-M-- code=45 mods=6	\e[27;7;45~	agree
+xterm 411 MS minus	legacy mok=3	M-_ code=45 mods=3	\e[27;4;95~	agree
+xterm 411 CMS minus	legacy mok=3	C-M-_ code=45 mods=7	\e[27;8;95~	agree
+xterm 411 - equal	legacy mok=3	= code=61 mods=0	\e[27;1;61~	agree
+xterm 411 S equal	legacy mok=3	+ code=61 mods=1	\e[27;2;43~	agree
+xterm 411 C equal	legacy mok=3	C-= code=61 mods=4	\e[27;5;61~	agree
+xterm 411 M equal	legacy mok=3	M-= code=61 mods=2	\e[27;3;61~	agree
+xterm 411 CS equal	legacy mok=3	C-+ code=61 mods=5	\e[27;6;43~	agree
+xterm 411 CM equal	legacy mok=3	C-M-= code=61 mods=6	\e[27;7;61~	agree
+xterm 411 MS equal	legacy mok=3	M-+ code=61 mods=3	\e[27;4;43~	agree
+xterm 411 CMS equal	legacy mok=3	C-M-+ code=61 mods=7	\e[27;8;43~	agree
+xterm 411 - bracketleft	legacy mok=3	[ code=91 mods=0	\e[27;1;91~	agree
+xterm 411 S bracketleft	legacy mok=3	{ code=91 mods=1	\e[27;2;123~	agree
+xterm 411 C bracketleft	legacy mok=3	C-[ code=91 mods=4	\e[27;5;91~	agree
+xterm 411 M bracketleft	legacy mok=3	M-[ code=91 mods=2	\e[27;3;91~	agree
+xterm 411 CS bracketleft	legacy mok=3	C-{ code=91 mods=5	\e[27;6;123~	agree
+xterm 411 CM bracketleft	legacy mok=3	C-M-[ code=91 mods=6	\e[27;7;91~	agree
+xterm 411 MS bracketleft	legacy mok=3	M-{ code=91 mods=3	\e[27;4;123~	agree
+xterm 411 CMS bracketleft	legacy mok=3	C-M-{ code=91 mods=7	\e[27;8;123~	agree
+xterm 411 - bracketright	legacy mok=3	] code=93 mods=0	\e[27;1;93~	agree
+xterm 411 S bracketright	legacy mok=3	} code=93 mods=1	\e[27;2;125~	agree
+xterm 411 C bracketright	legacy mok=3	C-] code=93 mods=4	\e[27;5;93~	agree
+xterm 411 M bracketright	legacy mok=3	M-] code=93 mods=2	\e[27;3;93~	agree
+xterm 411 CS bracketright	legacy mok=3	C-} code=93 mods=5	\e[27;6;125~	agree
+xterm 411 CM bracketright	legacy mok=3	C-M-] code=93 mods=6	\e[27;7;93~	agree
+xterm 411 MS bracketright	legacy mok=3	M-} code=93 mods=3	\e[27;4;125~	agree
+xterm 411 CMS bracketright	legacy mok=3	C-M-} code=93 mods=7	\e[27;8;125~	agree
+xterm 411 - backslash	legacy mok=3	\ code=92 mods=0	\e[27;1;92~	agree
+xterm 411 S backslash	legacy mok=3	| code=92 mods=1	\e[27;2;124~	agree
+xterm 411 C backslash	legacy mok=3	C-\ code=92 mods=4	\e[27;5;92~	agree
+xterm 411 M backslash	legacy mok=3	M-\ code=92 mods=2	\e[27;3;92~	agree
+xterm 411 CS backslash	legacy mok=3	C-| code=92 mods=5	\e[27;6;124~	agree
+xterm 411 CM backslash	legacy mok=3	C-M-\ code=92 mods=6	\e[27;7;92~	agree
+xterm 411 MS backslash	legacy mok=3	M-| code=92 mods=3	\e[27;4;124~	agree
+xterm 411 CMS backslash	legacy mok=3	C-M-| code=92 mods=7	\e[27;8;124~	agree
+xterm 411 - semicolon	legacy mok=3	; code=59 mods=0	\e[27;1;59~	agree
+xterm 411 S semicolon	legacy mok=3	: code=59 mods=1	\e[27;2;58~	agree
+xterm 411 C semicolon	legacy mok=3	C-; code=59 mods=4	\e[27;5;59~	agree
+xterm 411 M semicolon	legacy mok=3	M-; code=59 mods=2	\e[27;3;59~	agree
+xterm 411 CS semicolon	legacy mok=3	C-: code=59 mods=5	\e[27;6;58~	agree
+xterm 411 CM semicolon	legacy mok=3	C-M-; code=59 mods=6	\e[27;7;59~	agree
+xterm 411 MS semicolon	legacy mok=3	M-: code=59 mods=3	\e[27;4;58~	agree
+xterm 411 CMS semicolon	legacy mok=3	C-M-: code=59 mods=7	\e[27;8;58~	agree
+xterm 411 - apostrophe	legacy mok=3	' code=39 mods=0	\e[27;1;39~	agree
+xterm 411 S apostrophe	legacy mok=3	" code=39 mods=1	\e[27;2;34~	agree
+xterm 411 C apostrophe	legacy mok=3	C-' code=39 mods=4	\e[27;5;39~	agree
+xterm 411 M apostrophe	legacy mok=3	M-' code=39 mods=2	\e[27;3;39~	agree
+xterm 411 CS apostrophe	legacy mok=3	C-" code=39 mods=5	\e[27;6;34~	agree
+xterm 411 CM apostrophe	legacy mok=3	C-M-' code=39 mods=6	\e[27;7;39~	agree
+xterm 411 MS apostrophe	legacy mok=3	M-" code=39 mods=3	\e[27;4;34~	agree
+xterm 411 CMS apostrophe	legacy mok=3	C-M-" code=39 mods=7	\e[27;8;34~	agree
+xterm 411 - comma	legacy mok=3	, code=44 mods=0	\e[27;1;44~	agree
+xterm 411 S comma	legacy mok=3	< code=44 mods=1	\e[27;2;60~	agree
+xterm 411 C comma	legacy mok=3	C-, code=44 mods=4	\e[27;5;44~	agree
+xterm 411 M comma	legacy mok=3	M-, code=44 mods=2	\e[27;3;44~	agree
+xterm 411 CS comma	legacy mok=3	C-< code=44 mods=5	\e[27;6;60~	agree
+xterm 411 CM comma	legacy mok=3	C-M-, code=44 mods=6	\e[27;7;44~	agree
+xterm 411 MS comma	legacy mok=3	M-< code=44 mods=3	\e[27;4;60~	agree
+xterm 411 CMS comma	legacy mok=3	C-M-< code=44 mods=7	\e[27;8;60~	agree
+xterm 411 - period	legacy mok=3	. code=46 mods=0	\e[27;1;46~	agree
+xterm 411 S period	legacy mok=3	> code=46 mods=1	\e[27;2;62~	agree
+xterm 411 C period	legacy mok=3	C-. code=46 mods=4	\e[27;5;46~	agree
+xterm 411 M period	legacy mok=3	M-. code=46 mods=2	\e[27;3;46~	agree
+xterm 411 CS period	legacy mok=3	C-> code=46 mods=5	\e[27;6;62~	agree
+xterm 411 CM period	legacy mok=3	C-M-. code=46 mods=6	\e[27;7;46~	agree
+xterm 411 MS period	legacy mok=3	M-> code=46 mods=3	\e[27;4;62~	agree
+xterm 411 CMS period	legacy mok=3	C-M-> code=46 mods=7	\e[27;8;62~	agree
+xterm 411 - slash	legacy mok=3	/ code=47 mods=0	\e[27;1;47~	agree
+xterm 411 S slash	legacy mok=3	? code=47 mods=1	\e[27;2;63~	agree
+xterm 411 C slash	legacy mok=3	C-/ code=47 mods=4	\e[27;5;47~	agree
+xterm 411 M slash	legacy mok=3	M-/ code=47 mods=2	\e[27;3;47~	agree
+xterm 411 CS slash	legacy mok=3	C-? code=47 mods=5	\e[27;6;63~	agree
+xterm 411 CM slash	legacy mok=3	C-M-/ code=47 mods=6	\e[27;7;47~	agree
+xterm 411 MS slash	legacy mok=3	M-? code=47 mods=3	\e[27;4;63~	agree
+xterm 411 CMS slash	legacy mok=3	C-M-? code=47 mods=7	\e[27;8;63~	agree
+xterm 411 - space	legacy mok=3	Space code=32 mods=0	\e[27;1;32~	agree
+xterm 411 S space	legacy mok=3	Space code=32 mods=1	\e[27;2;32~	agree
+xterm 411 C space	legacy mok=3	C-Space code=32 mods=4	\e[27;5;32~	agree
+xterm 411 M space	legacy mok=3	M-Space code=32 mods=2	\e[27;3;32~	agree
+xterm 411 CS space	legacy mok=3	C-Space code=32 mods=5	\e[27;6;32~	agree
+xterm 411 CM space	legacy mok=3	C-M-Space code=32 mods=6	\e[27;7;32~	agree
+xterm 411 MS space	legacy mok=3	M-Space code=32 mods=3	\e[27;4;32~	agree
+xterm 411 CMS space	legacy mok=3	C-M-Space code=32 mods=7	\e[27;8;32~	agree
+xterm 411 - Return	legacy mok=3	Enter code=13 mods=0	\e[27;1;13~	agree
+xterm 411 S Return	legacy mok=3	S-Enter code=13 mods=1	\e[27;2;13~	agree
+xterm 411 C Return	legacy mok=3	C-Enter code=13 mods=4	\e[27;5;13~	agree
+xterm 411 M Return	legacy mok=3	M-Enter code=13 mods=2	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CS Return	legacy mok=3	C-S-Enter code=13 mods=5	\e[27;6;13~	agree
+xterm 411 CM Return	legacy mok=3	C-M-Enter code=13 mods=6	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 MS Return	legacy mok=3	M-S-Enter code=13 mods=3	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 CMS Return	legacy mok=3	C-M-S-Enter code=13 mods=7	none	na: xterm's own default translation takes Alt-Enter (full screen)
+xterm 411 - Tab	legacy mok=3	Tab code=9 mods=0	\e[27;1;9~	agree
+xterm 411 S Tab	legacy mok=3	S-Tab code=9 mods=1	\e[27;2;9~	agree
+xterm 411 C Tab	legacy mok=3	C-Tab code=9 mods=4	\e[27;5;9~	agree
+xterm 411 M Tab	legacy mok=3	M-Tab code=9 mods=2	\e[27;3;9~	agree
+xterm 411 CS Tab	legacy mok=3	C-S-Tab code=9 mods=5	\e[27;6;9~	agree
+xterm 411 CM Tab	legacy mok=3	C-M-Tab code=9 mods=6	\e[27;7;9~	agree
+xterm 411 MS Tab	legacy mok=3	M-S-Tab code=9 mods=3	\e[27;4;9~	agree
+xterm 411 CMS Tab	legacy mok=3	C-M-S-Tab code=9 mods=7	\e[27;8;9~	agree
+xterm 411 - Escape	legacy mok=3	Escape code=27 mods=0	\e[27;1;27~	agree
+xterm 411 S Escape	legacy mok=3	S-Escape code=27 mods=1	\e[27;2;27~	agree
+xterm 411 C Escape	legacy mok=3	C-Escape code=27 mods=4	\e[27;5;27~	agree
+xterm 411 M Escape	legacy mok=3	M-Escape code=27 mods=2	\e[27;3;27~	agree
+xterm 411 CS Escape	legacy mok=3	C-S-Escape code=27 mods=5	\e[27;6;27~	agree
+xterm 411 CM Escape	legacy mok=3	C-M-Escape code=27 mods=6	\e[27;7;27~	agree
+xterm 411 MS Escape	legacy mok=3	M-S-Escape code=27 mods=3	\e[27;4;27~	agree
+xterm 411 CMS Escape	legacy mok=3	C-M-S-Escape code=27 mods=7	\e[27;8;27~	agree
+xterm 411 - BackSpace	legacy mok=3	BSpace code=127 mods=0	\e[27;1;127~	agree
+xterm 411 S BackSpace	legacy mok=3	S-BSpace code=127 mods=1	\e[27;2;127~	agree
+xterm 411 C BackSpace	legacy mok=3	C-BSpace code=127 mods=4	\e[27;5;8~	agree
+xterm 411 M BackSpace	legacy mok=3	M-BSpace code=127 mods=2	\e[27;3;127~	agree
+xterm 411 CS BackSpace	legacy mok=3	C-S-BSpace code=127 mods=5	\e[27;6;8~	agree
+xterm 411 CM BackSpace	legacy mok=3	C-M-BSpace code=127 mods=6	\e[27;7;8~	agree
+xterm 411 MS BackSpace	legacy mok=3	M-S-BSpace code=127 mods=3	\e[27;4;127~	agree
+xterm 411 CMS BackSpace	legacy mok=3	C-M-S-BSpace code=127 mods=7	\e[27;8;8~	agree
+xterm 411 - Delete	legacy mok=3	Delete mods=0	\e[3~	agree
+xterm 411 S Delete	legacy mok=3	S-Delete mods=1	\e[3;2~	agree
+xterm 411 C Delete	legacy mok=3	C-Delete mods=4	\e[3;5~	agree
+xterm 411 M Delete	legacy mok=3	M-Delete mods=2	\e[3;3~	agree
+xterm 411 CS Delete	legacy mok=3	C-S-Delete mods=5	\e[3;6~	agree
+xterm 411 CM Delete	legacy mok=3	C-M-Delete mods=6	\e[3;7~	agree
+xterm 411 MS Delete	legacy mok=3	M-S-Delete mods=3	\e[3;4~	agree
+xterm 411 CMS Delete	legacy mok=3	C-M-S-Delete mods=7	\e[3;8~	agree
+xterm 411 - Insert	legacy mok=3	Insert mods=0	\e[2~	agree
+xterm 411 S Insert	legacy mok=3	S-Insert mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Insert	legacy mok=3	C-Insert mods=4	\e[2;5~	agree
+xterm 411 M Insert	legacy mok=3	M-Insert mods=2	\e[2;3~	agree
+xterm 411 CS Insert	legacy mok=3	C-S-Insert mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Insert	legacy mok=3	C-M-Insert mods=6	\e[2;7~	agree
+xterm 411 MS Insert	legacy mok=3	M-S-Insert mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Insert	legacy mok=3	C-M-S-Insert mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Up	legacy mok=3	Up mods=0	\e[A	agree
+xterm 411 S Up	legacy mok=3	S-Up mods=1	\e[1;2A	agree
+xterm 411 C Up	legacy mok=3	C-Up mods=4	\e[1;5A	agree
+xterm 411 M Up	legacy mok=3	M-Up mods=2	\e[1;3A	agree
+xterm 411 CS Up	legacy mok=3	C-S-Up mods=5	\e[1;6A	agree
+xterm 411 CM Up	legacy mok=3	C-M-Up mods=6	\e[1;7A	agree
+xterm 411 MS Up	legacy mok=3	M-S-Up mods=3	\e[1;4A	agree
+xterm 411 CMS Up	legacy mok=3	C-M-S-Up mods=7	\e[1;8A	agree
+xterm 411 - Down	legacy mok=3	Down mods=0	\e[B	agree
+xterm 411 S Down	legacy mok=3	S-Down mods=1	\e[1;2B	agree
+xterm 411 C Down	legacy mok=3	C-Down mods=4	\e[1;5B	agree
+xterm 411 M Down	legacy mok=3	M-Down mods=2	\e[1;3B	agree
+xterm 411 CS Down	legacy mok=3	C-S-Down mods=5	\e[1;6B	agree
+xterm 411 CM Down	legacy mok=3	C-M-Down mods=6	\e[1;7B	agree
+xterm 411 MS Down	legacy mok=3	M-S-Down mods=3	\e[1;4B	agree
+xterm 411 CMS Down	legacy mok=3	C-M-S-Down mods=7	\e[1;8B	agree
+xterm 411 - Left	legacy mok=3	Left mods=0	\e[D	agree
+xterm 411 S Left	legacy mok=3	S-Left mods=1	\e[1;2D	agree
+xterm 411 C Left	legacy mok=3	C-Left mods=4	\e[1;5D	agree
+xterm 411 M Left	legacy mok=3	M-Left mods=2	\e[1;3D	agree
+xterm 411 CS Left	legacy mok=3	C-S-Left mods=5	\e[1;6D	agree
+xterm 411 CM Left	legacy mok=3	C-M-Left mods=6	\e[1;7D	agree
+xterm 411 MS Left	legacy mok=3	M-S-Left mods=3	\e[1;4D	agree
+xterm 411 CMS Left	legacy mok=3	C-M-S-Left mods=7	\e[1;8D	agree
+xterm 411 - Right	legacy mok=3	Right mods=0	\e[C	agree
+xterm 411 S Right	legacy mok=3	S-Right mods=1	\e[1;2C	agree
+xterm 411 C Right	legacy mok=3	C-Right mods=4	\e[1;5C	agree
+xterm 411 M Right	legacy mok=3	M-Right mods=2	\e[1;3C	agree
+xterm 411 CS Right	legacy mok=3	C-S-Right mods=5	\e[1;6C	agree
+xterm 411 CM Right	legacy mok=3	C-M-Right mods=6	\e[1;7C	agree
+xterm 411 MS Right	legacy mok=3	M-S-Right mods=3	\e[1;4C	agree
+xterm 411 CMS Right	legacy mok=3	C-M-S-Right mods=7	\e[1;8C	agree
+xterm 411 - Home	legacy mok=3	Home mods=0	\e[H	agree
+xterm 411 S Home	legacy mok=3	S-Home mods=1	\e[1;2H	agree
+xterm 411 C Home	legacy mok=3	C-Home mods=4	\e[1;5H	agree
+xterm 411 M Home	legacy mok=3	M-Home mods=2	\e[1;3H	agree
+xterm 411 CS Home	legacy mok=3	C-S-Home mods=5	\e[1;6H	agree
+xterm 411 CM Home	legacy mok=3	C-M-Home mods=6	\e[1;7H	agree
+xterm 411 MS Home	legacy mok=3	M-S-Home mods=3	\e[1;4H	agree
+xterm 411 CMS Home	legacy mok=3	C-M-S-Home mods=7	\e[1;8H	agree
+xterm 411 - End	legacy mok=3	End mods=0	\e[F	agree
+xterm 411 S End	legacy mok=3	S-End mods=1	\e[1;2F	agree
+xterm 411 C End	legacy mok=3	C-End mods=4	\e[1;5F	agree
+xterm 411 M End	legacy mok=3	M-End mods=2	\e[1;3F	agree
+xterm 411 CS End	legacy mok=3	C-S-End mods=5	\e[1;6F	agree
+xterm 411 CM End	legacy mok=3	C-M-End mods=6	\e[1;7F	agree
+xterm 411 MS End	legacy mok=3	M-S-End mods=3	\e[1;4F	agree
+xterm 411 CMS End	legacy mok=3	C-M-S-End mods=7	\e[1;8F	agree
+xterm 411 - Prior	legacy mok=3	PageUp mods=0	\e[5~	agree
+xterm 411 S Prior	legacy mok=3	S-PageUp mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Prior	legacy mok=3	C-PageUp mods=4	\e[5;5~	agree
+xterm 411 M Prior	legacy mok=3	M-PageUp mods=2	\e[5;3~	agree
+xterm 411 CS Prior	legacy mok=3	C-S-PageUp mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Prior	legacy mok=3	C-M-PageUp mods=6	\e[5;7~	agree
+xterm 411 MS Prior	legacy mok=3	M-S-PageUp mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Prior	legacy mok=3	C-M-S-PageUp mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - Next	legacy mok=3	PageDown mods=0	\e[6~	agree
+xterm 411 S Next	legacy mok=3	S-PageDown mods=1	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 C Next	legacy mok=3	C-PageDown mods=4	\e[6;5~	agree
+xterm 411 M Next	legacy mok=3	M-PageDown mods=2	\e[6;3~	agree
+xterm 411 CS Next	legacy mok=3	C-S-PageDown mods=5	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CM Next	legacy mok=3	C-M-PageDown mods=6	\e[6;7~	agree
+xterm 411 MS Next	legacy mok=3	M-S-PageDown mods=3	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 CMS Next	legacy mok=3	C-M-S-PageDown mods=7	none	na: xterm's own default translations take Shift with Insert, Page Up and Page Down (paste, scroll), with any other modifiers too
+xterm 411 - F1	legacy mok=3	F1 mods=0	\eOP	agree
+xterm 411 S F1	legacy mok=3	S-F1 mods=1	\e[1;2P	agree
+xterm 411 C F1	legacy mok=3	C-F1 mods=4	\e[1;5P	agree
+xterm 411 M F1	legacy mok=3	M-F1 mods=2	\e[1;3P	agree
+xterm 411 CS F1	legacy mok=3	C-S-F1 mods=5	\e[1;6P	agree
+xterm 411 CM F1	legacy mok=3	C-M-F1 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F1	legacy mok=3	M-S-F1 mods=3	\e[1;4P	agree
+xterm 411 CMS F1	legacy mok=3	C-M-S-F1 mods=7	\e[1;8P	agree
+xterm 411 - F2	legacy mok=3	F2 mods=0	\eOQ	agree
+xterm 411 S F2	legacy mok=3	S-F2 mods=1	\e[1;2Q	agree
+xterm 411 C F2	legacy mok=3	C-F2 mods=4	\e[1;5Q	agree
+xterm 411 M F2	legacy mok=3	M-F2 mods=2	\e[1;3Q	agree
+xterm 411 CS F2	legacy mok=3	C-S-F2 mods=5	\e[1;6Q	agree
+xterm 411 CM F2	legacy mok=3	C-M-F2 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F2	legacy mok=3	M-S-F2 mods=3	\e[1;4Q	agree
+xterm 411 CMS F2	legacy mok=3	C-M-S-F2 mods=7	\e[1;8Q	agree
+xterm 411 - F3	legacy mok=3	F3 mods=0	\eOR	agree
+xterm 411 S F3	legacy mok=3	S-F3 mods=1	\e[1;2R	agree
+xterm 411 C F3	legacy mok=3	C-F3 mods=4	\e[1;5R	agree
+xterm 411 M F3	legacy mok=3	M-F3 mods=2	\e[1;3R	agree
+xterm 411 CS F3	legacy mok=3	C-S-F3 mods=5	\e[1;6R	agree
+xterm 411 CM F3	legacy mok=3	C-M-F3 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F3	legacy mok=3	M-S-F3 mods=3	\e[1;4R	agree
+xterm 411 CMS F3	legacy mok=3	C-M-S-F3 mods=7	\e[1;8R	agree
+xterm 411 - F4	legacy mok=3	F4 mods=0	\eOS	agree
+xterm 411 S F4	legacy mok=3	S-F4 mods=1	\e[1;2S	agree
+xterm 411 C F4	legacy mok=3	C-F4 mods=4	\e[1;5S	agree
+xterm 411 M F4	legacy mok=3	M-F4 mods=2	\e[1;3S	agree
+xterm 411 CS F4	legacy mok=3	C-S-F4 mods=5	\e[1;6S	agree
+xterm 411 CM F4	legacy mok=3	C-M-F4 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F4	legacy mok=3	M-S-F4 mods=3	\e[1;4S	agree
+xterm 411 CMS F4	legacy mok=3	C-M-S-F4 mods=7	\e[1;8S	agree
+xterm 411 - F5	legacy mok=3	F5 mods=0	\e[15~	agree
+xterm 411 S F5	legacy mok=3	S-F5 mods=1	\e[15;2~	agree
+xterm 411 C F5	legacy mok=3	C-F5 mods=4	\e[15;5~	agree
+xterm 411 M F5	legacy mok=3	M-F5 mods=2	\e[15;3~	agree
+xterm 411 CS F5	legacy mok=3	C-S-F5 mods=5	\e[15;6~	agree
+xterm 411 CM F5	legacy mok=3	C-M-F5 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F5	legacy mok=3	M-S-F5 mods=3	\e[15;4~	agree
+xterm 411 CMS F5	legacy mok=3	C-M-S-F5 mods=7	\e[15;8~	agree
+xterm 411 - F6	legacy mok=3	F6 mods=0	\e[17~	agree
+xterm 411 S F6	legacy mok=3	S-F6 mods=1	\e[17;2~	agree
+xterm 411 C F6	legacy mok=3	C-F6 mods=4	\e[17;5~	agree
+xterm 411 M F6	legacy mok=3	M-F6 mods=2	\e[17;3~	agree
+xterm 411 CS F6	legacy mok=3	C-S-F6 mods=5	\e[17;6~	agree
+xterm 411 CM F6	legacy mok=3	C-M-F6 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F6	legacy mok=3	M-S-F6 mods=3	\e[17;4~	agree
+xterm 411 CMS F6	legacy mok=3	C-M-S-F6 mods=7	\e[17;8~	agree
+xterm 411 - F7	legacy mok=3	F7 mods=0	\e[18~	agree
+xterm 411 S F7	legacy mok=3	S-F7 mods=1	\e[18;2~	agree
+xterm 411 C F7	legacy mok=3	C-F7 mods=4	\e[18;5~	agree
+xterm 411 M F7	legacy mok=3	M-F7 mods=2	\e[18;3~	agree
+xterm 411 CS F7	legacy mok=3	C-S-F7 mods=5	\e[18;6~	agree
+xterm 411 CM F7	legacy mok=3	C-M-F7 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F7	legacy mok=3	M-S-F7 mods=3	\e[18;4~	agree
+xterm 411 CMS F7	legacy mok=3	C-M-S-F7 mods=7	\e[18;8~	agree
+xterm 411 - F8	legacy mok=3	F8 mods=0	\e[19~	agree
+xterm 411 S F8	legacy mok=3	S-F8 mods=1	\e[19;2~	agree
+xterm 411 C F8	legacy mok=3	C-F8 mods=4	\e[19;5~	agree
+xterm 411 M F8	legacy mok=3	M-F8 mods=2	\e[19;3~	agree
+xterm 411 CS F8	legacy mok=3	C-S-F8 mods=5	\e[19;6~	agree
+xterm 411 CM F8	legacy mok=3	C-M-F8 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F8	legacy mok=3	M-S-F8 mods=3	\e[19;4~	agree
+xterm 411 CMS F8	legacy mok=3	C-M-S-F8 mods=7	\e[19;8~	agree
+xterm 411 - F9	legacy mok=3	F9 mods=0	\e[20~	agree
+xterm 411 S F9	legacy mok=3	S-F9 mods=1	\e[20;2~	agree
+xterm 411 C F9	legacy mok=3	C-F9 mods=4	\e[20;5~	agree
+xterm 411 M F9	legacy mok=3	M-F9 mods=2	\e[20;3~	agree
+xterm 411 CS F9	legacy mok=3	C-S-F9 mods=5	\e[20;6~	agree
+xterm 411 CM F9	legacy mok=3	C-M-F9 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F9	legacy mok=3	M-S-F9 mods=3	\e[20;4~	agree
+xterm 411 CMS F9	legacy mok=3	C-M-S-F9 mods=7	\e[20;8~	agree
+xterm 411 - F10	legacy mok=3	F10 mods=0	\e[21~	agree
+xterm 411 S F10	legacy mok=3	S-F10 mods=1	\e[21;2~	agree
+xterm 411 C F10	legacy mok=3	C-F10 mods=4	\e[21;5~	agree
+xterm 411 M F10	legacy mok=3	M-F10 mods=2	\e[21;3~	agree
+xterm 411 CS F10	legacy mok=3	C-S-F10 mods=5	\e[21;6~	agree
+xterm 411 CM F10	legacy mok=3	C-M-F10 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F10	legacy mok=3	M-S-F10 mods=3	\e[21;4~	agree
+xterm 411 CMS F10	legacy mok=3	C-M-S-F10 mods=7	\e[21;8~	agree
+xterm 411 - F11	legacy mok=3	F11 mods=0	\e[23~	agree
+xterm 411 S F11	legacy mok=3	S-F11 mods=1	\e[23;2~	agree
+xterm 411 C F11	legacy mok=3	C-F11 mods=4	\e[23;5~	agree
+xterm 411 M F11	legacy mok=3	M-F11 mods=2	\e[23;3~	agree
+xterm 411 CS F11	legacy mok=3	C-S-F11 mods=5	\e[23;6~	agree
+xterm 411 CM F11	legacy mok=3	C-M-F11 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F11	legacy mok=3	M-S-F11 mods=3	\e[23;4~	agree
+xterm 411 CMS F11	legacy mok=3	C-M-S-F11 mods=7	\e[23;8~	agree
+xterm 411 - F12	legacy mok=3	F12 mods=0	\e[24~	agree
+xterm 411 S F12	legacy mok=3	S-F12 mods=1	\e[24;2~	agree
+xterm 411 C F12	legacy mok=3	C-F12 mods=4	\e[24;5~	agree
+xterm 411 M F12	legacy mok=3	M-F12 mods=2	\e[24;3~	agree
+xterm 411 CS F12	legacy mok=3	C-S-F12 mods=5	\e[24;6~	agree
+xterm 411 CM F12	legacy mok=3	C-M-F12 mods=6	none	na: the X server's keymap makes Ctrl-Alt with F1 to F12 its VT switches, which reach no terminal
+xterm 411 MS F12	legacy mok=3	M-S-F12 mods=3	\e[24;4~	agree
+xterm 411 CMS F12	legacy mok=3	C-M-S-F12 mods=7	\e[24;8~	agree

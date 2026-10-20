@@ -197,6 +197,31 @@ impl fux_vt::Sink for Replies {
     }
 }
 
+/// What fux-vt answers the program of `recording` now, set up and fed as
+/// `record` set it up and fed it: the replies a recording keeps, to
+/// compare with what it kept (`corpus`).
+pub fn replies_now(recording: &crate::corpus::Recording) -> Result<Vec<u8>, String> {
+    let mut parser = fux_vt::Parser::with_options(
+        crate::vt_size(recording.rows, recording.cols)?,
+        8 << 20,
+        fux::pane::OPTIONS,
+    )
+    .map_err(|e| format!("fux-vt: {e}"))?;
+    let mut out = Vec::new();
+    for (i, (_, bytes)) in recording.steps.iter().enumerate() {
+        if let Some((rows, cols)) = recording.resize_at(i) {
+            parser
+                .resize(crate::vt_size(rows, cols)?)
+                .map_err(|e| format!("fux-vt: {e}"))?;
+            out.extend(parser.resize_report().unwrap_or_default());
+        }
+        let mut sink = Replies::default();
+        let _ = parser.process_with(bytes, &mut sink);
+        out.extend_from_slice(&sink.0);
+    }
+    Ok(out)
+}
+
 /// The program on its PTY, the parser beside it, and everything read.
 struct Session {
     master: File,
@@ -478,7 +503,9 @@ fn write(request: &Request, session: &Session, ends: &[End]) -> Result<(), Strin
         std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
     };
     save(&path(".bin"), &output)?;
+    sign(&path(".bin"), &output)?;
     let manifest = serde_json::json!({
+        "recorded": provenance(),
         "program": request.program,
         "version": request.version,
         "command": request.argv,
@@ -495,9 +522,75 @@ fn write(request: &Request, session: &Session, ends: &[End]) -> Result<(), Strin
     save(&path(".json"), text.as_bytes())
 }
 
+/// When, from which commit and on what system a recording is made, as
+/// the commands say them (`date -u`, `git rev-parse HEAD`, `uname -sr`).
+fn provenance() -> serde_json::Value {
+    let said = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+    };
+    serde_json::json!({
+        "date": said("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]),
+        "commit": said("git", &["rev-parse", "HEAD"]),
+        "system": said("uname", &["-sr"]),
+    })
+}
+
+/// Puts `bin`'s SHA-256 in the corpus's `SHA256SUMS` (as `sha256sum`
+/// writes it), in place of the one it had, so a test can check every
+/// recording's bytes are the ones recorded.
+fn sign(bin: &Path, bytes: &[u8]) -> Result<(), String> {
+    let name = bin
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or("a recording with no name")?;
+    let sums = bin.with_file_name("SHA256SUMS");
+    let old = std::fs::read_to_string(&sums).unwrap_or_default();
+    let mut lines: Vec<String> = old
+        .lines()
+        .filter(|l| l.split_whitespace().nth(1) != Some(name.as_str()))
+        .map(str::to_owned)
+        .collect();
+    lines.push(format!("{}  {name}", crate::bench::sha256(bytes)?));
+    lines.sort_by(|a, b| {
+        a.split_whitespace()
+            .nth(1)
+            .cmp(&b.split_whitespace().nth(1))
+    });
+    let mut text = lines.join("\n");
+    text.push('\n');
+    std::fs::write(&sums, text).map_err(|e| format!("{}: {e}", sums.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    /// A recording made again replaces its line in SHA256SUMS, and the
+    /// others stay, sorted by name.
+    #[test]
+    fn a_recording_is_signed_once() -> Result<(), String> {
+        let dir = std::env::temp_dir().join(format!("fux-vt-sign-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let sums = dir.join("SHA256SUMS");
+        std::fs::write(&sums, "00  b.bin\n11  a.bin\n").map_err(|e| e.to_string())?;
+        super::sign(&dir.join("a.bin"), b"x")?;
+        super::sign(&dir.join("a.bin"), b"y")?;
+        let text = std::fs::read_to_string(&sums).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.split_whitespace().nth(1))
+            .collect();
+        assert_eq!(names, ["a.bin", "b.bin"]);
+        assert!(text.contains(&format!("{}  a.bin", crate::bench::sha256(b"y")?)));
+        Ok(())
+    }
 
     /// Keys reach the program as fux gives them to a pane, in the key mode
     /// it asked for (fux-vt/src/keys/encode.rs).

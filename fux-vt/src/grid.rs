@@ -2,13 +2,13 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, Text};
+use crate::compact::{BLANK, Compact, Line, Restyled, Text};
 use crate::geometry::{Size, Span};
-use crate::history::{Arriving, History, trimmed};
-use crate::link::{Held, Hyperlink, Links, RowLinks};
+use crate::history::{Arriving, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
+use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
 use crate::screen::Saved;
 use crate::style::Styles;
-use crate::{Attributes, CellRef, Error, Row, RowId, reserve};
+use crate::{Attributes, CellRef, Error, LineRendition, Row, RowId, reserve};
 
 /// The cursor, and what DECSC saves with it. Only the grid's movements set
 /// its row and column, each keeping them on the grid: a glyph that reaches
@@ -99,6 +99,8 @@ fn take_row(
         .get_mut(start..start.wrapping_add(usize::from(m.used)))
         .unwrap_or_default();
     let len = trimmed(row).len();
+    // The blank tail scanned; history's push counts the cells it keeps.
+    work!(cells, row.len().saturating_sub(len));
     let kept = row.get_mut(..len).unwrap_or_default();
     history.push(m.arriving(kept, width))?;
     // Blanked here, while they are at hand, not when the slot is taken;
@@ -111,6 +113,10 @@ fn take_row(
     Ok(true)
 }
 
+/// `Grid::narrow`'s bits.
+const LR: u8 = 1;
+const DOUBLED: u8 = 2;
+
 /// The most cells a screen holds, and its history (512 MiB at 8 bytes a
 /// cell), whatever history's budget.
 pub(crate) const MAX_CELLS: usize = 64 * 1024 * 1024;
@@ -122,17 +128,19 @@ pub(crate) const MAX_ROWS: usize = 1_048_576;
 struct Meta {
     id: RowId,
     version: u64,
-    wrapped: bool,
     /// How far into the row a cell may differ from a blank in the default
     /// attributes: every cell from here to the grid's width is one, so
     /// recycling the slot clears only the cells before it, and a row
     /// scrolled into history is looked at no further.
     used: u16,
-    /// Whether a prompt starts on the row (OSC 133 ; A).
-    prompt: bool,
+    /// Whether the row is soft-wrapped (`WRAPPED`) and whether a prompt
+    /// starts on it (`PROMPT`, OSC 133 ; A), the bits history keeps them
+    /// in, and its line rendition above them (`RENDITION`): one byte, which
+    /// a row taken into history hands on as it is.
+    flags: u8,
 }
 
-// `prompt` fits where the struct had padding: a row costs no more for it.
+// `flags` fits where the struct had padding: a row costs no more for it.
 const _: () = assert!(size_of::<Meta>() == 24);
 
 impl Meta {
@@ -142,8 +150,7 @@ impl Meta {
         Arriving {
             id: self.id,
             version: self.version,
-            wrapped: self.wrapped,
-            prompt: self.prompt,
+            flags: self.flags,
             cells,
             width,
         }
@@ -152,10 +159,34 @@ impl Meta {
         Self {
             id,
             version,
-            wrapped,
             used,
-            prompt: false,
+            flags: if wrapped { WRAPPED } else { 0 },
         }
+    }
+    fn wrapped(&self) -> bool {
+        self.flags & WRAPPED != 0
+    }
+    fn prompt(&self) -> bool {
+        self.flags & PROMPT != 0
+    }
+    fn rendition(&self) -> LineRendition {
+        LineRendition::from_bits(self.flags >> RENDITION_SHIFT)
+    }
+    /// The row with `flag` on or off. Its soft wrap set or ended anew, its
+    /// line no longer ends early (`ENDS`).
+    fn set(&mut self, flag: u8, on: bool) {
+        let ends = if flag & WRAPPED != 0 { ENDS } else { 0 };
+        self.flags = (self.flags & !flag & !ends) | if on { flag } else { 0 };
+    }
+    /// Whether its line goes on in the row below: soft-wrapped, and that
+    /// row not erased whole since (`ENDS`).
+    fn continues(&self) -> bool {
+        self.flags & (WRAPPED | ENDS) == WRAPPED
+    }
+    /// The row with rendition `rendition`, its other flags kept.
+    fn with_rendition(mut self, rendition: LineRendition) -> Self {
+        self.flags = (self.flags & (WRAPPED | PROMPT | ENDS)) | rendition.bits() << RENDITION_SHIFT;
+        self
     }
 }
 
@@ -202,12 +233,62 @@ impl Order {
     /// Puts `slot` under the last row.
     fn push_back(&mut self, slot: usize) {
         if self.top != 0 {
+            spend!(slots, self.slots.len());
             if let Some(slots) = self.slots.get_mut(..) {
                 slots.rotate_left(self.top);
             }
             self.top = 0;
         }
         self.slots.push(slot);
+    }
+    /// Turns the slots of rows `low` to `high` by `by`: to the left (each
+    /// `by` rows up, the first `by` going to the end), or to the right.
+    /// Once, whatever `by`, and only rows `low` to `high`, wherever the
+    /// ring puts them (threats.md B36).
+    fn rotate(&mut self, (low, high): (usize, usize), by: usize, left: bool) {
+        let len = high.wrapping_sub(low).wrapping_add(1);
+        if high < low || high >= self.slots.len() || by > len {
+            return;
+        }
+        let (front, _) = self.as_mut_slices();
+        if low < front.len() && high >= front.len() {
+            // Across the ring's end: turned where they lie, by three
+            // reversals, each slot moved about twice.
+            work!(slots, len.saturating_mul(2));
+            let by = if left { by } else { len.saturating_sub(by) };
+            let (mid, end) = (low.saturating_add(by), high.saturating_add(1));
+            self.reverse(low, mid);
+            self.reverse(mid, end);
+            self.reverse(low, end);
+            return;
+        }
+        let (front, back) = self.as_mut_slices();
+        let split = front.len();
+        let run = match (low.checked_sub(split), high.checked_sub(split)) {
+            (Some(low), Some(high)) => back.get_mut(low..=high),
+            _ => front.get_mut(low..=high),
+        };
+        if let Some(run) = run {
+            work!(slots, run.len());
+            if left {
+                run.rotate_left(by);
+            } else {
+                run.rotate_right(by);
+            }
+        }
+    }
+    /// Reverses the slots of rows `low` up to `end`, not including it,
+    /// wherever the ring puts them.
+    fn reverse(&mut self, mut low: usize, mut end: usize) {
+        while low < end {
+            end = end.wrapping_sub(1);
+            if let (Some(a), Some(b)) = (self.at(low), self.at(end))
+                && let Ok([a, b]) = self.slots.get_disjoint_mut([a, b])
+            {
+                std::mem::swap(a, b);
+            }
+            low = low.wrapping_add(1);
+        }
     }
     /// The top row's slot becomes the bottom row's.
     #[inline]
@@ -305,6 +386,9 @@ pub(crate) struct Grid {
     /// whenever styles are numbered anew, each holds the default attributes,
     /// which are no style of the table.
     recent: [(Attributes, u32); RECENT],
+    /// How many sweeps have renumbered the table's styles: a number found
+    /// before one may name another style after it.
+    sweeps: u64,
     /// The slot of each row of the screen, top to bottom.
     order: Order,
     history: History,
@@ -317,9 +401,12 @@ pub(crate) struct Grid {
     /// The left and right margins (DECSLRM, with DECLRMM set), set with
     /// `set_columns` alone, which keeps `lr`.
     columns: Span,
-    /// Whether `columns` is narrower than the screen: one test for every
-    /// operation the margins bound, which without them does as it did.
-    lr: bool,
+    /// What may end a line before the screen's edge, a bit each: `LR`,
+    /// `columns` is narrower than the screen; `DOUBLED`, a row of the
+    /// screen may be half as long (`LineRendition`), set when one is made
+    /// so and cleared when every row is single width again. One test for
+    /// every operation either bounds, which without them does as it did.
+    narrow: u8,
     /// Whether its screen's cells are yet to be made (`Grid::unmade`):
     /// every row is blank, and `make` makes them.
     unmade: bool,
@@ -394,6 +481,7 @@ impl Grid {
             return Ok(());
         }
         let size = self.size.cells();
+        spend!(cells, size);
         reserve(&mut self.cells, size)?;
         self.cells.resize(size, BLANK);
         self.unmade = false;
@@ -430,6 +518,7 @@ impl Grid {
             links: Links::default(),
             styles: Arc::default(),
             recent: [(Attributes::default(), 0); RECENT],
+            sweeps: 0,
             order: Order::default(),
             history: History::new(history_bytes),
             size,
@@ -437,7 +526,7 @@ impl Grid {
             saved: Saved::default(),
             lines: size.lines(),
             columns: size.columns(),
-            lr: false,
+            narrow: 0,
             unmade: false,
             keyboard: KeyboardStack::default(),
         }
@@ -447,12 +536,24 @@ impl Grid {
     /// and their numbers, which the rows it is given keep; unmade if this
     /// one is.
     fn successor(&self, size: Size) -> Self {
-        Self {
+        let mut next = Self {
             styles: Arc::clone(&self.styles),
             recent: self.recent,
             unmade: self.unmade,
             ..Self::bare(size, self.history_bytes())
-        }
+        };
+        // Its history counts the styles it shares as this one's does
+        // (B11), before it is given a row.
+        let cells = if self.unmade { 0 } else { size.cells() };
+        next.charge_styles(cells);
+        // The rows it is given come in many spans (`History::stage_spans`),
+        // found once it has them all (`rows_given`).
+        next.history.stage_spans();
+        next
+    }
+    /// A successor given all its rows: its history finds them now.
+    pub(crate) fn rows_given(&mut self) {
+        self.history.finish_spans();
     }
 
     /// Room for the screen's rows, exactly; their cells' only once made.
@@ -488,9 +589,19 @@ impl Grid {
         self.history.push(meta.arriving(kept, width))?;
         // A row with neither text nor links, as most are, attaches none.
         let text = text.filter(|text| !text.is_empty());
+        let links = links.and_then(|mut links| KeptLinks::take(&mut links));
         if text.is_some() || links.is_some() {
             self.history.attach(text.map(|text| text.exact()), links);
         }
+        self.history.trim();
+        Ok(())
+    }
+
+    /// Keeps a row in history as it is, `cells` of `width`, their blank
+    /// tail left: a row with no text or links, as another history or the
+    /// screen kept it.
+    fn keep_history_row(&mut self, meta: Meta, cells: &[Compact], width: u16) -> Result<(), Error> {
+        self.history.push(meta.arriving(trimmed(cells), width))?;
         self.history.trim();
         Ok(())
     }
@@ -507,12 +618,17 @@ impl Grid {
     ) {
         let slot = self.meta.len();
         let cols = usize::from(self.size.cols());
+        spend!(rows, 1);
         // An unmade grid's rows are blank, and have no cells to put.
         if !self.unmade {
+            spend!(cells, cols);
             let start = self.cells.len();
             self.cells
                 .extend_from_slice(cells.get(..cells.len().min(cols)).unwrap_or_default());
             self.cells.resize(start.saturating_add(cols), BLANK);
+        }
+        if meta.rendition().is_double() {
+            self.narrow |= DOUBLED;
         }
         self.meta.push(meta);
         self.texts.push(text.unwrap_or_default());
@@ -580,15 +696,15 @@ impl Grid {
             index: self.history.len().saturating_add(row),
             id: m.id,
             version: m.version,
-            wrapped: m.wrapped,
-            prompt: m.prompt,
+            flags: m.flags,
             cells: self.slice(slot),
             width: usize::from(self.size.cols()),
             text: self.texts.get(slot)?,
-            links: self.linked.get(slot).filter(|links| !links.is_empty()),
+            links: (self.linked.get(slot).filter(|links| !links.is_empty())).map(RowLinks::runs),
         })
     }
     pub fn row_at(&self, index: usize) -> Option<Row<'_>> {
+        work!(rows, 1);
         let Some(row) = index.checked_sub(self.history.len()) else {
             let found = self.history.get(index)?;
             return Some(Row {
@@ -596,8 +712,7 @@ impl Grid {
                 index,
                 id: found.kept.id,
                 version: found.kept.version,
-                wrapped: found.kept.wrapped(),
-                prompt: found.kept.prompt(),
+                flags: found.flags,
                 cells: found.cells,
                 width: usize::from(found.kept.width()),
                 text: found.text,
@@ -609,20 +724,59 @@ impl Grid {
     pub fn row_by_id(&self, id: RowId) -> Option<Row<'_>> {
         self.index_of(id).and_then(|index| self.row_at(index))
     }
+    /// Where the row with identity `id` is, counted from the oldest row
+    /// history keeps: the screen's rows are looked through first, then
+    /// history's.
     pub fn index_of(&self, id: RowId) -> Option<usize> {
-        self.history.position(id).or_else(|| {
-            self.order
-                .iter()
-                .position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id))
-                .and_then(|row| row.checked_add(self.history.len()))
-        })
+        self.screen_index_of(id)
+            .or_else(|| self.history.position(id))
+    }
+    /// Where the row with identity `id` is, as `index_of` says, if it is
+    /// one of the screen's rows: at most its rows read.
+    pub(crate) fn screen_index_of(&self, id: RowId) -> Option<usize> {
+        let row =
+            (self.order.iter()).position(|slot| self.meta.get(*slot).is_some_and(|m| m.id == id));
+        spend!(
+            rows,
+            row.map_or(self.order.len(), |row| row.saturating_add(1))
+        );
+        row.and_then(|row| row.checked_add(self.history.len()))
+    }
+    /// Where the screen's pictures were last followed into history to
+    /// (`Screen::track_pictures`).
+    pub(crate) fn followed(&self) -> &crate::history::Noted {
+        self.history.followed()
+    }
+    /// The numbers, in the order rows came into history, of the oldest row
+    /// it keeps and of the next to come.
+    pub(crate) fn history_numbers(&self) -> (u64, u64) {
+        self.history.numbers()
+    }
+    /// Where the history row numbered `number` in the order rows came is,
+    /// if it is kept and is row `id`: one row read.
+    pub(crate) fn index_of_number(&self, number: u64, id: RowId) -> Option<usize> {
+        work!(rows, 1);
+        let index = self.history.index_of_number(number)?;
+        (self.history.kept(index)?.id == id).then_some(index)
+    }
+    /// The identity of the history row numbered `number` in the order rows
+    /// came, if it is kept.
+    pub(crate) fn id_of_number(&self, number: u64) -> Option<RowId> {
+        let index = self.history.index_of_number(number)?;
+        Some(self.history.kept(index)?.id)
     }
     /// Whether the screen's row `row` is soft-wrapped, read without making
     /// its `Row`: printing asks on its way.
     pub fn live_wrapped(&self, row: u16) -> bool {
         self.slot(row)
             .and_then(|slot| self.meta.get(slot))
-            .is_some_and(|m| m.wrapped)
+            .is_some_and(Meta::wrapped)
+    }
+    /// The identity of the screen's row `row`, read without making its
+    /// `Row`: recording prints asks for it for each run.
+    #[inline]
+    pub(crate) fn live_id(&self, row: u16) -> Option<RowId> {
+        Some(self.meta.get(self.slot(row)?)?.id)
     }
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
@@ -644,6 +798,11 @@ impl Grid {
     pub fn live_cells(&self, row: u16) -> &[Compact] {
         self.slot(row).map_or(&[], |slot| self.slice(slot))
     }
+    /// A live row's cells as stored, and its text.
+    pub(crate) fn live_cells_and_text(&self, row: u16) -> Option<(&[Compact], &Text)> {
+        let slot = self.slot(row)?;
+        Some((self.slice(slot), self.texts.get(slot)?))
+    }
     /// A live row's cell as stored, for what its halves and whether it
     /// has text say, which need neither its text nor its attributes.
     #[inline]
@@ -662,8 +821,19 @@ impl Grid {
         end: u16,
         f: impl FnOnce(&mut [Compact]) -> bool,
     ) {
+        self.mutate_row_to(row, version, |cells| f(cells).then_some(end));
+    }
+    /// `mutate_row` for an edit that finds as it goes where the cells it
+    /// makes end: `f` says so, or `None` if it changed none.
+    #[inline]
+    pub fn mutate_row_to(
+        &mut self,
+        row: u16,
+        version: u64,
+        f: impl FnOnce(&mut [Compact]) -> Option<u16>,
+    ) {
         if let Some(slot) = self.slot(row)
-            && f(self.slice_mut(slot))
+            && let Some(end) = f(self.slice_mut(slot))
         {
             self.changed(slot, end.into(), version);
         }
@@ -695,6 +865,7 @@ impl Grid {
         let Some(slot) = self.slot(row) else {
             return Written::Before(0);
         };
+        work!(cells, run.len());
         let start = usize::from(col);
         let Some(dst) = start
             .checked_add(run.len())
@@ -833,18 +1004,36 @@ impl Grid {
     /// few compares, stays small where it is inlined.
     #[inline(never)]
     fn find_table_style(&mut self, attributes: Attributes, at: usize) -> u32 {
+        work!(lookups, 1);
         let id = match self.styles.find(attributes) {
             Some(id) => id,
             None => {
+                work!(inserts, 1);
                 let cells = self.cells.len().saturating_add(self.history.kept_cells());
-                if self.styles.wants_sweep(cells) {
+                let mut swept = self.styles.wants_sweep(cells);
+                if swept {
                     self.sweep();
+                }
+                // Its bytes change only as its room grows, or a sweep, or
+                // as a table shared with a clone is copied, at its length:
+                // history makes room for them first, and if it can't, the
+                // styles only it held go too.
+                let copied = Arc::get_mut(&mut self.styles).is_none();
+                Arc::make_mut(&mut self.styles);
+                let grows = self.styles.full();
+                if grows && !self.make_style_room() {
+                    self.sweep();
+                    swept = true;
                 }
                 // After a sweep there is room: the styles in use are at
                 // most the cells, far fewer than the table holds.
-                Arc::make_mut(&mut self.styles)
+                let id = Arc::make_mut(&mut self.styles)
                     .insert(attributes)
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                if grows || swept || copied {
+                    self.charge_styles(self.cells.len());
+                }
+                id
             }
         };
         if let Some(slot) = self.recent.get_mut(at) {
@@ -853,11 +1042,32 @@ impl Grid {
         id
     }
 
+    /// Charges the style table's bytes beyond the share of a screen of
+    /// `cells` cells to history's budget (`threats.md` B11).
+    fn charge_styles(&mut self, cells: usize) {
+        let share = crate::style::screen_share(cells);
+        self.history
+            .charge(self.styles.bytes().saturating_sub(share));
+    }
+
+    /// Charges the style table's bytes, one more style in it, beyond the
+    /// screen's share to history's budget, the oldest rows going to fit
+    /// (`threats.md` B11); whether they fit, with no rows if need be.
+    fn make_style_room(&mut self) -> bool {
+        let share = crate::style::screen_share(self.cells.len());
+        let after = self.styles.bytes_after_insert().saturating_sub(share);
+        self.history.charge(after);
+        !(after > self.history.budget())
+    }
+
     /// Keeps only the styles cells have, numbered anew, and gives every
     /// cell its style's new number (`style.rs`).
     #[cold]
     #[inline(never)]
     pub(crate) fn sweep(&mut self) {
+        // Every cell is read twice: to mark its style, then to renumber it.
+        let cells = self.cells.len().saturating_add(self.history.kept_cells());
+        spend!(styles, cells.saturating_mul(2));
         let mut used = vec![false; self.styles.len()];
         let mut mark = |cell: &Compact| {
             if let Some(mark) = Styles::place(cell.style()).and_then(|i| used.get_mut(i)) {
@@ -875,6 +1085,12 @@ impl Grid {
         self.cells.iter_mut().for_each(&mut renumbered);
         self.history.each_cell_mut(renumbered);
         self.recent = [(Attributes::default(), 0); RECENT];
+        self.sweeps = self.sweeps.wrapping_add(1);
+    }
+
+    /// How many sweeps have renumbered the table's styles.
+    pub(crate) fn sweeps(&self) -> u64 {
+        self.sweeps
     }
 
     /// How many styles the grid's table holds, in use or not.
@@ -894,9 +1110,8 @@ impl Grid {
     /// no room for it, room is made (`make_room`), at most once in a while
     /// after that fails; `None` if there is still none.
     pub fn intern(&mut self, opened: &Hyperlink, version: u64) -> Option<Hyperlink> {
-        let (uri, id) = (&opened.uri, opened.id.as_ref());
-        if let Some(id) = id
-            && let Some(link) = self.links.find(uri, id)
+        if opened.id().is_some()
+            && let Some(link) = self.links.find(opened)
         {
             return Some(link.clone());
         }
@@ -921,16 +1136,13 @@ impl Grid {
     /// never do.
     fn make_room(&mut self, version: u64) {
         // Oldest first, as links open: the screen's rows top to bottom.
-        let linked = &self.linked;
-        let history = self
-            .history
-            .links()
-            .map(|(index, links)| (Some(index), links));
-        let screen = self
-            .order
-            .iter()
-            .filter_map(|slot| Some((None, linked.get(*slot)?)));
-        let lose = self.links.sweep(history.chain(screen), self.history.len());
+        let (linked, history, order) = (&self.linked, &self.history, &self.order);
+        let rows = || {
+            let history = history.links().map(|(index, links)| (Some(index), links));
+            let screen = (order.iter()).filter_map(|slot| Some((None, linked.get(*slot)?.runs())));
+            history.chain(screen)
+        };
+        let lose = self.links.sweep(rows, self.history.len());
         for index in 0..lose {
             self.history.unlink(index, version);
         }
@@ -941,22 +1153,51 @@ impl Grid {
         self.history.let_go
     }
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
-    /// not: ED erased it.
-    pub fn set_prompt(&mut self, row: u16, prompt: bool) {
+    /// not: ED erased it. A change of mark gives the row `version`
+    /// (`threats.md` P12): a host redraws what shows the marks.
+    pub fn set_prompt(&mut self, row: u16, prompt: bool, version: u64) {
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+            && m.prompt() != prompt
+        {
+            m.version = version;
+            m.set(PROMPT, prompt);
+        }
+    }
+
+    /// Live row `row`'s line ends with it though it stays soft-wrapped
+    /// (`ENDS`), and the row takes `version` if that is news.
+    fn end_line(&mut self, row: u16, version: u64) {
+        if let Some(slot) = self.slot(row)
+            && let Some(m) = self.meta.get_mut(slot)
+            && m.continues()
+        {
+            m.version = version;
+            m.flags |= ENDS;
+        }
+    }
+
+    /// `wrap`, as a glyph wrapping off live row `row` does: its line goes
+    /// on, though it had ended there (`ENDS`).
+    pub(crate) fn wrap_onto(&mut self, row: u16, wrapped: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
         {
-            m.prompt = prompt;
+            let flags = (m.flags & !(WRAPPED | ENDS)) | if wrapped { WRAPPED } else { 0 };
+            if flags != m.flags {
+                m.version = version;
+                m.flags = flags;
+            }
         }
     }
 
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
-            && m.wrapped != wrapped
+            && m.wrapped() != wrapped
         {
             m.version = version;
-            m.wrapped = wrapped;
+            m.set(WRAPPED, wrapped);
         }
     }
     /// Blanks columns `start` to `end` of live row `row` in `attributes`,
@@ -989,6 +1230,7 @@ impl Grid {
             span_end
         };
         let blank = Compact::blank(style);
+        work!(cells, reach.saturating_sub(first));
         let cells = self.slice_mut(slot);
         // Already blank in this style up to the first that is not, as an
         // erased tail is: the row is as it was, and a blank is never half
@@ -1037,8 +1279,8 @@ impl Grid {
                 m.used = m.used.min(start);
             }
             // As `wrap` ends the row's soft wrap.
-            if clears_edge && m.wrapped {
-                m.wrapped = false;
+            if clears_edge && m.wrapped() {
+                m.set(WRAPPED, false);
                 m.version = version;
             }
         }
@@ -1047,10 +1289,13 @@ impl Grid {
         // its text is gone: a line editor that erases it to draw its prompt
         // again (bash after a resize) starts a line of its own there. Above
         // the top row is history's newest: a screen cleared after a resize
-        // that pushed a line's start into history begins anew too.
+        // that pushed a line's start into history begins anew too. The row
+        // above keeps its soft wrap, as xterm keeps it (`ClearRight`,
+        // `ScrnClearLines` clear only the rows they erase): its line ends
+        // with it (`ENDS`, `Row::continues`).
         if start == 0 && end >= cols {
             match row.checked_sub(1) {
-                Some(above) if changed => self.wrap(above, false, version),
+                Some(above) if changed => self.end_line(above, version),
                 None if changed => self.history.end_newest_line(version),
                 Some(_) | None => {}
             }
@@ -1074,11 +1319,18 @@ impl Grid {
         &mut self,
         display: bool,
         part: Erase,
+        version: u64,
         mut erase: impl FnMut(&mut Self, u16, u16, u16),
     ) {
         self.cursor.pending_wrap = false;
         let ((row, col), cols) = (self.cursor.at(), self.size.cols());
         if display {
+            // ED spends the screen's cells (`budget`); EL, a row's at
+            // most, nothing.
+            crate::budget::spend(
+                crate::budget::units(self.size.cells()),
+                crate::budget::weight::cells,
+            );
             for y in 0..self.size.rows() {
                 let whole = match part {
                     Erase::Below => y > row,
@@ -1087,7 +1339,10 @@ impl Grid {
                 };
                 if whole {
                     erase(self, y, 0, cols);
-                    self.set_prompt(y, false);
+                    self.set_prompt(y, false, version);
+                    if self.doubled() {
+                        self.set_rendition(y, LineRendition::Single, version);
+                    }
                 }
             }
         }
@@ -1097,6 +1352,15 @@ impl Grid {
             Erase::All => (0, cols),
         };
         erase(self, row, start, end);
+        // ED makes a line it erases whole single width (DEC STD 070, ED,
+        // note 1, and its algorithm); EL leaves it as it is.
+        if display && self.doubled() && start == 0 && end >= self.row_end(row) {
+            self.set_rendition(row, LineRendition::Single, version);
+            // Every row is single width again after ED 2.
+            if part == Erase::All {
+                self.narrow &= !DOUBLED;
+            }
+        }
     }
 
     /// `erase`, leaving the guarded glyphs (SPA's) as they are. Each run of
@@ -1114,6 +1378,7 @@ impl Grid {
                     || c.is_wide_continuation() && cells.get(at.wrapping_sub(1)).is_some_and(kept)
             })
         };
+        work!(cells, end.saturating_sub(start));
         let mut runs = Vec::new();
         let mut from = start;
         for col in start..end {
@@ -1139,6 +1404,7 @@ impl Grid {
     pub fn fill(&mut self, row: u16, (start, end): (u16, u16), c: char, style: u32, version: u64) {
         self.erase(row, start, end, style, version);
         let span = usize::from(start)..usize::from(end);
+        work!(cells, span.len());
         let glyph = Compact::glyph(c, 1, style);
         self.mutate_row(row, version, end, |cells| {
             cells
@@ -1163,31 +1429,110 @@ impl Grid {
         all: Option<u32>,
         version: u64,
     ) {
+        #[cfg(test)]
+        if tests::PER_CELL.with(std::cell::Cell::get) {
+            return self.erase_to_spaces_per_cell(row, (start, end), all, version);
+        }
         let span = usize::from(start)..usize::from(end);
+        work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
-            // Whether the glyph before is protected.
+            // Whether the glyph before is protected, which keeps its
+            // second half if the span starts there.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
-            let before = before.filter(|_| all.is_none());
-            let (mut kept, mut changed) = (before.is_some_and(Compact::is_protected), false);
-            for cell in cells.get_mut(span).into_iter().flatten() {
-                if cell.is_wide_continuation() {
-                    if !kept {
-                        *cell = cell.blanked();
-                        changed = true;
-                    }
-                    continue;
-                }
-                kept = all.is_none() && cell.is_protected();
-                if cell.has_contents() && !kept {
-                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
-                    changed = true;
-                }
+            let kept = before.is_some_and(|c| all.is_none() && c.is_protected());
+            let Some(run) = cells.get_mut(span.clone()) else {
+                return false;
+            };
+            let changed = Compact::erase_run(run, all, kept);
+            // Inside the span a glyph and its second half go or stay
+            // together: only one the span's edges cut may have lost its
+            // other half (`repair_wide`, the rest of the row being whole).
+            let last = span.end.saturating_sub(1);
+            let edges = [
+                span.start.checked_sub(1),
+                Some(span.start),
+                Some(last),
+                Some(span.end),
+            ];
+            for at in edges.into_iter().flatten() {
+                repair_wide_at(cells, at);
             }
-            repair_wide(cells);
             changed
         });
         if all.is_some() {
             self.set_link(row, usize::from(start)..usize::from(end), None, version);
+        }
+    }
+
+    /// DECCARA's and DECRARA's work on the cells `start..end` of the
+    /// screen's row `row`: each occupied cell, a wide glyph's second half
+    /// too, takes the style `restyle` gives for its own, and with `fill`
+    /// (DECSACE 2) each unoccupied one becomes a space in it first (DEC STD
+    /// 070, DECSACE). Their text, protection and links stay.
+    ///
+    /// The cells go a run at a time (`Compact::restyle_run`), with the
+    /// styles `restyle` gave lately (`Restyled`); a cell of another style
+    /// asks it again. Asking again for a style it gave would give the same,
+    /// as a style made stays in the table until a sweep. Making one may
+    /// sweep the table, numbering every cell's style anew: the cell it was
+    /// asked for then takes the answer alone, and those given are
+    /// forgotten.
+    pub fn restyle(
+        &mut self,
+        row: u16,
+        (start, end): (u16, u16),
+        fill: bool,
+        version: u64,
+        restyle: &mut impl FnMut(&mut Self, u32) -> u32,
+    ) {
+        #[cfg(test)]
+        if tests::PER_CELL.with(std::cell::Cell::get) {
+            return self.restyle_per_cell(row, (start, end), fill, version, restyle);
+        }
+        let Some(slot) = self.slot(row) else {
+            return;
+        };
+        let end = end.min(self.size.cols());
+        work!(cells, end.saturating_sub(start));
+        let end = usize::from(end);
+        let (mut col, mut changed) = (usize::from(start), false);
+        let mut given = Restyled::default();
+        loop {
+            // The next cell `restyle` is asked of.
+            let cells = self.slice(slot).get(col..end).unwrap_or_default();
+            let Some(at) = cells.iter().position(|c| fill || occupied(c)) else {
+                break;
+            };
+            let Some(old) = cells.get(at).map(Compact::style) else {
+                break;
+            };
+            col = col.saturating_add(at);
+            let sweeps = self.sweeps;
+            let new = restyle(self, old);
+            let swept = self.sweeps != sweeps;
+            let Some(cells) = self.slice_mut(slot).get_mut(col..end) else {
+                break;
+            };
+            let cells = match (swept, cells) {
+                (true, [cell, ..]) => {
+                    given = Restyled::default();
+                    given.give(cell.style(), new);
+                    std::slice::from_mut(cell)
+                }
+                (_, cells) => {
+                    given.give(old, new);
+                    cells
+                }
+            };
+            let (done, run) = match fill {
+                true => Compact::restyle_run::<true>(cells, &given),
+                false => Compact::restyle_run::<false>(cells, &given),
+            };
+            changed |= run;
+            col = col.saturating_add(done.max(1));
+        }
+        if changed {
+            self.changed(slot, end, version);
         }
     }
 
@@ -1198,34 +1543,159 @@ impl Grid {
     /// copied to have no link.
     pub fn copy_rectangle(&mut self, lines: Span, columns: Span, to: (u16, u16), version: u64) {
         let span = usize::from(columns.first())..usize::from(columns.end());
-        let source: Vec<(Vec<Compact>, Text)> = lines
-            .each()
-            .map(|y| {
-                let text = self.slot(y).and_then(|slot| self.texts.get(slot));
-                let cells = self.live_cells(y).get(span.clone()).unwrap_or_default();
-                let mut cells = cells.to_vec();
-                // The half of a glyph the source's edge cuts.
-                if let Some(cut) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
-                    *cut = cut.blanked();
-                }
-                if let Some(cut) = cells.last_mut().filter(|c| c.is_wide()) {
-                    *cut = cut.blanked();
-                }
-                (cells, text.cloned().unwrap_or_default())
-            })
-            .collect();
         let (row, col) = to;
         let end = col.saturating_add(columns.len()).min(self.size.cols());
-        for (y, (cells, text)) in (row..self.size.rows()).zip(source) {
-            self.mutate_line(y, version, end, |line| {
-                for (at, cell) in (usize::from(col)..usize::from(end)).zip(&cells) {
-                    line.set(at, *cell, text.of(cell));
-                }
-                repair_wide(line.cells);
-                true
-            });
+        // Each source row is read before any row is written over it: a
+        // copy down goes from the last row up, one up or across from the
+        // first down, and a row over itself moves its cells as one.
+        let mut rows: Vec<(u16, u16)> = lines.each().zip(row..self.size.rows()).collect();
+        if row > lines.first() {
+            rows.reverse();
+        }
+        for (from, y) in rows {
+            // To a double-width line's end (DEC STD 070, 5.6.1).
+            let end = end.min(self.row_end(y)).max(col);
+            if !self.copy_plain_cells(from, y, span.clone(), col..end, version) {
+                self.copy_cells(from, y, span.clone(), col..end, version);
+            }
             self.set_link(y, usize::from(col)..usize::from(end), None, version);
         }
+    }
+
+    /// DECCRA's copy of the cells `span` of live row `from` to the columns
+    /// `to` of live row `y`, if neither keeps text in its row's (`Text`),
+    /// as most don't: moved as a run, the row's text left as it is, and the
+    /// halves of a glyph the source's edges cut blanked as `copy_cells`
+    /// blanks them. Whether it did.
+    fn copy_plain_cells(
+        &mut self,
+        from: u16,
+        y: u16,
+        span: Range<usize>,
+        to: Range<u16>,
+        version: u64,
+    ) -> bool {
+        let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) else {
+            return false;
+        };
+        let (Some(rows), Some(dest)) = (self.cells_of(source), self.cells_of(target)) else {
+            return false;
+        };
+        let (start, end) = (usize::from(to.start), usize::from(to.end));
+        let len = span.len().min(end.saturating_sub(start));
+        let src = rows.start.saturating_add(span.start);
+        let src = src..src.saturating_add(len).min(rows.end);
+        let dst = dest.start.saturating_add(start);
+        let dst = dst..dst.saturating_add(len).min(dest.end);
+        let (Some(cells), Some(olds)) = (self.cells.get(src.clone()), self.cells.get(dst.clone()))
+        else {
+            return false;
+        };
+        let whole = self.live_cells(from).get(span.clone()).unwrap_or_default();
+        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
+            return false;
+        }
+        // The halves of a glyph the source's edges cut.
+        let first = len > 0 && whole.first().is_some_and(Compact::is_wide_continuation);
+        let last = whole.last().is_some_and(|c| c.is_wide()) && len == span.len();
+        // Each cell read, then written; and the row's text, as `copy_cells`
+        // clones it.
+        let text = self.texts.get(source).map_or(0, Text::bytes);
+        spend!(cells, span.len().saturating_mul(2));
+        spend!(edits, span.len());
+        spend!(text, text);
+        // A row that keeps text has it compacted, as `copy_cells`'s
+        // `clear_for` compacts it; the span, none of whose cells keeps any,
+        // is not blanked first, as it may be the source too.
+        if self.texts.get(target).is_some_and(|text| !text.is_empty())
+            && let Some(mut line) = self.line(target)
+        {
+            line.clear_for(start..start);
+        }
+        let _ = crate::bytes::copy_within(&mut self.cells, src, dst.start);
+        let row = self.slice_mut(target);
+        let edges = [
+            (first, start),
+            (last, start.saturating_add(len).saturating_sub(1)),
+        ];
+        for (cut, at) in edges {
+            if let Some(cell) = row.get_mut(at).filter(|_| cut) {
+                *cell = cell.blanked();
+            }
+        }
+        repair_wide(row);
+        self.changed(target, end, version);
+        true
+    }
+
+    /// DECCRA's copy of a row's cells with the clusters' text, over the
+    /// columns `to` cleared first (`clear_for`), the text of a run of
+    /// clusters at once (`Line::write`; `copy_plain_cells` says what is
+    /// copied).
+    fn copy_cells(&mut self, from: u16, y: u16, span: Range<usize>, to: Range<u16>, version: u64) {
+        let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) else {
+            return;
+        };
+        let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
+        // Each cell read, then written; and the row's text, as a copy of it
+        // costs.
+        spend!(cells, cells.len().saturating_mul(2));
+        spend!(edits, cells.len());
+        let bytes = self.texts.get(source).map_or(0, Text::bytes);
+        spend!(text, bytes);
+        // And the text written into the target row, counted by its stores
+        // as they go, at most the row's: spent here too.
+        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
+        cut(&mut cells);
+        let columns = usize::from(to.start)..usize::from(to.end);
+        let cells = cells.get(..columns.len()).unwrap_or(&cells);
+        let fill = |line: &mut Line<'_>, text: &Text| {
+            line.write_over(columns.clone(), cells, text);
+            if Compact::any_halves(line.cells) {
+                repair_wide(line.cells);
+            }
+        };
+        let written = if source == target {
+            // The row over itself: its text as it was, which clearing the
+            // columns gives back.
+            self.line(target).map(|mut line| {
+                let text = line.clear_outside(columns.clone());
+                fill(&mut line, &text);
+            })
+        } else {
+            self.with_source(source, target, |line, _, text| {
+                let _ = line.clear_outside(columns.clone());
+                fill(line, text);
+            })
+        };
+        if written.is_none() {
+            return;
+        }
+        self.changed(target, columns.end, version);
+    }
+
+    /// Runs `f` on slot `target`'s cells and text, to write into, beside
+    /// slot `source`'s, another, to read.
+    fn with_source<R>(
+        &mut self,
+        source: usize,
+        target: usize,
+        f: impl FnOnce(&mut Line<'_>, &[Compact], &Text) -> R,
+    ) -> Option<R> {
+        let (from, to) = (self.cells_of(source)?, self.cells_of(target)?);
+        let [text, written] = self.texts.get_disjoint_mut([source, target]).ok()?;
+        let (cells, writing) = if from.start < to.start {
+            let (low, high) = self.cells.split_at_mut_checked(to.start)?;
+            (low.get(from)?, high.get_mut(..to.len())?)
+        } else {
+            let (low, high) = self.cells.split_at_mut_checked(from.start)?;
+            (high.get(..from.len())?, low.get_mut(to)?)
+        };
+        let mut line = Line {
+            cells: writing,
+            text: written,
+        };
+        Some(f(&mut line, cells, text))
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
@@ -1236,7 +1706,7 @@ impl Grid {
     /// nothing at all, the pending wrap staying too, as in xterm
     /// (`InsertChar`, `DeleteChar`; DEC STD 070, 5.4.3).
     pub fn edit_cells(&mut self, count: u16, insert: bool, blank: u32, version: u64) {
-        if self.lr && !self.in_columns() {
+        if self.lr() && !self.in_columns() {
             return;
         }
         self.cursor.pending_wrap = false;
@@ -1257,8 +1727,9 @@ impl Grid {
         version: u64,
     ) {
         // The cells the edit moves end at the right margin, which is the
-        // last column without margins.
-        let end = self.columns.end();
+        // last column without margins, or at the row's end, on a row half
+        // as long (ICH and DCH, their algorithms).
+        let end = self.columns.end().min(self.row_end(row));
         // At most the cells from the column to the margin.
         let count = usize::from(count.min(end.saturating_sub(col)));
         if count == 0 {
@@ -1266,6 +1737,7 @@ impl Grid {
         }
         let cols = self.size.cols();
         let end = usize::from(end);
+        work!(cells, end.saturating_sub(usize::from(col)));
         let blank = Compact::blank(blank);
         self.mutate_row(row, version, cols, |row_cells| {
             let col = usize::from(col);
@@ -1317,6 +1789,7 @@ impl Grid {
             used = usize::from(m.used);
             *m = Meta::new(id, version, false, 0);
         }
+        work!(cells, used);
         // A row taken into history leaves its slot blank (`take_row`).
         if used > 0 {
             let cells = self.slice_mut(slot);
@@ -1356,6 +1829,7 @@ impl Grid {
     /// never fused into one slower loop.
     #[inline(never)]
     fn colour(&mut self, slot: usize, blank: u32) {
+        work!(cells, self.size.cols());
         for cell in self.slice_mut(slot) {
             cell.set_style(blank);
         }
@@ -1375,20 +1849,49 @@ impl Grid {
         blank: u32,
         next: &mut u64,
         version: u64,
-    ) -> Result<(), Error> {
+    ) {
         // A line feed at the bottom of the screen, the commonest scroll,
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
             && region == self.size.lines()
             && self.history_bytes() > 0
         {
-            for _ in 0..count.min(self.size.rows()) {
-                self.scroll_into_history(blank, next, version)?;
+            let count = count.min(self.size.rows());
+            for done in 0..count {
+                if self.scroll_into_history(blank, next, version).is_err() {
+                    let rest = count.saturating_sub(done);
+                    self.scroll_past_history(rest, blank, next, version);
+                    break;
+                }
             }
-            return Ok(());
+            return;
         }
         self.scroll_region(region, count, direction, blank, next, version);
-        Ok(())
+    }
+
+    /// No room in history for the rows a scroll of the screen takes into
+    /// it: these `count` go as with no history (threats.md 1.3, SCR-10),
+    /// counted. Out of line, as no scroll but a refused one comes here.
+    #[cold]
+    #[inline(never)]
+    fn scroll_past_history(&mut self, count: u16, blank: u32, next: &mut u64, version: u64) {
+        crate::degraded();
+        if !self.links.none() {
+            self.unlink_rows(self.size.lines(), count, false);
+        }
+        // Each top row goes, its slot a new blank row under the screen's
+        // last, as `scroll_into_history` makes one.
+        for _ in 0..count {
+            let Some(&slot) = self.order.get(0) else {
+                return;
+            };
+            let id = next_id(next);
+            self.recycle(slot, id, version);
+            if blank != 0 {
+                self.colour(slot, blank);
+            }
+            self.order.turn();
+        }
     }
 
     /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
@@ -1408,6 +1911,7 @@ impl Grid {
         }
         let left = usize::from(self.columns.first());
         let end = usize::from(self.columns.end());
+        spend!(cells, usize::from(height).saturating_mul(2));
         for y in top..=bottom {
             self.mutate_row(y, version, 0, |cells| {
                 let mut changed = false;
@@ -1450,41 +1954,81 @@ impl Grid {
         let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
             return;
         };
-        let cells: Vec<Compact> = self
-            .slice(source)
-            .get(span.clone())
-            .unwrap_or_default()
-            .to_vec();
-        let text = self.texts.get(source).map(Text::exact).unwrap_or_default();
-        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
-        let mut changed = false;
-        if let Some(mut line) = self.line(target) {
-            for (i, cell) in cells.iter().enumerate() {
-                let at = span.start.saturating_add(i);
-                let Some(&old) = line.cells.get(at) else {
-                    continue;
-                };
-                if old.same_as(line.text, cell, &text) {
-                    continue;
-                }
-                changed = true;
-                if cell.is_spilled() {
-                    line.set(at, *cell, text.of(cell));
-                } else if let Some(slot) = line.cells.get_mut(at) {
-                    *slot = *cell;
-                }
-            }
-        }
-        if changed {
-            self.changed(target, span.end, version);
+        if !self.copy_plain_span(source, target, span.clone(), version) {
+            self.copy_span_cells(source, target, span.clone(), version);
         }
         // The links, a cell at a time: each takes its source's, or none.
+        let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
         if linked {
             for at in span {
-                let link = links.as_ref().and_then(|l| l.get(at));
+                let link = links.as_ref().and_then(|l| l.runs().get(at));
                 self.set_link(to, at..at.saturating_add(1), link, version);
             }
+        }
+    }
+
+    /// `copy_span`'s copy of the cells `span` of slot `source` over those
+    /// of slot `target`, if neither keeps text in its row's (`Text`), as
+    /// most spans don't: compared and moved a run at once, the row's text
+    /// left as it is, as none of it is the span's. Whether it did.
+    fn copy_plain_span(
+        &mut self,
+        source: usize,
+        target: usize,
+        span: Range<usize>,
+        version: u64,
+    ) -> bool {
+        let (Some(from), Some(to)) = (self.cells_of(source), self.cells_of(target)) else {
+            return false;
+        };
+        let at = |cells: &Range<usize>| {
+            let start = cells.start.saturating_add(span.start);
+            start..start.saturating_add(span.len()).min(cells.end)
+        };
+        let (from, to) = (at(&from), at(&to));
+        let (Some(cells), Some(olds)) = (self.cells.get(from.clone()), self.cells.get(to.clone()))
+        else {
+            return false;
+        };
+        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
+            return false;
+        }
+        // Each cell read, compared with the one it goes over, and written.
+        spend!(cells, cells.len().saturating_mul(3));
+        spend!(spans, 1);
+        if cells != olds {
+            let _ = crate::bytes::copy_within(&mut self.cells, from, to.start);
+            self.changed(target, span.end, version);
+        }
+        true
+    }
+
+    /// `copy_span`'s copy of a span with clusters (`Line::copy`).
+    fn copy_span_cells(&mut self, source: usize, target: usize, span: Range<usize>, version: u64) {
+        let len = self.slice(source).get(span.clone()).map_or(0, <[_]>::len);
+        // Each cell read, compared with the one it goes over, and written.
+        spend!(cells, len.saturating_mul(3));
+        spend!(spans, 1);
+        // The span's own text, each cluster's, not the whole row's: a row
+        // of long clusters holds far more than a few cells copy.
+        let cells = self.slice(source).get(span.clone()).unwrap_or_default();
+        let bytes = Compact::spilled_bytes(cells);
+        spend!(text, bytes);
+        // And the text written into the target row, which its stores count
+        // as they go (`Line::copy`), at most what was read: spent here, so
+        // the budget prices what the counters count (decision 969).
+        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
+        // A span over itself is as it was.
+        let changed = self.with_source(source, target, |line, cells, text| {
+            line.copy(
+                span.start,
+                cells.get(span.clone()).unwrap_or_default(),
+                text,
+            )
+        });
+        if changed == Some(true) {
+            self.changed(target, span.end, version);
         }
     }
 
@@ -1494,6 +2038,7 @@ impl Grid {
     fn blank_span(&mut self, row: u16, span: Range<usize>, blank: u32, version: u64) {
         let cell = Compact::blank(blank);
         let end = u16::try_from(span.end).unwrap_or(u16::MAX);
+        spend!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
             let Some(run) = cells.get_mut(span.clone()) else {
                 return false;
@@ -1532,13 +2077,39 @@ impl Grid {
         if count == 0 {
             return;
         }
-        for _ in 0..count {
+        if count == 1 {
             let id = next_id(next);
             let (from, to) = if up { (top, bottom) } else { (bottom, top) };
             if let Some(slot) = self.move_row(usize::from(from), usize::from(to)) {
                 self.recycle(slot, id, version);
                 if blank != 0 {
                     self.colour(slot, blank);
+                }
+            }
+        } else {
+            // The region's slots turned once, by `count` (threats.md B36),
+            // then the rows brought in made anew in the order moving them
+            // one at a time would: up, from the first brought in, at the
+            // bottom less `count`; down, from the last, at the top.
+            let (low, high) = (usize::from(top), usize::from(bottom));
+            self.order.rotate((low, high), usize::from(count), up);
+            for k in 0..count {
+                let row = if up {
+                    bottom
+                        .saturating_add(1)
+                        .saturating_sub(count)
+                        .saturating_add(k)
+                } else {
+                    top.saturating_add(count)
+                        .saturating_sub(1)
+                        .saturating_sub(k)
+                };
+                let id = next_id(next);
+                if let Some(slot) = self.slot(row) {
+                    self.recycle(slot, id, version);
+                    if blank != 0 {
+                        self.colour(slot, blank);
+                    }
                 }
             }
         }
@@ -1602,11 +2173,14 @@ impl Grid {
         let start = slot.saturating_mul(usize::from(self.size.cols()));
         let used = start.saturating_add(usize::from(m.used));
         let cells = trimmed(self.cells.get(start..used).unwrap_or_default());
+        // The blank tail scanned; history's push counts the cells it keeps.
+        work!(cells, usize::from(m.used).saturating_sub(cells.len()));
         self.history.push(m.arriving(cells, self.size.cols()))?;
         // The row's text and links, which history has just taken, go with
-        // it: a copy of the text, and the links themselves.
+        // it: a copy of the text, and the links themselves, the slot keeping
+        // their list's memory for its next row.
         let text = self.texts.get(slot).map(Text::exact);
-        let links = (self.linked.get_mut(slot).map(std::mem::take)).filter(|l| !l.is_empty());
+        let links = self.linked.get_mut(slot).and_then(KeptLinks::take);
         self.history.attach(text, links);
         Ok(())
     }
@@ -1623,6 +2197,7 @@ impl Grid {
         // rows from `from` to `to` lie in one of them: there the move shifts
         // that run by one.
         let (low, high) = (from.min(to), from.max(to));
+        work!(slots, high.saturating_sub(low).saturating_add(1));
         let (front, back) = self.order.as_mut_slices();
         let split = front.len();
         let run = if high < split {
@@ -1720,6 +2295,7 @@ impl Grid {
         replacement.reserve_screen()?;
         // Each row is laid out whole in `row`, as wide as it is, then kept.
         let mut row = Vec::new();
+        let same_width = self.size.cols() == cols;
         for source in 0..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = source < live_top;
@@ -1729,18 +2305,44 @@ impl Grid {
                 Some(r) if is_history => u16::try_from(r.width).map_err(|_| Error::Capacity)?,
                 Some(_) | None => cols,
             };
-            row.clear();
-            row.resize(usize::from(width), BLANK);
-            let wrapped = old.is_some_and(|r| r.wrapped) && is_history;
+            // A row cut or padded to a new width no longer continues on
+            // the next; at the same width it does, as it did.
+            let wrapped = old.is_some_and(|r| r.wrapped()) && (is_history || same_width);
             let row_version = if is_history {
                 old.map_or(version, |r| r.version)
             } else {
                 version
             };
-            // As much of the old row's links as fits, as of its cells.
+            let mut meta = Meta::new(id, row_version, wrapped, width)
+                .with_rendition(old.map_or(LineRendition::Single, |r| r.rendition()));
+            meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
+            if wrapped && old.is_some_and(|r| !r.continues()) {
+                meta.flags |= ENDS;
+            }
+            // A row of history keeps its width, so its cells go into the
+            // new history as they are, unless it has text or links to store
+            // again or a rendition to cut it to: no row to lay out.
+            if let Some(old) = old.filter(|r| {
+                is_history
+                    && r.text.is_empty()
+                    && r.links.is_none()
+                    && r.rendition() == LineRendition::Single
+            }) {
+                replacement.keep_history_row(meta, old.cells, width)?;
+                continue;
+            }
+            row.clear();
+            row.resize(usize::from(width), BLANK);
+            work!(cells, width);
+            // As much of the old row's links as fits, as of its cells: on a
+            // row half as long, to its end at the new width.
+            let fits = match old.is_some_and(|r| r.rendition().is_double()) {
+                true => (width / 2).max(1),
+                false => width,
+            };
             let links = old
                 .and_then(|r| r.links)
-                .map(|links| links.clipped(usize::from(width)));
+                .map(|links| links.clipped(usize::from(fits)));
             let mut text = None;
             if let Some(old) = old {
                 // As much of the old row as fits, over the new one's start:
@@ -1749,17 +2351,22 @@ impl Grid {
                 if let (Some(dst), Some(src)) = (row.get_mut(..len), old.cells.get(..len)) {
                     crate::copy_from(dst, src);
                 }
+                // A row half as long keeps its rendition, and loses what
+                // is past its end at the new width, as DECDWL loses it.
+                if old.rendition().is_double()
+                    && let Some(past) = row.get_mut(usize::from(fits)..)
+                {
+                    past.fill(BLANK);
+                }
                 repair_wide(&mut row);
                 // The row's text comes along, stored again within the
                 // budget of the row's new width.
                 text = Some(Line::rebuilt(&mut row, old.text));
             }
-            let meta = Meta {
-                prompt: old.is_some_and(|r| r.prompt),
-                ..Meta::new(id, row_version, wrapped, width)
-            };
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
+        replacement.fit_cursor();
+        replacement.rows_given();
         Ok(replacement)
     }
 
@@ -1770,13 +2377,36 @@ impl Grid {
         if !self.recyclable() {
             // The links' table is kept, which counts the link the program
             // has open (`Screen::link_cells`), and finds it by its `id`.
-            let mut grid = Self::made(self.size, self.history_bytes(), next, version, self.unmade)?;
-            grid.links = std::mem::take(&mut self.links);
-            *self = grid;
-            return Ok(());
+            match Self::made(self.size, self.history_bytes(), next, version, self.unmade) {
+                Ok(mut grid) => {
+                    grid.links = std::mem::take(&mut self.links);
+                    *self = grid;
+                    return Ok(());
+                }
+                // No room for a grid made anew: history goes, and the rows
+                // the grid holds are blanked in place (threats.md 1.3,
+                // SCR-10), counted.
+                Err(refused) => {
+                    if !self.holds_its_rows() {
+                        return Err(refused);
+                    }
+                    self.history = History::new(self.history_bytes());
+                    self.charge_styles(self.cells.len());
+                    crate::degraded();
+                }
+            }
         }
         self.renew(next, version);
         Ok(())
+    }
+
+    /// Whether the grid's storage holds a slot for each of its live rows,
+    /// each as wide as the grid (none for an unmade grid's cells), as
+    /// `renew` blanks them.
+    fn holds_its_rows(&self) -> bool {
+        let rows = usize::from(self.size.rows());
+        let cells = if self.unmade { 0 } else { self.size.cells() };
+        self.order.len() == rows && self.meta.len() == rows && self.cells.len() >= cells
     }
 
     /// Whether `clear` can start the grid again in the storage it has: it
@@ -1808,11 +2438,12 @@ impl Grid {
         self.cursor = Cursor::default();
         self.saved = Saved::default();
         self.keyboard = KeyboardStack::default();
+        self.narrow &= !DOUBLED;
         self.reset_margins();
     }
     /// Whether every slot's cells from `used` to its width are blank, as
     /// recycling relies on; an unmade grid's are all blank.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "checks"))]
     pub fn blank_past_used(&self) -> bool {
         self.unmade
             || (0..self.meta.len()).all(|slot| {
@@ -1827,7 +2458,12 @@ impl Grid {
     /// them each costs this test and no more.
     #[inline]
     pub fn lr(&self) -> bool {
-        self.lr
+        self.narrow & LR != 0
+    }
+    /// Whether a row of the screen may be half as long.
+    #[inline]
+    pub(crate) fn doubled(&self) -> bool {
+        self.narrow & DOUBLED != 0
     }
     /// The left and right margins.
     pub fn columns(&self) -> Span {
@@ -1836,7 +2472,12 @@ impl Grid {
     /// Sets the left and right margins.
     pub fn set_columns(&mut self, columns: Span) {
         self.columns = columns;
-        self.lr = columns != self.size.columns();
+        self.narrow = (self.narrow & !LR)
+            | if columns != self.size.columns() {
+                LR
+            } else {
+                0
+            };
     }
     /// The margins at the screen's edges, as resets put them.
     pub fn reset_margins(&mut self) {
@@ -1851,23 +2492,108 @@ impl Grid {
     /// One past the last column a glyph printed now may take: the right
     /// margin's, unless the cursor is past it, when the margin is no bound
     /// (DEC STD 070, 5.4.3; xterm's `dotext`). The screen's without margins.
+    /// On a row half as long, its end bounds it too (`row_end`).
     #[inline]
     pub fn line_end(&self) -> u16 {
-        if self.lr {
+        if self.narrow() {
             return self.line_end_in_margins();
         }
         self.size.cols()
     }
-    /// `line_end` with left and right margins. Out of line, as every margin
-    /// case is, so that without margins each costs one test.
+    /// `line_end` with left and right margins, or a row half as long. Out
+    /// of line, as every margin case is, so that without margins each
+    /// costs one test.
     #[cold]
     #[inline(never)]
     fn line_end_in_margins(&self) -> u16 {
-        if self.cursor.col <= self.columns.last() {
+        let end = if self.lr() && self.cursor.col <= self.columns.last() {
             self.columns.end()
         } else {
             self.size.cols()
+        };
+        end.min(self.row_end(self.cursor.row))
+    }
+    /// Whether a line may end before the screen's edge: left and right
+    /// margins are set, or a row may be half as long.
+    #[inline]
+    pub fn narrow(&self) -> bool {
+        self.narrow != 0
+    }
+    /// The rendition of the screen's row `row` (DECDWL, DECDHL).
+    pub fn rendition(&self, row: u16) -> LineRendition {
+        self.slot(row)
+            .and_then(|slot| self.meta.get(slot))
+            .map_or(LineRendition::Single, Meta::rendition)
+    }
+    /// One past the last column of the screen's row `row`: the screen's
+    /// width, or on a row that is not single width half of it, rounded
+    /// down (DEC STD 070, 5.14.1, `end_of_line`), and at least one column.
+    #[inline]
+    pub fn row_end(&self, row: u16) -> u16 {
+        if !self.doubled() {
+            return self.size.cols();
         }
+        self.halved_end(row)
+    }
+    #[cold]
+    #[inline(never)]
+    fn halved_end(&self, row: u16) -> u16 {
+        let cols = self.size.cols();
+        if self.rendition(row).is_double() {
+            (cols / 2).max(1)
+        } else {
+            cols
+        }
+    }
+    /// Keeps the cursor short of its row's end: a cursor moved onto or
+    /// along a row half as long stops at its last column (DEC STD 070,
+    /// 5.6.1; IND, LF, CUU, CUD, CUF, CUP and HT, their algorithms).
+    #[inline]
+    pub(crate) fn fit_cursor(&mut self) {
+        if self.doubled() {
+            self.fit_to_row();
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn fit_to_row(&mut self) {
+        let last = self.halved_end(self.cursor.row).saturating_sub(1);
+        self.cursor.col = self.cursor.col.min(last);
+    }
+    /// Sets the rendition of the screen's row `row` (DECSWL, DECDWL,
+    /// DECDHL). A row made half as long loses its cells past its new end,
+    /// and the cursor on it goes no further than its last column (DECDWL
+    /// and DECDHL, their notes and algorithms); one made single width
+    /// keeps every cell it has (DECSWL, note 2).
+    pub fn set_rendition(&mut self, row: u16, rendition: LineRendition, version: u64) {
+        let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) else {
+            return;
+        };
+        if m.rendition() == rendition {
+            return;
+        }
+        *m = m.with_rendition(rendition);
+        m.version = version;
+        if rendition.is_double() {
+            self.narrow |= DOUBLED;
+            let (end, cols) = (self.halved_end(row), self.size.cols());
+            self.erase(row, end, cols, 0, version);
+            self.set_link(row, usize::from(end)..usize::from(cols), None, version);
+            if self.cursor.row == row {
+                self.fit_to_row();
+            }
+        }
+    }
+    /// Makes every row of the screen single width, as setting DECLRMM does
+    /// (DEC STD 070, DECLRMM, 5-29).
+    pub fn single_width(&mut self, version: u64) {
+        if !self.doubled() {
+            return;
+        }
+        for row in 0..self.size.rows() {
+            self.set_rendition(row, LineRendition::Single, version);
+        }
+        self.narrow &= !DOUBLED;
     }
     /// Where the next glyph goes, before any wrap: the cursor's column, or
     /// one past the last column while a wrap is pending.
@@ -1893,9 +2619,12 @@ impl Grid {
     #[inline]
     pub fn set_row(&mut self, row: u16) {
         self.cursor.row = row.min(self.size.lines().last());
+        self.fit_cursor();
     }
     /// Moves the cursor to column `col`, the last if past it.
     #[inline]
+    /// A column past the end of a row half as long is its callers' to
+    /// bring back (`fit_cursor`): most move left, or to a column on it.
     pub fn set_col(&mut self, col: u16) {
         self.cursor.col = col.min(self.size.columns().last());
     }
@@ -1909,7 +2638,7 @@ impl Grid {
     /// STD 070 leaves CR at the margin).
     #[inline]
     pub fn carriage_return(&mut self) {
-        self.cursor.col = if self.lr {
+        self.cursor.col = if self.lr() {
             self.carriage_in_margins()
         } else {
             0
@@ -1927,11 +2656,14 @@ impl Grid {
     /// CUP: moves the cursor, within the margins in origin mode, where
     /// lines count from the top margin and columns from the left. Like
     /// every cursor movement, it ends a pending wrap.
+    /// Inlined where the compiler finds it pays: forced into every caller
+    /// it cost every program's recordings 0.2% on x86 (fux-bench).
     #[inline]
     pub fn position(&mut self, row: u16, col: u16) {
         self.cursor.pending_wrap = false;
         let (lines, columns) = self.addressed();
         (self.cursor.row, self.cursor.col) = (lines.nth(row), columns.nth(col));
+        self.fit_cursor();
     }
     /// The rows and columns CUP addresses: between the margins in origin
     /// mode, else the whole screen, as the margins are no bound outside it.
@@ -1950,15 +2682,21 @@ impl Grid {
     #[inline]
     pub fn forward(&mut self, n: u16, absolute: bool) {
         let col = self.cursor.col.saturating_add(n);
-        self.cursor.col = if self.lr {
+        self.cursor.col = if self.narrow() {
             self.forward_in_margins(col, absolute)
         } else {
             col.min(self.size.columns().last())
         };
     }
+    /// `forward` with left and right margins, or on a row half as long,
+    /// whose end bounds it too.
     #[cold]
     #[inline(never)]
     fn forward_in_margins(&self, col: u16, absolute: bool) -> u16 {
+        let end = self.row_end(self.cursor.row).saturating_sub(1);
+        if !self.lr() {
+            return col.min(end);
+        }
         let bounded = if absolute {
             self.cursor.origin
         } else {
@@ -1969,6 +2707,7 @@ impl Grid {
         } else {
             self.size.columns().last()
         })
+        .min(end)
     }
     /// CUB: the cursor `n` columns left, no further than the left margin,
     /// unless it is left of it already (xterm's `CursorBack`).
@@ -1976,7 +2715,7 @@ impl Grid {
     pub fn backward(&mut self, n: u16) {
         let col = self.cursor.col.saturating_sub(n);
         let left = self.columns.first();
-        self.cursor.col = if self.lr && self.cursor.col >= left {
+        self.cursor.col = if self.lr() && self.cursor.col >= left {
             col.max(left)
         } else {
             col
@@ -1986,11 +2725,23 @@ impl Grid {
     /// margin in origin mode, no further than the right one.
     #[inline]
     pub fn column(&mut self, col: u16) {
-        self.cursor.col = if self.lr && self.cursor.origin {
+        self.cursor.col = if self.narrow() {
+            self.column_in_margins(col)
+        } else {
+            col.min(self.size.columns().last())
+        };
+    }
+    /// `column` with left and right margins, from the left one in origin
+    /// mode, or on a row half as long, whose end bounds it.
+    #[cold]
+    #[inline(never)]
+    fn column_in_margins(&self, col: u16) -> u16 {
+        let col = if self.lr() && self.cursor.origin {
             self.columns.nth(col)
         } else {
             col.min(self.size.columns().last())
         };
+        col.min(self.row_end(self.cursor.row).saturating_sub(1))
     }
     /// Moves the cursor to line `line` as CUP does, keeping its column,
     /// which origin mode keeps within the right margin (VPA and VPR, as
@@ -1998,14 +2749,33 @@ impl Grid {
     #[inline]
     pub fn position_line(&mut self, line: u16) {
         let col = self.cursor.col;
-        self.position(line, 0);
-        self.cursor.col = col.min(self.addressed().1.last());
+        let (lines, columns) = self.addressed();
+        self.cursor.pending_wrap = false;
+        (self.cursor.row, self.cursor.col) = (lines.nth(line), col.min(columns.last()));
+        self.fit_cursor();
     }
+}
+
+/// Whether DECCARA and DECRARA change `cell` with DECSACE 0 or 1: a glyph,
+/// or a wide glyph's second half.
+fn occupied(cell: &Compact) -> bool {
+    cell.has_contents() || cell.is_wide_continuation()
 }
 
 /// The column one past `col` if a wrap is pending there, else `col`.
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
+}
+
+/// Blanks the halves of a glyph the edges of `cells`, a span DECCRA
+/// copies, cut.
+fn cut(cells: &mut [Compact]) {
+    if let Some(cell) = cells.first_mut().filter(|c| c.is_wide_continuation()) {
+        *cell = cell.blanked();
+    }
+    if let Some(cell) = cells.last_mut().filter(|c| c.is_wide()) {
+        *cell = cell.blanked();
+    }
 }
 
 /// Gives the cells `span` of the row in slot `slot` link `link`, or none:
@@ -2105,6 +2875,21 @@ fn split_wide(cells: &mut [Compact], at: usize) -> bool {
     true
 }
 
+/// `repair_wide`'s work on the cell `at` of `cells` alone.
+fn repair_wide_at(cells: &mut [Compact], at: usize) {
+    let next = at.checked_add(1).and_then(|j| cells.get(j));
+    let previous = at.checked_sub(1).and_then(|j| cells.get(j));
+    let (next, previous) = (
+        next.is_some_and(Compact::is_wide_continuation),
+        previous.is_some_and(Compact::is_wide),
+    );
+    if let Some(cell) = cells.get_mut(at)
+        && (cell.is_wide() && !next || cell.is_wide_continuation() && !previous)
+    {
+        *cell = cell.blanked();
+    }
+}
+
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
     for i in 0..cells.len() {
         let invalid = cells.get(i).is_some_and(|c| {
@@ -2128,3 +2913,442 @@ pub(crate) fn repair_wide(cells: &mut [Compact]) {
 mod reflow;
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// The grid's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Grid {
+    /// Runs every check of the grid, its history, styles and links, the
+    /// grid named `which` and its screen at `version`, into `report`.
+    pub(crate) fn check(&self, which: &str, version: u64, report: &mut crate::Checked) {
+        report.record("grid.order", which, self.check_order());
+        report.record("grid.slots", which, self.check_slots());
+        report.record("grid.blank_past_used", which, self.check_blank_past_used());
+        report.record("grid.blank_past_end", which, self.check_blank_past_end());
+        report.record("grid.wide_pairs", which, self.check_wide_pairs());
+        report.record("grid.text", which, self.check_text());
+        report.record("grid.style_numbers", which, self.check_style_numbers());
+        report.record("grid.recent", which, self.check_recent());
+        report.record("grid.charged", which, self.check_charged());
+        report.record("styles.table", which, self.styles.check());
+        let keyed = |attributes: &Attributes| {
+            std::hash::BuildHasher::hash_one(&crate::style::Keyed, attributes)
+        };
+        report.record("styles.spread", which, self.styles.check_spread(keyed));
+        report.record("grid.versions", which, self.check_versions(version));
+        report.record("grid.cursor", which, self.check_cursor());
+        report.record("grid.margins", which, self.check_margins());
+        report.record("grid.keyboard", which, self.check_keyboard());
+        report.record("links.runs", which, self.check_link_runs());
+        report.record("links.held", which, self.check_links_held());
+        self.history.check(which, report);
+    }
+
+    /// Every row of the grid, screen and history, as the checker reads it:
+    /// its cells kept, its width, its text and its links. History's are
+    /// read without the work counters seeing them.
+    fn checked_rows(
+        &self,
+    ) -> impl Iterator<Item = (&[Compact], usize, &Text, Option<Runs<'_>>)> + '_ {
+        let history = (0..self.history.len()).filter_map(|i| {
+            let found = self.history.get(i)?;
+            let width = usize::from(found.kept.width());
+            Some((found.cells, width, found.text, found.links))
+        });
+        let cols = usize::from(self.size.cols());
+        let screen = (self.order.iter()).filter_map(move |&slot| {
+            let links = self.linked.get(slot).filter(|l| !l.is_empty());
+            Some((
+                self.slice(slot),
+                cols,
+                self.texts.get(slot)?,
+                links.map(RowLinks::runs),
+            ))
+        });
+        history.chain(screen)
+    }
+
+    /// 7: the order is a permutation of the slots, one a row.
+    fn check_order(&self) -> Result<(), String> {
+        let rows = usize::from(self.size.rows());
+        crate::check::ensure(self.order.len() == rows, || {
+            format!("{} rows ordered, {rows} rows", self.order.len())
+        })?;
+        crate::check::ensure(self.order.top < rows.max(1), || {
+            format!("the order's top {} past {rows} rows", self.order.top)
+        })?;
+        let mut seen = vec![false; self.meta.len()];
+        for &slot in &self.order.slots {
+            match seen.get_mut(slot) {
+                Some(seen) if !*seen => *seen = true,
+                Some(_) => return Err(format!("slot {slot} ordered twice")),
+                None => return Err(format!("slot {slot} past {} slots", self.meta.len())),
+            }
+        }
+        crate::check::ensure(seen.iter().all(|s| *s), || "a slot no row has".into())
+    }
+
+    /// 8 and 10: one record, text and links a slot; the screen's cells, a
+    /// row of the grid's width a slot, once made.
+    fn check_slots(&self) -> Result<(), String> {
+        let slots = self.meta.len();
+        crate::check::ensure(
+            self.texts.len() == slots && self.linked.len() == slots,
+            || {
+                format!(
+                    "{slots} slots, {} texts, {} links",
+                    self.texts.len(),
+                    self.linked.len()
+                )
+            },
+        )?;
+        let cells = if self.unmade {
+            0
+        } else {
+            slots.saturating_mul(usize::from(self.size.cols()))
+        };
+        crate::check::ensure(self.cells.len() == cells, || {
+            format!("{} cells for {slots} slots", self.cells.len())
+        })
+    }
+
+    /// 9: every cell past a slot's `used` mark is blank.
+    fn check_blank_past_used(&self) -> Result<(), String> {
+        crate::check::ensure(self.blank_past_used(), || {
+            "a cell past a row's used mark is not blank".into()
+        })
+    }
+
+    /// 9a: on a screen row that is not single width, every cell past its
+    /// end (`row_end`) holds nothing, no half of a wide glyph either, and
+    /// no link: the rendition erased them, and no write reaches past the
+    /// end.
+    fn check_blank_past_end(&self) -> Result<(), String> {
+        for row in 0..self.size.rows() {
+            if !self.rendition(row).is_double() {
+                continue;
+            }
+            let end = usize::from(self.row_end(row));
+            let cells = self
+                .slot(row)
+                .map(|slot| self.slice(slot))
+                .unwrap_or_default();
+            let held = (cells.iter().enumerate().skip(end))
+                .find(|(_, c)| c.has_contents() || c.is_wide() || c.is_wide_continuation());
+            if let Some((col, _)) = held {
+                return Err(format!(
+                    "row {row}, column {col}: a cell past a double-width line's end holds something"
+                ));
+            }
+            // Its links too: within the line's end.
+            if let Some(links) = self.slot(row).and_then(|slot| self.linked.get(slot)) {
+                links
+                    .runs()
+                    .check(end)
+                    .map_err(|e| format!("row {row}, past a double-width line's end: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 11: a wide glyph's halves are side by side, on the screen and in
+    /// history.
+    fn check_wide_pairs(&self) -> Result<(), String> {
+        for (row, (cells, width, _, _)) in self.checked_rows().enumerate() {
+            let cell = |i: usize| cells.get(i).copied().unwrap_or(BLANK);
+            for i in 0..width {
+                let here = cell(i);
+                let paired = if here.is_wide() {
+                    i.checked_add(1)
+                        .filter(|j| *j < width)
+                        .is_some_and(|j| cell(j).is_wide_continuation())
+                } else if here.is_wide_continuation() {
+                    i.checked_sub(1).is_some_and(|j| cell(j).is_wide())
+                } else {
+                    true
+                };
+                if !paired {
+                    return Err(format!("row {row}, column {i}: half a wide glyph"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 13: each row's text within its limits, and every cell's text where
+    /// its locator says.
+    fn check_text(&self) -> Result<(), String> {
+        for (row, (cells, width, text, _)) in self.checked_rows().enumerate() {
+            text.check(cells, width)
+                .map_err(|e| format!("row {row}: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// 14: every style of the table a cell has, on the screen and in
+    /// history, is in the grid's table.
+    fn check_style_numbers(&self) -> Result<(), String> {
+        let len = self.styles.len();
+        for (row, (cells, _, _, _)) in self.checked_rows().enumerate() {
+            for (i, cell) in cells.iter().enumerate() {
+                if Styles::place(cell.style()).is_some_and(|place| place >= len) {
+                    return Err(format!(
+                        "row {row}, column {i}: style {:#x} past {len} styles",
+                        cell.style()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The styles found lately are the table's, with their attributes.
+    fn check_recent(&self) -> Result<(), String> {
+        for (at, &(attributes, style)) in self.recent.iter().enumerate() {
+            if attributes == Attributes::default() {
+                continue;
+            }
+            crate::check::ensure(
+                self.styles.get(style) == attributes.with_guard(false),
+                || format!("style {style:#x} found lately at {at} has other attributes"),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 21a: history is charged the style table's bytes beyond the
+    /// screen's share (B11).
+    fn check_charged(&self) -> Result<(), String> {
+        let share = crate::style::screen_share(self.cells.len());
+        let want = self.styles.bytes().saturating_sub(share);
+        let charged = self.history.charged();
+        crate::check::ensure(charged == want, || {
+            format!("history charged {charged} bytes for styles of {want}")
+        })
+    }
+
+    /// 20: every row's version is at most the screen's, `version`.
+    fn check_versions(&self, version: u64) -> Result<(), String> {
+        let screen = self.meta.iter().map(|m| m.version);
+        let history =
+            (0..self.history.len()).filter_map(|i| self.history.kept(i).map(|k| k.version));
+        match history.chain(screen).find(|v| *v > version) {
+            Some(v) => Err(format!("a row's version {v} past the screen's {version}")),
+            None => Ok(()),
+        }
+    }
+
+    /// 25: the cursor and the saved cursor are on the grid.
+    fn check_cursor(&self) -> Result<(), String> {
+        let (rows, cols) = (self.size.rows(), self.size.cols());
+        for (name, cursor) in [("cursor", self.cursor), ("saved cursor", self.saved.cursor)] {
+            crate::check::ensure(cursor.row < rows && cursor.col < cols, || {
+                format!("{name} at {:?} off {rows}x{cols}", cursor.at())
+            })?;
+        }
+        // The cursor is on its line's columns: half of them on a line not
+        // single width.
+        let end = self.row_end(self.cursor.row);
+        crate::check::ensure(self.cursor.col < end, || {
+            format!("cursor at {:?} past its line's end {end}", self.cursor.at())
+        })
+    }
+
+    /// 26: the margins are inside the grid, each the whole of it or two
+    /// lines or columns apart at least, and `lr` says whether the left and
+    /// right ones are narrower than the grid.
+    fn check_margins(&self) -> Result<(), String> {
+        let (rows, cols) = (self.size.rows(), self.size.cols());
+        let inside = |span: Span, n: u16| span.first() <= span.last() && span.last() < n;
+        crate::check::ensure(
+            inside(self.lines, rows) && inside(self.columns, cols),
+            || {
+                format!(
+                    "margins {:?} {:?} off {rows}x{cols}",
+                    self.lines, self.columns
+                )
+            },
+        )?;
+        let set = |span: Span, whole: Span| span == whole || span.first() < span.last();
+        crate::check::ensure(
+            set(self.lines, self.size.lines()) && set(self.columns, self.size.columns()),
+            || {
+                format!(
+                    "margins {:?} {:?} one line or column",
+                    self.lines, self.columns
+                )
+            },
+        )?;
+        crate::check::ensure(self.lr() == (self.columns != self.size.columns()), || {
+            format!("lr {} with columns {:?}", self.lr(), self.columns)
+        })?;
+        // A row half as long is never missed: its end bounds the cursor
+        // and printing only while `doubled` says one may be.
+        let halved = (0..rows).any(|row| self.rendition(row).is_double());
+        crate::check::ensure(self.doubled() || !halved, || {
+            "a row is half as long, unmarked".into()
+        })
+    }
+
+    /// 36: the kitty keyboard stack holds at most its limit.
+    fn check_keyboard(&self) -> Result<(), String> {
+        crate::check::ensure(self.keyboard.0.len() <= KEYBOARD_STACK_LIMIT, || {
+            format!("{} kitty keyboard flags held", self.keyboard.0.len())
+        })
+    }
+
+    /// 24: each row's link runs inside its width, in order and apart.
+    fn check_link_runs(&self) -> Result<(), String> {
+        for (row, (_, width, _, links)) in self.checked_rows().enumerate() {
+            if let Some(links) = links {
+                links.check(width).map_err(|e| format!("row {row}: {e}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 23 and 24: what the links held cost covers the links the rows have,
+    /// within the bound, and each with an `id` is found by it.
+    fn check_links_held(&self) -> Result<(), String> {
+        let links = self.checked_rows().filter_map(|(_, _, _, links)| links);
+        self.links.check(links)
+    }
+}
+
+/// The grid's checks, each shown a grid with its one fault (HAR-26): a
+/// check that stops checking fails here.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    /// A grid of 3 rows of 4, with a few rows of history.
+    fn grid() -> Result<Grid, Error> {
+        let size = Size::new(3, 4).map_err(|_| Error::Capacity)?;
+        let mut next = 1;
+        let mut grid = Grid::new(size, 1 << 12, &mut next, 1)?;
+        for _ in 0..5 {
+            let _ = grid.write_ascii(0, 0, b"ab", 0, 1);
+            grid.scroll(
+                size.lines(),
+                1,
+                Scroll::Up { history: true },
+                0,
+                &mut next,
+                1,
+            );
+        }
+        Ok(grid)
+    }
+
+    /// The checks that found a fault in `grid`.
+    fn faulted(grid: &Grid) -> Vec<&'static str> {
+        let mut report = crate::Checked::default();
+        grid.check("grid", 1, &mut report);
+        report.faults().iter().map(|f| f.check).collect()
+    }
+
+    /// Whether `grid` is clean, and `fault` makes it fail `check` alone.
+    fn shows(check: &str, fault: impl FnOnce(&mut Grid)) -> Result<(), Error> {
+        let mut grid = grid()?;
+        assert_eq!(faulted(&grid), Vec::<&str>::new());
+        fault(&mut grid);
+        let found = faulted(&grid);
+        assert!(found.contains(&check), "{check}: {found:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("grid.order", |g| {
+            if let [first, second, ..] = g.order.slots.as_mut_slice() {
+                *first = *second;
+            }
+        })?;
+        shows("grid.slots", |g| {
+            g.texts.pop();
+        })?;
+        shows("grid.blank_past_used", |g| {
+            if let Some(cell) = g.cells.get_mut(1) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 0);
+        })?;
+        shows("grid.blank_past_end", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            let at = g.order.get(0).map(|slot| slot * 4 + 3);
+            if let Some(cell) = at.and_then(|at| g.cells.get_mut(at)) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.wide_pairs", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                *cell = Compact::glyph('一', 2, 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.text", |g| {
+            let long = "e\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
+            g.mutate_line(0, 1, 1, |line| line.set(0, Compact::glyph('e', 1, 0), long));
+            if let Some(&slot) = g.order.get(0)
+                && let Some(text) = g.texts.get_mut(slot)
+            {
+                *text = Text::default();
+            }
+        })?;
+        shows("grid.style_numbers", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                cell.set_style(crate::style::TABLE | 5);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.recent", |g| {
+            let bold = Attributes::default().with_bold(true);
+            if let Some(slot) = g.recent.get_mut(0) {
+                *slot = (bold, crate::style::TABLE | 3);
+            }
+        })?;
+        shows("grid.charged", |g| g.history.charge(1))?;
+        // A run past the row's 4 cells, and a link the links held never
+        // counted (guard mutants: the grid's calls to each check).
+        shows("links.runs", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(3..5, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
+        shows("links.held", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(0..1, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
+        shows("grid.versions", |g| {
+            g.meta.iter_mut().for_each(|m| m.version = 2);
+        })?;
+        shows("grid.cursor", |g| g.cursor.row = 3)?;
+        shows("grid.cursor", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            (g.cursor.row, g.cursor.col) = (0, g.size.cols().saturating_sub(1));
+        })?;
+        shows("grid.margins", |g| g.narrow = LR)?;
+        shows("grid.margins", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            g.narrow = 0;
+        })?;
+        shows("grid.keyboard", |g| g.keyboard.0.extend([1; 33]))?;
+        Ok(())
+    }
+}
+
+/// What a fault test needs of a grid it breaks on purpose.
+#[cfg(all(test, feature = "checks"))]
+impl Grid {
+    /// Gives live row `row` identity `id`, another row's maybe.
+    pub(crate) fn give_id(&mut self, row: u16, id: RowId) {
+        if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
+            m.id = id;
+        }
+    }
+}

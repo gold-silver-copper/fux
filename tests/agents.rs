@@ -450,9 +450,10 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     })?;
     // A terminal of 10 by 20 pixel cells that draws sixel.
     client.send(b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[6;20;10t\x1b[?62;4;22c")?;
-    // P1 9: square pixels (DEC STD 070, 7.1).
-    let asked =
-        r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo drawn";
+    // P1 9: square pixels (DEC STD 070, 7.1). The cursor stays on the
+    // picture's last row (DEC STD 070, 11.3; xterm "requires only a single
+    // newline"), so a line goes first lest the text cover it.
+    let asked = r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo; echo drawn";
     server.ok(&[
         "str",
         "%1",
@@ -481,7 +482,7 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     })?;
     let json = server.ok(&["str", "%1", "pane", "capture", "json"])?;
     assert!(
-        json.contains(r#""col":0,"rows":1,"cols":2,"width":20,"height":12}]"#),
+        json.contains(r#""col":0,"rows":1,"cropped":0,"cols":2,"width":20,"height":12}]"#),
         "{json}"
     );
     Ok(())
@@ -2002,6 +2003,39 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
+/// An exit is told by the first answer that tells it, not by a capture,
+/// which reads the screen and tells no exit: a wait after a capture still
+/// tells the exit, with what came.
+#[test]
+fn a_capture_tells_no_exit() -> Outcome {
+    let server = Server::start("")?;
+    let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
+    server.ok(&[
+        "str",
+        &ends,
+        "pane",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    eventually("the exit", || {
+        Ok(server
+            .ok(&["str", &ends, "pane", "str", "state", "get"])?
+            .trim()
+            == "exited 0")
+    })?;
+    let read = server.ok(&["str", &ends, "pane", "capture"])?;
+    assert!(read.contains("BYE"), "{read}");
+    let told = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert!(!told.contains("told before"), "{told}");
+    let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
+    assert!(again.contains("told before"), "{again}");
+    Ok(())
+}
+
 /// A capture with `styles` keeps blanks at a line's end that are painted,
 /// in JSON's lines and runs as in its text; plain lines trim them. The
 /// cursor is the screen's row and column in JSON as in answers, and an
@@ -2160,8 +2194,8 @@ fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
 }
 
 /// A remote client that reports nothing of what it runs (here a stand-in
-/// named `ssh`, reading its terminal as ssh does while its command runs
-/// there) is no program waiting for keys: once quiet it is `waiting`, the
+/// named `ssh`, watching its terminal in a select, as ssh does beside its
+/// socket while its command runs there) is no program waiting for keys: once quiet it is `waiting`, the
 /// answer says fux cannot tell and how to wait, and a text wait runs to
 /// its limit, never told it cannot come (7).
 #[test]
@@ -2169,7 +2203,12 @@ fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
     let server = Server::start("")?;
     let ssh = server.dir.join("ssh");
-    std::fs::write(&ssh, "#!/bin/sh\necho connected\nread line\n").map_err(e)?;
+    let watch = "import select, sys; select.select([sys.stdin], [], [])";
+    std::fs::write(
+        &ssh,
+        format!("#!/bin/sh\necho connected\nexec python3 -c '{watch}'\n"),
+    )
+    .map_err(e)?;
     std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
     let ssh = ssh.to_string_lossy().into_owned();
     let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;

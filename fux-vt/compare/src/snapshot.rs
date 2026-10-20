@@ -215,6 +215,11 @@ impl Snapshot {
     /// so comparing two masked snapshots compares only what it can.
     pub fn masked(&self, can: &Can) -> Snapshot {
         let mut s = self.clone();
+        if !can.last_wrapped
+            && let Some(last) = s.screen.last_mut()
+        {
+            last.wrapped = false;
+        }
         for line in &mut s.screen {
             line.wrapped &= can.wrapped;
             line.prompt &= can.prompt;
@@ -287,8 +292,37 @@ impl Snapshot {
         for (_, wrapped) in &mut s.history {
             *wrapped &= can.wrapped;
         }
+        let d = &mut s.device;
+        if !can.cursor_shape {
+            d.cursor_shape = 0;
+        }
+        if !can.tab_stops {
+            d.tab_stops.clear();
+        }
+        if !can.renditions {
+            d.renditions.clear();
+        }
+        if !can.protection {
+            d.protected.clear();
+        }
         s
     }
+}
+
+/// What a terminal keeps that DA claims and a screen's text doesn't show
+/// (HAR-46): the cursor's shape, the tab stops, each screen row's line
+/// rendition and the cells protected from selective erase.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Device {
+    /// DECSCUSR's Ps for the shape: 0 and 1 as 1, the terminal's own as 7.
+    pub cursor_shape: u16,
+    /// The columns with a tab stop, zero-based.
+    pub tab_stops: Vec<u16>,
+    /// Each screen row's rendition: 0 single width, 1 double width, 2 the
+    /// top half of double height, 3 its bottom half.
+    pub renditions: Vec<u8>,
+    /// The protected cells, row and column.
+    pub protected: Vec<(u16, u16)>,
 }
 
 /// Everything compared, read from one terminal.
@@ -321,6 +355,7 @@ pub struct Snapshot {
     /// fux-vt's whole history, oldest first, and as many of Ghostty's most
     /// recent history rows: Ghostty bounds history in bytes, not rows.
     pub history: Vec<(String, bool)>,
+    pub device: Device,
 }
 
 /// Keeps the replies both terminals give alike: DSR 5n's `CSI 0 n` and
@@ -397,6 +432,10 @@ pub enum Field {
     Strikeout,
     History,
     HistoryWrapped,
+    CursorShape,
+    TabStops,
+    Rendition,
+    Protected,
 }
 
 impl Field {
@@ -437,12 +476,43 @@ impl Field {
             Field::Strikeout => can.strikeout,
             Field::History => can.history,
             Field::HistoryWrapped => can.history && can.wrapped,
+            Field::CursorShape => can.cursor_shape,
+            Field::TabStops => can.tab_stops,
+            Field::Rendition => can.renditions,
+            Field::Protected => can.protection,
         }
     }
 }
 
 /// A mode, by name, what it is, and how to read it.
 type Mode = (&'static str, Field, fn(&Snapshot) -> bool);
+
+/// The modes compared as flags, by the name a difference in one has.
+fn flags() -> [Mode; 11] {
+    [
+        ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
+        ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
+        ("autowrap", Field::Autowrap, |s| s.autowrap),
+        ("origin mode", Field::Origin, |s| s.origin),
+        ("alternate screen", Field::Alternate, |s| s.alternate),
+        ("application cursor", Field::ApplicationCursor, |s| {
+            s.application_cursor
+        }),
+        ("application keypad", Field::ApplicationKeypad, |s| {
+            s.application_keypad
+        }),
+        ("bracketed paste", Field::BracketedPaste, |s| {
+            s.bracketed_paste
+        }),
+        ("focus reporting", Field::FocusReporting, |s| {
+            s.focus_reporting
+        }),
+        ("synchronized output", Field::SynchronizedOutput, |s| {
+            s.synchronized_output
+        }),
+        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
+    ]
+}
 
 /// One difference: where (`key`, the same for every engine), what it is
 /// about, and the two values.
@@ -509,29 +579,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.cursor),
         format!("{:?}", other.cursor),
     );
-    let flags: [Mode; 11] = [
-        ("pending wrap", Field::PendingWrap, |s| s.pending_wrap),
-        ("cursor visible", Field::CursorVisible, |s| s.cursor_visible),
-        ("autowrap", Field::Autowrap, |s| s.autowrap),
-        ("origin mode", Field::Origin, |s| s.origin),
-        ("alternate screen", Field::Alternate, |s| s.alternate),
-        ("application cursor", Field::ApplicationCursor, |s| {
-            s.application_cursor
-        }),
-        ("application keypad", Field::ApplicationKeypad, |s| {
-            s.application_keypad
-        }),
-        ("bracketed paste", Field::BracketedPaste, |s| {
-            s.bracketed_paste
-        }),
-        ("focus reporting", Field::FocusReporting, |s| {
-            s.focus_reporting
-        }),
-        ("synchronized output", Field::SynchronizedOutput, |s| {
-            s.synchronized_output
-        }),
-        ("in-band resize", Field::InBandResize, |s| s.in_band_resize),
-    ];
+    let flags = flags();
     for (name, f, get) in flags {
         field(name.into(), f, get(fux).to_string(), get(other).to_string());
     }
@@ -558,13 +606,57 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         format!("{:?}", fux.reports),
         format!("{:?}", other.reports),
     );
+    let (a, b) = (&fux.device, &other.device);
+    // fux-vt's own shape (7) is the terminal's, which it doesn't know.
+    if a.cursor_shape != 7 {
+        field(
+            "cursor shape".into(),
+            Field::CursorShape,
+            a.cursor_shape.to_string(),
+            b.cursor_shape.to_string(),
+        );
+    }
+    field(
+        "tab stops".into(),
+        Field::TabStops,
+        format!("{:?}", a.tab_stops),
+        format!("{:?}", b.tab_stops),
+    );
+    for (y, (ra, rb)) in a.renditions.iter().zip(&b.renditions).enumerate() {
+        field(
+            format!("row {y} rendition"),
+            Field::Rendition,
+            ra.to_string(),
+            rb.to_string(),
+        );
+    }
+    field(
+        "protected cells".into(),
+        Field::Protected,
+        format!("{:?}", a.protected),
+        format!("{:?}", b.protected),
+    );
     // Which cells share a link, compared among the cells both give a link
     // with the same URI (a cell where they differ on it differs on its
     // URI): each such cell's link is named, in each snapshot, by the first
     // such cell in reading order that has the same link.
     let mut fux_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
     let mut other_firsts: HashMap<&str, (usize, usize)> = HashMap::new();
+    // A screen or a row read short would hide the cells past its end from
+    // the comparison: its length differs instead. Adapters pad every row.
+    field(
+        "screen rows read".into(),
+        Field::Size,
+        fux.screen.len().to_string(),
+        other.screen.len().to_string(),
+    );
     for (y, (a, b)) in fux.screen.iter().zip(&other.screen).enumerate() {
+        field(
+            format!("row {y} cells read"),
+            Field::Size,
+            a.cells.len().to_string(),
+            b.cells.len().to_string(),
+        );
         field(
             format!("row {y} soft-wrapped"),
             Field::Wrapped,
@@ -655,7 +747,7 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
     fux_blank.set(false);
     let ha: Vec<_> = fux.history.iter().rev().collect();
     let hb: Vec<_> = other.history.iter().rev().collect();
-    if ha.len() > hb.len() {
+    if ha.len() != hb.len() {
         field(
             "history rows kept".into(),
             Field::History,
@@ -678,6 +770,82 @@ pub fn differences(fux: &Snapshot, other: &Snapshot) -> Vec<Diff> {
         );
     }
     out
+}
+
+/// The value of the field `key` names in `s`, as [`differences`] shows
+/// it, so an expected value is written as a difference would show it:
+/// `size`, `cursor`, a mode by its name (`pending wrap`, `autowrap`, …),
+/// `kitty keyboard flags`, `title`, `reports`, `row Y` (its text, as
+/// [`Line::text`] gives it), `row Y soft-wrapped`, `row Y starts a prompt`,
+/// and `cell (Y,X) PART` for a part `differences` names; with the field it
+/// is about. None for a key it does not know or a cell off the screen.
+pub fn read(s: &Snapshot, key: &str) -> Option<(Field, String)> {
+    if let Some((_, field, get)) = flags().into_iter().find(|(name, _, _)| *name == key) {
+        return Some((field, get(s).to_string()));
+    }
+    match key {
+        "size" => return Some((Field::Size, format!("{}x{}", s.rows, s.cols))),
+        "cursor" => return Some((Field::Cursor, format!("{:?}", s.cursor))),
+        "kitty keyboard flags" => {
+            return Some((Field::Kitty, s.kitty_keyboard_flags.to_string()));
+        }
+        "title" => return Some((Field::Title, format!("{:?}", s.title))),
+        "reports" => return Some((Field::Reports, format!("{:?}", s.reports))),
+        _ => {}
+    }
+    if let Some(rest) = key.strip_prefix("row ") {
+        let (y, part) = rest.split_once(' ').unwrap_or((rest, ""));
+        let line = s.screen.get(y.parse::<usize>().ok()?)?;
+        return match part {
+            "" => Some((Field::Text, line.text())),
+            "soft-wrapped" => Some((Field::Wrapped, line.wrapped.to_string())),
+            "starts a prompt" => Some((Field::Prompt, line.prompt.to_string())),
+            _ => None,
+        };
+    }
+    let (at, part) = key.strip_prefix("cell (")?.split_once(") ")?;
+    let (y, x) = at.split_once(',')?;
+    let cell = s
+        .screen
+        .get(y.parse::<usize>().ok()?)?
+        .cells
+        .get(x.parse::<usize>().ok()?)?;
+    let st = &cell.style;
+    Some(match part {
+        "text" => (Field::Text, format!("{:?}", cell.text)),
+        "width" => (Field::Width, format!("{:?}", cell.width)),
+        "link" => (
+            Field::LinkUri,
+            format!("{:?}", cell.link.as_ref().map(|l| &l.uri)),
+        ),
+        "fg" => (Field::Fg, format!("{:?}", st.fg)),
+        "bg" => (Field::Bg, format!("{:?}", st.bg)),
+        "underline colour" => (Field::UnderlineColor, format!("{:?}", st.underline_color)),
+        "bold" => (Field::Bold, st.bold.to_string()),
+        "dim" => (Field::Dim, st.dim.to_string()),
+        "italic" => (Field::Italic, st.italic.to_string()),
+        "underline" => (Field::Underline, st.underline.to_string()),
+        "blink" => (Field::Blink, st.blink.to_string()),
+        "inverse" => (Field::Inverse, st.inverse.to_string()),
+        "hidden" => (Field::Hidden, st.hidden.to_string()),
+        "strikeout" => (Field::Strikeout, st.strikeout.to_string()),
+        _ => return None,
+    })
+}
+
+/// Whether an expected value for `key` (see [`read`]) settles the field a
+/// difference's `diff_key` names: the same key, or a row's text and the
+/// text of a cell on it.
+pub fn covers(key: &str, diff_key: &str) -> bool {
+    key == diff_key
+        || key.strip_prefix("row ").is_some_and(|y| {
+            !y.contains(' ')
+                && diff_key
+                    .strip_prefix("cell (")
+                    .and_then(|rest| rest.strip_prefix(y))
+                    .and_then(|rest| rest.strip_prefix(','))
+                    .is_some_and(|rest| rest.ends_with(") text"))
+        })
 }
 
 /// Both screens side by side, as text, with the cursor marked and each
@@ -731,6 +899,90 @@ pub fn side_by_side_beside(
 #[cfg(test)]
 mod tests {
     use super::{Cell, Field, Line, Snapshot, Style, Width};
+
+    /// An engine that can't tell the last row's soft wrap (xterm's print)
+    /// is not compared on it, and is on every other row's.
+    #[test]
+    fn the_last_rows_soft_wrap_is_compared_where_it_is_told() {
+        let line = |wrapped| Line {
+            unread_from: None,
+            prompt: false,
+            cells: Vec::new(),
+            wrapped,
+        };
+        let fux = Snapshot {
+            screen: vec![line(true), line(true)],
+            ..Snapshot::default()
+        };
+        let other = Snapshot {
+            screen: vec![line(false), line(false)],
+            ..Snapshot::default()
+        };
+        let can = crate::engine::Can {
+            last_wrapped: false,
+            ..crate::engine::Can::ALL
+        };
+        let keys: Vec<String> = super::differences(&fux.masked(&can), &other.masked(&can))
+            .into_iter()
+            .map(|d| d.key)
+            .collect();
+        assert_eq!(keys, ["row 0 soft-wrapped"]);
+        let all = crate::engine::Can::ALL;
+        assert_eq!(
+            super::differences(&fux.masked(&all), &other.masked(&all)).len(),
+            2
+        );
+    }
+
+    /// The device's state DA claims is compared where an engine can tell
+    /// it, and with no one where it can't (HAR-46): a double-width row, a
+    /// tab stop, the cursor's shape and a protected cell.
+    #[test]
+    fn the_device_state_is_compared_where_it_is_told() {
+        let fux = Snapshot {
+            device: super::Device {
+                cursor_shape: 3,
+                tab_stops: vec![4, 8],
+                renditions: vec![1],
+                protected: vec![(0, 0)],
+            },
+            ..Snapshot::default()
+        };
+        let other = Snapshot {
+            device: super::Device {
+                cursor_shape: 1,
+                tab_stops: vec![8],
+                renditions: vec![0],
+                protected: vec![],
+            },
+            ..Snapshot::default()
+        };
+        let all = crate::engine::Can::ALL;
+        let fields: Vec<Field> = super::differences(&fux.masked(&all), &other.masked(&all))
+            .into_iter()
+            .map(|d| d.field)
+            .collect();
+        for f in [
+            Field::CursorShape,
+            Field::TabStops,
+            Field::Rendition,
+            Field::Protected,
+        ] {
+            assert!(fields.contains(&f), "{f:?} not compared: {fields:?}");
+        }
+        let none = crate::engine::Can::NO_DEVICE;
+        assert!(super::differences(&fux.masked(&none), &other.masked(&none)).is_empty());
+        // fux-vt's own shape, the terminal's (7), is compared with no one.
+        let own = Snapshot {
+            device: super::Device {
+                cursor_shape: 7,
+                ..super::Device::default()
+            },
+            ..Snapshot::default()
+        };
+        let shapes = super::differences(&own, &Snapshot::default());
+        assert!(shapes.iter().all(|d| d.field != Field::CursorShape));
+    }
 
     fn row(links: &[Option<(&str, &str)>]) -> Snapshot {
         let cells = links
@@ -790,6 +1042,63 @@ mod tests {
             fields(&fux, &shorter),
             [("cell (0,0) link".to_owned(), Field::LinkUri)]
         );
+    }
+
+    /// A field read by its key has the value a difference in it shows,
+    /// and a row's text covers its cells' text alone.
+    #[test]
+    fn a_field_reads_as_its_difference_shows_it() {
+        let fux = row(&[Some(("u", "1")), None]);
+        let mut other = row(&[None, None]);
+        if let Some(cell) = other.screen.first_mut().and_then(|l| l.cells.first_mut()) {
+            cell.text = "y".into();
+            cell.style.bold = true;
+        }
+        other.cursor = (0, 1);
+        other.pending_wrap = true;
+        for diff in super::differences(&fux, &other) {
+            let read = |s: &Snapshot| super::read(s, &diff.key);
+            assert_eq!(read(&fux), Some((diff.field, diff.fux)), "{}", diff.key);
+            assert_eq!(read(&other), Some((diff.field, diff.other)), "{}", diff.key);
+        }
+        assert_eq!(
+            super::read(&other, "row 0"),
+            Some((Field::Text, "yx".to_owned()))
+        );
+        assert_eq!(super::read(&other, "cell (0,2) text"), None);
+        assert_eq!(super::read(&other, "row 0 colour"), None);
+        assert!(super::covers("row 0", "cell (0,1) text"));
+        assert!(!super::covers("row 0", "cell (0,1) bold"));
+        assert!(!super::covers("row 1", "cell (10,1) text"));
+        assert!(!super::covers("row 0 soft-wrapped", "cell (0,1) text"));
+    }
+
+    /// A row read short is a difference, not a row whose missing cells
+    /// go uncompared (at the parent they were zipped away).
+    #[test]
+    fn a_row_read_short_differs() {
+        let full = row(&[None, None, None]);
+        let mut short = full.clone();
+        if let Some(line) = short.screen.first_mut() {
+            line.cells.truncate(1);
+        }
+        assert_eq!(
+            fields(&full, &short),
+            [("row 0 cells read".to_owned(), Field::Size)]
+        );
+    }
+
+    /// A subject that kept fewer history rows than the other differs, as
+    /// one that kept more does: its loss of its oldest rows is seen.
+    #[test]
+    fn history_kept_short_differs_both_ways() {
+        let mut short = row(&[None]);
+        short.history = vec![("b".into(), false)];
+        let mut long = short.clone();
+        long.history = vec![("a".into(), false), ("b".into(), false)];
+        let kept = [("history rows kept".to_owned(), Field::History)];
+        assert_eq!(fields(&short, &long), kept);
+        assert_eq!(fields(&long, &short), kept);
     }
 
     #[test]

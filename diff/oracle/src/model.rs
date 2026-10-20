@@ -3,13 +3,22 @@
 //! side's types into these through fux-vt's public API, so the two are
 //! compared field by field.
 //!
-//! A kind one side has and the model does not name (a colour, an event, a
-//! mouse mode added later) is read as `Other`, with its `Debug` text, so it
-//! is a difference rather than a silent match.
+//! `side.rs` reads each kind (a colour, an event, an unhandled sequence)
+//! by a match with no catch-all, so one a side has and the model does not
+//! name fails to build, rather than matching silently.
 use std::fmt::{self, Write};
 
 /// A colour.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Why `Parser::process_until_stop` stopped: a frame began or ended, or
+/// the call spent its work budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Begun,
+    Ended,
+    Budget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
     Default,
     Idx(u8),
@@ -17,7 +26,7 @@ pub enum Color {
 }
 
 /// An underline's style.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Underline {
     None,
     Single,
@@ -28,7 +37,7 @@ pub enum Underline {
 }
 
 /// How a cell blinks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Blink {
     None,
     Slow,
@@ -36,7 +45,7 @@ pub enum Blink {
 }
 
 /// Colours and rendition: every attribute fux-vt keeps.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Style {
     pub fg: Color,
     pub bg: Color,
@@ -315,6 +324,87 @@ pub struct State {
     /// Whether the rows read from the bottom end where the history and
     /// screen do.
     pub rows_end_there: bool,
+    /// `Screen::left_right_margins`.
+    pub left_right_margins: (u16, u16),
+    /// The 256 palette entries and the dynamic colours (OSC 10 to 19), as
+    /// the program has them: `None` where it set none.
+    pub palette: Vec<Option<(u8, u8, u8)>>,
+    pub dynamic: Vec<Option<(u8, u8, u8)>>,
+    pub pictures: Vec<Shown>,
+    /// The screen not in use: its rows' identities, wrap flags and a hash
+    /// of their cells, as `Screen::main_rows` or `alternate_rows` gives
+    /// them.
+    pub inactive: Vec<(u64, bool, u64)>,
+    /// `Screen::let_go`: the newest version of a history row let go.
+    pub let_go: u64,
+}
+
+/// A picture shown: its number, top row, first column, columns, rows,
+/// size in pixels, and a hash of its pixels.
+pub type Shown = (u64, i64, u16, u16, u16, (u32, u32), u64);
+
+/// A host's call between outputs (`Step::Host`): what fux does to a pane's
+/// parser other than feed it and resize it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Call {
+    /// `Parser::set_history_bytes`.
+    HistoryBytes(usize),
+    /// `Parser::clear_history`.
+    ClearHistory,
+    /// `Parser::tick`.
+    Tick,
+    /// `Parser::set_host_palette`, entry `n % 16` known (a colour made of
+    /// `n`), the rest not.
+    Palette(u8),
+    /// `Parser::set_host_graphics`: a cell of this many pixels, sixel drawn.
+    Graphics(u16, u16),
+    /// `Parser::require_mark_nonce`: both nonces, or none.
+    Nonce(bool),
+    /// `Parser::note_submit`.
+    Submit,
+    /// `Parser::record_prints`.
+    Record(bool),
+    /// `Parser::take_prints`, what it gives compared.
+    Prints,
+}
+
+impl Call {
+    /// The call as `Case::to_text` writes it, after `host `.
+    pub fn to_text(self) -> String {
+        match self {
+            Call::HistoryBytes(n) => format!("history_bytes {n}"),
+            Call::ClearHistory => "clear_history".into(),
+            Call::Tick => "tick".into(),
+            Call::Palette(n) => format!("palette {n}"),
+            Call::Graphics(w, h) => format!("graphics {w} {h}"),
+            Call::Nonce(on) => format!("nonce {}", u8::from(on)),
+            Call::Submit => "submit".into(),
+            Call::Record(on) => format!("record {}", u8::from(on)),
+            Call::Prints => "prints".into(),
+        }
+    }
+
+    /// A call `to_text` wrote.
+    pub fn from_text(text: &str) -> Option<Call> {
+        let mut words = text.split_whitespace();
+        let name = words.next()?;
+        let mut number = || words.next()?.parse::<usize>().ok();
+        Some(match name {
+            "history_bytes" => Call::HistoryBytes(number()?),
+            "clear_history" => Call::ClearHistory,
+            "tick" => Call::Tick,
+            "palette" => Call::Palette(u8::try_from(number()?).ok()?),
+            "graphics" => Call::Graphics(
+                u16::try_from(number()?).ok()?,
+                u16::try_from(number()?).ok()?,
+            ),
+            "nonce" => Call::Nonce(number()? != 0),
+            "submit" => Call::Submit,
+            "record" => Call::Record(number()? != 0),
+            "prints" => Call::Prints,
+            _ => return None,
+        })
+    }
 }
 
 /// What a mark taken earlier says now.

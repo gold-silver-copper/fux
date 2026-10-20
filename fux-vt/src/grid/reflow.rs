@@ -101,6 +101,8 @@ impl Grid {
             let meta = Meta::new(next_id(next), version, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
         }
+        replacement.fit_cursor();
+        replacement.rows_given();
         Ok(replacement)
     }
 
@@ -126,12 +128,17 @@ impl Grid {
             },
             target,
         };
+        // Whether any row may be half as long, which only then is asked.
+        let halved = self.doubled() || self.history.has_renditions();
+        let double = |index: usize| halved && self.rendition_at(index).is_double();
         let mut start = 0;
         while start < retained {
             // A line runs through its wrapped rows to the row that ends it.
             // Its length leaves out its blank tail, which can run back over
             // several rows: the rows' widths up to the last with text, and
-            // that row's text.
+            // that row's text. A row half as long is a line of its own, as
+            // wide as it was, never joined to the rows around it nor split:
+            // the row it is laid out in takes its rendition.
             let (mut end, mut before, mut length) = (start, 0usize, 0);
             loop {
                 let (wrapped, width, text) = self.facts_at(end);
@@ -139,18 +146,30 @@ impl Grid {
                     length = before.saturating_add(text);
                 }
                 before = before.saturating_add(width);
-                if !wrapped || end.checked_add(1).is_none_or(|next| next >= retained) {
+                let next = end.saturating_add(1);
+                if !wrapped || next >= retained || double(end) || double(next) {
                     break;
                 }
-                end = end.saturating_add(1);
+                end = next;
             }
             if (start..=end).contains(&self.history_len()) {
                 pass.out.screen_line = pass.out.rows;
             }
-            self.lay_out_runs((start, end), length, &mut pass)?;
+            let rendition = if double(start) {
+                self.rendition_at(start)
+            } else {
+                LineRendition::Single
+            };
+            self.lay_out_runs((start, end), (length, rendition), &mut pass)?;
             start = end.saturating_add(1);
         }
         Ok(pass.out)
+    }
+
+    /// The rendition of retained row `index`.
+    fn rendition_at(&self, index: usize) -> LineRendition {
+        self.row_at(index)
+            .map_or(LineRendition::Single, |row| row.rendition())
     }
 
     /// Lays out the line of rows `start` through `end`, a run of cells at a
@@ -160,13 +179,20 @@ impl Grid {
     /// as one column cannot show them. So a line costs its rows and the rows it is laid
     /// out in, not its cells; one whose rows stay as they are (every line
     /// but a few, when only the rows change) costs a run a row. The line's
-    /// text is `length` cells long.
+    /// text is `length` cells long. A line of `rendition` other than single
+    /// width, one row, keeps as much as fits in half the width, and loses
+    /// the rest, as DECDWL loses it (DEC STD 070, DECDWL, notes 1 and 2).
     fn lay_out_runs(
         &self,
         (start, end): (usize, usize),
-        length: usize,
+        (length, rendition): (usize, LineRendition),
         pass: &mut Pass<'_, impl Reflow>,
     ) -> Result<(), Error> {
+        let length = if rendition.is_double() {
+            length.min((pass.width / 2).max(1))
+        } else {
+            length
+        };
         let mut line = Run {
             used: 0,
             next: start,
@@ -184,7 +210,7 @@ impl Grid {
             let len = row.width;
             // The row the row's first cell goes to is where the prompt
             // starts after, or the line's last, if no cell goes after it.
-            line.pending |= row.prompt;
+            line.pending |= row.starts_prompt();
             for (offset, mark) in line.offsets.iter_mut().zip(pass.marks) {
                 if let Some((row_index, col)) = mark
                     && row_index == i
@@ -239,7 +265,7 @@ impl Grid {
         }
         let id = self.id_at(line.next, end);
         pass.target
-            .row(out.rows, line.used, false, id, line.prompt)?;
+            .row(out.rows, line.used, (false, rendition), id, line.prompt)?;
         out.rows = out.rows.saturating_add(1);
         out.trailing_blank = if length == 0 {
             out.trailing_blank
@@ -289,8 +315,13 @@ impl Grid {
     fn end_row(&self, line: &mut Run, pass: &mut Pass<'_, impl Reflow>) -> Result<(), Error> {
         let id = self.id_at(line.next, line.end);
         line.next = line.next.saturating_add(1);
-        pass.target
-            .row(pass.out.rows, line.used, true, id, line.prompt)?;
+        pass.target.row(
+            pass.out.rows,
+            line.used,
+            (true, LineRendition::Single),
+            id,
+            line.prompt,
+        )?;
         pass.out.rows = pass.out.rows.saturating_add(1);
         line.used = 0;
         line.prompt = false;
@@ -303,7 +334,15 @@ impl Grid {
         if index > end {
             return None;
         }
-        self.row_at(index).map(|row| row.id)
+        // As `row_at` counts it, without making the row.
+        work!(rows, 1);
+        match index.checked_sub(self.history.len()) {
+            None => self.history.kept(index).map(|kept| kept.id),
+            Some(row) => self
+                .order
+                .get(row)
+                .and_then(|&slot| Some(self.meta.get(slot)?.id)),
+        }
     }
 
     /// Retained row `index`'s facts a line's layout reads: whether it is
@@ -314,8 +353,9 @@ impl Grid {
     fn facts_at(&self, index: usize) -> (bool, usize, usize) {
         let Some(row) = index.checked_sub(self.history.len()) else {
             let kept = self.history.kept(index);
+            let goes_on = self.history.continues(index);
             return kept.map_or((false, 0, 0), |k| {
-                (k.wrapped(), usize::from(k.width()), k.len())
+                (goes_on, usize::from(k.width()), k.len())
             });
         };
         let width = usize::from(self.size.cols());
@@ -331,13 +371,13 @@ impl Grid {
             .iter()
             .rposition(|c| !c.is_blank(0))
             .map_or(0, |last| last.saturating_add(1));
-        (m.wrapped, width, text)
+        (m.continues(), width, text)
     }
 }
 
 /// The links of a run of cells: their row's, if it has any, and where the
 /// cells are in it.
-type RunLinks<'a> = Option<(&'a RowLinks, Range<usize>)>;
+type RunLinks<'a> = Option<(Runs<'a>, Range<usize>)>;
 
 /// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.
@@ -348,13 +388,14 @@ trait Reflow {
     /// covers, which it does not keep, are blank.
     fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>);
     /// Reflowed row `row` is finished, its cells from `used` on blank;
-    /// `wrapped` if its line goes on, the identity of its line's row in the
-    /// same place before, if any, and whether a prompt starts on it.
+    /// `wrapped` if its line goes on, and its rendition; the identity of its
+    /// line's row in the same place before, if any, and whether a prompt
+    /// starts on it.
     fn row(
         &mut self,
         row: usize,
         used: usize,
-        wrapped: bool,
+        wrapped: (bool, LineRendition),
         id: Option<RowId>,
         prompt: bool,
     ) -> Result<(), Error>;
@@ -452,7 +493,14 @@ struct Reflowed {
 struct Layout;
 impl Reflow for Layout {
     fn run(&mut self, _: usize, _: usize, _: &[Compact], _: &Text, _: RunLinks<'_>) {}
-    fn row(&mut self, _: usize, _: usize, _: bool, _: Option<RowId>, _: bool) -> Result<(), Error> {
+    fn row(
+        &mut self,
+        _: usize,
+        _: usize,
+        _: (bool, LineRendition),
+        _: Option<RowId>,
+        _: bool,
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -486,6 +534,7 @@ impl Reflow for Fill<'_> {
             return;
         };
         self.written = self.written.max(col.saturating_add(cells.len()));
+        work!(cells, cells.len());
         crate::copy_from(dst, cells);
         // The clusters held in the row's text are stored again, as placing
         // the cells one at a time stores them.
@@ -511,7 +560,7 @@ impl Reflow for Fill<'_> {
         &mut self,
         row: usize,
         used: usize,
-        wrapped: bool,
+        (wrapped, rendition): (bool, LineRendition),
         id: Option<RowId>,
         prompt: bool,
     ) -> Result<(), Error> {
@@ -530,13 +579,12 @@ impl Reflow for Fill<'_> {
         let text = std::mem::take(&mut self.text);
         let links = self.links.take();
         let written = std::mem::take(&mut self.written);
-        let meta = Meta {
-            prompt,
-            ..Meta::new(id, self.version, wrapped, used)
-        };
+        let mut meta = Meta::new(id, self.version, wrapped, used).with_rendition(rendition);
+        meta.set(PROMPT, prompt);
         let history = row < self.screen;
         let cells = (self.cells.as_slice(), written);
         (self.grid).keep_row(meta, cells, (Some(text), links), history)?;
+        work!(cells, written);
         if let Some(cells) = self.cells.get_mut(..written) {
             cells.fill(BLANK);
         }

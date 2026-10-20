@@ -11,16 +11,34 @@ license = "MIT"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+# fux-vt's invariant checker and work counters, which the targets assert
+# after every operation.
+default = ["checks"]
+checks = ["fux-vt/checks"]
+# Each target notes the features and host calls it reaches (reach.sh).
+reach = []
+
 [dependencies]
 libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+# The graphemes target's input, shared with fux-vt's tests
+# (tests/corpus/graphemes_target.rs): the version libfuzzer-sys uses.
+arbitrary = { version = "=1.4.2", features = ["derive"] }
 fux-vt = { path = ".." }
 # The references the model oracles are built on, as fux-vt's tests use.
 unicode-segmentation = "=1.13.3"
-unicode-width = "0.2"
+unicode-width = "=0.2.2"
 
 [[bin]]
 name = "terminal"
 path = "fuzz_targets/terminal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deep"
+path = "fuzz_targets/deep.rs"
 test = false
 doc = false
 bench = false
@@ -45,3 +63,40 @@ path = "fuzz_targets/keys.rs"
 test = false
 doc = false
 bench = false
+
+[lints.rust]
+unused_must_use = "forbid"
+unconditional_recursion = "forbid"
+unsafe_code = "forbid"
+
+[lints.clippy]
+suspicious = { level = "forbid", priority = -1 }
+unwrap_used = "forbid"
+expect_used = "forbid"
+panic = "forbid"
+unreachable = "forbid"
+todo = "forbid"
+unimplemented = "forbid"
+indexing_slicing = "forbid"
+exit = "forbid"
+infinite_loop = "forbid"
+large_stack_frames = "forbid"
+unchecked_time_subtraction = "forbid"
+read_zero_byte_vec = "forbid"
+unused_result_ok = "forbid"
+debug_assert_with_mut_call = "forbid"
+allow_attributes = "forbid"
+undocumented_unsafe_blocks = "forbid"
+significant_drop_in_scrutinee = "forbid"
+significant_drop_tightening = "forbid"
+cast_lossless = "forbid"
+string_slice = "forbid"
+mem_forget = "forbid"
+large_stack_arrays = "forbid"
+allow_attributes_without_reason = "forbid"
+wildcard_enum_match_arm = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_sign_loss = "forbid"
+arithmetic_side_effects = "forbid"
+disallowed_methods = "forbid"

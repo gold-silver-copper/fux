@@ -262,8 +262,10 @@ struct Attached {
     placement: Placement,
     /// When the next paint may be made.
     clock: PaintClock,
-    /// The pictures its terminal was last sent, as they show there.
+    /// The pictures its terminal was last sent, as they show there, and
+    /// their sixel data.
     pictures: Vec<render::Visible>,
+    sixels: render::Sixels,
 }
 
 /// When a client may be painted next: `PAINT` after its last paint, as a
@@ -361,6 +363,7 @@ impl Attached {
             spare: Grid::new(0, 0),
             placement: Placement::default(),
             pictures: Vec::new(),
+            sixels: render::Sixels::default(),
             clock: PaintClock {
                 next: now,
                 due: now,
@@ -1128,7 +1131,12 @@ impl Server {
         }
         for (id, pane) in &self.session.panes {
             if let Process::Reading(child) = &pane.process {
-                let mut flags = PollFlags::IN;
+                // Output waiting to be read (`Pane::has_unread`) is read
+                // first: until it is, no more is taken from the program.
+                let mut flags = match pane.has_unread() {
+                    true => PollFlags::HUP,
+                    false => PollFlags::IN,
+                };
                 if !pane.input.is_empty() {
                     flags |= PollFlags::OUT;
                 }
@@ -1225,15 +1233,41 @@ impl Server {
         let Some(view) = session.views.get(&client) else {
             return;
         };
-        render::compose_view(session, view, &mut attached.spare, &mut attached.placement);
+        // A pane part way through a frame shows as it was last painted
+        // (render::compose_held), its pictures too.
+        let placed = attached.placement.panes.clone();
+        let painted = (attached.known).then_some(render::Painted {
+            grid: &attached.shown,
+            panes: &placed,
+        });
+        render::compose_held(
+            session,
+            view,
+            &mut attached.spare,
+            &mut attached.placement,
+            painted,
+        );
         if !before.is_empty() {
             attached.paint(&mut conn.out, &before);
         }
         // A picture gone or moved has its cells painted again, blank, which
         // takes its pixels away; one whose cells this paint paints over, or
         // new, is sent after the text.
-        let pictures = render::pictures(session, client, &attached.placement);
+        let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
+        for &(id, rect) in &attached.placement.panes {
+            if session.panes.get(&id).is_some_and(Pane::mid_frame) {
+                pictures.retain(|p| p.pane != id);
+                let (rows, cols) = (attached.spare.rows, attached.spare.cols);
+                let painted = render::Painted {
+                    grid: &attached.shown,
+                    panes: &placed,
+                };
+                if known && painted.kept(id, rect, rows, cols) {
+                    pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());
+                }
+            }
+        }
         for gone in (attached.pictures.iter()).filter(|p| known && !pictures.contains(p)) {
             attached.shown.forget_area(gone.area);
         }
@@ -1264,11 +1298,12 @@ impl Server {
         };
         let mut drawn = Vec::new();
         for (picture, _) in pictures.iter().zip(&send).filter(|(_, send)| **send) {
-            render::picture_into(picture, &mut drawn);
+            attached.sixels.picture_into(picture, &mut drawn);
         }
         if !drawn.is_empty() {
             attached.paint(&mut conn.out, &drawn);
         }
+        attached.sixels.keep(&pictures);
         attached.pictures = pictures;
         if let Some(view) = session.views.get_mut(&client) {
             view.dirty = false;
@@ -1756,8 +1791,14 @@ impl Server {
             if total >= PANE_READ {
                 break false;
             }
-            let Some(Process::Reading(child)) = self.session.panes.get(&id).map(|p| &p.process)
-            else {
+            let Some(pane) = self.session.panes.get(&id) else {
+                return;
+            };
+            // Output already waits: it is read before any more is taken.
+            if pane.has_unread() {
+                break false;
+            }
+            let Process::Reading(child) = &pane.process else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {

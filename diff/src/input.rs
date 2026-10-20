@@ -212,7 +212,11 @@ stack!(
     baseline,
     |press, application, out| baseline::encode::key_bytes(
         press.into(),
-        baseline::encode::KeyMode::legacy(application),
+        baseline::encode::KeyMode::Legacy {
+            application,
+            other_keys: None,
+            backarrow: false,
+        },
         out
     ),
     |input| {
@@ -222,12 +226,10 @@ stack!(
         format!("{input:?}")
     },
     |deadline, last_output| {
-        let typed = baseline::pane::Typed {
-            line: Vec::new(),
-            deadline,
-            last_output,
-        };
-        Some(typed.due_at())
+        let typed = baseline::pane::Typed::new(Vec::new(), deadline)?;
+        let mut queue = baseline::pane::InputQueue::from(typed);
+        last_output.into_iter().for_each(|at| queue.heard(|| at));
+        queue.due_at()
     }
 );
 stack!(
@@ -237,6 +239,7 @@ stack!(
         press.into(),
         fux::encode::KeyMode::Legacy {
             application,
+            keypad: false,
             other_keys: None,
             backarrow: false,
         },

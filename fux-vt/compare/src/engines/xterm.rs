@@ -38,10 +38,9 @@
 //! # Read
 //!
 //! - Cells and history: `CSI ? 11 i`, media copy of all pages: the saved
-//!   lines and the screen, or on the alternate screen that screen alone.
-//!   History read on the primary screen is kept, and given again while the
-//!   alternate screen is shown (the primary's history does not change
-//!   underneath it, except by a resize). Rows are decoded by
+//!   lines and the screen, or on the alternate screen that screen alone,
+//!   which has no history, as fux-vt's (`Screen::history_len` is the screen
+//!   in use's) and the panel's have none. Rows are decoded by
 //!   `pane::Reader` (see `pane::Glyphs::Xterm`). Each row ends with CR, then
 //!   LF unless it is soft-wrapped; the last row has no LF either way, and
 //!   reads as not soft-wrapped. (`CSI ? 10 i` would print only the
@@ -96,9 +95,9 @@
 //! - ZWJ and VS16 are not kept, so emoji sequences are cells of their own
 //!   (`--size 1x8 '👨\u{200d}👩❤\u{fe0f}'`); a skin tone and a second
 //!   regional indicator are cells of their own.
-use crate::engine::{Blanks, Can, Engine, Kind, Setup};
+use crate::engine::{Blanks, CANNOT, Can, Engine, Kind, Setup};
 use crate::engines::pane::{self, Glyphs, Pane, Reader};
-use crate::snapshot::{Line, Snapshot};
+use crate::snapshot::{Device, Line, Snapshot};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -119,6 +118,11 @@ pub const KIND: Kind = Kind {
         link_uri: false,
         link_group: false,
         prompt: false,
+        // The shape by DECRQSS, the stops by DECTABSR, the renditions in the
+        // print; protection it can't tell.
+        protection: false,
+        // Its print ends the last row with no LF either way.
+        last_wrapped: false,
         ..Can::ALL
     },
     blanks: Blanks::XTERM,
@@ -278,7 +282,8 @@ const ARRIVE: Duration = Duration::from_secs(10);
 /// Everything a snapshot asks, ending with the print.
 const QUERY: &[u8] = b"\x1b[?4h\x1b[?4l\x1b[6n\
 \x1b[?1$p\x1b[?6$p\x1b[?7$p\x1b[?25$p\x1b[?66$p\x1b[?1004$p\x1b[?2004$p\
-\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\x1b[?11i";
+\x1b[?1049$p\x1b[?1047$p\x1b[?47$p\x1b[21t\x1bP$qr\x1b\\\x1bP$qs\x1b\\\
+\x1bP$q q\x1b\\\x1b[2$w\x1b[?11i";
 
 /// The first patch with `printRawChars` (xterm's changelog, patch #397).
 /// An older xterm's print drops the second half of a wide character and
@@ -420,8 +425,6 @@ pub struct Xterm {
     print: PathBuf,
     rows: u16,
     cols: u16,
-    /// History as last read on the primary screen.
-    history: Vec<(String, bool)>,
     /// Whether the harness has sent xterm its own queries (a read or a
     /// resize) since the last output.
     asked: bool,
@@ -439,7 +442,6 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
         print,
         rows: setup.rows,
         cols: setup.cols,
-        history: Vec::new(),
         asked: false,
         owed: 0,
     };
@@ -588,6 +590,7 @@ impl Xterm {
             }
         };
         let (top, left) = (margin('r'), margin('s'));
+
         // Rows end with CR; a row that is not soft-wrapped, with LF after.
         let mut rows: Vec<(Vec<u8>, bool)> = Vec::new();
         let mut rest = printed.as_slice();
@@ -602,7 +605,7 @@ impl Xterm {
                 after
             };
         }
-        // The last row has no LF either way.
+        // The last row has no LF either way (`Can::last_wrapped`).
         if let Some(last) = rows.last_mut() {
             last.1 = false;
         }
@@ -611,7 +614,11 @@ impl Xterm {
         let mut reader = Reader::new(Glyphs::Xterm);
         let mut screen = Vec::new();
         let mut history = Vec::new();
+        let mut renditions = Vec::new();
         for (i, (text, wrapped)) in rows.iter().enumerate() {
+            if i >= first_screen {
+                renditions.push(rendition(text));
+            }
             let cells = reader.row(text, self.cols, &|_| 1);
             let line = Line {
                 cells,
@@ -625,11 +632,6 @@ impl Xterm {
             } else {
                 screen.push(line);
             }
-        }
-        if alternate {
-            history = self.history.clone();
-        } else {
-            self.history = history.clone();
         }
         let skip = history.len().saturating_sub(history_rows);
         Ok(Snapshot {
@@ -655,6 +657,12 @@ impl Xterm {
             reports: self.pane.reports(),
             screen,
             history: history.into_iter().skip(skip).collect(),
+            device: Device {
+                cursor_shape: cursor_shape(&replies),
+                tab_stops: tab_stops(&replies, self.cols),
+                renditions,
+                protected: Vec::new(),
+            },
         })
     }
 }
@@ -662,10 +670,14 @@ impl Xterm {
 impl Engine for Xterm {
     fn process(&mut self, bytes: &[u8]) -> Result<(), String> {
         if sets_underline_colour(bytes) {
-            return Err("xterm has no SGR 58, and reads its colour as attributes".into());
+            return Err(format!(
+                "{CANNOT}xterm has no SGR 58, and reads its colour as attributes"
+            ));
         }
         if self.asked && repeats_before_printing(bytes) {
-            return Err("the harness's queries came between a character and REP".into());
+            return Err(format!(
+                "{CANNOT}the harness's queries came between a character and REP"
+            ));
         }
         self.asked = false;
         self.owed = owed_after(self.owed, bytes);
@@ -699,7 +711,9 @@ impl Engine for Xterm {
 
     fn snapshot(&mut self, history_rows: usize) -> Result<Snapshot, String> {
         if self.owed > 0 {
-            return Err("the harness's queries would split a UTF-8 character".into());
+            return Err(format!(
+                "{CANNOT}the harness's queries would split a UTF-8 character"
+            ));
         }
         self.asked = true;
         self.read(history_rows)
@@ -726,6 +740,54 @@ impl Drop for Xterm {
         let _ = fs::remove_file(&self.print);
         pane::tidy();
     }
+}
+
+/// A printed row's line rendition, as xterm's print gives it (`ESC # 6`,
+/// `ESC # 3`, `ESC # 4` before the row's text), as fux-vt's adapter
+/// numbers them.
+fn rendition(row: &[u8]) -> u8 {
+    let has =
+        |code: &[u8]| (0..row.len()).any(|i| row.get(i..).is_some_and(|r| r.starts_with(code)));
+    if has(b"\x1b#6") {
+        1
+    } else if has(b"\x1b#3") {
+        2
+    } else if has(b"\x1b#4") {
+        3
+    } else {
+        0
+    }
+}
+
+/// DECSCUSR's Ps, from xterm's DECRQSS answer (`DCS 1 $ r Ps SP q ST`),
+/// 0 and 1, both a blinking block, as 1, as fux-vt's adapter gives them.
+fn cursor_shape(replies: &[u8]) -> u16 {
+    let text = String::from_utf8_lossy(replies);
+    let shape = text
+        .split("\x1bP1$r")
+        .find_map(|answer| answer.split_once(" q").map(|(ps, _)| ps.to_owned()))
+        .and_then(|ps| ps.parse::<u16>().ok())
+        .unwrap_or(0);
+    match shape {
+        0 => 1,
+        n => n,
+    }
+}
+
+/// The tab stops, from xterm's DECTABSR (`DCS 2 $ u Pc / Pc … ST`, one-
+/// based), as fux-vt's adapter reads them by HT: past the first column and
+/// before the last.
+fn tab_stops(replies: &[u8], cols: u16) -> Vec<u16> {
+    let text = String::from_utf8_lossy(replies);
+    let Some((_, after)) = text.split_once("\x1bP2$u") else {
+        return Vec::new();
+    };
+    let list = after.split('\x1b').next().unwrap_or_default();
+    list.split('/')
+        .filter_map(|c| c.parse::<u16>().ok())
+        .map(|c| c.saturating_sub(1))
+        .filter(|&c| c > 0 && c.saturating_add(1) < cols)
+        .collect()
 }
 
 #[cfg(test)]

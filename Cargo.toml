@@ -1,5 +1,5 @@
 [workspace]
-members = ["fux-vt", "fuxix", "fuxth"]
+members = ["fux-vt", "fux-vt/peak", "fuxix", "fuxth"]
 exclude = ["fux-vt/fuzz", "fux-vt/gen", "fux-vt/compare", "fuzz", "walk", "diff", "bench"]
 resolver = "3"
 
@@ -19,7 +19,6 @@ include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.
 [dependencies]
 fux-vt = { path = "fux-vt", version = "0.10.0" }
 signal-hook = "0.4"
-unicode-width = "0.2"
 fuxix = { path = "fuxix", version = "0.6.1" }
 fuxth = { path = "fuxth", version = "0.4.0" }
 
@@ -35,6 +34,11 @@ debug = 0
 # fux-vt's grapheme tables are tested against unicode-segmentation for every
 # code point; optimized, that takes seconds rather than half a minute.
 [profile.dev.package.unicode-segmentation]
+opt-level = 3
+
+# And its widths against unicode-width's, for every code point and many
+# clusters.
+[profile.dev.package.unicode-width]
 opt-level = 3
 
 [profile.release]

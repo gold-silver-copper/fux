@@ -11,9 +11,11 @@
 //! channel one to four hex digits scaled to 16 bits (`f` is `ffff`), and
 //! `#RGB`, `#RRGGBB`, `#RRRGGGBBB` and `#RRRRGGGGBBBB`, the digits the
 //! channel's high bits (`#fff` is `f000`); of the 16 bits the high byte is
-//! kept, so `#fff` reports `f0f0`, as xterm does. Colour names and the
-//! device-independent spaces (`rgbi:`, `CIEXYZ:` and the rest) are not
-//! read: a specification fux-vt cannot read changes nothing.
+//! kept, so `#fff` reports `f0f0`, as xterm does. XParseColor's
+//! device-independent spaces (`rgbi:`, `CIEXYZ:` and the rest) are read as
+//! its Xcms reads them on a screen of its defaults (`xcms`), each OSC
+//! spending at most [`ALLOWANCE`] of their arithmetic. Colour names
+//! are not read: a specification fux-vt cannot read changes nothing.
 //!
 //! What fux-vt keeps is what the program set, and what the host says its
 //! terminal shows for palette entries 0 to 15 ([`crate::Parser::set_host_palette`]):
@@ -26,6 +28,18 @@
 //! default being the terminal's foreground, which fux-vt does not know.
 use crate::parser::{Event, Sink};
 use crate::{Reply, Rgb};
+
+mod xcms;
+
+/// The most steps of colour arithmetic (`xcms`, the `colours` counter)
+/// one OSC spends: a quarter of the call's ceiling U, so that the OSC that
+/// spends it, with its bytes, stays under the half of U the budget leaves
+/// for the sequence that crosses it (`budget.rs`). Real programs ask a few
+/// colours an OSC; one OSC 4 of 64 KiB asks over 3,000 that need the
+/// chroma search. Past the allowance a specification that needs the
+/// search is unreadable, which ends OSC 4 and 5 (a departure: xterm reads
+/// them all, in up to about half a second of its own).
+pub(crate) const ALLOWANCE: u64 = crate::budget::CEILING / 4 / crate::budget::weight::colours;
 
 /// How many special colours xterm has (ctlseqs, OSC 5): bold, underline,
 /// blink, reverse and italic.
@@ -190,41 +204,48 @@ impl Rgb {
     /// terminal's answer (see the module's documentation); `None` for one
     /// fux-vt does not read.
     pub fn parse(spec: &[u8]) -> Option<Self> {
-        let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
-            // Three channels of 1 to 4 digits each, the digits the high bits.
-            let n = hex.len() / 3;
-            if n == 0 || hex.len() % 3 != 0 || n > 4 {
-                return None;
-            }
-            let shift = u32::try_from(n).ok()?.checked_mul(4)?;
-            let channel = |i: usize| -> Option<u16> {
-                let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-                let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
-                value.checked_shl(16u32.checked_sub(shift)?)
-            };
-            [channel(0)?, channel(1)?, channel(2)?]
-        } else {
-            // `rgb:`, its prefix in either case.
-            let prefix = spec.get(..4)?;
-            if !prefix.eq_ignore_ascii_case(b"rgb:") {
-                return None;
-            }
-            let mut channels = spec.get(4..)?.split(|b| *b == b'/');
-            let colour = [
-                scaled(channels.next()?)?,
-                scaled(channels.next()?)?,
-                scaled(channels.next()?)?,
-            ];
-            if channels.next().is_some() {
-                return None;
-            }
-            colour
-        };
-        Some(Rgb::from(sixteen.map(|c| {
-            let [high, _] = c.to_be_bytes();
-            high
-        })))
+        specification(spec, u64::MAX)
     }
+}
+
+/// A colour specification, as [`Rgb::parse`] reads it, the colour
+/// arithmetic not read once `xcms::taken` reaches `until`.
+fn specification(spec: &[u8], until: u64) -> Option<Rgb> {
+    let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
+        // Three channels of 1 to 4 digits each, the digits the high bits.
+        let n = hex.len() / 3;
+        if n == 0 || hex.len() % 3 != 0 || n > 4 {
+            return None;
+        }
+        let shift = u32::try_from(n).ok()?.checked_mul(4)?;
+        let channel = |i: usize| -> Option<u16> {
+            let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
+            let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
+            value.checked_shl(16u32.checked_sub(shift)?)
+        };
+        [channel(0)?, channel(1)?, channel(2)?]
+    } else if spec
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case(b"rgb:"))
+    {
+        // `rgb:`, its prefix in either case.
+        let mut channels = spec.get(4..)?.split(|b| *b == b'/');
+        let colour = [
+            scaled(channels.next()?)?,
+            scaled(channels.next()?)?,
+            scaled(channels.next()?)?,
+        ];
+        if channels.next().is_some() {
+            return None;
+        }
+        colour
+    } else {
+        xcms::parse(spec, until)?
+    };
+    Some(Rgb::from(sixteen.map(|c| {
+        let [high, _] = c.to_be_bytes();
+        high
+    })))
 }
 
 /// xterm's answer: `OSC command ; index ; rgb:RRRR/GGGG/BBBB` (no index for
@@ -320,6 +341,7 @@ fn pairs(
     sink: &mut impl Sink,
 ) {
     let limit = PAST_PALETTE.saturating_add(SPECIALS);
+    let until = xcms::taken().saturating_add(ALLOWANCE);
     let mut params = parameters(rest);
     while let (Some(number), Some(spec)) = (params.next(), params.next()) {
         let Some(n) = u16::try_from(atoi(number))
@@ -348,7 +370,7 @@ fn pairs(
             sink.reply(answer(command, Some(asked), colour, bel).as_bytes());
             continue;
         }
-        let Some(colour) = Rgb::parse(spec) else {
+        let Some(colour) = specification(spec, until) else {
             return;
         };
         if let Some(slot) = colours.get_or_insert_default().slot(n) {
@@ -407,6 +429,7 @@ pub(crate) fn dynamic(
     events: bool,
     sink: &mut impl Sink,
 ) {
+    let until = xcms::taken().saturating_add(ALLOWANCE);
     for (i, parameter) in (first..10).zip(parameters(rest)) {
         let number = i.saturating_add(10);
         if parameter == b"?" {
@@ -415,7 +438,7 @@ pub(crate) fn dynamic(
                 None if events => sink.event(Event::ColorQuery { number, bel }),
                 None => {}
             }
-        } else if let Some(colour) = Rgb::parse(parameter)
+        } else if let Some(colour) = specification(parameter, until)
             && let Some(slot) = colours
                 .get_or_insert_default()
                 .dynamic
@@ -430,6 +453,79 @@ pub(crate) fn dynamic(
 mod tests {
     use super::{atoi, default};
     use crate::Rgb;
+
+    /// What libX11 reads that fux-vt read otherwise: a comma for the
+    /// decimal point, when the point fails (the retry of each Xcms
+    /// `ParseString`, for a locale's comma); an `rgbi:` channel below 0 as
+    /// 0 (its intensity table's first entry); and an argument of Xcms's
+    /// square root past 1e30, whose Newton's method took more steps than
+    /// fux-vt allowed (libX11's own answer, f2/13/78, from the faithful
+    /// model, results/final/k/xcms-model.py).
+    #[test]
+    fn libx11s_comma_negative_intensities_and_long_roots_are_read() {
+        let parse = |spec: &[u8]| Rgb::parse(spec).map(<[u8; 3]>::from);
+        assert_eq!(parse(b"rgbi:0,5/0,5/0,5"), Some([0xc1, 0xbb, 0xbb]));
+        assert_eq!(parse(b"rgbi:-1/0.5/0"), Some([0x00, 0xbb, 0x00]));
+        assert_eq!(
+            parse(b"CIEXYZ:2.0911354754393084e-17/0.2/-0.9999999999999999"),
+            Some([0xf2, 0x13, 0x78])
+        );
+    }
+
+    /// One OSC 4 spends at most its allowance of colour arithmetic: past
+    /// it, a specification that needs the chroma search is unreadable and
+    /// ends the OSC, as any unreadable one does; the next OSC has its own.
+    #[test]
+    fn an_osc_spends_at_most_its_allowance_of_colour_arithmetic() {
+        struct Deaf;
+        impl crate::parser::Sink for Deaf {}
+        let mut colours = None;
+        let mut rest: Vec<u8> = std::iter::repeat_n(b"1;TekHVC:266/48/99;", 5000)
+            .flatten()
+            .copied()
+            .collect();
+        rest.extend_from_slice(b"2;TekHVC:266/48/99");
+        super::osc(&mut colours, b"4", &rest, true, false, &mut Deaf);
+        let set = |c: &Option<Box<super::Colours>>, n| c.as_ref().and_then(|c| c.palette(n));
+        assert!(set(&colours, 1).is_some());
+        assert_eq!(set(&colours, 2), None);
+        super::osc(
+            &mut colours,
+            b"4",
+            b"2;TekHVC:266/48/99",
+            true,
+            false,
+            &mut Deaf,
+        );
+        assert!(set(&colours, 2).is_some());
+    }
+
+    /// XParseColor's device-independent spaces, which ctlseqs names for a
+    /// colour: esctest2's expectations (`tests/change_color.py`), which
+    /// xterm 411 meets on Xvfb, a screen with no colour characterization
+    /// of its own.
+    #[test]
+    fn device_independent_spaces_are_read_as_xparsecolor_reads_them() {
+        for (spec, want) in [
+            ("rgbi:1/1/1", [0xff, 0xff, 0xff]),
+            ("rgbi:0.5/0.5/0.5", [0xc1, 0xbb, 0xbb]),
+            ("CIEXYZ:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIEXYZ:0.5/0.5/0.5", [0xdd, 0xb5, 0xa0]),
+            ("CIEuvY:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIEuvY:0.5/0.5/0.5", [0xff, 0xa3, 0xae]),
+            ("CIExyY:1/1/1", [0xff, 0xff, 0xff]),
+            ("CIExyY:0.5/0.5/0.5", [0xf7, 0xb3, 0x0e]),
+            ("CIELab:1/1/1", [0x6c, 0x67, 0x67]),
+            ("CIELab:0.5/0.5/0.5", [0x52, 0x4f, 0x4f]),
+            ("CIELuv:1/1/1", [0x16, 0x14, 0x0e]),
+            ("CIELuv:0.5/0.5/0.5", [0x0e, 0x13, 0x0e]),
+            ("TekHVC:1/1/1", [0x1a, 0x13, 0x0f]),
+            ("TekHVC:0.5/0.5/0.5", [0x11, 0x13, 0x0e]),
+        ] {
+            let got = Rgb::parse(spec.as_bytes()).map(<[u8; 3]>::from);
+            assert_eq!(got, Some(want), "{spec}");
+        }
+    }
 
     #[test]
     fn specifications_are_read_as_xterm_reads_them() {
@@ -459,7 +555,7 @@ mod tests {
             b"rgb:1/2/3/4",
             b"rgb:12345/0/0",
             b"rgb:/0/0",
-            b"rgbi:1/1/1",
+            b"rgbi:1/1",
             b"red",
             b"?",
         ] {

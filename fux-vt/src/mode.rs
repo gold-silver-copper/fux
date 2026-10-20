@@ -8,13 +8,15 @@ use crate::{Feature, MouseProtocolEncoding, MouseProtocolMode, Options};
 /// [default soft] => kind, ... }` (`if Feature` and the marks optional) to
 /// that enum, `Mode::of(n, private, options)` (the mode SM and RM, or with
 /// `private` DECSET and DECRST, name by `n`; with `if Feature` only while
-/// `options` have that feature), `Mode::kind` (each one's kind),
+/// `options` have that feature), `Mode::kind` (each one's kind), `Mode::ALL`
+/// (every mode, in the order declared),
 /// `Modes::DEFAULT` (the modes marked `default`) and `Modes::SOFT_RESET`
 /// (those marked `soft`), and checks at compile time that every mode is a
-/// bit of a `Modes` (a `u32`). A row `Autowrap (true, 7) [default soft] =>
+/// bit of a `Modes` (a `u64`). A row `Autowrap (true, 7) [default soft] =>
 /// Kind::Flag,` makes the variant `Autowrap`, the arm `(true, 7) =>
 /// Some(Self::Autowrap)` of `of`, the arm `Self::Autowrap => Kind::Flag`
-/// of `kind`, and `| Mode::Autowrap.bit()` in both constants' bits.
+/// of `kind`, `Mode::Autowrap` in `Mode::ALL`, and `| Mode::Autowrap.bit()`
+/// in both constants' bits.
 macro_rules! modes {
     ($(#[$doc:meta])* pub enum Mode {
         $(
@@ -29,17 +31,32 @@ macro_rules! modes {
         }
 
         impl Mode {
+            /// Every mode, in the order declared.
+            pub const ALL: [Self; [$(Self::$variant),*].len()] = [$(Self::$variant),*];
+
             /// The mode SM and RM (`private` false: IRM and LNM alone) or
             /// DECSET and DECRST name by `n`, with `options`: without
-            /// theirs, 2031 and 2048 are not recognized.
-            #[inline(always)]
+            /// theirs, 2031 and 2048 are not recognized. Out of line, and
+            /// read from tables of the numbers, so that its code is the
+            /// same whatever numbers there are: a `match` of them, inlined
+            /// into `Screen::csi`, slowed every sequence as modes were
+            /// added. A DEC private mode is found by its number
+            /// (`PRIVATE`), an ANSI mode by a search of the few.
+            #[inline(never)]
             pub(crate) fn of(n: u16, private: bool, options: &Options) -> Option<Self> {
-                match (private, n) {
-                    $(
-                        ($private, $n) $(if options.has(Feature::$feature))? => Some(Self::$variant),
-                    )*
-                    _ => None,
-                }
+                // Each mode's number, 1 << 16 more for a private mode.
+                const NUMBERS: [u32; Mode::ALL.len()] = [$(($private as u32) << 16 | $n,)*];
+                const FEATURES: [Option<Feature>; Mode::ALL.len()] =
+                    [$(modes!(@feature $($feature)?),)*];
+                const PRIVATE: [u8; PRIVATE_MODES] = private_modes(&NUMBERS);
+                let at = if private {
+                    usize::from(*PRIVATE.get(usize::from(n))?).checked_sub(1)?
+                } else {
+                    NUMBERS.iter().position(|&number| number == u32::from(n))?
+                };
+                let feature = FEATURES.get(at).copied().flatten();
+                let mode = Self::ALL.get(at).copied()?;
+                feature.is_none_or(|f| options.has(f)).then_some(mode)
             }
 
             /// Where its state is kept, and what setting it does.
@@ -61,13 +78,56 @@ macro_rules! modes {
                 Self(0 $($($(| modes!(@soft $mark Mode::$variant))*)?)*);
         }
 
-        // Each mode is a bit of a `Modes`: at most a `u32`'s 32.
-        const _: () = assert!([$(Mode::$variant),*].len() <= 32);
+        // Each mode is a bit of a `Modes`: at most a `u64`'s 64 (and so
+        // has a place `Mode::of`'s table of `u8`s can hold).
+        const _: () = assert!([$(Mode::$variant),*].len() <= 64);
     };
+    (@feature $feature:ident) => { Some(Feature::$feature) };
+    (@feature) => { None };
     (@default default $mode:path) => { $mode.bit() };
     (@default soft $mode:path) => { 0 };
     (@soft soft $mode:path) => { $mode.bit() };
     (@soft default $mode:path) => { 0 };
+}
+
+/// The DEC private modes `Mode::of` reads by number: 0 to 2048.
+const PRIVATE_MODES: usize = 2049;
+
+/// For each DEC private mode number below `PRIVATE_MODES`, one more than
+/// its place in `numbers` (each mode's, `1 << 16` more if private), 0 for
+/// none.
+const fn private_modes(numbers: &[u32]) -> [u8; PRIVATE_MODES] {
+    let mut table = [0u8; PRIVATE_MODES];
+    let mut slots: &mut [u8] = &mut table;
+    let mut n: u32 = 0;
+    while let [slot, rest @ ..] = slots {
+        *slot = place(numbers, n);
+        slots = rest;
+        n = match n.checked_add(1) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    table
+}
+
+/// One more than the place of DEC private mode `n` in `numbers`, 0 for
+/// none.
+const fn place(numbers: &[u32], n: u32) -> u8 {
+    let key = n | 1 << 16;
+    let mut rest = numbers;
+    let mut at: u8 = 0;
+    while let [number, tail @ ..] = rest {
+        at = match at.checked_add(1) {
+            Some(next) => next,
+            None => return 0,
+        };
+        if *number == key {
+            return at;
+        }
+        rest = tail;
+    }
+    0
 }
 
 modes! {
@@ -104,12 +164,23 @@ modes! {
         AutoRepeat (true, 8) => Kind::Permanent(false),
         /// Mouse mode 9, X10: button presses.
         MousePress (true, 9) => Kind::Mouse(MouseProtocolMode::Press),
+        /// Mode 12 (`CSI ? 12 h`, ctlseqs: "Start blinking cursor (AT&T
+        /// 610)"): the blink of the cursor's shape, which DECSCUSR sets
+        /// too, as xterm 411 keeps one state for both.
+        CursorBlink (true, 12) => Kind::CursorBlink,
         /// DECTCEM (`CSI ? 25 h`): the cursor is shown. Default.
         ShowCursor (true, 25) [default soft] => Kind::Flag,
+        /// more(1)'s fix (`CSI ? 41 h`, ctlseqs): HT with a wrap pending
+        /// carries the wrap out first, as xterm's `curses` resource has it.
+        MoreFix (true, 41) => Kind::Flag,
         /// Reverse wraparound (`CSI ? 45 h`): BS and CUB go back over soft wraps.
         ReverseWrap (true, 45) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 47 h`).
         AlternateScreen (true, 47) => Kind::Screen(Switch::Plain),
+        /// DECHCCM (`CSI ? 60 h`), horizontal cursor coupling: permanently
+        /// reset, "always Reset in the VT420 and can not be changed" (DEC
+        /// STD 070, DECRQM, p. 5-194).
+        HorizontalCursorCoupling (true, 60) => Kind::Permanent(false),
         /// DECNKM (`CSI ? 66 h`), the keypad mode `ESC =` and `ESC >` set too.
         ApplicationKeypad (true, 66) [soft] => Kind::Flag,
         /// DECBKM (`CSI ? 67 h`), the backarrow key sending BS, which
@@ -117,8 +188,15 @@ modes! {
         BackarrowSendsBackspace (true, 67) => Kind::Flag,
         /// DECLRMM (`CSI ? 69 h`): DECSLRM sets left and right margins.
         LeftRightMargins (true, 69) [soft] => Kind::Margins,
+        /// DECSDM (`CSI ? 80 h`), Sixel Display Mode (ctlseqs: "Enable
+        /// Sixel Display Mode", "Turns on 'Sixel Scrolling'" when reset):
+        /// a picture goes at the top left, scrolls nothing and moves no
+        /// cursor, as xterm 411 has it. DEC STD 070 does not define it.
+        SixelDisplay (true, 80) => Kind::Flag,
         /// Mouse mode 1000: presses and releases.
         MousePressRelease (true, 1000) => Kind::Mouse(MouseProtocolMode::PressRelease),
+        /// Mouse mode 1001, highlight tracking: reported as 1000.
+        MouseHighlight (true, 1001) => Kind::Mouse(MouseProtocolMode::Highlight),
         /// Mouse mode 1002: also motion while a button is down.
         MouseButtonMotion (true, 1002) => Kind::Mouse(MouseProtocolMode::ButtonMotion),
         /// Mouse mode 1003: also motion with no button down.
@@ -129,6 +207,14 @@ modes! {
         MouseUtf8 (true, 1005) => Kind::Encoding(MouseProtocolEncoding::Utf8),
         /// Mouse encoding 1006, SGR.
         MouseSgr (true, 1006) => Kind::Encoding(MouseProtocolEncoding::Sgr),
+        /// Alternate scroll (`CSI ? 1007 h`, xterm's alternateScroll): the
+        /// wheel, with no mouse reporting, on the alternate screen sends
+        /// cursor up and down (`Screen::encode_mouse`).
+        AlternateScroll (true, 1007) => Kind::Flag,
+        /// Mouse encoding 1015, urxvt.
+        MouseUrxvt (true, 1015) => Kind::Encoding(MouseProtocolEncoding::Urxvt),
+        /// Mouse encoding 1016, SGR with pixels.
+        MouseSgrPixels (true, 1016) => Kind::Encoding(MouseProtocolEncoding::SgrPixels),
         /// Extended reverse wraparound (`CSI ? 1045 h`): back over any line.
         ExtendedReverseWrap (true, 1045) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 1047 h`), cleared on leaving it.
@@ -158,10 +244,12 @@ modes! {
 /// SRTM, ERM (ED, EL and ECH spare a guarded area), VEM, BDSM (EXPLICIT:
 /// no implicit bidirectional processing), DCSM (PRESENTATION: there is no
 /// data component), HEM, PUM, FEAM, FETM, MATM, TTM, SATM and TSM, which
-/// DECRQM answers permanently reset. 19, the 4th edition's EBM, "shall not
-/// be used" (F.5.1), and is not recognized.
-pub(crate) const RESET_FOR_GOOD: [u16; 16] =
-    [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18];
+/// DECRQM answers permanently reset. And 19, the 4th edition's EBM, which
+/// the 5th says "shall not be used" (F.5.1): DECRQM is DEC's, and DEC STD
+/// 070's VT420 table (DECRQM, p. 5-194) answers it "always Reset ... and
+/// can not be changed".
+pub(crate) const RESET_FOR_GOOD: [u16; 17] =
+    [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19];
 
 /// The ANSI modes fux-vt keeps in their set state for good, which DECRQM
 /// answers permanently set: SRM, SIMULTANEOUS (7.2.15; DEC STD 070's SRM,
@@ -172,8 +260,8 @@ pub(crate) const SET_FOR_GOOD: [u16; 3] = [12, 21, 22];
 
 impl Mode {
     /// What DECRQM reports for a mode SM and RM never change: 1048, an
-    /// action, is not recognized, and DECARM and 2027 are reset or set for
-    /// good. None for every other mode, which XTSAVE saves and XTRESTORE
+    /// action, is not recognized, and DECARM, DECHCCM and 2027 are reset
+    /// or set for good. None for every other mode, which XTSAVE saves and XTRESTORE
     /// restores.
     pub(crate) fn fixed(self) -> Option<ModeStatus> {
         match self.kind() {
@@ -185,14 +273,15 @@ impl Mode {
             | Kind::Frame
             | Kind::SizeReport
             | Kind::Origin
+            | Kind::CursorBlink
             | Kind::Screen(_)
             | Kind::Mouse(_)
             | Kind::Encoding(_) => None,
         }
     }
 
-    const fn bit(self) -> u32 {
-        1u32.wrapping_shl(self as u32)
+    const fn bit(self) -> u64 {
+        1u64.wrapping_shl(self as u32)
     }
 }
 
@@ -229,6 +318,8 @@ pub(crate) enum Kind {
     SizeReport,
     /// The shown grid's DECOM.
     Origin,
+    /// Mode 12: whether the cursor's shape blinks.
+    CursorBlink,
     /// Whether the alternate screen is shown.
     Screen(Switch),
     /// 1048: an action, never set, and not saved by XTSAVE.
@@ -255,7 +346,7 @@ pub(crate) enum Switch {
 
 /// A set of modes, a bit each.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Modes(u32);
+pub(crate) struct Modes(u64);
 
 impl Modes {
     pub(crate) const fn contains(self, mode: Mode) -> bool {

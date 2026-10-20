@@ -22,16 +22,20 @@ dependencies = [
  "libc",
  "seccompiler",
  "signal-hook",
- "unicode-width",
 ]
 
 [[package]]
 name = "fux-vt"
 version = "0.10.0"
 dependencies = [
+ "fux-vt-peak",
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "fux-vt-peak"
+version = "0.0.0"
 
 [[package]]
 name = "fuxix"

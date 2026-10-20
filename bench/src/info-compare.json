@@ -1,0 +1,121 @@
+{
+  "inputs": [
+    {
+      "about": "sixel-bench's shape: whole-screen 16-colour sixel frames of moving stripes (an engine without sixel discards them: for it, ignored-protocol throughput) (the census fed 8 MiB)",
+      "bytes": 8421565,
+      "cols": 200,
+      "name": "sixel:frames",
+      "rows": 50,
+      "sha256": "bcf98821c0e9162a6b6c1538b0729c0000c98efe30ab81e6d8f36e79f094018a"
+    }
+  ],
+  "kind": "fux-vt-compare bench",
+  "tables": [
+    {
+      "fairness": {
+        "chunk_bytes": 4096,
+        "cpus": "0-11",
+        "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+        "mb": 8,
+        "print_recording": "off, but fux-vt+prints",
+        "read_timed": false,
+        "reflow": "fux-vt on; the others as they are",
+        "repeats": 3,
+        "sixel": "ignored-protocol throughput for an engine without sixel"
+      },
+      "in_process": true,
+      "retention": "equal-budget",
+      "setup": "10,000 rows asked: fux-vt the bytes for 10,000 full rows, the others their own setups (100,000 rows, Ghostty 64 MiB); rows held read back",
+      "workloads": [
+        {
+          "engines": {
+            "fux-vt": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 53.83410931349751,
+              "feed_seconds": 0.15611965,
+              "mb_per_s": 53.943017422854844,
+              "prints_recorded": null,
+              "read_seconds": 0.000315835,
+              "reply_bytes": 0,
+              "rows_held": 0
+            },
+            "fux-vt+prints": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 54.19587025958241,
+              "feed_seconds": 0.155391268,
+              "mb_per_s": 54.19587025958241,
+              "prints_recorded": 30,
+              "read_seconds": 0.0,
+              "reply_bytes": 0,
+              "rows_held": 0
+            },
+            "wezterm": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 7.495498072078254,
+              "feed_seconds": 1.123391334,
+              "mb_per_s": 7.496555069562252,
+              "prints_recorded": null,
+              "read_seconds": 0.000158418,
+              "reply_bytes": 0,
+              "rows_held": 0
+            }
+          },
+          "name": "sixel:frames"
+        }
+      ]
+    },
+    {
+      "fairness": {
+        "chunk_bytes": 4096,
+        "cpus": "0-11",
+        "kitty_images": "ignored-protocol throughput: fux-vt keeps no kitty images",
+        "mb": 8,
+        "print_recording": "off, but fux-vt+prints",
+        "read_timed": false,
+        "reflow": "fux-vt on; the others as they are",
+        "repeats": 3,
+        "sixel": "ignored-protocol throughput for an engine without sixel"
+      },
+      "in_process": true,
+      "retention": "equal-retention",
+      "setup": "no history: every engine holds the screen alone, read back as 0 rows",
+      "workloads": [
+        {
+          "engines": {
+            "fux-vt": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 53.91629612610289,
+              "feed_seconds": 0.155891855,
+              "mb_per_s": 54.02184097430876,
+              "prints_recorded": null,
+              "read_seconds": 0.000305169,
+              "reply_bytes": 0,
+              "rows_held": 0
+            },
+            "fux-vt+prints": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 54.01125920351263,
+              "feed_seconds": 0.155922397,
+              "mb_per_s": 54.01125920351263,
+              "prints_recorded": 30,
+              "read_seconds": 0.0,
+              "reply_bytes": 0,
+              "rows_held": 0
+            },
+            "wezterm": {
+              "contract_failed": false,
+              "feed_and_read_mb_per_s": 7.490721983220685,
+              "feed_seconds": 1.1241696270000001,
+              "mb_per_s": 7.491365001982926,
+              "prints_recorded": null,
+              "read_seconds": 0.000096501,
+              "reply_bytes": 0,
+              "rows_held": 0
+            }
+          },
+          "name": "sixel:frames"
+        }
+      ]
+    }
+  ]
+}

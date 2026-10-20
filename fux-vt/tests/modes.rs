@@ -43,15 +43,18 @@ fn cursor_after(input: &[u8]) -> Result<(u16, u16)> {
 /// (7.2.15; DEC STD 070's SRM: set, local echo off, the default), as
 /// fux-vt never images what is typed; GRCM (21) CUMULATIVE (7.2.8), as an
 /// SGR changes only the renditions it names; ZDM (22) DEFAULT (F.4.2), as
-/// a parameter of 0 is its default. 19, EBM in the 4th edition, "shall not
-/// be used" (8.3.106, F.5.1): not recognized (0).
+/// a parameter of 0 is its default. 19, EBM in the 4th edition, which the
+/// 5th says "shall not be used" (F.5.1), is permanently reset too: DECRQM
+/// is DEC's, and DEC STD 070's VT420 table (DECRQM, p. 5-194) lists "19
+/// EBM *", "always Reset ... and can not be changed". 23, no mode, is not
+/// recognized (0).
 #[test]
 fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
     let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
     for (state, modes) in [
         (
             4,
-            &[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18][..],
+            &[1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19][..],
         ),
         (3, &[12, 21, 22]),
     ] {
@@ -67,9 +70,33 @@ fn decrqm_reports_the_ansi_modes_kept_in_one_state() -> Result {
         }
     }
     assert_eq!(
-        replies(&mut p, b"\x1b[19$p\x1b[?5$p")?,
-        "^[[19;0$y^[[?5;2$y"
+        replies(&mut p, b"\x1b[23$p\x1b[?5$p")?,
+        "^[[23;0$y^[[?5;2$y"
     );
+    Ok(())
+}
+
+/// DECHCCM (`?60`), horizontal cursor coupling, is "always Reset in the
+/// VT420 and can not be changed" (DEC STD 070, DECRQM, p. 5-194, the
+/// VT420's table): DECRQM answers 4, set or reset, and DECSTR and RIS
+/// leave it so.
+#[test]
+fn decrqm_reports_dechccm_permanently_reset() -> Result {
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    for change in [
+        "",
+        "\x1b[?60h",
+        "\x1b[?60l",
+        "\x1b[?60h\x1b[!p",
+        "\x1b[?60h\x1bc",
+    ] {
+        p.process(change.as_bytes())?;
+        assert_eq!(
+            replies(&mut p, b"\x1b[?60$p")?,
+            "^[[?60;4$y",
+            "after {change:?}"
+        );
+    }
     Ok(())
 }
 
@@ -333,5 +360,44 @@ fn decaln_fills_the_screen_with_e() -> Result {
     let mark = p.screen().mark();
     p.process(b"\x1b#8")?;
     assert_eq!(p.screen().dirty_rows_since(mark).count(), 0);
+    Ok(())
+}
+
+/// Mode 12 (ctlseqs: "Start blinking cursor (AT&T 610)", reset "Stop
+/// blinking cursor") is the blink DECSCUSR sets too: xterm 411 keeps one
+/// state for both (`cursor_blink_esc`, set by `srm_ATT610_BLINK` and by
+/// DECSCUSR's blinking styles, cleared by its steady ones and by a reset).
+/// It starts reset; set, the shape keeps its form and blinks, the
+/// terminal's own taken as xterm's block; DECSCUSR 7 puts the terminal's
+/// own back, reset.
+#[test]
+fn mode_12_is_the_cursor_shapes_blink() -> Result {
+    use fux_vt::CursorShape::*;
+    let mut p = Parser::with_options(Size::new(25, 80)?, 0, MODES)?;
+    let ask = b"\x1b[?12$p";
+    assert_eq!(replies(&mut p, ask)?, "^[[?12;2$y");
+    p.process(b"\x1b[?12h")?;
+    assert_eq!(p.screen().cursor_shape(), BlinkingBlock);
+    assert_eq!(replies(&mut p, ask)?, "^[[?12;1$y");
+    for (bytes, shape, reply) in [
+        (&b"\x1b[6 q"[..], SteadyBar, "^[[?12;2$y"),
+        (b"\x1b[?12h", BlinkingBar, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyBar, "^[[?12;2$y"),
+        (b"\x1b[3 q", BlinkingUnderline, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyUnderline, "^[[?12;2$y"),
+        (b"\x1b[0 q", Zero, "^[[?12;1$y"),
+        (b"\x1b[?12l", SteadyBlock, "^[[?12;2$y"),
+        (
+            b"\x1b[?12h\x1b[?12s\x1b[?12l\x1b[?12r",
+            BlinkingBlock,
+            "^[[?12;1$y",
+        ),
+        (b"\x1b[7 q", Initial, "^[[?12;2$y"),
+        (b"\x1b[?12l", Initial, "^[[?12;2$y"),
+    ] {
+        p.process(bytes)?;
+        assert_eq!(p.screen().cursor_shape(), shape, "{bytes:?}");
+        assert_eq!(replies(&mut p, ask)?, reply, "{bytes:?}");
+    }
     Ok(())
 }

@@ -18,37 +18,47 @@ From the repository root:
 
 ```sh
 cargo run --release --manifest-path bench/Cargo.toml -- --against master
-cargo run --release --manifest-path bench/Cargo.toml -- --against HEAD~1 --repeats 9 --only paint/
+cargo run --release --manifest-path bench/Cargo.toml -- --against HEAD~1 --floors FLOORS.json --only paint/
+cargo run --release --manifest-path bench/Cargo.toml -- --calibrate --json FLOORS.json
 
 bench/target/release/fux-bench list          # the workloads
 bench/target/release/fux-bench time          # each one's thread CPU time here, and MB/s
 bench/target/release/fux-bench run vt/ascii  # one workload once, as --against counts it
-bench/target/release/fux-bench info          # MB/s beside Ghostty and alacritty, and fux-diff --speed
+bench/target/release/fux-bench info          # MB/s beside Ghostty and alacritty
 bench/target/release/fux-bench feel          # latency, throughput and footprint beside tmux, zellij and herdr
 ```
 
 | Command and flags | Meaning |
 | --- | --- |
 | (default) `--against REF` | every workload on REF (default `master`) and on the working tree, in instructions |
-| `--repeats N` | runs per side (default 5) |
-| `--jobs N` | threads (default: every core) |
-| `--threshold PERCENT` | flag a workload this much above REF (default 3) |
+| `--repeats N` | rounds (default 15) |
+| `--jobs N` | threads, and the jobs of its cargo builds (default: `CARGO_BUILD_JOBS`, else 4) |
+| `--floors FILE` | judge each workload against its floor from a calibration, which must be this counter's on this machine |
+| `--floors-here FILE` | the same if FILE was calibrated here; else said, and each workload judged by this run's spread |
+| `--calibrate` | an A/A run of the working tree built twice: each workload's floor, written to the JSON |
 | `--only TEXT` | only workloads whose names contain TEXT; repeatable |
-| `--json FILE` | where the JSON goes (default `bench/target/fux-bench/against.json`, `info.json` or `feel.json`) |
+| `--json FILE` | where the JSON goes (default in `bench/target/fux-bench/`: `against-REF-TREE.json` by the two commits, `calibration-TREE.json`, `info.json` or `feel.json`) |
 | `run WORKLOAD [--baseline]` | one workload, or its baseline, once |
-| `time [WORKLOAD...]` | thread CPU time, best of 3, and MB/s; names match by substring |
+| `time [WORKLOAD...]` | thread CPU time, best of 3, and MB/s of a workload fed bytes; names match by substring |
 | `--corpus DIR` | for `run` and `time`: recordings other than `fux-vt/compare/corpus/` |
+| `--payloads DIR` | for `run` and `time`: the census's speed payloads other than `bench/payloads/` |
 | `feel --muxes LIST --parts LIST --keys N` | see [`feel`](#feel-what-a-person-at-the-terminal-feels) |
 
-Exit status: 1 if `--against` flags a workload, 2 on an error.
+Exit status: 1 if `--against` finds a workload slower past its floor or
+too noisy to judge, or a broad loss by program; 2 on an error, a workload
+the tool cannot judge (broken) or a run that failed among them (the JSON
+names the runs that failed).
 
 ## The workloads
 
 | Workload | What runs | Fed |
 | --- | --- | --- |
-| `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 10,000 rows of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
-| `pane/NAME` | `fux::pane::Pane::output` | 64 KiB at a time, as fux's server reads a pane |
-| `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB | 4 KiB at a time |
+| `vt/NAME` | fux-vt alone, set up as fux sets up a pane (`fux::pane::OPTIONS`), 8 MiB of history | 4 KiB at a time, as `fux-vt/compare`'s `bench` feeds it |
+| `pane/NAME` | `fux::pane::Pane::output` | 16 KiB at a time, as fux's server gives a pane what it reads (up to 64 KiB a tick) |
+| `vt/corpus:NAME` | fux-vt alone on one recording at its size, repeated to 4 MiB (or to 256 resizes, for one that resizes) | 4 KiB at a time |
+| `vt/ascii@N`, `vt/corpus@N` | `vt/ascii` and `vt/corpus`, listed for N of 1, 64, 16384 and 65536 (any `vt/NAME@N` runs by name) | N bytes at a time |
+| `vt/resize-history` | a pane's parser at 50×200, its 8 MiB of history filled by `vt/ascii`, resized to 80 columns and back 4 times; the baseline only fills it | resizes, not bytes |
+| `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`, `vt/foot:alt-random-writes`, `vt/yes:crlf`, `vt/yes:lf`, `vt/sixel:frames` | fux-vt alone on each of the census's speed payloads (`src/census.rs`; vendored data in `payloads/` with its licences; kitty's GPL payloads re-made by our own code), 8 MiB at 50×200 | 4 KiB at a time |
 | `paint/corpus` | a `fux::session::Session` without processes, one client whose pane is each recording's size; after each read the screen is composed (`render::compose_into`) and painted (`render::paint_into`) | every recording in turn, to 4 MiB |
 | `paint/split` | the same with two panes side by side given the same output | the same |
 | `decode/legacy`, `decode/kitty` | fux's decoder of a client's terminal on the keys typed in the recordings, as a legacy terminal and as a kitty terminal with the flags fux pushes (5) send them | to 1 MiB |
@@ -66,25 +76,38 @@ bytes per frame in the JSON.
 
 ## How `--against` counts
 
-1. REF is checked out in a worktree under `bench/target/against/run`
-   (removed after the run, or at the next one). The working tree's copy of
-   this crate is built there with REF's toolchain file, so both sides run
-   the same workloads against their own fux, fux-vt and fuxix. REF's build
-   directory, `bench/target/against/target`, is kept.
-2. The working tree's side is the running binary: run it with `cargo run
-   --release`. A debug build refuses.
+1. Both sides are built by one recipe. Each side's tree (REF's, with the
+   working tree's `bench/` in it, and the working tree's as it is, changes
+   and untracked files included) is `git archive`d into a path of one
+   length, `src/old-TREE` and `src/new-TREE`, built with fux's release
+   profile into one target dir, and kept as `bin/old-TREE` and
+   `bin/new-TREE`, all under `$CARGO_TARGET_DIR/fux-bench-against` (or
+   `bench/target/against`). A tree already built is not built again.
+2. The binaries run as `run/old` and `run/new`, names of one length: a
+   path of another length moves the counts. `--against HEAD` on a clean
+   tree builds the one tree twice and is the self-test: it flags nothing.
 3. Each workload and its baseline run as child processes, counted by
-   `/usr/bin/time -l` on macOS, or on Linux by `perf stat -e
-   instructions:u` (with `kernel.perf_event_paranoid` at 2 or less), else
-   valgrind's cachegrind (about fifty times slower).
-4. Each side runs `--repeats` times, alternating which side goes first.
-5. A side's count is the fewest instructions of its runs less the fewest
-   of its baseline's (on macOS kernel work for the process only adds). Its
-   **noise** is the spread of its runs over its count.
-6. A workload is **flagged** when the working tree retires more than
-   `--threshold` percent more than REF and more than either side's noise,
-   and reported as too noisy to judge when its noise is above the
-   threshold.
+   `/usr/bin/time -l` on macOS, or on Linux by `bench/perf.sh` (`perf stat
+   -e instructions:u` pinned to one core type, with
+   `kernel.perf_event_paranoid` at 2 or less; `FUX_PERF` names perf if it
+   is not on PATH, `FUX_PERF_CPUS` the CPUs), else valgrind's cachegrind
+   (about fifty times slower). A perf count whose PMU ran for less than all
+   the time it was enabled (multiplexed, or moved between core types) is
+   refused, never scaled.
+4. In each of `--repeats` rounds every workload runs four times (each
+   side, and each side's baseline), the side that goes first alternating.
+5. A round's change pairs both sides' runs in it, each less its side's
+   median baseline. A workload's **change** is the median of its rounds',
+   its **spread** their median absolute deviation.
+6. Its **floor** comes from a calibration (`--calibrate`, an A/A run apart
+   from the one judged): max(0.25%, the A/A change, 3 × the A/A spread). A
+   change past it is **slower** or **faster**, else **inconclusive**; a run
+   whose spread is past two thirds of it is **noisy**; a floor over 1% means
+   the tool is **broken** for that workload. Across the recordings, a sign
+   test that counts each program's recordings once flags a broad loss.
+   Exit 1 on a slower workload or a broad loss, 2 on a broken one. The JSON
+   keeps every round and count, and perf's report of every run goes beside
+   it (`NAME.perf.txt`).
 
 For fux-vt beside other engines in instructions per byte, see
 `fux-vt/compare/run.sh bench --instructions`.
@@ -92,8 +115,10 @@ For fux-vt beside other engines in instructions per byte, see
 ## `info`
 
 Figures not compared against REF: `fux-vt/compare/run.sh bench --engines
-ghostty,alacritty --mb 4` (MB/s by wall time, best of 3; its first run
-builds Ghostty, which takes minutes) and `fux-diff --speed`.
+ghostty,alacritty --mb 4 --json` (MB/s by wall time, the median of 3 rounds; its first
+run builds Ghostty, which takes minutes), read from its JSON (kept beside
+info.json as `info.compare.json`). `info` exits 1 when it fails or its
+figures can't be read.
 
 ## `feel`: what a person at the terminal feels
 

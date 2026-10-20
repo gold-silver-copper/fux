@@ -89,7 +89,7 @@ pub const KIND: Kind = Kind {
         link_uri: false,
         link_group: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         attributes: false,
@@ -261,6 +261,7 @@ impl Engine for Avt {
             reports: Vec::new(),
             screen,
             history,
+            device: Default::default(),
         })
     }
 }

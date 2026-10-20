@@ -1,0 +1,66 @@
+# libtermkey 0.22 (MIT, Paul Evans), its decoding cases (t/02getkey.c,
+# 03utf8.c, 30mouse.c, 31position.c, 32modereport.c, 38csi.c, 39dcs.c) and
+# the key names both read (12strpkey.c), as fux-vt's decoder sees them:
+# source, the bytes a terminal sent (or `name:` and a key name), what
+# libtermkey reads in fux-vt's terms, verdict. A position is fux-vt's,
+# from 0. A partial push's intermediate state ("again") is not a case:
+# the whole push is.
+02getkey.c:21	h	h	agree
+02getkey.c:34	\x01	C-a	agree
+02getkey.c:42	\eOA	Up	agree
+02getkey.c:56	\eOC	Right	agree
+02getkey.c:66	\e[27;5u	C-Escape	agree
+02getkey.c:74	\x00	C-Space	agree
+03utf8.c:15	a	a	agree
+03utf8.c:24	\xc2\xa0	U+00A0	agree
+03utf8.c:30	\xdf\xbf	U+07FF	agree
+03utf8.c:38	\xe0\xa0\x80	U+0800	agree
+03utf8.c:44	\xef\xbf\xbd	U+FFFD	agree
+03utf8.c:52	\xf0\x90\x80\x80	U+10000	agree
+03utf8.c:58	\xf4\x8f\xbf\xbf	U+10FFFF	agree
+03utf8.c:66	\xc2!	U+FFFD !	agree
+03utf8.c:73	\xe0!	U+FFFD !	agree
+03utf8.c:80	\xe0\xa0!	U+FFFD !	agree
+03utf8.c:87	\xf0!	U+FFFD !	agree
+03utf8.c:94	\xf0\x90!	U+FFFD !	agree
+03utf8.c:101	\xf0\x90\x80!	U+FFFD !	agree
+03utf8.c:112	\xc2\xa0	U+00A0	agree
+03utf8.c:122	\xe0\xa0\x80	U+0800	agree
+03utf8.c:135	\xf0\x90\x80\x80	U+10000	agree
+30mouse.c:20	\e[M !!	mouse:Press(Left):0,0	agree
+30mouse.c:46	\e[M@"!	mouse:Motion(Some(Left)):1,0	agree
+30mouse.c:59	\e[M##!	mouse:Release(None):2,0	agree
+30mouse.c:71	\e[M0++	mouse:C-Press(Left):10,10	agree
+30mouse.c:87	\e[0;20;20M	mouse:Press(Left):19,19	na: urxvt's encoding (1015), which fux never asks the client's terminal for
+30mouse.c:101	\e[3;20;20M	mouse:Release(None):19,19	na: urxvt's encoding (1015), which fux never asks the client's terminal for
+30mouse.c:117	\e[<0;30;30M	mouse:Press(Left):29,29	agree
+30mouse.c:133	\e[<0;30;30m	mouse:Release(Some(Left)):29,29	agree
+30mouse.c:149	\e[<0;500;300M	mouse:Press(Left):499,299	agree
+31position.c:16	\e[?15;7R	position 14,6	differs: fux asks the client's terminal for no cursor position, so a report is dropped, never typed; fux: none
+31position.c:30	\e[R	F3	agree
+32modereport.c:16	\e[?1;2$y	reply:Mode { mode: 1, status: Reset }	agree
+32modereport.c:28	\e[4;1$y	ansi mode 4 set	differs: fux asks the client's terminal only about DEC private modes, so an ANSI mode's report is dropped, never typed; fux: none
+38csi.c:18	\e[5;25v	csi 5;25 v	differs: a CSI that names no key and answers nothing fux asked is dropped, never typed: fux has no input for it; fux: none
+38csi.c:31	\e[?w	csi ? w	differs: a CSI that names no key and answers nothing fux asked is dropped, never typed: fux has no input for it; fux: none
+38csi.c:38	\e[?$x	csi ? $ x	differs: a CSI that names no key and answers nothing fux asked is dropped, never typed: fux has no input for it; fux: none
+39dcs.c:17	\eP1$r1 q\e\\	dcs 1$r1 q	differs: a DCS is an answer only while fux awaits one (Decoder::expect); else ESC P is Alt-P and the rest is typed, as typing cannot be told from it (README, Keys); fux: M-P 1 $ r 1 Space q M-\
+39dcs.c:30	\x901$r2 q\x9c	dcs 1$r2 q	na: an 8-bit DCS, which no client terminal sends fux, as fux never sets S8C1T on it
+39dcs.c:43	\e]15;abc\e\\	osc 15;abc	differs: fux reads the OSC answers it asks for (4, 10, 11); another is dropped, never typed; fux: none
+39dcs.c:58	\eP	M-P	agree
+12strpkey.c:21	name:A	A	agree
+12strpkey.c:37	name:C-b	C-b	agree
+12strpkey.c:45	name:Ctrl-b	C-b	na: libtermkey's long modifier names, which tmux's names, fux's, do not have
+12strpkey.c:53	name:^B	C-b	na: libtermkey's caret notation, which tmux's names, fux's, do not have
+12strpkey.c:61	name:A-c	M-c	na: libtermkey writes Alt as A-, where tmux's names, fux's, have M-
+12strpkey.c:69	name:Alt-c	M-c	na: libtermkey's long modifier names, which tmux's names, fux's, do not have
+12strpkey.c:77	name:M-c	M-c	agree
+12strpkey.c:85	name:Meta-c	M-c	na: libtermkey's long modifier names, which tmux's names, fux's, do not have
+12strpkey.c:93	name:meta c	M-c	na: libtermkey's long modifier names, which tmux's names, fux's, do not have
+12strpkey.c:101	name:ctrl alt page up	C-M-PageUp	na: libtermkey's long modifier names, which tmux's names, fux's, do not have
+12strpkey.c:109	name:Up	Up	agree
+12strpkey.c:116	name:F5	F5	agree
+12strpkey.c:124	name:MousePress(1)	mouse	na: libtermkey's mouse event names, which fux's key names do not have
+12strpkey.c:132	name:MousePress(2) @ (3, 5)	mouse	na: libtermkey's mouse event names, which fux's key names do not have
+12strpkey.c:142	name:MouseRelease(1)	mouse	na: libtermkey's mouse event names, which fux's key names do not have
+12strpkey.c:150	name:MouseDrag(1)	mouse	na: libtermkey's mouse event names, which fux's key names do not have
+12strpkey.c:158	name:MouseUnknown(1)	mouse	na: libtermkey's mouse event names, which fux's key names do not have

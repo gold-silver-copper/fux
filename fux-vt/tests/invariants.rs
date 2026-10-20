@@ -6,6 +6,9 @@ mod pieces;
 
 #[path = "corpus/invariants.rs"]
 mod invariants;
+#[cfg(feature = "checks")]
+#[path = "corpus/known.rs"]
+mod known;
 use fux_vt::{Feature, Identity, Mode, Options, Parser, Sink, Size};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -118,7 +121,7 @@ fn the_adversarial_corpus_is_chunk_invariant_and_bounded() -> Result {
                         whole.resize(Size::new(rows, cols)?)?;
                         split.resize(Size::new(rows, cols)?)?;
                     }
-                    invariants::equal(&whole, &split);
+                    invariants::same_feed(&whole, &split);
                     invariants::check(&whole);
                 }
             }
@@ -243,5 +246,64 @@ fn degenerate_reflows_keep_every_invariant() -> Result {
         p.resize(Size::new(rows, cols)?)?;
         invariants::check(&p);
     }
+    Ok(())
+}
+
+/// A resize, with reflow and without, makes the grid anew around the
+/// style table it shares, and its history is charged for that table as
+/// the old one's was (B11): more distinct styles than the screen's share
+/// holds, kept by history's rows, then each resize.
+#[test]
+fn a_resize_keeps_history_charged_for_the_shared_styles() -> Result {
+    for reflow in [false, true] {
+        let options = Options::default().set(Feature::Reflow, reflow);
+        let mut p = Parser::with_options(Size::new(2, 4)?, 1 << 20, options)?;
+        let mut input = String::new();
+        for i in 0..6000u32 {
+            let (g, b) = (i / 256, i % 256);
+            input.push_str(&format!("\x1b[48;2;0;{g};{b}mx\r\n"));
+        }
+        p.process(input.as_bytes())?;
+        invariants::check(&p);
+        p.resize(Size::new(3, 5)?)?;
+        invariants::check(&p);
+    }
+    Ok(())
+}
+
+/// A parser cloned, as a host may keep one (threats.md 1.2), is as sound
+/// as the one it was cloned from: its history counts the storage the copy
+/// holds, not the original's (FA-SCR-H3).
+#[test]
+fn a_cloned_parser_keeps_every_invariant() -> Result {
+    let options = Options::default().set(Feature::Hyperlinks, true);
+    let mut p = Parser::with_options(Size::new(3, 20)?, 1 << 20, options)?;
+    for i in 0..300 {
+        let line = format!("row {i} \u{e9}\u{301} \x1b]8;;http://x/{i}\x07a\x1b]8;;\x07b\r\n");
+        p.process(line.as_bytes())?;
+    }
+    invariants::check(&p);
+    invariants::check(&p.clone());
+    Ok(())
+}
+
+/// A style a cloned parser adds is charged to its history for the table
+/// its copy holds, which the clone made at its length, not the room the
+/// shared one had (B11, FA-RE-B-7): more distinct styles than the screen's
+/// share holds, then one more on the clone.
+#[test]
+fn a_cloned_parser_charges_the_styles_it_adds() -> Result {
+    let mut p = Parser::new(Size::new(2, 4)?, 1 << 20)?;
+    let mut input = String::new();
+    for i in 0..6000u32 {
+        let (g, b) = (i / 256, i % 256);
+        input.push_str(&format!("\x1b[48;2;0;{g};{b}mx\r\n"));
+    }
+    p.process(input.as_bytes())?;
+    let mut clone = p.clone();
+    clone.process(b"\x1b[48;2;1;1;1mx")?;
+    invariants::check(&clone);
+    p.process(b"\x1b[48;2;1;1;1mx")?;
+    invariants::check(&p);
     Ok(())
 }

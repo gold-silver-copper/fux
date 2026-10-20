@@ -14,16 +14,19 @@ fn arriving(id: u64, cells: &[Compact], width: u16) -> Arriving<'_> {
     Arriving {
         id: RowId(id),
         version: id.wrapping_mul(3),
-        wrapped: id % 2 == 1,
-        prompt: id.is_multiple_of(3),
+        flags: u8::from(id % 2 == 1)
+            | u8::from(id.is_multiple_of(3)) << 1
+            | u8::from(id % 5 == 4) << RENDITION_SHIFT,
         cells,
         width,
     }
 }
 
-/// What a reader finds of each row: its identity, version, flags, width
-/// and cells.
-fn found(history: &History) -> Vec<(u64, u64, bool, bool, u16, Vec<Compact>)> {
+/// What a reader finds of each row: its identity, version, flags (whether
+/// it is soft-wrapped; whether a prompt starts on it, and whether it is
+/// double width), width and cells.
+type Found = (u64, u64, bool, (bool, bool), u16, Vec<Compact>);
+fn found(history: &History) -> Vec<Found> {
     (0..history.len())
         .filter_map(|index| history.get(index))
         .map(|row| {
@@ -31,7 +34,7 @@ fn found(history: &History) -> Vec<(u64, u64, bool, bool, u16, Vec<Compact>)> {
                 row.kept.id.0,
                 row.kept.version,
                 row.kept.wrapped(),
-                row.kept.prompt(),
+                (row.flags & PROMPT != 0, row.flags >> RENDITION_SHIFT != 0),
                 row.kept.width(),
                 row.cells.to_vec(),
             )
@@ -79,7 +82,7 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
             id,
             id.wrapping_mul(3),
             id % 2 == 1,
-            id.is_multiple_of(3),
+            (id.is_multiple_of(3), id % 5 == 4),
             width,
             cells,
         ));
@@ -94,7 +97,8 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
         );
         let kept: usize = expected.iter().map(|row| row.5.len()).sum();
         assert_eq!(history.kept_cells(), kept);
-        assert_eq!(history.bytes(), expected.len() * 24 + kept * 8);
+        // What it counts is what it holds, and within the budget.
+        assert_eq!(history.bytes(), history.heap());
         assert!(history.bytes() <= budget);
     }
     let last = history.len().saturating_sub(1);
@@ -103,26 +107,139 @@ fn rows_read_back_as_they_came_while_the_oldest_go() -> Result<(), Error> {
     Ok(())
 }
 
-/// Blocks the rows have left are let go, but for the spare: the history's
-/// memory stops growing once it holds as much as its budget.
+/// Blocks the rows have left are let go: the history's memory stops
+/// growing at its budget, and fills most of it.
 #[test]
 fn memory_stops_growing_at_the_budget() -> Result<(), Error> {
-    let mut history = History::new(256 << 10);
-    let mut most = 0;
+    let budget = 256 << 10;
+    let mut history = History::new(budget);
     for round in 0..4 {
         for id in 0..2000u64 {
             let cells = row(usize::try_from(id % 120).unwrap_or(0), b'a', 0);
             history.push(arriving(id, &cells, 120))?;
             history.trim();
+            assert!(
+                history.heap() <= budget,
+                "round {round}: {}",
+                history.heap()
+            );
         }
-        if round == 0 {
-            most = history.heap();
-        }
+        // Less than two blocks and the ring's doubling short of it.
         assert!(
-            history.heap() <= most,
-            "round {round}: {} > {most}",
+            history.heap() > budget / 2,
+            "round {round}: {}",
             history.heap()
         );
     }
+    Ok(())
+}
+
+/// Block numbers are 16 bits and wrap (`BLOCKS`, HAR-37): a long-lived
+/// pane makes 65,536 blocks in about 268 M cells. Numbered from just below
+/// the wrap, rows of a block each read back as they came across it, while
+/// the oldest go past the budget, and the bytes counted stay those held.
+#[test]
+fn block_numbers_wrap() -> Result<(), Error> {
+    let budget = 256 << 10;
+    let mut history = History::new(budget);
+    history.first_block = u16::MAX - 3;
+    history.newest_block = u16::MAX - 3;
+    let mut expected = std::collections::VecDeque::new();
+    for id in 0..200u64 {
+        // Each row more than half a block: a block of its own.
+        let len = (BLOCK / 2).saturating_add(usize::try_from(id % 7).unwrap_or(0));
+        let first = b'a'.wrapping_add(u8::try_from(id % 26).unwrap_or(0));
+        let cells = row(len, first, 0);
+        let width = u16::try_from(len).unwrap_or(u16::MAX);
+        history.push(arriving(id, &cells, width))?;
+        expected.push_back((
+            id,
+            id.wrapping_mul(3),
+            id % 2 == 1,
+            (id.is_multiple_of(3), id % 5 == 4),
+            width,
+            cells,
+        ));
+        history.trim();
+        while expected.len() > history.len() {
+            expected.pop_front();
+        }
+        assert_eq!(
+            found(&history),
+            Vec::from(expected.clone()),
+            "after row {id}"
+        );
+        assert_eq!(history.bytes(), history.heap());
+        assert!(history.bytes() <= budget);
+    }
+    assert!(
+        history.first_block < 1000,
+        "never wrapped: {}",
+        history.first_block
+    );
+    assert!(history.len() > 1);
+    Ok(())
+}
+
+/// A row with one link keeps its run in place: its links cost history
+/// nothing beyond its share of the map (`threats.md` B15), however the row
+/// came by them; one with two links costs the room of its runs.
+#[test]
+fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
+    use crate::link::{Hyperlink, KeptLinks, RowLinks, Run};
+    let (a, b) = (
+        Hyperlink::new(1, "http://a", None),
+        Hyperlink::new(2, "http://b", Some("b")),
+    );
+    let cells = row(3, b'a', 0);
+    let mut history = History::new(1 << 20);
+    // Printed in one run; and in two runs of one link, which join.
+    for (id, ends) in [(0, &[3][..]), (1, &[1, 3][..])] {
+        let mut links = RowLinks::default();
+        let mut start = 0;
+        for &end in ends {
+            links.set(start..end, Some(&a));
+            start = end;
+        }
+        history.push(arriving(id, &cells, 4))?;
+        history.attach(None, KeptLinks::take(&mut links));
+        assert_eq!(history.runs, 0, "row {id}");
+    }
+    let mut links = RowLinks::default();
+    links.set(0..1, Some(&a));
+    links.set(2..3, Some(&b));
+    history.push(arriving(2, &cells, 4))?;
+    history.attach(None, KeptLinks::take(&mut links));
+    assert_eq!(history.runs, 2 * size_of::<Run>());
+    Ok(())
+}
+
+/// The maps are counted at the room their tables were made with: their
+/// entries removed leave the buckets allocated, which `capacity` counts
+/// out (FA-RE-F-9), so what history counts for them stays until the table
+/// is made smaller.
+#[test]
+fn the_maps_are_counted_as_allocated_after_removals() -> Result<(), Error> {
+    use crate::link::{Hyperlink, KeptLinks, RowLinks};
+    let link = Hyperlink::new(1, "http://a", None);
+    let cells = row(3, b'a', 0);
+    let mut history = History::new(1 << 26);
+    let rows = 3584u64;
+    for id in 0..rows {
+        let mut links = RowLinks::default();
+        links.set(0..1, Some(&link));
+        history.push(arriving(id, &cells, 4))?;
+        history.attach(None, KeptLinks::take(&mut links));
+    }
+    let (full, room) = (history.maps_bytes(), history.linked.capacity());
+    for index in 0..1000 {
+        history.unlink(index, 1);
+    }
+    assert_eq!(history.linked.len(), 2584);
+    assert!(
+        history.maps_bytes() >= full,
+        "{} bytes counted for a table made with room for {room}, after {full}",
+        history.maps_bytes()
+    );
     Ok(())
 }

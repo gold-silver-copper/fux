@@ -59,8 +59,38 @@ macro_rules! reply {
     };
 }
 
+/// Counts `n` units of work of the kind `counter` names (threats.md 4.1),
+/// with the `checks` feature; without it, nothing at all, so a build without
+/// it carries no trace of the count: `work!(cells, n)` expands to
+/// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::budget::units(n)));`.
+macro_rules! work {
+    ($counter:ident, $n:expr) => {
+        #[cfg(feature = "checks")]
+        $crate::work::add(|w| w.$counter($crate::budget::units($n)));
+    };
+}
+
+/// Counts `n` units of work of the kind `counter` names, as `work!` does,
+/// and spends them from the call's budget too (`budget`, threats.md P24),
+/// with or without the `checks` feature: for the work one sequence can
+/// multiply. `spend!(cells, n)` expands to
+/// `{ let n = crate::budget::units(n); crate::budget::spend(n,
+/// crate::budget::weight::cells); #[cfg(feature = "checks")]
+/// crate::work::add(|w| w.cells(n)); }`.
+macro_rules! spend {
+    ($counter:ident, $n:expr) => {{
+        let n = $crate::budget::units($n);
+        $crate::budget::spend(n, $crate::budget::weight::$counter);
+        #[cfg(feature = "checks")]
+        $crate::work::add(|w| w.$counter(n));
+    }};
+}
+
+mod budget;
 pub mod bytes;
 mod cell;
+#[cfg(feature = "checks")]
+mod check;
 mod compact;
 mod geometry;
 mod grid;
@@ -76,24 +106,30 @@ mod style;
 #[cfg(test)]
 mod test_rng;
 mod unicode;
+#[cfg(feature = "checks")]
+mod work;
 
 use std::{fmt, ops::Range};
 
 pub use cell::{
     Attributes, Blink, CLUSTER_CAPACITY, CellRef, Cells, Color, Rgb, SgrForm, UnderlineStyle,
 };
+#[cfg(feature = "checks")]
+pub use check::{Checked, Fault, refuse_next};
 pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
-    Event, Feature, Frame, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
+    Event, Feature, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Stop,
     Unhandled,
 };
 pub use screen::{
     CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
     PICTURE_BYTES, PLACEHOLDER, Report, Reported, Screen, Shown,
 };
-pub use unicode::{UNICODE_VERSION, continues_cluster};
+pub use unicode::{UNICODE_VERSION, char_width, continues_cluster, str_width};
+#[cfg(feature = "checks")]
+pub use work::Work;
 
 /// `slice::copy_from_slice`, checked: copies `src` over `dst`, if they are the
 /// same length.
@@ -110,8 +146,32 @@ pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((halves.next()?, halves.next()?))
 }
 
+thread_local! {
+    /// How many refusals of room this thread's calls have met and gone on
+    /// past, each with its defined degrade (threats.md 1.3, SCR-10).
+    static DEGRADED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a refusal of room that was met by its degrade, not an error: a
+/// row let go rather than kept in history, a grid blanked in place rather
+/// than made anew. A call into the parser counts what its calls met
+/// ([`Parser::refused`]), as it counts what it spent (`budget`).
+#[cold]
+pub(crate) fn degraded() {
+    DEGRADED.with(|n| n.set(n.get().saturating_add(1)));
+}
+
+/// What `degraded` has counted on this thread.
+pub(crate) fn degrades() -> u64 {
+    DEGRADED.with(std::cell::Cell::get)
+}
+
 /// Makes room in `v` for `len` items in all, or says there is none.
 pub(crate) fn reserve<T>(v: &mut Vec<T>, len: usize) -> Result<(), Error> {
+    #[cfg(feature = "checks")]
+    if check::refusing() {
+        return Err(Error::Capacity);
+    }
     v.try_reserve_exact(len.saturating_sub(v.len()))
         .map_err(|_| Error::Capacity)
 }
@@ -168,6 +228,47 @@ pub struct RowId(pub(crate) u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark(pub(crate) u64);
 
+/// A line's rendition (DEC STD 070, 5.6.1): single width, as every line
+/// starts, or double width (DECDWL, `ESC # 6`), or the top or bottom half
+/// of double height and double width (DECDHL, `ESC # 3` and `ESC # 4`). A
+/// line that is not single width is half as long: its cells past half the
+/// screen's width (rounded down) are lost when it is set, and the cursor
+/// and printing stop short of them. The cells keep their columns; the host
+/// draws each twice as wide.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum LineRendition {
+    /// DECSWL (`ESC # 5`), and every line until another is set.
+    #[default]
+    Single,
+    /// DECDWL (`ESC # 6`).
+    DoubleWidth,
+    /// DECDHL's top half (`ESC # 3`).
+    DoubleHeightTop,
+    /// DECDHL's bottom half (`ESC # 4`).
+    DoubleHeightBottom,
+}
+
+impl LineRendition {
+    /// Whether the line is drawn twice as wide, and so half as long.
+    pub fn is_double(self) -> bool {
+        self != Self::Single
+    }
+    /// The rendition as two bits, 0 single width (`bits`'s inverse).
+    pub(crate) fn from_bits(bits: u8) -> Self {
+        match bits & 3 {
+            0 => Self::Single,
+            1 => Self::DoubleWidth,
+            2 => Self::DoubleHeightTop,
+            _ => Self::DoubleHeightBottom,
+        }
+    }
+    /// The rendition as two bits.
+    pub(crate) fn bits(self) -> u8 {
+        self as u8
+    }
+}
+
 /// A retained row, and its place among the rows retained: history's,
 /// oldest first, then the screen's from its top. It borrows the screen, so
 /// no row is held past a change that could move it; to find a row again
@@ -179,16 +280,17 @@ pub struct Row<'a> {
     pub(crate) index: usize,
     pub(crate) id: RowId,
     pub(crate) version: u64,
-    pub(crate) wrapped: bool,
-    /// Whether a prompt starts on the row (OSC 133 ; A).
-    pub(crate) prompt: bool,
+    /// Whether the row is soft-wrapped and whether a prompt starts on it
+    /// (OSC 133 ; A), and its rendition, as a screen row's flags hold them
+    /// (`history::WRAPPED`, `PROMPT`, `RENDITION_SHIFT`).
+    pub(crate) flags: u8,
     /// The cells the row keeps: all of them, or those before its blank
     /// tail, a history row's; those past them, to `width`, are blank.
     pub(crate) cells: &'a [compact::Compact],
     pub(crate) width: usize,
     pub(crate) text: &'a compact::Text,
     /// Each cell's link, if any cell of the row has had one (`link.rs`).
-    pub(crate) links: Option<&'a link::RowLinks>,
+    pub(crate) links: Option<link::Runs<'a>>,
 }
 
 impl fmt::Debug for Row<'_> {
@@ -197,7 +299,7 @@ impl fmt::Debug for Row<'_> {
             .field("index", &self.index)
             .field("id", &self.id)
             .field("version", &self.version)
-            .field("wrapped", &self.wrapped)
+            .field("wrapped", &self.wrapped())
             .finish_non_exhaustive()
     }
 }
@@ -255,7 +357,21 @@ impl<'a> Row<'a> {
     }
     /// Whether the row is soft-wrapped: its line goes on in the next row.
     pub fn wrapped(&self) -> bool {
-        self.wrapped
+        self.flags & history::WRAPPED != 0
+    }
+    /// Whether the row's line goes on in the row below: it is soft-wrapped
+    /// ([`Row::wrapped`]) and that row was not erased whole since, as a
+    /// line editor erases the row its prompt wrapped onto to draw it again
+    /// there (bash after a resize). xterm keeps the soft wrap through such
+    /// an erase, and so does `wrapped`; a host joining rows into lines
+    /// reads this.
+    pub fn continues(&self) -> bool {
+        self.flags & (history::WRAPPED | history::ENDS) == history::WRAPPED
+    }
+    /// The row's line rendition: whether the host draws it double width,
+    /// or as half of double height (DECDWL, DECDHL).
+    pub fn rendition(&self) -> LineRendition {
+        LineRendition::from_bits(self.flags >> history::RENDITION_SHIFT)
     }
     /// How many cells the row has: a history row keeps the width it had.
     pub fn len(&self) -> usize {
@@ -270,7 +386,7 @@ impl<'a> Row<'a> {
     /// in, no part of the text (reflow and copies skip it). A blank erased
     /// in a colour is a cell painted, and no spacer.
     pub fn ends_in_spacer(&self) -> bool {
-        self.wrapped
+        self.wrapped()
             && (self.width.checked_sub(1))
                 .and_then(|col| self.stored(col))
                 .is_some_and(|c| c.is_blank(0))
@@ -323,7 +439,7 @@ impl<'a> Row<'a> {
     /// `OSC 133 ; A` while the cursor was on it. The mark goes with the row
     /// as it scrolls and reflows; ED, erasing the row whole, removes it.
     pub fn starts_prompt(&self) -> bool {
-        self.prompt
+        self.flags & history::PROMPT != 0
     }
     /// Bytes of text the row keeps for clusters over 17 bytes, overwritten
     /// ones included until the row is compacted: at most
@@ -379,14 +495,45 @@ impl<'a> Row<'a> {
 }
 
 /// What was printed while the host records ([`Parser::record_prints`]):
-/// each run of text that changed cells, in the order printed, though later
+/// each run of text printed, though it changed no cell (a redraw of what
+/// was there), in the order printed, though later
 /// drawn over, its texts end to end. A row moved within the screen, its
 /// text as it was (lines deleted or put in above it, a region scrolled),
 /// is a run with no text and no columns: the topmost of those moved.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// It keeps at most [`Prints::cap`] bytes of text, 4 a screen cell and
+/// 16 KiB at least, and [`PRINT_RUNS`] runs, between takes (`threats.md`
+/// B10). Past either, and after a resize while it holds something, it
+/// records nothing more and says so ([`Prints::lost`]): a host then takes
+/// everything as changed. A resize while it holds nothing makes it anew,
+/// with the new size's room.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prints {
     runs: Vec<(RowId, Range<u16>, Range<usize>)>,
     text: String,
+    cap: usize,
+    lost: bool,
+    /// Glyphs printed over themselves, changing no cell, after the last
+    /// text recorded and not beside it: their row and columns. The text
+    /// printed next beside them takes them (`Screen::printed_as`); any
+    /// other lets them go.
+    held: Option<(RowId, Range<u16>)>,
+    /// Where the text recorded last ended, kept across takes: a glyph
+    /// printed over itself there goes on with it.
+    anchor: Option<(RowId, u16)>,
+}
+
+/// The most runs [`Prints`] keeps between takes.
+pub const PRINT_RUNS: usize = 1 << 12;
+
+/// The fewest bytes of text [`Prints`] keeps between takes, however small
+/// the screen.
+const PRINT_TEXT_FLOOR: usize = 16 << 10;
+
+impl Default for Prints {
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 /// A run of [`Prints`]: the row it was printed on, the columns it took,
@@ -402,6 +549,66 @@ pub struct Print<'a> {
 }
 
 impl Prints {
+    /// What a screen of `cells` cells records into: nothing yet.
+    pub(crate) fn new(cells: usize) -> Self {
+        Self {
+            runs: Vec::new(),
+            text: String::new(),
+            cap: text_cap(cells),
+            lost: false,
+            held: None,
+            anchor: None,
+        }
+    }
+    /// Takes what was recorded, leaving one for a screen of `cells` cells
+    /// that keeps where the text recorded last ended and the glyphs held,
+    /// so that a take between two calls changes nothing recorded after it.
+    pub(crate) fn take(&mut self, cells: usize) -> Self {
+        let mut next = Self::new(cells);
+        (next.anchor, next.held) = (self.anchor, self.held.take());
+        std::mem::replace(self, next)
+    }
+    /// The most bytes of text it keeps.
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+    /// Whether some of what was printed is not in it: past its cap, or
+    /// printed before a resize. What it holds is still what it says.
+    pub fn lost(&self) -> bool {
+        self.lost
+    }
+    /// Says that some of what was printed is not in it.
+    pub(crate) fn lose(&mut self) {
+        self.lost = true;
+    }
+    /// Whether `text` more bytes, or another run, are past its caps.
+    fn over_cap(&self, text: usize) -> bool {
+        self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
+    }
+    /// Makes room for `text` more bytes and a run: each room doubling, as
+    /// a `Vec`'s does, but never past the caps; false if they are past.
+    #[cold]
+    #[inline(never)]
+    fn grow(&mut self, text: usize) -> bool {
+        if self.over_cap(text) {
+            return false;
+        }
+        let needed = self.text.len().saturating_add(text);
+        if needed > self.text.capacity() {
+            let room = (self.text.capacity().saturating_mul(2))
+                .max(needed)
+                .max(256)
+                .min(self.cap);
+            self.text
+                .reserve_exact(room.saturating_sub(self.text.len()));
+        }
+        if self.runs.len() == self.runs.capacity() {
+            let room = self.runs.capacity().saturating_mul(2).clamp(16, PRINT_RUNS);
+            self.runs
+                .reserve_exact(room.saturating_sub(self.runs.len()));
+        }
+        true
+    }
     /// The runs, in the order printed.
     pub fn iter(&self) -> impl Iterator<Item = Print<'_>> {
         self.runs.iter().map(|(row, cols, text)| Print {
@@ -425,18 +632,126 @@ impl Prints {
         self.runs.is_empty()
     }
     /// Adds `text` printed at `cols` of `row`: to the last run if it goes
-    /// on where that left off, on its row.
+    /// on where that left off, on its row. Past its caps, nothing more is
+    /// added, and it is lost; its room grows by doubling, never past them.
     pub(crate) fn push(&mut self, row: RowId, cols: Range<u16>, text: &str) {
+        self.add(row, cols, text, false);
+    }
+    /// Adds `text` joined to the cell at `cols` of `row`'s first column (a
+    /// mark, a cluster's next character): to the last run if it took that
+    /// cell, its columns grown to `cols`.
+    pub(crate) fn join(&mut self, row: RowId, cols: Range<u16>, text: &str) {
+        self.add(row, cols, text, true);
+    }
+    /// Whether a glyph printed over itself at `cols` of `row`, changing no
+    /// cell, is recorded now: where the text recorded last ended; else it
+    /// is held, with any held just before it, for the text printed next
+    /// beside it (`take_held`).
+    pub(crate) fn unchanged(&mut self, row: RowId, cols: Range<u16>) -> bool {
+        if self.lost || self.anchor == Some((row, cols.start)) {
+            return !self.lost;
+        }
+        self.held = match self.held.take() {
+            Some((at, held)) if at == row && held.end == cols.start => {
+                Some((row, held.start..cols.end))
+            }
+            _ => Some((row, cols)),
+        };
+        false
+    }
+    /// Whether it holds glyphs printed over themselves (`unchanged`).
+    #[inline]
+    pub(crate) fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+    /// The columns of the glyphs held that end where text printed at `col`
+    /// of `row` begins, which it takes; any others are let go.
+    pub(crate) fn take_held(&mut self, row: RowId, col: u16) -> Option<Range<u16>> {
+        self.held
+            .take()
+            .filter(|(at, held)| *at == row && held.end == col)
+            .map(|(_, held)| held)
+    }
+    #[inline]
+    fn add(&mut self, row: RowId, cols: Range<u16>, text: &str, joins: bool) {
+        // Its room is within its caps: while it lasts, nothing is past them.
         let start = self.text.len();
+        // Written as `String` and `Vec` test their room, which then needn't
+        // be tested again.
+        let fits = text.len() <= self.text.capacity().wrapping_sub(start)
+            && self.runs.len() != self.runs.capacity();
+        if self.lost || !fits && !self.grow(text.len()) {
+            self.lost = true;
+            return;
+        }
+        work!(prints, text.len());
         self.text.push_str(text);
         let end = self.text.len();
-        match self.runs.last_mut() {
-            Some((last, at, bytes)) if *last == row && at.end == cols.start && !cols.is_empty() => {
-                at.end = cols.end;
+        let ends = match self.runs.last_mut() {
+            // It goes on where the last left off, or joins a cell it took.
+            Some((last, at, bytes))
+                if *last == row
+                    && !cols.is_empty()
+                    && (at.end == cols.start || joins && at.contains(&cols.start)) =>
+            {
+                at.end = at.end.max(cols.end);
                 bytes.end = end;
+                at.end
             }
-            _ => self.runs.push((row, cols, start..end)),
+            _ => {
+                let ends = cols.end;
+                self.runs.push((row, cols, start..end));
+                ends
+            }
+        };
+        self.anchor = Some((row, ends));
+    }
+}
+
+/// The most bytes of text [`Prints`] keeps for a screen of `cells` cells:
+/// 4 a cell, and [`PRINT_TEXT_FLOOR`] at least.
+fn text_cap(cells: usize) -> usize {
+    let four = cells.saturating_mul(4);
+    if four > PRINT_TEXT_FLOOR {
+        four
+    } else {
+        PRINT_TEXT_FLOOR
+    }
+}
+
+/// `Prints`' part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Prints {
+    /// 33: within its caps, its room too.
+    pub(crate) fn check_cap(&self) -> Result<(), String> {
+        check::ensure(
+            self.text.capacity() <= self.cap && self.runs.capacity() <= PRINT_RUNS,
+            || {
+                format!(
+                    "room for {} bytes of text of {} and {} runs",
+                    self.text.capacity(),
+                    self.cap,
+                    self.runs.capacity()
+                )
+            },
+        )
+    }
+    /// 34: each run's text lies inside the text, the runs end to end in
+    /// the order printed, and each run's columns are in order.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let mut end = 0;
+        for (row, cols, text) in &self.runs {
+            check::ensure(text.start == end && text.start <= text.end, || {
+                format!("a run of row {row:?} has text {text:?} after {end}")
+            })?;
+            check::ensure(cols.start <= cols.end, || {
+                format!("a run of row {row:?} has columns {cols:?}")
+            })?;
+            end = text.end;
         }
+        check::ensure(end == self.text.len(), || {
+            format!("the runs end at {end} in {} bytes of text", self.text.len())
+        })
     }
 }
 
@@ -549,7 +864,7 @@ impl<'a> Window<'a> {
     /// Whether row `row` of the window is soft-wrapped, its line going on in
     /// the next row.
     pub fn row_wrapped(&self, row: u16) -> bool {
-        self.row(row).is_some_and(|r| r.wrapped)
+        self.row(row).is_some_and(|r| r.wrapped())
     }
     /// Inclusive endpoints, normalized to wide leaders. Limits are checked
     /// before allocation and before every append; an oversized copy is refused.
@@ -595,7 +910,7 @@ impl<'a> Window<'a> {
                 }
                 output.push_str(text);
             }
-            if y == end.0 || !row.wrapped {
+            if y == end.0 || !row.wrapped() {
                 while output.len() > line_start && output.ends_with(' ') {
                     output.pop();
                 }

@@ -41,9 +41,16 @@ pub trait Engine {
 
     /// Every reply the terminal has written back so far, in order: what a
     /// terminal sends up its pty for its program to read. Empty for an
-    /// engine that answers nothing, or whose answers are not taken here.
-    fn replies(&self) -> Vec<u8> {
-        Vec::new()
+    /// engine that answers nothing.
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(Vec::new())
+    }
+
+    /// How many replies its adapter has given for the engine's host so far
+    /// (a colour the engine asks its host for, the window's pixel size),
+    /// for `Answering` to count as the harness's answers: adapter-observed.
+    fn host_answers(&mut self) -> usize {
+        0
     }
 
     /// The rows of history it holds now, if it can tell (`footprint`
@@ -113,6 +120,17 @@ pub struct Can {
     pub title: bool,
     pub reports: bool,
     pub history: bool,
+    /// The cursor's shape (DECSCUSR's Ps).
+    pub cursor_shape: bool,
+    /// The tab stops.
+    pub tab_stops: bool,
+    /// Each screen row's line rendition (DECSWL, DECDWL, DECDHL).
+    pub renditions: bool,
+    /// Which cells DECSCA or SPA protects from selective erase.
+    pub protection: bool,
+    /// Whether the screen's last row's soft wrap: xterm's print ends that
+    /// row with no LF whether or not it is wrapped.
+    pub last_wrapped: bool,
 }
 
 impl Can {
@@ -150,7 +168,38 @@ impl Can {
         title: true,
         reports: true,
         history: true,
+        cursor_shape: true,
+        tab_stops: true,
+        renditions: true,
+        protection: true,
+        last_wrapped: true,
     };
+
+    /// What only fux-vt's adapter reads of the device's state (HAR-46):
+    /// for an engine to set where it tells none of it.
+    pub const NO_DEVICE: Can = Can {
+        cursor_shape: false,
+        tab_stops: false,
+        renditions: false,
+        protection: false,
+        ..Can::ALL
+    };
+
+    /// Every field but the device's state and the last row's soft wrap,
+    /// which keep this one's: what a subject that cannot tell those is
+    /// judged on when coverage is reckoned (`case::reread`). Only fux-vt
+    /// and xterm read the device (HAR-46), so a subject that can't is
+    /// compared without it, rather than unavailable at every point.
+    pub const fn device(self) -> Can {
+        Can {
+            cursor_shape: self.cursor_shape,
+            tab_stops: self.tab_stops,
+            renditions: self.renditions,
+            protection: self.protection,
+            last_wrapped: self.last_wrapped,
+            ..Can::ALL
+        }
+    }
 
     /// What both can tell. A field the subject cannot tell is masked on
     /// both sides, as an engine's own `Can` masks one, so comparing with
@@ -189,6 +238,11 @@ impl Can {
             title: self.title && other.title,
             reports: self.reports && other.reports,
             history: self.history && other.history,
+            cursor_shape: self.cursor_shape && other.cursor_shape,
+            tab_stops: self.tab_stops && other.tab_stops,
+            renditions: self.renditions && other.renditions,
+            protection: self.protection && other.protection,
+            last_wrapped: self.last_wrapped && other.last_wrapped,
         }
     }
 
@@ -227,6 +281,11 @@ impl Can {
             (self.title, "title"),
             (self.reports, "reports"),
             (self.history, "history"),
+            (self.cursor_shape, "cursor shape"),
+            (self.tab_stops, "tab stops"),
+            (self.renditions, "line renditions"),
+            (self.protection, "protection"),
+            (self.last_wrapped, "the last row's soft wrap"),
         ];
         fields
             .iter()
@@ -300,6 +359,10 @@ impl Blanks {
             | Field::Wrapped
             | Field::Text
             | Field::Width
+            | Field::CursorShape
+            | Field::TabStops
+            | Field::Rendition
+            | Field::Protected
             | Field::Bg
             | Field::History
             | Field::HistoryWrapped => true,
@@ -376,6 +439,78 @@ pub const ENGINES: &[Kind] = &[
     engines::xterm::KIND,
 ];
 
+/// What each engine is set up with that is not its own default, for the
+/// fairness record every comparison's JSON carries ([`settings`]).
+pub const SETTINGS: &[(&str, &str)] = &[
+    (
+        "ghostty",
+        "mode 2027 (grapheme clusters) set when it is made (engines/ghostty.rs)",
+    ),
+    (
+        "alacritty",
+        "the kitty keyboard protocol on (Config::kitty_keyboard)",
+    ),
+    (
+        "libvterm",
+        "reflow on (vterm_screen_enable_reflow, engines/libvterm_shim.c)",
+    ),
+    (
+        "wezterm",
+        "the kitty keyboard protocol on (enable_kitty_keyboard)",
+    ),
+    (
+        "xterm.js",
+        "the unicode-graphemes addon loaded, and reflowCursorLine on (node/engine.mjs)",
+    ),
+    (
+        "tmux",
+        "its widths inferred by the adapter, not read from tmux: a cluster's first character's \
+         by unicode-width 0.2.2, 2 with VS16, a modifier or a regional indicator \
+         (engines/pane.rs, tmux_width)",
+    ),
+    (
+        "xterm",
+        "the resources engines/xterm.rs lists: precompose off, every window operation allowed",
+    ),
+];
+
+/// The settings of `engines` (by name) that are not their defaults, as a
+/// JSON object by engine, for a comparison's fairness record.
+pub fn settings<'a>(engines: impl IntoIterator<Item = &'a str>) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for name in engines {
+        if let Some((_, how)) = SETTINGS.iter().find(|(n, _)| *n == name) {
+            out.insert(name.to_owned(), serde_json::json!(how));
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+/// How an adapter's error begins when the input is beyond what it can
+/// read (xterm and SGR 58): the engine abstains for a limit of the
+/// adapter's, not for a failure of the engine's or of the run.
+pub const CANNOT: &str = "cannot tell: ";
+
+/// How an adapter's error begins when it refuses an input on which its
+/// engine has a known defect it would not survive (alacritty's loop): the
+/// engine abstains for its own failure.
+pub const DEFECT: &str = "engine defect: ";
+
+/// Why an engine abstained, from its error: `adapter-limited` (the
+/// adapter cannot read what it was given, [`CANNOT`]), `engine` (the engine
+/// panicked, as `case::guarded` says, or has a known defect there,
+/// [`DEFECT`]) or `infrastructure` (anything else: a reply or a print that
+/// never came, a process that died).
+pub fn abstention(why: &str) -> &'static str {
+    if why.starts_with(CANNOT) {
+        "adapter-limited"
+    } else if why.starts_with("panicked: ") || why.starts_with(DEFECT) {
+        "engine"
+    } else {
+        "infrastructure"
+    }
+}
+
 pub fn find(name: &str) -> Option<usize> {
     ENGINES.iter().position(|k| k.name == name)
 }
@@ -396,4 +531,15 @@ pub fn kind(index: usize) -> Option<&'static Kind> {
 /// The name of the engine at `index` (see [`kind`]), or `?`.
 pub fn name(index: usize) -> &'static str {
     kind(index).map_or("?", |k| k.name)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Each recorded departure is beside an engine there is.
+    #[test]
+    fn every_departure_is_beside_an_engine() {
+        for (family, beside, _) in crate::families::DEPARTURES {
+            assert!(super::find(beside).is_some(), "{family}: {beside}");
+        }
+    }
 }

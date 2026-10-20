@@ -1,8 +1,14 @@
-name: Fuzz corpora
+name: Fuzz
 
-# Replays every fuzz target's corpus, regressions included, nightly and on
-# request: `cargo test` does not run them, and a fuzz run is too long for
-# every push.
+# Nightly and on request: fux's targets replay their corpora, and each of
+# fux-vt's targets and the oracle explore for five minutes from their
+# corpus, their frozen seeds and what earlier nights found, which is kept
+# in the Actions cache between nights. `cargo test` runs none of them, and
+# a fuzz run is too long for every push. Each target is a job of its own,
+# so one that fails or doesn't build names itself and the others still run.
+# Each target's options are fux-vt/compare/fuzz-options.txt's, which
+# harness.sh fuzz reads too; each is built and run with debug assertions
+# (-a), as harness.sh runs them, and a crash's input is kept as an artifact.
 
 on:
   schedule:
@@ -14,8 +20,9 @@ permissions:
 
 jobs:
   replay:
+    name: fux's targets, replayed
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -32,22 +39,181 @@ jobs:
           cargo install cargo-fuzz --locked --version 0.13.2
 
       - name: fux's targets, over their corpora
-        env:
-          # session frees millions of small allocations (fuzz/README.md).
-          ASAN_OPTIONS: quarantine_size_mb=16
         run: |
           set -euo pipefail
-          for target in protocol paint layout config session fuxth_tokens fuxth_run fuxth_pause; do
-            cargo +nightly fuzz run "$target" --fuzz-dir fuzz "fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          failed=()
+          while read -r target dir asan options; do
+            [[ $target == "#"* || -z $target || $dir != fuzz ]] && continue
+            [[ $asan == - ]] && asan=""
+            # shellcheck disable=SC2086 # the options are words, split on purpose
+            ASAN_OPTIONS=$asan cargo +nightly fuzz run "$target" --fuzz-dir fuzz -O -a "fuzz/corpus/$target" -- \
+              -runs=0 -rss_limit_mb=2048 -timeout=25 $options </dev/null || failed+=("$target")
+          done <fux-vt/compare/fuzz-options.txt
+          # A target with no line there is not left out unseen.
+          # Listed apart, so a list that fails fails the job.
+          targets=$(cargo +nightly fuzz list --fuzz-dir fuzz)
+          for target in $targets; do
+            awk -v t="$target" '$1 == t && $2 == "fuzz" { found = 1 } END { exit !found }' \
+              fux-vt/compare/fuzz-options.txt || failed+=("$target (not in fux-vt/compare/fuzz-options.txt)")
           done
+          if ((${#failed[@]})); then
+            echo "::error::failed: ${failed[*]}"
+            exit 1
+          fi
 
-      - name: fux-vt's targets
+      - name: Crash inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-replay-artifacts
+          path: fuzz/artifacts/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  explore:
+    name: ${{ matrix.target }}, explored
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: terminal, dir: fux-vt/fuzz }
+          - { target: deep, dir: fux-vt/fuzz }
+          - { target: keys, dir: fux-vt/fuzz }
+          - { target: graphemes, dir: fux-vt/fuzz }
+          - { target: cells, dir: fux-vt/fuzz }
+          - { target: oracle, dir: diff/fuzz }
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      DIR: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Nightly and cargo-fuzz
         run: |
           set -euo pipefail
-          for target in terminal keys; do
-            cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz "fux-vt/fuzz/corpus/$target" -- -runs=0 -rss_limit_mb=2048 -timeout=25
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked --version 0.13.2
+
+      # The oracle builds against fux-vt's base-vt pin, which must name this
+      # very commit for both sides to share one API (diff/README.md).
+      - name: The oracle's pin
+        if: matrix.target == 'oracle'
+        run: diff/oracle.sh --pin HEAD
+
+      - name: Build
+        run: cargo +nightly fuzz build "$TARGET" --fuzz-dir "$DIR" -O -a
+
+      # What earlier nights found, newest first; saved again only when the
+      # run passes, so a night that crashes keeps the last good corpus.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz-corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Explore for five minutes
+        run: |
+          set -euo pipefail
+          found="fuzz-corpus/$TARGET"
+          mkdir -p "$found"
+          from=()
+          for dir in "$DIR/corpus/$TARGET" "$DIR/seeds/$TARGET"; do
+            [[ -d "$dir" ]] && from+=("$dir")
           done
-          # graphemes and cells keep no corpus: a short run of each.
-          for target in graphemes cells; do
-            cargo +nightly fuzz run "$target" --fuzz-dir fux-vt/fuzz -- -max_total_time=60 -rss_limit_mb=2048 -timeout=25
-          done
+          listed=$(awk -v t="$TARGET" -v d="$DIR" '$1 == t && $2 == d' fux-vt/compare/fuzz-options.txt)
+          if [[ -z $listed ]]; then
+            echo "::error::fux-vt/compare/fuzz-options.txt has no line for $TARGET in $DIR"
+            exit 1
+          fi
+          read -r _ _ asan options <<<"$listed"
+          [[ $asan == - ]] && asan=""
+          echo "corpus: $(ls "$found" | wc -l) found before, from ${from[*]:-nothing stored}"
+          # shellcheck disable=SC2086 # the options are words, split on purpose
+          ASAN_OPTIONS=$asan cargo +nightly fuzz run "$TARGET" --fuzz-dir "$DIR" -O -a "$found" "${from[@]}" -- \
+            -max_total_time=300 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1 $options
+          echo "corpus: $(ls "$found" | wc -l) after"
+
+      - name: Crash input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: ${{ matrix.dir }}/artifacts/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  mutation:
+    name: guard mutants, shard ${{ matrix.shard }} of 24
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: cargo-mutants and nextest
+        run: |
+          set -euo pipefail
+          cargo install cargo-mutants --locked --version 27.1.0
+          cargo install cargo-nextest --locked --version 0.9.148
+
+      # Every guard is generated first: a guard whose line moved fails here,
+      # by name, in a second.
+      - name: the guard names
+        run: fux-vt/compare/mutants.sh check
+
+      # The frozen guard set (fux-vt/compare/mutants-guards.txt), a 24th of
+      # it a job, two mutants at a time, as mutants.sh runs the guards:
+      # opt-level 1, 150 s a mutant, 2 GiB a test binary, guards.rs first.
+      - name: the guard mutants
+        env:
+          FUX_MUTANTS_JOBS: "2"
+          FUX_MUTANTS_SHARD: ${{ matrix.shard }}/24
+          FUX_MUTANTS_OUT: ${{ runner.temp }}/mutants
+        run: fux-vt/compare/mutants.sh guards
+
+      - name: the outcomes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutants-${{ matrix.shard }}
+          path: ${{ runner.temp }}/mutants/mutants.out/*.txt
+          if-no-files-found: ignore
+
+  mosh-corpus:
+    name: mosh's fuzz corpus, fetched at its pin and replayed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # mosh is GPL-3.0, so its 27 seeds are not vendored: the ignored test
+      # fetches them at decd9b70, checks external/mosh.sha256, and fails if
+      # it cannot fetch (no FUX_VT_CORPORA_OFFLINE here).
+      - name: mosh's corpus
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
+          cargo test -p fux-vt --features checks --release --locked --test external_corpora moshs_fuzz_corpus -- --ignored

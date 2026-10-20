@@ -17,7 +17,10 @@
 //!   fux-vt-compare, a resize-heavy stream with history full, and the
 //!   limits.
 //! - `shrink`: the smallest case that still differs.
+//! - `ceiling`: the working tree's worst call over the corpus, and a resize
+//!   of a full history, in fux-vt's work units, held to the ceiling U.
 pub mod case;
+pub mod ceiling;
 pub mod cells;
 pub mod inputs;
 pub mod model;
@@ -32,6 +35,10 @@ pub mod families;
 /// and fuzz targets draw them.
 #[path = "../../../fux-vt/tests/corpus/graphemes.rs"]
 pub mod graphemes;
+/// The checks of fux-vt's invariant checker known to fail at BASE, which
+/// the working tree's side leaves out of its faults, as fux-vt's tests do.
+#[path = "../../../fux-vt/tests/corpus/known.rs"]
+mod known;
 /// fux-vt-compare's seeded source of choices, which the families draw from.
 #[path = "../../../fux-vt/compare/src/rng.rs"]
 mod rng;
@@ -39,25 +46,28 @@ mod rng;
 pub use case::{Case, Count, Difference, Step, check};
 pub use side::{base, work};
 
-use model::{Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State};
+use model::{Call, Error, Heard, Lookup, Marked, Row, Seen, Selection, Setup, State, Stop};
 
 /// One side: a parser of one fux-vt, read into the model.
 pub trait Side: Clone {
     /// `work` or `base`.
     const NAME: &'static str;
-    /// A parser of `rows` by `cols` with `history` rows of history.
-    fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error>;
+    /// A parser of `rows` by `cols` with `history_bytes` of history.
+    fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error>;
     /// `Parser::process_with`, with what it gave the host.
     fn process(&mut self, bytes: &[u8], heard: &mut Vec<Heard>) -> Result<(), Error>;
-    /// `Parser::process_until_frame`: how many bytes it took if it
-    /// stopped, and whether a frame began there (else one ended).
-    fn process_until_frame(
+    /// `Parser::process_until_stop`: how many bytes it took if it
+    /// stopped, and why: a frame began or ended, or the budget was spent.
+    fn process_until_stop(
         &mut self,
         bytes: &[u8],
         heard: &mut Vec<Heard>,
-    ) -> Result<Option<(usize, bool)>, Error>;
+    ) -> Result<Option<(usize, Stop)>, Error>;
     /// `Parser::resize`.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error>;
+    /// A host's call, and what it gave back, as text: a tick's count, the
+    /// prints taken.
+    fn host(&mut self, call: Call) -> String;
     /// Everything about the screen but its rows.
     fn state(&self) -> State;
     /// How many rows the screen retains: its history and its live rows.
@@ -74,4 +84,10 @@ pub trait Side: Clone {
     fn lookups(&mut self, offsets: &[usize]) -> Vec<Lookup>;
     /// A window and a copy from it; each cell of it too, if `cells`.
     fn copy(&self, selection: &Selection, cells: bool) -> Seen;
+    /// What fux-vt's invariant checker (`Parser::check`, its `checks`
+    /// feature) finds wrong with this side, if it has the checker: the
+    /// working tree's side has.
+    fn faults(&self) -> Option<String> {
+        None
+    }
 }

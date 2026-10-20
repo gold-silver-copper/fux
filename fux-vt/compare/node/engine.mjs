@@ -254,8 +254,9 @@ async function handle(req) {
 }
 
 // The failure of a request that is not answered (a write without `ack`, a
-// dispose), given as the next answer instead of it.
-let failed;
+// dispose), by terminal, given as that terminal's next answer instead of
+// it: never another terminal's.
+const failed = new Map();
 
 function answered(req) {
   return req.op !== 'dispose' && !(req.op === 'write' && !req.ack);
@@ -274,19 +275,20 @@ function request(line) {
       req = JSON.parse(line);
       const reply = await handle(req);
       if (!answered(req)) return;
-      if (failed !== undefined) {
-        send({ ok: false, error: failed });
-        failed = undefined;
+      const earlier = failed.get(req.id);
+      if (earlier !== undefined) {
+        send({ ok: false, error: earlier });
+        failed.delete(req.id);
       } else {
         send({ ok: true, ...reply });
       }
     } catch (e) {
       const error = `${req.op}: ${e}`;
       if (answered(req)) {
-        send({ ok: false, error: failed ?? error });
-        failed = undefined;
-      } else {
-        failed ??= error;
+        send({ ok: false, error: failed.get(req.id) ?? error });
+        failed.delete(req.id);
+      } else if (!failed.has(req.id)) {
+        failed.set(req.id, error);
       }
     }
   });

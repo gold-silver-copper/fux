@@ -36,6 +36,12 @@ const CUT: &str = "… earlier lines not kept (past history-bytes)\n";
 /// Said first instead when more came than fux keeps for a wait.
 const MORE_THAN_KEPT: &str =
     "… more came than the pane's journal keeps (journal-bytes): text may have passed unseen\n";
+/// Said first instead when a piece of output printed more than fux
+/// records of one (`fux_vt::Prints::lost`): its caps are fux-vt's, said
+/// in its README (`Prints`), not again here.
+const PRINTS_LOST: &str = "… a piece of output printed more than fux records of one (fux-vt keeps \
+     a few bytes of printed text a screen cell between reads, and records nothing past that, or \
+     after many runs, or after a resize): text may have passed unseen\n";
 
 /// How long a bare `wait` on a pane that may go on alone waits for
 /// something new before it answers the pane as it is: longer than the
@@ -65,10 +71,12 @@ pub struct Waiting {
     follows: Follows,
 }
 
-/// A pane of a wait: still looked at, or its answer, which no look changes.
+/// A pane of a wait: still looked at, or its answer, which no look
+/// changes, and whether it tells the pane's program's exit (`Pane::
+/// exit_told`, marked once the wait's answer goes out).
 enum Look {
     Looking(Watch),
-    Told(Reply),
+    Told(Reply, bool),
 }
 
 /// What a wait follows, which decides how it reads its panes and what its
@@ -108,6 +116,8 @@ struct Watch {
     before: Before,
     /// Pieces of output it had not read yet were let go.
     missed: bool,
+    /// A piece of output printed more than it records (`Prints::lost`).
+    lost: bool,
     /// The first text found: which, its line, and when it came.
     found: Option<(String, String, Seq)>,
     /// The text printed on each row, runs that go on from each other
@@ -132,7 +142,9 @@ struct Watch {
     /// Since when, and at which revision, its pane has looked settled.
     settled_since: Option<(Instant, u64)>,
     /// It waits for a command the input began (a `line`'s) to end, not
-    /// only for quiet: any wait but a capture's.
+    /// only for quiet: any wait but a capture's that counts from an
+    /// action's input. A command marked after the program's start (a
+    /// full-screen program `run` began, marking its own) is no input's.
     ends: bool,
     /// The screen's highlighted runs as an action's wait began: a run its
     /// input highlighted anew (a selection moved) is said.
@@ -199,7 +211,7 @@ impl Waiting {
         let held = (self.watches.iter())
             .filter_map(|(_, look)| match look {
                 Look::Looking(watch) => watch.settled_since,
-                Look::Told(_) => None,
+                Look::Told(..) => None,
             })
             .map(|(since, _)| after(since, HOLD).max(now))
             .min();
@@ -250,6 +262,12 @@ impl Waiting {
                 (cursor(pane).filter(|_| live && on_text)).map(|(note, _)| format!(" · {note}"));
             outcome.text = format!("{line}{}\n{read}", cursor.unwrap_or_default());
         }
+        // The answer goes out now: the exits it tells are told.
+        for (id, look) in &self.watches {
+            if let (Look::Told(_, true), Some(pane)) = (look, session.panes.get(id)) {
+                pane.exit_told.set(true);
+            }
+        }
         Some(outcome)
     }
 
@@ -265,23 +283,25 @@ impl Waiting {
         for (id, look) in &mut self.watches {
             let watch = match look {
                 Look::Looking(watch) => watch,
-                Look::Told(_) => continue,
+                Look::Told(..) => continue,
             };
             let Some(pane) = session.panes.get(id) else {
-                *look = Look::Told(wait.gone(*id));
+                *look = Look::Told(wait.gone(*id), false);
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
+                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
+                *look = Look::Told(reply, exit);
             } else if late && !watch.lasts(pane, wait) {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                *look = Look::Told(wait.told(pane, told, limit, watch, (mode.2, capture)));
+                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
+                *look = Look::Told(reply, exit);
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
             .map(|(_, look)| match look {
                 Look::Looking(_) => None,
-                Look::Told(reply) => Some(reply),
+                Look::Told(reply, _) => Some(reply),
             })
             .collect::<Option<_>>()?;
         if let [one] = answers.as_slice() {
@@ -346,7 +366,7 @@ impl Wait {
         limit: Duration,
         watch: &Watch,
         (action, capture): (bool, bool),
-    ) -> Reply {
+    ) -> (Reply, bool) {
         let (id, now) = (pane.id, Instant::now());
         let state = || watch.state(pane, now);
         let came = || since_text(pane, watch, self.marks);
@@ -522,8 +542,9 @@ impl Wait {
         }
         // An exit an earlier answer told is said once: a later one says so,
         // not what the program printed again.
-        let told_before =
-            matches!(state, State::Exited(_)) && pane.exit_told.replace(true) && !capture && !found;
+        // A capture tells no exit, nor does a text met.
+        let tells = matches!(state, State::Exited(_)) && !capture && !found;
+        let told_before = tells && pane.exit_told.get();
         let body = match told_before {
             true => {
                 let note = format!("told before: `{id} capture` reads its last screen");
@@ -532,7 +553,10 @@ impl Wait {
             }
             false => body,
         };
-        said(id, state.word(), notes, body, end)
+        (
+            said(id, state.word(), notes, body, end),
+            tells && !told_before,
+        )
     }
 }
 
@@ -783,7 +807,7 @@ fn cursor(pane: &Pane) -> Option<Note> {
 /// and each row's text.
 fn wrapped_rows(screen: &fux_vt::Screen, row: u16) -> Option<(u16, Vec<String>)> {
     let window = screen.window();
-    let wraps = |y: u16| window.row(y).is_some_and(|r| r.wrapped());
+    let wraps = |y: u16| window.row(y).is_some_and(|r| r.continues());
     let mut from = row;
     while from > 0 && row.saturating_sub(from) < 3 && wraps(from.saturating_sub(1)) {
         from = from.saturating_sub(1);
@@ -877,6 +901,7 @@ impl Watch {
             before: pane.before.clone(),
 
             missed: false,
+            lost: false,
             found: None,
             stream: HashMap::new(),
             appeared: HashMap::new(),
@@ -888,7 +913,7 @@ impl Watch {
             starts: pane.starts,
             reading_since: None,
             settled_since: None,
-            ends: !matches!(follows, Follows::Capture(..)),
+            ends: start.input && !matches!(follows, Follows::Capture(..)),
             lit: match follows {
                 Follows::Action => crate::capture::highlights(pane.screen()),
                 Follows::Wait | Follows::Started | Follows::Capture(..) => Vec::new(),
@@ -962,6 +987,13 @@ impl Watch {
                  (journal-bytes): the text may have come unseen",
             );
         }
+        if self.lost {
+            return Some(
+                "a piece of output printed more than fux records of one (fux-vt keeps a few \
+                 bytes of printed text a screen cell between reads, and records nothing past \
+                 that, or after many runs, or after a resize): the text may have come unseen",
+            );
+        }
         self.echo_skipped.then_some(
             "the text was only in the echo of what was typed, which a wait never takes; \
              wait for text only the output has, or read the screen with `PANE capture`",
@@ -979,8 +1011,20 @@ impl Watch {
     ) -> Option<Found> {
         // Any wait's answer reads the journal: past its budget, it says so.
         self.missed |= pane.record.lost_after(self.looked);
+        self.lost |= pane.record.prints_lost_after(self.looked);
         if !texts.is_empty() && self.found.is_none() {
             self.read_prints(pane, texts, action);
+        }
+        // What a piece printed past what it records may be on a row of the
+        // screen that changed since the wait began.
+        if self.lost && self.found.is_none() {
+            let window = pane.screen().window();
+            let changed: String = (0..pane.screen().size().rows())
+                .filter_map(|y| window.row(y))
+                .filter(|row| row.version() > self.start.from.0)
+                .map(|row| format!("{}\n", row.cells_text().trim_end()))
+                .collect();
+            self.found = first_line(&changed, texts).map(|(t, l)| (t, l, pane.record.last()));
         }
         // What came since the last look: the pieces that printed a text
         // waited to go, and the first bell.
@@ -1231,10 +1275,11 @@ impl Watch {
     /// Whether what came since it began was more than the pane keeps, and
     /// the notice that says so: some was let go before the wait read it.
     fn cut(&self, pane: &Pane) -> Option<&'static str> {
-        match (self.missed, pane.cut()) {
-            (true, _) => Some(MORE_THAN_KEPT),
-            (false, true) => Some(CUT),
-            (false, false) => None,
+        match (self.missed, self.lost, pane.cut()) {
+            (true, _, _) => Some(MORE_THAN_KEPT),
+            (false, true, _) => Some(PRINTS_LOST),
+            (false, false, true) => Some(CUT),
+            (false, false, false) => None,
         }
     }
 }
@@ -1264,13 +1309,13 @@ impl Line {
             let rows = reach.div_ceil(width).saturating_add(1);
             let mut first = at;
             for _ in 0..rows {
-                match first.above().filter(Row::wrapped) {
+                match first.above().filter(Row::continues) {
                     Some(up) => first = up,
                     None => break,
                 }
             }
             let mut line = Line::default();
-            if first.above().is_some_and(|up| up.wrapped()) {
+            if first.above().is_some_and(|up| up.continues()) {
                 line.push(CUT_END, false);
             }
             // Rows after the piece's own, once it is passed.
@@ -1287,7 +1332,7 @@ impl Line {
                     (false, Some(n)) => Some(n.saturating_add(1)),
                     (false, None) => None,
                 };
-                row = r.below().filter(|_| r.wrapped());
+                row = r.below().filter(|_| r.continues());
                 if row.is_some() && after.is_some_and(|n| n >= rows) {
                     line.push(CUT_END, false);
                     return line;
@@ -1397,6 +1442,15 @@ fn lines_from(pane: &Pane, from: usize) -> String {
     };
     let (text, _) = crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
     if text == "\n" { String::new() } else { text }
+}
+
+/// The first of `texts` that a line of `lines` holds, and that line.
+fn first_line(lines: &str, texts: &[String]) -> Option<(String, String)> {
+    lines.lines().find_map(|line| {
+        (texts.iter())
+            .find(|t| found_in(line, t) > 0)
+            .map(|t| (t.clone(), line.to_owned()))
+    })
 }
 
 /// Whether the screen's lines show `text`, as `found_in` finds it.
@@ -1689,6 +1743,58 @@ mod tests {
         let far = crate::after(began, Duration::from_secs(2));
         assert!(waiting.answer(&session, far).is_none());
         assert!(waiting.due() > Instant::now());
+        Ok(())
+    }
+
+    /// A text printed and drawn over in one piece is still met, from the
+    /// piece's record; past the record's cap (`fux_vt::Prints::lost`), a
+    /// text printed after what it keeps is met on the line it changed, and
+    /// the answer says the record was cut.
+    #[test]
+    fn a_text_printed_past_the_record_s_cap_is_met_on_its_line() -> Result<(), String> {
+        use crate::command::{Until, Wait};
+        use std::time::{Duration, Instant};
+        let (now, limit) = (Instant::now(), Duration::from_secs(60));
+        let id = crate::id::PaneId::of(1);
+        let waiting = |session: &crate::session::Session, text: &str| {
+            let wait = Wait {
+                until: vec![Until::Text(text.into())],
+                timeout: None,
+                print: false,
+                marks: false,
+            };
+            let pane = session.panes.get(&id).ok_or("no %1")?;
+            Ok::<_, String>(super::Waiting::new(
+                &[pane],
+                wait,
+                super::Follows::Wait,
+                now,
+                limit,
+            ))
+        };
+        // Drawn over, below the cap: kept.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "SECRET")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"SECRET\rxxxxxx\r\n");
+        let answer = wait.answer(&session, now).ok_or("not met 1")?;
+        assert!(answer.text.contains("met \"SECRET\""), "{}", answer.text);
+        // Kept before the cap, then 65,535 copies of `x`, past it: met.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "SECRET")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"SECRET\rxxxxxx\x1b[65535b\r\n");
+        let answer = wait.answer(&session, now).ok_or("not met 2")?;
+        assert!(answer.text.contains("met \"SECRET\""), "{}", answer.text);
+        // Printed after the cap (16 KiB on this screen): not in the record,
+        // but on a line it changed.
+        let mut session = crate::session::testing::started(crate::config::Config::default())?;
+        let mut wait = waiting(&session, "LATE")?;
+        let pane = session.panes.get_mut(&id).ok_or("no %1")?;
+        pane.output(b"x\x1b[20000b\r\n\x1b[2J\x1b[HLATE\r\n");
+        assert!(pane.record.prints_lost_after(crate::log::Seq(0)));
+        let answer = wait.answer(&session, now).ok_or("not met 3")?;
+        assert!(answer.text.contains("met \"LATE\""), "{}", answer.text);
         Ok(())
     }
 

@@ -72,7 +72,8 @@ A fux-vt test cites the section that sets its expected value.
 | `UAX29_Text_Segmentation.html` | UAX #29, revision 47: grapheme clusters |
 | `UAX11_East_Asian_Width.html` | UAX #11, revision 44: widths |
 | `UTS51_Emoji.html` | UTS #51, revision 29: emoji presentation, ZWJ sequences, modifiers, flags |
-| `ucd/` | `EastAsianWidth.txt`, `DerivedCoreProperties.txt` (InCB), `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`, `emoji/emoji-data.txt`. `fux-vt/gen` builds its tables from four of them, given in one directory (`fux-vt/gen/README.md`) |
+| `ucd/` | `EastAsianWidth.txt`, `DerivedCoreProperties.txt` (InCB), `HangulSyllableType.txt`, `PropList.txt`, `UnicodeData.txt`, `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`, `emoji/emoji-data.txt`, `emoji/emoji-variation-sequences.txt`: what `fux-vt/gen` builds its tables from, read in this tree (`fux-vt/gen/README.md`); and `NormalizationTest.txt`, whose cases gen writes for fux-vt's tests |
+| `emoji/` | `emoji-test.txt`, whose qualified sequences fux-vt's tests print |
 
 ### `modern/`: extensions with no formal standard
 

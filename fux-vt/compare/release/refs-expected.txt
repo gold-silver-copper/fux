@@ -1,0 +1,10 @@
+# The cases of release/refs.sh where fux-vt's screen, in a fux pane, is not
+# real xterm 411's, each with why: `SUITE/CASE why`. refs.sh fails on a
+# difference not listed here, and on a listed case that agrees, so the list
+# never goes stale.
+
+alacritty/vttest_cursor_movement_1 DECCOLM: vttest sets 80 columns, and xterm becomes 80 columns wide; fux-vt ignores DECCOLM, the host deciding the size (README, "Deliberate boundary")
+alacritty/vttest_insert DECCOLM, as vttest_cursor_movement_1
+alacritty/vttest_tab_clear_set TBC 2 (CSI 2 g) clears every tab stop, the active line's being every line's (ECMA-48 8.3.154; README, tab stops), where xterm ignores it
+jediterm/Test2_Screen_2 TBC 2, as alacritty/vttest_tab_clear_set (the same vttest screen)
+jediterm/testEraseBeyondTerminalWidth the program resizes the window to 5 columns (CSI 8 ; 5 ; 5 t) and erases there; xterm resizes, and keeps the text beyond column 5 when it grows again; fux-vt refuses window operations (README, "Deliberate boundary"), so its erases clear the whole rows

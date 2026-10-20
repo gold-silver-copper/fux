@@ -6,7 +6,17 @@ fn cells(row: fux_vt::Row<'_>) -> Vec<fux_vt::CellRef<'_>> {
 }
 use std::collections::HashSet;
 
+/// The invariants after an operation: fux-vt's own checker's
+/// (`Parser::check`, with the `checks` feature), then those read through
+/// the public API.
 pub fn check(p: &Parser) {
+    // The known-at-BASE list is `known.rs`'s, a module beside this one in
+    // each crate that has it.
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(super::known::unknown(&report).is_empty(), "{report}");
+    }
     let s = p.screen();
     let (rows, cols) = s.size().into();
     let mut ids = HashSet::new();
@@ -88,7 +98,29 @@ pub fn check(p: &Parser) {
     assert_eq!(mark, s.mark(), "reading windows changed the terminal");
 }
 
+/// Two parsers fed the same bytes, split differently, alike in everything
+/// a host reads (`threats.md` section 6, 29): `equal`, and the screen not
+/// in use too.
+pub fn same_feed(a: &Parser, b: &Parser) {
+    equal(a, b);
+    let (a, b) = (a.screen(), b.screen());
+    for (a, b) in [
+        (a.main_rows(), b.main_rows()),
+        (a.alternate_rows(), b.alternate_rows()),
+    ] {
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.zip(b) {
+            let offset = a.index();
+            assert_eq!(cells(a), cells(b), "row {offset} of both screens");
+            assert_eq!(a.wrapped(), b.wrapped(), "row {offset} of both screens");
+        }
+    }
+}
+
+/// Two parsers alike in everything a host reads of the screen in use:
+/// its rows, cursor, modes, margins, colours and pictures.
 pub fn equal(a: &Parser, b: &Parser) {
+    assert_eq!(a.resize_report(), b.resize_report());
     let (a, b) = (a.screen(), b.screen());
     assert_eq!(a.size(), b.size());
     assert_eq!(a.cursor_position(), b.cursor_position());
@@ -99,17 +131,27 @@ pub fn equal(a: &Parser, b: &Parser) {
     assert_eq!(a.mouse_protocol_encoding(), b.mouse_protocol_encoding());
     assert_eq!(a.kitty_keyboard_flags(), b.kitty_keyboard_flags());
     assert_eq!(a.modify_other_keys(), b.modify_other_keys());
-    for mode in [
-        Mode::Autowrap,
-        Mode::Origin,
-        Mode::ShowCursor,
-        Mode::ApplicationCursor,
-        Mode::BracketedPaste,
-        Mode::AlternateScreen,
-        Mode::ColorSchemeUpdates,
-    ] {
+    for mode in Mode::ALL {
         assert_eq!(a.mode(mode), b.mode(mode), "{mode:?}");
     }
+    assert_eq!(a.cursor_shape(), b.cursor_shape());
+    assert_eq!(a.left_right_margins(), b.left_right_margins());
+    for index in 0..=u8::MAX {
+        assert_eq!(
+            a.palette_color(index),
+            b.palette_color(index),
+            "colour {index}"
+        );
+    }
+    for number in 10..=19 {
+        assert_eq!(
+            a.dynamic_color(number),
+            b.dynamic_color(number),
+            "OSC {number}"
+        );
+    }
+    assert_eq!(a.colors_changed(), b.colors_changed());
+    assert_eq!(pictures(a), pictures(b));
     assert_eq!(a.history_len(), b.history_len());
     assert_eq!(a.rows().len(), b.rows().len());
     for (a, b) in a.rows().zip(b.rows()) {
@@ -120,6 +162,26 @@ pub fn equal(a: &Parser, b: &Parser) {
         assert_eq!(a.starts_prompt(), b.starts_prompt(), "row {offset}");
     }
     assert_eq!(a.hyperlink(), b.hyperlink());
+}
+
+/// A picture shown: its number, its top row and first column, the
+/// columns and rows it covers, and its size in pixels.
+type Shown = (u64, i64, u16, u16, u16, (u32, u32));
+
+/// Each picture shown.
+fn pictures(s: &fux_vt::Screen) -> Vec<Shown> {
+    s.pictures()
+        .map(|p| {
+            (
+                p.id,
+                p.row,
+                p.col,
+                p.cols,
+                p.rows,
+                (p.picture.width(), p.picture.height()),
+            )
+        })
+        .collect()
 }
 
 /// Each cell's link: its URI, id and key.

@@ -66,6 +66,10 @@ pub enum Timer {
     Frame(PaneId),
     /// A pane's paced input goes on (`Pane::pace_due`).
     Pace(PaneId),
+    /// A pane's output, waiting since the parser did all the work one call
+    /// may, is read on (`Pane::read_unread`): due at once, after the
+    /// server's other work of this turn.
+    Unread(PaneId),
 }
 
 /// Where a command comes from, which says what it acts on when it names no
@@ -1781,18 +1785,38 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
+    /// What a program wrote as it exited may still be on its terminal, or
+    /// read and waiting for the pane's next turns (`Pane::has_unread`): it
+    /// is told exited once all of it is on its screen, from the turn that
+    /// reads the last of it (`Session::fire`).
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
         let status = process::shell_status(ended);
-        // What a program wrote as it exited may still be on its terminal,
-        // unread: its last screen is read whole before it is kept.
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
-        let left = program.map(|p| unread(&p.process)).unwrap_or_default();
-        if !left.is_empty() {
-            self.output(id, &left);
+        let program = program.map(|p| p.exiting.is_none());
+        // Once, at the first word of the exit, its terminal drained (what
+        // a program left writing there is not waited for), and the status
+        // kept till the last of it is read; at each, a frame it holds read,
+        // one begun in output read since too.
+        if program == Some(true) {
+            let left = (self.panes.get(&id))
+                .map(|p| unread(&p.process))
+                .unwrap_or_default();
+            if !left.is_empty() {
+                self.output(id, &left);
+            }
+        }
+        if program.is_some() {
+            self.read_with(id, Pane::release_frame);
         }
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
         };
+        if program.is_some() {
+            pane.exiting = Some(ended);
+            if pane.has_unread() {
+                return;
+            }
+        }
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
             Runs::Program(_) => {
@@ -1824,7 +1848,8 @@ impl Session {
             let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
             let paced = pane.pace_due().map(|at| (at, Timer::Pace(pane.id)));
-            typed.into_iter().chain(frame).chain(paced)
+            let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id)));
+            typed.into_iter().chain(frame).chain(paced).chain(unread)
         })
     }
 
@@ -1835,6 +1860,15 @@ impl Session {
                 .into_iter()
                 .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
+            Timer::Unread(id) => {
+                self.read_with(id, Pane::read_unread);
+                // A program that exited with output unread exits now, if
+                // the last of it is read.
+                let pane = self.panes.get(&id).filter(|p| !p.has_unread());
+                if let Some(ended) = pane.and_then(|p| p.exiting) {
+                    self.exited(id, ended);
+                }
+            }
             Timer::Pace(id) => (self.panes.get_mut(&id))
                 .into_iter()
                 .for_each(|p| p.release_paced(Instant::now())),
@@ -2393,6 +2427,7 @@ impl Session {
                             }
                             Asked::Press
                             | Asked::PressRelease
+                            | Asked::Highlight
                             | Asked::ButtonMotion
                             | Asked::AnyMotion => match event.action {
                                 Motion(_) => format!(
@@ -3766,19 +3801,21 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
             }
             // A piece of its own, never joined to another: what is around
             // a pause stays apart. Printable bytes (a character's, or part
-            // of one) edit a line; a control or Escape is a key's.
+            // of one) edit a line; others are the keys they are
+            // (`bytes_unit`).
             Input::Bytes(given) => {
                 sent.push(Sent::Named(given.len(), format!("bytes {}", hex(given))));
-                let edit = given.iter().all(|b| *b >= 0x20 && *b != 0x7f);
-                let unit = if edit { Unit::Edit } else { Unit::Submit };
+                let unit = bytes_unit(given);
                 let mut piece = Piece::new(given.clone(), unit);
                 piece.gap = gap.take();
                 units.push(piece);
                 last = None;
                 continue;
             }
+            // Pauses in a row add up, to the longest one may be.
             Input::Pause(pause) => {
-                gap = Some(*pause);
+                let total = gap.map_or(*pause, |gap: Duration| gap.saturating_add(*pause));
+                gap = Some(total.min(PAUSE_MOST));
                 last = None;
                 continue;
             }
@@ -3793,6 +3830,32 @@ fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
         }
     }
     (units, sent)
+}
+
+/// The longest pause before a piece: one `pause`'s most.
+const PAUSE_MOST: Duration = Duration::from_millis(crate::command::PAUSE_MOST_MS.unsigned_abs());
+
+/// What bytes given as they are are to a program reading them: an edit if
+/// printable (a character's, or part of one), or if each key they are
+/// (decoded as a terminal's input) is one that edits the line, as its
+/// named key is (`command::unit`: DEL is Backspace, `ESC [ D` Left); else
+/// a key that does something.
+fn bytes_unit(given: &[u8]) -> Unit {
+    if given.iter().all(|b| *b >= 0x20 && *b != 0x7f) {
+        return Unit::Edit;
+    }
+    let mut decoder = fux_vt::keys::decode::Decoder::default();
+    let mut inputs = Vec::new();
+    decoder.bytes(given, &mut inputs);
+    decoder.timeout(&mut inputs);
+    let edits = |input: &fux_vt::keys::decode::Input| {
+        matches!(input, fux_vt::keys::decode::Input::Key(stroke)
+            if crate::command::unit(stroke.press) == Unit::Edit)
+    };
+    match !inputs.is_empty() && inputs.iter().all(edits) {
+        true => Unit::Edit,
+        false => Unit::Submit,
+    }
 }
 
 /// `bytes` in hex, as `bytes` takes them.
@@ -3916,6 +3979,206 @@ mod tests {
         s.buffers.push_front("x".into());
         let pasted = run(&mut s, "%2 0 paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    /// A program that exits with output past a read budget still unread
+    /// (`Pane::has_unread`) is at work until it is read, and exited only
+    /// then, its last screen whole: a wait is never told it exited on a
+    /// screen of before. Each REP is spent as 65,535 copies: 2,000 of them
+    /// spend a budget.
+    #[test]
+    fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        // /bin/sh, which macOS has where it has no /bin/true.
+        let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
+        let exited = |s: &Session| {
+            (s.panes.get(&id))
+                .and_then(|p| p.process.child()?.leader.exited())
+                .is_some()
+        };
+        let until = crate::after(Instant::now(), Duration::from_secs(10));
+        while !exited(&s) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut flood: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
+            .flatten()
+            .copied()
+            .collect();
+        flood.extend_from_slice(b"\x1b[2J\x1b[HDONE");
+        s.output(id, &flood);
+        s.exited(id, Ended::Exited(0));
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert!(pane.has_unread(), "the budget stopped no call");
+        let state = crate::ready::state(pane, Instant::now(), None);
+        assert_eq!(state, crate::ready::State::Busy);
+        let mut turns = 0u32;
+        while s.panes.get(&id).is_some_and(Pane::has_unread) && turns < 100 {
+            s.fire(crate::session::Timer::Unread(id));
+            turns = turns.saturating_add(1);
+        }
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(
+            crate::ready::state(pane, Instant::now(), None),
+            crate::ready::State::Exited(Ended::Exited(0))
+        );
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(text.contains("DONE"), "{text:?}");
+        Ok(())
+    }
+
+    /// A program that exits while what it left behind writes on (a
+    /// background loop) is told exited once what was on its terminal as it
+    /// exited is read: its terminal is drained once, not again at each
+    /// later reap, so its exit is not put off for ever.
+    #[test]
+    fn a_program_whose_terminal_is_written_on_still_exits() -> Result<(), String> {
+        // A large screen, where each ED is spent as 40,000 cells.
+        let (mut s, _) = super::testing::attached(201, 200)?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
+        let rows = s.panes.get(&id).map(|p| p.screen().size().rows());
+        assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");
+        std::thread::sleep(Duration::from_millis(200));
+        let exited = |s: &Session| {
+            s.panes
+                .get(&id)
+                .is_some_and(|p| p.process.exit_status().is_some())
+        };
+        let mut turns = 0u32;
+        s.exited(id, Ended::Exited(0));
+        while !exited(&s) && turns < 100 {
+            s.fire(crate::session::Timer::Unread(id));
+            // As each reap of another child does.
+            s.exited(id, Ended::Exited(0));
+            turns = turns.saturating_add(1);
+        }
+        let told = exited(&s);
+        for (_, dying) in std::mem::take(&mut s.dying) {
+            if let Some(leader) = dying.kill() {
+                let _ = leader.finish();
+            }
+        }
+        if let Some(child) = s.panes.get_mut(&id).and_then(|p| {
+            match std::mem::replace(&mut p.process, Process::Absent) {
+                Process::Reading(child) | Process::HungUp(child) => Some(child),
+                Process::Absent | Process::Exited(_) => None,
+            }
+        }) {
+            drop(child.master);
+            let _ = child.leader.finish();
+        }
+        assert!(told, "not told exited in {turns} turns");
+        Ok(())
+    }
+
+    /// A frame of synchronized output held as its program exits is read
+    /// before the exit is told: its last screen is whole.
+    #[test]
+    fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        s.output(id, b"\x1b[?2026hHELD");
+        s.exited(id, Ended::Exited(0));
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(pane.process.exit_status(), Some(Ended::Exited(0)));
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(text.contains("HELD"), "{text:?}");
+        Ok(())
+    }
+
+    /// A frame begun in output read after the exit, past a read budget, is
+    /// read too before the exit is told.
+    #[test]
+    fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/true program run")?;
+        let id = PaneId::of(2);
+        let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
+            .flatten()
+            .copied()
+            .collect();
+        out.extend_from_slice(b"\x1b[2J\x1b[H\x1b[?2026hHELD");
+        s.output(id, &out);
+        s.exited(id, Ended::Exited(0));
+        let mut turns = 0u32;
+        while s
+            .panes
+            .get(&id)
+            .is_some_and(|p| p.process.exit_status().is_none())
+            && turns < 100
+        {
+            s.fire(crate::session::Timer::Unread(id));
+            turns = turns.saturating_add(1);
+        }
+        let pane = s.panes.get(&id).ok_or("the pane")?;
+        assert_eq!(pane.process.exit_status(), Some(Ended::Exited(0)));
+        let text = pane
+            .screen()
+            .rows()
+            .map(|r| r.cells_text())
+            .collect::<String>();
+        assert!(
+            text.contains("HELD"),
+            "no HELD in {} characters",
+            text.len()
+        );
+        Ok(())
+    }
+
+    /// Pauses in a row add up (to 10 s at most): the input after them is
+    /// written after all of them. Bytes are read as the keys they are:
+    /// DEL (Backspace) and `ESC [ D` (Left) edit the line, as their named
+    /// keys do, and a CR submits it.
+    #[test]
+    fn pauses_add_up_and_bytes_are_the_keys_they_are() -> Result<(), String> {
+        use crate::command::Input as In;
+        let pane = Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::Shell,
+            pane::size(2, 10),
+            1024,
+        )
+        .map_err(|e| e.to_string())?;
+        let ms = Duration::from_millis;
+        let inputs = [
+            In::Pause(ms(300)),
+            In::Pause(ms(200)),
+            In::Bytes(vec![0x7f]),
+            In::Bytes(b"\x1b[D".to_vec()),
+            In::Bytes(b"\r".to_vec()),
+            In::Pause(ms(9000)),
+            In::Pause(ms(9000)),
+            In::Text("x".into()),
+        ];
+        let (pieces, _) = super::units(&pane, &inputs);
+        let units: Vec<(Unit, Option<Duration>)> = pieces.iter().map(|p| (p.unit, p.gap)).collect();
+        assert_eq!(
+            units,
+            [
+                (Unit::Edit, Some(ms(500))),
+                (Unit::Edit, None),
+                (Unit::Submit, None),
+                (Unit::Edit, Some(ms(10_000))),
+            ]
+        );
         Ok(())
     }
 

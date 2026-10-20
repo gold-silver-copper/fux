@@ -35,10 +35,14 @@
 //! history, which keeps each pushed row's cells), avt, wezterm and vt100
 //! are each made to keep 10,000 rows, so each holds the same 10,000 rows.
 //! fux-vt's limit is in bytes: it is given enough for 10,000 full rows, so
-//! it keeps at least those. Ghostty's limit is in bytes, and prunes whole pages: it is
+//! it keeps at least those, but where its rows' styles take the budget
+//! first (`dense-cells` at 200 columns, every cell its own colours: styles
+//! count in history's budget, `threats.md` B11), which holds fewer, and
+//! the pieces are as many as fill it that far. Ghostty's limit is in bytes, and prunes whole pages: it is
 //! given [`GHOSTTY_SCROLLBACK`], more than any measure here fills, so it
 //! keeps every row it is fed, a few more than 10,000 where the last piece
-//! pushes several. Each engine's figure per row is divided by the rows it
+//! pushes several; and, as `ghostty-default`, its own default,
+//! [`GHOSTTY_DEFAULT`], where it prunes what passes it. Each engine's figure per row is divided by the rows it
 //! says it holds.
 use crate::bench::{self, CHUNK, WORKLOADS};
 use crate::engine::{ENGINES, Engine, SUBJECT, Setup};
@@ -59,6 +63,11 @@ pub const HISTORY: usize = 10_000;
 /// Ghostty's scrollback limit, in bytes: more than 10,000 rows of any
 /// content here take (dense cells at 200 columns take under 40 MiB).
 const GHOSTTY_SCROLLBACK: usize = 1 << 30;
+/// Ghostty's own default, as its app sets it: `scrollback-limit`, 50 MB
+/// (`src/config/Config.zig` at the commit run.sh pins), measured beside the
+/// 1 GiB as `ghostty-default`: where a measure fills more, it prunes, and
+/// holds fewer rows (HAR-83).
+const GHOSTTY_DEFAULT: usize = 50_000_000;
 /// The screen's rows.
 const ROWS: u16 = 50;
 /// The screen widths measured.
@@ -71,9 +80,10 @@ const SCROLLS: [&str; 3] = ["ascii", "scrolling", "unicode"];
 const MOST: usize = 256 << 20;
 
 /// The engines measured: fux-vt, and each in-process engine named.
-const IN_PROCESS: [&str; 7] = [
+const IN_PROCESS: [&str; 8] = [
     "fux-vt",
     "ghostty",
+    "ghostty-default",
     "alacritty",
     "libvterm",
     "avt",
@@ -82,7 +92,7 @@ const IN_PROCESS: [&str; 7] = [
 ];
 
 /// How each engine is configured here, for the report.
-const CONFIGURED: [(&str, &str); 7] = [
+const CONFIGURED: [(&str, &str); 8] = [
     (
         "fux-vt",
         "history in bytes for 10,000 full rows, set up as fux sets up a pane",
@@ -90,6 +100,10 @@ const CONFIGURED: [(&str, &str); 7] = [
     (
         "ghostty",
         "max_scrollback 1 GiB (its limit is in bytes): keeps every row fed",
+    ),
+    (
+        "ghostty-default",
+        "max_scrollback 50 MB, Ghostty's own default (scrollback-limit): prunes past it",
     ),
     ("alacritty", "scrolling_history 10,000 rows"),
     (
@@ -110,6 +124,7 @@ fn make(name: &str, setup: &Setup) -> Result<Box<dyn Engine>, String> {
     match name {
         "fux-vt" => (SUBJECT.make)(&limited),
         "ghostty" => engines::ghostty::with_scrollback(setup, GHOSTTY_SCROLLBACK),
+        "ghostty-default" => engines::ghostty::with_scrollback(setup, GHOSTTY_DEFAULT),
         "alacritty" => engines::alacritty::with_history(setup, HISTORY),
         "libvterm" => engines::libvterm::with_history(setup, HISTORY),
         "avt" => engines::avt::with_history(setup, HISTORY),
@@ -169,16 +184,17 @@ struct Pieces {
     recordings: Vec<Vec<u8>>,
     next: usize,
     tail: Vec<u8>,
+    /// The recordings as read, kept with their bytes (`content`).
+    _read: Vec<crate::corpus::Recording>,
 }
 
 impl Pieces {
     fn new(name: &str, rows: u16) -> Result<Pieces, String> {
         let tail = scroll_out(rows);
         if name == "corpus" {
-            let recordings: Vec<Vec<u8>> = crate::corpus::recordings(&[])?
-                .iter()
-                .map(crate::corpus::Recording::bytes)
-                .collect();
+            let read = crate::corpus::recordings(&[])?;
+            let recordings: Vec<Vec<u8>> =
+                read.iter().map(crate::corpus::Recording::bytes).collect();
             if recordings.is_empty() {
                 return Err("footprint: the corpus is empty".into());
             }
@@ -189,6 +205,7 @@ impl Pieces {
                 recordings,
                 next: 0,
                 tail,
+                _read: read,
             });
         }
         let make = WORKLOADS
@@ -203,6 +220,7 @@ impl Pieces {
             recordings: Vec::new(),
             next: 0,
             tail,
+            _read: Vec::new(),
         })
     }
 
@@ -227,7 +245,11 @@ impl Pieces {
     }
 }
 
-/// How many pieces of `name` fill fux-vt's history at `cols` columns.
+/// How many pieces of `name` fill fux-vt's history at `cols` columns: to
+/// [`HISTORY`] rows, or, where its rows' styles take its budget first
+/// (every cell its own colours, 200 a row: `threats.md` B11, styles count
+/// in the history budget), until a piece that scrolls rows into it leaves
+/// it no longer: it holds what its budget holds.
 fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
     let setup = Setup {
         rows: ROWS,
@@ -238,7 +260,8 @@ fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
     let mut vt = make("fux-vt", &setup)?;
     let mut pieces = Pieces::new(name, ROWS)?;
     let (mut count, mut fed) = (0usize, 0usize);
-    while vt.history_len().unwrap_or(0) < HISTORY {
+    let mut held = 0usize;
+    while held < HISTORY {
         if fed > MOST {
             return Err(format!(
                 "footprint: {name} at {cols} columns fills no history in {} MiB",
@@ -249,6 +272,17 @@ fn pieces_to_fill(name: &str, cols: u16) -> Result<usize, String> {
         vt.feed(&piece, CHUNK)?;
         fed = fed.saturating_add(piece.len());
         count = count.saturating_add(1);
+        // Every piece scrolls rows into history: one that leaves it no
+        // longer found it full.
+        let now = vt.history_len().unwrap_or(0);
+        if count > 1 && now <= held && held > 0 {
+            eprintln!(
+                "footprint: {name} at {cols} columns fills its history's budget at {held} \
+                 rows, before {HISTORY}: measured there"
+            );
+            break;
+        }
+        held = now;
     }
     Ok(count)
 }
@@ -281,6 +315,37 @@ impl Measured {
     }
 }
 
+/// `measure`'s bytes at `cols` columns (`count` pieces of a history
+/// measure), and what made them (a workload's pieces, the corpus read),
+/// kept for the child to hold past its second reading: freed before the
+/// first, their pages would be the engine's for free (on Linux, resident
+/// pages a later allocation reuses).
+fn content(
+    measure: &Measure,
+    cols: u16,
+    count: usize,
+) -> Result<(Vec<Vec<u8>>, Option<Pieces>), String> {
+    let mut rng = Rng::new(1);
+    Ok(match measure {
+        Measure::Empty => (Vec::new(), None),
+        Measure::Dense => {
+            let mut out = Vec::new();
+            bench::synthetic::dense_screen(&mut rng, &mut out, ROWS, cols);
+            (vec![out], None)
+        }
+        Measure::Medium => {
+            let mut out = Vec::new();
+            bench::synthetic::medium_screen(&mut rng, &mut out, ROWS, cols);
+            (vec![out], None)
+        }
+        Measure::History(name) => {
+            let mut source = Pieces::new(name, ROWS)?;
+            let bytes = (0..count).map(|_| source.next()).collect();
+            (bytes, Some(source))
+        }
+    })
+}
+
 /// The child: `ENGINE MEASURE COLS PIECES`. Prints what it measured as
 /// one line of JSON.
 pub fn child(args: &[String]) -> Result<(), String> {
@@ -296,25 +361,8 @@ pub fn child(args: &[String]) -> Result<(), String> {
         history: HISTORY,
         reflow: true,
     };
-    // The bytes, made before the first reading and held past the second.
-    let mut rng = Rng::new(1);
-    let bytes: Vec<Vec<u8>> = match &measure {
-        Measure::Empty => Vec::new(),
-        Measure::Dense => {
-            let mut out = Vec::new();
-            bench::dense_screen(&mut rng, &mut out, ROWS, cols);
-            vec![out]
-        }
-        Measure::Medium => {
-            let mut out = Vec::new();
-            bench::medium_screen(&mut rng, &mut out, ROWS, cols);
-            vec![out]
-        }
-        Measure::History(name) => {
-            let mut source = Pieces::new(name, ROWS)?;
-            (0..count).map(|_| source.next()).collect()
-        }
-    };
+    // The bytes, and what made them, held past the second reading.
+    let (bytes, made) = content(&measure, cols, count)?;
     let before = memory::read()?;
     let started = Instant::now();
     let mut vt = make(engine, &setup)?;
@@ -333,6 +381,7 @@ pub fn child(args: &[String]) -> Result<(), String> {
     });
     println!("{json}");
     drop(vt);
+    drop(made);
     Ok(())
 }
 
@@ -460,6 +509,11 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
                 .filter(|k| k.in_process)
                 .map(|k| k.name),
         )
+        // Ghostty at its own default too, beside the 1 GiB (HAR-83).
+        .flat_map(|n| match n {
+            "ghostty" => vec![n, "ghostty-default"],
+            _ => vec![n],
+        })
         .filter(|n| IN_PROCESS.contains(n))
         .collect();
     let sources: Vec<String> = WORKLOADS
@@ -534,7 +588,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     );
     let header = |text: &mut String, title: &str, columns: &[String]| {
         let _ = writeln!(text, "{title}");
-        let _ = write!(text, "{:<10}", "");
+        let _ = write!(text, "{:<16}", "");
         for c in columns {
             let _ = write!(text, " {c:>10}");
         }
@@ -563,7 +617,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     ] {
         header(&mut text, &title, &screen_columns);
         for &engine in &names {
-            let _ = write!(text, "{engine:<10}");
+            let _ = write!(text, "{engine:<16}");
             for cols in WIDTHS {
                 let units = if by_row {
                     usize::from(ROWS)
@@ -614,7 +668,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
         ] {
             header(&mut text, &title, &source_columns);
             for &engine in &names {
-                let _ = write!(text, "{engine:<10}");
+                let _ = write!(text, "{engine:<16}");
                 let empty = found(engine, &Measure::Empty, cols);
                 for source in &sources {
                     let m = Measure::History(source.clone());
@@ -667,7 +721,7 @@ pub fn run(engines: &[usize], json: Option<&str>, jobs: usize) -> Result<bool, S
     let _ = writeln!(text, "\nhow each engine is configured:");
     for (engine, how) in CONFIGURED {
         if names.contains(&engine) {
-            let _ = writeln!(text, "  {engine:<10} {how}");
+            let _ = writeln!(text, "  {engine:<16} {how}");
         }
     }
     let seconds = started.elapsed().as_secs_f64();
@@ -765,6 +819,46 @@ impl Count {
 #[cfg(test)]
 mod tests {
     use super::{Measure, Pieces, ROWS};
+
+    /// The content a child measures, and what made it, stay held over both
+    /// readings: memory allocated after the first reading reads as grown,
+    /// none of it reused from content freed before (Linux, where freed
+    /// pages stay resident). 8 MiB in small allocations reads as 7.5 at
+    /// least. In a process of its own ([`crate::memory::alone`]): the
+    /// footprint is the whole process's.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_a_child_measures_with_is_held_over_its_readings() -> Result<(), String> {
+        if !crate::memory::alone(
+            module_path!(),
+            "what_a_child_measures_with_is_held_over_its_readings",
+        )? {
+            return Ok(());
+        }
+        let (bytes, made) = super::content(&Measure::History("corpus".into()), 200, 400)?;
+        let before = crate::memory::read()?;
+        let blocks: Vec<Vec<u8>> = (0..2048)
+            .map(|i| vec![u8::try_from(i % 251).unwrap_or(1); 4096])
+            .collect();
+        let after = crate::memory::read()?;
+        let grown = after.footprint.saturating_sub(before.footprint);
+        assert!(grown >= 15 << 19, "{grown} bytes grew for 8 MiB");
+        drop((blocks, bytes, made));
+        Ok(())
+    }
+
+    /// fux-vt's history fills: with 10,000 rows, or, where its rows'
+    /// styles take its budget first (every cell its own colours, 200 a
+    /// row: `threats.md` B11), as far as its budget holds.
+    #[test]
+    fn every_history_measure_fills() -> Result<(), String> {
+        for cols in super::WIDTHS {
+            for name in ["dense-cells", "ascii", "unicode"] {
+                assert!(super::pieces_to_fill(name, cols)? > 0, "{name} at {cols}");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn measures_are_named_as_they_are_read() -> Result<(), String> {

@@ -517,9 +517,24 @@ pub struct Pane {
     pub input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
-    /// from BSU on, since when, and where the parser will end it; see
-    /// [`Pane::output`].
-    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan)>,
+    /// from BSU on, since when (its timeout's start), where the parser will
+    /// end it, and when its first bytes came from the program (what its
+    /// output is told as of, `classify`); see [`Pane::output`].
+    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan, Instant)>,
+    /// Output read from the program but not yet given to the screen: a
+    /// call of the parser did as much work as one may
+    /// (`fux_vt::Stop::Budget`), and the rest waits for the pane's next
+    /// turn, so that one pane can't hold up the others on the server's one
+    /// thread. While any waits, output read is put after it, and the
+    /// server reads no more from the program; see [`Pane::read_unread`].
+    /// With it, since when it waits: its turn is due then.
+    unread: (Vec<u8>, Instant),
+    /// How many of the unread bytes are the rest of a frame being read
+    /// (`Pane::mid_frame`).
+    frame_left: usize,
+    /// How its program exited, once told, while what it wrote is still
+    /// being read (`Session::exited`).
+    pub exiting: Option<Ended>,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
@@ -641,17 +656,21 @@ pub struct Start {
     pub on_full: bool,
     /// Where the cursor was: its row and column.
     pub cursor: (u16, u16),
+    /// It is an action's input, not the program's start: a command marked
+    /// after it may be one that input began, which a wait waits for.
+    pub input: bool,
 }
 
 impl Start {
-    /// Counting from `from`, `screen` as it is now.
-    pub fn at(from: log::Seq, screen: &Screen) -> Start {
+    /// Counting from `from`, `screen` as it is now; `input`, an action's.
+    pub fn at(from: log::Seq, screen: &Screen, input: bool) -> Start {
         Start {
             from,
             started: screen.commands().started,
             finished: screen.commands().finished,
             on_full: screen.mode(fux_vt::Mode::AlternateScreen),
             cursor: screen.cursor_position(),
+            input,
         }
     }
 }
@@ -785,6 +804,9 @@ impl Pane {
             input: InputQueue::default(),
             runs,
             frame: None,
+            unread: (Vec::new(), Instant::now()),
+            frame_left: 0,
+            exiting: None,
             colours: Colours::default(),
             bell: false,
             copied: None,
@@ -822,8 +844,10 @@ impl Pane {
     /// A frame the program draws in synchronized output (from `CSI ? 2026 h`,
     /// BSU, to `CSI ? 2026 l`, ESU, or whatever else resets the mode, found
     /// as the parser reads it: `fux_vt::FrameScan`) is held, unread, until
-    /// it ends, then read whole, as alacritty does: the screen is always at
-    /// the end of a frame, so a client is never painted half of one. A
+    /// it ends, then read whole, as alacritty does, so a client is never
+    /// painted half of one: a frame whose reading takes several turns (a
+    /// parser call's budget) is painted as the client last saw the pane
+    /// till it is whole (`Pane::mid_frame`). A
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
@@ -832,6 +856,10 @@ impl Pane {
     }
 
     /// [`Pane::output`] at `now`.
+    ///
+    /// Each call of the parser does at most a stated amount of work; at it,
+    /// the rest of the output waits, unread, for the pane's next turn
+    /// ([`Pane::read_unread`]).
     pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
         if let Some(log) = &mut self.log {
             // A log that cannot be written stops; the pane goes on.
@@ -839,9 +867,80 @@ impl Pane {
                 self.log = None;
             }
         }
+        if self.has_unread() {
+            self.unread.0.extend_from_slice(bytes);
+            return;
+        }
+        self.read(bytes, now, now);
+    }
+
+    /// Whether output waits to be read on the pane's next turn
+    /// ([`Pane::read_unread`]), or the work of a sequence read already,
+    /// which a call of the parser stopped at its budget before doing
+    /// (`fux_vt::Parser::has_work_left`: a screen-wide sequence it left
+    /// whole, REP's copies, a checksum's rows), any output read since
+    /// waiting behind it.
+    pub fn has_unread(&self) -> bool {
+        !self.unread.0.is_empty() || self.parser.has_work_left()
+    }
+
+    /// When the pane's next turn to read the output waiting is due, if any
+    /// waits: since it began to wait, so that it is due on the server's
+    /// next turn, whenever that reads the clock.
+    pub fn unread_due(&self) -> Option<Instant> {
+        self.has_unread().then_some(self.unread.1)
+    }
+
+    /// Whether the screen is part way through a frame drawn in
+    /// synchronized output, the rest of it waiting for the pane's next
+    /// turns: till it is whole, a client is painted the pane as it last
+    /// painted it ("keep rendering the last rendered state",
+    /// `references/modern/mode_2026_synchronized_output.md`), and the rest
+    /// of its screen as it is (`render::Grid::keep_area`).
+    pub fn mid_frame(&self) -> bool {
+        self.frame_left > 0
+    }
+
+    /// Reads the output waiting since a call of the parser did all the work
+    /// one may, until the next call does: the rest of a frame first, as
+    /// the frame was read.
+    pub fn read_unread(&mut self) {
+        // Told as of when it came, as the kernel's echo is looked for then;
+        // a frame it begins is timed from now.
+        let came = self.unread.1;
+        let unread = std::mem::take(&mut self.unread.0);
+        // Only the work of a sequence read already: a call of no bytes does
+        // it, and stops again if that spends its budget.
+        if unread.is_empty() {
+            let mut happened = Vec::new();
+            if self.parse(&[], false, &mut happened).is_some() {
+                self.wait_unread(Vec::new(), came);
+            }
+            return;
+        }
+        let frame_left = std::mem::take(&mut self.frame_left);
+        let at = frame_left.min(unread.len());
+        let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
+        if let Some((taken, _)) = self.feed(frame, false, came) {
+            self.frame_left = frame.len().saturating_sub(taken);
+            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), came);
+            return;
+        }
+        self.read(after, Instant::now(), came);
+    }
+
+    /// `left` waits to be read on the pane's next turn, from `now`.
+    fn wait_unread(&mut self, left: Vec<u8>, now: Instant) {
+        self.unread = (left, now);
+    }
+
+    /// Reads `bytes`, which came at `came`, as [`Pane::output_at`] does at
+    /// `now`, with no output waiting.
+    fn read(&mut self, bytes: &[u8], now: Instant, came: Instant) {
         let mut rest = bytes;
         loop {
-            if let Some((held, _, scan)) = &mut self.frame {
+            if let Some((held, _, scan, began)) = &mut self.frame {
+                let began = *began;
                 let read = held.len();
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
@@ -853,15 +952,26 @@ impl Pane {
                 let mut frame = std::mem::take(held);
                 self.frame = None;
                 frame.truncate(end);
-                self.feed(&frame, false);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-            } else {
-                let Some(end) = self.feed(rest, true) else {
+                if let Some((taken, _)) = self.feed(&frame, false, began) {
+                    let left = frame.get(taken..).unwrap_or_default();
+                    self.frame_left = left.len();
+                    self.wait_unread([left, rest].concat(), began);
                     return;
-                };
-                self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
-                rest = rest.get(end..).unwrap_or_default();
+                }
+            } else {
+                match self.feed(rest, true, came) {
+                    None => return,
+                    Some((end, fux_vt::Stop::Begun)) => {
+                        self.frame = Some((Vec::new(), now, self.parser.frame_scan(), came));
+                        rest = rest.get(end..).unwrap_or_default();
+                    }
+                    Some((end, _)) => {
+                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), came);
+                        return;
+                    }
+                }
             }
         }
     }
@@ -870,35 +980,52 @@ impl Pane {
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.frame
             .as_ref()
-            .map(|(_, since, _)| after(*since, FRAME_TIMEOUT))
+            .map(|(_, since, ..)| after(*since, FRAME_TIMEOUT))
     }
 
     /// Reads the held frame now, ended or not.
     pub fn release_frame(&mut self) {
-        if let Some((held, ..)) = self.frame.take() {
-            self.feed(&held, false);
+        if let Some((held, _, _, began)) = self.frame.take()
+            && let Some((taken, _)) = self.feed(&held, false, began)
+        {
+            // No output waits while a frame is held: it is the first.
+            let left = held.get(taken..).unwrap_or_default().to_vec();
+            self.frame_left = left.len();
+            self.wait_unread(left, began);
         }
     }
 
-    /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`.
-    /// Returns how many bytes were read if it stopped. They are read a
+    /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`,
+    /// and where a call of the parser did all the work one may
+    /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
+    /// and why (`Stop::Begun` or `Stop::Budget`). They are read a
     /// piece at a time, each ending at a bell or a shell mark, so that
     /// each of those has its place among the pieces; each piece is told
-    /// (`crate::classify`), numbered as the screen took it, and recorded.
-    fn feed(&mut self, bytes: &[u8], until_frame: bool) -> Option<usize> {
+    /// (`crate::classify`), as of `came`, when fux read it from the
+    /// program, numbered as the screen took it, and recorded.
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        until_frame: bool,
+        came: Instant,
+    ) -> Option<(usize, fux_vt::Stop)> {
         let now = Instant::now();
         let mut done = 0usize;
         let begun = loop {
             let rest = bytes.get(done..).unwrap_or_default();
             let marked = self.nonce.is_some();
             let piece = rest.get(..cut(rest, marked)).unwrap_or_default();
-            let runs = (self.classes).classify(self.parser.screen(), marked, piece, now);
+            let runs = (self.classes).classify(self.parser.screen(), marked, piece, came);
             let mut start = 0usize;
             let mut begun = None;
-            for (end, origin) in runs {
+            for &(end, origin) in &runs {
                 let run = piece.get(start..end).unwrap_or_default();
-                if let Some(taken) = self.record(run, origin, until_frame) {
-                    begun = Some(done.saturating_add(start).saturating_add(taken));
+                if let Some((taken, stop)) = self.record(run, origin, until_frame) {
+                    // The rest of the piece is read again later, and told
+                    // again then.
+                    let at = start.saturating_add(taken);
+                    self.classes.unread(piece, &runs, at);
+                    begun = Some((done.saturating_add(at), stop));
                     break;
                 }
                 start = end;
@@ -929,7 +1056,12 @@ impl Pane {
     /// Gives `run`, which came from `origin`, to the screen, as `feed`
     /// does, and records it: its number and what it printed, an entry kept
     /// only if it printed something; the rows it let go, a bell it rang.
-    fn record(&mut self, run: &[u8], origin: log::Origin, until_frame: bool) -> Option<usize> {
+    fn record(
+        &mut self,
+        run: &[u8],
+        origin: log::Origin,
+        until_frame: bool,
+    ) -> Option<(usize, fux_vt::Stop)> {
         if run.is_empty() {
             return None;
         }
@@ -960,7 +1092,9 @@ impl Pane {
             // A line drawn again as it read is no news, as far as the
             // first `REDRAWS` bytes after an input tell: past them (a flood)
             // every run is, and the rows it printed on are not read.
-            let tell = self.redraws < REDRAWS;
+            // Nor one that printed more than it records: what it changed
+            // is unknown (`Prints::lost`).
+            let tell = self.redraws < REDRAWS && !prints.lost();
             self.redraws = self.redraws.saturating_add(run.len());
             let held = |p: &Print<'_>| {
                 tell.then(|| (self.seen.get(&p.row)).or(self.before.get(&p.row).map(|b| &b.0)))
@@ -1032,7 +1166,7 @@ impl Pane {
         bytes: &[u8],
         until_frame: bool,
         happened: &mut Vec<log::Event>,
-    ) -> Option<usize> {
+    ) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
             happened,
@@ -1044,17 +1178,18 @@ impl Pane {
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
-        // Only `process_until_frame`, even to read past a BSU: with one way
+        // Only `process_until_stop`, even to read past a BSU: with one way
         // in, the parser's loop is compiled once and its byte handling is
         // inlined into it, as it was before frames were held; with two it
-        // was not, and escape-heavy output was a quarter slower.
+        // was not, and escape-heavy output was a quarter slower. A call
+        // that did all the work one may stops the read for this turn.
         let (mut begun, mut read) = (None, 0usize);
         while let Some(rest) = bytes.get(read..)
-            && let Ok(Some((taken, frame))) = self.parser.process_until_frame(rest, &mut sink)
+            && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
         {
             read = read.saturating_add(taken);
-            if until_frame && frame == fux_vt::Frame::Begun {
-                begun = Some(read);
+            if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
+                begun = Some((read, stop));
                 break;
             }
         }
@@ -1127,7 +1262,19 @@ impl Pane {
 
     /// An action's input begins: what comes after is what it brought.
     pub fn note_input(&mut self) {
-        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen());
+        self.count_from(true);
+    }
+
+    /// The program starts: what comes after is what it brought, no input
+    /// of an action's among it.
+    pub fn note_start(&mut self) {
+        self.count_from(false);
+    }
+
+    /// What comes after now is new to a wait; `input`, an action's input
+    /// brings it.
+    fn count_from(&mut self, input: bool) {
+        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen(), input);
         self.redraws = 0;
         self.before = Rc::new(
             (live(self.screen()))
@@ -1346,6 +1493,7 @@ impl Pane {
         self.input.is_empty()
             && drawn
             && !child.master.output_unread()
+            && !self.has_unread()
             && match taking() {
                 Some(Activity::Reading) => alone,
                 Some(Activity::Idle) => !escape,
@@ -1370,6 +1518,13 @@ impl Pane {
         };
         let name = basename(argv.first()?);
         if !REMOTE.contains(&name.as_str()) {
+            return None;
+        }
+        // One blocked reading its terminal alone (not watching it beside
+        // its socket) asks at a prompt of its own, here: a password, a
+        // host key. It reads as any program does (Linux; macOS does not
+        // say, and takes it for the client).
+        if fuxix::process::blocked_reading(&child.master, child.leader.pid()) {
             return None;
         }
         let modes = fuxix::terminal::attributes(&child.master).ok()?.modes();
@@ -1484,7 +1639,7 @@ impl Pane {
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
         fresh.process = process;
-        fresh.note_input();
+        fresh.note_start();
         Ok(std::mem::replace(self, fresh).process)
     }
 
@@ -1683,14 +1838,14 @@ pub fn holds_at(row: &Cells, print: &Print<'_>) -> bool {
 /// those from the first that differs from what stood in its cell to the
 /// last; of other output, all of it (its row may have been erased since).
 pub fn changed(row: &Cells, print: &Print<'_>, echo: bool) -> (usize, usize) {
-    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
-    let text: Vec<char> = print.text.chars().collect();
     if !echo {
         return match holds_at(row, print) {
             true => (0, 0),
-            false => (0, text.len()),
+            false => (0, print.text.chars().count()),
         };
     }
+    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
+    let text: Vec<char> = print.text.chars().collect();
     let same = |i: &usize| text.get(*i) == there.get(*i);
     let first = (0..text.len()).find(|i| !same(i));
     let last = (0..text.len()).rev().find(|i| !same(i));
@@ -1735,7 +1890,7 @@ fn cursor_line(screen: &Screen) -> Option<RowId> {
 
 /// The first row of the line `row` is on.
 pub fn line_top(mut row: Row<'_>) -> Row<'_> {
-    while let Some(up) = row.above().filter(Row::wrapped) {
+    while let Some(up) = row.above().filter(Row::continues) {
         row = up;
     }
     row
@@ -1883,6 +2038,37 @@ mod tests {
             .to_owned()
     }
 
+    /// Output that spends more than a parser call's budget on a screen of
+    /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
+    /// cell and ED clears them all, the pair repeated twice as often as
+    /// the fewest that a parser call stops at its budget in.
+    fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
+        struct Discard;
+        impl fux_vt::Sink for Discard {}
+        let output = |n| -> Vec<u8> {
+            std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], n)
+                .flatten()
+                .copied()
+                .collect()
+        };
+        let mut n = 1usize;
+        while n < 1 << 24 {
+            let stops = fux_vt::Parser::with_options(size(rows, cols), 1 << 10, OPTIONS).is_ok_and(
+                |mut parser| {
+                    matches!(
+                        parser.process_until_stop(&output(n), &mut Discard),
+                        Ok(Some((_, fux_vt::Stop::Budget)))
+                    )
+                },
+            );
+            if stops {
+                break;
+            }
+            n = n.saturating_mul(2);
+        }
+        output(n.saturating_mul(2))
+    }
+
     fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
         Pane::new(
             PaneId::of(1),
@@ -1908,6 +2094,199 @@ mod tests {
             "{} kept",
             pane.record.held()
         );
+        Ok(())
+    }
+
+    /// A call of the parser that does all the work one may stops the read
+    /// (threats.md P24): the rest of the output, and output read after it,
+    /// waits for the pane's next turn, and is read then, the screen ending
+    /// as one read of it all leaves it.
+    #[test]
+    fn a_read_that_spends_its_budget_goes_on_at_the_next_turn() -> Result<(), Error> {
+        let reps = spends_the_budget(50, 200);
+        let mut pane = pane(50, 200)?;
+        pane.output(&reps);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        pane.output(b"\x1b[HZ");
+        assert!(
+            !first_row(&pane).starts_with('Z'),
+            "output after the stop is read before it"
+        );
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(!pane.has_unread(), "{turns} turns");
+        let mut whole =
+            fux_vt::Parser::with_options(size(50, 200), 1 << 10, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size: size(50, 200),
+                    source,
+                }
+            })?;
+        let _ = whole.process(&[&reps[..], b"\x1b[HZ"].concat());
+        assert_eq!(
+            pane.screen().cursor_position(),
+            whole.screen().cursor_position()
+        );
+        let rows = |p: &fux_vt::Screen| p.rows().map(|r| r.cells_text()).collect::<Vec<_>>();
+        assert_eq!(rows(pane.screen()), rows(whole.screen()));
+        assert_eq!(first_row(&pane), "Z");
+        Ok(())
+    }
+
+    /// A screen-wide sequence the parser left for its next call, as the
+    /// output's last, all its bytes read, is carried out at the pane's
+    /// next turn: the pane says output waits while it does, though no byte
+    /// does, and the screen ends as one read of it all leaves it. At
+    /// 2000x2000, after DECALN's fill, ED 2 would take the call past U
+    /// (`Screen::holds_back`).
+    #[test]
+    fn a_sequence_left_past_the_budget_at_the_outputs_end_goes_on() -> Result<(), Error> {
+        let output = b"\x1b#8\x1b[2J";
+        let mut pane = pane(2000, 2000)?;
+        pane.output(output);
+        assert!(pane.has_unread(), "the sequences were done in one call");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(!pane.has_unread(), "{turns} turns");
+        let mut whole =
+            fux_vt::Parser::with_options(size(2000, 2000), 1 << 10, OPTIONS).map_err(|source| {
+                Error::Terminal {
+                    size: size(2000, 2000),
+                    source,
+                }
+            })?;
+        let _ = whole.process(output);
+        let (a, b) = (pane.screen(), whole.screen());
+        assert!(a.rows().zip(b.rows()).all(|(a, b)| a.cells().eq(b.cells())));
+        Ok(())
+    }
+
+    /// A frame whose reading spends a parser call's budget is read on over
+    /// the next turns, its rest first, and the pane says it is part way
+    /// through one till it ends; what came after it is read after.
+    #[test]
+    fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(50, 200), 0)?;
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(spends_the_budget(50, 200));
+        frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
+        pane.output(&frame);
+        assert!(pane.mid_frame(), "the budget stopped no call in the frame");
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        assert!(!pane.mid_frame());
+        assert_eq!(first_row(&pane), "DONEZ");
+        Ok(())
+    }
+
+    /// The kernel's echo of what was typed, in the piece of output a
+    /// parser call's budget stopped in, is told an echo when it is read on
+    /// the next turn: the output read so far took none of the echo's bytes
+    /// the parser had yet to read; and the echo is looked for as of when
+    /// the output came, though read more than the second it is looked for
+    /// after (`classify::ECHO_WITHIN`) later.
+    #[test]
+    fn an_echo_read_after_a_budget_stop_is_an_echo() -> Result<(), String> {
+        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
+        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
+        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
+        let input = crate::classify::Input {
+            unit: log::Unit::Edit,
+            line: None,
+            ahead: false,
+        };
+        let now = Instant::now();
+        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
+        // Output that spends a budget, in one piece with the echo.
+        let mut out = spends_the_budget(1000, 1000);
+        out.extend_from_slice(b"\x1b[Habc");
+        pane.output_at(&out, now);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(Duration::from_millis(1100));
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
+            .flat_map(|(_, printed)| {
+                printed
+                    .runs()
+                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
+            })
+            .filter(|(text, _)| text == "abc")
+            .map(|(_, echo)| echo)
+            .collect();
+        assert_eq!(echoes, [Echo::Is]);
+        Ok(())
+    }
+
+    /// The echo of what was typed, inside a frame begun in output read a
+    /// turn after it came, is looked for as of when it came, as outside
+    /// one: the frame read more than the second it is looked for after.
+    #[test]
+    fn an_echo_in_a_frame_read_late_is_an_echo() -> Result<(), String> {
+        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
+        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
+        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
+        let input = crate::classify::Input {
+            unit: log::Unit::Edit,
+            line: None,
+            ahead: false,
+        };
+        let now = Instant::now();
+        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
+        let mut out = spends_the_budget(1000, 1000);
+        out.extend_from_slice(b"\x1b[?2026h\x1b[Habc\x1b[?2026l");
+        pane.output_at(&out, now);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(Duration::from_millis(1100));
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
+            .flat_map(|(_, printed)| {
+                printed
+                    .runs()
+                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
+            })
+            .filter(|(text, _)| text == "abc")
+            .map(|(_, echo)| echo)
+            .collect();
+        assert_eq!(echoes, [Echo::Is]);
+        Ok(())
+    }
+
+    /// A frame begun in output read a turn after it came is held its full
+    /// timeout from when it is read, not from when the output came.
+    #[test]
+    fn a_frame_begun_in_output_read_later_is_held_its_timeout() -> Result<(), Error> {
+        let mut out = spends_the_budget(50, 200);
+        out.extend_from_slice(b"\x1b[?2026hY");
+        let mut pane = pane(50, 200)?;
+        pane.output(&out);
+        assert!(pane.has_unread(), "the budget stopped no call");
+        std::thread::sleep(FRAME_TIMEOUT.saturating_add(Duration::from_millis(100)));
+        let mut turns = 0u32;
+        while pane.has_unread() && turns < 100 {
+            pane.read_unread();
+            turns = turns.saturating_add(1);
+        }
+        let due = pane.frame_deadline();
+        assert!(due.is_some_and(|due| due > Instant::now()), "{due:?}");
         Ok(())
     }
 

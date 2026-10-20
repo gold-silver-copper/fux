@@ -534,6 +534,38 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
     Ok(())
 }
 
+/// A full-screen program `run` started that marks a command's output
+/// (`133;C`) and never its end, then reads its terminal, is waited for no
+/// longer than an unmarked one: no action's input began that command, so
+/// `run` and a bare `wait` after it answer once it is quiet, polling its
+/// terminal (`less`), not at their limit (decision 29). Where fux is not
+/// told what it is blocked in (macOS), the quiet pane is `settled`.
+#[test]
+fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
+    let server = Server::start("")?;
+    let code = "import os, select, tty\n\
+                tty.setraw(0); os.write(1, b'\\x1b[?1049h\\x1b]133;C\\x07marked')\n\
+                select.select([0], [], [], 60)\n";
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", code, "arg", "run",
+    ])?;
+    assert!(began.elapsed() < PATIENCE, "{answer}");
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let quiet = format!("{pane} {}", if PROBED { "waiting" } else { "settled" });
+    let first = answer.lines().next().unwrap_or_default();
+    assert!(first.starts_with(&quiet), "{answer}");
+    let began = std::time::Instant::now();
+    let answer = server.ok(&["str", &pane, "pane", "wait"])?;
+    assert!(began.elapsed() < PATIENCE, "{answer}");
+    assert!(answer.starts_with(&quiet), "{answer}");
+    Ok(())
+}
+
 /// `wait-done` waits as long as the shell command running in the pane
 /// runs, past the wait's limit (here `wait-seconds` 2): it ends at what
 /// else it waits for, or at the command's end, `· done STATUS`; a text
@@ -593,5 +625,48 @@ fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
     let (none, took) = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
     assert_eq!(none.status, 7, "{}{}", none.stdout, none.stderr);
     assert!(took < long, "{took:?}");
+    Ok(())
+}
+
+/// A remote client blocked reading its terminal alone, in line mode (ssh
+/// asking about a host key, or for a password with echo off), asks at a
+/// prompt of its own, here: `reading`, its question answered by keys, not
+/// a command at work on another machine. One watching its terminal beside
+/// its socket is the client (`agents.rs`'s
+/// `a_remote_client_is_not_taken_for_its_remote_program`). Linux says
+/// which; macOS does not.
+#[test]
+fn a_remote_client_asking_at_its_prompt_reads() -> Outcome {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let server = Server::start("")?;
+    for (name, asks) in [
+        (
+            "host-key",
+            "printf 'continue connecting (yes/no)? '; read answer",
+        ),
+        ("password", "stty -echo; printf 'password: '; read answer"),
+    ] {
+        let dir = server.dir.join(name);
+        std::fs::create_dir_all(&dir).map_err(e)?;
+        let ssh = dir.join("ssh");
+        std::fs::write(&ssh, format!("#!/bin/sh\n{asks}\necho \"got $answer\"\n")).map_err(e)?;
+        std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .map_err(e)?;
+        let ssh = ssh.to_string_lossy().into_owned();
+        let answer = server.ok(&["opts", "str", &ssh, "program", "10", "timeout", "run"])?;
+        let pane = answer
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        assert_eq!(
+            becomes(&server, &pane, &[READING])?,
+            READING,
+            "{name}: {answer}"
+        );
+        assert!(!answer.contains("another machine"), "{name}: {answer}");
+    }
     Ok(())
 }

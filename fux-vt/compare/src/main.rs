@@ -11,7 +11,11 @@ mod bench;
 mod case;
 mod cases;
 mod corpus;
+/// fux-bench's counter, the file itself: one way to count instructions.
+#[path = "../../../bench/src/count.rs"]
 mod count;
+/// `bench/perf.sh`, the wrapper `count` runs perf through.
+const PERF_SH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../bench/perf.sh");
 mod encoders;
 mod engine;
 mod engines;
@@ -21,6 +25,8 @@ mod families;
 mod footprint;
 mod instructions;
 mod inventory;
+mod ledger;
+mod lists;
 mod memory;
 mod record;
 mod rng;
@@ -30,7 +36,7 @@ mod transparency;
 
 use case::{Case, Snippet, Step};
 use engine::{ENGINES, FUX_VT};
-use families::{Authority, FAMILIES, Status};
+use families::{FAMILIES, Status};
 use rng::Rng;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -45,12 +51,12 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                       [--engines LIST] [--no-reflow] [--subject NAME]
        fux-vt-compare survey [--seed N] [--cases N] [--engines LIST] [--no-reflow]
        fux-vt-compare matrix [--seed N] [--cases N] [--engines LIST] [--no-reflow]
-       fux-vt-compare cases [--engines LIST] [--no-reflow] [--subject NAME] [NAME...]
+       fux-vt-compare cases [--engines LIST] [--no-reflow] [--subject NAME] [--json FILE] [NAME...]
        fux-vt-compare verdicts [--seed N] [--cases N] [--family NAME]... [--engines LIST]
                                [--no-reflow]
        fux-vt-compare replay [--engines LIST] [--size RxC] [--history N] [--no-reflow]
                              [--newline-before-resize] [--subject NAME] STEP...
-       fux-vt-compare bench [--engines LIST] [--mb N] [WORKLOAD...]
+       fux-vt-compare bench [--engines LIST] [--mb N] [--json FILE] [WORKLOAD...]
        fux-vt-compare bench --instructions [--engines LIST] [--mb N] [--repeats N] [--jobs N]
                             [--json FILE] [WORKLOAD...]
        fux-vt-compare footprint [--engines LIST] [--jobs N] [--json FILE]
@@ -58,49 +64,60 @@ usage: fux-vt-compare [run] [--seed N] [--cases N] [--family NAME]... [--all]
                              [--version TEXT] [--env KEY=VALUE]... [--dir DIR]
                              [--scrub OLD=NEW]... [--note TEXT] -- PROGRAM ARGS...
        fux-vt-compare corpus [--engines LIST] [--show] [--json FILE] [--subject NAME]
-                             [NAME...]
+                             [--chunk N] [NAME...]
        fux-vt-compare inventory [NAME...]
        fux-vt-compare encoders [--seed N] [--cases N]
        fux-vt-compare transparency [--engines LIST] [--chunk N] [--json FILE]
                                    [--multiplexers] [NAME... | --size RxC STEP...]
        fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [FILTER] (esctest --help: the rest)
+       fux-vt-compare lists [--json FILE] [--against FROZEN] [--esctest DIR]
+       fux-vt-compare ledger [--results DIR] [--json FILE] [--table FILE]
        fux-vt-compare scoreboard DIR [--keep KEPT COMMIT DATE]
        fux-vt-compare engines
        fux-vt-compare --list
 
 run      random cases from the families expected to agree (or those named,
          or --all). A case fails where most of the panel differs from
-         fux-vt; every failure is shrunk and printed. Exit 1 if any.
+         fux-vt; every failure is shrunk and printed. Then, unless families
+         are named, the families that differ, a twentieth as many cases
+         each, beside xterm (Ghostty for clusters) by their recorded
+         departures, as verdicts judges them. Exit 1 if any.
 survey   each family alone (with plain text), counting the cases that
          fail, and the smallest of the first: how to see what a family's
-         status should be.
+         status should be. Exit 1 if a family expected to agree fails.
 matrix   each family alone beside each engine alone, and beside the whole
          panel: the share of cases that differ, as a table.
-cases    the named cases (default: all), beside every engine that can run
-         here. Exit 1 if a case in a family expected to agree fails, or
-         the engines that decide a family with a recorded verdict (xterm,
-         for most) outvote fux-vt on one of its cases.
+cases    the named cases (default: all), beside every engine that votes
+         (default `panel,xterm.js,tmux,xterm`: all but vt100), judged
+         after every step. Exit 1 if one
+         fails: outvoted, or, in a family with a recorded verdict, against
+         its section's expected fields or the engines that decide it.
 verdicts the families with a recorded verdict (or those named), each
          beside the engines that decide it (default; --list names them):
          their named cases, then random cases from each with plain text
          (100 each with a verdict, by default). Exit 1 if they outvote
-         fux-vt on any.
+         fux-vt on any. The families that differ are judged too, each
+         beside xterm (Ghostty for clusters), each snippet a write of its
+         own: exit 1 on a difference none of its recorded departures
+         (families.rs, DEPARTURES) covers.
 replay   one case: STEP is output, written as `run` prints it ('\\e[1mX'),
          or resize:RxC. Prints each engine's verdict after every step, and
          the screens.
 bench    each engine's speed on the same workloads, in MB/s (default: the
          synthetic ones and the corpus all together; `corpus` adds each
-         recording alone). --instructions: instructions retired per
+         recording alone; NAME@N is NAME fed N bytes a call, not 4096).
+         --instructions: instructions retired per
          byte instead, each engine in this process and workload in a
          child process of its own, less the same child without the
-         feeding, the fewest of --repeats (3) runs each; --json writes
-         them to FILE.
+         feeding, the median of --repeats (3) paired rounds, --jobs
+         (CARGO_BUILD_JOBS, else 4) at once; --json writes them to FILE.
 footprint
          the memory each engine in this process holds (default: all of
          them), each measured in a child process of its own: a screen
          empty and full of styled text, and 10,000 rows of history from
          each synthetic workload and from the corpus, at 80 and 200
-         columns. --json writes the measures to FILE.
+         columns, --jobs (CARGO_BUILD_JOBS, else 4) at once. --json
+         writes the measures to FILE.
 record   runs PROGRAM on a PTY (--size, else 40x120) as a pane of fux
          runs it, types each line of keys in FILE (a line `!resize RxC`
          resizes it instead), and keeps every byte it writes (PREFIX.bin)
@@ -114,7 +131,9 @@ corpus   the recordings in corpus/ (default: all), each replayed through
          compared after every step. xterm decides the fields it can tell;
          the panel's vote the rest, and all once xterm abstains. Exit 1 if
          a recording expected to agree does not. --show prints fux-vt's
-         screen at the end of each; --json writes the results to FILE.
+         screen at the end of each; --json writes the results to FILE;
+         --chunk N gives each step's output N bytes at a time, compared
+         after each piece too, the exceptions still by recorded step.
 inventory every sequence the recordings (default: all) send, normalized,
          with how often, from which programs, and what fux-vt does with
          it, as Markdown (corpus/INVENTORY.md is its output).
@@ -142,9 +161,11 @@ engines  every engine: whether it can run here, whether it votes, and what
 --list   the families, what each covers, and its status.
 
 LIST is engine names joined by commas, or `panel` (the default for run,
-survey, matrix and replay: the voters that can run here), `all` (every
-engine that can run here, the default for cases and bench), `in-process`
-or `xterm`.
+survey, matrix and replay: the voters), `all` (every engine, the default
+for cases and bench), `in-process` or `xterm`. Every engine a LIST means
+must be able to run here, so a check is judged by the same engines
+wherever it runs; --missing-ok lets `panel`, `all` and `in-process` leave
+out one that cannot.
 
 --subject NAME judges another engine in fux-vt's place (run, cases, corpus,
 replay): ghostty or any engine in this process. It is judged as fux-vt is,
@@ -184,6 +205,8 @@ struct Args {
     note: String,
     /// Where `corpus` writes its results.
     json: Option<String>,
+    /// `corpus --chunk N`: each step's output judged N bytes at a time.
+    chunk: Option<usize>,
     /// How many children `footprint` and `bench --instructions` run at once.
     jobs: Option<usize>,
     /// `bench`: instructions retired, not MB/s.
@@ -227,6 +250,7 @@ fn parse() -> Result<Args, String> {
         scrub: Vec::new(),
         note: String::new(),
         json: None,
+        chunk: None,
         jobs: None,
         instructions: false,
         repeats: 3,
@@ -272,6 +296,7 @@ fn parse() -> Result<Args, String> {
             }
             "--history" => args.history = number("--history", &value("--history")?)?,
             "--mb" => args.mb = number("--mb", &value("--mb")?)?,
+            "--chunk" => args.chunk = Some(number("--chunk", &value("--chunk")?)?),
             "--out" => args.out = Some(value("--out")?),
             "--keys" => args.keys = Some(value("--keys")?),
             "--program" => args.program = Some(value("--program")?),
@@ -285,6 +310,7 @@ fn parse() -> Result<Args, String> {
             "--repeats" => args.repeats = number("--repeats", &value("--repeats")?)?,
             "--instructions" => args.instructions = true,
             "--subject" => args.subject = Some(value("--subject")?),
+            "--missing-ok" => MISSING_OK.store(true, std::sync::atomic::Ordering::Relaxed),
             "--" => {
                 args.rest.extend(words.by_ref());
                 break;
@@ -304,27 +330,40 @@ fn dimensions(text: &str) -> Result<(u16, u16), String> {
     Ok((n(rows)?, n(cols)?))
 }
 
-/// The engines a LIST names, as indices into [`ENGINES`]. Named engines
-/// must be able to run; `panel`, `all` and `in-process` skip those that
-/// cannot, saying so once.
+/// Whether `--missing-ok` was given: `panel`, `all` and `in-process` then
+/// leave out an engine that cannot run here.
+static MISSING_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The engines a LIST names, as indices into [`ENGINES`]. Every engine
+/// named, or meant by `panel`, `all` or `in-process`, must be able to run,
+/// so the judge is the same wherever a check runs; with `--missing-ok`
+/// those three leave out one that cannot, saying so once.
 fn engines(list: &str) -> Result<Vec<usize>, String> {
     let mut out = Vec::new();
-    let pick = |test: fn(&engine::Kind) -> bool, out: &mut Vec<usize>| {
+    let missing_ok = MISSING_OK.load(std::sync::atomic::Ordering::Relaxed);
+    let pick = |test: fn(&engine::Kind) -> bool, out: &mut Vec<usize>| -> Result<(), String> {
         for (i, kind) in ENGINES.iter().enumerate() {
             if !test(kind) {
                 continue;
             }
             match (kind.available)() {
                 Ok(()) => out.push(i),
-                Err(why) => eprintln!("({} cannot run here: {why})", kind.name),
+                Err(why) if missing_ok => eprintln!("({} cannot run here: {why})", kind.name),
+                Err(why) => {
+                    return Err(format!(
+                        "{} cannot run here ({why}); --missing-ok leaves it out",
+                        kind.name
+                    ));
+                }
             }
         }
+        Ok(())
     };
     for name in list.split(',').filter(|n| !n.is_empty()) {
         match name {
-            "panel" => pick(|k| k.panel, &mut out),
-            "all" => pick(|_| true, &mut out),
-            "in-process" => pick(|k| k.in_process, &mut out),
+            "panel" => pick(|k| k.panel, &mut out)?,
+            "all" => pick(|_| true, &mut out)?,
+            "in-process" => pick(|k| k.in_process, &mut out)?,
             name => {
                 let i = engine::find(name).ok_or(format!("no engine {name:?} (see engines)"))?;
                 let kind = ENGINES.get(i).ok_or("no such engine")?;
@@ -333,7 +372,9 @@ fn engines(list: &str) -> Result<Vec<usize>, String> {
             }
         }
     }
-    out.dedup();
+    // Each engine once, wherever the list names it again (`panel,ghostty`).
+    let mut seen = std::collections::BTreeSet::new();
+    out.retain(|&i| seen.insert(i));
     if out.is_empty() {
         return Err(format!("no engine in {list:?} can run here"));
     }
@@ -452,6 +493,9 @@ fn list_engines() {
             "own process"
         };
         println!("{:<10} {} ({role}, {place}; {here})", kind.name, kind.about);
+        if let Some((_, how)) = engine::SETTINGS.iter().find(|(n, _)| *n == kind.name) {
+            println!("           set up with: {how}");
+        }
         let missing = kind.can.missing();
         if !missing.is_empty() {
             println!("           cannot tell: {}", missing.join(", "));
@@ -485,7 +529,23 @@ fn random(
             subject,
             ..case::random(&mut r, families, args.reflow)
         };
-        let outcome = case.run(panel)?;
+        // An error (the subject refused, failed or panicked on the case) is
+        // a failure of its own, shrunk while it still errs and shown with
+        // its replay; the run goes on.
+        let outcome = match case.run(panel) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                failed = failed.saturating_add(1);
+                if shown.len() < show {
+                    let small = case.shrink_while(4000, |c| c.run(panel).is_err());
+                    let why = small.run(panel).err().unwrap_or(e);
+                    println!("ERROR    {why}");
+                    println!("  replay:   {}", small.command(panel));
+                    shown.push(small);
+                }
+                continue;
+            }
+        };
         if outcome.agrees() {
             continue;
         }
@@ -527,6 +587,13 @@ fn chosen_families(args: &Args) -> Result<Vec<usize>, String> {
 /// chosen by fux-vt's statuses, so its failures are reported, and only an
 /// error fails.
 fn run(args: &Args) -> Result<bool, String> {
+    // `run` takes no words: one is a command mistyped, which would run
+    // 20,000 cases.
+    if let Some(word) = args.rest.first() {
+        return Err(format!(
+            "{word:?} is no command (see --help); run takes no words"
+        ));
+    }
     let subject = subject(args)?;
     let panel = panel_beside(args, "panel", subject)?;
     let families = chosen_families(args)?;
@@ -552,7 +619,25 @@ fn run(args: &Args) -> Result<bool, String> {
         args.seed,
         started.elapsed().as_secs_f64()
     );
-    Ok(failed == 0 || subject != FUX_VT)
+    // The families that differ are drawn too, a twentieth as many cases
+    // each, judged beside their engine by their recorded departures, as
+    // `verdicts` judges them (HAR-47); unless the families are named, or
+    // the engine can't run here, which is said.
+    let mut departed = true;
+    if subject == FUX_VT && args.families.is_empty() && !args.all {
+        for (name, beside, _) in families::DEPARTURES {
+            let Some(i) = families::find(name).filter(|&i| usable(i, args.reflow)) else {
+                continue;
+            };
+            let Ok(panel) = engines(beside) else {
+                println!("== {name}: not judged, as {beside} cannot run here");
+                continue;
+            };
+            println!("== {name} (by its departures, beside {beside})");
+            departed &= random_judged(args, i, &panel, (count / 20).max(50))?;
+        }
+    }
+    Ok((failed == 0 && departed) || subject != FUX_VT)
 }
 
 fn survey(args: &Args) -> Result<bool, String> {
@@ -560,6 +645,7 @@ fn survey(args: &Args) -> Result<bool, String> {
     println!("engines: {}", names(&panel));
     let text = families::find("text").ok_or("no text family")?;
     let count = args.cases.unwrap_or(300);
+    let mut ok = true;
     for (i, f) in FAMILIES.iter().enumerate() {
         if !usable(i, args.reflow) {
             continue;
@@ -573,8 +659,13 @@ fn survey(args: &Args) -> Result<bool, String> {
         println!("== {} (expected: {status})", f.name);
         let failed = random(args, &panel, &set, count, args.seed, 1)?;
         println!("   {failed} of {count} failed");
+        // A family expected to agree that fails is a regression, as `run`
+        // has it; the others' counts are the survey's report.
+        if f.status == Status::Agree && failed > 0 {
+            ok = false;
+        }
     }
-    Ok(true)
+    Ok(ok)
 }
 
 /// The share of `count` random cases from `families` that fail beside
@@ -690,15 +781,63 @@ fn named_cases(args: &Args, subject: usize) -> Result<Vec<NamedCase>, String> {
     Ok(out)
 }
 
+/// A named case's result for `--json` (the conformance ledger reads it):
+/// where `subject` fails it as `case::judged` judges every subject, the
+/// fields it could not be judged on (unavailable), and whether xterm, if
+/// it ran, sees the subject's screen as its own.
+fn case_result(
+    named: (&str, &str, usize),
+    subject: usize,
+    (outcome, failures, at_end): &(case::Outcome, Vec<String>, bool),
+) -> Result<serde_json::Value, String> {
+    let (name, family, index) = named;
+    // The fields the subject cannot tell where the judge would have
+    // failed it: unavailable, so the case is no pass (`case::reread`).
+    let reread = case::reread(&outcome.fux, &outcome.verdicts, subject);
+    let unavailable: Vec<String> =
+        case::judged(index, name, subject, &outcome.fux, &reread, *at_end)?
+            .into_iter()
+            .filter(|f| !failures.contains(f))
+            .collect();
+    let xterm = engine::find("xterm").and_then(|x| {
+        outcome
+            .verdicts
+            .iter()
+            .find(|v| v.engine == x)
+            .map(|v| v.differences.is_empty())
+    });
+    Ok(serde_json::json!({
+        "case": name,
+        "family": family,
+        "failures": failures,
+        "unavailable": unavailable,
+        "xterm_agrees": xterm,
+    }))
+}
+
+/// Writes `value` as pretty JSON to `path`.
+fn write_json(path: &str, value: &serde_json::Value) -> Result<(), String> {
+    let mut text = serde_json::to_string_pretty(value).map_err(|e| format!("the results: {e}"))?;
+    text.push('\n');
+    std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The engines `cases` runs beside by default.
+const CASES_PANEL: &str = "panel,xterm.js,tmux,xterm";
+
 fn cases(args: &Args) -> Result<bool, String> {
     let subject = subject(args)?;
     if subject != FUX_VT {
         return cases_beside(args, subject);
     }
-    let panel = panel(args, "all")?;
+    // Every engine that votes: the panel, xterm.js and tmux (left out of
+    // `panel` for their speed alone), and xterm, which decides most
+    // decided families; not vt100, which does not vote.
+    let panel = panel(args, CASES_PANEL)?;
     println!("engines: {}", names(&panel));
     let mut ok = true;
     let (mut agree, mut differ, mut fixed) = (0usize, 0usize, 0usize);
+    let mut results = Vec::new();
     for NamedCase {
         name,
         family,
@@ -706,7 +845,10 @@ fn cases(args: &Args) -> Result<bool, String> {
         case,
     } in named_cases(args, subject)?
     {
-        let outcome = case.run_until(&panel, false)?;
+        // Judged after every step, stopping at the first it fails.
+        let judged = case::judge_named(&case, &panel, index, name)?;
+        results.push(case_result((name, family, index), subject, &judged)?);
+        let (outcome, failures, _) = judged;
         let status = FAMILIES.get(index).map(|f| f.status);
         let marks = marks(&outcome);
         if let Some(Status::Decided { by, authority, .. }) = status {
@@ -714,17 +856,24 @@ fn cases(args: &Args) -> Result<bool, String> {
                 [] => format!("{authority} decides"),
                 _ => format!("{authority} decides, beside {}", by.join(", ")),
             };
-            // Checked by the standard's cited test, or by xterm agreeing; a
-            // family with neither check fails.
-            let checked = match (authority, deciders_agree(&outcome.verdicts, by)) {
-                (_, Some(false)) => Ok(false),
-                (Authority::Xterm, None) => Err("xterm did not run".to_owned()),
-                (Authority::Standard { .. } | Authority::Xterm, Some(true) | None) => {
-                    authority.check(by).map(|()| true)
+            // Judged by the section's expected fields and the deciders'
+            // vote on the rest: deciders named must have given a verdict,
+            // but in a standard's family one that could not read the case
+            // (an adapter's limit, xterm's SGR 58) leaves the section's
+            // fields to judge; a standard's family needs its cited test.
+            let limited = outcome.abstained.iter().any(|(i, why)| {
+                by.contains(&engine::name(*i)) && engine::abstention(why) == "adapter-limited"
+            });
+            let standard = matches!(authority, families::Authority::Standard { .. });
+            let checked = authority.check(by).and_then(|()| {
+                if !by.is_empty() && !heard(&outcome.verdicts, by) && !(standard && limited) {
+                    Err(format!("none of {} gave a verdict", by.join(", ")))
+                } else {
+                    Ok(failures.clone())
                 }
-            };
+            });
             match checked {
-                Ok(true) => {
+                Ok(failures) if failures.is_empty() => {
                     agree = agree.saturating_add(1);
                     println!("ok       {name} (family {family}: {deciders})   {marks}");
                 }
@@ -733,72 +882,71 @@ fn cases(args: &Args) -> Result<bool, String> {
                     differ = differ.saturating_add(1);
                     println!("FAIL     {name} (family {family}: {deciders}): unchecked, {why}");
                 }
-                Ok(false) => {
+                Ok(failures) => {
                     ok = false;
                     differ = differ.saturating_add(1);
                     println!(
-                        "FAIL     {name} (family {family}: {deciders}, against fux-vt)   {marks}"
+                        "FAIL     {name} (family {family}: {deciders}, against fux-vt) on {}   {marks}",
+                        failures.join("; ")
                     );
+                    if let Some(e) = cases::expected(name) {
+                        println!("  {}: \"{}\"", e.section, e.quote);
+                    }
                     print!("{}", case::report(&case, &panel, &outcome));
                 }
             }
             continue;
         }
-        let expected = status == Some(Status::Agree);
-        match (outcome.agrees(), expected) {
-            (true, true) => {
+        // Any other family's case is judged on every field, a case recorded
+        // as differing (`cases::DIFFERING`) only where its record says.
+        match (failures.is_empty(), cases::differing(name)) {
+            (true, None) => {
                 agree = agree.saturating_add(1);
                 println!("ok       {name}   {marks}");
             }
-            (true, false) => {
+            (true, Some(record)) => {
                 fixed = fixed.saturating_add(1);
-                println!("agrees   {name} (family {family} differs elsewhere)   {marks}");
+                println!(
+                    "differs  {name}, as recorded, on {}: {}   {marks}",
+                    record.on.join(", "),
+                    record.why
+                );
             }
-            (false, expect) => {
+            (false, _) => {
+                ok = false;
                 differ = differ.saturating_add(1);
-                if expect {
-                    ok = false;
-                    println!("FAIL     {name} (family {family} is expected to agree)   {marks}");
-                } else {
-                    println!("fails    {name} (family {family})   {marks}");
-                }
+                println!(
+                    "FAIL     {name} (family {family}) on {}   {marks}",
+                    failures.join("; ")
+                );
                 print!("{}", case::report(&case, &panel, &outcome));
             }
         }
     }
     println!(
-        "{agree} agree in families expected to agree or decided, {fixed} agree in families that differ elsewhere, {differ} fail"
+        "{agree} agree, in a family that agrees, differs or is decided, {fixed} differ as recorded, {differ} fail"
     );
+    if let Some(path) = args.json.as_deref() {
+        write_json(
+            path,
+            &serde_json::json!({
+                "check": "cases",
+                "subject": "fux-vt",
+                "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+                "settings": engine::settings(panel.iter().map(|&i| engine::name(i))),
+                "results": results,
+                "ok": ok,
+            }),
+        )?;
+    }
     Ok(ok)
 }
 
-/// Whether the engines named in `by` agree with the subject in
-/// `verdicts`, by their vote alone (one engine alone outvotes the subject
-/// wherever it differs); none if none of them ran or all abstained.
-fn deciders_agree(verdicts: &[case::Verdict], by: &[&str]) -> Option<bool> {
-    let deciders: Vec<case::Verdict> = verdicts
+/// Whether any engine named in `by` gave a verdict.
+fn heard(verdicts: &[case::Verdict], by: &[&str]) -> bool {
+    verdicts
         .iter()
-        .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
-        .cloned()
-        .collect();
-    (!deciders.is_empty()).then(|| case::outvoted_on(&deciders).is_empty())
-}
-
-/// Whether a named case of the family at `index` agrees, at its end, as
-/// `cases` judges it: by the deciding engines in a family with a recorded
-/// verdict, else by the vote. The fields it is outvoted on, empty if none.
-fn outvoted_in(index: usize, verdicts: &[case::Verdict]) -> Vec<String> {
-    match FAMILIES.get(index).map(|f| f.status) {
-        Some(Status::Decided { by, .. }) => {
-            let deciders: Vec<case::Verdict> = verdicts
-                .iter()
-                .filter(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
-                .cloned()
-                .collect();
-            case::outvoted_on(&deciders)
-        }
-        Some(Status::Agree | Status::Differs(_)) | None => case::outvoted_on(verdicts),
-    }
+        .any(|v| engine::kind(v.engine).is_some_and(|k| by.contains(&k.name)))
 }
 
 /// The named cases with another engine as the subject, judged as fux-vt
@@ -809,7 +957,7 @@ fn outvoted_in(index: usize, verdicts: &[case::Verdict]) -> Vec<String> {
 /// subject voting in its place: the cases where one is outvoted and the
 /// other is not are listed, each with the replay that shows it.
 fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
-    let panel = panel_beside(args, "all", subject)?;
+    let panel = panel_beside(args, CASES_PANEL, subject)?;
     // The panel fux-vt is judged beside: the subject where fux-vt was.
     let swapped: Vec<usize> = panel
         .iter()
@@ -822,20 +970,29 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
     // Name, family, the fields the subject and fux-vt are outvoted on, and
     // the replays with each the subject.
     let mut split = Vec::new();
+    let mut results = Vec::new();
     for named in named_cases(args, subject)? {
         count = count.saturating_add(1);
-        let outcome = named.case.run_until(&panel, false)?;
+        let judged = case::judge_named(&named.case, &panel, named.index, named.name)?;
+        results.push(case_result(
+            (named.name, named.family, named.index),
+            subject,
+            &judged,
+        )?);
+        let (outcome, on, _) = judged;
         let marks = marks(&outcome);
         let deciders = match FAMILIES.get(named.index).map(|f| f.status) {
             Some(Status::Decided { by: [one], .. }) => format!(": {one} decides"),
             Some(Status::Decided { by, .. }) => format!(": {} decide", by.join(", ")),
             _ => String::new(),
         };
-        let on = outvoted_in(named.index, &outcome.verdicts);
-        let fux_on = case::rejudge(subject, &outcome.fux, &outcome.verdicts, FUX_VT).map_or_else(
-            || vec!["fux-vt abstained".to_owned()],
-            |(_, verdicts)| outvoted_in(named.index, &verdicts),
-        );
+        // fux-vt, judged as the subject is, every step, with the subject
+        // voting in its place.
+        let as_fux = Case {
+            subject: FUX_VT,
+            ..named.case.clone()
+        };
+        let (_, fux_on, _) = case::judge_named(&as_fux, &swapped, named.index, named.name)?;
         if fux_on.is_empty() {
             fux_agree = fux_agree.saturating_add(1);
         }
@@ -857,10 +1014,6 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             }
         }
         if !on.is_empty() || !fux_on.is_empty() {
-            let as_fux = Case {
-                subject: FUX_VT,
-                ..named.case.clone()
-            };
             split.push((
                 named.name,
                 named.family,
@@ -872,7 +1025,7 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
         }
     }
     println!(
-        "{name_of}: {agree} of {count} named cases agree; fux-vt, judged on the same screens \
+        "{name_of}: {agree} of {count} named cases agree; fux-vt, judged on the same cases \
          with {name_of} voting in its place: {fux_agree} of {count}"
     );
     let lists = [
@@ -921,18 +1074,19 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
             "check": "cases",
             "subject": name_of,
             "engines": panel.iter().map(|&i| engine::name(i)).collect::<Vec<_>>(),
+            "settings": engine::settings(
+                panel.iter().map(|&i| engine::name(i)).chain([name_of]),
+            ),
             "cases": count,
             "agree": agree,
             "fux-vt": { "agree": fux_agree },
+            "results": results,
             "ok": true,
         });
         if let Some(object) = value.as_object_mut() {
             object.extend(json);
         }
-        let mut text =
-            serde_json::to_string_pretty(&value).map_err(|e| format!("the results: {e}"))?;
-        text.push('\n');
-        std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+        write_json(path, &value)?;
     }
     Ok(true)
 }
@@ -942,14 +1096,15 @@ fn cases_beside(args: &Args, subject: usize) -> Result<bool, String> {
 /// random cases from each with plain text, where the deciding engines' vote
 /// decides (xterm alone outvotes fux-vt wherever it differs).
 fn verdicts(args: &Args) -> Result<bool, String> {
-    let text = families::find("text").ok_or("no text family")?;
     let chosen: Vec<usize> = if args.families.is_empty() {
         (0..FAMILIES.len())
             .filter(|&i| {
                 usable(i, args.reflow)
-                    && FAMILIES
-                        .get(i)
-                        .is_some_and(|f| matches!(f.status, Status::Decided { .. }))
+                    && FAMILIES.get(i).is_some_and(|f| match f.status {
+                        Status::Decided { .. } => true,
+                        Status::Differs(_) => families::departures(f.name).is_some(),
+                        Status::Agree => false,
+                    })
             })
             .collect()
     } else {
@@ -970,23 +1125,25 @@ fn verdicts(args: &Args) -> Result<bool, String> {
             println!("== {}: FAIL, unchecked: {why}", f.name);
             continue;
         }
+        // A standard decides, and no engine follows it all through: its
+        // test and its named cases' expected fields are the check.
+        let alone = matches!(f.status, Status::Decided { by: [], .. }) && args.engines.is_none();
+        let beside = match f.status {
+            Status::Differs(_) => families::departures(f.name).map(|(beside, _)| beside),
+            Status::Agree | Status::Decided { .. } => None,
+        };
         let panel = match (args.engines.as_deref(), f.status) {
             (Some(list), _) => engines(list)?,
-            // A standard decides, and no engine follows it all through:
-            // its test is the check.
-            (
-                None,
-                Status::Decided {
-                    by: [], authority, ..
-                },
-            ) => {
-                println!("== {} (checked by {authority}, which passes)", f.name);
-                continue;
-            }
+            (None, _) if beside.is_some() => engines(beside.unwrap_or("xterm"))?,
+            (None, Status::Decided { by: [], .. }) => Vec::new(),
             (None, Status::Decided { by, .. }) => engines(&by.join(","))?,
             (None, Status::Agree | Status::Differs(_)) => engines("xterm")?,
         };
-        println!("== {} (beside {})", f.name, names(&panel));
+        if alone {
+            println!("== {} (by its section and its test, which passes)", f.name);
+        } else {
+            println!("== {} (beside {})", f.name, names(&panel));
+        }
         for &(name, family, (rows, cols), words) in cases::CASES {
             if family != f.name {
                 continue;
@@ -1003,47 +1160,112 @@ fn verdicts(args: &Args) -> Result<bool, String> {
                 steps,
                 subject: FUX_VT,
             };
-            let outcome = case.run_until(&panel, false)?;
+            let (outcome, failures, _) = case::judge_named(&case, &panel, i, name)?;
             let marks = marks(&outcome);
-            if outcome.agrees() {
+            if failures.is_empty() {
                 println!("   ok    {name}   {marks}");
             } else {
                 ok = false;
-                println!("   FAIL  {name}   {marks}");
+                println!("   FAIL  {name} on {}   {marks}", failures.join("; "));
                 print!("{}", case::report(&case, &panel, &outcome));
             }
         }
-        let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
-        let mut r = Rng::new(args.seed);
-        let (mut judged, mut failed, mut unheard) = (0usize, 0usize, 0usize);
-        let mut shown = false;
-        // Cases xterm abstains from (SGR 58) are drawn again, up to ten
-        // times as many as asked for.
-        while judged < count && judged.saturating_add(unheard) < count.saturating_mul(10) {
-            let case = case::random(&mut r, &set, args.reflow);
-            let outcome = case.run(&panel)?;
-            if outcome.verdicts.is_empty() {
-                unheard = unheard.saturating_add(1);
-                continue;
-            }
-            judged = judged.saturating_add(1);
-            if outcome.agrees() {
-                continue;
-            }
-            failed = failed.saturating_add(1);
-            if !shown {
-                shown = true;
-                let small = case.shrink(&panel, 4000);
-                print!("{}", case::report(&small, &panel, &small.run(&panel)?));
-            }
+        if alone {
+            continue;
         }
-        ok &= failed == 0 && judged > 0;
-        println!(
-            "   {failed} of {judged} random cases failed (seed {}); {unheard} more had no verdict",
-            args.seed
-        );
+        ok &= random_judged(args, i, &panel, count)?;
     }
     Ok(ok)
+}
+
+/// `count` random cases of family `i` (with text, unless it is text)
+/// beside `panel`, cases xterm abstains from (SGR 58) drawn again, up to
+/// ten times as many; the first that fails shown, shrunk. A family that
+/// differs is judged by its departures (`families::DEPARTURES`), each
+/// snippet a write of its own: a case passes that a departure covers, and
+/// each departure's count is printed. Whether none failed, of some judged.
+fn random_judged(args: &Args, i: usize, panel: &[usize], count: usize) -> Result<bool, String> {
+    let f = FAMILIES.get(i).ok_or("no such family")?;
+    let text = families::find("text").ok_or("no text family")?;
+    let set: Vec<usize> = if i == text { vec![i] } else { vec![i, text] };
+    let mut r = Rng::new(args.seed);
+    let (mut judged, mut failed, mut unheard) = (0usize, 0usize, 0usize);
+    let mut shown = false;
+    // A family that differs: its departures from xterm, and how many
+    // cases each covered.
+    let departures = match f.status {
+        Status::Differs(_) => families::departures(f.name).map(|(_, d)| d),
+        Status::Agree | Status::Decided { .. } => None,
+    };
+    let mut made = vec![0usize; departures.map_or(0, <[_]>::len)];
+    // Cases xterm abstains from (SGR 58) are drawn again, up to ten
+    // times as many as asked for.
+    while judged < count && judged.saturating_add(unheard) < count.saturating_mul(10) {
+        let mut case = case::random(&mut r, &set, args.reflow);
+        if departures.is_some() {
+            case.steps = (case.steps.into_iter())
+                .flat_map(|s| match s {
+                    Step::Output(snippets) => snippets
+                        .into_iter()
+                        .map(|x| Step::Output(vec![x]))
+                        .collect(),
+                    other => vec![other],
+                })
+                .collect();
+        }
+        let outcome = case.run(panel)?;
+        if outcome.verdicts.is_empty() {
+            unheard = unheard.saturating_add(1);
+            continue;
+        }
+        judged = judged.saturating_add(1);
+        if outcome.agrees() {
+            continue;
+        }
+        if let Some(departures) = departures
+            && let Some(at) = covering(&case, &outcome, departures)
+        {
+            if let Some(n) = made.get_mut(at) {
+                *n = n.saturating_add(1);
+            }
+            continue;
+        }
+        failed = failed.saturating_add(1);
+        if !shown {
+            shown = true;
+            // Shrunk while it still differs where no departure covers.
+            let small = case.shrink_while(4000, |c| {
+                c.run(panel).is_ok_and(|o| {
+                    !o.agrees() && departures.is_none_or(|d| covering(c, &o, d).is_none())
+                })
+            });
+            print!("{}", case::report(&small, panel, &small.run(panel)?));
+        }
+    }
+    for (d, n) in departures.unwrap_or_default().iter().zip(&made) {
+        println!("   departs in {n} cases: {}", d.why);
+    }
+    println!(
+        "   {failed} of {judged} random cases failed (seed {}); {unheard} more had no verdict",
+        args.seed
+    );
+    Ok(failed == 0 && judged > 0)
+}
+
+/// The departure of `departures` that covers how `case` went (`outcome`):
+/// one its output makes, whose fields name every difference.
+fn covering(
+    case: &Case,
+    outcome: &case::Outcome,
+    departures: &[families::Departure],
+) -> Option<usize> {
+    let bytes = case.output_judged(outcome);
+    departures.iter().position(|d| {
+        (d.when)(&bytes, case.rows, case.cols)
+            && (outcome.verdicts.iter())
+                .flat_map(|v| &v.differences)
+                .all(|diff| d.fields.iter().any(|g| families::glob(g, &diff.key)))
+    })
 }
 
 fn replay(args: &Args) -> Result<bool, String> {
@@ -1107,17 +1329,81 @@ fn record(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Half the cores here, at least one: children measured side by side.
-fn half_the_cores() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .div_ceil(2)
+/// The children counted at once unless `--jobs` says: CARGO_BUILD_JOBS,
+/// as a shared machine's limit sets it, else 4, as fux-bench takes
+/// (speed-method.md: a count beside other work takes few cores).
+pub fn few_jobs() -> usize {
+    few_jobs_from(std::env::var("CARGO_BUILD_JOBS").ok().as_deref())
+}
+
+/// [`few_jobs`] of CARGO_BUILD_JOBS's value: a count of at least 1, else 4.
+fn few_jobs_from(cargo_build_jobs: Option<&str>) -> usize {
+    cargo_build_jobs
+        .and_then(|v| v.parse().ok())
+        .filter(|&n: &usize| n > 0)
+        .unwrap_or(4)
+}
+
+/// The children `bench --instructions` and `footprint` run at once:
+/// `--jobs`, else [`few_jobs`].
+fn children(jobs: Option<usize>) -> usize {
+    jobs.unwrap_or_else(few_jobs)
+}
+
+/// The most data compare may hold, in bytes, unless
+/// `FUX_VT_COMPARE_DATA_LIMIT` says otherwise (0: no limit of its own).
+const DATA_LIMIT: u64 = 4 << 30;
+
+/// Sets this process's data limit (`RLIMIT_DATA`, which its children
+/// inherit) to [`DATA_LIMIT`] or `FUX_VT_COMPARE_DATA_LIMIT`, never above
+/// the hard limit it has. An engine run in process that grows without end
+/// (alacritty_terminal 0.26's resize loop took 55 GB on 2026-10-17) then
+/// aborts with "memory allocation failed" instead of taking the machine.
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "the data limit is set through libc's C interface, and only here"
+)]
+fn limit_data() -> Result<(), String> {
+    let bytes = match std::env::var("FUX_VT_COMPARE_DATA_LIMIT") {
+        Ok(text) => text
+            .parse::<u64>()
+            .map_err(|e| format!("FUX_VT_COMPARE_DATA_LIMIT={text:?}: {e}"))?,
+        Err(_) => DATA_LIMIT,
+    };
+    if bytes == 0 {
+        return Ok(());
+    }
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for getrlimit to fill.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &raw mut limit) } != 0 {
+        return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+    }
+    let wanted = libc::rlim_t::try_from(bytes).unwrap_or(libc::RLIM_INFINITY);
+    limit.rlim_cur = wanted.min(limit.rlim_max);
+    // SAFETY: `limit` is a valid rlimit, its soft limit within its hard.
+    if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &raw const limit) } != 0 {
+        return Err(format!("setrlimit: {}", std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn limit_data() -> Result<(), String> {
+    Ok(())
 }
 
 fn main() -> ExitCode {
+    if let Err(e) = limit_data() {
+        eprintln!("fux-vt-compare: the data limit: {e}");
+        return ExitCode::from(2);
+    }
     // An engine's panic is caught and costs it its vote (`case::guarded`),
     // and reported there; the default hook would print each one again.
-    std::panic::set_hook(Box::new(|_| {}));
+    std::panic::set_hook(Box::new(case::note_panic));
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some((first, rest)) = argv.split_first()
         && first == instructions::CHILD
@@ -1168,6 +1454,30 @@ fn main() -> ExitCode {
         };
     }
     if let Some((first, rest)) = argv.split_first()
+        && first == "ledger"
+    {
+        return match ledger::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare ledger: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
+        && first == "lists"
+    {
+        return match lists::run(rest) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("fux-vt-compare lists: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    if let Some((first, rest)) = argv.split_first()
         && first == "esctest"
     {
         return match esctest::run(rest) {
@@ -1210,28 +1520,39 @@ fn main() -> ExitCode {
         "replay" => replay(&args),
         "record" => record(&args),
         "inventory" => inventory::run(&args.rest),
+        #[cfg(feature = "engines")]
         "encoders" => encoders::run(args.seed, args.cases.unwrap_or(2000)),
+        #[cfg(not(feature = "engines"))]
+        "encoders" => Err("encoders compares with libghostty-vt, which is not built \
+                           (--no-default-features)"
+            .to_owned()),
         "corpus" => corpus::run(
             subject(&args)?,
             &panel_beside(&args, "xterm,panel", subject(&args)?)?,
             &args.rest,
             args.show,
             args.json.as_deref(),
+            args.chunk,
         ),
         "bench" if args.instructions => instructions::run(
             &panel(&args, "in-process")?,
             &args.rest,
             args.mb,
             args.repeats,
-            args.jobs
-                .unwrap_or_else(|| half_the_cores().saturating_mul(2)),
+            children(args.jobs),
+            args.json.as_deref(),
+        ),
+        "bench" if args.json.is_some() => bench::run_to(
+            &panel(&args, "all")?,
+            &args.rest,
+            args.mb,
             args.json.as_deref(),
         ),
         "bench" => bench::run(&panel(&args, "all")?, &args.rest, args.mb),
         "footprint" => footprint::run(
             &panel(&args, "in-process")?,
             args.json.as_deref(),
-            args.jobs.unwrap_or_else(half_the_cores),
+            children(args.jobs),
         ),
         _ => run(&args),
     });
@@ -1242,5 +1563,67 @@ fn main() -> ExitCode {
             eprintln!("fux-vt-compare: {e}\n\n{USAGE}");
             ExitCode::from(2)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// `bench --instructions` and `footprint` run few children unless
+    /// `--jobs` says: CARGO_BUILD_JOBS, else 4, never every core.
+    #[test]
+    fn instructions_take_few_jobs_by_default() {
+        assert_eq!(super::few_jobs_from(None), 4);
+        assert_eq!(super::few_jobs_from(Some("2")), 2);
+        assert_eq!(super::few_jobs_from(Some("0")), 4);
+        assert_eq!(super::few_jobs_from(Some("x")), 4);
+        let env = std::env::var("CARGO_BUILD_JOBS").ok();
+        assert_eq!(super::children(None), super::few_jobs_from(env.as_deref()));
+        assert_eq!(super::children(Some(3)), 3);
+    }
+
+    /// A grouped check's command keeps a path with a space in it as one
+    /// word, run alongside the others or, with --jobs, alone ("+"): the
+    /// harness's own `spec` and `together` (lib.sh, which harness.sh
+    /// sources), each given a path under "a b/".
+    #[test]
+    fn a_grouped_checks_path_with_a_space_stays_one_word() -> Result<(), String> {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib.sh");
+        let dir = std::env::temp_dir().join(format!("fux-vt-harness-{}", std::process::id()));
+        let out = dir.join("a b").join("out");
+        let script = r#"set -euo pipefail
+. "$1"
+out=$2 product=p harness=h
+mkdir -p "$out/logs" "$out/status"
+args() { printf '%s\n' "$#" "$@" >"$out/$1.args"; }
+jobs=
+together "$(spec side args side "$out/x.json")"
+jobs=2
+together "+$(spec alone args alone "$out/x.json")"
+"#;
+        let ran = std::process::Command::new("bash")
+            .args(["-c", script, "bash"])
+            .arg(&lib)
+            .arg(&out)
+            .output()
+            .map_err(|e| e.to_string())?;
+        let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap_or_default();
+        let got: Vec<String> = ["side", "alone"]
+            .iter()
+            .flat_map(|n| [read(&format!("{n}.args")), read(&format!("status/{n}"))])
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let path = out.join("x.json").display().to_string();
+        let [side, side_status, alone, alone_status] = got.as_slice() else {
+            return Err(format!("{got:?}"));
+        };
+        assert_eq!(side, &format!("2\nside\n{path}\n"));
+        assert_eq!(alone, &format!("2\nalone\n{path}\n"));
+        assert!(side_status.starts_with("0 ") && alone_status.starts_with("0 "));
+        Ok(())
     }
 }

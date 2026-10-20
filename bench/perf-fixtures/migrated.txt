@@ -1,0 +1,13 @@
+child wrote this to stderr
+fux-perf: perf version 7.2.10-1
+fux-perf: cpus all
+fux-perf: pmu apple_avalanche_pmu 4-11
+fux-perf: pmu apple_blizzard_pmu 0-3
+fux-perf: begin
+# started on Sat Oct 17 16:45:36 2026
+
+instructions:u: 2147002885 162336582 122684456
+instructions:u: 286925885 41849959 41802376
+2147002885,,apple_avalanche_pmu/instructions/u,122684456,75.00,,
+286925885,,apple_blizzard_pmu/instructions/u,41802376,99.00,,
+fux-perf: end

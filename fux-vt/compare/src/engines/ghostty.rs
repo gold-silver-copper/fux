@@ -112,7 +112,7 @@ pub const KIND: Kind = Kind {
     about: "Ghostty's terminal core, libghostty-vt, built from source by Zig",
     can: Can {
         link_group: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -249,6 +249,7 @@ impl Ghostty {
             reports: snapshot::reports(&self.replies.borrow()),
             screen,
             history,
+            device: Default::default(),
         })
     }
 }
@@ -273,8 +274,8 @@ impl Engine for Ghostty {
         self.read(history_rows)
     }
 
-    fn replies(&self) -> Vec<u8> {
-        self.replies.borrow().clone()
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        Ok(self.replies.borrow().clone())
     }
 
     /// Its palette, foreground and background as OSC 4, 10 and 11 left

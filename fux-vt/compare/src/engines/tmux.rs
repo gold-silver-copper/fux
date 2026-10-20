@@ -79,7 +79,7 @@ use crate::snapshot::{Line, Snapshot};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub const KIND: Kind = Kind {
@@ -90,7 +90,7 @@ pub const KIND: Kind = Kind {
         synchronized_output: false,
         in_band_resize: false,
         link_group: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -120,7 +120,10 @@ fn available() -> Result<(), String> {
 }
 
 /// The sessions this process has open: the server exits with the last.
-static SESSIONS: AtomicUsize = AtomicUsize::new(0);
+/// Held while a session is counted and its server started, and while the
+/// last is killed and its socket removed, so one engine's drop never
+/// removes the socket of a server another has just started.
+static SESSIONS: Mutex<usize> = Mutex::new(0);
 
 /// This process's server socket, in its directory.
 fn socket() -> Result<PathBuf, String> {
@@ -170,7 +173,10 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
     };
     let target = tmux_engine.session.clone();
     // From here the session may exist, and dropping the engine kills it.
-    SESSIONS.fetch_add(1, Ordering::SeqCst);
+    let mut sessions = SESSIONS
+        .lock()
+        .map_err(|_| "tmux: a session count panicked")?;
+    *sessions = sessions.saturating_add(1);
     tmux_engine.killed = false;
     tmux(&[
         "start-server",
@@ -214,6 +220,7 @@ fn make(setup: &Setup) -> Result<Box<dyn Engine>, String> {
         "-T",
         "",
     ])?;
+    drop(sessions);
     if !tmux_engine.pane.connect(START)? {
         return Err(format!(
             "tmux: the pane program did not start within {START:?}"
@@ -375,6 +382,7 @@ impl Tmux {
             reports: self.pane.reports(),
             screen: lines,
             history,
+            device: Default::default(),
         })
     }
 }
@@ -429,9 +437,13 @@ impl Drop for Tmux {
         if self.killed {
             return;
         }
+        let Ok(mut sessions) = SESSIONS.lock() else {
+            return;
+        };
         let _ = tmux(&["kill-session", "-t", &self.session]);
+        *sessions = sessions.saturating_sub(1);
         // The server exits with its last session, and leaves its socket.
-        if SESSIONS.fetch_sub(1, Ordering::SeqCst) == 1
+        if *sessions == 0
             && let Ok(socket) = socket()
         {
             let _ = fs::remove_file(socket);

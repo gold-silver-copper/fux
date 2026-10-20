@@ -1,0 +1,589 @@
+# kitty's kitty_tests/keys.py (GPL-3.0, Kovid Goyal): what each of its
+# encoding assertions states (a key, its modifiers, the mode, the bytes kitty
+# expects), re-authored as facts in fux-vt's terms, its code not copied:
+# source, mode, key, the bytes kitty expects, verdict. Its key-mapping tests
+# (kitty's own shortcuts) and mouse encodings (no key) are left out.
+keys.py:90	legacy	Enter	\x0d	agree
+keys.py:90	legacy	S-Enter	\x0d	agree
+keys.py:90	legacy	C-Enter	\x0d	agree
+keys.py:90	legacy	C-M-Enter	\e\x0d	agree
+keys.py:90	legacy	C-S-Enter	\x0d	agree
+keys.py:90	legacy	M-S-Enter	\e\x0d	agree
+keys.py:90	legacy	Enter code=57414 mods=0	\x0d	agree
+keys.py:90	legacy	S-Enter code=57414 mods=1	\x0d	agree
+keys.py:90	legacy	C-Enter code=57414 mods=4	\x0d	agree
+keys.py:90	legacy	C-M-Enter code=57414 mods=6	\e\x0d	agree
+keys.py:90	legacy	C-S-Enter code=57414 mods=5	\x0d	agree
+keys.py:90	legacy	M-S-Enter code=57414 mods=3	\e\x0d	agree
+keys.py:91	legacy	Escape	\e	agree
+keys.py:91	legacy	S-Escape	\e	agree
+keys.py:91	legacy	C-Escape	\e	agree
+keys.py:91	legacy	C-M-Escape	\e\e	agree
+keys.py:91	legacy	C-S-Escape	\e	agree
+keys.py:91	legacy	M-S-Escape	\e\e	agree
+keys.py:92	legacy	BSpace	\x7f	agree
+keys.py:92	legacy	S-BSpace	\x7f	agree
+keys.py:92	legacy	C-BSpace	\x08	agree
+keys.py:92	legacy	C-M-BSpace	\e\x08	agree
+keys.py:92	legacy	C-S-BSpace	\x08	agree
+keys.py:92	legacy	M-S-BSpace	\e\x7f	agree
+keys.py:93	legacy	Tab	\x09	agree
+keys.py:93	legacy	S-Tab	\e[Z	agree
+keys.py:93	legacy	C-Tab	\x09	agree
+keys.py:93	legacy	C-M-Tab	\e\x09	agree
+keys.py:93	legacy	C-S-Tab	\e[Z	agree
+keys.py:93	legacy	M-S-Tab	\e\e[Z	differs: kitty's legacy table sends Alt-Shift-Tab as ESC CSI Z; real xterm 411 sends CSI Z (tests/data/keys/xterm-keys.txt); fux: \e[Z
+keys.py:94	legacy	Insert	\e[2~	agree
+keys.py:94	legacy	S-Insert	\e[2;2~	agree
+keys.py:94	legacy	C-Insert	\e[2;5~	agree
+keys.py:94	legacy	C-M-Insert	\e[2;7~	agree
+keys.py:94	legacy	C-S-Insert	\e[2;6~	agree
+keys.py:94	legacy	M-S-Insert	\e[2;4~	agree
+keys.py:94	legacy	Insert code=57425 mods=0	\e[2~	agree
+keys.py:94	legacy	S-Insert code=57425 mods=1	\e[2;2~	agree
+keys.py:94	legacy	C-Insert code=57425 mods=4	\e[2;5~	agree
+keys.py:94	legacy	C-M-Insert code=57425 mods=6	\e[2;7~	agree
+keys.py:94	legacy	C-S-Insert code=57425 mods=5	\e[2;6~	agree
+keys.py:94	legacy	M-S-Insert code=57425 mods=3	\e[2;4~	agree
+keys.py:95	legacy	Delete	\e[3~	agree
+keys.py:95	legacy	S-Delete	\e[3;2~	agree
+keys.py:95	legacy	C-Delete	\e[3;5~	agree
+keys.py:95	legacy	C-M-Delete	\e[3;7~	agree
+keys.py:95	legacy	C-S-Delete	\e[3;6~	agree
+keys.py:95	legacy	M-S-Delete	\e[3;4~	agree
+keys.py:95	legacy	Delete code=57426 mods=0	\e[3~	agree
+keys.py:95	legacy	S-Delete code=57426 mods=1	\e[3;2~	agree
+keys.py:95	legacy	C-Delete code=57426 mods=4	\e[3;5~	agree
+keys.py:95	legacy	C-M-Delete code=57426 mods=6	\e[3;7~	agree
+keys.py:95	legacy	C-S-Delete code=57426 mods=5	\e[3;6~	agree
+keys.py:95	legacy	M-S-Delete code=57426 mods=3	\e[3;4~	agree
+keys.py:96	legacy	PageUp	\e[5~	agree
+keys.py:96	legacy	S-PageUp	\e[5;2~	agree
+keys.py:96	legacy	C-PageUp	\e[5;5~	agree
+keys.py:96	legacy	C-M-PageUp	\e[5;7~	agree
+keys.py:96	legacy	C-S-PageUp	\e[5;6~	agree
+keys.py:96	legacy	M-S-PageUp	\e[5;4~	agree
+keys.py:96	legacy	PageUp code=57421 mods=0	\e[5~	agree
+keys.py:96	legacy	S-PageUp code=57421 mods=1	\e[5;2~	agree
+keys.py:96	legacy	C-PageUp code=57421 mods=4	\e[5;5~	agree
+keys.py:96	legacy	C-M-PageUp code=57421 mods=6	\e[5;7~	agree
+keys.py:96	legacy	C-S-PageUp code=57421 mods=5	\e[5;6~	agree
+keys.py:96	legacy	M-S-PageUp code=57421 mods=3	\e[5;4~	agree
+keys.py:97	legacy	PageDown	\e[6~	agree
+keys.py:97	legacy	S-PageDown	\e[6;2~	agree
+keys.py:97	legacy	C-PageDown	\e[6;5~	agree
+keys.py:97	legacy	C-M-PageDown	\e[6;7~	agree
+keys.py:97	legacy	C-S-PageDown	\e[6;6~	agree
+keys.py:97	legacy	M-S-PageDown	\e[6;4~	agree
+keys.py:97	legacy	PageDown code=57422 mods=0	\e[6~	agree
+keys.py:97	legacy	S-PageDown code=57422 mods=1	\e[6;2~	agree
+keys.py:97	legacy	C-PageDown code=57422 mods=4	\e[6;5~	agree
+keys.py:97	legacy	C-M-PageDown code=57422 mods=6	\e[6;7~	agree
+keys.py:97	legacy	C-S-PageDown code=57422 mods=5	\e[6;6~	agree
+keys.py:97	legacy	M-S-PageDown code=57422 mods=3	\e[6;4~	agree
+keys.py:98	legacy	Home	\e[H	agree
+keys.py:98	legacy	S-Home	\e[1;2H	agree
+keys.py:98	legacy	C-Home	\e[1;5H	agree
+keys.py:98	legacy	C-M-Home	\e[1;7H	agree
+keys.py:98	legacy	C-S-Home	\e[1;6H	agree
+keys.py:98	legacy	M-S-Home	\e[1;4H	agree
+keys.py:98	legacy	Home code=57423 mods=0	\e[H	agree
+keys.py:98	legacy	S-Home code=57423 mods=1	\e[1;2H	agree
+keys.py:98	legacy	C-Home code=57423 mods=4	\e[1;5H	agree
+keys.py:98	legacy	C-M-Home code=57423 mods=6	\e[1;7H	agree
+keys.py:98	legacy	C-S-Home code=57423 mods=5	\e[1;6H	agree
+keys.py:98	legacy	M-S-Home code=57423 mods=3	\e[1;4H	agree
+keys.py:99	legacy	End	\e[F	agree
+keys.py:99	legacy	S-End	\e[1;2F	agree
+keys.py:99	legacy	C-End	\e[1;5F	agree
+keys.py:99	legacy	C-M-End	\e[1;7F	agree
+keys.py:99	legacy	C-S-End	\e[1;6F	agree
+keys.py:99	legacy	M-S-End	\e[1;4F	agree
+keys.py:99	legacy	End code=57424 mods=0	\e[F	agree
+keys.py:99	legacy	S-End code=57424 mods=1	\e[1;2F	agree
+keys.py:99	legacy	C-End code=57424 mods=4	\e[1;5F	agree
+keys.py:99	legacy	C-M-End code=57424 mods=6	\e[1;7F	agree
+keys.py:99	legacy	C-S-End code=57424 mods=5	\e[1;6F	agree
+keys.py:99	legacy	M-S-End code=57424 mods=3	\e[1;4F	agree
+keys.py:100	legacy	F1	\eOP	agree
+keys.py:100	legacy	S-F1	\e[1;2P	agree
+keys.py:100	legacy	C-F1	\e[1;5P	agree
+keys.py:100	legacy	C-M-F1	\e[1;7P	agree
+keys.py:100	legacy	C-S-F1	\e[1;6P	agree
+keys.py:100	legacy	M-S-F1	\e[1;4P	agree
+keys.py:101	legacy	F2	\eOQ	agree
+keys.py:101	legacy	S-F2	\e[1;2Q	agree
+keys.py:101	legacy	C-F2	\e[1;5Q	agree
+keys.py:101	legacy	C-M-F2	\e[1;7Q	agree
+keys.py:101	legacy	C-S-F2	\e[1;6Q	agree
+keys.py:101	legacy	M-S-F2	\e[1;4Q	agree
+keys.py:102	legacy	F3	\eOR	agree
+keys.py:102	legacy	S-F3	\e[13;2~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); kitty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;2R
+keys.py:102	legacy	C-F3	\e[13;5~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); kitty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;5R
+keys.py:102	legacy	C-M-F3	\e[13;7~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); kitty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;7R
+keys.py:102	legacy	C-S-F3	\e[13;6~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); kitty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;6R
+keys.py:102	legacy	M-S-F3	\e[13;4~	differs: xterm's F3 is SS3 R, modified CSI 1 ; m R (ctlseqs, "PC-Style Function Keys"); kitty sends CSI 13 ; m ~, which no cursor position report can be mistaken for; fux: \e[1;4R
+keys.py:103	legacy	F4	\eOS	agree
+keys.py:103	legacy	S-F4	\e[1;2S	agree
+keys.py:103	legacy	C-F4	\e[1;5S	agree
+keys.py:103	legacy	C-M-F4	\e[1;7S	agree
+keys.py:103	legacy	C-S-F4	\e[1;6S	agree
+keys.py:103	legacy	M-S-F4	\e[1;4S	agree
+keys.py:104	legacy	F5	\e[15~	agree
+keys.py:104	legacy	S-F5	\e[15;2~	agree
+keys.py:104	legacy	C-F5	\e[15;5~	agree
+keys.py:104	legacy	C-M-F5	\e[15;7~	agree
+keys.py:104	legacy	C-S-F5	\e[15;6~	agree
+keys.py:104	legacy	M-S-F5	\e[15;4~	agree
+keys.py:105	legacy	F6	\e[17~	agree
+keys.py:105	legacy	S-F6	\e[17;2~	agree
+keys.py:105	legacy	C-F6	\e[17;5~	agree
+keys.py:105	legacy	C-M-F6	\e[17;7~	agree
+keys.py:105	legacy	C-S-F6	\e[17;6~	agree
+keys.py:105	legacy	M-S-F6	\e[17;4~	agree
+keys.py:106	legacy	F7	\e[18~	agree
+keys.py:106	legacy	S-F7	\e[18;2~	agree
+keys.py:106	legacy	C-F7	\e[18;5~	agree
+keys.py:106	legacy	C-M-F7	\e[18;7~	agree
+keys.py:106	legacy	C-S-F7	\e[18;6~	agree
+keys.py:106	legacy	M-S-F7	\e[18;4~	agree
+keys.py:107	legacy	F8	\e[19~	agree
+keys.py:107	legacy	S-F8	\e[19;2~	agree
+keys.py:107	legacy	C-F8	\e[19;5~	agree
+keys.py:107	legacy	C-M-F8	\e[19;7~	agree
+keys.py:107	legacy	C-S-F8	\e[19;6~	agree
+keys.py:107	legacy	M-S-F8	\e[19;4~	agree
+keys.py:108	legacy	F9	\e[20~	agree
+keys.py:108	legacy	S-F9	\e[20;2~	agree
+keys.py:108	legacy	C-F9	\e[20;5~	agree
+keys.py:108	legacy	C-M-F9	\e[20;7~	agree
+keys.py:108	legacy	C-S-F9	\e[20;6~	agree
+keys.py:108	legacy	M-S-F9	\e[20;4~	agree
+keys.py:109	legacy	F10	\e[21~	agree
+keys.py:109	legacy	S-F10	\e[21;2~	agree
+keys.py:109	legacy	C-F10	\e[21;5~	agree
+keys.py:109	legacy	C-M-F10	\e[21;7~	agree
+keys.py:109	legacy	C-S-F10	\e[21;6~	agree
+keys.py:109	legacy	M-S-F10	\e[21;4~	agree
+keys.py:110	legacy	F11	\e[23~	agree
+keys.py:110	legacy	S-F11	\e[23;2~	agree
+keys.py:110	legacy	C-F11	\e[23;5~	agree
+keys.py:110	legacy	C-M-F11	\e[23;7~	agree
+keys.py:110	legacy	C-S-F11	\e[23;6~	agree
+keys.py:110	legacy	M-S-F11	\e[23;4~	agree
+keys.py:111	legacy	F12	\e[24~	agree
+keys.py:111	legacy	S-F12	\e[24;2~	agree
+keys.py:111	legacy	C-F12	\e[24;5~	agree
+keys.py:111	legacy	C-M-F12	\e[24;7~	agree
+keys.py:111	legacy	C-S-F12	\e[24;6~	agree
+keys.py:111	legacy	M-S-F12	\e[24;4~	agree
+keys.py:112	legacy	Up	\e[A	agree
+keys.py:112	legacy	S-Up	\e[1;2A	agree
+keys.py:112	legacy	C-Up	\e[1;5A	agree
+keys.py:112	legacy	C-M-Up	\e[1;7A	agree
+keys.py:112	legacy	C-S-Up	\e[1;6A	agree
+keys.py:112	legacy	M-S-Up	\e[1;4A	agree
+keys.py:112	legacy	Up code=57419 mods=0	\e[A	agree
+keys.py:112	legacy	S-Up code=57419 mods=1	\e[1;2A	agree
+keys.py:112	legacy	C-Up code=57419 mods=4	\e[1;5A	agree
+keys.py:112	legacy	C-M-Up code=57419 mods=6	\e[1;7A	agree
+keys.py:112	legacy	C-S-Up code=57419 mods=5	\e[1;6A	agree
+keys.py:112	legacy	M-S-Up code=57419 mods=3	\e[1;4A	agree
+keys.py:113	legacy	Down	\e[B	agree
+keys.py:113	legacy	S-Down	\e[1;2B	agree
+keys.py:113	legacy	C-Down	\e[1;5B	agree
+keys.py:113	legacy	C-M-Down	\e[1;7B	agree
+keys.py:113	legacy	C-S-Down	\e[1;6B	agree
+keys.py:113	legacy	M-S-Down	\e[1;4B	agree
+keys.py:113	legacy	Down code=57420 mods=0	\e[B	agree
+keys.py:113	legacy	S-Down code=57420 mods=1	\e[1;2B	agree
+keys.py:113	legacy	C-Down code=57420 mods=4	\e[1;5B	agree
+keys.py:113	legacy	C-M-Down code=57420 mods=6	\e[1;7B	agree
+keys.py:113	legacy	C-S-Down code=57420 mods=5	\e[1;6B	agree
+keys.py:113	legacy	M-S-Down code=57420 mods=3	\e[1;4B	agree
+keys.py:114	legacy	Right	\e[C	agree
+keys.py:114	legacy	S-Right	\e[1;2C	agree
+keys.py:114	legacy	C-Right	\e[1;5C	agree
+keys.py:114	legacy	C-M-Right	\e[1;7C	agree
+keys.py:114	legacy	C-S-Right	\e[1;6C	agree
+keys.py:114	legacy	M-S-Right	\e[1;4C	agree
+keys.py:114	legacy	Right code=57418 mods=0	\e[C	agree
+keys.py:114	legacy	S-Right code=57418 mods=1	\e[1;2C	agree
+keys.py:114	legacy	C-Right code=57418 mods=4	\e[1;5C	agree
+keys.py:114	legacy	C-M-Right code=57418 mods=6	\e[1;7C	agree
+keys.py:114	legacy	C-S-Right code=57418 mods=5	\e[1;6C	agree
+keys.py:114	legacy	M-S-Right code=57418 mods=3	\e[1;4C	agree
+keys.py:115	legacy	Left	\e[D	agree
+keys.py:115	legacy	S-Left	\e[1;2D	agree
+keys.py:115	legacy	C-Left	\e[1;5D	agree
+keys.py:115	legacy	C-M-Left	\e[1;7D	agree
+keys.py:115	legacy	C-S-Left	\e[1;6D	agree
+keys.py:115	legacy	M-S-Left	\e[1;4D	agree
+keys.py:115	legacy	Left code=57417 mods=0	\e[D	agree
+keys.py:115	legacy	S-Left code=57417 mods=1	\e[1;2D	agree
+keys.py:115	legacy	C-Left code=57417 mods=4	\e[1;5D	agree
+keys.py:115	legacy	C-M-Left code=57417 mods=6	\e[1;7D	agree
+keys.py:115	legacy	C-S-Left code=57417 mods=5	\e[1;6D	agree
+keys.py:115	legacy	M-S-Left code=57417 mods=3	\e[1;4D	agree
+keys.py:119	legacy	`	`	agree
+keys.py:120	legacy	~	~	agree
+keys.py:121	legacy	M-`	\e`	agree
+keys.py:122	legacy	M-~	\e~	agree
+keys.py:123	legacy	C-`	`	differs: xterm sends Ctrl-` as NUL, as Xlib maps it; kitty sends the backtick; fux: \x00
+keys.py:124	legacy	C-M-`	\e`	differs: xterm sends Ctrl-` as NUL, as Xlib maps it; kitty sends the backtick; fux: \e\x00
+keys.py:125	legacy	1	1	agree
+keys.py:126	legacy	!	!	agree
+keys.py:127	legacy	M-1	\e1	agree
+keys.py:128	legacy	M-!	\e!	agree
+keys.py:129	legacy	C-1	1	agree
+keys.py:130	legacy	C-M-1	\e1	agree
+keys.py:131	legacy	2	2	agree
+keys.py:132	legacy	@	@	agree
+keys.py:133	legacy	M-2	\e2	agree
+keys.py:134	legacy	M-@	\e@	agree
+keys.py:135	legacy	C-2	\x00	agree
+keys.py:136	legacy	C-M-2	\e\x00	agree
+keys.py:137	legacy	3	3	agree
+keys.py:138	legacy	#	#	agree
+keys.py:139	legacy	M-3	\e3	agree
+keys.py:140	legacy	M-#	\e#	agree
+keys.py:141	legacy	C-3	\e	agree
+keys.py:142	legacy	C-M-3	\e\e	agree
+keys.py:143	legacy	4	4	agree
+keys.py:144	legacy	$	$	agree
+keys.py:145	legacy	M-4	\e4	agree
+keys.py:146	legacy	M-$	\e$	agree
+keys.py:147	legacy	C-4	\x1c	agree
+keys.py:148	legacy	C-M-4	\e\x1c	agree
+keys.py:149	legacy	5	5	agree
+keys.py:150	legacy	%	%	agree
+keys.py:151	legacy	M-5	\e5	agree
+keys.py:152	legacy	M-%	\e%	agree
+keys.py:153	legacy	C-5	\x1d	agree
+keys.py:154	legacy	C-M-5	\e\x1d	agree
+keys.py:155	legacy	6	6	agree
+keys.py:156	legacy	^	^	agree
+keys.py:157	legacy	M-6	\e6	agree
+keys.py:158	legacy	M-^	\e^	agree
+keys.py:159	legacy	C-6	\x1e	agree
+keys.py:160	legacy	C-M-6	\e\x1e	agree
+keys.py:161	legacy	7	7	agree
+keys.py:162	legacy	&	&	agree
+keys.py:163	legacy	M-7	\e7	agree
+keys.py:164	legacy	M-&	\e&	agree
+keys.py:165	legacy	C-7	\x1f	agree
+keys.py:166	legacy	C-M-7	\e\x1f	agree
+keys.py:167	legacy	8	8	agree
+keys.py:168	legacy	*	*	agree
+keys.py:169	legacy	M-8	\e8	agree
+keys.py:170	legacy	M-*	\e*	agree
+keys.py:171	legacy	C-8	\x7f	agree
+keys.py:172	legacy	C-M-8	\e\x7f	agree
+keys.py:173	legacy	9	9	agree
+keys.py:174	legacy	(	(	agree
+keys.py:175	legacy	M-9	\e9	agree
+keys.py:176	legacy	M-(	\e(	agree
+keys.py:177	legacy	C-9	9	agree
+keys.py:178	legacy	C-M-9	\e9	agree
+keys.py:179	legacy	0	0	agree
+keys.py:180	legacy	)	)	agree
+keys.py:181	legacy	M-0	\e0	agree
+keys.py:182	legacy	M-)	\e)	agree
+keys.py:183	legacy	C-0	0	agree
+keys.py:184	legacy	C-M-0	\e0	agree
+keys.py:185	legacy	-	-	agree
+keys.py:186	legacy	_	_	agree
+keys.py:187	legacy	M--	\e-	agree
+keys.py:188	legacy	M-_	\e_	agree
+keys.py:189	legacy	C--	-	agree
+keys.py:190	legacy	C-M--	\e-	agree
+keys.py:191	legacy	=	=	agree
+keys.py:192	legacy	+	+	agree
+keys.py:193	legacy	M-=	\e=	agree
+keys.py:194	legacy	M-+	\e+	agree
+keys.py:195	legacy	C-=	=	agree
+keys.py:196	legacy	C-M-=	\e=	agree
+keys.py:197	legacy	[	[	agree
+keys.py:198	legacy	{	{	agree
+keys.py:199	legacy	M-[	\e[	agree
+keys.py:200	legacy	M-{	\e{	agree
+keys.py:201	legacy	C-[	\e	agree
+keys.py:202	legacy	C-M-[	\e\e	agree
+keys.py:203	legacy	]	]	agree
+keys.py:204	legacy	}	}	agree
+keys.py:205	legacy	M-]	\e]	agree
+keys.py:206	legacy	M-}	\e}	agree
+keys.py:207	legacy	C-]	\x1d	agree
+keys.py:208	legacy	C-M-]	\e\x1d	agree
+keys.py:209	legacy	?	\\	na: unmapped key \\
+keys.py:210	legacy	|	|	na: unmapped key \\
+keys.py:211	legacy	M-?	\e\\	na: unmapped key \\
+keys.py:212	legacy	M-|	\e|	na: unmapped key \\
+keys.py:213	legacy	C-?	\x1c	na: unmapped key \\
+keys.py:214	legacy	C-M-?	\e\x1c	na: unmapped key \\
+keys.py:215	legacy	;	;	agree
+keys.py:216	legacy	:	:	agree
+keys.py:217	legacy	M-;	\e;	agree
+keys.py:218	legacy	M-:	\e:	agree
+keys.py:219	legacy	C-;	;	agree
+keys.py:220	legacy	C-M-;	\e;	agree
+keys.py:221	legacy	'	'	agree
+keys.py:222	legacy	"	"	agree
+keys.py:223	legacy	M-'	\e'	agree
+keys.py:224	legacy	M-"	\e"	agree
+keys.py:225	legacy	C-'	'	agree
+keys.py:226	legacy	C-M-'	\e'	agree
+keys.py:227	legacy	,	,	agree
+keys.py:228	legacy	<	<	agree
+keys.py:229	legacy	M-,	\e,	agree
+keys.py:230	legacy	M-<	\e<	agree
+keys.py:231	legacy	C-,	,	agree
+keys.py:232	legacy	C-M-,	\e,	agree
+keys.py:233	legacy	.	.	agree
+keys.py:234	legacy	>	>	agree
+keys.py:235	legacy	M-.	\e.	agree
+keys.py:236	legacy	M->	\e>	agree
+keys.py:237	legacy	C-.	.	agree
+keys.py:238	legacy	C-M-.	\e.	agree
+keys.py:239	legacy	/	/	agree
+keys.py:240	legacy	?	?	agree
+keys.py:241	legacy	M-/	\e/	agree
+keys.py:242	legacy	M-?	\e?	agree
+keys.py:243	legacy	C-/	\x1f	agree
+keys.py:244	legacy	C-M-/	\e\x1f	agree
+keys.py:245	legacy	a	a	agree
+keys.py:246	legacy	A	A	agree
+keys.py:247	legacy	M-a	\ea	agree
+keys.py:248	legacy	M-A	\eA	agree
+keys.py:249	legacy	C-a	\x01	agree
+keys.py:250	legacy	C-M-a	\e\x01	agree
+keys.py:251	legacy	b	b	agree
+keys.py:252	legacy	B	B	agree
+keys.py:253	legacy	M-b	\eb	agree
+keys.py:254	legacy	M-B	\eB	agree
+keys.py:255	legacy	C-b	\x02	agree
+keys.py:256	legacy	C-M-b	\e\x02	agree
+keys.py:257	legacy	c	c	agree
+keys.py:258	legacy	C	C	agree
+keys.py:259	legacy	M-c	\ec	agree
+keys.py:260	legacy	M-C	\eC	agree
+keys.py:261	legacy	C-c	\x03	agree
+keys.py:262	legacy	C-M-c	\e\x03	agree
+keys.py:263	legacy	d	d	agree
+keys.py:264	legacy	D	D	agree
+keys.py:265	legacy	M-d	\ed	agree
+keys.py:266	legacy	M-D	\eD	agree
+keys.py:267	legacy	C-d	\x04	agree
+keys.py:268	legacy	C-M-d	\e\x04	agree
+keys.py:269	legacy	e	e	agree
+keys.py:270	legacy	E	E	agree
+keys.py:271	legacy	M-e	\ee	agree
+keys.py:272	legacy	M-E	\eE	agree
+keys.py:273	legacy	C-e	\x05	agree
+keys.py:274	legacy	C-M-e	\e\x05	agree
+keys.py:275	legacy	f	f	agree
+keys.py:276	legacy	F	F	agree
+keys.py:277	legacy	M-f	\ef	agree
+keys.py:278	legacy	M-F	\eF	agree
+keys.py:279	legacy	C-f	\x06	agree
+keys.py:280	legacy	C-M-f	\e\x06	agree
+keys.py:281	legacy	g	g	agree
+keys.py:282	legacy	G	G	agree
+keys.py:283	legacy	M-g	\eg	agree
+keys.py:284	legacy	M-G	\eG	agree
+keys.py:285	legacy	C-g	\x07	agree
+keys.py:286	legacy	C-M-g	\e\x07	agree
+keys.py:287	legacy	h	h	agree
+keys.py:288	legacy	H	H	agree
+keys.py:289	legacy	M-h	\eh	agree
+keys.py:290	legacy	M-H	\eH	agree
+keys.py:291	legacy	C-h	\x08	agree
+keys.py:292	legacy	C-M-h	\e\x08	agree
+keys.py:293	legacy	i	i	agree
+keys.py:294	legacy	I	I	agree
+keys.py:295	legacy	M-i	\ei	agree
+keys.py:296	legacy	M-I	\eI	agree
+keys.py:297	legacy	C-i	\x09	agree
+keys.py:298	legacy	C-M-i	\e\x09	agree
+keys.py:299	legacy	j	j	agree
+keys.py:300	legacy	J	J	agree
+keys.py:301	legacy	M-j	\ej	agree
+keys.py:302	legacy	M-J	\eJ	agree
+keys.py:303	legacy	C-j	\x0a	agree
+keys.py:304	legacy	C-M-j	\e\x0a	agree
+keys.py:305	legacy	k	k	agree
+keys.py:306	legacy	K	K	agree
+keys.py:307	legacy	M-k	\ek	agree
+keys.py:308	legacy	M-K	\eK	agree
+keys.py:309	legacy	C-k	\x0b	agree
+keys.py:310	legacy	C-M-k	\e\x0b	agree
+keys.py:311	legacy	l	l	agree
+keys.py:312	legacy	L	L	agree
+keys.py:313	legacy	M-l	\el	agree
+keys.py:314	legacy	M-L	\eL	agree
+keys.py:315	legacy	C-l	\x0c	agree
+keys.py:316	legacy	C-M-l	\e\x0c	agree
+keys.py:317	legacy	m	m	agree
+keys.py:318	legacy	M	M	agree
+keys.py:319	legacy	M-m	\em	agree
+keys.py:320	legacy	M-M	\eM	agree
+keys.py:321	legacy	C-m	\x0d	agree
+keys.py:322	legacy	C-M-m	\e\x0d	agree
+keys.py:323	legacy	n	n	agree
+keys.py:324	legacy	N	N	agree
+keys.py:325	legacy	M-n	\en	agree
+keys.py:326	legacy	M-N	\eN	agree
+keys.py:327	legacy	C-n	\x0e	agree
+keys.py:328	legacy	C-M-n	\e\x0e	agree
+keys.py:329	legacy	o	o	agree
+keys.py:330	legacy	O	O	agree
+keys.py:331	legacy	M-o	\eo	agree
+keys.py:332	legacy	M-O	\eO	agree
+keys.py:333	legacy	C-o	\x0f	agree
+keys.py:334	legacy	C-M-o	\e\x0f	agree
+keys.py:335	legacy	p	p	agree
+keys.py:336	legacy	P	P	agree
+keys.py:337	legacy	M-p	\ep	agree
+keys.py:338	legacy	M-P	\eP	agree
+keys.py:339	legacy	C-p	\x10	agree
+keys.py:340	legacy	C-M-p	\e\x10	agree
+keys.py:341	legacy	q	q	agree
+keys.py:342	legacy	Q	Q	agree
+keys.py:343	legacy	M-q	\eq	agree
+keys.py:344	legacy	M-Q	\eQ	agree
+keys.py:345	legacy	C-q	\x11	agree
+keys.py:346	legacy	C-M-q	\e\x11	agree
+keys.py:347	legacy	r	r	agree
+keys.py:348	legacy	R	R	agree
+keys.py:349	legacy	M-r	\er	agree
+keys.py:350	legacy	M-R	\eR	agree
+keys.py:351	legacy	C-r	\x12	agree
+keys.py:352	legacy	C-M-r	\e\x12	agree
+keys.py:353	legacy	s	s	agree
+keys.py:354	legacy	S	S	agree
+keys.py:355	legacy	M-s	\es	agree
+keys.py:356	legacy	M-S	\eS	agree
+keys.py:357	legacy	C-s	\x13	agree
+keys.py:358	legacy	C-M-s	\e\x13	agree
+keys.py:359	legacy	t	t	agree
+keys.py:360	legacy	T	T	agree
+keys.py:361	legacy	M-t	\et	agree
+keys.py:362	legacy	M-T	\eT	agree
+keys.py:363	legacy	C-t	\x14	agree
+keys.py:364	legacy	C-M-t	\e\x14	agree
+keys.py:365	legacy	u	u	agree
+keys.py:366	legacy	U	U	agree
+keys.py:367	legacy	M-u	\eu	agree
+keys.py:368	legacy	M-U	\eU	agree
+keys.py:369	legacy	C-u	\x15	agree
+keys.py:370	legacy	C-M-u	\e\x15	agree
+keys.py:371	legacy	v	v	agree
+keys.py:372	legacy	V	V	agree
+keys.py:373	legacy	M-v	\ev	agree
+keys.py:374	legacy	M-V	\eV	agree
+keys.py:375	legacy	C-v	\x16	agree
+keys.py:376	legacy	C-M-v	\e\x16	agree
+keys.py:377	legacy	w	w	agree
+keys.py:378	legacy	W	W	agree
+keys.py:379	legacy	M-w	\ew	agree
+keys.py:380	legacy	M-W	\eW	agree
+keys.py:381	legacy	C-w	\x17	agree
+keys.py:382	legacy	C-M-w	\e\x17	agree
+keys.py:383	legacy	x	x	agree
+keys.py:384	legacy	X	X	agree
+keys.py:385	legacy	M-x	\ex	agree
+keys.py:386	legacy	M-X	\eX	agree
+keys.py:387	legacy	C-x	\x18	agree
+keys.py:388	legacy	C-M-x	\e\x18	agree
+keys.py:389	legacy	y	y	agree
+keys.py:390	legacy	Y	Y	agree
+keys.py:391	legacy	M-y	\ey	agree
+keys.py:392	legacy	M-Y	\eY	agree
+keys.py:393	legacy	C-y	\x19	agree
+keys.py:394	legacy	C-M-y	\e\x19	agree
+keys.py:395	legacy	z	z	agree
+keys.py:396	legacy	Z	Z	agree
+keys.py:397	legacy	M-z	\ez	agree
+keys.py:398	legacy	M-Z	\eZ	agree
+keys.py:399	legacy	C-z	\x1a	agree
+keys.py:400	legacy	C-M-z	\e\x1a	agree
+keys.py:404	legacy	M-/	\e/	agree
+keys.py:406	legacy	M-~	\e~	agree
+keys.py:406	legacy	M-!	\e!	agree
+keys.py:406	legacy	M-@	\e@	agree
+keys.py:406	legacy	M-#	\e#	agree
+keys.py:406	legacy	M-$	\e$	agree
+keys.py:406	legacy	M-%	\e%	agree
+keys.py:406	legacy	M-^	\e^	agree
+keys.py:406	legacy	M-&	\e&	agree
+keys.py:406	legacy	M-*	\e*	agree
+keys.py:406	legacy	M-(	\e(	agree
+keys.py:406	legacy	M-)	\e)	agree
+keys.py:406	legacy	M-_	\e_	agree
+keys.py:406	legacy	M-+	\e+	agree
+keys.py:406	legacy	M-{	\e{	agree
+keys.py:406	legacy	M-}	\e}	agree
+keys.py:406	legacy	M-|	\e|	agree
+keys.py:406	legacy	M-:	\e:	agree
+keys.py:406	legacy	M-"	\e"	agree
+keys.py:406	legacy	M-<	\e<	agree
+keys.py:406	legacy	M->	\e>	agree
+keys.py:406	legacy	M-?	\e?	agree
+keys.py:407	legacy	Space	 	agree
+keys.py:408	legacy	C-Space	\x00	agree
+keys.py:409	legacy	C-Space	\x00	agree
+keys.py:410	legacy	M-Space	\e 	agree
+keys.py:411	legacy	S-Space	 	agree
+keys.py:412	legacy	C-M-Space	\e\x00	agree
+keys.py:413	legacy	C-S-Space	\x00	agree
+keys.py:414	legacy	M-S-Space	\e 	agree
+keys.py:415	legacy	C-I	\e[105;6u	differs: the kitty spec lets a terminal send a key xterm has no bytes for as CSI u in legacy mode, or not ("Terminals may choose"); fux sends what xterm sends, Tab; fux: \x09
+keys.py:416	legacy	?	none	na: a modifier key pressed alone, which fux has no Key for
+keys.py:417	legacy	?	none	na: a modifier key pressed alone, which fux has no Key for
+keys.py:420	legacy	a	a	agree
+keys.py:421	legacy	a	a	agree
+keys.py:422	legacy	a	a	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:423	legacy	a	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:427	kitty=1	a code=97 mods=0	a	agree
+keys.py:428	kitty=1	Escape code=27 mods=0	\e[27u	agree
+keys.py:429	kitty=1	Enter code=13 mods=0	\x0d	agree
+keys.py:430	kitty=1	S-Enter code=13 mods=1	\e[13;2u	agree
+keys.py:431	kitty=1	Tab code=9 mods=0	\x09	agree
+keys.py:432	kitty=1	BSpace code=127 mods=0	\x7f	agree
+keys.py:433	kitty=1	S-Tab code=9 mods=1	\e[9;2u	agree
+keys.py:435	kitty=1	C-a code=97 mods=4	\e[97;5u	agree
+keys.py:435	kitty=1	M-a code=97 mods=2	\e[97;3u	agree
+keys.py:435	kitty=1	C-A code=97 mods=5	\e[97;6u	agree
+keys.py:435	kitty=1	M-A code=97 mods=3	\e[97;4u	agree
+keys.py:436	kitty=1	C-Space code=32 mods=4	\e[32;5u	agree
+keys.py:438	kitty=1	PageUp code=57421 mods=0	\e[57421u	agree
+keys.py:439	kitty=1	C-PageUp code=57421 mods=4	\e[57421;5u	agree
+keys.py:438	kitty=1	0 code=57399 mods=0	\e[57399u	agree
+keys.py:439	kitty=1	C-0 code=57399 mods=4	\e[57399;5u	agree
+keys.py:440	kitty=1	Up mods=0	\e[A	agree
+keys.py:441	kitty=1	C-Up mods=4	\e[1;5A	agree
+keys.py:445	kitty=2	a code=97 mods=0	a	agree
+keys.py:446	kitty=2	a code=97 mods=0	\e[97;1:2u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:447	kitty=2	a code=97 mods=0	\e[97;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:448	kitty=2	A code=97 mods=1	\e[97;2:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:450	kitty=3	BSpace code=127 mods=0	\x7f	agree
+keys.py:451	kitty=3	BSpace code=127 mods=0	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:453	kitty=3	Enter code=13 mods=192	\x0d	agree
+keys.py:454	kitty=3	Enter code=13 mods=192	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:458	kitty=4	a code=97 mods=0	a	agree
+keys.py:459	kitty=4	a code=97 mods=0 shifted=65	a	agree
+keys.py:460	kitty=4	A code=97 mods=1 shifted=65	\e[97:65;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: A
+keys.py:461	kitty=4	a code=97 mods=0 base=65	\e[97::65u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: a
+keys.py:462	kitty=4	A code=97 mods=1 shifted=65 base=98	\e[97:65:98;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: A
+keys.py:466	kitty=8	a code=97 mods=0	\e[97u	agree
+keys.py:467	kitty=8	a code=97 mods=0	\e[97u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:468	kitty=8	C-a code=97 mods=4	\e[97;5u	agree
+keys.py:469	kitty=8	Up mods=0	\e[A	agree
+keys.py:470	kitty=8	? mods=0	\e[57441u	na: a modifier key pressed alone, which fux has no Key for
+keys.py:471	kitty=8	Enter code=13 mods=0	\e[13u	agree
+keys.py:472	kitty=8	C-Enter code=13 mods=4	\e[13;5u	agree
+keys.py:473	kitty=8	Tab code=9 mods=0	\e[9u	agree
+keys.py:474	kitty=8	BSpace code=127 mods=0	\e[127u	agree
+keys.py:478	kitty=24	a code=97 mods=0	\e[97;;97u	agree
+keys.py:479	kitty=24	A code=97 mods=1	\e[97;2;65u	agree
+keys.py:480	kitty=24	A code=97 mods=1	\e[97;2;65:66u	na: associated text of several characters, which a fux key, one character, cannot carry

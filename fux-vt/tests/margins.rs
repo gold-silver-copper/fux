@@ -540,6 +540,25 @@ fn rep_wraps_and_scrolls_between_the_margins() -> Result {
     Ok(())
 }
 
+/// DECRC with origin mode restored brings the cursor inside the margins,
+/// all four (DEC STD 070, DECRC, note 3 and its algorithm, pp. 5-189 to
+/// 5-190): above the top margin it goes to the top margin, the column kept;
+/// left of the left margin, to the left margin. Here DECSTBM and DECSLRM
+/// set margins the saved cursor, at the home position, lies outside.
+#[test]
+fn decrc_in_origin_mode_brings_the_cursor_inside_the_margins() -> Result {
+    let p = run(24, 80, b"\x1b[?6h\x1b7\x1b[10;15r\x1b8X")?;
+    let rows = lines(&p);
+    assert_eq!(rows.get(9).map(String::as_str), Some("X"), "{rows:?}");
+    assert_eq!(p.screen().cursor_position(), (9, 1));
+    let p = run(3, 12, b"\x1b[?69h\x1b[?6h\x1b7\x1b[5;10s\x1b8X")?;
+    assert_eq!(lines(&p), ["    X", "", ""]);
+    // Outside origin mode nothing is clamped: the home position as saved.
+    let p = run(24, 80, b"\x1b7\x1b[10;15r\x1b8X")?;
+    assert_eq!(lines(&p).first().map(String::as_str), Some("X"));
+    Ok(())
+}
+
 /// DECSC saves the cursor's column as it is, and DECRC in origin mode puts
 /// it back no further right than the right margin, as xterm's
 /// `CursorRestore` does; DECALN resets the margins (xterm: DEC STD 070's

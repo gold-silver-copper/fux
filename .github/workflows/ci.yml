@@ -77,7 +77,74 @@ jobs:
           # and skips every fux-vt test.
           cargo fmt --all --check 2>&1 | tee "$CI_LOGS/fmt.log"
           cargo clippy --workspace --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/clippy.log"
+          # fux-vt's checker, bounds suite and seeds build only with its
+          # `checks` feature: linted with it too.
+          cargo clippy -p fux-vt --features checks --all-targets --locked -- -D warnings 2>&1 | tee -a "$CI_LOGS/clippy.log"
           cargo test --workspace --locked 2>&1 | tee "$CI_LOGS/test.log"
+          # fux-vt's unit tests of its checker (the faults it finds) build
+          # only with `checks`: about a minute beside the workspace's.
+          cargo test -p fux-vt --features checks --lib --locked 2>&1 | tee -a "$CI_LOGS/test.log"
+
+      # fux-vt's bounds suite and its frozen seeds (the `checks` feature),
+      # in release, as debug is too slow for the step's 5 minutes; built in
+      # a step of its own, and run under an 8 GiB data limit, so a bound
+      # that stops holding fails here instead of taking the runner. A row
+      # known to fail is listed in fux-vt/tests/bounds/known-failing.txt,
+      # and the suite fails when one starts holding.
+      - name: fux-vt bounds and seeds build
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds --no-run 2>&1 | tee "$CI_LOGS/bounds-build.log"
+
+      - name: fux-vt bounds and seeds
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # macOS refuses a data limit; the probes' own counts still bound it there.
+          if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
+          cargo test -p fux-vt --features checks --release --locked --test bounds --test seeds 2>&1 | tee "$CI_LOGS/bounds.log"
+
+      # The guard mutants' tests (fux-vt/tests/guards.rs) with `checks`, in
+      # release beside the bounds suite, the one that makes 64 Mi cells
+      # (about 1.5 GiB, so ignored elsewhere) included.
+      - name: fux-vt guard tests, the 1.5 GiB one included
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --features checks --release --locked --test guards -- --include-ignored 2>&1 | tee "$CI_LOGS/guards.log"
+
+      - name: fux-vt wraptest (DEC STD 070 D.6.1)
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --locked --test wraptest 2>&1 | tee "$CI_LOGS/wraptest.log"
+
+      - name: fux-vt xterm.js fixtures
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --locked --test xtermjs 2>&1 | tee "$CI_LOGS/xtermjs.log"
+
+      - name: fux-vt UTF-8 property
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --locked --test utf8_property 2>&1 | tee "$CI_LOGS/utf8-property.log"
+
+      # Ghostty's and vt100-rust's fuzz corpora (vendored, MIT) replayed
+      # under the invariant checker; mosh's (GPL) is an ignored test.
+      - name: fux-vt external corpora
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
+          cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
+
+      - name: libvterm's tests, translated
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          cargo test -p fux-vt --locked --test libvterm 2>&1 | tee "$CI_LOGS/libvterm.log"
 
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
@@ -89,12 +156,12 @@ jobs:
           cargo +1.95 check --workspace --all-targets --locked 2>&1 | tee "$CI_LOGS/msrv.log"
 
       - name: Excluded packages
-        # walk and the fuzz targets use fux and fux-vt by path, so an API
-        # change that breaks them breaks nothing in the workspace.
+        # walk, the fuzz targets and fux-bench use fux and fux-vt by path,
+        # so an API change that breaks them breaks nothing in the workspace.
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          for package in walk fuzz fux-vt/fuzz fux-vt/gen; do
+          for package in walk fuzz fux-vt/fuzz fux-vt/gen bench; do
             cargo fmt --manifest-path "$package/Cargo.toml" --all --check
             cargo clippy --manifest-path "$package/Cargo.toml" --all-targets --locked -- -D warnings
             cargo test --manifest-path "$package/Cargo.toml" --locked
@@ -110,6 +177,38 @@ jobs:
           set -euo pipefail
           cargo fmt --manifest-path fux-vt/compare/Cargo.toml --all --check
           DOCS_RS=1 cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/compare.log"
+          cargo clippy --manifest-path fux-vt/compare/Cargo.toml --all-targets --locked --no-default-features -- -D warnings 2>&1 | tee -a "$CI_LOGS/compare.log"
+
+      # esctest2 at the commit references/fetch.sh pins, fetched once and
+      # cached by that commit.
+      - name: esctest2's pinned commit
+        id: esctest2
+        if: runner.os == 'Linux'
+        run: echo "commit=$(sed -n 's/^esctest_commit=//p' references/fetch.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: runner.os == 'Linux'
+        with:
+          path: references/xterm/esctest2
+          key: esctest2-${{ steps.esctest2.outputs.commit }}
+
+      - name: esctest against fux-vt
+        # fux-vt-compare built without the engines it links (Ghostty's
+        # core needs Zig): esctest2 against fux-vt alone. A test failing
+        # that esctest-expected.txt does not list fails, and so does one
+        # listed that passes.
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        env:
+          COMMIT: ${{ steps.esctest2.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ ! -d references/xterm/esctest2/.git ]]; then
+            git init -q references/xterm/esctest2
+            git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$COMMIT"
+            git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
+          fi
+          cargo run --release --locked --quiet --no-default-features --manifest-path fux-vt/compare/Cargo.toml -- esctest 2>&1 | tee "$CI_LOGS/esctest.log"
 
       - name: fux-vt oracle builds
         # Against this very commit, so both sides share one API and it
@@ -119,13 +218,16 @@ jobs:
         run: |
           set -euo pipefail
           diff/oracle.sh --pin HEAD
-          cargo clippy --manifest-path diff/Cargo.toml -p fux-vt-oracle --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/oracle.log"
+          cargo clippy --manifest-path diff/Cargo.toml -p fux-vt-oracle -p fux-vt-oracle-fuzz --all-targets --locked -- -D warnings 2>&1 | tee "$CI_LOGS/oracle.log"
+          # The families it shares with fux-vt-compare check their own
+          # citations wherever they are built (families.rs, `fux_vt_dir`).
+          cargo test --manifest-path diff/Cargo.toml -p fux-vt-oracle --locked families:: 2>&1 | tee -a "$CI_LOGS/oracle.log"
 
       - name: fux-diff builds
         # It builds the last release beside this code, so a deliberate API
-        # change can break it until its baseline is bumped (diff/README.md).
+        # change breaks it until its baseline is bumped (diff/README.md):
+        # then the bump is part of that change.
         if: runner.os == 'Linux'
-        continue-on-error: true
         run: |
           set -euo pipefail
           cargo fmt --manifest-path diff/Cargo.toml --all --check

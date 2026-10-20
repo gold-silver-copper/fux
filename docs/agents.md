@@ -34,7 +34,7 @@ fux %2 str C-c key send-keys                            # a key: Enter, C-c, Up,
 fux %2 str 1b bytes 30 pause str '[A' text send-keys    # bytes in hex, split by a pause: input that arrives in pieces
 fux opts str 'ssh -n host make' command run             # a remote command: then `%2 wait-exit wait` waits for its end
 fux opts str 'koh connect host' command run            # a remote shell, REPL or TUI: then `%2 str 'make' line`, keys answer settled
-fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as `wrapped capture` counts
+fux %2 str click 3 10 mouse send-mouse                  # a cell from 0, as `wrapped capture` counts (2×COL on a double-width row)
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x     # sizes; also: %2 horizontal split
 fux %2 str TERM signal; fux %2 respawn                  # stop; start again on a new terminal
 fux str agent workspace kill                            # at the end: everything run started, at once
@@ -134,7 +134,8 @@ its end` (a command on a pipe there, which ssh ends with), or `· ssh
 shows another machine's terminal, …: `%2 str TEXT wait-text wait` waits
 for a text it shows`; it is `waiting` once quiet a second, never
 `reading`, and a text wait runs to its limit, never status 7. `· cursor
-ROW,COL` gives the cursor, from 0 as a mouse event counts cells, wherever it
+ROW,COL` gives the cursor, from 0 as a mouse event counts cells (on a
+double-width row, COL is the cell: a click there is at 2×COL), wherever it
 matters: after keys that edited a line a program reads (text typed, Left,
 Up, Backspace; at its end too), when text shows under or right of it on its
 row (an editor), or when the keys moved it and nothing else (End). It is
@@ -188,7 +189,8 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   the program took the one before (`echo`). `N times` (1 to 1000) repeats only the input just before it: `str Down key 2 times str Enter key` is Down Down Enter.
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (`right`, `wheel-up`,
   `press`, `release`, `move`), a cell counted from 0 as `wrapped capture` counts:
-  a program's own "row 22" hint is usually counted from 1.
+  a program's own "row 22" hint is usually counted from 1. On a double-width
+  row (DECDWL, DECDHL) each cell takes two columns: click at 2×COL.
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) answers once the program
   exits or settles; `%2 kill` closes one pane; `%2 respawn` starts it
   again, on a new terminal.
@@ -231,8 +233,12 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   limit (VTIME, or the gap after its first key) is `waiting`, not 7: it
   returns alone, so a text wait runs to its limit (124). The answer is the
   screen (it starts `… earlier lines not kept (past history-bytes)` if lines
-  written since were let go, or `… more came than the pane's journal keeps
-  (journal-bytes): text may have passed unseen`, 32 MiB by default). Status 3: the program exited first.
+  written since were let go, `… more came than the pane's journal keeps
+  (journal-bytes): text may have passed unseen`, 32 MiB by default, or `… a
+  piece of output printed more than fux records of one (…)`: text may have
+  passed unseen, as one piece of output printed more than fux records of it
+  between reads, or after many runs, or a resize). Status 3: the program
+  exited first.
   A met `wait-exit` answers status 0, `%2 exited 3` and what came: the
   program's own status is in its state (`str exited get`).
 
@@ -248,7 +254,8 @@ likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
   it, a path or a word never split, and `rows` takes each line it touches
   whole), `marks`, `styles`,
   `json` (screen and state: `cursor` the screen's row and column, as the
-  state line's `· cursor ROW,COL` and `wrapped` count them; blanks at a
+  state line's `· cursor ROW,COL` and `wrapped` count them, a cell on a
+  double-width row; blanks at a
   line's end painted, with `styles`, kept; `wrap_pending` when a glyph went into the last column and the next
   goes on the next line, though the cursor shows on that last cell). Rows and columns count from 0. Keys after
   which a program leaves its full screen answer what it printed after (in

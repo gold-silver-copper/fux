@@ -4,13 +4,21 @@
 //! nothing more comes out or the time is up. Every case tried must be safe
 //! to allocate (`Case::is_safe`), so making a size that was refused
 //! smaller never makes one that allocates gigabytes.
-use crate::case::{Case, Difference, Step, check};
+use crate::case::{Case, Count, Difference, Step, check};
 use std::time::Instant;
 
-/// Whether the candidate still differs.
-fn differs(case: &Case) -> bool {
-    case.is_safe() && check(case).is_err()
+/// What a difference is in, its numbers left out: shrinking moves rows,
+/// columns and items, so a candidate that differs in the same field at
+/// another place still reproduces it, and one that differs in another
+/// field is another difference.
+fn field(difference: &Difference) -> String {
+    (difference.what.chars())
+        .filter(|c| !c.is_ascii_digit())
+        .collect()
 }
+
+/// How a case is run and compared: `check`, or a test's stand-in.
+type Check<'a> = &'a dyn Fn(&Case) -> Result<Count, Difference>;
 
 /// `items` with as many taken out as can be while `keep` holds: halves,
 /// then quarters, down to one at a time.
@@ -45,7 +53,7 @@ fn with_bytes(case: &Case, i: usize, bytes: &[u8]) -> Case {
     if let Some(step) = c.steps.get_mut(i) {
         match step {
             Step::Output(b) | Step::Frame(b) => *b = bytes.to_vec(),
-            Step::Resize(..) | Step::Copy(_) => {}
+            Step::Resize(..) | Step::Copy(_) | Step::Host(_) => {}
         }
     }
     c
@@ -62,14 +70,15 @@ fn simpler(case: &Case) -> Vec<Case> {
             out.push(c);
         }
     };
-    push(&|c| c.history = 0);
-    push(&|c| c.history /= 2);
+    push(&|c| c.history_bytes = 0);
+    push(&|c| c.history_bytes /= 2);
     push(&|c| c.rows = (c.rows / 2).max(1));
     push(&|c| c.cols = (c.cols / 2).max(1));
     push(&|c| c.rows = c.rows.saturating_sub(1).max(1));
     push(&|c| c.cols = c.cols.saturating_sub(1).max(1));
     push(&|c| c.setup.identity = None);
-    for flag in 0..12 {
+    let flags = case.clone().setup.flags().len();
+    for flag in 0..flags {
         push(&|c| {
             if let Some((_, on)) = c.setup.flags().into_iter().nth(flag) {
                 *on = false;
@@ -99,8 +108,15 @@ fn simpler(case: &Case) -> Vec<Case> {
 }
 
 /// The smallest case found by `until` that still differs from `case`,
-/// which differs (`first`, its difference).
+/// which differs (`first`, its difference), in the same field.
 pub fn shrink(case: &Case, first: &Difference, until: Instant) -> Case {
+    shrink_by(case, first, until, &check)
+}
+
+/// `shrink`, each case run and compared by `check`.
+fn shrink_by(case: &Case, first: &Difference, until: Instant, check: Check<'_>) -> Case {
+    let kind = field(first);
+    let differs = |case: &Case| case.is_safe() && check(case).is_err_and(|d| field(&d) == kind);
     let mut best = case.clone();
     // Nothing after the step that differed matters.
     if let Some(step) = first.step {
@@ -131,7 +147,7 @@ pub fn shrink(case: &Case, first: &Difference, until: Instant) -> Case {
         for i in 0..best.steps.len() {
             let bytes = match best.steps.get(i) {
                 Some(Step::Output(b) | Step::Frame(b)) => b.clone(),
-                Some(Step::Resize(..) | Step::Copy(_)) | None => continue,
+                Some(Step::Resize(..) | Step::Copy(_) | Step::Host(_)) | None => continue,
             };
             let reduced = reduce(
                 &bytes,
@@ -151,5 +167,56 @@ pub fn shrink(case: &Case, first: &Difference, until: Instant) -> Case {
         if best == before || Instant::now() > until {
             return best;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Setup;
+
+    /// A stand-in for the two sides: an output holding `b` differs in a
+    /// row's cell, one holding `a` alone in the cursor.
+    fn sides(case: &Case) -> Result<Count, Difference> {
+        let holds =
+            |byte| (case.steps.iter()).any(|s| matches!(s, Step::Output(b) if b.contains(&byte)));
+        let differ = |what: &str| Difference {
+            step: Some(0),
+            what: what.into(),
+            base: String::new(),
+            work: String::new(),
+        };
+        if holds(b'b') {
+            let at = case.bytes();
+            Err(differ(&format!("row {at} from the bottom: cell")))
+        } else if holds(b'a') {
+            Err(differ("cursor"))
+        } else {
+            Ok(Count::default())
+        }
+    }
+
+    /// A case that differs in two fields shrinks to one that still differs
+    /// in the first one found, wherever it now is, not to the smaller one
+    /// that differs in the other; and the palette, the last of the setup's
+    /// flags, is turned off too.
+    #[test]
+    fn shrinking_keeps_the_field_that_differed() {
+        let mut setup = Setup::pane();
+        setup.palette = true;
+        let case = Case {
+            rows: 4,
+            cols: 10,
+            history_bytes: 0,
+            setup,
+            steps: vec![Step::Output(b"xxbxxxxaxx".to_vec())],
+        };
+        let first = sides(&case).err();
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        let small = first.map(|first| shrink_by(&case, &first, until, &sides));
+        assert_eq!(
+            small.map(|c| (c.steps, c.setup.palette)),
+            Some((vec![Step::Output(b"b".to_vec())], false))
+        );
     }
 }

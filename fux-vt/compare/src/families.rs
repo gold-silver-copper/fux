@@ -18,6 +18,8 @@ pub enum Status {
     /// what the feature's spec says. Left out of a random run, and checked
     /// beside them by `verdicts`, which also runs the standard's test; with
     /// no check, the standard's test passing or xterm agreeing, it fails.
+    /// A standard's family's named cases are judged first by their expected
+    /// fields (`cases::EXPECTED`), and `by` decides only the rest.
     Decided {
         why: &'static str,
         by: &'static [&'static str],
@@ -68,14 +70,14 @@ impl Authority {
         let (file, function) = test
             .split_once("::")
             .ok_or_else(|| format!("{test}: not file::function"))?;
-        let manifest = format!("{}/../Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let manifest = fux_vt_dir().join("Cargo.toml");
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let out = std::process::Command::new(cargo)
             .args([
                 "test",
                 "--quiet",
                 "--manifest-path",
-                &manifest,
+                &manifest.to_string_lossy(),
                 "--test",
                 file,
             ])
@@ -103,14 +105,26 @@ impl std::fmt::Display for Authority {
     }
 }
 
+/// fux-vt's directory: found up from the crate this file is built in,
+/// fux-vt-compare (`fux-vt/compare`) or the oracle (`diff/oracle`), which
+/// takes this file by its path, as the repository's `fux-vt` beside them.
+fn fux_vt_dir() -> std::path::PathBuf {
+    let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    built
+        .ancestors()
+        .map(|dir| dir.join("fux-vt"))
+        .find(|dir| dir.join("tests").is_dir())
+        .unwrap_or_else(|| built.join(".."))
+}
+
 /// Whether fux-vt's test `test` (`file::function`) exists and its doc
 /// comment, its lines joined, cites `section`.
 fn cited(section: &str, test: &str) -> Result<(), String> {
     let (file, function) = test
         .split_once("::")
         .ok_or_else(|| format!("{test}: not file::function"))?;
-    let path = format!("{}/../tests/{file}.rs", env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let path = fux_vt_dir().join("tests").join(format!("{file}.rs"));
+    let source = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let lines: Vec<&str> = source.lines().collect();
     let at = lines
         .iter()
@@ -220,6 +234,15 @@ fn clusters(r: &mut Rng) -> Vec<u8> {
     .into_bytes()
 }
 
+/// SUB in ground and inside an escape sequence, a CSI and an OSC, which it
+/// cuts short, and CAN beside it; text before and after.
+fn substitute(r: &mut Rng) -> Vec<u8> {
+    let cut = pick(r, &["", "", "\x1b(", "\x1b[1", "\x1b[?25", "\x1b]0;x"]);
+    let control = pick(r, &["\x1a", "\x1a", "\x18"]);
+    let after = pick(r, &["a", "bc", "\x1b[2b", "\r\n"]);
+    format!("x{cut}{control}{after}").into_bytes()
+}
+
 /// The C0 controls, but HT, which ends a pending wrap where xterm keeps it
 /// (`pending-wrap`'s `tab-ends-a-pending-wrap`, settled by its test).
 fn controls(r: &mut Rng) -> Vec<u8> {
@@ -256,6 +279,35 @@ fn rectangles(r: &mut Rng) -> Vec<u8> {
         0 => format!("\x1b[{};{corners}$x", pick(r, &["", "35", "113", "233"])),
         1 => format!("\x1b[{corners}${}", pick(r, &["z", "{"])),
         _ => format!("\x1b[{corners};1;{};{};1$v", number(r), number(r)),
+    }
+    .into_bytes()
+}
+
+/// DECDHL, DECSWL and DECDWL on the cursor's line, and moves onto lines
+/// that have one.
+fn renditions(r: &mut Rng) -> Vec<u8> {
+    match r.below(3) {
+        0 => pick(r, &["\x1b#3", "\x1b#4", "\x1b#5", "\x1b#6"]),
+        1 => format!("\x1b[{};{}H", number(r), number(r)),
+        _ => csi(r, &["A", "B", "C", "@", "P", "J", "K"]),
+    }
+    .into_bytes()
+}
+
+fn protection(r: &mut Rng) -> Vec<u8> {
+    match r.below(4) {
+        0 => pick(
+            r,
+            &["\x1b[1\"q", "\x1b[0\"q", "\x1b[2\"q", "\x1bV", "\x1bW"],
+        ),
+        1 => pick(
+            r,
+            &[
+                "\x1b[?J", "\x1b[?1J", "\x1b[?2J", "\x1b[?K", "\x1b[?1K", "\x1b[?2K",
+            ],
+        ),
+        2 => pick(r, &["\x1b[J", "\x1b[K", "\x1b[1K", "\x1b[3X"]),
+        _ => format!("\x1b[{};{}H", number(r), number(r)),
     }
     .into_bytes()
 }
@@ -492,12 +544,36 @@ fn charset_g2_g3(r: &mut Rng) -> Vec<u8> {
     if r.chance(50) {
         return charset(r);
     }
-    pick(
-        r,
-        &[
-            "\x1b*0", "\x1b*B", "\x1b+0", "\x1b+B", "\x1bn", "\x1bo", "\x1bN", "\x1bO",
-        ],
-    )
+    // A shift comes after its set is designated: the set a set holds
+    // before any designation is `charset-supplemental`'s.
+    let set = pick(r, &["0", "B"]);
+    match r.below(3) {
+        0 => format!("\x1b{}{set}", pick(r, &["*", "+"])),
+        1 => format!("\x1b*{set}{}", pick(r, &["\x1bn", "\x1bN"])),
+        _ => format!("\x1b+{set}{}", pick(r, &["\x1bo", "\x1bO"])),
+    }
+    .into_bytes()
+}
+
+/// G2 and G3 as level 2 starts them, DEC Supplemental, shifted in with no
+/// designation; designated so by `% 5` and `<`; and the set's characters.
+fn charset_supplemental(r: &mut Rng) -> Vec<u8> {
+    match r.below(3) {
+        0 => pick(
+            r,
+            &[
+                "\x1bn",
+                "\x1bo",
+                "\x1bN",
+                "\x1bO",
+                "\x0f",
+                "\x1b)%5\x0e",
+                "\x1b*<",
+            ],
+        ),
+        1 => pick(r, &["!", "(", "W", "]", "_", "w", "}", "~", "$", "A"]),
+        _ => pick(r, &["\x1b[!p", "\x1bc", "\x1b*B"]),
+    }
     .into_bytes()
 }
 
@@ -793,7 +869,7 @@ pub const FAMILIES: &[Family] = &[
         name: "rectangles",
         about: "DECFRA, DECERA, DECSERA and DECCRA",
         status: Status::Decided {
-            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`)",
+            why: "DEC STD 070's rectangular area operations (5.12.1, level 4), which xterm implements as fux-vt does, and every other engine of the panel ignores, outvoting fux-vt (`replay --engines all --size 4x6 'abcdef\\r\\nghijkl\\e[88;1;2;2;4$x'`). In origin mode, which the generator leaves out, xterm clamps a rectangle to the margins, where DEC STD 070 clamps it to the page (\"This control is not otherwise affected by the margins\"), as fux-vt does (`replay --engines xterm --size 4x6 'abcdef\\r\\nghijkl\\r\\nmnopqr\\r\\nstuvwx\\e[2;3r\\e[?69h\\e[2;4s\\e[?6h\\e[88;1;1;9;9$x'`)",
             by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, 5.12.1",
@@ -802,6 +878,34 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: rectangles,
+    },
+    Family {
+        name: "renditions",
+        about: "DECSWL, DECDWL and DECDHL (ESC # 5, 6, 3, 4), then cursor movement, edits and erases",
+        status: Status::Decided {
+            why: "a line that is not single width is half as long (DEC STD 070, 5.6.1, and 5.14.1's end_of_line): its cells past half the screen are lost as it is set, and the cursor, printing and ICH and DCH stop at its end, as fux-vt does and libvterm does on these (`replay --engines all --size 3x10 'abcdefghij\\r\\e#6\\e#5' '\\e#6\\e[1;9HZ' '\\e#6abcdefgh' '\\e[3;1H\\e#6\\e[2;8H\\e[BX'`); xterm keeps the cells, hidden, and lets the cursor past the line's end, and Ghostty, alacritty, avt, wezterm, vt100, xterm.js and tmux ignore the four, outvoting fux-vt. libvterm splits elsewhere in what the generator writes (the pending wrap, see `controls`), so the test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, 5.6.1",
+                test: "renditions::line_renditions_halve_the_line_and_lose_what_is_past_its_end",
+            },
+        },
+        ratty_only: false,
+        generate: renditions,
+    },
+    Family {
+        name: "protection",
+        about: "DECSCA and SPA/EPA, then DECSED and DECSEL, ED, EL and ECH",
+        status: Status::Decided {
+            why: "DECSCA protects a glyph from DECSED and DECSEL, and SPA/EPA from ED, EL and ECH too (ISO 6429's protection), each glyph keeping its own, and a selective erase leaves each position its rendition (DEC STD 070, DECSCA, DECSED and DECSEL; ECMA-48 8.3.112 and 8.3.48), as fux-vt does; xterm gives the erased positions the pen's colours, and no engine of the panel but xterm keeps protection, so the test alone checks it (HAR-46, so that the oracle draws it)",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, DECSEL and DECSED",
+                test: "protection::selective_erase_leaves_each_position_its_rendition",
+            },
+        },
+        ratty_only: false,
+        generate: protection,
     },
     Family {
         name: "edit",
@@ -844,7 +948,7 @@ pub const FAMILIES: &[Family] = &[
         name: "origin",
         about: "DECOM with a scroll region, then cursor movement",
         status: Status::Differs(
-            "fux-vt addresses lines in origin mode as DEC STD 070 (DECOM) and xterm do, and the panel splits on an invalid DECSTBM (see scroll) and on one-column screens, where Ghostty and alacritty wrap after HPA (`replay --engines all --size 11x1 '\\e[10;99r\\e[?6h\\e[2`o'`). Ghostty, alacritty and xterm.js count VPR in origin mode from the top margin twice, outvoted by xterm, libvterm, avt and wezterm (`replay --engines all --size 6x5 '\\e[2;6r\\e[?6h\\e[3eX'`). Against xterm alone, what differs is history: xterm, Ghostty and alacritty keep the lines that scroll off a region whose top is the screen's, and fux-vt keeps only those of whole-screen scrolls (documented)",
+            "fux-vt addresses lines in origin mode as DEC STD 070 (DECOM) and xterm do, and the panel splits on an invalid DECSTBM (see scroll) and on one-column screens, where Ghostty and alacritty wrap after HPA (`replay --engines all --size 11x1 '\\e[10;99r\\e[?6h\\e[2`o'`). Ghostty, alacritty and xterm.js count VPR in origin mode from the top margin twice, outvoted by xterm, libvterm, avt and wezterm (`replay --engines all --size 6x5 '\\e[2;6r\\e[?6h\\e[3eX'`). Against xterm alone, what differs is history: xterm, Ghostty and alacritty keep the lines that scroll off a region whose top is the screen's, and fux-vt keeps only those of whole-screen scrolls (documented); and DECRC with origin mode restored brings the cursor inside the margins, as DEC STD 070 says (DECRC, note 3 and its algorithm; `margins::decrc_in_origin_mode_brings_the_cursor_inside_the_margins`), where xterm leaves the line above the top margin as saved (`replay --engines xterm --size 24x80 '\\e[?6h\\e7\\e[10;15r\\e8X'`)",
         ),
         ratty_only: false,
         generate: origin,
@@ -947,7 +1051,7 @@ pub const FAMILIES: &[Family] = &[
         name: "tabs",
         about: "HT, HTS, TBC, CHT and CBT",
         status: Status::Decided {
-            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it. TBC with several parameters acts on each in turn, as DEC STD 070's algorithm (TBC, p. 5-66) does, and fux-vt does; xterm and Ghostty read only the first (`replay --engines xterm,ghostty --size 1x20 '\\e[0;3g\\tX'`), and its test (`conformance::tbc_acts_on_each_of_its_parameters`) checks it",
+            why: "CBT with a wrap pending moves back a tab stop from the last column, the active position, as ECMA-48 (8.3.7) says, and ends the wrap, as DEC STD 070 (Appendix D.6.1) ends it for a control that may move the cursor, and fux-vt does: Ghostty, alacritty, libvterm, avt and wezterm move back; xterm moves its cursor but keeps the wrap pending, so the next glyph wraps, and xterm.js leaves the cursor (`replay --engines all --size 2x10 'abcdefghij\\e[ZX'`). HT and CHT end a pending wrap too (see `controls`), where xterm keeps it. avt, which agrees most, counts a pending wrap as one column past the last (`replay --engines avt --size 1x9 'abcdefghi\\e[Z'`), so the test alone checks it. TBC with several parameters acts on each in turn, as DEC STD 070's algorithm (TBC, p. 5-66) does, and fux-vt does; xterm and Ghostty read only the first (`replay --engines xterm,ghostty --size 1x20 '\\e[0;3g\\tX'`), and its test (`conformance::tbc_acts_on_each_of_its_parameters`) checks it. TBC 2 and 5 clear every stop, as ECMA-48 (8.3.154, TSM's MULTIPLE) says and fux-vt does (`conformance::tbc_acts_on_each_of_its_parameters`), where xterm does nothing (`replay --engines xterm --size 1x20 '\\e[5g\\tX'`)",
             by: &[],
             authority: Authority::Standard {
                 section: "ECMA-48 8.3.7",
@@ -977,6 +1081,20 @@ pub const FAMILIES: &[Family] = &[
         },
         ratty_only: false,
         generate: charset_g2_g3,
+    },
+    Family {
+        name: "charset-supplemental",
+        about: "DEC Supplemental Graphics: G2 and G3 as level 2 starts and resets them, `% 5` and `<`, and its characters",
+        status: Status::Decided {
+            why: "at level 2, G2 and G3 hold DEC Supplemental at power-up and soft reset (DEC STD 070, 3.6.4.2), so SS2 and LS2 reach it with no designation, as fux-vt does; xterm and every other engine have ASCII there (`replay --engines all --size 1x6 '\\eNA'`), and xterm in UTF-8 maps none of the set's characters but the positions it leaves empty, which it shows as fux-vt does (`replay --engines xterm --size 1x6 '\\e)%5\\x0e\\x21\\x7e\\x0f'`). The test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "DEC STD 070, 3.6.4.2",
+                test: "conformance::dec_supplemental_graphics_is_in_g2_and_g3_at_level_2",
+            },
+        },
+        ratty_only: false,
+        generate: charset_supplemental,
     },
     Family {
         name: "repeat",
@@ -1069,7 +1187,14 @@ pub const FAMILIES: &[Family] = &[
     Family {
         name: "kitty",
         about: "kitty keyboard flags: push, pop and set",
-        status: Status::Agree,
+        status: Status::Decided {
+            why: "fux-vt keeps and reports only the flags fux honours, 1, 4, 8 and 16, not report event types (2), as fux sends no repeats or releases: the kitty spec's \"Detection of support\" has a program learn what a terminal implementing a subset does by setting the flags and asking. Ghostty, alacritty and wezterm, which send release events, keep 2; libvterm and avt keep no flags (`replay --engines all --size 1x1 '\\e[>3u'`). The test alone checks it",
+            by: &[],
+            authority: Authority::Standard {
+                section: "the kitty keyboard protocol's Detection of support",
+                test: "extended::kitty_keyboard_flags_push_set_pop_and_answer_queries",
+            },
+        },
         ratty_only: false,
         generate: kitty,
     },
@@ -1106,6 +1231,20 @@ pub const FAMILIES: &[Family] = &[
         generate: invalid_utf8,
     },
     Family {
+        name: "substitute",
+        about: "SUB in ground and inside sequences and strings, and CAN",
+        status: Status::Decided {
+            why: "SUB displays the error character, a reversed question mark (U+2426), at the active position, in ground and in place of a sequence it aborts, as DEC STD 070's SUBSTITUTE (p. 5-132, note 2) and its C0 table (5.9.1) say and xterm does; CAN shows none. Every other engine of the panel drops SUB as CAN, outvoting fux-vt (`replay --engines all --size 1x6 'a\\x1ab'`). The standard contradicts itself in its parsing algorithm (3.5.5), which cancels with no glyph; chapter 5, the function's own page, decides (decisions.md 4). Inside a control string, which SUB ends (3.5.4.4), the glyph shows too, as in xterm",
+            by: XTERM,
+            authority: Authority::Standard {
+                section: "DEC STD 070, SUBSTITUTE",
+                test: "conformance::sub_is_displayed_as_the_error_character",
+            },
+        },
+        ratty_only: false,
+        generate: substitute,
+    },
+    Family {
         name: "hostile",
         about: "random bytes from an alphabet of sequence pieces",
         status: Status::Differs(
@@ -1125,6 +1264,279 @@ pub const FAMILIES: &[Family] = &[
     },
 ];
 
+/// Whether `text` is `pattern`, each `*` in it standing for any run of
+/// characters.
+/// Where a family that differs departs from the engine it is judged
+/// beside (xterm, the authority where the standards are silent; Ghostty for
+/// grapheme clusters, which xterm lacks and Ghostty's mode 2027 defines):
+/// what makes it (the case's output, all its writes
+/// in order, and its size, rows and columns), the fields that then differ,
+/// and why fux-vt is right there, by the section or document that decides.
+pub struct Departure {
+    pub why: &'static str,
+    pub when: fn(&[u8], u16, u16) -> bool,
+    pub fields: &'static [&'static str],
+}
+
+/// Each family that differs, judged by `verdicts` beside the engine named
+/// in random cases of it and text, each snippet a write of its own (bytes
+/// that arrive together xterm's jump scroll draws differently): a case
+/// that differs where no departure of its family covers fails; how many
+/// cases each departure covered is printed (one rare in the generator may
+/// cover none in a run). Not listed: hostile, which mixes every
+/// family, and resize, which reflows where xterm does not and differs from
+/// Ghostty's reflow by design (its status).
+pub const DEPARTURES: &[(&str, &str, &[Departure])] = &[
+    (
+        "scroll",
+        "xterm",
+        &[
+            BOTTOM_PAST_SCREEN,
+            SCROLL_ZERO,
+            REGION_HISTORY,
+            WRAP_BELOW_REGION,
+        ],
+    ),
+    ("origin", "xterm", &[BOTTOM_PAST_SCREEN, REGION_HISTORY]),
+    ("alternate", "xterm", &[]),
+    ("insert-mode", "xterm", &[]),
+    (
+        "clusters",
+        "ghostty",
+        &[
+            LONE_INDICATOR,
+            PREPEND,
+            WIDENED_AT_THE_EDGE,
+            WIDE_ON_ONE_COLUMN,
+            MARK_ON_ONE_COLUMN,
+        ],
+    ),
+];
+
+/// Each CSI sequence in `bytes`: its private marker, if any, its
+/// parameters (none for an empty one) and its final byte.
+fn csis(bytes: &[u8]) -> Vec<(Option<u8>, Vec<Option<u32>>, u8)> {
+    let mut out = Vec::new();
+    let mut rest = bytes;
+    while let Some(at) =
+        (0..rest.len()).find(|&i| rest.get(i..).is_some_and(|r| r.starts_with(b"\x1b[")))
+    {
+        rest = rest.get(at.saturating_add(2)..).unwrap_or_default();
+        let private = rest.first().copied().filter(|b| b"?<=>".contains(b));
+        let body = rest
+            .get(usize::from(private.is_some())..)
+            .unwrap_or_default();
+        let len = body
+            .iter()
+            .position(|b| !(b.is_ascii_digit() || *b == b';'))
+            .unwrap_or(body.len());
+        let (Some(text), Some(&last)) = (body.get(..len), body.get(len)) else {
+            break;
+        };
+        let params = (text.split(|b| *b == b';'))
+            .map(|p| std::str::from_utf8(p).ok().and_then(|p| p.parse().ok()))
+            .collect();
+        out.push((private, params, last));
+        rest = body.get(len..).unwrap_or_default();
+    }
+    out
+}
+
+/// The characters of `bytes`.
+fn chars(bytes: &[u8]) -> Vec<char> {
+    String::from_utf8_lossy(bytes).chars().collect()
+}
+
+fn indicator(c: Option<&char>) -> bool {
+    c.is_some_and(|c| ('\u{1f1e6}'..='\u{1f1ff}').contains(c))
+}
+
+const LONE_INDICATOR: Departure = Departure {
+    why: "a regional indicator with no other beside it is one column, as in xterm, alacritty, \
+          libvterm, xterm.js and tmux, where Ghostty makes it two (the family's status)",
+    // Or any, on a screen too narrow for the flag a pair makes.
+    when: |bytes, _, cols| {
+        let c = chars(bytes);
+        (0..c.len()).any(|i| {
+            indicator(c.get(i))
+                && (cols < 2
+                    || !indicator(i.checked_sub(1).and_then(|p| c.get(p)))
+                        && !indicator(c.get(i.saturating_add(1))))
+        })
+    },
+    fields: &["*"],
+};
+
+const PREPEND: Departure = Departure {
+    why: "a Prepend character joins what follows it, as UAX #29 (GB9b) has it and mode 2027 \
+          requires, where Ghostty, as every engine of the panel, breaks after it",
+    when: |bytes, _, _| {
+        chars(bytes)
+            .iter()
+            .any(|c| ('\u{600}'..='\u{605}').contains(c))
+    },
+    fields: &["*"],
+};
+
+/// The grapheme clusters of the text in `bytes`, as fux-vt joins what it
+/// prints (`fux_vt::continues_cluster`), controls and sequences breaking
+/// them (an ESC ends a cluster; what follows it is read as text, which
+/// only adds clusters).
+fn clusters_of(bytes: &[u8]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut joining = false;
+    for c in chars(bytes) {
+        if c.is_control() {
+            joining = false;
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if joining && fux_vt::continues_cluster(last, c) => last.push(c),
+            _ => out.push(c.to_string()),
+        }
+        joining = true;
+    }
+    out
+}
+
+/// Whether a cluster in `bytes` takes two columns though its first
+/// character takes one or none: a join widened it (VS16, a flag, a
+/// conjunct, an emoji modifier on a narrow base).
+fn widened(bytes: &[u8]) -> bool {
+    clusters_of(bytes).iter().any(|cluster| {
+        fux_vt::str_width(cluster) >= 2
+            && (cluster.chars().next())
+                .and_then(fux_vt::char_width)
+                .is_some_and(|w| w < 2)
+    })
+}
+
+const WIDENED_AT_THE_EDGE: Departure = Departure {
+    why: "a cluster a join widens (VS16, a flag, a conjunct) stays narrow in the last column, \
+          as a wide glyph would not fit there, where Ghostty wraps it (the family's status, \
+          README's Grapheme clusters row)",
+    when: |bytes, _, _| widened(bytes),
+    fields: &["*"],
+};
+
+const WIDE_ON_ONE_COLUMN: Departure = Departure {
+    why: "on a one-column screen a glyph or cluster two columns wide is dropped or kept narrow, \
+          as xterm drops a wide glyph there (the `wide` family, decided by xterm), where Ghostty \
+          keeps it with a wrap pending",
+    when: |bytes, _, cols| {
+        cols < 2
+            && clusters_of(bytes)
+                .iter()
+                .any(|cluster| fux_vt::str_width(cluster) >= 2)
+    },
+    fields: &["*"],
+};
+
+const MARK_ON_ONE_COLUMN: Departure = Departure {
+    why: "on a one-column screen a character of no width joins the glyph waiting to wrap, as \
+          UAX #29 (GB9) joins it and xterm, alacritty, libvterm, wezterm, vt100 and tmux do, \
+          where Ghostty drops it",
+    when: |bytes, _, cols| {
+        cols < 2
+            && chars(bytes)
+                .iter()
+                .any(|&c| fux_vt::char_width(c) == Some(0))
+    },
+    fields: &["*"],
+};
+
+/// A DECSTBM in the output whose bottom is past the screen.
+fn bottom_past_screen(bytes: &[u8], rows: u16, _: u16) -> bool {
+    csis(bytes).iter().any(|(private, params, last)| {
+        *last == b'r'
+            && private.is_none()
+            && params
+                .get(1)
+                .copied()
+                .flatten()
+                .is_some_and(|b| b > u32::from(rows))
+    })
+}
+
+const BOTTOM_PAST_SCREEN: Departure = Departure {
+    why: "a DECSTBM whose bottom is past the screen is ignored, as DEC STD 070 says (DECSTBM, \
+          note 3), where xterm takes it as the last line: what follows is laid out in other \
+          margins",
+    when: bottom_past_screen,
+    fields: &["*"],
+};
+
+const SCROLL_ZERO: Departure = Departure {
+    why: "`CSI 0 T` scrolls a line, fux-vt's parameters not telling 0 from empty, where xterm \
+          reads it as mouse tracking",
+    when: |bytes, _, _| {
+        (csis(bytes).iter()).any(|(p, params, last)| {
+            p.is_none() && *last == b'T' && params.first().copied().flatten() == Some(0)
+        })
+    },
+    fields: &["*"],
+};
+
+const REGION_HISTORY: Departure = Departure {
+    why: "a region whose top is the screen's keeps no history in fux-vt, which keeps only the \
+          lines whole-screen scrolls push off (documented), where xterm keeps those that scroll \
+          off such a region too",
+    when: |bytes, rows, _| {
+        csis(bytes).iter().any(|(p, params, last)| {
+            let top = params.first().copied().flatten().unwrap_or(1);
+            let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
+            p.is_none() && *last == b'r' && top <= 1 && bottom < u32::from(rows)
+        })
+    },
+    fields: &["history *"],
+};
+
+const WRAP_BELOW_REGION: Departure = Departure {
+    why: "a glyph that wraps on the screen's last row below the region overwrites that row's \
+          first column, the line going on in no row, so fux-vt leaves the row unwrapped (a soft \
+          wrap is a line going on in the next row, `Row::wrapped`); xterm 411's WrapLine sets \
+          LINEWRAPPED before xtermIndex, which cannot move there (charproc.c, cursor.c), and \
+          the flag shows once a scroll brings the row up",
+    when: |bytes, rows, _| {
+        csis(bytes).iter().any(|(p, params, last)| {
+            let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
+            p.is_none() && *last == b'r' && bottom > 0 && bottom < u32::from(rows)
+        })
+    },
+    fields: &["row * soft-wrapped"],
+};
+
+/// The engine `family` is judged beside and its departures, if it is
+/// judged so.
+pub fn departures(family: &str) -> Option<(&'static str, &'static [Departure])> {
+    (DEPARTURES.iter())
+        .find(|(f, _, _)| *f == family)
+        .map(|(_, beside, d)| (*beside, *d))
+}
+
+pub fn glob(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => {
+                rest = rest
+                    .get(at.saturating_add(part.len())..)
+                    .unwrap_or_default()
+            }
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
 pub fn find(name: &str) -> Option<usize> {
     FAMILIES.iter().position(|f| f.name == name)
 }
@@ -1132,6 +1544,45 @@ pub fn find(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{Authority, FAMILIES, Status, XTERM};
+
+    /// The departures' triggers find what they name, and nothing else.
+    #[test]
+    fn a_departure_is_made_by_what_it_names() {
+        assert!(super::bottom_past_screen(b"x\x1b[2;99rX", 24, 80));
+        assert!(!super::bottom_past_screen(
+            b"x\x1b[2;24rX\x1b[?2;99r",
+            24,
+            80
+        ));
+        let lone = super::LONE_INDICATOR.when;
+        assert!(lone("a\u{1f1fa}b".as_bytes(), 4, 10));
+        assert!(!lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 10));
+        assert!(lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 1));
+        let below = super::WRAP_BELOW_REGION.when;
+        assert!(below(b"\x1b[0;2r\x1b[10H@#", 6, 1));
+        assert!(!below(b"\x1b[2;6r\x1b[10H@#", 6, 1));
+        assert!(!below(b"@#", 6, 1));
+        let widened = super::WIDENED_AT_THE_EDGE.when;
+        assert!(widened("\u{2764}\u{fe0f}".as_bytes(), 1, 3));
+        assert!(widened("\u{1f44d}\u{1f1fa}\u{1f1f8}".as_bytes(), 1, 3));
+        assert!(widened("aa\u{915}\u{94d}\u{937}".as_bytes(), 3, 3));
+        assert!(!widened("\u{4e00}e\u{301}".as_bytes(), 1, 3));
+        assert!(!widened("\u{1f1fa}a\u{1f1f8}".as_bytes(), 1, 3));
+        let one = super::WIDE_ON_ONE_COLUMN.when;
+        assert!(one("\u{1100}".as_bytes(), 1, 1));
+        assert!(!one("\u{1100}".as_bytes(), 1, 2));
+        assert!(!one("e\u{301}".as_bytes(), 1, 1));
+        let mark = super::MARK_ON_ONE_COLUMN.when;
+        assert!(mark("a\u{300}".as_bytes(), 1, 1));
+        assert!(!mark("a\u{300}".as_bytes(), 1, 2));
+        assert!((super::SCROLL_ZERO.when)(b"\x1b[0T", 4, 10));
+        assert!(!(super::SCROLL_ZERO.when)(b"\x1b[T\x1b[0S", 4, 10));
+        // That each is beside an engine there is, engine.rs's test says:
+        // the oracle, which shares this file, has no engines.
+        for (family, _, _) in super::DEPARTURES {
+            assert!(super::find(family).is_some(), "{family}");
+        }
+    }
 
     /// Every decided family has its check: the test its standard names
     /// cites the section, or xterm is among the engines beside it. A test
@@ -1152,5 +1603,12 @@ mod tests {
         };
         assert!(uncited.check(XTERM).is_err());
         assert!(Authority::Xterm.check(&["ghostty"]).is_err());
+    }
+
+    /// `*` stands for any run of characters, and nothing else is loose.
+    #[test]
+    fn a_glob_matches_runs_of_characters() {
+        assert!(super::glob("cell (*) text", "cell (0,1) text"));
+        assert!(!super::glob("cursor", "cursor visible"));
     }
 }

@@ -3,23 +3,35 @@
 //! writes to its terminal and reads the terminal's reports back, the cells
 //! by DECRQCRA rectangle checksums, the cursor by DSR, modes by DECRQM.
 //!
-//! esctest runs on a PTY, one Python process for each area (a test class,
-//! one file of `esctest/tests/`), in order within it as esctest runs them,
-//! so every area starts on a fresh terminal. The terminal is a fux-vt
-//! parser set up as fux's panes are (`fux::pane::OPTIONS`) with the
-//! reports fux-vt keeps off in panes that esctest needs (see [`options`]):
-//! it reads what esctest writes, and its replies are written back. Each
-//! read esctest makes waits `--timeout` for its reply, so a report fux-vt
-//! does not give fails that test alone; an area that runs past `--limit`
-//! is stopped, and its unfinished tests fail.
+//! esctest runs on a PTY, one Python process for each test, on a terminal
+//! made for that test alone: every terminal, fux-vt, the engines, a fux
+//! pane and xterm, is isolated the same way, so no test starts from what an
+//! earlier one left, whatever the terminal's resets do (esctest's own reset
+//! before each test still runs). The tests are reported by area (a test
+//! class, one file of `esctest/tests/`). The terminal is a fux-vt parser
+//! set up as fux's panes are (`fux::pane::OPTIONS`) with the reports
+//! fux-vt keeps off in panes that esctest needs (see [`options`]): it reads
+//! what esctest writes, and its replies are written back. Each read esctest
+//! makes waits `--timeout` for its reply, so a report fux-vt does not give
+//! fails that test alone.
+//!
+//! Every terminal is scored on one denominator, the tests esctest runs
+//! (those it skips by its options are skipped for all). A result is a pass,
+//! a failure (the terminal's: an assertion, a report not given, or the
+//! engine's own error), or unavailable ([`Limit`]): adapter-limited, where
+//! the harness cannot read the cells, or infrastructure, where its run gave
+//! no result (stopped past `--limit`), which is no failure of the terminal
+//! but fails the run. A pass or a failure in which the harness answered a
+//! report for an engine ([`crate::answering`]) is adapter-observed, not
+//! native.
 //!
 //! With `--in-fux`, each area also runs in a pane of a real fux server of
 //! its own (its own socket and directory), with a client attached on a
 //! PTY, whose terminal is a fux-vt parser that answers what fux asks of
 //! it. The results are set beside the direct run's: a test passing in
 //! one and failing in the other points at fux, its pane replies or its
-//! painting. Tests that read cells cannot run there: fux's panes do not
-//! answer DECRQCRA, so they are not counted.
+//! painting. Tests that read cells are unavailable there: fux's panes do
+//! not answer DECRQCRA.
 //!
 //! With `--xterm`, each area also runs in a real xterm under Xvfb, the
 //! reference: what xterm passes and fux-vt fails is what fux-vt lacks.
@@ -41,7 +53,7 @@ use crate::engine::{ENGINES, Setup};
 use crate::escape;
 use fuxix::poll::{Events, PollFd};
 use fuxix::process::{Pid, Signal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -69,11 +81,19 @@ const EXPECTED_TERMINAL: &str = "xterm";
 /// (VT520) tests are skipped.
 const VT_LEVEL: &str = "4";
 
+/// `--xterm-reverse-wrap`: the xterm patch whose reverse-wrap movement
+/// esctest expects. From 383 on, a test that asks for reverse wraparound
+/// sets extended reverse wraparound (mode 1045, `esccmd.py`,
+/// `ReverseWraparound`) and expects the cursor where xterm since 383 puts
+/// it (`tests/bs.py`, `tests/cub.py`); the default, 0, expects patch 380's
+/// movement, which xterm 411 no longer has.
+const XTERM_REVERSE_WRAP: u32 = 383;
+
 /// The usage of `esctest`.
 pub const USAGE: &str = "\
 usage: fux-vt-compare esctest [--terminal NAME] [--beside NAME] [--in-fux] [--xterm]
                               [--jobs N] [--timeout SECONDS] [--limit SECONDS]
-                              [--expected FILE] [--json FILE] [--logs DIR]
+                              [--tmux] [--expected FILE | --unlisted] [--json FILE] [--logs DIR]
                               [--replays] [--show] [FILTER]
 
 Runs esctest2 (references/xterm/esctest2, from references/fetch.sh) against
@@ -82,16 +102,20 @@ Python regular expression a test's name (CLASS.test_name) must contain.
 Results are checked against esctest-expected.txt: exit 1 on a failure not
 listed there, or a test listed that passes. --in-fux also runs every area in
 a pane of a real fux server (building fux), --xterm in a real xterm under Xvfb,
-and each lists where it differs from fux-vt alone. --timeout is esctest's: how
-long a read waits for its reply (default 1); --limit how long an area may run
-(default 120). --logs keeps esctest's logs (AREA.log, AREA.fux.log,
-AREA.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
+--tmux in a real tmux (held to no list, as xterm is), and each lists where it
+differs from fux-vt alone. --timeout is esctest's: how
+long a read waits for its reply (default 1); --limit how long a test may run
+(default 60); --jobs how many tests run at once (CARGO_BUILD_JOBS, else 4). Every test runs on a terminal made for it alone. --logs keeps
+esctest's logs (TEST.log, TEST.NAME.log, TEST.fux.log, TEST.xterm.log) in DIR. --replays prints, for each failure, what the test wrote
 (without its queries) as a run.sh replay. --show prints each failure's message.
 --json writes every result, as fux-vt/compare's README says. --terminal runs
 against another engine in this process (ghostty) instead of fux-vt, checked
 against esctest-expected-NAME.txt; --beside also runs NAME (fux-vt, or an
 engine), checked against its own list, and compares the two: each area's pass
-rates, and the tests one passes and the other fails, with their features.";
+rates, and the tests one passes and the other fails, with their features.
+--unlisted scores the terminal, and the one beside it, without a list: only a
+test with no result (infrastructure) fails the run, as it does in xterm's
+column.";
 
 /// The terminal esctest runs against directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,18 +165,20 @@ impl Subject {
 
     /// The engine set up as esctest's terminal: Ghostty's core told its
     /// size ([`crate::engines::ghostty::answering`]), any other as the
-    /// comparisons make it.
-    fn engine(i: usize) -> Result<Box<dyn crate::engine::Engine>, String> {
+    /// comparisons make it; and whether its origin mode can be read.
+    fn engine(i: usize) -> Result<(Box<dyn crate::engine::Engine>, bool), String> {
         let kind = ENGINES.get(i).ok_or("no such engine")?;
-        if kind.name == "ghostty" {
-            return crate::engines::ghostty::answering(ROWS, COLS);
-        }
-        (kind.make)(&Setup {
-            rows: ROWS,
-            cols: COLS,
-            history: 10_000,
-            reflow: false,
-        })
+        let engine = if kind.name == "ghostty" {
+            crate::engines::ghostty::answering(ROWS, COLS)?
+        } else {
+            (kind.make)(&Setup {
+                rows: ROWS,
+                cols: COLS,
+                history: 10_000,
+                reflow: false,
+            })?
+        };
+        Ok((engine, kind.can.origin))
     }
 }
 
@@ -166,6 +192,8 @@ struct Request {
     in_fux: bool,
     /// Also run each area in a real xterm, as the reference.
     xterm: bool,
+    /// Also run each area in a real tmux, an engine of its own process.
+    tmux: bool,
     jobs: usize,
     /// esctest's own `--timeout`: how long a read waits for its reply.
     timeout: f64,
@@ -178,6 +206,8 @@ struct Request {
     logs: Option<PathBuf>,
     replays: bool,
     show: bool,
+    /// Score only: no list, and a failure is no mismatch.
+    unlisted: bool,
 }
 
 /// The request `argv` makes; `None` if it asks for help.
@@ -188,14 +218,16 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         beside: None,
         in_fux: false,
         xterm: false,
-        jobs: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
+        tmux: false,
+        jobs: crate::few_jobs(),
         timeout: 1.0,
-        limit: Duration::from_secs(120),
+        limit: Duration::from_secs(60),
         expected: PathBuf::new(),
         json: None,
         logs: None,
         replays: false,
         show: false,
+        unlisted: false,
     };
     let mut expected = None;
     let mut words = argv.iter();
@@ -210,8 +242,10 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
         match word.as_str() {
             "--in-fux" => out.in_fux = true,
             "--xterm" => out.xterm = true,
+            "--tmux" => out.tmux = true,
             "--replays" => out.replays = true,
             "--show" => out.show = true,
+            "--unlisted" => out.unlisted = true,
             "--jobs" => {
                 let text = value("--jobs")?;
                 out.jobs = text
@@ -249,6 +283,9 @@ fn request(argv: &[String]) -> Result<Option<Request>, String> {
             out.terminal.name()
         ));
     }
+    if out.unlisted && expected.is_some() {
+        return Err("--unlisted reads no list: it goes without --expected".into());
+    }
     out.expected = expected.unwrap_or_else(|| out.terminal.expected());
     Ok(Some(out))
 }
@@ -261,13 +298,31 @@ pub fn options() -> fux_vt::Options {
         .with(fux_vt::Feature::ExtendedReplies)
 }
 
+/// The esctest2 commit the results and the lists are of, as
+/// `references/fetch.sh` pins it.
+const ESCTEST_COMMIT: &str = "2798f12149a19c3295e9b4853ab2da4b2eff1b2b";
+
 /// Where esctest is: `references/xterm/esctest2/esctest`, which
-/// `references/fetch.sh` clones.
+/// `references/fetch.sh` fetches, checked to be at [`ESCTEST_COMMIT`].
 fn suite() -> Result<PathBuf, String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../references/xterm/esctest2/esctest")
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../references/xterm/esctest2");
+    let dir = checkout
+        .join("esctest")
         .canonicalize()
         .map_err(|_| "esctest is not in references/xterm/esctest2: run references/fetch.sh")?;
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| format!("esctest2's commit: {e}"))?;
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    if head != ESCTEST_COMMIT {
+        return Err(format!(
+            "references/xterm/esctest2 is at {head:?}, not {ESCTEST_COMMIT}: remove it and run \
+             references/fetch.sh"
+        ));
+    }
     Ok(dir)
 }
 
@@ -302,6 +357,16 @@ for c in tests.tests:
 struct Area {
     name: String,
     tests: Vec<String>,
+}
+
+impl Area {
+    /// What its files are named by: its one test's name, or its own.
+    fn stem(&self) -> &str {
+        match self.tests.as_slice() {
+            [test] => test,
+            _ => &self.name,
+        }
+    }
 }
 
 fn areas(python: &Path, suite: &Path, filter: Option<&str>) -> Result<Vec<Area>, String> {
@@ -348,8 +413,33 @@ enum Outcome {
     /// It failed, with what esctest said.
     Fail(String),
     /// Not run: it needs a VT level above the one chosen, or esctest does
-    /// not try it in xterm.
+    /// not try it in xterm. esctest decides it from its options alone, so
+    /// every terminal skips the same tests.
     Skip(String),
+    /// Run, with no result that says anything of the terminal: neither a
+    /// pass nor a failure, but coverage that is unavailable, with why.
+    Unavailable(Limit, String),
+}
+
+/// Why a test's result is unavailable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Limit {
+    /// The harness cannot read its cells: a DECRQCRA in origin mode, which
+    /// [`Answering`] cannot answer from a snapshot (adapter-limited), or one
+    /// in a fux pane, which does not answer DECRQCRA.
+    Unreadable,
+    /// The harness's run gave no result: stopped at `--limit`, or esctest
+    /// logged none.
+    Infrastructure,
+}
+
+impl Limit {
+    fn name(self) -> &'static str {
+        match self {
+            Limit::Unreadable => "adapter-limited",
+            Limit::Infrastructure => "infrastructure",
+        }
+    }
 }
 
 impl Outcome {
@@ -474,7 +564,7 @@ fn outcomes(log: &str) -> BTreeMap<String, Outcome> {
             if message.starts_with("esctypes.InternalError: Should have failed") {
                 Outcome::Pass { beyond_xterm: true }
             } else if message.is_empty() {
-                Outcome::Fail("no result in esctest's log".into())
+                Outcome::Unavailable(Limit::Infrastructure, "no result in esctest's log".into())
             } else {
                 Outcome::Fail(message)
             }
@@ -485,7 +575,8 @@ fn outcomes(log: &str) -> BTreeMap<String, Outcome> {
 }
 
 /// The arguments esctest is run with for `area`, logging to `log`, with
-/// each test's bytes in `cases` if asked.
+/// each test's bytes in `cases` if asked, and the terminal's esctest
+/// `options` (README.txt, `--options`): none but for real xterm.
 fn esctest_argv(
     python: &Path,
     suite: &Path,
@@ -493,6 +584,7 @@ fn esctest_argv(
     timeout: f64,
     log: &Path,
     cases: Option<&Path>,
+    options: &[&str],
 ) -> Vec<String> {
     let names: Vec<&str> = area
         .tests
@@ -505,12 +597,17 @@ fn esctest_argv(
         format!("--expected-terminal={EXPECTED_TERMINAL}"),
         format!("--max-vt-level={VT_LEVEL}"),
         format!("--timeout={timeout}"),
+        format!("--xterm-reverse-wrap={XTERM_REVERSE_WRAP}"),
         format!("--logfile={}", log.display()),
         "--no-print-logs".into(),
         format!("--include=^{}\\.(?:{})$", area.name, names.join("|")),
     ];
     if let Some(dir) = cases {
         argv.push(format!("--test-case-dir={}", dir.display()));
+    }
+    if !options.is_empty() {
+        argv.push("--options".into());
+        argv.extend(options.iter().map(|o| (*o).to_owned()));
     }
     argv
 }
@@ -637,19 +734,26 @@ fn pump(
     }
 }
 
-/// What running an area gave: esctest's log, and whether it was stopped.
+/// What running a test gave: esctest's log, and whether it was stopped;
+/// how many reports the harness answered for the engine ([`Answering::told`])
+/// and left unanswered as unreadable ([`Answering::unreadable`]); and the
+/// engine's own failure, if it failed (an error or a panic of its own).
+#[derive(Default)]
 struct Ran {
     log: String,
     stopped: bool,
+    told: usize,
+    unreadable: usize,
+    failed: Option<String>,
 }
 
-/// Runs `area` against `subject` directly: fux-vt (its log `AREA.log`), or
-/// an engine (`AREA.NAME.log`). Only the terminal under test keeps each
-/// test's bytes, for `--replays`.
+/// Runs `area` (one test, [`isolated`]) against `subject` directly, made
+/// afresh: fux-vt (its log `TEST.log`), or an engine (`TEST.NAME.log`).
+/// Only the terminal under test keeps each test's bytes, for `--replays`.
 fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Result<Ran, String> {
     let log = match subject {
-        Subject::FuxVt => scratch.join(format!("{}.log", area.name)),
-        Subject::Engine(_) => scratch.join(format!("{}.{}.log", area.name, subject.name())),
+        Subject::FuxVt => scratch.join(format!("{}.log", area.stem())),
+        Subject::Engine(_) => scratch.join(format!("{}.{}.log", area.stem(), subject.name())),
     };
     let cases = if subject == job.request.terminal {
         job.cases_dir(scratch, area)?
@@ -663,32 +767,52 @@ fn direct(job: &Job<'_>, subject: Subject, area: &Area, scratch: &Path) -> Resul
         job.request.timeout,
         &log,
         cases.as_deref(),
+        &[],
     );
-    let mut answer: Box<Answer<'_>> = match subject {
+    let deadline = deadline(job.request.limit);
+    let mut ran = Ran::default();
+    let finished = match subject {
         Subject::FuxVt => {
             let mut parser =
                 fux_vt::Parser::with_options(crate::vt_size(ROWS, COLS)?, 8 << 20, options())
                     .map_err(|e| format!("fux-vt: {e}"))?;
-            Box::new(move |bytes| {
+            let mut answer = |bytes: &[u8]| {
                 Ok(parse(&mut parser, bytes, |s: &mut Replies| {
                     std::mem::take(&mut s.0)
                 }))
-            })
+            };
+            let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
+            let finished = pump(&mut master, &mut answer, deadline, || false);
+            stop(&mut child);
+            finished?
         }
         Subject::Engine(i) => {
-            let mut terminal = Answering::new(Subject::engine(i)?);
-            Box::new(move |bytes| terminal.take(bytes))
+            let (engine, reads_origin) = Subject::engine(i)?;
+            let mut terminal = Answering::new(engine, reads_origin);
+            // An engine that fails (an error, or a panic of its own) fails
+            // the test, and answers nothing more.
+            let mut failed = None;
+            let mut answer = |bytes: &[u8]| {
+                if failed.is_some() {
+                    return Ok(Vec::new());
+                }
+                Ok(terminal.take(bytes).unwrap_or_else(|why| {
+                    failed = Some(why);
+                    Vec::new()
+                }))
+            };
+            let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
+            let finished = pump(&mut master, &mut answer, deadline, || false);
+            stop(&mut child);
+            ran.told = terminal.told;
+            ran.unreadable = terminal.unreadable;
+            ran.failed = failed;
+            finished?
         }
     };
-    let (mut master, mut child) = launch(&argv, ROWS, COLS, &[])?;
-    let deadline = deadline(job.request.limit);
-    let finished = pump(&mut master, &mut *answer, deadline, || false);
-    stop(&mut child);
-    let finished = finished?;
-    Ok(Ran {
-        log: std::fs::read_to_string(&log).unwrap_or_default(),
-        stopped: !finished,
-    })
+    ran.log = std::fs::read_to_string(&log).unwrap_or_default();
+    ran.stopped = !finished;
+    Ok(ran)
 }
 
 fn deadline(limit: Duration) -> Instant {
@@ -700,6 +824,9 @@ fn deadline(limit: Duration) -> Instant {
 struct Server {
     dir: PathBuf,
     socket: PathBuf,
+    /// The client's `XDG_CONFIG_HOME`, empty: the user's config is never
+    /// run.
+    config: PathBuf,
     child: Child,
 }
 
@@ -713,9 +840,18 @@ impl Drop for Server {
 
 static SERVERS: AtomicUsize = AtomicUsize::new(0);
 
+/// `text` quoted as a shell word.
+fn quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Starts a fux server whose panes run `argv`, in a directory of its own
 /// under `fuxix::file::scratch`, as fux's own tests start one
-/// (`tests/support/mod.rs`); never the user's.
+/// (`tests/support/mod.rs`); never the user's. Its panes run a script that
+/// runs `argv`, given as the server's `SHELL`: `fux __serve SOCKET` takes no
+/// config, and a client's `config.fux` (`str shell … set`) reaches only the
+/// panes made after it runs, never the first, which the server starts as
+/// it starts (`Session::start`), with the default shell.
 fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
     let dir = fuxix::file::scratch()
         .map_err(|e| e.to_string())?
@@ -726,31 +862,40 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
         ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let quoted: Vec<String> = argv.iter().map(|w| format!("'{w}'")).collect();
-    let config = dir.join("fux.conf");
-    std::fs::write(&config, format!("set shell {}\n", quoted.join(" ")))
-        .map_err(|e| format!("{}: {e}", config.display()))?;
+    let words: Vec<String> = argv.iter().map(|w| quoted(w)).collect();
+    let script = dir.join("pane.sh");
+    std::fs::write(&script, format!("#!/bin/sh\nexec {}\n", words.join(" ")))
+        .map_err(|e| format!("{}: {e}", script.display()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{}: {e}", script.display()))?;
+    }
+    // The client's config directory, with no config in it.
+    let config = dir.join("config");
     let socket = dir.join("s").join("fux.sock");
     let log = File::create(dir.join("server.log")).map_err(|e| format!("server.log: {e}"))?;
     let child = {
         let _guard = SPAWN.lock().map_err(|_| "a spawn panicked")?;
         Command::new(fux)
-            .arg("server")
-            .arg("--socket")
+            .arg(fux::SERVE)
             .arg(&socket)
-            .arg("--config")
-            .arg(&config)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &dir)
-            .env("SHELL", "/bin/sh")
+            .env("SHELL", &script)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
             .map_err(|e| format!("starting {}: {e}", fux.display()))?
     };
-    let server = Server { dir, socket, child };
+    let server = Server {
+        dir,
+        socket,
+        config,
+        child,
+    };
     let deadline = deadline(Duration::from_secs(10));
     while std::os::unix::net::UnixStream::connect(&server.socket).is_err() {
         if Instant::now() >= deadline {
@@ -765,8 +910,16 @@ fn server(fux: &Path, argv: &[String]) -> Result<Server, String> {
 /// Runs `area` in a pane of a fux server of its own, with a client
 /// attached on a PTY one row taller than esctest's terminal, for fux's bar.
 fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran, String> {
-    let log = scratch.join(format!("{}.fux.log", area.name));
-    let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
+    let log = scratch.join(format!("{}.fux.log", area.stem()));
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        &[],
+    );
     let server = server(fux, &argv)?;
     let rows = ROWS.saturating_add(1);
     let terminal = fux_vt::Options::new()
@@ -779,7 +932,11 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
         &attach,
         rows,
         COLS,
-        &[("FUX_SOCKET", &server.socket), ("HOME", &server.dir)],
+        &[
+            ("FUX_SOCKET", &server.socket),
+            ("HOME", &server.dir),
+            ("XDG_CONFIG_HOME", &server.config),
+        ],
     )?;
     let deadline = deadline(job.request.limit);
     let ended = || {
@@ -800,6 +957,7 @@ fn in_fux(job: &Job<'_>, fux: &Path, area: &Area, scratch: &Path) -> Result<Ran,
     Ok(Ran {
         log: std::fs::read_to_string(&log).unwrap_or_default(),
         stopped: !finished,
+        ..Ran::default()
     })
 }
 
@@ -822,48 +980,101 @@ impl Job<'_> {
     }
 }
 
-/// Each test of `area`, from its run.
-fn results(area: &Area, ran: &Ran, limit: Duration) -> Tests {
+/// Whether `message` is a read of cells by DECRQCRA that timed out.
+fn checksum_timed_out(message: &str) -> bool {
+    message.contains("Timeout waiting to read") && message.contains("GetChecksumOfRect")
+}
+
+/// Each test of `area`, from its run, at `place`; and whether the harness
+/// answered a report for the engine in it (adapter-observed).
+fn results(area: &Area, ran: &Ran, limit: Duration, place: Place) -> (Tests, bool) {
     let found = outcomes(&ran.log);
-    area.tests
+    let tests = area
+        .tests
         .iter()
         .map(|name| {
-            let outcome = found.get(name).cloned().unwrap_or_else(|| {
-                Outcome::Fail(if ran.stopped {
-                    format!("no result: the area was stopped after {}s", limit.as_secs())
-                } else {
-                    "no result: esctest did not run it".into()
-                })
-            });
+            let outcome = match (found.get(name).cloned(), &ran.failed) {
+                (_, Some(why)) => Outcome::Fail(format!("the engine failed: {why}")),
+                (Some(Outcome::Fail(m)), None) if ran.unreadable > 0 && checksum_timed_out(&m) => {
+                    Outcome::Unavailable(
+                        Limit::Unreadable,
+                        "reads cells by DECRQCRA in origin mode, where the engine's margins \
+                         cannot be read"
+                            .into(),
+                    )
+                }
+                (Some(Outcome::Fail(m)), None) if place == Place::Fux && checksum_timed_out(&m) => {
+                    Outcome::Unavailable(
+                        Limit::Unreadable,
+                        "reads cells by DECRQCRA, which fux's panes do not answer".into(),
+                    )
+                }
+                (Some(outcome), None) => outcome,
+                (None, None) => Outcome::Unavailable(
+                    Limit::Infrastructure,
+                    if ran.stopped {
+                        format!("no result: stopped after {}s", limit.as_secs())
+                    } else {
+                        "no result: esctest did not run it".into()
+                    },
+                ),
+            };
             (name.clone(), outcome)
+        })
+        .collect();
+    (tests, ran.told > 0)
+}
+
+/// Each test of `areas` as an area of its own, in order: every test runs on
+/// a terminal made for it alone, so none starts from what an earlier one
+/// left, whatever the terminal's resets do (esctest's own still run).
+fn isolated(areas: &[Area]) -> Vec<Area> {
+    areas
+        .iter()
+        .flat_map(|area| {
+            area.tests.iter().map(|test| Area {
+                name: area.name.clone(),
+                tests: vec![test.clone()],
+            })
         })
         .collect()
 }
 
-/// An area's results, or why it could not run.
-type AreaResult = Result<Tests, String>;
+/// What a place's run gave: each area's results, in the areas' order, and
+/// the tests in which the harness answered a report for the engine.
+struct Runs {
+    results: Vec<Tests>,
+    observed: BTreeSet<String>,
+}
 
-/// Runs every area, `jobs` at a time, with `run`; each area's results, in
-/// the areas' order.
+/// A test's results, or why it could not run.
+type UnitResult = Result<(Tests, bool), String>;
+
+/// Runs every test of `areas` on its own ([`isolated`]), `jobs` at a time,
+/// with `run`, at `place`. A test whose run fails or panics has no result
+/// (infrastructure), and the rest go on.
 fn run_all(
     areas: &[Area],
     jobs: usize,
     limit: Duration,
+    place: Place,
     run: &(dyn Fn(&Area) -> Result<Ran, String> + Sync),
-) -> Result<Vec<Tests>, String> {
-    // The largest first, so that the last to finish is small.
-    let mut order: Vec<usize> = (0..areas.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse(areas.get(i).map_or(0, |a| a.tests.len())));
+) -> Result<Runs, String> {
+    let units = isolated(areas);
     let next = AtomicUsize::new(0);
-    let done: Mutex<BTreeMap<usize, AreaResult>> = Mutex::new(BTreeMap::new());
+    let done: Mutex<BTreeMap<usize, UnitResult>> = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
-        for _ in 0..jobs.min(areas.len()) {
+        for _ in 0..jobs.min(units.len()) {
             scope.spawn(|| {
-                while let Some(&i) = order.get(next.fetch_add(1, Ordering::SeqCst)) {
-                    let Some(area) = areas.get(i) else {
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(unit) = units.get(i) else {
                         break;
                     };
-                    let result = run(area).map(|ran| results(area, &ran, limit));
+                    // A run that errs or panics is the harness's failure:
+                    // its tests have no result, and the others go on.
+                    let result = crate::case::guarded(|| run(unit))
+                        .map(|ran| results(unit, &ran, limit, place));
                     if let Ok(mut done) = done.lock() {
                         done.insert(i, result);
                     }
@@ -871,14 +1082,50 @@ fn run_all(
             });
         }
     });
-    let done = done.into_inner().map_err(|_| "a run panicked")?;
-    (0..areas.len())
-        .map(|i| {
-            done.get(&i)
-                .cloned()
-                .unwrap_or(Err("an area did not run".into()))
-        })
-        .collect()
+    let mut done = done
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut runs = Runs {
+        results: Vec::new(),
+        observed: BTreeSet::new(),
+    };
+    let mut i = 0usize;
+    for area in areas {
+        let mut tests = Tests::new();
+        for name in &area.tests {
+            let (unit, observed) = match done.remove(&i) {
+                Some(Ok(ran)) => ran,
+                Some(Err(why)) => {
+                    let why = format!("no result: the run failed: {why}");
+                    (
+                        vec![(
+                            name.clone(),
+                            Outcome::Unavailable(Limit::Infrastructure, why),
+                        )],
+                        false,
+                    )
+                }
+                None => {
+                    let why = "no result: the test did not run".to_owned();
+                    (
+                        vec![(
+                            name.clone(),
+                            Outcome::Unavailable(Limit::Infrastructure, why),
+                        )],
+                        false,
+                    )
+                }
+            };
+            if observed {
+                runs.observed
+                    .extend(unit.iter().map(|(name, _)| name.clone()));
+            }
+            tests.extend(unit);
+            i = i.saturating_add(1);
+        }
+        runs.results.push(tests);
+    }
+    Ok(runs)
 }
 
 /// Where a listed failure applies.
@@ -920,7 +1167,7 @@ struct Listed {
 fn expected(text: &str) -> Result<BTreeMap<String, Listed>, String> {
     let mut out = BTreeMap::new();
     for (n, line) in text.lines().enumerate() {
-        let at = |e: &str| format!("esctest-expected.txt line {}: {e}", n.saturating_add(1));
+        let at = |e: &str| format!("the list line {}: {e}", n.saturating_add(1));
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -953,6 +1200,23 @@ fn expected(text: &str) -> Result<BTreeMap<String, Listed>, String> {
     Ok(out)
 }
 
+/// An expected list's lines, for `lists`: each test with its scope
+/// (`both`, `direct` or `fux`), its kind and the reason after it.
+pub fn listed(path: &Path) -> Result<Vec<(String, &'static str, String, String)>, String> {
+    Ok(read_list(path)?
+        .into_iter()
+        .map(|(name, l)| {
+            let scope = match l.scope {
+                Scope::Both => "both",
+                Scope::Direct => "direct",
+                Scope::Fux => "fux",
+            };
+            let (kind, why) = l.reason.split_once(':').unwrap_or((&l.reason, ""));
+            (name, scope, kind.to_owned(), why.trim().to_owned())
+        })
+        .collect())
+}
+
 /// Whether `listed` says the test fails in a run `in_fux` or not.
 fn listed_fails(listed: Option<&Listed>, in_fux: bool) -> bool {
     match listed.map(|l| l.scope) {
@@ -963,28 +1227,68 @@ fn listed_fails(listed: Option<&Listed>, in_fux: bool) -> bool {
     }
 }
 
-/// Where `results` and the list disagree: a failure not listed, or a test
-/// listed that passes.
+/// Where `results` and the list disagree: a failure not listed, a test
+/// listed that passes or that esctest skipped, and, in a `whole` run (no
+/// FILTER) of a terminal alone, a test listed that the suite does not
+/// have; and, `unlisted` or not, a test with no result.
 fn mismatches(
     results: &[(String, Outcome)],
     list: &BTreeMap<String, Listed>,
     in_fux: bool,
+    unlisted: bool,
+    whole: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
+    if whole && !in_fux && !unlisted {
+        for name in list.keys() {
+            if !results.iter().any(|(n, _)| n == name) {
+                out.push(format!("{name}: listed, but not in the suite: remove it"));
+            }
+        }
+    }
     for (name, outcome) in results {
         let listed = listed_fails(list.get(name), in_fux);
         match outcome {
-            Outcome::Fail(message) if !listed => {
+            Outcome::Fail(message) if !listed && !unlisted => {
                 let first = message.lines().next().unwrap_or_default();
                 out.push(format!("{name}: fails, not listed: {first}"));
             }
-            Outcome::Pass { .. } if listed => {
+            Outcome::Pass { .. } if listed && !unlisted => {
                 out.push(format!("{name}: passes, but is listed: remove it"));
             }
-            Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_) => {}
+            Outcome::Skip(why) if listed && !unlisted => {
+                out.push(format!("{name}: skipped ({why}), but is listed: remove it"));
+            }
+            // The harness gave no result: not the terminal's failure, but
+            // the run is not whole.
+            Outcome::Unavailable(Limit::Infrastructure, why) => {
+                out.push(format!("{name}: no result ({why}): the run is not whole"));
+            }
+            Outcome::Pass { .. }
+            | Outcome::Fail(_)
+            | Outcome::Skip(_)
+            | Outcome::Unavailable(Limit::Unreadable, _) => {}
         }
     }
     out
+}
+
+/// The tests `list` says xterm fails too (`xterm-too:`) that pass in
+/// xterm's `results`: each line's tag is stale.
+fn xterm_too_passing(
+    results: &[(String, Outcome)],
+    list: &BTreeMap<String, Listed>,
+) -> Vec<String> {
+    results
+        .iter()
+        .filter(|(name, outcome)| {
+            matches!(outcome, Outcome::Pass { .. })
+                && list
+                    .get(name)
+                    .is_some_and(|l| l.reason.starts_with("xterm-too:"))
+        })
+        .map(|(name, _)| format!("{name}: listed as xterm-too, but passes in xterm: retag it"))
+        .collect()
 }
 
 /// Counts of a set of results.
@@ -994,6 +1298,9 @@ struct Tally {
     beyond_xterm: usize,
     failed: usize,
     skipped: usize,
+    /// Run, with no result: adapter-limited, and the harness's own.
+    unreadable: usize,
+    infrastructure: usize,
 }
 
 impl Tally {
@@ -1009,13 +1316,27 @@ impl Tally {
                 }
                 Outcome::Fail(_) => t.failed = t.failed.saturating_add(1),
                 Outcome::Skip(_) => t.skipped = t.skipped.saturating_add(1),
+                Outcome::Unavailable(Limit::Unreadable, _) => {
+                    t.unreadable = t.unreadable.saturating_add(1);
+                }
+                Outcome::Unavailable(Limit::Infrastructure, _) => {
+                    t.infrastructure = t.infrastructure.saturating_add(1);
+                }
             }
         }
         t
     }
+    /// The tests run: every test esctest does not skip, whatever came of
+    /// it, so that every terminal has one denominator.
+    fn run(self) -> usize {
+        self.passed
+            .saturating_add(self.failed)
+            .saturating_add(self.unreadable)
+            .saturating_add(self.infrastructure)
+    }
     /// The share of the tests run that passed, in percent.
     fn rate(self) -> f64 {
-        let run = self.passed.saturating_add(self.failed);
+        let run = self.run();
         if run == 0 {
             return 0.0;
         }
@@ -1029,19 +1350,38 @@ impl Tally {
             "passed_beyond_xterm": self.beyond_xterm,
             "failed": self.failed,
             "skipped": self.skipped,
+            "unavailable": {
+                "adapter_limited": self.unreadable,
+                "infrastructure": self.infrastructure,
+            },
+            "run": self.run(),
             "pass_rate": (self.rate() * 10.0).round() / 10.0,
         })
     }
 }
 
-/// A test's result, with the reason the list gives for its failure.
-fn outcome_json(outcome: &Outcome, listed: Option<&Listed>) -> serde_json::Value {
+/// A test's result, with the reason the list gives for its failure: a
+/// pass or a failure is the terminal's own (`native`), or `adapter-observed`
+/// where the harness answered a report for it in the test; a failure is
+/// the engine's; an unavailable result is `adapter-limited` or
+/// `infrastructure`.
+fn outcome_json(outcome: &Outcome, listed: Option<&Listed>, observed: bool) -> serde_json::Value {
+    let basis = if observed {
+        "adapter-observed"
+    } else {
+        "native"
+    };
     let mut value = match outcome {
         Outcome::Pass { beyond_xterm } => {
-            serde_json::json!({"outcome": "pass", "beyond_xterm": beyond_xterm})
+            serde_json::json!({"outcome": "pass", "beyond_xterm": beyond_xterm, "basis": basis})
         }
-        Outcome::Fail(message) => serde_json::json!({"outcome": "fail", "message": message}),
+        Outcome::Fail(message) => serde_json::json!({
+            "outcome": "fail", "class": "engine", "basis": basis, "message": message,
+        }),
         Outcome::Skip(why) => serde_json::json!({"outcome": "skip", "message": why}),
+        Outcome::Unavailable(limit, why) => {
+            serde_json::json!({"outcome": "unavailable", "class": limit.name(), "message": why})
+        }
     };
     if let (Some(listed), Some(object)) = (listed, value.as_object_mut()) {
         object.insert("listed".into(), serde_json::json!(listed.reason));
@@ -1065,7 +1405,7 @@ fn replay(scratch: &Path, name: &str) -> Option<String> {
 /// few areas a line so that it fits a screen.
 fn table(areas: &[Area], runs: &[(&str, &[Tests])]) -> String {
     let cell = |t: Tally| {
-        let run = t.passed.saturating_add(t.failed);
+        let run = t.run();
         let skipped = if t.skipped > 0 {
             format!("+{}", t.skipped)
         } else {
@@ -1105,7 +1445,7 @@ fn table(areas: &[Area], runs: &[(&str, &[Tests])]) -> String {
             total,
             "{}/{} ({:.1}%) +{}  ",
             tally.passed,
-            tally.passed.saturating_add(tally.failed),
+            tally.run(),
             tally.rate(),
             tally.skipped
         );
@@ -1168,6 +1508,7 @@ enum Place {
     Direct(Subject),
     Fux,
     Xterm,
+    Tmux,
 }
 
 impl Place {
@@ -1180,6 +1521,7 @@ impl Place {
             Place::Direct(subject) => subject.name().into(),
             Place::Fux => "in fux".into(),
             Place::Xterm => "in xterm".into(),
+            Place::Tmux => "in tmux".into(),
         }
     }
     /// Its key in the JSON: the terminal under test's is `direct`, the one
@@ -1190,6 +1532,7 @@ impl Place {
             Place::Direct(subject) => subject.name().replace('-', "_"),
             Place::Fux => "in_fux".into(),
             Place::Xterm => "xterm".into(),
+            Place::Tmux => "tmux".into(),
         }
     }
 }
@@ -1202,6 +1545,8 @@ struct Column {
     label: String,
     key: String,
     results: Vec<Tests>,
+    /// The tests in which the harness answered a report for the engine.
+    observed: BTreeSet<String>,
     time: Duration,
 }
 
@@ -1212,54 +1557,22 @@ impl Column {
     fn tally(&self) -> Tally {
         Tally::of(self.results.iter().flatten().map(|(_, o)| o))
     }
-}
-
-/// In a fux pane, a test that reads cells waits for a DECRQCRA reply the
-/// pane never gives: fux's panes leave rectangle checksums off (see
-/// [`options`]). It says nothing of fux, so it is not counted.
-fn unanswered_checksum(outcome: Outcome) -> Outcome {
-    match outcome {
-        Outcome::Fail(message)
-            if message.contains("Timeout waiting to read")
-                && message.contains("GetChecksumOfRect") =>
-        {
-            Outcome::Skip("reads cells by DECRQCRA, which fux's panes do not answer".into())
-        }
-        other @ (Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_)) => other,
-    }
-}
-
-/// For an engine answering as [`crate::answering`] says, a test that reads
-/// cells in origin mode waits for a DECRQCRA reply that is never given:
-/// there the rectangle is relative to the margins, which the engine's
-/// snapshot does not give. Its cells cannot be read, so it is not counted.
-fn unread_checksum(outcome: Outcome, name: &str) -> Outcome {
-    match outcome {
-        Outcome::Fail(message)
-            if message.contains("Timeout waiting to read")
-                && message.contains("GetChecksumOfRect") =>
-        {
-            Outcome::Skip(format!(
-                "cannot read: reads cells by DECRQCRA in origin mode, where {name}'s margins \
-                 cannot be read"
-            ))
-        }
-        other @ (Outcome::Pass { .. } | Outcome::Fail(_) | Outcome::Skip(_)) => other,
-    }
-}
-
-/// Each outcome of `results`, as `f` reads it again.
-fn reread(results: &mut [Tests], f: impl Fn(Outcome) -> Outcome) {
-    for (_, outcome) in results.iter_mut().flatten() {
-        let taken = std::mem::replace(outcome, Outcome::Skip(String::new()));
-        *outcome = f(taken);
+    /// The passes and failures that are adapter-observed.
+    fn counted_observed(&self) -> usize {
+        (self.results.iter().flatten())
+            .filter(|(name, o)| (o.passed() || o.failed()) && self.observed.contains(name))
+            .count()
     }
 }
 
 /// The list of expected failures in `path`.
 fn read_list(path: &Path) -> Result<BTreeMap<String, Listed>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    expected(&text)
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    expected(&text).map_err(|e| e.replacen("the list", &name, 1))
 }
 
 /// How `outcome` reads in a list of differences.
@@ -1268,6 +1581,7 @@ fn say(outcome: &Outcome) -> String {
         Outcome::Pass { .. } => "passes".to_owned(),
         Outcome::Fail(m) => format!("fails ({})", m.lines().next().unwrap_or_default()),
         Outcome::Skip(_) => "skipped".to_owned(),
+        Outcome::Unavailable(limit, _) => format!("unavailable ({})", limit.name()),
     }
 }
 
@@ -1297,11 +1611,20 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         return Err("no esctest test matches".into());
     }
     let count: usize = areas.iter().map(|a| a.tests.len()).sum();
-    let list = read_list(&request.expected)?;
+    let list = if request.unlisted {
+        BTreeMap::new()
+    } else {
+        read_list(&request.expected)?
+    };
     let beside = match request.beside {
         Some(subject) => {
             let path = subject.expected();
-            Some((subject, read_list(&path)?, path))
+            let list = if request.unlisted {
+                BTreeMap::new()
+            } else {
+                read_list(&path)?
+            };
+            Some((subject, list, path))
         }
         None => None,
     };
@@ -1347,32 +1670,31 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     if request.xterm {
         places.push(Place::Xterm);
     }
+    if request.tmux {
+        places.push(Place::Tmux);
+    }
     let mut columns = Vec::new();
     for place in places {
         let at = Instant::now();
-        let mut results = run_all(
+        let runs = run_all(
             &areas,
             request.jobs,
             request.limit,
+            place,
             &|area| match (place, &fux) {
                 (Place::Fux, Some(fux)) => in_fux(&job, fux, area, &scratch),
                 (Place::Xterm, _) => in_xterm(&job, area, &scratch),
+                (Place::Tmux, _) => in_tmux(&job, area, &scratch),
                 (Place::Direct(subject), _) => direct(&job, subject, area, &scratch),
                 (Place::Fux, None) => direct(&job, terminal, area, &scratch),
             },
         )?;
-        match place {
-            Place::Fux => reread(&mut results, unanswered_checksum),
-            Place::Direct(subject @ Subject::Engine(_)) => {
-                reread(&mut results, |o| unread_checksum(o, subject.name()));
-            }
-            Place::Direct(Subject::FuxVt) | Place::Xterm => {}
-        }
         columns.push(Column {
             place,
             label: place.label(terminal),
             key: place.key(terminal),
-            results,
+            results: runs.results,
+            observed: runs.observed,
             time: at.elapsed(),
         });
     }
@@ -1384,6 +1706,12 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let mut problems = Vec::new();
     let mut json = serde_json::json!({
         "suite": "esctest2",
+        // fux-vt's own setup here, and the engines': the fairness record.
+        "settings": {
+            "fux-vt": "as fux's panes are, with RectangleChecksums and ExtendedReplies on, which panes leave off (`options`)",
+            "engines": crate::engine::settings(crate::engine::ENGINES.iter().map(|k| k.name)),
+        },
+        "suite_commit": ESCTEST_COMMIT,
         "expected_terminal": EXPECTED_TERMINAL,
         "max_vt_level": VT_LEVEL,
         "timeout": request.timeout,
@@ -1399,11 +1727,23 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         (Some((subject, list, _)), Place::Direct(s)) if s == *subject => list,
         _ => &list,
     };
+    // A line saying xterm fails a test too must say it of xterm's column.
+    if let Some(xterm) = columns.iter().find(|c| c.place == Place::Xterm) {
+        problems.extend(xterm_too_passing(&xterm.flat(), &list));
+    }
     for column in &columns {
         let flat = column.flat();
         let first = column.place == Place::Direct(terminal);
-        if column.place != Place::Xterm {
-            let found = mismatches(&flat, list_of(column.place), column.place == Place::Fux);
+        {
+            // xterm, the reference, is held to no list: only a run that
+            // gave no result is a mismatch there.
+            // So is tmux, an engine without a list, and with --unlisted the
+            // terminals run directly.
+            let unlisted = matches!(column.place, Place::Xterm | Place::Tmux)
+                || (matches!(column.place, Place::Direct(_)) && request.unlisted);
+            let in_fux = column.place == Place::Fux;
+            let whole = request.filter.is_none();
+            let found = mismatches(&flat, list_of(column.place), in_fux, unlisted, whole);
             problems.extend(found.iter().map(|p| {
                 if first {
                     p.clone()
@@ -1429,7 +1769,7 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         if let Some(object) = json.as_object_mut() {
             object.insert(
                 column.key.clone(),
-                run_json(&areas, &column.results, column.time, list_of(column.place)),
+                run_json(&areas, column, list_of(column.place)),
             );
         }
     }
@@ -1447,12 +1787,13 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
             let differ = differences(direct, other);
             // xterm, the reference, passes many tests fux-vt does not
             // implement: they are counted, and listed with --show.
-            if other.place == Place::Xterm && !request.show {
+            if matches!(other.place, Place::Xterm | Place::Tmux) && !request.show {
                 let fails = format!("{} fails", direct.label);
                 let direct_fails = differ.iter().filter(|d| d.contains(&fails)).count();
                 println!(
-                    "in xterm: {direct_fails} tests pass that fail {}, {} the other way \
+                    "{}: {direct_fails} tests pass that fail {}, {} the other way \
                      (--show lists them)",
+                    other.label,
                     direct.label,
                     differ.len().saturating_sub(direct_fails)
                 );
@@ -1508,12 +1849,16 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         let t = column.tally();
         let _ = write!(
             summary,
-            "{} {} {} of {} pass ({:.1}%), {} skipped, in {:.1}s",
+            "{} {} {} of {} pass ({:.1}%), {} unavailable ({} adapter-limited), {} \
+             adapter-observed, {} skipped, in {:.1}s",
             if i == 0 { "" } else { ";" },
             column.label,
             t.passed,
-            t.passed.saturating_add(t.failed),
+            t.run(),
             t.rate(),
+            t.unreadable.saturating_add(t.infrastructure),
+            t.unreadable,
+            column.counted_observed(),
             t.skipped,
             column.time.as_secs_f64()
         );
@@ -1522,7 +1867,11 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
         summary,
         "; {} mismatches with {}",
         problems.len(),
-        request.expected.display()
+        if request.unlisted {
+            "no list (--unlisted)".to_owned()
+        } else {
+            request.expected.display().to_string()
+        }
     );
     if let Some((_, _, path)) = &beside {
         let _ = write!(summary, " and {}", path.display());
@@ -1589,7 +1938,7 @@ impl Comparison {
             test: name.to_owned(),
             failure: match outcome {
                 Outcome::Fail(m) => m.lines().next().unwrap_or_default().to_owned(),
-                Outcome::Pass { .. } | Outcome::Skip(_) => String::new(),
+                Outcome::Pass { .. } | Outcome::Skip(_) | Outcome::Unavailable(..) => String::new(),
             },
             reason: list
                 .get(name)
@@ -1603,9 +1952,12 @@ impl Comparison {
                 first.push(only(name, &y, b_list));
             } else if x.failed() && y.passed() {
                 second.push(only(name, x, a_list));
-            } else if matches!(x, Outcome::Skip(_)) != matches!(y, Outcome::Skip(_)) {
+            } else if (x.passed() || x.failed()) != (y.passed() || y.failed()) {
                 let what = |o: &Outcome| match o {
                     Outcome::Skip(why) => format!("skipped: {why}"),
+                    Outcome::Unavailable(limit, why) => {
+                        format!("unavailable ({}): {why}", limit.name())
+                    }
                     Outcome::Pass { .. } | Outcome::Fail(_) => say(o),
                 };
                 one_ran.push((name.clone(), [what(x), what(&y)]));
@@ -1624,7 +1976,7 @@ impl Comparison {
     fn text(&self) -> String {
         let [a, b] = self.names;
         let rate = |t: Tally| {
-            let run = t.passed.saturating_add(t.failed);
+            let run = t.run();
             format!("{:>3}/{:<3} {:>5.1}%", t.passed, run, t.rate())
         };
         let mut out = format!(
@@ -1749,6 +2101,11 @@ const SOURCES: &[(&str, &str)] = &[
          and §5.12.1 (DECSERA); ECMA-48 SPA, EPA; ctlseqs CSI Ps \" q, CSI ? Ps J, CSI ? Ps K",
     ),
     (
+        "DECSACE, the extent",
+        "DEC STD 070 §5.12.1, Select Attribute Change Extent; VT510 DECSACE; ctlseqs \
+         CSI Ps * x",
+    ),
+    (
         "rectangle operations",
         "DEC STD 070 §5.12.1, Rectangular Area Operations; VT510 DECCRA, DECFRA, DECERA, \
          DECCARA, DECRARA, DECSACE; ctlseqs CSI … $ v, $ x, $ z, $ r, $ t, * x",
@@ -1767,6 +2124,11 @@ const SOURCES: &[(&str, &str)] = &[
         "left and right margins",
         "DEC STD 070 §5.4.3, Set Left and Right Margins and Set/Reset Left Right Margin Mode; \
          VT510 DECSLRM, DECLRMM; ctlseqs CSI ? 69 h, CSI Pl ; Pr s",
+    ),
+    (
+        "mode 41",
+        "ctlseqs CSI ? 41 h (more(1) fix, xterm's curses resource); DEC STD 070 appendix D \
+         §D.6.1, the Last Column Flag",
     ),
     (
         "reverse wraparound",
@@ -1866,25 +2228,124 @@ fn source(reason: &str) -> Option<&'static str> {
         .map(|(_, source)| *source)
 }
 
+/// Real xterm's esctest options: every window operation allowed, as its
+/// resources below set them (README.txt, `xtermWinopsEnabled`).
+const XTERM_OPTIONS: &[&str] = &["xtermWinopsEnabled"];
+
+/// Runs `area` in a real tmux, as the program of a session of 80 by 25 on
+/// a server of its own (its socket in the temporary directory), with no
+/// status line, so
+/// esctest talks to tmux's terminal as a program in a pane does.
+fn in_tmux(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
+    let log = scratch.join(format!("{}.tmux.log", area.stem()));
+    // Named by a count, not by the test: a socket's path has at most 108
+    // bytes, and a test's name alone can be most of that.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let socket = std::env::temp_dir().join(format!("esctest-{}-{n}.tmux", std::process::id()));
+    let config = scratch.join(format!("{}.tmux.conf", area.stem()));
+    std::fs::write(&config, "set -g status off\nset -g window-size manual\n")
+        .map_err(|e| format!("{}: {e}", config.display()))?;
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        &[],
+    );
+    // The program as a shell line, each word quoted.
+    let line = argv
+        .iter()
+        .map(|w| format!("'{}'", w.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tmux = |args: &[&str]| {
+        let _guard = SPAWN.lock().map_err(|_| "a spawn panicked".to_owned())?;
+        Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .arg("-f")
+            .arg(&config)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("tmux: {e}"))
+    };
+    let (cols, rows) = (COLS.to_string(), ROWS.to_string());
+    let started = tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "esctest",
+        "-x",
+        &cols,
+        "-y",
+        &rows,
+        &line,
+    ])?;
+    if !started.success() {
+        return Err(format!("tmux new-session: {started}"));
+    }
+    let deadline = deadline(job.request.limit);
+    let mut finished = false;
+    while Instant::now() < deadline {
+        if !tmux(&["has-session", "-t", "esctest"])?.success() {
+            finished = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = tmux(&["kill-server"]);
+    let _ = std::fs::remove_file(&socket);
+    Ok(Ran {
+        log: std::fs::read_to_string(&log).unwrap_or_default(),
+        stopped: !finished,
+        ..Ran::default()
+    })
+}
+
 /// Runs `area` in a real xterm, under the harness's Xvfb (`engines::xterm`),
 /// set up as esctest's README says: 80 by 25, UTF-8 as fux is, a VT420
-/// (`decTerminalID`, xterm's default), and DECRQCRA allowed, which xterm's
-/// default `disallowedWindowOps` forbids; the other window operations stay
-/// as xterm keeps them by default. Its checksum counts a cell nothing was
-/// written to as a space (`checksumExtension` 8, "do not skip uninitialized
-/// cells", ctlseqs' XTCHECKSUM), as esctest expects of a DEC terminal by
-/// default: xterm's own default counts it as nothing, which esctest reads
-/// as no character at all, failing every test that reads an empty cell.
+/// (`decTerminalID`, xterm's default), and every window operation allowed
+/// (`allowWindowOps`, an empty `disallowedWindowOps`; README.txt's
+/// `xtermWinopsEnabled`, [`XTERM_OPTIONS`]), DECRQCRA among them. A base
+/// and its combining marks are kept as written (`precompose: false`), as
+/// the engine xterm keeps them (`engines::xterm`).
+///
+/// Its checksum is `checksumExtension` 26 (ctlseqs' XTCHECKSUM, xterm's
+/// manual): bit 1, the video attributes left out, as esctest reads one
+/// character a cell; bit 3, a cell nothing was written to counted as a
+/// space, as esctest expects of a DEC terminal (xterm's default counts it as
+/// nothing, which esctest reads as no character at all, failing every test
+/// that reads an empty cell); and bit 4, the cell's own character, not
+/// masked. Without bit 4, xterm 411 sums `charSeen` (`screen.c:3209`,
+/// `xtermCheckRect`), a per-cell copy of what was written that DCH, ICH
+/// and the scrolls never move, so it reads back characters that are no
+/// longer there.
 fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
-    let log = scratch.join(format!("{}.xterm.log", area.name));
-    let argv = esctest_argv(job.python, job.suite, area, job.request.timeout, &log, None);
+    let log = scratch.join(format!("{}.xterm.log", area.stem()));
+    let argv = esctest_argv(
+        job.python,
+        job.suite,
+        area,
+        job.request.timeout,
+        &log,
+        None,
+        XTERM_OPTIONS,
+    );
     let display = crate::engines::xterm::display()?;
     let resources = [
         "XTerm*locale: false",
         "XTerm*utf8: 2",
         "XTerm*decTerminalID: 420",
-        "XTerm*checksumExtension: 8",
-        "XTerm*disallowedWindowOps: GetIconTitle,GetWinTitle,SetSelection,GetSelection,SetXprop",
+        "XTerm*checksumExtension: 26",
+        "XTerm*allowWindowOps: true",
+        "XTerm*disallowedWindowOps: ",
+        "XTerm*precompose: false",
     ];
     let mut command = Command::new("xterm");
     command
@@ -1920,17 +2381,14 @@ fn in_xterm(job: &Job<'_>, area: &Area, scratch: &Path) -> Result<Ran, String> {
     Ok(Ran {
         log: std::fs::read_to_string(&log).unwrap_or_default(),
         stopped: !finished,
+        ..Ran::default()
     })
 }
 
 /// A place's results: the tally, the time, each area's tally and each
 /// test's result.
-fn run_json(
-    areas: &[Area],
-    results: &[Tests],
-    time: Duration,
-    list: &BTreeMap<String, Listed>,
-) -> serde_json::Value {
+fn run_json(areas: &[Area], column: &Column, list: &BTreeMap<String, Listed>) -> serde_json::Value {
+    let (results, time) = (&column.results, column.time);
     let mut by_area = serde_json::Map::new();
     let mut tests = serde_json::Map::new();
     for (area, results) in areas.iter().zip(results) {
@@ -1939,7 +2397,11 @@ fn run_json(
             Tally::of(results.iter().map(|(_, o)| o)).json(),
         );
         for (name, outcome) in results {
-            tests.insert(name.clone(), outcome_json(outcome, list.get(name)));
+            let observed = column.observed.contains(name);
+            tests.insert(
+                name.clone(),
+                outcome_json(outcome, list.get(name), observed),
+            );
         }
     }
     let mut total = Tally::of(results.iter().flatten().map(|(_, o)| o)).json();
@@ -1947,6 +2409,10 @@ fn run_json(
         object.insert(
             "seconds".into(),
             serde_json::json!((time.as_secs_f64() * 10.0).round() / 10.0),
+        );
+        object.insert(
+            "adapter_observed".into(),
+            serde_json::json!(column.counted_observed()),
         );
         object.insert("areas".into(), serde_json::Value::Object(by_area));
         object.insert("tests".into(), serde_json::Value::Object(tests));
@@ -1963,6 +2429,8 @@ fn build_fux() -> Result<PathBuf, String> {
             "build",
             "--release",
             "--quiet",
+            "-j",
+            &crate::few_jobs().to_string(),
             "--bin",
             "fux",
             "--manifest-path",
@@ -1973,7 +2441,9 @@ fn build_fux() -> Result<PathBuf, String> {
     if !status.success() {
         return Err("building fux failed".into());
     }
-    root.join("target/release/fux")
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), PathBuf::from)
+        .join("release/fux")
         .canonicalize()
         .map_err(|e| format!("fux's binary: {e}"))
 }
@@ -2078,6 +2548,89 @@ a
         Ok(())
     }
 
+    /// A `not-implemented:` line says the corpus sends its sequence when it
+    /// does: the kind reads as "no program in the corpus sends it" unless
+    /// the line says otherwise, so a line whose sequence a recording sends
+    /// (corpus/INVENTORY.md, which the_inventory_regenerates_unchanged
+    /// keeps current) cites the inventory and denies nothing. Each such
+    /// line names what its test sends, as inventory keys (a prefix and a
+    /// suffix); every line is named, so none goes unchecked (HAR-44).
+    #[test]
+    fn no_not_implemented_reason_denies_a_sequence_the_corpus_sends() -> Result<(), String> {
+        const SENDS: &[(&str, &[(&str, &str)])] = &[
+            ("DECDSRTests.test_DECDSR_DECCKSR", &[("CSI ? 63;", " n")]),
+            ("DECDSRTests.test_DECDSR_DECMSR", &[("CSI ? 62 n", "")]),
+            ("DECDSRTests.test_DECDSR_DECXCPR", &[("CSI ? 6 n", "")]),
+            (
+                "DECDSRTests.test_DECDSR_DSRDECLocatorStatus",
+                &[("CSI ? 55 n", "")],
+            ),
+            ("DECDSRTests.test_DECDSR_DSRKeyboard", &[("CSI ? 26 n", "")]),
+            (
+                "DECDSRTests.test_DECDSR_DSRMultipleSessionStatus",
+                &[("CSI ? 85 n", "")],
+            ),
+            (
+                "DECDSRTests.test_DECDSR_DSRPrinterPort",
+                &[("CSI ? 15 n", "")],
+            ),
+            ("DECDSRTests.test_DECDSR_LocatorType", &[("CSI ? 56 n", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECNRCM", &[("CSI ? 42 ", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECPEX", &[("CSI ? 19 ", "")]),
+            ("DECRQMTests.test_DECRQM_DEC_DECPFF", &[("CSI ? 18 ", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSASD", &[("DCS $ q $}", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSLPP", &[("DCS $ q t", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSNLS", &[("DCS $ q *|", "")]),
+            ("DECRQSSTests.test_DECRQSS_DECSSDT", &[("DCS $ q $~", "")]),
+            (
+                "ResetSpecialColorTests.test_ResetSpecialColor_Multiple",
+                &[("DCS + q", "")],
+            ),
+            (
+                "ResetSpecialColorTests.test_ResetSpecialColor_Single",
+                &[("DCS + q", "")],
+            ),
+        ];
+        let compare = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let inventory = std::fs::read_to_string(crate::corpus::dir().join("INVENTORY.md"))
+            .map_err(|e| e.to_string())?;
+        // Each table row's first column, a sequence as the inventory keys it.
+        let sent: Vec<String> = inventory
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split_once("` |"))
+            .map(|(key, _)| key.replace("\\|", "|"))
+            .collect();
+        assert!(sent.iter().any(|k| k == "CSI ? 25 l"), "no keys read");
+        let list = super::read_list(&compare.join("esctest-expected.txt"))?;
+        let unnamed: Vec<&String> = (list.iter())
+            .filter(|(_, l)| l.reason.starts_with("not-implemented:"))
+            .map(|(name, _)| name)
+            .filter(|name| !SENDS.iter().any(|(n, _)| n == name))
+            .collect();
+        assert!(unnamed.is_empty(), "say what these send: {unnamed:?}");
+        for (name, keys) in SENDS {
+            let reason = list
+                .get(*name)
+                .map(|l| l.reason.as_str())
+                .filter(|r| r.starts_with("not-implemented:"))
+                .ok_or(format!("{name} is not listed not-implemented"))?;
+            let Some(key) = sent.iter().find(|k| {
+                keys.iter()
+                    .any(|(pre, post)| k.starts_with(pre) && k.ends_with(post))
+            }) else {
+                continue;
+            };
+            assert!(
+                reason.contains("corpus/INVENTORY.md")
+                    && !reason.contains("no program in the corpus")
+                    && !reason.contains("no real program"),
+                "{name}: the corpus sends {key:?}, and its reason does not say so: {reason}"
+            );
+        }
+        Ok(())
+    }
+
     /// Two terminals' results side by side: each area's tallies, the
     /// tests only one passes with the failing one's reason, and those run
     /// in one only.
@@ -2103,6 +2656,7 @@ a
                     .zip(results)
                     .collect(),
             ],
+            observed: std::collections::BTreeSet::new(),
             time: std::time::Duration::ZERO,
         };
         let a = column(vec![pass.clone(), fail.clone(), skip, pass.clone()]);
@@ -2178,13 +2732,182 @@ a
             ("A.t3".to_owned(), fail),
             ("A.t4".to_owned(), pass),
         ];
-        let direct = super::mismatches(&results, &list, false);
+        let direct = super::mismatches(&results, &list, false, false, false);
         assert_eq!(direct.len(), 2, "{direct:?}");
         assert!(direct.iter().any(|m| m.starts_with("A.t1: passes")));
         assert!(direct.iter().any(|m| m.starts_with("A.t2: fails")));
-        let fux = super::mismatches(&results, &list, true);
+        let fux = super::mismatches(&results, &list, true, false, false);
         assert_eq!(fux.len(), 2, "{fux:?}");
         assert!(fux.iter().any(|m| m.starts_with("A.t3: fails")));
+        // A listed test esctest skipped, and one the suite no longer has
+        // (looked for only in a whole run): each a mismatch.
+        let gone = super::expected("A.t1 bug: x\nA.t9 bug: gone\n")?;
+        let skipped = vec![("A.t1".to_owned(), Outcome::Skip("level 5".into()))];
+        let whole = super::mismatches(&skipped, &gone, false, false, true);
+        assert_eq!(whole.len(), 2, "{whole:?}");
+        assert!(whole.iter().any(|m| m.starts_with("A.t1: skipped")));
+        assert!(
+            whole
+                .iter()
+                .any(|m| m.starts_with("A.t9: listed, but not in the suite"))
+        );
+        let filtered = super::mismatches(&skipped, &gone, false, false, false);
+        assert_eq!(filtered.len(), 1, "{filtered:?}");
+        // A test tagged xterm-too that xterm passes: its tag is stale.
+        let tagged = super::expected("A.t1 xterm-too: x\nA.t2 xterm-too: y\n")?;
+        let in_xterm = vec![
+            (
+                "A.t1".to_owned(),
+                Outcome::Pass {
+                    beyond_xterm: false,
+                },
+            ),
+            ("A.t2".to_owned(), Outcome::Fail("e".into())),
+        ];
+        let stale = super::xterm_too_passing(&in_xterm, &tagged);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(
+            stale
+                .iter()
+                .all(|m| m.starts_with("A.t1: listed as xterm-too"))
+        );
+        Ok(())
+    }
+
+    /// A test whose run errs or panics has no result (infrastructure), and
+    /// the others still come back (at the parent one area's error or a
+    /// worker's panic ended esctest with no table and no JSON).
+    #[test]
+    fn a_failed_run_costs_its_test_alone() -> Result<(), String> {
+        use super::{Limit, Place, Ran, Subject};
+        let area = super::Area {
+            name: "A".into(),
+            tests: vec!["A.t1".into(), "A.t2".into(), "A.t3".into()],
+        };
+        let run = |unit: &super::Area| -> Result<Ran, String> {
+            match unit.tests.first().map(String::as_str) {
+                Some("A.t1") => Ok(Ran {
+                    log: "Run test: A.t1\nPassed.\n\n".into(),
+                    ..Ran::default()
+                }),
+                Some("A.t2") => Err("the engine went away".into()),
+                _ => {
+                    let one = "a".len();
+                    assert!(one == 2, "a worker's bug");
+                    Err("unreachable".into())
+                }
+            }
+        };
+        let place = Place::Direct(Subject::FuxVt);
+        let runs = super::run_all(&[area], 2, std::time::Duration::from_secs(60), place, &run)?;
+        let tests: Vec<&Outcome> = runs.results.iter().flatten().map(|(_, o)| o).collect();
+        let [first, second, third] = tests.as_slice() else {
+            return Err(format!("{tests:?}"));
+        };
+        assert!(matches!(first, Outcome::Pass { .. }));
+        assert!(
+            matches!(second, Outcome::Unavailable(Limit::Infrastructure, why) if why.contains("went away"))
+        );
+        assert!(
+            matches!(third, Outcome::Unavailable(Limit::Infrastructure, why) if why.contains("a worker's bug"))
+        );
+        Ok(())
+    }
+
+    /// Each test runs alone, and comes back in its area, in order.
+    #[test]
+    fn every_test_runs_alone() {
+        let areas = vec![
+            super::Area {
+                name: "A".into(),
+                tests: vec!["A.t1".into(), "A.t2".into()],
+            },
+            super::Area {
+                name: "B".into(),
+                tests: vec!["B.t1".into()],
+            },
+        ];
+        let units = super::isolated(&areas);
+        let names: Vec<(&str, &str)> = units.iter().map(|u| (u.name.as_str(), u.stem())).collect();
+        assert_eq!(names, [("A", "A.t1"), ("A", "A.t2"), ("B", "B.t1")]);
+    }
+
+    /// A run's results, classified: a timeout reading cells the adapter
+    /// could not answer is adapter-limited; one the engine's own failure
+    /// caused is the engine's; a test with no result is infrastructure's,
+    /// and a mismatch, but not a failure; every one but the skipped is in
+    /// the denominator.
+    #[test]
+    fn results_are_classified() -> Result<(), String> {
+        use super::{Limit, Place, Ran, Subject};
+        let area = super::Area {
+            name: "A".into(),
+            tests: vec!["A.t1".into(), "A.t2".into(), "A.t3".into()],
+        };
+        let log = "Run test: A.t1\nPassed.\n\nRun test: A.t2\n*** TEST A.t2 FAILED:\n\
+                   Traceback (most recent call last):\n  File \"a.py\", line 1, in test_t2\n    \
+                   f()\n  File \"escutil.py\", line 1, in GetChecksumOfRect\n    g()\n\
+                   esctypes.InternalError: Timeout waiting to read.\n\n";
+        let limit = std::time::Duration::from_secs(60);
+        let place = Place::Direct(Subject::FuxVt);
+        let ran = Ran {
+            log: log.into(),
+            stopped: true,
+            told: 1,
+            unreadable: 1,
+            failed: None,
+        };
+        let (tests, observed) = super::results(&area, &ran, limit, place);
+        assert!(observed);
+        let outcomes: Vec<&Outcome> = tests.iter().map(|(_, o)| o).collect();
+        let [first, second, third] = outcomes.as_slice() else {
+            return Err(format!("{outcomes:?}"));
+        };
+        assert!(matches!(first, Outcome::Pass { .. }));
+        assert!(matches!(second, Outcome::Unavailable(Limit::Unreadable, _)));
+        assert!(matches!(
+            third,
+            Outcome::Unavailable(Limit::Infrastructure, _)
+        ));
+        let tally = super::Tally::of(outcomes.iter().copied());
+        assert_eq!((tally.passed, tally.failed, tally.run()), (1, 0, 3));
+        let list = super::expected("")?;
+        let found = super::mismatches(&tests, &list, false, true, true);
+        let [found] = found.as_slice() else {
+            return Err(format!("{found:?}"));
+        };
+        assert!(found.starts_with("A.t3: no result"));
+        // The same timeout where the harness declined no checksum (a slow
+        // reply, a load): the engine's failure, not an unreadable test.
+        let slow = Ran {
+            log: log.into(),
+            stopped: true,
+            told: 1,
+            unreadable: 0,
+            failed: None,
+        };
+        let (tests, _) = super::results(&area, &slow, limit, place);
+        assert!(
+            matches!(tests.get(1), Some((_, Outcome::Fail(_)))),
+            "{tests:?}"
+        );
+        // Without an unanswered read, the timeout is the engine's failure.
+        let ran = Ran {
+            unreadable: 0,
+            ..ran
+        };
+        let (tests, _) = super::results(&area, &ran, limit, place);
+        assert!(matches!(tests.get(1), Some((_, Outcome::Fail(_)))));
+        let ran = Ran {
+            failed: Some("panicked".into()),
+            ..ran
+        };
+        let (tests, _) = super::results(&area, &ran, limit, place);
+        assert!(
+            tests
+                .iter()
+                .all(|(_, o)| matches!(o, Outcome::Fail(m) if m.contains("panicked")))
+        );
         Ok(())
     }
 }

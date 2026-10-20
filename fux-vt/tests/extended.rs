@@ -3,7 +3,8 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
-use fux_vt::keys::encode::OtherKeys;
+use fux_vt::keys::Modifiers;
+use fux_vt::keys::encode::{OtherKeys, OtherKeysLevel};
 use fux_vt::{
     Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
     Unhandled,
@@ -324,13 +325,17 @@ fn sequences_fux_vt_does_not_implement_reach_the_sink() -> Result {
             // SRM: of the ANSI modes, IRM and LNM alone are kept.
             "CSI 12h",
             "CSI ?1u",
-            // The 96-character sets are not designated, nor shifted into
-            // GR, which UTF-8 leaves no room for.
+            // The 96-character sets are not designated.
             "ESC -A",
-            "ESC ~",
             "CSI 2;3:4^"
         ]
     );
+    // LS1R, LS2R and LS3R shift into GR (ECMA-35, 9.3.2), and S7C1T and
+    // S8C1T are taken (DEC STD 070, 1.7.2's level 2 list), though no byte
+    // reaches GR in UTF-8 nor is a reply 8-bit; ANSI's conformance levels
+    // (`ESC SP L`) are not.
+    let record = run(&mut p, b"\x1b~\x1b}\x1b|\x1b F\x1b G\x1b L")?;
+    assert_eq!(record.unhandled, ["ESC  L"]);
     assert!(record.replies.is_empty());
     // Unknown private modes are consumed quietly; queries still answer.
     let record = run(&mut p, b"\x1b[?12345h\x1b[5n")?;
@@ -363,7 +368,7 @@ fn an_identity_answers_device_attributes_and_version_queries() -> Result {
     // Without one, fux-vt's own answers, and XTVERSION goes unanswered.
     let mut p = Parser::new(Size::new(5, 20)?, 0)?;
     let record = run(&mut p, b"\x1b[c\x1b[>c\x1b[>q01234567890123456789\x1b[6n")?;
-    assert_eq!(record.replies, ["\x1b[?1;2c", "\x1b[1;21R"]);
+    assert_eq!(record.replies, ["\x1b[?1;2c", "\x1b[1;20R"]);
     // A missing parameter is reported as 0.
     assert_eq!(record.unhandled, ["CSI >0c", "CSI >0q"]);
     Ok(())
@@ -400,6 +405,11 @@ fn identity_versions_encode_like_xterm_and_long_names_go_unanswered() -> Result 
 
 // Kitty keyboard protocol and modifyOtherKeys.
 
+/// The flags are pushed, set, popped and reported as the kitty keyboard
+/// protocol's "Progressive enhancement" has them, and kept only as far as
+/// fux honours them, not report event types (2): the kitty keyboard
+/// protocol's Detection of support has a program learn so by setting the
+/// flags it wants and asking.
 #[test]
 fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
@@ -411,7 +421,7 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     assert_eq!(
         record.replies,
         [
-            "\x1b[?0u", "\x1b[?5u", "\x1b[?7u", "\x1b[?3u", "\x1b[?1u", "\x1b[?0u"
+            "\x1b[?0u", "\x1b[?5u", "\x1b[?5u", "\x1b[?1u", "\x1b[?1u", "\x1b[?0u"
         ]
     );
     assert!(record.unhandled.is_empty());
@@ -420,15 +430,19 @@ fn kitty_keyboard_flags_push_set_pop_and_answer_queries() -> Result {
     p.process(b"\x1b[>1u\x1b[>2u\x1b[<9u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=3u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 3);
-    // Only the spec's five flags are kept ("The progressive enhancement
-    // flags": 1 to 16); other bits mean nothing.
+    assert_eq!(p.screen().kitty_keyboard_flags(), 1);
+    // Only the spec's flags fux-vt honours are kept: 1, 4, 8 and 16 ("The
+    // progressive enhancement flags"), not report event types (2), as fux
+    // sends no repeats or releases; the spec's "Detection of support":
+    // "applications can detect such implementations by first setting the
+    // desired progressive enhancements and then querying". Other bits mean
+    // nothing.
     p.process(b"\x1b[>999u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 7);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 5);
     p.process(b"\x1b[>32u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[=63u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 31);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 29);
     Ok(())
 }
 
@@ -446,9 +460,9 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
     for n in 1..=33u8 {
         p.process(format!("\x1b[>{n}u").as_bytes())?;
     }
-    p.process(b"\x1b[<31u")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 2);
-    p.process(b"\x1b[<u")?;
+    p.process(b"\x1b[<30u")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 3 & 29);
+    p.process(b"\x1b[<2u")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
     p.process(b"\x1b[>4u\x1b[>4;2m\x1bc")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
@@ -462,16 +476,66 @@ fn kitty_keyboard_stacks_are_per_screen_bounded_and_reset() -> Result {
 #[test]
 fn kitty_keyboard_stacks_outlive_clears_and_resizes() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
-    p.process(b"\x1b[>3u\x1b[?1049h\x1b[>6u\x1b[?1049l\x1b[?1049h")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    p.process(b"\x1b[>5u\x1b[?1049h\x1b[>12u\x1b[?1049l\x1b[?1049h")?;
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.process(b"\x1b[?1049l\x1b[?1047h\x1b[?1047l\x1b[?1047h")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.resize(Size::new(7, 30)?)?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 6);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 12);
     p.process(b"\x1b[?1047l")?;
-    assert_eq!(p.screen().kitty_keyboard_flags(), 3);
+    assert_eq!(p.screen().kitty_keyboard_flags(), 5);
     p.process(b"\x1bc\x1b[?1049h")?;
     assert_eq!(p.screen().kitty_keyboard_flags(), 0);
+    Ok(())
+}
+
+/// XTQMODKEYS (ctlseqs, `CSI ? Pp m`): "XTerm's response ... is formatted
+/// as an XTMODKEYS control, i.e., CSI > Pp m", as xterm answers
+/// modifyOtherKeys (4), its value 0 when off. fux-vt keeps no other
+/// resource, and answers none of them.
+#[test]
+fn xtqmodkeys_answers_the_modify_other_keys_level() -> Result {
+    let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
+    let asked =
+        |p: &mut Parser, input: &[u8]| -> Result<Vec<String>> { Ok(run(p, input)?.replies) };
+    assert_eq!(asked(&mut p, b"\x1b[?4m")?, ["\x1b[>4;0m"]);
+    assert_eq!(asked(&mut p, b"\x1b[>4;2m\x1b[?4m")?, ["\x1b[>4;2m"]);
+    assert_eq!(asked(&mut p, b"\x1b[>4;3m\x1b[?4m")?, ["\x1b[>4;3m"]);
+    assert!(asked(&mut p, b"\x1b[?1m\x1b[?6m")?.is_empty());
+    let mut off = Parser::new(Size::new(5, 20)?, 0)?;
+    assert!(asked(&mut off, b"\x1b[?4m")?.is_empty());
+    Ok(())
+}
+
+/// XTMODKEYS with a mask of modifiers to factor out (ctlseqs, "Alt and Meta
+/// Keys"), as xterm 411 reads it (`CASE_SET_MOD_FKEYS`): the mask a
+/// subparameter of the level, `CSI > 4 ; 2 : 1 m`, kept until the level is
+/// set again; one of the resource, ctlseqs' own example `CSI > 4 : 1 m`,
+/// ignored, as xterm 411 ignores it (fux-vt/compare/xterm-keys, the `ct`
+/// mode recorded beside xterm-keys-factored.txt). XTQMODKEYS answers the
+/// level alone (`report_mod_fkeys`).
+#[test]
+fn modify_other_keys_takes_a_mask_to_factor_out() -> Result {
+    let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
+    let factored = |shift, ctrl, alt| Modifiers { shift, ctrl, alt };
+    p.process(b"\x1b[>4;2:5m")?;
+    let keys = p.screen().modify_other_keys().ok_or("no modifyOtherKeys")?;
+    assert_eq!(keys.level(), OtherKeysLevel::All);
+    assert_eq!(keys.factored(), factored(true, true, false));
+    assert_eq!(run(&mut p, b"\x1b[?4m")?.replies, ["\x1b[>4;2m"]);
+    p.process(b"\x1b[>4:1m")?;
+    assert_eq!(p.screen().modify_other_keys(), Some(keys));
+    p.process(b"\x1b[>4;1:8m")?;
+    let keys = p.screen().modify_other_keys().ok_or("no modifyOtherKeys")?;
+    assert_eq!(
+        (keys.level(), keys.factored()),
+        (OtherKeysLevel::Usual, factored(false, false, true))
+    );
+    p.process(b"\x1b[>4;1m")?;
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::Usual))
+    );
     Ok(())
 }
 
@@ -480,13 +544,19 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;2m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::All))
+    );
     p.process(b"\x1b[>4;0m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     for byte in b"\x1b[>4;1m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::Usual))
+    );
     p.process(b"\x1b[>4m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
@@ -502,7 +572,10 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     for byte in b"\x1b[>0m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::All));
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::All))
+    );
     for byte in b"\x1b[>m" {
         p.process(&[*byte])?;
     }
@@ -513,9 +586,15 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     p.process(b"\x1b[>4;2m\x1b[>4n")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;1m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::Usual))
+    );
     let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeys::Usual));
+    assert_eq!(
+        p.screen().modify_other_keys(),
+        Some(OtherKeys::from(OtherKeysLevel::Usual))
+    );
     assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
     p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
@@ -852,7 +931,10 @@ fn the_history_budget_changes_on_a_live_parser() -> Result {
 
 /// A sixel picture takes the cells it covers, in the host's cell size, and
 /// shows while they are its: text over one of them takes it away, and a
-/// scroll carries it up. The cursor ends below it.
+/// scroll carries it up. The cursor ends on the row the last band ends in
+/// (DEC STD 070-9, 11.3: "updated to reflect the vertical motion commands
+/// executed"): its last row here, below it after a final graphics new
+/// line, at its left either way.
 #[test]
 fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
@@ -871,9 +953,17 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     assert_eq!(shown, [(1, 3, 2, 2)]);
     assert_eq!(
         p.screen().cursor_position(),
-        (3, 3),
-        "below it, at its left"
+        (2, 3),
+        "on its last row, at its left"
     );
+    // A graphics new line after the last band takes it below.
+    let mut q = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    q.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    q.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~-\x1b\\")?;
+    assert_eq!(q.screen().cursor_position(), (3, 3), "below it");
     let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
     assert_eq!(lines(&p).get(1).map(|l| l.trim()), Some(covered.as_str()));
     p.process(b"\x1b[6;1H\n")?;
@@ -885,6 +975,296 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
         0,
         "text over a cell takes it away"
     );
+    Ok(())
+}
+
+/// A picture placed on the bottom margin between left and right margins
+/// scrolls their cells, not the rows (DEC STD 070, 5.4.3), as text there
+/// does: its first band goes up a row with the cells, and the picture is
+/// listed where its cells are, its last row the cursor's (FA-SIX-1). So
+/// too when the graphics new lines after its last band scroll them
+/// (FA-RE-B-6).
+#[test]
+fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are() -> Result {
+    for (at, end, top) in [(4, "", 2), (3, "-", 1), (3, "---", 0)] {
+        let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let sixel = format!("\x1bPq\"1;1#1;2;100;0;0!8~-!8~{end}\x1b\\");
+        p.process(format!("\x1b[?69h\x1b[1;5s\x1b[{at};3H{sixel}").as_bytes())?;
+        let shown: Vec<_> = p
+            .screen()
+            .pictures()
+            .map(|s| (s.row, s.col, s.cols, s.rows))
+            .collect();
+        assert_eq!(shown, [(top, 2, 2, 2)], "{sixel:?} at row {at}");
+        let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
+        let row = usize::try_from(top)?;
+        for row in [row, row.saturating_add(1)] {
+            assert_eq!(
+                lines(&p).get(row).map(|l| l.trim()),
+                Some(covered.as_str()),
+                "{sixel:?} at row {at}"
+            );
+        }
+        #[cfg(feature = "checks")]
+        {
+            let report = p.check();
+            assert!(report.is_clean(), "{report}");
+        }
+    }
+    Ok(())
+}
+
+/// A picture taller than a screen that keeps no history scrolls its top
+/// off, which is cropped, the rest shown (DEC STD 070-9, 11.2.4), and the
+/// checker reads it so too (FA-CODEX-6).
+#[test]
+fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
+    let mut p = Parser::with_options(Size::new(1, 2)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bP0;1q\"1;1;1;12~-~\x1b\\")?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.rows)).collect();
+    assert_eq!(shown, [(-1, 2)]);
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
+/// What scrolls off a region's top margin is gone too (DEC STD 070-9,
+/// 11.2.4), and the rest of a picture stays: a picture of two rows on the
+/// region's first two, the region scrolled once, keeps its second row on
+/// the region's first, its top cropped (`Shown::cropped`); the row above
+/// the margin, which was never the picture's, is not taken as it, and the
+/// checker reads it so too (the terminal fuzz target, run 39307528271).
+#[test]
+fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1b[2;4r\x1b[1;1Habcd\x1b[2;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\\n\n")?;
+    let shown: Vec<_> = (p.screen().pictures())
+        .map(|s| (s.row, s.rows, s.cropped))
+        .collect();
+    assert_eq!(shown, [(0, 2, 1)]);
+    assert_eq!(lines(&p).first().map(|l| l.trim()), Some("abcd"));
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
+/// The rows a region's scroll took from a picture stay taken, whatever
+/// margins are set after (decision 962): with the margins reset, as
+/// programs reset them, the picture of the test above still shows its
+/// second row, its first cropped; and a picture cropped by the top of a
+/// screen that keeps no history keeps the rows that still hold it when a
+/// margin is set inside it later.
+#[test]
+fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
+    let graphics = fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    };
+    let shown = |p: &Parser| -> Vec<(i64, u16, u16)> {
+        (p.screen().pictures())
+            .map(|s| (s.row, s.rows, s.cropped))
+            .collect()
+    };
+    let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1b[2;4r\x1b[1;1Habcd\x1b[2;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\\n\n\x1b[r")?;
+    assert_eq!(shown(&p), [(0, 2, 1)], "margins reset");
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "margins reset: {report}");
+    }
+    // Three rows on a screen of four with no history, scrolled once: its
+    // top above the screen; then a region from the second row.
+    let mut p = Parser::with_options(Size::new(4, 4)?, 0, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1b[2;1H\x1bPq\"1;1#1;2;100;0;0~-~-~\x1b\\\x1b[4;1H\n")?;
+    assert_eq!(shown(&p), [(0, 3, 0)]);
+    p.process(b"\n\x1b[2;4r")?;
+    assert_eq!(shown(&p), [(-1, 3, 1)], "a margin set inside it");
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "a margin set inside it: {report}");
+    }
+    Ok(())
+}
+
+/// A picture taller than the screen and the history kept, its top gone
+/// above the oldest row history keeps, is cropped there, and the checker
+/// counts it so: its crop counted from the oldest row kept, not the
+/// screen's top (the terminal fuzz target on seed b01-raster-pictures,
+/// "shown with 88 rows cropped, 92 noted").
+#[test]
+fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
+    let mut p = Parser::with_options(Size::new(2, 4)?, 120, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~-~-~-~-~\x1b\\")?;
+    let kept = p.screen().history_len();
+    let shown: Vec<_> = (p.screen().pictures())
+        .map(|s| (s.row, s.rows, s.cropped))
+        .collect();
+    let first = 2 - 6;
+    let cropped = u16::try_from(-(first + i64::try_from(kept)?))?;
+    assert_eq!(shown, [(first, 6, cropped)]);
+    assert!(kept > 0 && cropped > 0);
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
+/// A picture being drawn lets another go only for the room it takes: a
+/// doubling of its pixels that could not fit even with every picture gone
+/// lets none go, and the exact growth that fits beside them is taken
+/// (FA-SIX-4). The budget holds the first picture (4 by 6 pixels, 96
+/// bytes) and the second at 11 by 6 (264), with its 10 by 6 drawn first
+/// (240), but not its doubling to 20 by 6 beside those 240 (720).
+#[test]
+fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 20)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.set_picture_bytes(96 + 240 + 264);
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!4~\x1b\\\x1b[3;1H")?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!10~$!11~\x1b\\")?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.cols)).collect();
+    assert_eq!(shown, [(0, 2), (2, 6)]);
+    Ok(())
+}
+
+/// Graphics new lines after a picture's last band take the cursor down
+/// as far as they went (DEC STD 070-9, 11.3), but at most 8 rows below
+/// the picture's last row: a new line goes down as many rows as the
+/// aspect ratio makes six pixel rows, so a few bytes could ask for any
+/// number of line feeds (B05). With 8-pixel cells, one band (row 0), then
+/// 3 new lines end on pixel row 23, row 2; 20 would end on row 15, and
+/// stop at 8 (FA-SIX-5).
+#[test]
+fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
+    for (lines, row) in [(3, 2), (20, 8)] {
+        let mut p = Parser::with_options(Size::new(20, 10)?, 10, PICTURES)?;
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let dashes: String = std::iter::repeat_n('-', lines).collect();
+        let data = format!("\x1bPq\"1;1#1;2;100;0;0~{dashes}\x1b\\");
+        p.process(data.as_bytes())?;
+        assert_eq!(p.screen().cursor_position(), (row, 0), "{lines} new lines");
+    }
+    Ok(())
+}
+
+/// A lowered picture budget holds the pictures kept too, when the one
+/// being drawn is past it alone (FA-RE-B-3): a 100 by 6 picture kept
+/// (2,400 bytes) and another of its size being drawn, then a budget of
+/// 1,000: neither is kept.
+#[test]
+fn a_lowered_picture_budget_holds_the_pictures_kept() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 60)?, 0, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    p.process(b"\x1bPq\"1;1!100~\x1b\\\r\n\x1bPq!100~")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    p.set_picture_bytes(1000);
+    assert_eq!(p.screen().pictures().count(), 0);
+    Ok(())
+}
+
+/// A picture shows while every cell it covers, row by row down from its
+/// top, holds the placeholder: a region scroll that moves part of it past
+/// the rest, or an edit in the call that placed it, takes it away, as
+/// text over a cell does, however the screen remembers having found it
+/// whole.
+#[test]
+fn a_picture_split_or_written_over_after_it_was_placed_is_gone() -> Result {
+    // 4 pixels by 24 at 4 by 8: one cell by three, at rows 1 to 3, with
+    // text in the rows below.
+    let place = |p: &mut Parser, after: &[u8]| -> Result<usize> {
+        p.set_host_graphics(fux_vt::Graphics {
+            cell: Some((4, 8)),
+            sixel: true,
+        });
+        let mut bytes =
+            b"\x1b[5;1Hxxx\r\nxxx\x1b[2;1H\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~\x1b\\".to_vec();
+        bytes.extend(after);
+        p.process(&bytes)?;
+        // Another picture placed, apart, checks the first again.
+        p.process(b"\x1b[1;9H\x1bPq~\x1b\\")?;
+        Ok(p.screen().pictures().filter(|s| s.col == 0).count())
+    };
+    let fresh = || -> Result<Parser> { Ok(Parser::with_options(Size::new(8, 10)?, 10, PICTURES)?) };
+    assert_eq!(place(&mut fresh()?, b"")?, 1, "whole");
+    // Rows 1 to 3 scrolled down: its second row goes, its top moves to row
+    // 2, and text is where its last row would be.
+    assert_eq!(place(&mut fresh()?, b"\x1b[1;3r\x1b[T\x1b[r")?, 0, "SD");
+    // Rows 3 to 7 scrolled up: its second row goes, text below its last.
+    assert_eq!(place(&mut fresh()?, b"\x1b[3;7r\x1b[S\x1b[r")?, 0, "SU");
+    assert_eq!(place(&mut fresh()?, b"\x1b[3;1H\x1b[M")?, 0, "DL");
+    assert_eq!(
+        place(&mut fresh()?, b"\x1b[3;1Hy")?,
+        0,
+        "text, in the same call"
+    );
+    Ok(())
+}
+
+/// A picture whose rows scroll into history is shown there, where they
+/// are, as history lets its oldest rows go, and still after a resize
+/// makes history anew and brings some of them back.
+#[test]
+fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
+    // 420 bytes of history: 24 a row and 8 a cell, so the 17th row the
+    // line feeds below take in lets the first go.
+    let mut p = Parser::with_options(Size::new(8, 10)?, 420, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // One cell by three at row 1; a last graphics new line takes the
+    // cursor to row 4.
+    p.process(b"\r\n\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~-\x1b\\")?;
+    let rows = |p: &Parser| p.screen().pictures().map(|s| s.row).collect::<Vec<_>>();
+    assert_eq!(rows(&p), [1]);
+    // Three line feeds to the bottom row, then 17 scrolls.
+    p.process(&[b'\n'; 20])?;
+    assert_eq!(rows(&p), [-16]);
+    assert_eq!(p.screen().history_len(), 16, "the first row went");
+    // Two more rows: two come back from history.
+    p.resize(Size::new(10, 10)?)?;
+    assert_eq!(rows(&p), [-14]);
+    p.process(b"\n")?;
+    assert_eq!(rows(&p), [-15]);
     Ok(())
 }
 
@@ -914,7 +1294,7 @@ fn sixel_pixel(sixel: &str, (x, y): (u32, u32)) -> Result<Drawn> {
     p.process(format!("\x1bP{sixel}\x1b\\").as_bytes())?;
     let shown = p.screen().pictures().next().ok_or("no picture")?;
     let picture = shown.picture;
-    Ok(((picture.width, picture.height), picture.pixel(x, y)))
+    Ok(((picture.width(), picture.height()), picture.pixel(x, y)))
 }
 
 /// DEC STD 070, 7.1 and 8.1.2: a pixel is as tall, to its width, as P1's
@@ -962,6 +1342,68 @@ fn sixel_background_select_and_extent() -> Result {
     Ok(())
 }
 
+/// DEC STD 070, sixel graphics, 9.1 (C0 codes): "SUB - process as if a
+/// 3/15 code (blank Sixel) was received"; "CAN - exit DCS mode processing,
+/// exit Sixel mode". So a SUB between two sixels leaves a blank one between
+/// them, in the background P2 0 sets (7.2), and shows no error character;
+/// a CAN ends the picture, which is not placed: the standard does not say
+/// it is, and CAN ends a control string "without execution" (3.5.1.2.1).
+#[test]
+fn sub_inside_sixel_is_a_blank_sixel_and_can_ends_it() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    let blank = Some([0, 0, 0, 255]);
+    let picture = "q\"1;1#1;2;100;0;0~\x1a~";
+    assert_eq!(sixel_pixel(picture, (0, 0))?, ((3, 6), red));
+    assert_eq!(sixel_pixel(picture, (1, 0))?, ((3, 6), blank));
+    assert_eq!(sixel_pixel(picture, (2, 5))?, ((3, 6), red));
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~\x1a~\x1b\\\r\nx")?;
+    assert_eq!(p.screen().pictures().count(), 1);
+    let text = lines(&p).concat();
+    assert!(text.contains('x') && !text.contains('\u{2426}'), "{text:?}");
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0~~\x18x")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(lines(&p).first().map(|l| l.trim_end()), Some("x"));
+    Ok(())
+}
+
+/// DEC STD 070, sixel graphics, 9.1 (C0 codes): "BEL - same action as in
+/// text mode"; "All other C0 Codes are ignored", as 0/8 to 0/13 "have no
+/// effect". So a control between a repeat's introducer and its count, or
+/// a colour's numbers, leaves the command whole, and BEL rings.
+#[test]
+fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
+    let red = Some([255, 0, 0, 255]);
+    // A repeat of 3 with ENQ and SO inside it: three sixels wide.
+    assert_eq!(
+        sixel_pixel("q\"1;1#1;2;100;0;0!\x053\x0e~", (2, 0))?,
+        ((3, 6), red)
+    );
+    // A colour with ACK between its numbers: register 1 is red still.
+    assert_eq!(
+        sixel_pixel("q\"1;1#1;2;100\x06;0;0~", (0, 0))?,
+        ((1, 6), red)
+    );
+    struct Bells(usize);
+    impl fux_vt::Sink for Bells {
+        fn reply(&mut self, _: &[u8]) {}
+        fn event(&mut self, event: fux_vt::Event<'_>) {
+            if matches!(event, fux_vt::Event::Bell) {
+                self.0 += 1;
+            }
+        }
+    }
+    let options = PICTURES.with(fux_vt::Feature::Events);
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, options)?;
+    let mut bells = Bells(0);
+    p.process_with(b"\x1bPq#1;2;100;0;0~\x07~\x1b\\", &mut bells)?;
+    assert_eq!(bells.0, 1);
+    let shown = p.screen().pictures().next().ok_or("no picture")?;
+    assert_eq!(shown.picture.width(), 2);
+    Ok(())
+}
+
 /// Without `Feature::Pictures`, sixel is ignored as any other DCS is:
 /// nothing is placed, the cells hold what was written around it, the
 /// cursor stays, and the terminal says no sixel though its host draws it.
@@ -980,7 +1422,7 @@ fn sixel_is_ignored_without_pictures() -> Result {
     assert_eq!(p.screen().pictures().count(), 0);
     assert_eq!(lines(&p).first().map(|l| l.trim_end()), Some("abcd"));
     assert_eq!(p.screen().cursor_position(), (0, 4));
-    assert_eq!(String::from_utf8_lossy(&replies), "\x1b[?1;2c");
+    assert_eq!(String::from_utf8_lossy(&replies), "\x1b[?1;2c\x1b[?1;3S");
     Ok(())
 }
 
@@ -1008,5 +1450,108 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
     assert_eq!(replies(&mut p, b"\x1b[16t")?, "\x1b[6;18;9t");
     assert_eq!(replies(&mut p, b"\x1b[14t")?, "\x1b[4;108;90t");
     assert_eq!(replies(&mut p, b"\x1b[?1;1S")?, "\x1b[?1;0;256S");
+    // XTSMGRAPHICS's statuses (ctlseqs: 1 "error in Pi", 2 "error in Pa", 3
+    // "failure"), as xterm 411 answers them: the maximum read as the
+    // count, setting refused, ReGIS and an item or action it does not know.
+    assert_eq!(replies(&mut p, b"\x1b[?1;4;0S")?, "\x1b[?1;0;256S");
+    assert_eq!(replies(&mut p, b"\x1b[?2;1;0S")?, "\x1b[?2;0;90;108S");
+    assert_eq!(replies(&mut p, b"\x1b[?1;3;16S")?, "\x1b[?1;3S");
+    assert_eq!(replies(&mut p, b"\x1b[?3;1;0S")?, "\x1b[?3;3S");
+    assert_eq!(replies(&mut p, b"\x1b[?1;9;0S")?, "\x1b[?1;2S");
+    assert_eq!(replies(&mut p, b"\x1b[?7;1;0S")?, "\x1b[?7;1S");
+    assert_eq!(replies(&mut p, b"\x1b[?1S")?, "");
+    // The geometry is the screen's, no more than the decoder keeps whole
+    // (ctlseqs: "the minimum of the window size and the graphic size"): a
+    // side at most 4096 pixels, and 4096 by 2160 in all.
+    let mut wide = Parser::with_options(Size::new(200, 500)?, 10, PICTURES)?;
+    wide.set_host_graphics(fux_vt::Graphics {
+        cell: Some((10, 20)),
+        sixel: true,
+    });
+    assert_eq!(replies(&mut wide, b"\x1b[?2;1;0S")?, "\x1b[?2;0;4096;2160S");
+    assert_eq!(replies(&mut wide, b"\x1b[?2;4;0S")?, "\x1b[?2;0;4096;2160S");
+    Ok(())
+}
+
+/// DEC STD 070-9, 11.2.2: sixels "printed past the right margin are not
+/// printed". A picture placed between left and right margins (DECLRMM,
+/// DECSLRM) takes the cells up to the right margin and no further, and
+/// shows there, the cells past it left as they were; and a picture clipped
+/// at the screen's edge stays shown, as clipped, when the screen widens.
+#[test]
+fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
+    let graphics = fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    };
+    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    // 24 pixels wide, 6 cells, at column 3 with the right margin at 5.
+    p.process(b"abcdefghij\r\x1b[?69h\x1b[1;5s\x1b[1;3H\x1bPq\"1;1#1;2;100;0;0!24~\x1b\\")?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols))
+        .collect();
+    assert_eq!(shown, [(0, 2, 3)]);
+    let row = lines(&p).first().cloned().unwrap_or_default();
+    assert!(row.ends_with("fghij"), "{row:?}");
+    // 20 cells on a screen of 10, then 30 columns.
+    let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(graphics);
+    p.process(b"\x1bPq\"1;1#1;2;100;0;0!80~\x1b\\")?;
+    p.resize(Size::new(4, 30)?)?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.col, s.cols)).collect();
+    assert_eq!(shown, [(0, 10)]);
+    Ok(())
+}
+
+/// DEC STD 070-9, 11.2.4: a picture past the bottom margin scrolls "if
+/// text drawn into this region would have scrolled", and what scrolls off
+/// is gone. On a screen that keeps no history (the alternate one), a
+/// picture taller than the rows below the cursor scrolls its own top off
+/// as it is placed: the rest is shown, its top cropped, above the screen.
+#[test]
+fn a_picture_whose_top_scrolled_off_shows_what_is_left() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 4 pixels wide and 84 high (14 bands): one cell by 11, from row 3 of 6,
+    // its bottom on the last row and its top 5 rows above the screen.
+    let bands: String = std::iter::repeat_n("!4~-", 13).collect();
+    let sixel = format!("\x1b[?1049h\x1b[4;1H\x1bPq\"1;1#1;2;100;0;0{bands}!4~\x1b\\");
+    p.process(sixel.as_bytes())?;
+    let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.rows)).collect();
+    assert_eq!(shown, [(-5, 11)]);
+    Ok(())
+}
+
+/// DECSDM (`CSI ? 80 h`; ctlseqs, "Enable Sixel Display Mode", VT330 and
+/// VT340; DEC STD 070 does not define it): set, a picture goes at the top
+/// left of the screen, scrolls nothing, its rows past the bottom clipped,
+/// and the cursor stays where it was, as xterm 411 places it; reset, the
+/// default, it goes at the cursor and scrolls ("Sixel Scrolling").
+#[test]
+fn decsdm_places_a_picture_at_the_top_left_without_scrolling() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((4, 8)),
+        sixel: true,
+    });
+    // 8 pixels wide and 84 high: 2 cells by 11, taller than the screen.
+    let bands: String = std::iter::repeat_n("!8~-", 13).collect();
+    let sixel = format!("\x1b[?80h\x1b[4;5Hx\x1bPq\"1;1#1;2;100;0;0{bands}!8~\x1b\\");
+    p.process(sixel.as_bytes())?;
+    let shown: Vec<_> = p
+        .screen()
+        .pictures()
+        .map(|s| (s.row, s.col, s.cols, s.rows))
+        .collect();
+    assert_eq!(shown, [(0, 0, 2, 6)]);
+    assert_eq!(p.screen().cursor_position(), (3, 5));
+    assert_eq!(p.screen().history_len(), 0);
+    assert!(p.screen().mode(fux_vt::Mode::SixelDisplay));
     Ok(())
 }

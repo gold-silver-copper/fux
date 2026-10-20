@@ -23,15 +23,13 @@ cargo build --release --manifest-path diff/Cargo.toml
 diff/target/release/fux-diff                                # every area
 diff/target/release/fux-diff --scale 10 --seed 7 terminal layout
 diff/target/release/fux-diff --list                         # what each area compares
-diff/target/release/fux-diff --speed                        # fux-vt's parse time beside its last release
 ```
 
 | Flag | Meaning |
 | --- | --- |
 | `AREA...` | the areas to run; all if none |
 | `--seed N` | the seed (default 1). Each area derives its own from it, so one area run alone replays exactly |
-| `--scale N` | multiplies each area's number of cases (default 1); with `--speed`, lengthens the streams |
-| `--speed` | times fux-vt beside its last release instead of comparing |
+| `--scale N` | multiplies each area's number of cases (default 1) |
 
 Each area prints how much it found alike, or stops at its first difference
 and prints the seed, both sides and what led to it (a session's last 40
@@ -43,25 +41,19 @@ area differed, 2 for a bad argument.
 | Area | Input | Compared |
 | --- | --- | --- |
 | `layout` | random trees, weights 0 to `u32::MAX`, areas up to `u16::MAX` wide | placements, neighbours, resizes, splits, removals and swaps |
-| `protocol` | random frames and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces; a frame each reads as a type of its own stops both: a command (the baseline's a command line, the current one's a typed request), an attach, an attached client's input (the baseline's the bytes typed, the current one's a typed `Act`), a hello of the `Headless` role the baseline lacks |
-| `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for, which the baseline keeps and a `CursorShape` drops; the shape is compared as its Ps, the terminal's own (0 and 7 in the baseline, `Initial` now) as 0 |
+| `protocol` | random frames (made by the current fux's frame types: hellos, attaches, resizes, detaches, paints, exits, stdout, reply parts, dones) and byte streams, broken ones included | encoded bytes; frames, errors and bytes held, decoding whole and in pieces, each kind as the frame type of the stage it is allowed in; an attached client's `Act` and a command's request are typed values fux's own tests decode |
+| `terminal` | fux-vt fed random output in pieces, with resizes | after every piece: replies, events, errors, every retained row, the cursor, modes, the cursor's shape, scroll region, changed rows. Leaves out what fux-vt 0.2.0 changed on purpose (SGR 5, 6, 8, 9, 25, 28, 29, 58, 59; CSI f, s, u; characters that join a cluster), and a DECSCUSR Ps ctlseqs lists no style for; the shape is compared as its Ps, the terminal's own (`Initial`) as 0 |
 | `input` | client input in pieces with Escape timeouts, key names, pastes, held command lines, pane input queues | decoded input and the Escape deadline, encoded keys and pastes, the queues |
 | `copy` | screens and history from random lines; searches both ways | matches, copied text, row positions |
 | `text` | random words and key names | `split`, `quote`, `join`, `shell_line`, key names, JSON strings, base64 |
 | `system` | errnos, nonblocking requests on pipes, sockets and PTYs | fuxix's results, and the config file's path for every mix of `XDG_CONFIG_HOME` and `HOME` |
 
-`--speed` parses five synthetic streams (ASCII, SGR, CJK, emoji, cursor
-movement) and the recordings in `fux-vt/compare/corpus/` with both fux-vts
-in turn, best of nine, by the thread's CPU time, so a busy machine slows
-neither.
-
 Not covered: the server's connection handling in `server.rs` (the walk,
-`walk/`, and the integration tests cover it), and performance beyond
-`--speed` (see `bench/`). Nor, since fuxth, whole sessions, command
-lines, copy mode's errors in a session, or config files: the command line
-and the config are fuxth programs and keys are read by each client, so the
-baseline (0.20.0) and the current fux take different inputs there. Areas
-for them return once the baseline is a release with fuxth.
+`walk/`, and the integration tests cover it), and performance (see
+`bench/`: `fux-bench --against REF` counts fux-vt's instructions against
+any commit, in paired rounds). Nor, since fuxth, whole sessions, command
+lines, copy mode's errors in a session, or config files: areas for them,
+now that the baseline (0.31.0) has fuxth too, are still to be written.
 
 ### The baseline
 
@@ -75,7 +67,11 @@ differs too:
   current side what it needs there and compare both in the same form. CI's
   "fux-diff builds" step may fail until then.
 - **After each release,** bump the three `baseline` versions in
-  `Cargo.toml` and `cargo update -p` them.
+  `Cargo.toml` and `cargo update -p` them. They are fux 0.31.0, fux-vt
+  0.10.0 and fuxix 0.6.1: on a branch that changes fux-vt on purpose
+  (vt-best), `terminal` and `input` differ from them where it does (a
+  character cut short is one U+FFFD; a sequence cut by a control gives
+  the control), and the other areas agree.
 
 ## The oracle: fux-vt beside a commit
 
@@ -138,9 +134,18 @@ commit it.
 Each side is read into one model (`oracle/src/model.rs`) through fux-vt's
 public API (`oracle/src/side.rs`) after every step:
 
-- **The screen's state:** size, cursor, pending wrap, every mode, the
-  margins, the pen, the open link, history length, `storage_cells`, marks,
-  `resize_report`, the options reported.
+- **The screen's state:** size, cursor, pending wrap, every mode both
+  sides have, by name (all but DECHCCM, which the DECRQM probe compares), both
+  pairs of margins (`scroll_region`, `left_right_margins`), the pen, the
+  open link, history length, `storage_cells`, marks, `resize_report`, the
+  options reported, the 256 palette entries and the dynamic colours as the
+  program set them, the pictures shown (number, place, size and a sample
+  of their pixels), the live rows of the screen not in use (identity, wrap
+  and their cells hashed), and `let_go`.
+- **The host's calls,** as steps between outputs (`Step::Host`): history
+  budgets, `clear_history`, `tick` (its count compared), the host's
+  palette and graphics, the mark nonces, `note_submit`, recording prints
+  and what `take_prints` gives.
 - **Every retained row:** identity and version, soft wrap, prompt mark,
   length, `text_len`, `has_links`; each cell's text, width, attributes,
   colours and link, through every getter.
@@ -167,10 +172,17 @@ compared by number); `process` and `process_with_replies`, which are
 - **The corpus:** every recording in `fux-vt/compare/corpus/`, set up as a
   fux pane and with every option off, each step cut into pieces of 1 to
   2,048 bytes.
+- **The ceiling,** with the corpus: the working tree's fux-vt alone, as a
+  pane, each recording read 4 KiB at a time as fux reads a pane's output
+  (`process_until_stop` until the read is taken): the call that does the
+  most work, in fux-vt's work units (`Work::cost`); and a resize of a full
+  history at 50×200 to 80 columns, and back. Each is printed as a share of
+  the per-call ceiling U (`Work::CEILING`, 50 ms where the weights were
+  measured), and past it the run fails.
 - **Random cases** from fux-vt-compare's families
   (`fux-vt/compare/src/families.rs`, included by path, so a new family is
   drawn here too) at random sizes, histories and options, with resizes,
-  `process_until_frame`, copies, and output cut anywhere.
+  `process_until_stop`, copies, and output cut anywhere.
 - **Resize streams:** history full, a resize every few lines, wide glyphs,
   clusters, links and prompt marks, with reflow and without.
 - **The limits:** OSC strings, links, clusters, parameters and sizes at and

@@ -17,7 +17,9 @@
 //!   accessor does, read after each: every query's reply (DECRQM for every
 //!   mode, DSR, DA1/2/3, XTVERSION, DECXCPR, DECRQSS, DECRQCRA, kitty's
 //!   flags, the size reports, colour queries); the saved cursor (DECRC)
-//!   and the character sets (G0 and G1 drawn); the tab stops; the cluster
+//!   and the character sets (G0 and G1 drawn); the tab stops; each row's
+//!   end (a line rendition halves it); what a selective erase leaves (the
+//!   protected cells, DECSEL and DECSED); the cluster
 //!   the next character would join and the character REP repeats; the
 //!   kitty keyboard stack, popped, and the alternate screen's.
 use crate::Side;
@@ -126,7 +128,27 @@ pub fn compare<A: Side, B: Side>(
     readers: &mut Readers,
     count: &mut Count,
 ) -> Result<(), Difference> {
-    let (sa, sb) = (a.state(), b.state());
+    // A side the invariant checker finds wrong differs from any other.
+    for (name, faults) in [(A::NAME, a.faults()), (B::NAME, b.faults())] {
+        if let Some(faults) = faults {
+            return Err(Difference {
+                step,
+                what: format!("{name}'s invariants"),
+                base: if name == "base" {
+                    faults.clone()
+                } else {
+                    "clean".into()
+                },
+                work: if name == "work" {
+                    faults
+                } else {
+                    "clean".into()
+                },
+            });
+        }
+    }
+    let (mut sa, mut sb) = (a.state(), b.state());
+    common_modes(&mut sa.modes, &mut sb.modes);
     same(step, "the screen's state", &sa, &sb)?;
     rows(step, a, b, readers, count)?;
     same_list(step, "the marks", &a.marks(), &b.marks())?;
@@ -320,9 +342,74 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     let _ = copy.process(b"\x1b[3Z", &mut heard);
     let _ = write!(stops, "back {}", copy.state().cursor.1);
     out.push(format!("tab stops: {stops} {heard:?}"));
+    // Each row's end, where the cursor stops going right, which a line
+    // rendition halves (HAR-46): with origin mode off, row by row.
+    let mut ends = String::new();
+    let mut copy = s.clone();
+    let _ = copy.process(b"\x1b[?6l\x1b[?69l", &mut heard);
+    let (rows, _) = copy.state().size;
+    for y in 0..rows.min(400) {
+        let at = format!("\x1b[{};65535H", y.saturating_add(1));
+        let _ = copy.process(at.as_bytes(), &mut heard);
+        let _ = write!(ends, "{} ", copy.state().cursor.1);
+    }
+    out.push(format!("row ends: {ends}"));
+    // The protected cells: what a selective erase of the screen leaves
+    // (DECSED), and of the cursor's line (DECSEL).
+    let mut copy = s.clone();
+    out.push(poke(&mut copy, "DECSEL", b"\x1b[?2K"));
+    let _ = copy.process(b"\x1b[?2J", &mut heard);
+    let mut kept = String::new();
+    let mut row = Row::default();
+    let history = copy.state().history_len;
+    for y in 0..usize::from(rows.min(400)) {
+        if copy.row(history.saturating_add(y), &mut row) {
+            let _ = write!(kept, "{:?} ", row.text);
+        }
+    }
+    out.push(format!("after DECSED: {kept}"));
     for _ in 0..3 {
         out.push(poke(&mut copy, "kitty pop", b"\x1b[<u"));
     }
     out.push(poke(&mut copy, "the other screen", b"\x1b[?1049h\x1b[?u"));
     out
+}
+
+/// Keeps of each side's modes those the other names too, by name, in one
+/// order: a mode one side's `Mode` has and the other's lacks is no
+/// difference between them, as `Mode::ALL` grows.
+fn common_modes(a: &mut Vec<(String, bool)>, b: &mut Vec<(String, bool)>) {
+    let names = |modes: &Vec<(String, bool)>| -> std::collections::BTreeSet<String> {
+        modes.iter().map(|(name, _)| name.clone()).collect()
+    };
+    let (in_a, in_b) = (names(a), names(b));
+    a.retain(|(name, _)| in_b.contains(name));
+    b.retain(|(name, _)| in_a.contains(name));
+    a.sort();
+    b.sort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::common_modes;
+
+    /// A mode only one side has, or the two sides' orders, make no
+    /// difference; a mode both have, set on one side alone, does
+    /// (FA-RE-B-11).
+    #[test]
+    fn modes_are_compared_by_name_over_those_both_sides_have() {
+        let mode = |name: &str, on: bool| (name.to_string(), on);
+        let mut a = vec![
+            mode("Origin", false),
+            mode("New", true),
+            mode("Insert", true),
+        ];
+        let mut b = vec![mode("Insert", true), mode("Origin", false)];
+        common_modes(&mut a, &mut b);
+        assert_eq!(a, b);
+        let mut a = vec![mode("Origin", true), mode("Insert", true)];
+        let mut b = vec![mode("Insert", true), mode("Origin", false)];
+        common_modes(&mut a, &mut b);
+        assert_ne!(a, b);
+    }
 }

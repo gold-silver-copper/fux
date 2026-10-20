@@ -17,25 +17,9 @@ impl Shape for fux::layout::Tree {
     }
 }
 
-impl Shape for baseline::layout::Node {
+impl Shape for baseline::layout::Tree {
     fn shape(&self) -> String {
-        /// A subtree, whose axis is not written: it is the other one.
-        fn inner(node: &baseline::layout::Node, axis: String) -> String {
-            match node {
-                baseline::layout::Node::Pane(p) => format!("Pane({p:?})"),
-                baseline::layout::Node::Split { children, .. } => {
-                    let children: Vec<String> = (children.iter())
-                        .map(|(w, c)| format!("({w}, {})", inner(c, "()".into())))
-                        .collect();
-                    format!("Split({axis}, Split([{}]))", children.join(", "))
-                }
-            }
-        }
-        let axis = match self {
-            baseline::layout::Node::Split { axis, .. } => format!("{axis:?}"),
-            baseline::layout::Node::Pane(_) => String::new(),
-        };
-        inner(self, axis)
+        format!("{self:?}")
     }
 }
 
@@ -205,18 +189,31 @@ macro_rules! stack {
     };
 }
 
-// A separator as the baseline has it: its axis, first cell and length.
+// A rect is cut from a screen, so it fits one; both sides alike.
 stack!(
     base,
     baseline,
-    layout,
-    Node,
-    |x, y, w, h| Rect { x, y, w, h },
-    |s: &Separator| (s.axis, s.x, s.y, s.len),
-    layout::split,
-    |text| baseline::command::parse_pane(text).ok()
+    id,
+    Tree,
+    |x: u16, y: u16, w: u16, h: u16| {
+        let screen = Rect::screen(y.saturating_add(h), x.saturating_add(w));
+        let (_, below) = screen.split(Axis::Vertical, y);
+        below.split(Axis::Horizontal, x).1
+    },
+    |s: &Separator| {
+        let len = match s.axis {
+            Axis::Horizontal => s.rect.h(),
+            Axis::Vertical => s.rect.w(),
+        };
+        (s.axis, s.rect.x(), s.rect.y(), len)
+    },
+    // A split needs a tree with a pane in it.
+    |root: &mut Option<Tree>, target, new, axis, side| {
+        root.as_mut()
+            .is_some_and(|r| r.split(target, new, axis, side))
+    },
+    |text| text.parse().ok()
 );
-// A rect is cut from a screen, so it fits one.
 stack!(
     cur,
     fux,

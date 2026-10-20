@@ -16,11 +16,21 @@ use crate::escape;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-/// The private modes `Screen::mode` keeps (fux-vt `src/screen.rs`).
-const MODES: &[u16] = &[
-    1, 6, 7, 9, 25, 47, 69, 1000, 1002, 1003, 1004, 1005, 1006, 1047, 1048, 1049, 2004, 2026, 2031,
-    2048,
-];
+/// Whether fux-vt, set up as fux's panes are, keeps the private mode `n`:
+/// what its DECRQM (`CSI ? n $ p`) says, anything but 0, not recognized.
+/// Read from fux-vt itself, so the list never goes stale.
+fn keeps_mode(n: u16) -> bool {
+    let Ok(size) = crate::vt_size(1, 1) else {
+        return false;
+    };
+    let Ok(mut parser) = fux_vt::Parser::with_options(size, 0, fux::pane::OPTIONS) else {
+        return false;
+    };
+    let mut heard = Heard::default();
+    let _ = parser.process_with(format!("\x1b[?{n}$p").as_bytes(), &mut heard);
+    let reply = String::from_utf8_lossy(&heard.replies).into_owned();
+    reply.starts_with(&format!("\x1b[?{n};")) && !reply.starts_with(&format!("\x1b[?{n};0$y"))
+}
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
 /// what it knows as the host, and how.
@@ -498,7 +508,13 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
     } else {
         format!("{} {fin}", inter.replace(' ', "SP"))
     };
-    let answered = || Does::Answers(escape::escape(&heard.replies));
+    // Version numbers as `VERSION`, as the corpus compares replies: they
+    // change with every release.
+    let answered = || {
+        Does::Answers(escape::escape(
+            corpus::unversioned(&heard.replies).as_bytes(),
+        ))
+    };
     if heard.unhandled {
         let shown = match (private, fin) {
             _ if !inter.is_empty() => rest.to_owned(),
@@ -521,7 +537,7 @@ fn csi(params: &[u8], intermediates: &[u8], action: u8, heard: &Heard) -> Vec<(S
             .split(';')
             .map(|m| {
                 let n = m.parse::<u16>().unwrap_or(0);
-                let does = if MODES.contains(&n) {
+                let does = if keeps_mode(n) {
                     Does::Implemented("")
                 } else {
                     Does::Ignored("a mode fux-vt does not keep, consumed quietly")
@@ -834,6 +850,13 @@ fn table(out: &mut String, rows: &[(&String, &Row)]) {
 
 /// The inventory of the recordings named (all if none), as Markdown.
 pub fn run(names: &[String]) -> Result<bool, String> {
+    print!("{}", render(names)?);
+    Ok(true)
+}
+
+/// The inventory of the recordings named (all if none), as `corpus/
+/// INVENTORY.md` holds it.
+fn render(names: &[String]) -> Result<String, String> {
     let recordings = corpus::recordings(names)?;
     let rows = tally(&recordings)?;
     let mut sorted: Vec<(&String, &Row)> = rows.iter().collect();
@@ -871,13 +894,36 @@ pub fn run(names: &[String]) -> Result<bool, String> {
     table(&mut out, &missing);
     let _ = writeln!(out, "\n## Implemented\n");
     table(&mut out, &done);
-    print!("{out}");
-    Ok(true)
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Token, tokens};
+
+    /// The committed inventory is what `inventory` makes of the corpus
+    /// now: a mode fux-vt comes to keep, or a reply it comes to give,
+    /// shows as a change to commit.
+    #[test]
+    fn the_inventory_regenerates_unchanged() -> Result<(), String> {
+        let path = crate::corpus::dir().join("INVENTORY.md");
+        let committed = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        assert!(
+            super::render(&[])? == committed,
+            "regenerate {}",
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// The modes are fux-vt's own, read from its DECRQM: 1045 and 2027
+    /// among them, which the list kept by hand lacked; a number it does not
+    /// know is not.
+    #[test]
+    fn a_mode_is_kept_as_fux_vt_reports_it() {
+        assert!(super::keeps_mode(7) && super::keeps_mode(1045) && super::keeps_mode(2027));
+        assert!(!super::keeps_mode(9999));
+    }
 
     #[test]
     fn sequences_are_cut_as_a_parser_reads_them() {

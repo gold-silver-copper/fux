@@ -67,13 +67,17 @@ const REPLY_DELAY: Duration = Duration::from_secs(1);
 /// or `ESC P1` waits as long as an answer begun (`REPLY_DELAY`), unless the
 /// answer to DA1, asked last, comes first.
 const REPLY_WINDOW: Duration = Duration::from_secs(1);
-/// The longest OSC answer kept: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29
-/// bytes. A longer string is dropped.
+/// The longest OSC answer kept, with the BEL or the ESC that begins its
+/// end: `OSC 11 ; rgb:RRRR/GGGG/BBBB ST` is 29 bytes. A longer string is
+/// dropped.
 const OSC_LIMIT: usize = 128;
-/// The longest DCS answer kept: a DECRPSS of the longest pen,
-/// `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
+/// The longest DCS answer kept, with the ESC that begins its ST: a
+/// DECRPSS of the longest pen, `DCS 1 $ r 0;1;4:3;6;7;8;2;3;9;38:2::255:255:255;48:2::…;58:2::… m ST`,
 /// is under 90 bytes, and XTGETTCAP's answer for `Smulx` under 50.
 const DCS_LIMIT: usize = 256;
+/// The longest sequence the decoder holds unfinished: `ESC P` and a DCS
+/// answer's limit.
+const HELD: usize = DCS_LIMIT + 2;
 /// The largest paste delivered; a longer one is refused whole.
 pub const PASTE_LIMIT: usize = 64 * 1024;
 /// How long a bracketed paste waits for more of itself before it ends
@@ -180,11 +184,13 @@ enum State {
         held: Vec<u8>,
         since: Option<Instant>,
     },
-    /// An answer's string past its limit (OSC or DCS), dropped as it
-    /// arrives until it ends (`drop_to_end`), as an answer begun waits.
+    /// An answer's string past its limit (OSC or DCS), or a `CSI ?` answer
+    /// past its (`csi`), dropped as it arrives until it ends
+    /// (`drop_to_end`), as an answer begun waits.
     Dropping {
         bel: bool,
         escape: bool,
+        csi: bool,
         since: Option<Instant>,
     },
     /// Inside a bracketed paste: what it has kept, and since when no more
@@ -245,8 +251,36 @@ struct Expecting {
 /// ends within them, else whether they end with such an ESC. An Escape that
 /// ends it unfinished begins what follows, put back if the last read ended
 /// with it.
+/// The ESC that begins them is the last read's: it is put back before
+/// them, a copy of at most the longest held sequence and a byte, as a long
+/// read comes in pieces (`held_first`).
 #[cold]
-fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]>, bool> {
+fn drop_to_end(
+    bel: bool,
+    mut escape: bool,
+    csi: bool,
+    bytes: &[u8],
+) -> Result<Cow<'_, [u8]>, bool> {
+    // Every byte is looked at, at most: those after the end are decoded
+    // again, and counted again there.
+    work!(keys, bytes.len());
+    // A CSI past its window ends with its final byte, as one read whole does
+    // (`long_answer`).
+    if csi {
+        let end = bytes
+            .iter()
+            .position(|b| !(0x20..=0x3f).contains(b))
+            .ok_or(false)?;
+        // A final byte is dropped with it; any other byte begins what comes
+        // next, as `long_answer` has it.
+        let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
+        let rest = if final_byte {
+            end.saturating_add(1)
+        } else {
+            end
+        };
+        return Ok(Cow::Borrowed(bytes.get(rest..).unwrap_or_default()));
+    }
     for (i, &byte) in bytes.iter().enumerate() {
         let rest = match (escape, byte) {
             (true, b'\\') => i.saturating_add(1),
@@ -271,7 +305,9 @@ fn drop_to_end(bel: bool, mut escape: bool, bytes: &[u8]) -> Result<Cow<'_, [u8]
 /// once its end marker is among them, what it comes to, to `out`, and the
 /// bytes after it; else what it keeps. Once it is past `limit`, by more
 /// than the end that may begin the marker, it is reported too long, at
-/// once, and dropped from then on.
+/// once, and dropped from then on. The marker is looked for in `bytes`
+/// where they lie, and only what the paste keeps is copied: a read that
+/// holds many pastes is never copied whole for each (threats.md B23).
 fn paste<'a>(
     pasted: Pasted,
     bytes: &'a [u8],
@@ -282,28 +318,65 @@ fn paste<'a>(
         Pasted::Text(text) => (text, false),
         Pasted::TooLong(tail) => (tail, true),
     };
-    let (old, marker) = (text.len(), PASTE_END.len());
-    text.extend_from_slice(bytes);
-    // The marker may have begun in the bytes before these.
-    let from = old.saturating_sub(marker.saturating_sub(1));
-    let found =
-        (from..text.len()).find(|&i| text.get(i..).is_some_and(|t| t.starts_with(PASTE_END)));
-    let Some(end) = found else {
-        let tail = text.len().saturating_sub(marker.saturating_sub(1));
+    let marker = PASTE_END.len();
+    // The marker begun in what was kept, and ended in these bytes: the
+    // longest such start first, the earliest.
+    let across = (1..marker).rev().find(|&k| {
+        PASTE_END
+            .split_at_checked(k)
+            .is_some_and(|(head, tail)| text.ends_with(head) && bytes.starts_with(tail))
+    });
+    let found = match across {
+        Some(k) => Some((text.len().saturating_sub(k), 0, marker.saturating_sub(k))),
+        None => (0..bytes.len())
+            .find(|&at| bytes.get(at..).is_some_and(|b| b.starts_with(PASTE_END)))
+            .map(|at| (text.len(), at, at.saturating_add(marker))),
+    };
+    // The bytes searched: to the marker's end, or all of them.
+    work!(keys, found.map_or(bytes.len(), |(_, _, rest)| rest));
+    let Some((kept, taken, rest)) = found else {
+        // No end yet: the paste keeps its bytes while it may still be
+        // within its limit, else only the end that may begin the marker.
+        let total = text.len().saturating_add(bytes.len());
+        let tail = total.saturating_sub(marker.saturating_sub(1));
         if !too_long && tail <= limit {
+            work!(keys, bytes.len());
+            // Grown by doubling, as a `Vec` grows, but never past what the
+            // paste may keep: its limit and the end that may begin the
+            // marker (B23).
+            if total > text.capacity() {
+                let most = limit.saturating_add(marker.saturating_sub(1));
+                let room = total.max(text.capacity().saturating_mul(2)).min(most);
+                text.reserve_exact(room.saturating_sub(text.len()));
+            }
+            text.extend_from_slice(bytes);
             return Err(Pasted::Text(text));
         }
         if !too_long {
             out.push(Input::PasteTooLong);
         }
-        return Err(Pasted::TooLong(
-            text.get(tail..).unwrap_or_default().to_vec(),
-        ));
+        let keep = marker.saturating_sub(1);
+        let from_text = keep.saturating_sub(bytes.len()).min(text.len());
+        let mut end = (text.get(text.len().saturating_sub(from_text)..))
+            .unwrap_or_default()
+            .to_vec();
+        end.extend_from_slice(
+            bytes
+                .get(bytes.len().saturating_sub(keep)..)
+                .unwrap_or_default(),
+        );
+        return Err(Pasted::TooLong(end));
     };
-    let rest = end.saturating_add(marker).saturating_sub(old);
-    text.truncate(end);
     if !too_long {
-        out.push(finished(text, limit));
+        // Copied only if the paste is within its limit with them.
+        if kept.saturating_add(taken) > limit {
+            out.push(Input::PasteTooLong);
+        } else {
+            text.truncate(kept);
+            work!(keys, taken);
+            text.extend_from_slice(bytes.get(..taken).unwrap_or_default());
+            out.push(finished(text, limit));
+        }
     }
     Ok(bytes.get(rest..).unwrap_or_default())
 }
@@ -315,7 +388,9 @@ enum Step {
     PasteStart(usize),
     /// The bytes are an answer's string past its limit, all of it: the rest
     /// of it is dropped as it comes, to its end (BEL too if `bel`, or ST).
-    Overlong { bel: bool },
+    /// A CSI past its window (`csi`) ends at its final byte.
+    /// `escape` if the bytes end with an ESC, which may begin the ST.
+    Overlong { bel: bool, csi: bool, escape: bool },
     /// The bytes are a prefix of something longer.
     Incomplete,
 }
@@ -353,6 +428,13 @@ impl Decoder {
     /// not waiting.
     pub fn deadline(&self) -> Option<Instant> {
         let (since, wait) = match &self.state {
+            // A character begun, after an Escape or not, waits for its
+            // bytes with no deadline (`single`).
+            State::Pending { held, .. }
+                if utf8_begun(held.strip_prefix(b"\x1b").unwrap_or(held)) =>
+            {
+                return None;
+            }
             State::Pending { held, since } => {
                 let reply = match held.as_slice() {
                     b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expecting.is_some(),
@@ -393,6 +475,12 @@ impl Decoder {
     /// Decodes `bytes`, appending what they complete to `out`; an incomplete
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        // What is held, or an ESC that may end a dropped string, takes only
+        // what decides it of a long read (`held_first`), not a copy of all;
+        // and so does a sequence a long read begins, left unfinished.
+        if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
+            return self.held_first(bytes, out);
+        }
         self.feed(bytes, false, out);
     }
 
@@ -409,14 +497,25 @@ impl Decoder {
         let (rest, since) = match std::mem::take(&mut self.state) {
             State::Idle => (Cow::Borrowed(bytes), None),
             State::Pending { mut held, since } => {
+                work!(keys, bytes.len());
                 held.extend_from_slice(bytes);
                 (Cow::Owned(held), since)
             }
-            State::Dropping { bel, escape, since } => match drop_to_end(bel, escape, bytes) {
+            State::Dropping {
+                bel,
+                escape,
+                csi,
+                since,
+            } => match drop_to_end(bel, escape, csi, bytes) {
                 Ok(rest) => (rest, None),
                 Err(_) if flush => return,
                 Err(escape) => {
-                    self.state = State::Dropping { bel, escape, since };
+                    self.state = State::Dropping {
+                        bel,
+                        escape,
+                        csi,
+                        since,
+                    };
                     return;
                 }
             },
@@ -437,6 +536,54 @@ impl Decoder {
         self.state = self.run(&rest, since, flush, out);
     }
 
+    /// Whether what the decoder is in may hold the bytes a read brings:
+    /// a sequence held, an ESC that may end a string being dropped, or
+    /// nothing begun, which a sequence the read begins may leave held.
+    fn may_hold(&self) -> bool {
+        matches!(
+            self.state,
+            State::Idle | State::Pending { .. } | State::Dropping { escape: true, .. }
+        )
+    }
+
+    /// `bytes` of a read longer than any sequence held, while one is held
+    /// (or an ESC that may end a string being dropped): the held sequence
+    /// is given from the front of them only what decides it, no more than
+    /// the longest held and one byte, past which every sequence is decided
+    /// (threats.md B24, KEY-3); then the rest, whole, where it lies. A
+    /// sequence what was given begins and leaves held is read again from
+    /// where it begins in the read, not copied with the rest; an ESC left
+    /// that may end a string being dropped is given the one byte that
+    /// decides it. At most 2 × 258 keys a read past 2 a byte (decision
+    /// 821), and nothing of the read held but a sequence it ends with.
+    #[cold]
+    #[inline(never)]
+    fn held_first(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let piece = HELD.saturating_add(1);
+        let mut fed = piece.min(bytes.len());
+        self.feed(bytes.get(..fed).unwrap_or_default(), false, out);
+        while fed < bytes.len() {
+            let step = match &self.state {
+                State::Pending { held, .. } => {
+                    let start = fed.checked_sub(held.len());
+                    let begun = start.filter(|&at| bytes.get(at..fed) == Some(held.as_slice()));
+                    if let Some(start) = begun {
+                        self.state = State::Idle;
+                        self.feed(bytes.get(start..).unwrap_or_default(), false, out);
+                        return;
+                    }
+                    piece
+                }
+                State::Dropping { escape: true, .. } => 1,
+                State::Idle | State::Dropping { .. } | State::Paste { .. } => break,
+            };
+            let next = fed.saturating_add(step).min(bytes.len());
+            self.feed(bytes.get(fed..next).unwrap_or_default(), false, out);
+            fed = next;
+        }
+        self.feed(bytes.get(fed..).unwrap_or_default(), false, out);
+    }
+
     /// Decodes `bytes`, with nothing begun before them but what they begin
     /// with, waiting since `since` if that is so; what is begun after them.
     fn run(
@@ -447,7 +594,16 @@ impl Decoder {
         out: &mut Vec<Input>,
     ) -> State {
         while !bytes.is_empty() {
-            let rest = match decode(bytes, flush, self.expecting.is_some()) {
+            let step = decode(bytes, flush, self.expecting.is_some());
+            // What the step read: all the bytes, unless it ended within them.
+            work!(
+                keys,
+                match step {
+                    Step::Done(n, _) | Step::PasteStart(n) => n,
+                    Step::Overlong { .. } | Step::Incomplete => bytes.len(),
+                }
+            );
+            let rest = match step {
                 Step::Done(n, input) => {
                     if matches!(input, Some(Input::Reply(Reply::Attributes { .. }))) {
                         self.expecting = self.expecting.and_then(|e| {
@@ -470,11 +626,16 @@ impl Decoder {
                         }
                     }
                 }
-                Step::Overlong { bel } => {
-                    let escape = false;
-                    return State::Dropping { bel, escape, since };
+                Step::Overlong { bel, csi, escape } => {
+                    return State::Dropping {
+                        bel,
+                        escape,
+                        csi,
+                        since,
+                    };
                 }
                 Step::Incomplete => {
+                    work!(keys, bytes.len());
                     let held = bytes.to_vec();
                     return State::Pending { held, since };
                 }
@@ -488,8 +649,67 @@ impl Decoder {
     }
 }
 
+/// The key decoder's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Decoder {
+    /// 35: an unfinished sequence held is no longer than the longest
+    /// answer read, 258 bytes (B24), and a paste keeps at most its limit
+    /// and the end that may begin its marker (B23).
+    pub fn check(&self) -> crate::Checked {
+        let mut report = crate::Checked::default();
+        let held = HELD;
+        let found = match &self.state {
+            State::Pending { held: bytes, .. } => crate::check::ensure(bytes.len() <= held, || {
+                format!(
+                    "{} bytes of a sequence held, {held} at most (B24)",
+                    bytes.len()
+                )
+            }),
+            State::Idle | State::Dropping { .. } | State::Paste { .. } => Ok(()),
+        };
+        report.record("keys.held", "", found);
+        let room = (self.paste_limit).saturating_add(PASTE_END.len().saturating_sub(1));
+        let found = match &self.state {
+            State::Paste {
+                pasted: Pasted::Text(text) | Pasted::TooLong(text),
+                ..
+            } => crate::check::ensure(text.capacity() <= room, || {
+                format!(
+                    "room for {} bytes of paste, {room} at most (B23)",
+                    text.capacity()
+                )
+            }),
+            State::Idle | State::Pending { .. } | State::Dropping { .. } => Ok(()),
+        };
+        report.record("keys.paste", "", found);
+        report
+    }
+}
+
 fn press(key: Key, mods: Modifiers) -> Option<Input> {
     Some(Input::Key(KeyPress::new(key, mods).into()))
+}
+
+/// Whether `bytes` are the beginning of a character as UTF-8 may begin
+/// one, well-formed (Unicode 17.0, 3.9, Table 3-7) but short of its bytes.
+fn utf8_begun(bytes: &[u8]) -> bool {
+    let Some((&first, rest)) = bytes.split_first() else {
+        return false;
+    };
+    let (need, second) = match first {
+        0xc2..=0xdf => (2, 0x80..=0xbf),
+        0xe0 => (3, 0xa0..=0xbf),
+        0xe1..=0xec | 0xee..=0xef => (3, 0x80..=0xbf),
+        0xed => (3, 0x80..=0x9f),
+        0xf0 => (4, 0x90..=0xbf),
+        0xf1..=0xf3 => (4, 0x80..=0xbf),
+        0xf4 => (4, 0x80..=0x8f),
+        _ => return false,
+    };
+    let mut rest = rest.iter();
+    bytes.len() < need
+        && rest.next().is_none_or(|b| second.contains(b))
+        && rest.all(|b| (0x80..=0xbf).contains(b))
 }
 
 /// One control byte or character, without an Escape prefix, and how many
@@ -497,7 +717,7 @@ fn press(key: Key, mods: Modifiers) -> Option<Input> {
 /// `decode`, as most keys are one byte: left to the compiler, it was not,
 /// and a key cost up to 9% more (`decode/legacy`).
 #[inline(always)]
-fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
+fn single(bytes: &[u8]) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
     if let Some(control) = Control::of(first.into()) {
         return Some((1, KeyPress::plain(control.key())));
@@ -516,21 +736,26 @@ fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
                 0xf0..=0xf7 => 4,
                 _ => 1,
             };
-            if bytes.len() < need && !flush {
-                // Stop at a byte that cannot continue the character.
-                let broken = bytes.iter().skip(1).any(|b| b & 0xc0 != 0x80);
-                if !broken {
-                    return None;
-                }
+            // A well-formed beginning waits for the rest, however long it
+            // takes: a character is never cut short by a deadline.
+            if utf8_begun(bytes) {
+                return None;
             }
             let take = need.min(bytes.len());
             let text = bytes.get(..take).unwrap_or_default();
-            return Some(
-                match str::from_utf8(text).ok().and_then(|s| s.chars().next()) {
+            // Ill-formed, it is one U+FFFD for its maximal subpart (Unicode
+            // 3.9, "U+FFFD Substitution of Maximal Subparts"), which is
+            // what std's `error_len` measures.
+            return Some(match str::from_utf8(text) {
+                Ok(s) => match s.chars().next() {
                     Some(c) => (take, KeyPress::plain(Key::Char(c))),
                     None => (1, KeyPress::plain(Key::Char('\u{fffd}'))),
                 },
-            );
+                Err(e) => {
+                    let subpart = e.error_len().unwrap_or(take).max(1);
+                    (subpart, KeyPress::plain(Key::Char('\u{fffd}')))
+                }
+            });
         }
     };
     Some((1, KeyPress::new(key, mods)))
@@ -543,7 +768,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         return Step::Incomplete;
     };
     if first != 0x1b {
-        return single(bytes, flush).map_or(Step::Incomplete, |(n, key)| {
+        return single(bytes).map_or(Step::Incomplete, |(n, key)| {
             Step::Done(n, Some(Input::Key(key.into())))
         });
     }
@@ -557,17 +782,12 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
     match second {
         b'[' => csi(bytes, flush),
         b']' => osc(bytes, flush),
-        b'O' => match bytes.get(2) {
-            None if !flush => Step::Incomplete,
-            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-            // A byte no final key names: Alt-O, then the byte.
-            Some(&last) => match final_key(last, Modifiers::NONE) {
-                Some(input) => Step::Done(3, Some(input)),
-                None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-            },
-        },
-        // Escape Escape: an Escape, then decode the second one on its own.
-        0x1b => Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+        b'O' => ss3(bytes, flush),
+        // An Escape before a whole CSI or SS3 key is that key with Alt, as
+        // libtermkey reads an Escape prefix, and rxvt and PuTTY send Alt with
+        // the arrows; before anything else, or alone, an Escape, then the
+        // second decoded on its own, as vim's users type `ESC ESC`.
+        0x1b => escape_prefix(bytes, flush),
         // An answer only while one is expected: else `ESC P` is Alt-P at
         // once, and a string that began with it would be an answer read
         // whole and keys read in pieces. Its string ends with ST (`ESC \`);
@@ -581,13 +801,63 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             Step::Incomplete
         }
         // The Escape and what followed it; within `bytes`, so exact.
-        _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
+        _ => match single(bytes.get(1..).unwrap_or_default()) {
             Some((n, KeyPress { key, mods })) => {
                 let mods = Modifiers { alt: true, ..mods };
                 Step::Done(n.saturating_add(1), press(key, mods))
             }
             None => Step::Incomplete,
         },
+    }
+}
+
+/// `ESC O`: an SS3 key; else Alt-O, then what follows, once the deadline
+/// has passed if nothing follows yet.
+fn ss3(bytes: &[u8], flush: bool) -> Step {
+    match bytes.get(2) {
+        None if !flush => Step::Incomplete,
+        None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
+        // A byte no final key names: Alt-O, then the byte.
+        Some(&last) => match final_key(last, Modifiers::NONE) {
+            Some(input) => Step::Done(3, Some(input)),
+            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
+        },
+    }
+}
+
+/// `ESC ESC`: an Escape before a whole CSI or SS3 key is that key with Alt;
+/// before anything else, or alone, an Escape, and what follows is decoded
+/// on its own. It calls `csi` and `ss3`, not `decode`, so that `decode` is
+/// no recursive function and stays inlined into the decoder's loop: called
+/// recursively it was not, and a key cost 12% more (`decode/legacy`).
+#[cold]
+#[inline(never)]
+fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
+    let rest = bytes.get(1..).unwrap_or_default();
+    let step = match bytes.get(2) {
+        // `CSI ?` begins an answer, never a key: the Escape is no part of
+        // it, and is not held while the answer is (B24).
+        Some(b'[') if bytes.get(3) == Some(&b'?') => {
+            return Step::Done(1, press(Key::Escape, Modifiers::NONE));
+        }
+        Some(b'[') => csi(rest, flush),
+        Some(b'O') => ss3(rest, flush),
+        None if !flush => return Step::Incomplete,
+        _ => return Step::Done(1, press(Key::Escape, Modifiers::NONE)),
+    };
+    match step {
+        // A whole key, more than the `ESC [` or `ESC O` that alone is Alt-[
+        // or Alt-O.
+        Step::Done(n, Some(Input::Key(mut stroke))) if n > 2 => {
+            stroke.press.mods.alt = true;
+            Step::Done(n.saturating_add(1), Some(Input::Key(stroke)))
+        }
+        // Past a key's window (32 bytes after `ESC [`) it is no key, and
+        // the Escape is not held while it is (B24).
+        Step::Incomplete if rest.len() <= 2 + 32 => Step::Incomplete,
+        Step::Done(..) | Step::PasteStart(_) | Step::Overlong { .. } | Step::Incomplete => {
+            Step::Done(1, press(Key::Escape, Modifiers::NONE))
+        }
     }
 }
 
@@ -639,19 +909,37 @@ fn answer(
             // and the ESC begins what comes next.
             Some(_) => return Step::Done(i.saturating_add(2), None),
             None if flush => return Step::Done(bytes.len(), None),
+            // The string and the ESC that may begin its ST past the limit:
+            // no answer, whatever follows, and no more is held (B24).
+            None if i >= limit => {
+                return Step::Overlong {
+                    bel,
+                    csi: false,
+                    escape: true,
+                };
+            }
             None => return Step::Incomplete,
         },
         // Cut short: dropped.
         None if flush => return Step::Done(bytes.len(), None),
         // Longer than any answer: dropped, the rest of it as it comes.
-        None if body.len() > limit => return Step::Overlong { bel },
+        None if body.len() > limit => {
+            return Step::Overlong {
+                bel,
+                csi: false,
+                escape: false,
+            };
+        }
         None => return Step::Incomplete,
     };
     // Within `bytes`: the string, its two-byte opening and its end.
     let consumed = consumed.unwrap_or(bytes.len()).min(bytes.len());
-    // A string past the limit is no answer, whether it came whole or not.
+    // A string past the limit is no answer, whether it came whole or not:
+    // with the BEL or the ESC that begins its end, at most `limit` bytes,
+    // so that one held unfinished is never more than its opening and
+    // `limit` (B24).
     let reply = payload
-        .filter(|p| p.len() <= limit)
+        .filter(|p| p.len() < limit)
         .and_then(reply)
         .map(Input::Reply);
     Step::Done(consumed, reply)
@@ -772,34 +1060,37 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
     mouse::event(code, x, y, release)
 }
 
-/// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
-/// A CSI ended unfinished by an ESC among `params`, its bytes after
-/// `ESC [`.
-#[cold]
-#[inline(never)]
-fn unfinished(params: &[u8]) -> Step {
-    let at = params.iter().position(|&b| b == 0x1b).unwrap_or(0);
-    if at == 0 {
-        Step::Done(2, press(Key::Char('['), Modifiers::ALT))
-    } else {
-        Step::Done(at.saturating_add(2), None)
-    }
-}
-
-/// A `CSI ?` answer longer than any answer, `body` its bytes after `ESC [`:
-/// dropped through its final byte once that is here, as an over-long OSC
-/// or DCS answer is dropped to its end; held until then, up to
-/// `DCS_LIMIT` bytes, past which (or at a timeout) what is held is dropped.
+/// A CSI longer than its window (a key's, or a `CSI ?` answer's), `body`
+/// its bytes after `ESC [`: no key nor answer, dropped through its final
+/// byte once that is here, as an over-long OSC or DCS answer is dropped
+/// to its end, none of it typed (B25); held until then, up to
+/// `DCS_LIMIT` bytes, past which the rest is dropped as it comes, to its
+/// final byte, and at a timeout what is held is dropped.
 #[cold]
 #[inline(never)]
 fn long_answer(body: &[u8], flush: bool) -> Step {
-    match body.iter().position(|b| (0x40..=0x7e).contains(b)) {
-        Some(end) => Step::Done(end.saturating_add(3), None),
-        None if flush || body.len() > DCS_LIMIT => Step::Done(body.len().saturating_add(2), None),
+    // Its end: a final byte, dropped with it; or a byte no control sequence
+    // holds (ECMA-48 5.4, 5.5: an ESC, a control), which begins what comes
+    // next.
+    let end = body.iter().position(|b| !(0x20..=0x3f).contains(b));
+    match end {
+        Some(end) if body.get(end).is_some_and(|b| (0x40..=0x7e).contains(b)) => {
+            Step::Done(end.saturating_add(3), None)
+        }
+        Some(end) => Step::Done(end.saturating_add(2), None),
+        None if flush => Step::Done(body.len().saturating_add(2), None),
+        // Past what is held: the rest of it is dropped as it comes, to its
+        // final byte, however it is split (threats.md B25).
+        None if body.len() > DCS_LIMIT => Step::Overlong {
+            bel: false,
+            csi: true,
+            escape: false,
+        },
         None => Step::Incomplete,
     }
 }
 
+/// A CSI sequence: `ESC [ params final`. Too long a sequence is dropped.
 fn csi(bytes: &[u8], flush: bool) -> Step {
     let body = bytes.get(2..).unwrap_or_default();
     // A mouse report in the default encoding: `ESC [ M` and three raw
@@ -819,14 +1110,24 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // A sequence with no final byte within the limit is dropped as far as
     // one byte past it, whatever follows.
     let window = body.get(..=limit).unwrap_or(body);
-    let Some(end) = window.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+    // A byte that can be no part of a control sequence (ECMA-48 5.4:
+    // parameters 03/00 to 03/15, intermediates 02/00 to 02/15, the final
+    // 04/00 to 07/14), an ESC (5.5) among them, ends it unfinished there:
+    // `ESC [` alone is Alt-[, a sequence with parameters is dropped, and the
+    // byte begins the next key.
+    let first = window.iter().position(|b| !(0x20..=0x3f).contains(b));
+    if let Some(at) = first
+        && window.get(at).is_some_and(|b| !(0x40..=0x7e).contains(b))
+    {
+        return if at == 0 {
+            Step::Done(2, press(Key::Char('['), Modifiers::ALT))
+        } else {
+            Step::Done(at.saturating_add(2), None)
+        };
+    }
+    let Some(end) = first else {
         if window.len() > limit {
-            return if answer {
-                long_answer(body, flush)
-            } else {
-                // Not a sequence fux can use: garbage.
-                Step::Done(window.len().saturating_add(2), None)
-            };
+            return long_answer(body, flush);
         }
         if !flush {
             return Step::Incomplete;
@@ -842,13 +1143,6 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
     // `ESC [`, the parameters and the final byte; within `bytes`, so exact.
     let consumed = end.saturating_add(3);
     let params = body.get(..end).unwrap_or_default();
-    // An ESC among them ended the sequence unfinished there (ECMA-48,
-    // 5.5): `ESC [` alone is Alt-[, a sequence with parameters is dropped,
-    // and the ESC begins the next key. The byte taken for the final one
-    // then follows the ESC, so the byte before it is the one looked at.
-    if params.last() == Some(&0x1b) {
-        return unfinished(params);
-    }
     let last = body.get(end).copied().unwrap_or(0);
     if params.first() == Some(&b'<') {
         // An SGR mouse report: `CSI < code ; column ; row M`, `m` a release.
@@ -863,12 +1157,7 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         // Answers fux does not use are dropped.
         return Step::Done(consumed, csi_reply(params, last).map(Input::Reply));
     }
-    // Each parameter with its colon-separated parts; an empty part is none.
-    let groups: Vec<Vec<Option<u32>>> = str::from_utf8(params)
-        .unwrap_or("")
-        .split(';')
-        .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
-        .collect();
+    let groups = parts(params);
     let part = |group: usize, i: usize| groups.get(group)?.get(i).copied().flatten();
     let first = part(0, 0).unwrap_or(0);
     let modifier = part(1, 0).unwrap_or(1);
@@ -951,6 +1240,37 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
         other => other,
     };
     Step::Done(consumed, input)
+}
+
+/// The first three parts of each of the first three parameters of a CSI
+/// key, `params`, its parameters `;`-separated and their parts
+/// `:`-separated, each as `str::parse::<u32>` reads it (an empty part, or
+/// one that is no number, is none); all none if `params` is not UTF-8.
+/// No key reads more, and nothing is allocated.
+fn parts(params: &[u8]) -> [[Option<u32>; 3]; 3] {
+    let mut groups = [[None; 3]; 3];
+    if str::from_utf8(params).is_err() {
+        return groups;
+    }
+    for (group, text) in groups.iter_mut().zip(params.split(|&b| b == b';')) {
+        for (part, text) in group.iter_mut().zip(text.split(|&b| b == b':')) {
+            *part = number(text);
+        }
+    }
+    groups
+}
+
+/// `text` as `str::parse::<u32>` reads it: an optional `+`, then decimal
+/// digits, at least one, that fit.
+fn number(text: &[u8]) -> Option<u32> {
+    let digits = text.strip_prefix(b"+").unwrap_or(text);
+    if digits.is_empty() {
+        return None;
+    }
+    digits.iter().try_fold(0u32, |n, &b| {
+        let digit = b.checked_sub(b'0').filter(|d| *d < 10)?;
+        n.checked_mul(10)?.checked_add(u32::from(digit))
+    })
 }
 
 /// The key that `code` names in both forms that carry one, xterm's
@@ -1101,6 +1421,49 @@ mod tests {
             .collect()
     }
 
+    /// A CSI key's parts read as `str::parse::<u32>` reads each part of
+    /// its `;` and `:` splits: every short string of the bytes that matter
+    /// (digits, the separators, signs, a letter, a byte not UTF-8 alone),
+    /// and numbers at and past `u32::MAX`.
+    #[test]
+    fn parts_read_as_str_parse_reads_them() {
+        let reference = |params: &[u8]| -> Vec<Vec<Option<u32>>> {
+            str::from_utf8(params)
+                .unwrap_or("")
+                .split(';')
+                .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
+                .collect()
+        };
+        let alphabet = [b'0', b'7', b'9', b';', b':', b'+', b'-', b'a', 0xff];
+        let mut cases: Vec<Vec<u8>> = vec![
+            b"4294967295".to_vec(),
+            b"4294967296".to_vec(),
+            b"+4294967295:1;99999999999".to_vec(),
+            b"1:2:3:4;5:6:7:8;9:10:11:12;13".to_vec(),
+        ];
+        for len in 0..=5u32 {
+            for n in 0..alphabet.len().pow(len) {
+                let mut case = Vec::new();
+                let mut rest = n;
+                for _ in 0..len {
+                    case.extend(alphabet.get(rest % alphabet.len()));
+                    rest /= alphabet.len();
+                }
+                cases.push(case);
+            }
+        }
+        for case in cases {
+            let want = reference(&case);
+            let got = parts(&case);
+            for (g, group) in got.iter().enumerate() {
+                for (i, part) in group.iter().enumerate() {
+                    let expected = want.get(g).and_then(|p| p.get(i)).copied().flatten();
+                    assert_eq!(*part, expected, "{:?} part {g}.{i}", case.escape_ascii());
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_key_sequence_decodes() {
         for (bytes, name) in [
@@ -1156,6 +1519,93 @@ mod tests {
         name.parse().ok()
     }
 
+    /// Typed ill-formed UTF-8 is one U+FFFD a maximal subpart, as the
+    /// Unicode Standard 17.0, 3.9's Tables 3-8 to 3-11 give it, whole or
+    /// split anywhere: each table's bytes type its "Output" row.
+    #[test]
+    fn ill_formed_utf8_is_one_replacement_a_maximal_subpart() {
+        let fffd = '\u{fffd}';
+        let tables: [(&[u8], &[char]); 4] = [
+            (
+                b"\xc0\xaf\xe0\x80\xbf\xf0\x81\x82\x41",
+                &[fffd, fffd, fffd, fffd, fffd, fffd, fffd, fffd, 'A'],
+            ),
+            (
+                b"\xed\xa0\x80\xed\xbf\xbf\xed\xaf\x41",
+                &[fffd, fffd, fffd, fffd, fffd, fffd, fffd, fffd, 'A'],
+            ),
+            (
+                b"\xf4\x91\x92\x93\xff\x41\x80\xbf\x42",
+                &[fffd, fffd, fffd, fffd, fffd, 'A', fffd, fffd, 'B'],
+            ),
+            (
+                b"\xe1\x80\xe2\xf0\x91\x92\xf1\xbf\x41",
+                &[fffd, fffd, fffd, fffd, 'A'],
+            ),
+        ];
+        for (bytes, output) in tables {
+            let expected: Vec<Input> = (output.iter())
+                .map(|&c| Input::Key(KeyPress::plain(Key::Char(c)).into()))
+                .collect();
+            assert_eq!(all(bytes), expected, "{bytes:x?}");
+            split_anywhere(bytes, false, &expected);
+        }
+    }
+
+    /// A character typed a byte at a time, as a slow link or a terminal
+    /// that writes each byte apart sends it, waits for its bytes however
+    /// long they take: a well-formed beginning (Unicode 17.0, 3.9, Table
+    /// 3-7) has no deadline, and a timeout leaves it waiting, alone or after
+    /// an Escape (Alt). A byte that cannot go on with it still gives the
+    /// maximal subpart's U+FFFD at once (FA-KEY-10).
+    #[test]
+    fn a_character_split_across_reads_waits_for_its_bytes() {
+        for (bytes, expected) in [
+            (&b"\xc3\xa9"[..], key("\u{e9}")),
+            ("\u{4e16}".as_bytes(), key("\u{4e16}")),
+            ("\u{1f600}".as_bytes(), key("\u{1f600}")),
+            (b"\x1b\xc3\xa9", key("M-\u{e9}")),
+            ("\x1b\u{1f600}".as_bytes(), key("M-\u{1f600}")),
+        ] {
+            // An Escape and the lead byte come in one read, as Alt sends
+            // them; the rest a byte a read, a deadline apart.
+            let first = if bytes.first() == Some(&0x1b) { 2 } else { 1 };
+            let (head, tail) = bytes.split_at_checked(first).unwrap_or((bytes, &[]));
+            let reads = std::iter::once(head).chain(tail.iter().map(std::slice::from_ref));
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            for (i, read) in reads.enumerate() {
+                d.bytes(read, &mut out);
+                d.mark(Instant::now());
+                if out.is_empty() {
+                    assert_eq!(d.deadline(), None, "{bytes:x?} after read {i}");
+                }
+                d.timeout(&mut out);
+            }
+            assert_eq!(out, vec![expected], "{bytes:x?}");
+        }
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\xe4\xb8", &mut out);
+        d.bytes(b"A", &mut out);
+        assert_eq!(out, vec![key("\u{fffd}"), key("A")]);
+        // So a mouse report's ESC, after the deadline, ends it: its U+FFFD,
+        // then the report, which is still one.
+        out.clear();
+        d.bytes(b"\xe9", &mut out);
+        d.timeout(&mut out);
+        d.bytes(b"\x1b[<0;10;5M", &mut out);
+        let press = crate::keys::mouse::MouseAction::Press(crate::keys::mouse::MouseButton::Left);
+        let (mods, row, col) = (Modifiers::NONE, 4, 9);
+        let click = Input::Mouse(MouseEvent {
+            action: press,
+            mods,
+            row,
+            col,
+        });
+        assert_eq!(out, vec![key("\u{fffd}"), click]);
+    }
+
     /// xterm's modifyOtherKeys form names a key by the code `CSI code ;
     /// mods u` does: Enter, Tab, Escape and Backspace too, and 8 as
     /// Ctrl-Backspace, which `encode.rs` sends for it.
@@ -1170,6 +1620,9 @@ mod tests {
             (127, 3, "M-BSpace"),
             (8, 5, "C-BSpace"),
             (8, 6, "C-S-BSpace"),
+            // BS is Ctrl's whatever else is held, none or Alt.
+            (8, 1, "C-BSpace"),
+            (8, 3, "C-M-BSpace"),
             (97, 5, "C-a"),
         ] {
             for form in [
@@ -1407,6 +1860,7 @@ mod tests {
                 };
                 let legacy = KeyMode::Legacy {
                     application: false,
+                    keypad: false,
                     other_keys: None,
                     backarrow: false,
                 };
@@ -1526,6 +1980,66 @@ mod tests {
         assert_eq!(all(b"\x1b[12\x1b[A"), vec![key("Up")]);
     }
 
+    /// A byte that can be no part of a control sequence (ECMA-48 5.4: its
+    /// parameter bytes are 03/00 to 03/15, intermediates 02/00 to 02/15, the
+    /// final 04/00 to 07/14) ends a CSI unfinished there, as an ESC does
+    /// (5.5): `ESC [` alone is Alt-[, with parameters it is dropped, and the
+    /// byte begins the next key, at once, not at the deadline.
+    #[test]
+    fn a_byte_no_control_sequence_holds_ends_a_csi_and_begins_the_next_key() {
+        assert_eq!(
+            all("\x1b[\u{e9}a".as_bytes()),
+            vec![key("M-["), key("\u{e9}"), key("a")]
+        );
+        assert_eq!(all(b"\x1b[12\ra"), vec![key("Enter"), key("a")]);
+        assert_eq!(all(b"\x1b[1;2\x7fA"), vec![key("BSpace"), key("A")]);
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        d.bytes(b"\x1b[\r", &mut out);
+        assert_eq!(out, vec![key("M-["), key("Enter")], "before the deadline");
+        split_anywhere(
+            "\x1b[\u{e9}a".as_bytes(),
+            false,
+            &[key("M-["), key("\u{e9}"), key("a")],
+        );
+    }
+
+    /// An Escape before a whole CSI or SS3 key is that key with Alt, as
+    /// libtermkey reads it (`termkey.c`, an Escape prefix) and as rxvt and
+    /// PuTTY send Alt with the arrows; `ESC ESC` alone, and before anything
+    /// else, stays an Escape and what follows, as vim's users type it.
+    #[test]
+    fn an_escape_before_a_key_sequence_is_alt() {
+        assert_eq!(all(b"\x1b\x1b[A"), vec![key("M-Up")]);
+        assert_eq!(all(b"\x1b\x1bOB"), vec![key("M-Down")]);
+        assert_eq!(all(b"\x1b\x1b[1;5C"), vec![key("C-M-Right")]);
+        assert_eq!(all(b"\x1b\x1b[3~"), vec![key("M-Delete")]);
+        assert_eq!(all(b"\x1b\x1b"), vec![key("Escape"), key("Escape")]);
+        assert_eq!(all(b"\x1b\x1bx"), vec![key("Escape"), key("M-x")]);
+        assert_eq!(all(b"\x1b\x1b[I"), vec![key("Escape"), Input::FocusIn]);
+        split_anywhere(b"\x1b\x1b[A", false, &[key("M-Up")]);
+        // Cut short at the deadline, `ESC [` and `ESC O` are no whole key
+        // but Alt-[ and Alt-O: the Escape before them is an Escape.
+        assert_eq!(all(b"\x1b\x1b["), vec![key("Escape"), key("M-[")]);
+        assert_eq!(all(b"\x1b\x1bO"), vec![key("Escape"), key("M-O")]);
+    }
+
+    /// A CSI past its window that an ESC or a control cuts short ends there,
+    /// unfinished, and the byte begins what comes next (ECMA-48 5.5), whole
+    /// or split: the Up after a long one is typed (FA-RE-B-8).
+    #[test]
+    fn an_over_long_csi_cut_short_by_an_esc_drops_only_itself() {
+        let mut long = b"\x1b[".to_vec();
+        long.extend(std::iter::repeat_n(b'1', 40));
+        long.extend_from_slice(b"\x1b[A");
+        assert_eq!(all(&long), vec![key("Up")]);
+        let mut held = b"\x1b[".to_vec();
+        held.extend(std::iter::repeat_n(b'1', 300));
+        held.extend_from_slice(b"\x1b[A");
+        assert_eq!(all(&held), vec![key("Up")]);
+        split_anywhere(&long, false, &[key("Up")]);
+    }
+
     /// `ESC O` and a byte no final key names is Alt-O, then that byte, as
     /// `ESC` and any other byte is: neither is lost.
     #[test]
@@ -1636,6 +2150,15 @@ mod tests {
         d.expect(t0);
         d.expire(t0 + REPLY_WINDOW);
         assert_eq!(waits(&mut d, b"\x1b]", &mut out), Some(ESCAPE_DELAY));
+        // Two rounds of questions: the first DA1 answer leaves the second
+        // expected, and the second ends it.
+        let mut d = Decoder::default();
+        d.expect(t0);
+        d.expect(t0);
+        let da1 = b"\x1b[?1;2c\x1b]";
+        assert_eq!(waits(&mut d, da1, &mut out), Some(REPLY_DELAY));
+        d.timeout(&mut out);
+        assert_eq!(waits(&mut d, da1, &mut out), Some(ESCAPE_DELAY));
     }
 
     /// The DCS answers fux asks for (`outer::styles!`), in the forms
@@ -1795,6 +2318,22 @@ mod tests {
     /// An answer's string past its limit is dropped to its end however its
     /// bytes are read, and none of it is typed.
     #[test]
+    fn a_key_csi_at_the_end_of_its_window_waits_for_its_final_byte() {
+        // A kitty key whose parameters fill the window, 32 bytes, its final
+        // byte in the next read: one key (KEY-8, the window's guard).
+        let mut d = Decoder::default();
+        let mut out = Vec::new();
+        let digits: Vec<u8> = std::iter::repeat_n(b'0', 30).chain(*b"97").collect();
+        d.bytes(&[b"\x1b[".as_slice(), &digits].concat(), &mut out);
+        d.bytes(b"u", &mut out);
+        d.timeout(&mut out);
+        assert!(
+            matches!(out.as_slice(), [Input::Key(k)] if k.press.key == Key::Char('a')),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn a_string_past_its_limit_is_dropped_alike_however_it_is_read() {
         // Read as answers are, while one is expected.
         let pieced = |bytes: &[u8], size: usize| {
@@ -1831,6 +2370,14 @@ mod tests {
             streams.push(([string.as_slice(), b"\x1bx"].concat(), vec![key("M-x")]));
             streams.push(([string.as_slice(), b"\xeb"].concat(), vec![]));
         }
+        // A `CSI ?` answer past what is held, dropped through its final
+        // byte (KEY-2): at the parent, read in pieces, its digits were typed.
+        let mut answer = b"\x1b[?".to_vec();
+        answer.extend(std::iter::repeat_n(b'1', DCS_LIMIT + 20));
+        streams.push((
+            [answer.as_slice(), b"cxy"].concat(),
+            vec![key("x"), key("y")],
+        ));
         for (stream, tail) in &streams {
             let whole = pieced(stream, stream.len());
             assert!(whole.ends_with(tail), "{stream:?}: {whole:?}");
@@ -1842,5 +2389,28 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// The key decoder's checks, each shown a decoder with its one fault
+/// (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    #[test]
+    fn a_long_sequence_held_or_a_paste_with_room_past_its_limit_are_faults() {
+        let mut decoder = Decoder::default();
+        assert!(decoder.check().is_clean());
+        decoder.state = State::Pending {
+            held: vec![b'1'; DCS_LIMIT.saturating_add(3)],
+            since: None,
+        };
+        assert!(decoder.check().faults_of("keys.held").next().is_some());
+        decoder.state = State::Paste {
+            pasted: Pasted::Text(Vec::with_capacity(PASTE_LIMIT.saturating_mul(2))),
+            since: None,
+        };
+        assert!(decoder.check().faults_of("keys.paste").next().is_some());
     }
 }

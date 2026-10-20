@@ -1,6 +1,7 @@
 //! Independent models of what fux-vt should do, shared by the property
 //! tests and the fuzz targets: how printed text is segmented into cells
-//! (UAX #29 by unicode-segmentation, widths by unicode-width), and what a
+//! (UAX #29 by unicode-segmentation, widths by unicode-width as fux-vt's
+//! written rule tailors it), and what a
 //! run of `Cells` holds after edits.
 #![allow(dead_code, reason = "each user takes the models it needs")]
 
@@ -13,18 +14,133 @@ use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Whether `c` continues any cluster: Extend, ZWJ or SpacingMark.
-pub fn extends(c: char) -> bool {
-    format!("a{c}").graphemes(true).count() == 1
+/// The spacing marks unicode-width makes 0 and fux-vt's rule 1, the
+/// canonical decompositions of two whose second is one, `(first, second)
+/// -> composed`, and every spacing mark (`data/spacing-marks.txt`, from
+/// UnicodeData.txt).
+type Marks = (
+    std::collections::HashSet<char>,
+    std::collections::HashMap<(char, char), char>,
+    std::collections::HashSet<char>,
+);
+
+fn marks() -> &'static Marks {
+    static MARKS: std::sync::OnceLock<Marks> = std::sync::OnceLock::new();
+    MARKS.get_or_init(|| {
+        let hex = |h: &str| u32::from_str_radix(h, 16).ok().and_then(char::from_u32);
+        let mut marks = Marks::default();
+        let text = include_str!("../data/spacing-marks.txt");
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            match fields[..] {
+                [code, "widened"] => {
+                    marks.0.extend(hex(code));
+                    marks.2.extend(hex(code));
+                }
+                [code] => marks.2.extend(hex(code)),
+                [whole, "=", first, second] => {
+                    if let (Some(w), Some(f), Some(s)) = (hex(whole), hex(first), hex(second)) {
+                        marks.1.insert((f, s), w);
+                    }
+                }
+                _ => {}
+            }
+        }
+        marks
+    })
 }
 
-/// A character fux-vt prints as a glyph or joins to one: not a control, and
-/// if it takes no columns, one that continues a cluster (others have no
-/// cell to go in, and are attached to whatever is before them). U+17D8, the
-/// one character unicode-width makes three columns wide, is left to its own
-/// test (`a_three_column_character_*`).
+/// The columns `c` takes, by fux-vt's written width rule (its README, "A
+/// glyph", B32): unicode-width's, but a cell holds at most 2, so U+17D8,
+/// the one character unicode-width makes 3 columns wide, takes 1, as in
+/// xterm 411 and glibc; and a spacing mark of combining class 0 it makes
+/// 0 takes 1, as in wcwidth 0.9.2.
+pub fn width(c: char) -> Option<usize> {
+    if marks().0.contains(&c) {
+        return Some(1);
+    }
+    c.width().map(|w| if w > 2 { 1 } else { w })
+}
+
+/// The Khmer letters unicode-width 0.2.2 subjoins after a coeng (its
+/// `KHMER_COENG_ELIGIBLE_LETTER`).
+fn khmer_coeng_eligible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1780}'..='\u{1782}'
+            | '\u{1784}'..='\u{1787}'
+            | '\u{1789}'..='\u{178c}'
+            | '\u{178e}'..='\u{1793}'
+            | '\u{1795}'..='\u{1798}'
+            | '\u{179b}'..='\u{179d}'
+            | '\u{17a0}'
+            | '\u{17a2}'
+            | '\u{17a7}'
+            | '\u{17ab}'
+            | '\u{17ac}'
+            | '\u{17af}'
+    )
+}
+
+/// The columns `text` takes by the same rule: unicode-width's, each
+/// character it makes wider than 2 counted at 1, without its rule that a
+/// Khmer coeng takes a column back before a letter it subjoins (the coeng
+/// takes none, its letter one),
+/// each spacing mark it makes 0 and the rule 1 one more; but each
+/// character's alone in place of the columns of the text composed (each
+/// pair of a character and such a mark that composes canonically made
+/// one, from the start), where such a mark right after another spacing
+/// mark takes none.
+fn text_width(text: &str) -> usize {
+    let over = text.chars().filter(|c| c.width().is_some_and(|w| w > 2));
+    let extra = over
+        .map(|c| c.width().unwrap_or(1).saturating_sub(1))
+        .sum::<usize>();
+    let (widened, pairs, spacing) = marks();
+    let alone = |c: char| width(c).unwrap_or(1);
+    let counted = |c: char, before: Option<char>| {
+        if widened.contains(&c) && before.is_some_and(|b| spacing.contains(&b)) {
+            0
+        } else {
+            alone(c)
+        }
+    };
+    // unicode-width's columns, the widened marks' one each, then the rule's
+    // for the composed text in place of each character's alone.
+    // unicode-width takes a column back for each coeng before a letter it
+    // subjoins (its KHMER_COENG_ELIGIBLE_LETTER); the rule does not.
+    let subjoined = text
+        .chars()
+        .zip(text.chars().skip(1))
+        .filter(|&(c, next)| c == '\u{17d2}' && khmer_coeng_eligible(next))
+        .count();
+    let base = (text.width().saturating_sub(extra))
+        .saturating_add(subjoined)
+        .saturating_add(text.chars().filter(|c| widened.contains(c)).count());
+    let summed = text.chars().map(alone).fold(0usize, usize::saturating_add);
+    let mut rule = 0usize;
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        let (mut before, mut pending) = (None, first);
+        for c in chars {
+            match pairs.get(&(pending, c)) {
+                Some(&whole) => pending = whole,
+                None => {
+                    rule = rule.saturating_add(counted(pending, before));
+                    (before, pending) = (Some(pending), c);
+                }
+            }
+        }
+        rule = rule.saturating_add(counted(pending, before));
+    }
+    base.saturating_add(rule).saturating_sub(summed)
+}
+
+/// A character fux-vt prints as a glyph or joins to one: any but a
+/// control, which is carried out. One of no width that joins no cluster is
+/// printable too: `cells_of` places it by the README's written rule.
 pub fn printable(c: char) -> bool {
-    !c.is_control() && c.width().is_some_and(|w| w <= 2) && (c.width() != Some(0) || extends(c))
+    !c.is_control() && width(c).is_some()
 }
 
 /// The clusters fux-vt makes of `text`: UAX #29's.
@@ -47,44 +163,79 @@ pub fn append(text: &mut String, c: char) -> bool {
 /// The cells `text` printed on one line makes, as (text, wide): one a
 /// cluster, keeping its characters until one does not fit in
 /// `CLUSTER_CAPACITY` bytes, wide once a kept prefix is two columns
-/// wide. A cluster that starts with characters taking no columns (after a
-/// Control-class format character, which UAX #29 breaks after) has no cell
-/// for them: they join the cell before, as marks always have, without
-/// widening it, and the rest of it starts afresh.
+/// wide. A cluster that starts with a character taking no columns (a
+/// format control, a zero-width Prepend character, a mark or a lone vowel
+/// or trailing jamo after a break) has no cell of its own, as the README's
+/// departure from UAX #29 says ("A character of no width that joins no
+/// cluster"): it joins the cell before, with what UAX #29 joins to it, the
+/// cell widening if they make it two columns, but for a zero-width Prepend
+/// character, which joins it alone, what follows segmented afresh; at the
+/// line's start its characters of no width are dropped, and the rest
+/// starts afresh.
 pub fn cells_of(text: &str) -> Vec<(String, bool)> {
     let mut cells: Vec<(String, bool)> = Vec::new();
     let mut queue: VecDeque<String> = clusters(text).into();
     while let Some(cluster) = queue.pop_front() {
         let mut chars = cluster.chars();
         let Some(first) = chars.next() else { continue };
-        if first.width() == Some(0) {
-            let leading: String = cluster
-                .chars()
-                .take_while(|c| c.width() == Some(0))
-                .collect();
-            if let Some((text, _)) = cells.last_mut() {
-                for c in leading.chars() {
-                    append(text, c);
-                }
+        if zero_prepend(first)
+            && let Some((text, wide)) = cells.last_mut()
+        {
+            if append(text, first) {
+                *wide |= text_width(text) >= 2;
             }
-            let rest: String = cluster.chars().skip(leading.chars().count()).collect();
-            for next in clusters(&rest).into_iter().rev() {
+            for next in clusters(chars.as_str()).into_iter().rev() {
                 queue.push_front(next);
             }
             continue;
         }
+        if width(first) == Some(0) {
+            if let Some((text, wide)) = cells.last_mut() {
+                for c in cluster.chars() {
+                    if !append(text, c) {
+                        break;
+                    }
+                    *wide |= text_width(text) >= 2;
+                }
+            } else {
+                let rest: String = cluster
+                    .chars()
+                    .skip_while(|c| width(*c) == Some(0))
+                    .collect();
+                for next in clusters(&rest).into_iter().rev() {
+                    queue.push_front(next);
+                }
+            }
+            continue;
+        }
         let mut text = String::from(first);
-        let mut wide = first.width() == Some(2);
+        let mut wide = width(first) == Some(2);
         // A start of the cluster: once a character is dropped, the rest go.
-        for c in chars {
+        // After a Prepend character of no width (inside a cluster begun by
+        // one of a column, U+0600), what follows is segmented afresh, as
+        // after one that begins it.
+        while let Some(c) = chars.next() {
             if !append(&mut text, c) {
                 break;
             }
-            wide |= text.width() >= 2;
+            wide |= text_width(&text) >= 2;
+            if zero_prepend(c) {
+                for next in clusters(chars.as_str()).into_iter().rev() {
+                    queue.push_front(next);
+                }
+                break;
+            }
         }
         cells.push((text, wide));
     }
     cells
+}
+
+/// Whether `c` is a Prepend character of no width, which joins no cluster
+/// after it (README, "A character of no width that joins no cluster";
+/// decision 824): UAX #29 joins it to a letter after it (GB9b).
+fn zero_prepend(c: char) -> bool {
+    width(c) == Some(0) && clusters(&format!("{c}a")).len() == 1
 }
 
 /// A cell as the model keeps it.
@@ -291,7 +442,10 @@ pub fn apply(cells: &mut Cells, other: &mut Cells, model: &mut Vec<Model>, op: &
             }
         }
         CellsOp::Resize { len } => {
-            cells.resize(*len, CellRef::default());
+            assert!(
+                cells.resize(*len, CellRef::default()).is_ok(),
+                "{len} cells"
+            );
             model.resize(*len, Model::blank());
             // A shorter run keeps a shorter run's budget: cells whose text
             // no longer fits, left to right, keep what fits inline.

@@ -17,7 +17,7 @@
 //! counted again, and the oldest history rows lose theirs if need be
 //! (`Grid::make_room`).
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -27,37 +27,64 @@ pub const URI_LIMIT: usize = 2083;
 /// The longest `id` kept, as VTE bounds it (the spec's "Length limits"). A
 /// link with a longer one is not opened.
 pub const ID_LIMIT: usize = 250;
-/// The most bytes of URIs and ids a grid's links hold at once, each link
-/// counted with `LINK_COST` more for what holds it.
+/// The most heap a grid's links hold at once: each link's string, with
+/// its URI and id and the `Arc`'s counts, and the map of those with an
+/// `id`, its table as allocated, two tables while it grows (`Links`).
 pub(crate) const LINK_BYTES: usize = 4 << 20;
-/// What a link costs beyond its URI and id: what holds it, and its place
-/// in the map of ids.
-const LINK_COST: usize = 64;
+/// What an `Arc<str>` allocates beyond its text: its two counts.
+const ARC_HEADER: usize = 2 * size_of::<usize>();
 /// After making room fails (every link left is on the screen), how many
 /// more links are refused before trying again: the rows' links are counted
 /// at most once in this many links.
 const STALL: u32 = 256;
 
 /// A cell's hyperlink: where it points, the program's `id` for it, if it
-/// gave one, and a number that tells links apart. Cloning it is cheap: the
-/// URI and `id` are shared.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// gave one, and a number that tells links apart. Cloning it is cheap: its
+/// URI and `id` are one shared string, made with one allocation.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Hyperlink {
-    pub(crate) key: u64,
-    pub(crate) uri: Arc<str>,
-    pub(crate) id: Option<Arc<str>>,
+    key: u64,
+    /// The URI, after the `id` between two NULs if it has one: neither
+    /// holds a NUL (`parse` keeps them printable ASCII), and a URI is never
+    /// empty, so a link without an `id` costs no search to read its URI.
+    text: Arc<str>,
 }
 
 impl Hyperlink {
+    /// The link numbered `key` to `uri`, with `id` if it has one.
+    pub(crate) fn new(key: u64, uri: &str, id: Option<&str>) -> Self {
+        let text = match id {
+            Some(id) => {
+                let len = id.len().saturating_add(uri.len()).saturating_add(2);
+                let mut text = String::with_capacity(len);
+                for part in ["\0", id, "\0", uri] {
+                    text.push_str(part);
+                }
+                Arc::from(text)
+            }
+            None => Arc::from(uri),
+        };
+        Self { key, text }
+    }
+    /// The `id` and the URI.
+    fn parts(&self) -> (Option<&str>, &str) {
+        match self.text.strip_prefix('\0') {
+            Some(rest) => match rest.split_once('\0') {
+                Some((id, uri)) => (Some(id), uri),
+                None => (None, rest),
+            },
+            None => (None, &self.text),
+        }
+    }
     /// The URI, as the program sent it: at most [`URI_LIMIT`] bytes, each a
     /// printable ASCII character.
     pub fn uri(&self) -> &str {
-        &self.uri
+        self.parts().1
     }
     /// The `id` parameter the program gave the link, if it gave a nonempty
     /// one: at most [`ID_LIMIT`] printable ASCII bytes.
     pub fn id(&self) -> Option<&str> {
-        self.id.as_deref()
+        self.parts().0
     }
     /// A number that identifies the link among the parser's links, never
     /// given to another: cells with the same key are one link, as the spec
@@ -68,28 +95,117 @@ impl Hyperlink {
     pub fn key(&self) -> u64 {
         self.key
     }
-    /// What the link costs its grid.
+    /// What the link's string allocates: its URI and `id`, as `text` holds
+    /// them, and the `Arc`'s counts.
     fn cost(&self) -> usize {
-        (self.uri.len())
-            .saturating_add(self.id.as_deref().map_or(0, str::len))
-            .saturating_add(LINK_COST)
+        self.text.len().saturating_add(ARC_HEADER)
+    }
+}
+
+/// As its fields: the key, the URI and the `id`.
+impl std::fmt::Debug for Hyperlink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hyperlink")
+            .field("key", &self.key())
+            .field("uri", &self.uri())
+            .field("id", &self.id())
+            .finish()
+    }
+}
+
+/// A link with an `id`, found by its `id` and URI (`Links::ids`).
+#[derive(Clone, Debug)]
+struct ById(Hyperlink);
+
+impl PartialEq for ById {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+
+impl Eq for ById {}
+
+impl std::hash::Hash for ById {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.text.hash(state);
     }
 }
 
 /// A row's links: runs of cells with one link each, left to right and
-/// apart; a cell in no run has none.
+/// apart; a cell in no run has none. A row of the screen keeps its list's
+/// memory for the slot's next row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RowLinks(Vec<Run>);
 
+/// A history row's links, as `RowLinks` keeps them, in the memory they
+/// need: one run, as a row with one link has, in place, with no memory of
+/// its own, and more in a list of their own size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum KeptLinks {
+    One(Run),
+    Many(Box<[Run]>),
+}
+
+/// A row's links to read: its runs, left to right.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Runs<'a>(&'a [Run]);
+
 /// Cells `start..end` of a row, and their link.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Run {
+pub(crate) struct Run {
     start: u16,
     end: u16,
     link: Hyperlink,
 }
 
+const _: () = assert!(size_of::<Run>() == 32 && size_of::<KeptLinks>() == 32);
+
+impl KeptLinks {
+    /// The links `links` has, taken out of it, which keeps its memory;
+    /// `None` if it has none.
+    pub(crate) fn take(links: &mut RowLinks) -> Option<Self> {
+        match links.0.len() {
+            0 => None,
+            1 => links.0.pop().map(Self::One),
+            n => {
+                // Moved out, last first, into a list of their own size.
+                let mut runs = Vec::with_capacity(n);
+                runs.extend(std::iter::from_fn(|| links.0.pop()));
+                runs.reverse();
+                Some(Self::Many(runs.into_boxed_slice()))
+            }
+        }
+    }
+    /// A copy of `runs`; `None` if there are none.
+    pub(crate) fn of(runs: Runs<'_>) -> Option<Self> {
+        match runs.0 {
+            [] => None,
+            [run] => Some(Self::One(run.clone())),
+            runs => Some(Self::Many(runs.into())),
+        }
+    }
+    /// Its runs.
+    pub(crate) fn runs(&self) -> Runs<'_> {
+        match self {
+            Self::One(run) => Runs(std::slice::from_ref(run)),
+            Self::Many(runs) => Runs(runs),
+        }
+    }
+    /// The bytes its runs take beyond itself.
+    pub(crate) fn heap(&self) -> usize {
+        match self {
+            Self::One(_) => 0,
+            Self::Many(runs) => runs.len().saturating_mul(size_of::<Run>()),
+        }
+    }
+}
+
 impl RowLinks {
+    /// Its runs.
+    #[inline]
+    pub(crate) fn runs(&self) -> Runs<'_> {
+        Runs(&self.0)
+    }
     /// Whether no cell has a link.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
@@ -97,32 +213,6 @@ impl RowLinks {
     /// Drops every link, keeping the memory for the slot's next row.
     pub(crate) fn clear(&mut self) {
         self.0.clear();
-    }
-    /// The link of the cell at `col`.
-    pub(crate) fn get(&self, col: usize) -> Option<&Hyperlink> {
-        let col = u16::try_from(col).ok()?;
-        let at = self.0.partition_point(|run| run.end <= col);
-        self.0
-            .get(at)
-            .filter(|run| run.start <= col)
-            .map(|run| &run.link)
-    }
-    /// Each link of the cells `cells`, with the cells that have it there,
-    /// counted from the first of `cells`.
-    pub(crate) fn within(
-        &self,
-        cells: Range<usize>,
-    ) -> impl Iterator<Item = (Range<usize>, &Hyperlink)> {
-        self.0.iter().filter_map(move |run| {
-            let start = usize::from(run.start).max(cells.start);
-            let end = usize::from(run.end).min(cells.end);
-            let at = start.saturating_sub(cells.start);
-            (start < end).then(|| (at..at.saturating_add(end.saturating_sub(start)), &run.link))
-        })
-    }
-    /// Every link of the row, once a run.
-    pub(crate) fn links(&self) -> impl Iterator<Item = &Hyperlink> {
-        self.0.iter().map(|run| &run.link)
     }
     /// Gives the cells `span` link `link`, or none; whether a cell's link
     /// changed. A span past what a row holds changes nothing. Inlined for
@@ -251,13 +341,62 @@ impl RowLinks {
         });
         self.tidy();
     }
+}
+
+impl<'a> Runs<'a> {
+    /// The link of the cell at `col`.
+    pub(crate) fn get(self, col: usize) -> Option<&'a Hyperlink> {
+        let col = u16::try_from(col).ok()?;
+        let at = self.0.partition_point(|run| run.end <= col);
+        self.0
+            .get(at)
+            .filter(|run| run.start <= col)
+            .map(|run| &run.link)
+    }
+    /// Each link of the cells `cells`, with the cells that have it there,
+    /// counted from the first of `cells`.
+    pub(crate) fn within(
+        self,
+        cells: Range<usize>,
+    ) -> impl Iterator<Item = (Range<usize>, &'a Hyperlink)> {
+        self.0.iter().filter_map(move |run| {
+            let start = usize::from(run.start).max(cells.start);
+            let end = usize::from(run.end).min(cells.end);
+            let at = start.saturating_sub(cells.start);
+            (start < end).then(|| (at..at.saturating_add(end.saturating_sub(start)), &run.link))
+        })
+    }
+    /// Every link of the row, once a run.
+    pub(crate) fn links(self) -> impl Iterator<Item = &'a Hyperlink> {
+        self.0.iter().map(|run| &run.link)
+    }
     /// The links of the cells before `width`.
-    pub(crate) fn clipped(&self, width: usize) -> RowLinks {
+    pub(crate) fn clipped(self, width: usize) -> RowLinks {
         let width = u16::try_from(width).unwrap_or(u16::MAX);
-        let mut links = self.clone();
+        let mut links = RowLinks(self.0.to_vec());
         links.remake(|run| [(run.start, run.end.min(width)), (0, 0), (0, 0)]);
         links.tidy();
         links
+    }
+}
+
+/// The buckets a `HashSet` of `capacity` has: a power of two, with room
+/// for an eighth more than it holds (hashbrown's), at least 4 once it has
+/// any.
+fn buckets(capacity: usize) -> usize {
+    match capacity {
+        0 => 0,
+        1..8 => capacity.saturating_add(1).next_power_of_two().max(4),
+        _ => (capacity.saturating_mul(8) / 7).next_power_of_two(),
+    }
+}
+
+/// What a table of `buckets` allocates for `Links::ids`: a link and a
+/// control byte a bucket, and a group's control bytes more.
+fn table_bytes(buckets: usize) -> usize {
+    match buckets {
+        0 => 0,
+        _ => (buckets.saturating_mul(size_of::<ById>().saturating_add(1))).saturating_add(16),
     }
 }
 
@@ -265,12 +404,17 @@ impl RowLinks {
 /// the link the program has open as the grid has it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Links {
-    /// What the links held cost: those the rows had when they were last
-    /// counted (`sweep`), and every link made since.
+    /// What the links held cost: the strings of those the rows had when
+    /// they were last counted (`sweep`) and of every link made since, and
+    /// `ids`'s table (`table_bytes` of `buckets`).
     held: usize,
+    /// The buckets `ids`'s table has, as allocated: counted when it is
+    /// made, grown or made smaller, as removals leave it as it is while
+    /// its `capacity` counts their tombstones out.
+    buckets: usize,
     /// The links with an `id`, by `id` and URI, until the rows are counted
     /// without them.
-    ids: HashMap<(Arc<str>, Arc<str>), Hyperlink>,
+    ids: HashSet<ById>,
     /// Links still to refuse before making room is tried again.
     stalled: u32,
     /// The link the program has open (`Screen::link`), as the grid has it.
@@ -285,22 +429,39 @@ impl Links {
         self.held == 0
     }
     /// The held link with this `id` and URI.
-    pub(crate) fn find(&self, uri: &Arc<str>, id: &Arc<str>) -> Option<&Hyperlink> {
-        self.ids.get(&(Arc::clone(id), Arc::clone(uri)))
+    pub(crate) fn find(&self, opened: &Hyperlink) -> Option<&Hyperlink> {
+        let found = self.ids.get(&ById(opened.clone()));
+        found.map(|link| &link.0)
     }
-    /// A new link, sharing the strings of the link opened; `None` if it
-    /// does not fit without making room.
+    /// A new link, the link opened shared; `None` if it does not fit
+    /// without making room. One with an `id` that grows `ids` fits only if
+    /// the old table and the new, both held while it grows, do.
     pub(crate) fn insert(&mut self, opened: &Hyperlink) -> Option<Hyperlink> {
         let link = opened.clone();
-        let (uri, id) = (&link.uri, link.id.as_ref());
         let held = self.held.saturating_add(link.cost());
-        if held > LINK_BYTES {
+        // With no room left, the table is made again, as large or twice as
+        // large, the old one held until the new one is filled.
+        let grows = link.id().is_some() && self.ids.len() >= self.ids.capacity();
+        let grown = match grows {
+            true => table_bytes(self.buckets.saturating_mul(2).max(4)),
+            false => 0,
+        };
+        if held.saturating_add(grown) > LINK_BYTES {
             return None;
         }
-        self.held = held;
-        if let Some(id) = id {
-            self.ids
-                .insert((Arc::clone(id), Arc::clone(uri)), link.clone());
+        if grows {
+            self.ids.try_reserve(1).ok()?;
+            // A table just made holds no tombstone: its capacity is all
+            // its buckets'.
+            let made = buckets(self.ids.capacity());
+            self.held =
+                (held.saturating_sub(table_bytes(self.buckets))).saturating_add(table_bytes(made));
+            self.buckets = made;
+        } else {
+            self.held = held;
+        }
+        if link.id().is_some() {
+            self.ids.replace(ById(link.clone()));
         }
         Some(link)
     }
@@ -310,19 +471,38 @@ impl Links {
     /// lose their links for the links left to cost at most half the bound,
     /// as many as there are if no number does. What the links left cost is
     /// held, and the links with an `id` that no row is left with go.
-    pub(crate) fn sweep<'a>(
-        &mut self,
-        rows: impl Iterator<Item = (Option<usize>, &'a RowLinks)>,
-        len: usize,
-    ) -> usize {
+    pub(crate) fn sweep<'a, I>(&mut self, rows: impl Fn() -> I, len: usize) -> usize
+    where
+        I: Iterator<Item = (Option<usize>, Runs<'a>)>,
+    {
         // Each link once, with the newest row that has it, a row of the
         // screen newer than any: by key, which links take as they open,
-        // so mostly in order already.
-        let mut seen: Vec<(u64, usize, usize)> = Vec::new();
-        for (row, links) in rows {
-            let row = row.unwrap_or(usize::MAX);
-            seen.extend(links.links().map(|link| (link.key, row, link.cost())));
+        // so mostly in order already. The list is made as long as the
+        // runs are at once, the rows read once more to count them, as it
+        // would be held twice while it grew; and rows and costs are 32
+        // bits (a history holds at most `grid::MAX_ROWS` rows, and a link
+        // costs less than 4 KiB): it is small beside the links.
+        let runs = rows().fold(0usize, |n, (_, links)| n.saturating_add(links.0.len()));
+        let mut seen: Vec<(u64, u32, u32)> = Vec::with_capacity(runs);
+        for (row, links) in rows() {
+            let row = row.map_or(u32::MAX, |row| u32::try_from(row).unwrap_or(u32::MAX - 1));
+            seen.extend(links.links().map(|link| {
+                let cost = u32::try_from(link.cost()).unwrap_or(u32::MAX);
+                (link.key(), row, cost)
+            }));
         }
+        // Each run, each history row's share, each `id` and the two sorts'
+        // steps, ⌈log2 runs⌉ × runs ÷ 16 each (threats.md B16): by key, and
+        // the rows' by row.
+        let log = usize::try_from(seen.len().checked_ilog2().unwrap_or(0)).unwrap_or(0);
+        let sort = log.saturating_add(1).saturating_mul(seen.len()) / 16;
+        spend!(
+            links,
+            seen.len()
+                .saturating_add(len)
+                .saturating_add(self.ids.len())
+                .saturating_add(sort.saturating_mul(2))
+        );
         seen.sort_unstable();
         seen.dedup_by(|next, kept| {
             let same = next.0 == kept.0;
@@ -331,32 +511,61 @@ impl Links {
             }
             same
         });
-        // What each history row takes with it when it loses its links: the
-        // links no newer row has.
-        let mut live = 0usize;
-        let mut leaving = vec![0usize; len];
-        for &(_, row, cost) in &seen {
-            live = live.saturating_add(cost);
-            if let Some(leaves) = leaving.get_mut(row) {
-                *leaves = leaves.saturating_add(cost);
+        // The history rows lose their links oldest first, each taking the
+        // links no newer row has, until what is left costs half the bound,
+        // its table counted as it is now: the links by their newest row,
+        // which only rows with links have, so that nothing is kept a
+        // history row.
+        let half = (LINK_BYTES / 2).saturating_sub(table_bytes(self.buckets));
+        let wide = |n: u32| usize::try_from(n).unwrap_or(usize::MAX);
+        let len = u32::try_from(len).unwrap_or(u32::MAX - 1);
+        let mut live = (seen.iter()).fold(0usize, |live, &(_, _, c)| live.saturating_add(wide(c)));
+        let mut lose = 0u32;
+        let mut kept = seen.as_mut_slice();
+        if live > half {
+            lose = len;
+            kept.sort_unstable_by_key(|&(_, row, _)| row);
+            for leaving in kept.chunk_by(|a, b| a.1 == b.1) {
+                let Some(&(_, row, _)) = leaving.first().filter(|(_, row, _)| *row < len) else {
+                    break;
+                };
+                let cost =
+                    (leaving.iter()).fold(0usize, |sum, &(_, _, c)| sum.saturating_add(wide(c)));
+                live = live.saturating_sub(cost);
+                if live <= half {
+                    lose = row.saturating_add(1);
+                    break;
+                }
             }
+            // The links rows from `lose` on keep, by key again.
+            let from = kept.partition_point(|&(_, row, _)| row < lose);
+            kept = kept.get_mut(from..).unwrap_or_default();
+            kept.sort_unstable();
         }
-        let mut lose = 0usize;
-        for leaves in leaving {
-            if live <= LINK_BYTES / 2 {
-                break;
-            }
-            live = live.saturating_sub(leaves);
-            lose = lose.saturating_add(1);
-        }
-        self.held = live;
-        self.ids.retain(|_, link| {
-            let at = seen.binary_search_by_key(&link.key, |&(key, _, _)| key);
+        self.ids.retain(|ById(link)| {
+            let at = kept.binary_search_by_key(&link.key(), |&(key, _, _)| key);
             at.ok()
-                .and_then(|at| seen.get(at))
+                .and_then(|at| kept.get(at))
                 .is_some_and(|&(_, row, _)| row >= lose)
         });
-        lose
+        // The table gives back what it holds past twice what it keeps, if
+        // the smaller one fits beside it while both are held.
+        if self.ids.is_empty() {
+            self.ids = HashSet::new();
+            self.buckets = 0;
+        } else if buckets(self.ids.len()).saturating_mul(2) < self.buckets {
+            let smaller = table_bytes(buckets(self.ids.len()));
+            if live
+                .saturating_add(table_bytes(self.buckets))
+                .saturating_add(smaller)
+                <= LINK_BYTES
+            {
+                self.ids.shrink_to(self.ids.len());
+                self.buckets = buckets(self.ids.capacity());
+            }
+        }
+        self.held = live.saturating_add(table_bytes(self.buckets));
+        wide(lose)
     }
     /// Whether making room may be tried now, counting this try: after one
     /// fails, only once in [`STALL`] links.
@@ -377,8 +586,75 @@ impl Links {
     /// links the rows have, which are held.
     #[cfg(test)]
     pub(crate) fn costs<'a>(&self, live: impl Iterator<Item = &'a Hyperlink>) -> (usize, usize) {
-        let live: HashMap<u64, usize> = live.map(|link| (link.key, link.cost())).collect();
+        let live: std::collections::HashMap<u64, usize> =
+            live.map(|link| (link.key(), link.cost())).collect();
         (self.held, live.values().sum())
+    }
+}
+
+/// The links' part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl Runs<'_> {
+    /// 24: the runs lie inside a row `width` wide, each of a cell or more,
+    /// left to right and apart, with links within the spec's limits.
+    pub(crate) fn check(self, width: usize) -> Result<(), String> {
+        let mut end = 0u16;
+        for run in self.0 {
+            crate::check::ensure(
+                end <= run.start && run.start < run.end && usize::from(run.end) <= width,
+                || {
+                    format!(
+                        "run {}..{} after {end}, in {width} cells",
+                        run.start, run.end
+                    )
+                },
+            )?;
+            end = run.end;
+            let (uri, id) = (run.link.uri().len(), run.link.id().map_or(0, str::len));
+            crate::check::ensure(uri <= URI_LIMIT && id <= ID_LIMIT, || {
+                format!("a link of {uri} and {id} bytes")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "checks")]
+impl Links {
+    /// 23 and 24: what the links held cost is at most the bound, and at
+    /// least what the links `rows` have cost, each link once; each with an
+    /// `id` is found by it.
+    pub(crate) fn check<'a>(&self, rows: impl Iterator<Item = Runs<'a>>) -> Result<(), String> {
+        let mut costs = std::collections::HashMap::new();
+        for links in rows {
+            for link in links.links() {
+                costs.insert(link.key(), link.cost());
+                if link.id().is_some() {
+                    let found = self.find(link).map(Hyperlink::key);
+                    crate::check::ensure(found == Some(link.key()), || {
+                        format!("link {} with an id is not found by it", link.key())
+                    })?;
+                }
+            }
+        }
+        let live = costs
+            .values()
+            .fold(0, |sum: usize, cost| sum.saturating_add(*cost));
+        // Its capacity counts tombstones out: the table has at least the
+        // buckets it says, and what is counted is what it has.
+        let map = table_bytes(self.buckets);
+        let least = buckets(self.ids.capacity());
+        crate::check::ensure(
+            least <= self.buckets
+                && live.saturating_add(map) <= self.held
+                && self.held <= LINK_BYTES,
+            || {
+                format!(
+                    "{} bytes of links held, the rows' cost {live} and the table's {map}",
+                    self.held
+                )
+            },
+        )
     }
 }
 
@@ -423,6 +699,35 @@ pub(crate) fn parse(payload: &[u8]) -> Option<(&str, Option<&str>)> {
 mod tests {
     use super::*;
 
+    /// A sweep that lets most links with an id go leaves the table as
+    /// large as it was (a `HashSet` gives no room back on removals), so it
+    /// is made smaller, and counted as made: `capacity` alone, which
+    /// counts the removed entries' tombstones out (896 down to 412 here),
+    /// took the table for half as large, kept it, and counted it so.
+    #[test]
+    fn the_id_table_is_counted_as_allocated_after_a_sweep() {
+        let mut links = Links::default();
+        let made: Vec<Hyperlink> = (0..896u64)
+            .filter_map(|i| links.insert(&Hyperlink::new(i, "u", Some(&i.to_string()))))
+            .collect();
+        assert_eq!(made.len(), 896);
+        let full = buckets(links.ids.capacity());
+        assert_eq!(full, 1024, "the table after the 896th link");
+        let mut row = RowLinks::default();
+        for (i, link) in made.iter().take(200).enumerate() {
+            assert!(row.set(i * 2..i * 2 + 1, Some(link)));
+        }
+        let lose = links.sweep(|| std::iter::once((None, row.runs())), 0);
+        assert_eq!((lose, links.ids.len()), (0, 200));
+        // Kept to 200, the table is made smaller, to 256 buckets: a table
+        // just made, its capacity all its buckets' (7 in 8); and held
+        // counts it.
+        let now = buckets(links.ids.capacity());
+        assert_eq!((now, links.ids.capacity()), (256, 224), "made smaller");
+        let strings = made.iter().take(200).map(Hyperlink::cost).sum::<usize>();
+        assert_eq!(links.held, strings + table_bytes(now));
+    }
+
     #[test]
     fn a_payload_opens_its_link_or_closes() {
         assert_eq!(parse(b";http://a"), Some(("http://a", None)));
@@ -454,5 +759,49 @@ mod tests {
         assert_eq!(parse(";http://é".as_bytes()), None);
         assert_eq!(parse(b";http://a\x07b"), None);
         assert_eq!(parse(b"id=\x01;http://a"), None);
+    }
+}
+
+/// The links' checks, each shown links with their one fault (HAR-26).
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn link(key: u64, id: Option<&str>) -> Hyperlink {
+        Hyperlink::new(key, "http://a", id)
+    }
+
+    #[test]
+    fn runs_out_of_order_or_past_the_row_are_faults() {
+        let mut row = RowLinks::default();
+        assert!(row.set(0..2, Some(&link(1, None))));
+        assert!(row.set(3..4, Some(&link(2, None))));
+        assert_eq!(row.runs().check(4), Ok(()));
+        assert!(row.runs().check(3).is_err(), "past the row");
+        row.0.reverse();
+        assert!(row.runs().check(4).is_err(), "out of order");
+    }
+
+    #[test]
+    fn links_held_for_less_than_the_rows_cost_or_lost_ids_are_faults() {
+        let mut links = Links::default();
+        let opened = link(1, Some("i"));
+        let Some(held) = links.insert(&opened) else {
+            return;
+        };
+        let mut row = RowLinks::default();
+        assert!(row.set(0..1, Some(&held)));
+        assert_eq!(links.check([row.runs()].into_iter()), Ok(()));
+        links.held = 0;
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "held too little"
+        );
+        links.held = held.cost();
+        links.ids.clear();
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "an id not found"
+        );
     }
 }

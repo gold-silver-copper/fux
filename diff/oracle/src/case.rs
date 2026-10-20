@@ -1,7 +1,7 @@
 //! A case: a parser's size, history and options, and the steps both sides
 //! take, each followed by a reading of everything (`observe`). Also how a
 //! case is written down to replay (`Case::to_text`) and read back.
-use crate::model::{Error, Heard, IDENTITIES, Selection, Setup};
+use crate::model::{Call, Error, Heard, IDENTITIES, Selection, Setup, Stop};
 use crate::observe::{self, Readers};
 use crate::{Side, base, work};
 use std::fmt;
@@ -11,13 +11,15 @@ use std::fmt;
 pub enum Step {
     /// Output, in one call of `process_with`.
     Output(Vec<u8>),
-    /// Output through `process_until_frame`, called again after each frame
-    /// it stops at, until the bytes are used up.
+    /// Output through `process_until_stop`, called again after each stop
+    /// (a frame's start or end, or the budget), until the bytes are used up.
     Frame(Vec<u8>),
     /// A resize.
     Resize(u16, u16),
     /// A window read and a copy made from it.
     Copy(Selection),
+    /// A host's call, and what it gave back.
+    Host(Call),
 }
 
 /// A case.
@@ -25,7 +27,8 @@ pub enum Step {
 pub struct Case {
     pub rows: u16,
     pub cols: u16,
-    pub history: usize,
+    /// History's budget, in bytes, as `Parser::with_options` takes it.
+    pub history_bytes: usize,
     pub setup: Setup,
     pub steps: Vec<Step>,
 }
@@ -179,28 +182,52 @@ pub fn check(case: &Case) -> Result<Count, Difference> {
     run::<base::Terminal, work::Terminal>(case)
 }
 
-/// The most cells a case may make a grid able to hold, unless fux-vt is
-/// sure to refuse the size (`grid::MAX_CELLS`, `MAX_ROWS`): so that no
-/// generated or shrunk case allocates gigabytes before it is compared.
+/// The most cells a case may make a screen of, unless fux-vt is sure to
+/// refuse the size (`grid::MAX_CELLS`): so that no generated or shrunk
+/// case allocates gigabytes before it is compared.
 pub const SAFE_CELLS: usize = 2 << 20;
 const MAX_CELLS: usize = 64 << 20;
-const MAX_ROWS: usize = 1 << 20;
 
-/// Whether a grid of this size and history is small, or certain to be
-/// refused.
-pub fn safe(rows: u16, cols: u16, history: usize) -> bool {
-    let retained = history.saturating_add(usize::from(rows));
-    let cells = retained.saturating_mul(usize::from(cols));
-    cells <= SAFE_CELLS || cells > MAX_CELLS || retained > MAX_ROWS
+/// Whether a screen of this size is small, or certain to be refused.
+/// History needs no such care: its budget is bytes, which fux-vt keeps to
+/// and fills only as the case's output comes.
+pub fn safe(rows: u16, cols: u16) -> bool {
+    let cells = usize::from(rows).saturating_mul(usize::from(cols));
+    cells <= SAFE_CELLS || cells > MAX_CELLS
 }
 
+/// The most cells a screen of a case the fuzz target runs may have,
+/// unless fux-vt is sure to refuse the size: the binary cases' largest
+/// screen (40 by 100) and a little more. Every observation compares every
+/// cell, both sides', with its history, about 9 µs a cell in release: a
+/// case's comparisons stay well within the fuzzer's 25 s limit up to a few
+/// hundred thousand cells, which a 1 by 65,535 screen with history passes
+/// (`diff/fuzz/regressions/oracle-timeout-5a154e8e.case`, 786,480 cells in
+/// 7 s). The oracle's own runs (`diff/oracle.sh`) check such sizes still.
+pub const QUICK_CELLS: usize = 4096;
+
 impl Case {
+    /// Whether every size the case asks for is safe to try, and small
+    /// enough to compare quickly ([`QUICK_CELLS`]), or certain to be
+    /// refused: what the fuzz target runs.
+    pub fn is_quick(&self) -> bool {
+        let quick = |rows: u16, cols: u16| {
+            let cells = usize::from(rows).saturating_mul(usize::from(cols));
+            cells <= QUICK_CELLS || cells > MAX_CELLS
+        };
+        quick(self.rows, self.cols)
+            && self.steps.iter().all(|step| match step {
+                Step::Resize(rows, cols) => quick(*rows, *cols),
+                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
+            })
+    }
+
     /// Whether every size the case asks for is safe to try.
     pub fn is_safe(&self) -> bool {
-        safe(self.rows, self.cols, self.history)
+        safe(self.rows, self.cols)
             && self.steps.iter().all(|step| match step {
-                Step::Resize(rows, cols) => safe(*rows, *cols, self.history),
-                Step::Output(_) | Step::Frame(_) | Step::Copy(_) => true,
+                Step::Resize(rows, cols) => safe(*rows, *cols),
+                Step::Output(_) | Step::Frame(_) | Step::Copy(_) | Step::Host(_) => true,
             })
     }
 
@@ -210,7 +237,7 @@ impl Case {
             .iter()
             .map(|step| match step {
                 Step::Output(b) | Step::Frame(b) => b.len(),
-                Step::Resize(..) | Step::Copy(_) => 0,
+                Step::Resize(..) | Step::Copy(_) | Step::Host(_) => 0,
             })
             .sum()
     }
@@ -219,8 +246,8 @@ impl Case {
 /// The two parsers made as the case says; `Ok(None)` if both refused
 /// alike.
 fn make<A: Side, B: Side>(case: &Case) -> Result<Option<(A, B)>, Difference> {
-    let a = A::new(case.rows, case.cols, case.history, &case.setup);
-    let b = B::new(case.rows, case.cols, case.history, &case.setup);
+    let a = A::new(case.rows, case.cols, case.history_bytes, &case.setup);
+    let b = B::new(case.rows, case.cols, case.history_bytes, &case.setup);
     match (a, b) {
         (Ok(a), Ok(b)) => Ok(Some((a, b))),
         (a, b) => {
@@ -235,18 +262,18 @@ fn make<A: Side, B: Side>(case: &Case) -> Result<Option<(A, B)>, Difference> {
     }
 }
 
-/// `process_until_frame` over all of `bytes`, called again after each
-/// frame begins or ends: what each call returned.
+/// `process_until_stop` over all of `bytes`, called again after each
+/// stop: what each call returned.
 fn frames<S: Side>(
     s: &mut S,
     bytes: &[u8],
     heard: &mut Vec<Heard>,
-) -> Vec<Result<Option<(usize, bool)>, Error>> {
+) -> Vec<Result<Option<(usize, Stop)>, Error>> {
     let mut results = Vec::new();
     let mut rest = bytes;
     // At most a call a byte, and one more.
     for _ in 0..=bytes.len() {
-        let result = s.process_until_frame(rest, heard);
+        let result = s.process_until_stop(rest, heard);
         let taken = result.as_ref().ok().copied().flatten().map(|(n, _)| n);
         results.push(result);
         match taken.and_then(|n| rest.get(n..)) {
@@ -291,8 +318,8 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                 let (mut ha, mut hb) = (Vec::new(), Vec::new());
                 let ra = frames(&mut a, bytes, &mut ha);
                 let rb = frames(&mut b, bytes, &mut hb);
-                same_list(at, "process_until_frame's results", &ra, &rb)?;
-                same_list(at, "what process_until_frame gave the host", &ha, &hb)?;
+                same_list(at, "process_until_stop's results", &ra, &rb)?;
+                same_list(at, "what process_until_stop gave the host", &ha, &hb)?;
                 count.bytes = count
                     .bytes
                     .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
@@ -308,6 +335,14 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                     "a window and a copy from it",
                     &a.copy(selection, true),
                     &b.copy(selection, true),
+                )?;
+            }
+            Step::Host(call) => {
+                same(
+                    at,
+                    "what the host's call gave",
+                    &a.host(*call),
+                    &b.host(*call),
                 )?;
             }
         }
@@ -365,7 +400,7 @@ impl Case {
     pub fn to_text(&self) -> String {
         let mut out = format!(
             "size {} {}\nhistory {}\nsetup {}\n",
-            self.rows, self.cols, self.history, self.setup
+            self.rows, self.cols, self.history_bytes, self.setup
         );
         for step in &self.steps {
             match step {
@@ -376,6 +411,7 @@ impl Case {
                     "copy {} {} {} {} {} {} {}\n",
                     s.offset, s.from.0, s.from.1, s.to.0, s.to.1, s.max_cells, s.max_bytes
                 )),
+                Step::Host(call) => out.push_str(&format!("host {}\n", call.to_text())),
             }
         }
         out
@@ -386,7 +422,7 @@ impl Case {
         let mut case = Case {
             rows: 1,
             cols: 1,
-            history: 0,
+            history_bytes: 0,
             setup: Setup::default(),
             steps: Vec::new(),
         };
@@ -408,7 +444,9 @@ impl Case {
                     case.rows = small(n.first())?;
                     case.cols = small(n.get(1))?;
                 }
-                "history" => case.history = *numbers()?.first().ok_or(at("no history".into()))?,
+                "history" => {
+                    case.history_bytes = *numbers()?.first().ok_or(at("no history".into()))?;
+                }
                 "setup" => case.setup = setup_from(rest).map_err(at)?,
                 "output" => case.steps.push(Step::Output(unescape(rest).map_err(at)?)),
                 "frame" => case.steps.push(Step::Frame(unescape(rest).map_err(at)?)),
@@ -428,6 +466,9 @@ impl Case {
                         max_bytes: get(6)?,
                     }));
                 }
+                "host" => case.steps.push(Step::Host(
+                    Call::from_text(rest).ok_or(at(format!("no host call {rest:?}")))?,
+                )),
                 "" => {}
                 other => return Err(at(format!("no step {other:?}"))),
             }
@@ -464,12 +505,36 @@ fn setup_from(text: &str) -> Result<Setup, String> {
 mod tests {
     use super::*;
 
+    /// A case that resizes to 65,535 columns, which fux-vt takes, is left
+    /// to the oracle's own runs: compared at every step, its wide rows took
+    /// the fuzz target 7 s (FA-SB-3's artifact); its refused sizes alone
+    /// would not have.
+    #[test]
+    fn a_case_too_wide_to_compare_quickly_is_not_fuzzed() -> Result<(), String> {
+        let text = include_str!("../../fuzz/regressions/oracle-timeout-5a154e8e.case");
+        let case = Case::from_text(text)?;
+        assert!(case.is_safe(), "safe to try");
+        assert!(!case.is_quick(), "but not quick to compare");
+        let refused_only = Case {
+            steps: (case.steps.iter())
+                .filter(|s| !matches!(s, Step::Resize(1, u16::MAX)))
+                .cloned()
+                .collect(),
+            ..case
+        };
+        assert!(
+            refused_only.is_quick(),
+            "the sizes fux-vt refuses are cheap"
+        );
+        Ok(())
+    }
+
     #[test]
     fn a_case_reads_back_as_it_was_written() -> Result<(), String> {
         let case = Case {
             rows: 3,
             cols: 7,
-            history: 20,
+            history_bytes: 20,
             setup: Setup::pane(),
             steps: vec![
                 Step::Output(b"a\\b\x1b[1m\xff\n".to_vec()),
@@ -527,12 +592,60 @@ mod tests {
         );
     }
 
+    /// What this pass changes is seen (HAR-32): two terminals whose sixel
+    /// pictures differ only in the last band, whose palettes differ, or
+    /// whose screens not in use differ, read as different states; and the
+    /// host's calls are steps a case can hold and replay.
+    #[test]
+    fn pictures_colours_and_the_other_screen_are_seen() -> Result<(), String> {
+        let mut setup = Setup::pane();
+        setup.pictures = true;
+        let state = |output: &[u8]| -> Result<crate::model::State, String> {
+            let mut t = work::Terminal::new(10, 20, 0, &setup).map_err(|e| e.0)?;
+            t.host(Call::Graphics(2, 6));
+            t.process(output, &mut Vec::new()).map_err(|e| e.0)?;
+            Ok(t.state())
+        };
+        // Two bands of red; the second band's sixels differ.
+        let one = state(b"\x1bP9;1q#1;2;100;0;0!8~-!8~\x1b\\")?;
+        let two = state(b"\x1bP9;1q#1;2;100;0;0!8~-!8N\x1b\\")?;
+        assert_eq!(one.pictures.len(), 1);
+        assert_ne!(one.pictures, two.pictures, "a picture's last band unseen");
+        let colour = state(b"\x1b]4;1;rgb:12/34/56\x07")?;
+        assert_ne!(
+            colour.palette,
+            state(b"")?.palette,
+            "a palette entry unseen"
+        );
+        let inactive = state(b"\x1b[?1049hon the alternate\x1b[?1049l")?;
+        assert_ne!(
+            inactive.inactive,
+            state(b"\x1b[?1049h\x1b[?1049l")?.inactive
+        );
+        let case = Case {
+            rows: 3,
+            cols: 7,
+            history_bytes: 64,
+            setup: Setup::pane(),
+            steps: vec![
+                Step::Host(Call::Record(true)),
+                Step::Output(b"printed".to_vec()),
+                Step::Host(Call::Prints),
+                Step::Host(Call::HistoryBytes(1024)),
+                Step::Host(Call::Tick),
+            ],
+        };
+        assert_eq!(Case::from_text(&case.to_text())?, case);
+        run::<work::Terminal, work::Terminal>(&case).map_err(|d| d.to_string())?;
+        Ok(())
+    }
+
     #[test]
     fn the_same_commit_agrees_with_itself() -> Result<(), String> {
         let case = Case {
             rows: 4,
             cols: 10,
-            history: 5,
+            history_bytes: 5,
             setup: Setup::pane(),
             steps: vec![
                 Step::Output(b"hello\r\nworld \x1b[31mred\x1b[0m\r\n\x1b[6n".to_vec()),

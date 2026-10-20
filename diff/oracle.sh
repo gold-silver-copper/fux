@@ -9,7 +9,10 @@
 #
 # The commit is base-vt's rev in diff/oracle/Cargo.toml, fetched from this
 # repository by a file:// URL. A run pins it there (Cargo.lock follows) and
-# puts both files back when it exits, so it leaves no change behind.
+# puts both files back once it has built, before the oracle runs, so it
+# leaves no change behind. One run at a time pins: another waits for it
+# (diff/target/oracle-pin, a link to the files the run holding it saved);
+# a run killed before it put them back is put back by the next.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -36,10 +39,30 @@ sha=$(git -C "$root" rev-parse --verify "$ref^{commit}")
 source=file://$(cd "$(git -C "$root" rev-parse --git-common-dir)" && pwd)
 
 mkdir -p "$here/target"
+held=$here/target/oracle-pin
+put_back() {
+  cp "$1/Cargo.toml" "$manifest" && cp "$1/Cargo.lock" "$lock" && rm -rf "$1"
+}
 if [[ -z $keep ]]; then
-  saved=$(mktemp -d "$here/target/oracle-pin.XXXXXX")
+  saved=$here/target/oracle-pin.$$
+  rm -rf "$saved"
+  until ln -sn "${saved##*/}" "$held" 2>/dev/null; do
+    holder=$(readlink "$held" || true)
+    if kill -0 "${holder##*.}" 2>/dev/null; then
+      sleep 1
+      continue
+    fi
+    # Its run is gone: what it saved goes back first.
+    if [[ -f $here/target/$holder/Cargo.lock ]]; then
+      put_back "$here/target/$holder"
+    fi
+    if [[ $(readlink "$held" || true) == "$holder" ]]; then
+      rm -f "$held"
+    fi
+  done
+  mkdir "$saved"
   cp "$manifest" "$lock" "$saved/"
-  trap 'cp "$saved/Cargo.toml" "$manifest"; cp "$saved/Cargo.lock" "$lock"; rm -rf "$saved"' EXIT
+  trap 'put_back "$saved"; rm -f "$held"' EXIT
 fi
 sed -i.bak -E "s|^base-vt = .*|base-vt = { package = \"fux-vt\", git = \"$source\", rev = \"$sha\" }|" "$manifest"
 rm -f "$manifest.bak"
@@ -49,7 +72,7 @@ cargo fetch --quiet --manifest-path "$manifest"
 [[ -n $keep ]] && exit 0
 
 echo "oracle.sh: the working tree beside $ref ($sha)" >&2
-if ! cargo build --release --quiet --locked --manifest-path "$manifest" --bin fux-vt-oracle 2>"$log"; then
+if ! cargo build --release --quiet --locked -j "${CARGO_BUILD_JOBS:-4}" --manifest-path "$manifest" --bin fux-vt-oracle 2>"$log"; then
   cat >&2 <<EOF
 oracle.sh: fux-vt-oracle does not build against $ref ($sha).
 If this tree changed fux-vt's public API, the one adapter in
@@ -59,4 +82,7 @@ rustc's errors: $log
 EOF
   exit 1
 fi
-"$here/target/release/fux-vt-oracle" "$@"
+put_back "$saved"
+rm -f "$held"
+trap - EXIT
+exec "${CARGO_TARGET_DIR:-$here/target}/release/fux-vt-oracle" "$@"

@@ -1,24 +1,44 @@
-//! Generates fux-vt's grapheme segmentation tables from the Unicode Character
-//! Database, and the conformance cases its tests run.
+//! Generates fux-vt's Unicode tables (grapheme segmentation and widths)
+//! from the Unicode Character Database, and the conformance cases its tests
+//! run.
 //!
 //! ```sh
-//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- <ucd directory>
+//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- references/unicode
+//! cargo run --manifest-path fux-vt/gen/Cargo.toml -- catalogue references
 //! ```
 //!
-//! The directory holds, from `https://www.unicode.org/Public/<version>/ucd/`,
-//! `auxiliary/GraphemeBreakProperty.txt`, `auxiliary/GraphemeBreakTest.txt`,
-//! `emoji/emoji-data.txt` and `DerivedCoreProperties.txt`, all in one
-//! directory (see fux-vt/gen/README.md). The version is read from them, and
-//! they must agree.
+//! The second form writes the conformance table's catalogue, the control
+//! functions the references define (`catalogue.rs`).
+//!
+//! The first reads the Unicode files as `references/fetch.sh` lays them out,
+//! the UCD's own tree from `https://www.unicode.org/Public/<version>/`:
+//! `ucd/auxiliary/GraphemeBreakProperty.txt` and `GraphemeBreakTest.txt`,
+//! `ucd/emoji/emoji-data.txt` and `emoji-variation-sequences.txt`,
+//! `ucd/DerivedCoreProperties.txt`, `EastAsianWidth.txt`,
+//! `HangulSyllableType.txt`, `NormalizationTest.txt`, `PropList.txt` and
+//! `UnicodeData.txt`, and `emoji/emoji-test.txt`. The version is read from
+//! them (`UnicodeData.txt` names none), and they must agree.
 //!
 //! Output, relative to the repository root:
-//! - `fux-vt/src/unicode/tables.rs`: one byte of properties per code point,
-//!   in a two-stage table.
-//! - `fux-vt/tests/data/GraphemeBreakTest.txt`: the conformance cases alone.
+//! - `fux-vt/src/unicode/tables.rs`: sixteen bits of properties per code
+//!   point, in a two-stage table.
+//! - in `fux-vt/tests/data/`, the conformance files' cases alone:
+//!   `GraphemeBreakTest.txt`, `emoji-test.txt` and
+//!   `emoji-variation-sequences.txt`, and `NormalizationTest.txt` as each
+//!   line's distinct forms.
+//!
+//! The widths are fux-vt's width rule (fux-vt's README, "Width"): each
+//! character's columns as unicode-width 0.2.2 counts them for Unicode
+//! 17.0.0 (its `scripts/unicode.py`: `load_zero_widths`, then East Asian
+//! Wide and Fullwidth as 2, the rest as 1), but U+17D8 at 1, not 3, and
+//! a spacing mark (Mc) of combining class 0 it makes 0 at 1; and
+//! the properties its string rule reads within a cluster.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+mod catalogue;
 
 /// Grapheme_Cluster_Break values, numbered as fux-vt's `unicode.rs` reads them.
 const BREAKS: [&str; 14] = [
@@ -38,57 +58,117 @@ const BREAKS: [&str; 14] = [
     "LVT",
 ];
 /// Bit 4: Extended_Pictographic.
-const PICTOGRAPHIC: u8 = 1 << 4;
+const PICTOGRAPHIC: u16 = 1 << 4;
 /// Bits 5 and 6: Indic_Conjunct_Break, 0 for None.
-const CONJUNCTS: [(&str, u8); 3] = [
+const CONJUNCTS: [(&str, u16); 3] = [
     ("Consonant", 1 << 5),
     ("Extend", 2 << 5),
     ("Linker", 3 << 5),
 ];
+/// Bits 7 and 8: the columns the character takes alone, 0 to 2; 3 for a
+/// control (C0, DEL and C1), which takes none.
+const WIDTH_SHIFT: u32 = 7;
+const CONTROL: u16 = 3;
+/// Bit 9: Emoji_Presentation, but neither an emoji modifier nor a regional
+/// indicator (unicode-width's `WidthInfo::EMOJI_PRESENTATION`).
+const PRESENTATION: u16 = 1 << 9;
+/// Bit 10: an emoji presentation sequence starts with it (`emoji style`,
+/// with U+FE0F, in emoji-variation-sequences.txt).
+const EMOJI_STYLE: u16 = 1 << 10;
+/// Bit 11: a text presentation sequence starts with it (`text style`, with
+/// U+FE0E) and it is Emoji_Presentation, outside the Enclosed Ideographic
+/// Supplement (U+1F200 to U+1F2FF), which stays wide.
+const TEXT_STYLE: u16 = 1 << 11;
+/// Bit 12: Emoji_Modifier_Base.
+const MODIFIER_BASE: u16 = 1 << 12;
+/// Bit 13: a combining mark (Mn, Mc, Me) that is Default_Ignorable: it
+/// interrupts no ligature in unicode-width's string rule.
+const LIGATURE_TRANSPARENT: u16 = 1 << 13;
+/// Bit 14: a character the cluster width rule looks at, before or after
+/// it (`src/unicode/width.rs`): a line feed, a spacing mark unicode-width
+/// makes 0 and fux-vt 1, ZWJ, the
+/// keycap, a variation selector, Kirat Rai's vowel signs, a regional
+/// indicator, an emoji modifier, a tag. Text with none of them takes its
+/// characters' columns summed.
+const CONTEXT: u16 = 1 << 14;
+/// Bit 15: a spacing mark (General_Category Mc).
+const SPACING: u16 = 1 << 15;
+const IN_CONTEXT: [std::ops::RangeInclusive<usize>; 8] = [
+    0x0a..=0x0a,
+    0x200d..=0x200d,
+    0x20e3..=0x20e3,
+    0xfe00..=0xfe0f,
+    0x16d63..=0x16d6a,
+    0x1f1e6..=0x1f1ff,
+    0x1f3fb..=0x1f3ff,
+    0xe0020..=0xe007f,
+];
 
 const CODE_POINTS: usize = 0x11_0000;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
-    let ucd = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or("usage: fux-vt-gen <ucd directory>")?;
+    let usage = "usage: fux-vt-gen references/unicode | fux-vt-gen catalogue references";
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next().ok_or(usage)?;
+    if first == "catalogue" {
+        let references = args.next().map(PathBuf::from).ok_or(usage)?;
+        return catalogue::run(&references, &root.join("fux-vt/tests/data/conformance.txt"));
+    }
+    let unicode = PathBuf::from(first);
+    let ucd = unicode.join("ucd");
 
-    let breaks = read(&ucd, "GraphemeBreakProperty.txt")?;
-    let emoji = read(&ucd, "emoji-data.txt")?;
+    let breaks = read(&ucd, "auxiliary/GraphemeBreakProperty.txt")?;
+    let emoji = read(&ucd, "emoji/emoji-data.txt")?;
+    let variations = read(&ucd, "emoji/emoji-variation-sequences.txt")?;
+    let normalization = read(&ucd, "NormalizationTest.txt")?;
+    let emoji_test = read(&unicode, "emoji/emoji-test.txt")?;
     let derived = read(&ucd, "DerivedCoreProperties.txt")?;
-    let test = read(&ucd, "GraphemeBreakTest.txt")?;
+    let east_asian = read(&ucd, "EastAsianWidth.txt")?;
+    let hangul = read(&ucd, "HangulSyllableType.txt")?;
+    let props = read(&ucd, "PropList.txt")?;
+    let data = read(&ucd, "UnicodeData.txt")?;
+    let test = read(&ucd, "auxiliary/GraphemeBreakTest.txt")?;
     let version = version_of(&breaks, "GraphemeBreakProperty")?;
     for (text, name) in [
         (&derived, "DerivedCoreProperties"),
+        (&east_asian, "EastAsianWidth"),
+        (&hangul, "HangulSyllableType"),
+        (&props, "PropList"),
         (&test, "GraphemeBreakTest"),
+        (&normalization, "NormalizationTest"),
     ] {
         let other = version_of(text, name)?;
         if other != version {
             return Err(format!("{name} is Unicode {other}, not {version}").into());
         }
     }
-    // emoji-data.txt names its version on a line of its own, without the
-    // update number.
-    let emoji_version = emoji
-        .lines()
-        .find_map(|line| line.strip_prefix("# Version: "))
-        .ok_or("emoji-data: no version line")?;
-    if !version.starts_with(&format!("{emoji_version}.")) {
-        return Err(format!("emoji-data is version {emoji_version}, not {version}").into());
+    // The emoji files name their version on a line of their own, without
+    // the update number.
+    for (text, name) in [
+        (&emoji, "emoji-data"),
+        (&variations, "emoji-variation-sequences"),
+        (&emoji_test, "emoji-test"),
+    ] {
+        let emoji_version = text
+            .lines()
+            .find_map(|line| line.strip_prefix("# Version: "))
+            .ok_or(format!("{name}: no version line"))?;
+        if !version.starts_with(&format!("{emoji_version}.")) {
+            return Err(format!("{name} is version {emoji_version}, not {version}").into());
+        }
     }
 
-    let mut properties = vec![0u8; CODE_POINTS];
+    let mut properties = vec![0u16; CODE_POINTS];
     for (range, fields) in entries(&breaks) {
         let value = BREAKS
             .iter()
             .position(|name| *name == fields[0])
             .ok_or_else(|| format!("unknown Grapheme_Cluster_Break {}", fields[0]))?;
         for p in &mut properties[range] {
-            *p = (*p & !0x0f) | u8::try_from(value)?;
+            *p = (*p & !0x0f) | u16::try_from(value)?;
         }
     }
     for (range, fields) in entries(&emoji) {
@@ -112,11 +192,105 @@ fn main() -> Result<()> {
         }
     }
 
-    let tables = tables(&properties, &version)?;
+    let mut widths = widths(&breaks, &derived, &east_asian, &hangul, &props);
+    // A spacing mark (Mc) of Canonical_Combining_Class 0 takes its column,
+    // as wcwidth 0.9.2 (ucs-detect's reference) measures it, where
+    // unicode-width makes one that is Grapheme_Extend zero: a consonant and
+    // its spacing vowel sign take two columns, as each takes one. One of
+    // another class stays at none: a spacing virama (9, as U+A9C0 JAVANESE
+    // PANGKON) joins two consonants into one conjunct, as wcwidth 0.9.2 has
+    // it, where glibc gives it 1; and the Hangul tone marks, the Vietnamese
+    // reading marks (East Asian Wide) and the musical stems and flags,
+    // which canonical ordering moves (Unicode 3.11), so a cluster's columns
+    // never depend on the order of its marks. Such a mark is
+    // the second half of a two-part vowel sign's decomposition (U+09CB is
+    // U+09C7 U+09BE): right after another spacing mark it adds none, and a
+    // cluster takes the columns its pairs composed take
+    // (`src/unicode/width.rs`): the cluster rule looks at the mark.
+    let (spacing, classless) = spacing_marks(&data)?;
+    let mut widened = Vec::new();
+    for code in 0..CODE_POINTS {
+        if spacing[code] && classless[code] && widths[code] == 0 {
+            widths[code] = 1;
+            widened.push(code);
+        }
+    }
+    for (p, width) in properties.iter_mut().zip(widths) {
+        *p |= width << WIDTH_SHIFT;
+    }
+    let pairs = compositions(&data, &widened)?;
+    for (p, _) in properties.iter_mut().zip(&spacing).filter(|(_, s)| **s) {
+        *p |= SPACING;
+    }
+    for &code in &widened {
+        properties[code] |= CONTEXT;
+    }
+    emoji_bits(&mut properties, &emoji, &props, &variations)?;
+    let marks = categories(&data, &["Mn", "Mc", "Me"])?;
+    for (range, fields) in entries(&derived) {
+        if fields[0] == "Default_Ignorable_Code_Point" {
+            for code in range.filter(|&c| marks[c]) {
+                properties[code] |= LIGATURE_TRANSPARENT;
+            }
+        }
+    }
+
+    for range in IN_CONTEXT {
+        for p in &mut properties[range] {
+            *p |= CONTEXT;
+        }
+    }
+
+    let mut tables = tables(&properties, &version)?;
+    writeln!(
+        tables,
+        "\n/// Each canonical decomposition of two characters whose second is a\n\
+         /// spacing mark fux-vt widens, as (first, second, composed), in order."
+    )?;
+    writeln!(
+        tables,
+        "pub(super) const COMPOSITIONS: [(char, char, char); {}] = [",
+        pairs.len()
+    )?;
+    for (whole, first, second) in &pairs {
+        writeln!(
+            tables,
+            "    ('\\u{{{first:x}}}', '\\u{{{second:x}}}', '\\u{{{whole:x}}}'),"
+        )?;
+    }
+    writeln!(tables, "];")?;
     write(&root.join("fux-vt/src/unicode/tables.rs"), &tables)?;
+    let data = root.join("fux-vt/tests/data");
+    let mut marks_text = format!(
+        "# The spacing marks (General_Category Mc) of UnicodeData.txt {version}, for\n\
+         # the tests' width model: `widened`, one unicode-width makes 0 and\n\
+         # fux-vt 1 (fux-vt's README, \"Width\"); then each canonical\n\
+         # decomposition of two whose second is widened, `COMPOSED = FIRST\n\
+         # SECOND`. Generated by fux-vt/gen.\n"
+    );
+    for code in (0..CODE_POINTS).filter(|&c| spacing[c]) {
+        let kind = if widened.contains(&code) {
+            " widened"
+        } else {
+            ""
+        };
+        writeln!(marks_text, "{code:04X}{kind}")?;
+    }
+    for (whole, first, second) in &pairs {
+        writeln!(marks_text, "{whole:04X} = {first:04X} {second:04X}")?;
+    }
+    write(&data.join("spacing-marks.txt"), &marks_text)?;
+    let files = [
+        ("GraphemeBreakTest.txt", &test),
+        ("emoji-test.txt", &emoji_test),
+        ("emoji-variation-sequences.txt", &variations),
+    ];
+    for (name, text) in files {
+        write(&data.join(name), &cases(name, text, &version))?;
+    }
     write(
-        &root.join("fux-vt/tests/data/GraphemeBreakTest.txt"),
-        &conformance(&test, &version),
+        &data.join("NormalizationTest.txt"),
+        &normalization_forms(&normalization, &version)?,
     )?;
     Ok(())
 }
@@ -158,25 +332,227 @@ fn entries(text: &str) -> impl Iterator<Item = (std::ops::Range<usize>, Vec<&str
     })
 }
 
-/// The two-stage table in the block size that makes it smallest.
-fn tables(properties: &[u8], version: &str) -> Result<String> {
-    let (shift, index, blocks) = (4..=10)
-        .map(|shift| {
-            let size = 1usize << shift;
-            let mut seen: HashMap<&[u8], u16> = HashMap::new();
-            let mut blocks: Vec<u8> = Vec::new();
-            let mut index = Vec::new();
-            for block in pieces(properties, size) {
-                let next = u16::try_from(seen.len()).unwrap_or(u16::MAX);
-                let id = *seen.entry(block).or_insert_with(|| {
-                    blocks.extend_from_slice(block);
-                    next
-                });
-                index.push(id);
+/// Each code point's columns alone (`WIDTH_SHIFT`'s two bits), as
+/// unicode-width 0.2.2's `scripts/unicode.py` makes them outside East Asian
+/// contexts: 0 for its zero widths (`load_zero_widths`), else 2 for East
+/// Asian Wide and Fullwidth, else 1; U+17A4 at 2; and U+17D8, which it
+/// makes 3, at 1 (fux-vt's one departure, as xterm 411 and glibc have it).
+/// C0, DEL and C1 are controls.
+fn widths(breaks: &str, derived: &str, east_asian: &str, hangul: &str, props: &str) -> Vec<u16> {
+    let mut wide = vec![false; CODE_POINTS];
+    for (range, fields) in entries(east_asian) {
+        if matches!(fields[0], "W" | "F") {
+            wide[range].fill(true);
+        }
+    }
+    let mut zero = vec![false; CODE_POINTS];
+    for (range, fields) in entries(derived) {
+        if matches!(
+            fields[0],
+            "Default_Ignorable_Code_Point" | "Grapheme_Extend"
+        ) {
+            zero[range].fill(true);
+        }
+    }
+    // Vowel and trailing jamo: a decomposed syllable is as wide as its
+    // leading jamo, as glibc's wcwidth has it.
+    for (range, fields) in entries(hangul) {
+        if matches!(fields[0], "V" | "T") {
+            zero[range].fill(true);
+        }
+    }
+    // The Syriac abbreviation mark and four Arabic
+    // Prepended_Concatenation_Marks; and every other Prepend character.
+    for code in [0x070f, 0x0605, 0x0890, 0x0891, 0x08e2] {
+        zero[code] = true;
+    }
+    let mut concatenation = vec![false; CODE_POINTS];
+    for (range, fields) in entries(props) {
+        if fields[0] == "Prepended_Concatenation_Mark" {
+            concatenation[range].fill(true);
+        }
+    }
+    for (range, fields) in entries(breaks) {
+        if fields[0] == "Prepend" {
+            for code in range.filter(|&c| !concatenation[c]) {
+                zero[code] = true;
             }
-            (shift, index, blocks)
+        }
+    }
+    // HANGUL CHOSEONG FILLER, TIFINAGH CONSONANT JOINER, DEVANAGARI CARET.
+    zero[0x115f] = false;
+    zero[0x2d7f] = false;
+    zero[0xa8fa] = true;
+    let mut widths: Vec<u16> = (0..CODE_POINTS)
+        .map(|code| match (zero[code], wide[code]) {
+            (true, _) => 0,
+            (false, true) => 2,
+            (false, false) => 1,
         })
-        .min_by_key(|(_, index, blocks)| index.len() * 2 + blocks.len())
+        .collect();
+    widths[0x17a4] = 2;
+    widths[0x17d8] = 1;
+    for code in (0..0x20).chain(0x7f..0xa0) {
+        widths[code] = CONTROL;
+    }
+    widths
+}
+
+/// The emoji bits: `PRESENTATION`, `MODIFIER_BASE`, `EMOJI_STYLE` and
+/// `TEXT_STYLE`.
+fn emoji_bits(properties: &mut [u16], emoji: &str, props: &str, variations: &str) -> Result<()> {
+    let mut presentation = vec![false; CODE_POINTS];
+    for (range, fields) in entries(emoji) {
+        match fields[0] {
+            "Emoji_Presentation" => presentation[range].fill(true),
+            "Emoji_Modifier_Base" => properties[range]
+                .iter_mut()
+                .for_each(|p| *p |= MODIFIER_BASE),
+            _ => {}
+        }
+    }
+    let mut shown = presentation.clone();
+    // unicode-width's later special cases take emoji modifiers and regional
+    // indicators out of its emoji presentation class.
+    for (range, fields) in entries(emoji).chain(entries(props)) {
+        if matches!(fields[0], "Emoji_Modifier" | "Regional_Indicator") {
+            shown[range].fill(false);
+        }
+    }
+    for (p, shown) in properties.iter_mut().zip(shown) {
+        if shown {
+            *p |= PRESENTATION;
+        }
+    }
+    for line in variations.lines() {
+        let data = line.split('#').next().unwrap_or("");
+        let mut fields = data.split(';').map(str::trim);
+        let (Some(sequence), Some(style)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let (bit, selector) = match style {
+            "emoji style" => (EMOJI_STYLE, "FE0F"),
+            "text style" => (TEXT_STYLE, "FE0E"),
+            _ => continue,
+        };
+        let mut codes = sequence.split_whitespace();
+        let (Some(first), Some(second)) = (codes.next(), codes.next()) else {
+            return Err(format!("emoji-variation-sequences: {line:?}").into());
+        };
+        if second != selector {
+            return Err(format!("emoji-variation-sequences: {line:?}").into());
+        }
+        let code = usize::from_str_radix(first, 16)?;
+        // A text style that changes a width: of an emoji shown wide by
+        // default, but not an ideograph's.
+        if bit == TEXT_STYLE && (!presentation[code] || (0x1f200..0x1f300).contains(&code)) {
+            continue;
+        }
+        properties[code] |= bit;
+    }
+    Ok(())
+}
+
+/// Whether each code point is of one of the General_Categories `of` (Mn,
+/// Mc and Me: a combining mark), by UnicodeData.txt.
+fn categories(data: &str, of: &[&str]) -> Result<Vec<bool>> {
+    let mut marks = vec![false; CODE_POINTS];
+    let mut first = None;
+    for line in data.lines() {
+        let mut fields = line.split(';');
+        let (Some(code), Some(name), Some(category)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return Err(format!("UnicodeData: {line:?}").into());
+        };
+        let code = usize::from_str_radix(code, 16)?;
+        let mark = of.contains(&category);
+        // A range is given by its first and last code points.
+        let from = match name.ends_with(", Last>") {
+            true => first
+                .take()
+                .ok_or(format!("UnicodeData: {line:?} begins no range"))?,
+            false => code,
+        };
+        if name.ends_with(", First>") {
+            first = Some(code);
+        }
+        marks[from..=code].fill(mark);
+    }
+    Ok(marks)
+}
+
+/// The two-character canonical decompositions (UnicodeData.txt's field 5)
+/// whose second is one of `marks`, as (composed, first, second), in the
+/// order of (first, second).
+fn compositions(data: &str, marks: &[usize]) -> Result<Vec<(usize, usize, usize)>> {
+    let mut pairs = Vec::new();
+    for line in data.lines() {
+        let fields: Vec<&str> = line.split(';').collect();
+        let (Some(code), Some(mapping)) = (fields.first(), fields.get(5)) else {
+            continue;
+        };
+        if mapping.starts_with('<') {
+            continue;
+        }
+        let parts: Vec<&str> = mapping.split_whitespace().collect();
+        if let [first, second] = parts[..] {
+            let second = usize::from_str_radix(second, 16)?;
+            if marks.contains(&second) {
+                let whole = usize::from_str_radix(code, 16)?;
+                pairs.push((whole, usize::from_str_radix(first, 16)?, second));
+            }
+        }
+    }
+    pairs.sort_unstable_by_key(|&(_, first, second)| (first, second));
+    Ok(pairs)
+}
+
+/// Whether each code point is a spacing mark (General_Category Mc), and
+/// whether of Canonical_Combining_Class 0, by UnicodeData.txt, where no
+/// Mc is given by a range.
+fn spacing_marks(data: &str) -> Result<(Vec<bool>, Vec<bool>)> {
+    let mut spacing = vec![false; CODE_POINTS];
+    let mut classless = vec![false; CODE_POINTS];
+    for line in data.lines() {
+        let fields: Vec<&str> = line.split(';').collect();
+        if let [code, _, "Mc", ccc, ..] = fields[..] {
+            let code = usize::from_str_radix(code, 16)?;
+            spacing[code] = true;
+            classless[code] = ccc == "0";
+        }
+    }
+    Ok((spacing, classless))
+}
+
+/// The two-stage table in the block size that makes it smallest.
+fn tables(properties: &[u16], version: &str) -> Result<String> {
+    let mut sizes = Vec::new();
+    for shift in 4..=10 {
+        let size = 1usize << shift;
+        let mut seen: HashMap<&[u16], u16> = HashMap::new();
+        let mut blocks: Vec<u16> = Vec::new();
+        let mut index = Vec::new();
+        for block in pieces(properties, size) {
+            let id = match seen.get(block) {
+                Some(&id) => id,
+                None => {
+                    // The index holds a block's number in 16 bits: more
+                    // distinct blocks than that is an error, not a table.
+                    let id = u16::try_from(seen.len())
+                        .map_err(|_| format!("blocks of {size}: more than 65,536 distinct"))?;
+                    seen.insert(block, id);
+                    blocks.extend_from_slice(block);
+                    id
+                }
+            };
+            index.push(id);
+        }
+        sizes.push((shift, index, blocks));
+    }
+    let (shift, index, blocks) = sizes
+        .into_iter()
+        .min_by_key(|(_, index, blocks)| (index.len() + blocks.len()) * 2)
         .ok_or("no block size")?;
     let (major, minor, update) = {
         let mut parts = version.split('.').map(str::parse::<u8>);
@@ -190,18 +566,23 @@ fn tables(properties: &[u8], version: &str) -> Result<String> {
     let mut out = String::new();
     writeln!(
         out,
-        "//! Grapheme segmentation properties, generated by fux-vt/gen from the\n\
-         //! Unicode Character Database {version}. Do not edit: regenerate.\n\
+        "//! Grapheme segmentation and width properties, generated by fux-vt/gen\n\
+         //! from the Unicode Character Database {version}. Do not edit: regenerate.\n\
          //!\n\
-         //! One byte a code point: bits 0-3 Grapheme_Cluster_Break (numbered as\n\
-         //! `Break` in unicode.rs), bit 4 Extended_Pictographic, bits 5-6\n\
-         //! Indic_Conjunct_Break (0 None, 1 Consonant, 2 Extend, 3 Linker).\n\
+         //! Sixteen bits a code point: bits 0-3 Grapheme_Cluster_Break (numbered\n\
+         //! as `Break` in unicode.rs), bit 4 Extended_Pictographic, bits 5-6\n\
+         //! Indic_Conjunct_Break (0 None, 1 Consonant, 2 Extend, 3 Linker),\n\
+         //! bits 7-8 the columns it takes alone (3: a control), bit 9 emoji\n\
+         //! presentation, bits 10 and 11 an emoji and a text presentation\n\
+         //! sequence starting with it, bit 12 Emoji_Modifier_Base, bit 13 a\n\
+         //! combining mark that is Default_Ignorable, bit 14 a character the\n\
+         //! cluster width rule looks at, bit 15 a spacing mark (Mc).\n\
          //! `BLOCK` holds the block each run of `1 << SHIFT` code points uses;\n\
          //! `PROPERTIES` holds the distinct blocks.\n"
     )?;
     writeln!(
         out,
-        "/// The Unicode version grapheme clusters are segmented by."
+        "/// The Unicode version grapheme clusters are segmented and measured by."
     )?;
     writeln!(
         out,
@@ -209,7 +590,7 @@ fn tables(properties: &[u8], version: &str) -> Result<String> {
     )?;
     writeln!(out, "pub(super) const SHIFT: u32 = {shift};")?;
     write_array(&mut out, "BLOCK", "u16", &index)?;
-    write_array(&mut out, "PROPERTIES", "u8", &blocks)?;
+    write_array(&mut out, "PROPERTIES", "u16", &blocks)?;
     Ok(out)
 }
 
@@ -251,14 +632,56 @@ fn pieces<T>(items: &[T], size: usize) -> impl Iterator<Item = &[T]> {
 
 /// The conformance cases without their comments: one a line, `÷` a
 /// boundary and `×` none, between hexadecimal code points.
-fn conformance(text: &str, version: &str) -> String {
-    let mut out = format!("# GraphemeBreakTest-{version}.txt, cases only (fux-vt/gen)\n");
+fn cases(name: &str, text: &str, version: &str) -> String {
+    let stem = name.trim_end_matches(".txt");
+    let mut out = format!("# {stem}-{version}.txt, cases only (fux-vt/gen)\n");
     for line in text.lines() {
         let data = line.split('#').next().unwrap_or("").trim();
         if !data.is_empty() {
-            out.push_str(data);
+            // Runs of spaces (emoji-test.txt aligns its columns) as one.
+            out.push_str(&data.split_whitespace().collect::<Vec<_>>().join(" "));
             out.push('\n');
         }
     }
     out
+}
+
+/// NormalizationTest.txt cut to what fux-vt's test reads: of each line,
+/// the distinct forms of its two sets of canonical equivalents, c1 to c3
+/// (the source, its NFC and its NFD) and c4 and c5 (its NFKC and NFKD),
+/// each set's forms `;` apart and the sets `|` apart (the second left out
+/// when it holds the first's forms), the code points in hex. The file's
+/// part headers and comments are left out.
+fn normalization_forms(text: &str, version: &str) -> Result<String> {
+    let mut out = format!(
+        "# NormalizationTest-{version}.txt, each line's distinct forms, c1 to c3 | c4 and c5 (fux-vt/gen)\n"
+    );
+    for line in text.lines() {
+        let data = line.split('#').next().unwrap_or("").trim();
+        if data.is_empty() || data.starts_with('@') {
+            continue;
+        }
+        let columns: Vec<&str> = data.split(';').map(str::trim).collect();
+        let (Some(canonical), Some(compatible)) = (columns.get(..3), columns.get(3..5)) else {
+            return Err(format!("NormalizationTest: {line:?}").into());
+        };
+        let distinct = |forms: &[&str]| {
+            let mut kept: Vec<&str> = Vec::new();
+            for form in forms {
+                if !kept.contains(form) {
+                    kept.push(form);
+                }
+            }
+            kept.join(";")
+        };
+        let (canonical, compatible) = (distinct(canonical), distinct(compatible));
+        out.push_str(&canonical);
+        // Mostly the same forms: then written once.
+        if compatible != canonical {
+            out.push('|');
+            out.push_str(&compatible);
+        }
+        out.push('\n');
+    }
+    Ok(out)
 }

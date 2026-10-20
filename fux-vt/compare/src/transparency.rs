@@ -104,6 +104,13 @@ pub const SHOWN: Can = Can {
     title: false,
     reports: false,
     history: false,
+    // The device's state is the pane's, which fux keeps for it; the
+    // client's terminal shows none of it but the cursor's shape.
+    cursor_shape: false,
+    tab_stops: false,
+    renditions: false,
+    protection: false,
+    last_wrapped: true,
 };
 
 /// The most the server reads from a pane at once (its read buffer).
@@ -400,6 +407,8 @@ impl Through {
 /// shows it too), so that no paint can make the two sides agree. Only the
 /// differences `covers` takes are expected; any other still fails.
 pub struct Known {
+    /// Its name, which `lists` keys it by.
+    pub name: &'static str,
     pub recordings: Recordings,
     pub engines: &'static [&'static str],
     pub why: &'static str,
@@ -427,6 +436,7 @@ impl Recordings {
 /// The differences recorded.
 pub const KNOWN: &[Known] = &[
     Known {
+        name: "blank-foreground",
         recordings: Recordings::Every,
         engines: &["ghostty", "alacritty"],
         why: "a cell erased while a foreground is set (ECH, EL, ED, ICH, DCH, IL, DL, a \
@@ -441,6 +451,7 @@ pub const KNOWN: &[Known] = &[
         covers: blank_foreground,
     },
     Known {
+        name: "delta-wrap-marker",
         recordings: Recordings::Only(&["delta-diff"]),
         engines: &["alacritty", "avt", "wezterm"],
         why: "delta draws its wrap marker in the last column, then sends EL 0 with the wrap \
@@ -450,6 +461,7 @@ pub const KNOWN: &[Known] = &[
         covers: erased_at_the_last_column,
     },
     Known {
+        name: "prompt-marks",
         recordings: Recordings::Every,
         engines: &["ghostty"],
         why: "a shell's prompt marks (OSC 133: fish sends them) mark its rows in the pane, \
@@ -500,20 +512,28 @@ fn erased_at_the_last_column(d: &Diff, direct: &Snapshot, through: &Snapshot) ->
     })
 }
 
-/// The recorded difference that covers every one of `differences`, if one
-/// does.
+/// The recorded differences that cover `differences`, if each of them is
+/// covered by one (two recorded differences can meet at one point); none
+/// if any is covered by none.
 fn known(
     recording: &str,
     engine: &str,
     differences: &[Diff],
     direct: &Snapshot,
     through: &Snapshot,
-) -> Option<&'static Known> {
-    KNOWN.iter().find(|k| {
-        k.recordings.contains(recording)
-            && k.engines.contains(&engine)
-            && differences.iter().all(|d| (k.covers)(d, direct, through))
-    })
+) -> Option<Vec<&'static Known>> {
+    let mut used: Vec<&'static Known> = Vec::new();
+    for d in differences {
+        let k = KNOWN.iter().find(|k| {
+            k.recordings.contains(recording)
+                && k.engines.contains(&engine)
+                && (k.covers)(d, direct, through)
+        })?;
+        if !used.iter().any(|u| u.name == k.name) {
+            used.push(k);
+        }
+    }
+    Some(used)
 }
 
 /// A point where the two sides differ.
@@ -540,8 +560,8 @@ struct Outcome {
     step_ends_same: usize,
     /// The first point that differs otherwise than recorded.
     first: Option<First>,
-    /// The recorded difference seen, if one was.
-    known: Option<&'static Known>,
+    /// The recorded differences seen.
+    known: Vec<&'static Known>,
     paints: usize,
     painted_bytes: usize,
 }
@@ -569,7 +589,7 @@ fn through_fux(
         step_ends: 0,
         step_ends_same: 0,
         first: None,
-        known: None,
+        known: Vec::new(),
         paints: 0,
         painted_bytes: 0,
     };
@@ -623,9 +643,13 @@ fn through_fux(
             if differences.is_empty() {
                 continue;
             }
-            if let Some(k) = known(&recording.name, kind.name, &differences, &d, &t) {
+            if let Some(used) = known(&recording.name, kind.name, &differences, &d, &t) {
                 outcome.recorded = outcome.recorded.saturating_add(1);
-                outcome.known = Some(k);
+                for k in used {
+                    if !outcome.known.iter().any(|u| u.name == k.name) {
+                        outcome.known.push(k);
+                    }
+                }
                 continue;
             }
             outcome.differing = outcome.differing.saturating_add(1);
@@ -751,7 +775,9 @@ fn chosen(options: &Options) -> Result<Vec<Recording>, String> {
         rows,
         cols,
         steps,
+        replies: Vec::new(),
         resizes: Vec::new(),
+        chunk: None,
     }])
 }
 
@@ -815,6 +841,8 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
     let started = Instant::now();
     let mut ok = true;
     let mut results = Vec::new();
+    // The recorded differences seen, by name.
+    let mut fired = std::collections::BTreeSet::new();
     for kind in &kinds {
         println!(
             "transparency: each recording directly and through fux, read by {}",
@@ -836,16 +864,23 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
                 outcome.painted_bytes
             );
             let mut first_json = serde_json::Value::Null;
-            match (&outcome.first, outcome.known) {
-                (None, None) => {
+            fired.extend(outcome.known.iter().map(|k| k.name));
+            let whys = outcome
+                .known
+                .iter()
+                .map(|k| k.why)
+                .collect::<Vec<_>>()
+                .join(" ");
+            match (&outcome.first, outcome.known.is_empty()) {
+                (None, true) => {
                     same = same.saturating_add(1);
                     println!("ok       {label}");
                 }
-                (None, Some(known)) => {
+                (None, false) => {
                     recorded = recorded.saturating_add(1);
                     println!(
-                        "differs  {label}; {} differ as recorded: {}",
-                        outcome.recorded, known.why
+                        "differs  {label}; {} differ as recorded: {whys}",
+                        outcome.recorded
                     );
                 }
                 (Some(first), _) => {
@@ -878,8 +913,8 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
                 "points_differing": outcome.differing,
                 "step_ends": outcome.step_ends,
                 "step_ends_identical": outcome.step_ends_same,
-                "identical": outcome.first.is_none() && outcome.known.is_none(),
-                "recorded": outcome.known.map(|k| k.why),
+                "identical": outcome.first.is_none() && outcome.known.is_empty(),
+                "recorded": outcome.known.iter().map(|k| k.name).collect::<Vec<_>>(),
                 "paints": outcome.paints,
                 "painted_bytes": outcome.painted_bytes,
                 "first_difference": first_json,
@@ -894,6 +929,19 @@ pub fn run(argv: &[String]) -> Result<bool, String> {
                 .saturating_sub(same)
                 .saturating_sub(recorded),
         );
+    }
+    // A recorded difference whose engines and recordings ran, and that
+    // never showed, no longer occurs.
+    for k in KNOWN {
+        let ran = kinds.iter().any(|kind| k.engines.contains(&kind.name))
+            && recordings.iter().any(|r| k.recordings.contains(&r.name));
+        if ran && !fired.contains(k.name) {
+            ok = false;
+            println!(
+                "STALE    the recorded difference {} showed nowhere: remove it",
+                k.name
+            );
+        }
     }
     let seconds = started.elapsed().as_secs_f64();
     println!("({seconds:.1}s)");
@@ -1185,7 +1233,7 @@ impl Client {
     /// replies to the client.
     fn take(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.terminal.process(bytes)?;
-        let replies = self.terminal.replies();
+        let replies = self.terminal.replies()?;
         if let Some(new) = replies.get(self.answered..)
             && !new.is_empty()
         {
@@ -1752,6 +1800,18 @@ mod tests {
         assert!(super::known("nvim", "ghostty", &[fg(1)], &a, &b).is_some());
         assert!(super::known("nvim", "libvterm", &[fg(1)], &a, &b).is_none());
         assert!(super::known("nvim", "ghostty", &[fg(1), fg(0)], &a, &b).is_none());
+        // Two recorded differences at one point: each covers its own (at
+        // the parent one entry had to cover both, and the point failed).
+        let prompt = Diff {
+            key: "row 0 starts a prompt".into(),
+            field: Field::Prompt,
+            styled_cell: None,
+            fux_blank: false,
+            fux: "true".into(),
+            other: "false".into(),
+        };
+        let both = super::known("fish", "ghostty", &[fg(1), prompt], &a, &b);
+        assert_eq!(both.map(|k| k.len()), Some(2));
         assert!(super::erased_at_the_last_column(&fg(2), &a, &b));
         assert!(!super::erased_at_the_last_column(&fg(1), &a, &b));
         Ok(())
@@ -1792,7 +1852,9 @@ mod tests {
             rows: 3,
             cols: 10,
             steps: vec![(String::new(), output.to_vec())],
+            replies: Vec::new(),
             resizes: Vec::new(),
+            chunk: None,
         };
         let outcome = super::through_fux(ghostty()?, &recording, Some(3))?;
         assert!(outcome.points > 10);

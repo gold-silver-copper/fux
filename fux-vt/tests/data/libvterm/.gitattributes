@@ -1,0 +1,3 @@
+# libvterm's tests, copied unchanged: their trailing blanks are
+# expectations (an empty row), not text to tidy.
+*.test -whitespace

@@ -255,42 +255,69 @@ fn marks_observe_cursor_modes_resize_and_invalid_marks_without_consumption() -> 
 
 /// A row erased whole no longer goes on the line above: bash, resized,
 /// erases the row its prompt wrapped onto and draws the prompt there again.
+/// The row above keeps its soft wrap, as xterm keeps it (`ClearRight`,
+/// `ScrnClearLines` clear only the rows they erase), and its line ends
+/// with it (`Row::continues`).
 #[test]
 fn a_row_erased_whole_ends_the_line_above() -> Result {
     let mut p = Parser::new(Size::new(3, 10)?, 0)?;
+    let continues = |p: &Parser, y: u16| p.screen().window().row(y).is_some_and(|r| r.continues());
     p.process(b"bench:~/quill$ ")?;
-    assert!(p.screen().row_wrapped(0));
+    assert!(p.screen().row_wrapped(0) && continues(&p, 0));
     p.process(b"\r\x1b[K\rbench:~/quill$ ")?;
-    assert!(!p.screen().row_wrapped(0));
-    assert!(p.screen().row_wrapped(1));
+    assert!(p.screen().row_wrapped(0) && !continues(&p, 0));
+    assert!(continues(&p, 1));
     // An erase that leaves the row's start leaves the line whole.
     p.process(b"\x1b[3;3H\x1b[K")?;
-    assert!(p.screen().row_wrapped(1));
+    assert!(continues(&p, 1));
+    // A glyph wrapping off the row again goes on in the next.
+    p.process(b"\x1b[1;10Hxy")?;
+    assert!(continues(&p, 0));
     Ok(())
 }
 
 /// Above the top row is history's newest: a line that went on from there
 /// ends once the top row is erased whole (a screen cleared, as `koh
 /// connect` and bash do after a resize), and the next prompt there is a
-/// line of its own.
+/// line of its own; the row keeps its soft wrap, as xterm's scrollback
+/// keeps it.
 #[test]
 fn a_top_row_erased_whole_ends_the_line_in_history() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 1000)?;
     p.process(b"$ echo 0123456789abcde")?;
-    assert!(above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    assert!(
+        above(&p, 1)?
+            .row(0)
+            .is_some_and(|r| r.wrapped() && r.continues())
+    );
     p.process(b"\x1b[H\x1b[2J$ ")?;
-    assert!(!above(&p, 1)?.row(0).is_some_and(|r| r.wrapped()));
+    assert!(
+        above(&p, 1)?
+            .row(0)
+            .is_some_and(|r| r.wrapped() && !r.continues())
+    );
     Ok(())
 }
 
+/// A rejected resize changes nothing, synchronized output included (the
+/// API's "failing size changes leave the old screen intact"); one that is
+/// taken, or to the same size, ends it, as in Ghostty (threats.md B37).
 #[test]
-fn height_only_resize_clears_live_wrap_metadata() -> Result {
-    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
-    p.process(b"abcdef")?;
-    assert!(p.screen().row_wrapped(0));
-    p.resize(Size::new(4, 5)?)?;
-    assert!(!p.screen().row_wrapped(0));
-    assert_eq!(lines(&p), ["abcde", "f", "", ""]);
+fn a_rejected_resize_leaves_synchronized_output_on() -> Result {
+    let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
+    p.process(b"\x1b[?2026h")?;
+    let mark = p.screen().mark();
+    assert_eq!(
+        p.resize(Size::new(u16::MAX, u16::MAX)?),
+        Err(Error::Capacity)
+    );
+    assert!(p.screen().mode(Mode::SynchronizedOutput), "rejected");
+    assert!(!p.screen().changed_since(mark));
+    p.resize(Size::new(3, 5)?)?;
+    assert!(!p.screen().mode(Mode::SynchronizedOutput), "the same size");
+    p.process(b"\x1b[?2026h")?;
+    p.resize(Size::new(4, 6)?)?;
+    assert!(!p.screen().mode(Mode::SynchronizedOutput), "taken");
     Ok(())
 }
 
@@ -473,7 +500,8 @@ fn ignored_sequences_cancel_and_recover_without_payload_leakage() -> Result {
     }
     let mut p = Parser::new(Size::new(2, 8)?, 0)?;
     p.process(b"\x1b]unfinished\x18A\x1b[12\x1aB\x1b[999999999999999999C!")?;
-    assert_eq!(lines(&p), ["AB     !", ""]);
+    // CAN shows nothing, SUB its error character (DEC STD 070, p. 5-129).
+    assert_eq!(lines(&p), ["A\u{2426}B    !", ""]);
     p.process(b"\x1b[1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30;31;32;33H\rZ")?;
     assert_eq!(cell(&p, 0, 0)?.contents(), "Z");
     Ok(())
@@ -641,5 +669,56 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
         (5, 1),
         "no region: a line feed"
     );
+    Ok(())
+}
+
+/// Without reflow, a resize that keeps the width keeps the screen's rows'
+/// soft wraps, as it keeps history's: the rows are as they were, and a copy
+/// joins them still (`Row::wrapped`'s contract). One that changes the width
+/// ends them, as a cut or padded row no longer continues on the next.
+#[test]
+fn a_resize_at_the_same_width_keeps_the_soft_wraps() -> Result {
+    let wrapped = |p: &Parser| p.screen().rows().map(|r| r.wrapped()).collect::<Vec<_>>();
+    let mut p = Parser::new(Size::new(3, 5)?, 0)?;
+    p.process(b"abcdefg")?;
+    assert_eq!(wrapped(&p), [true, false, false]);
+    p.resize(Size::new(4, 5)?)?;
+    assert_eq!(wrapped(&p), [true, false, false, false]);
+    p.resize(Size::new(2, 5)?)?;
+    assert_eq!(wrapped(&p), [true, false]);
+    p.resize(Size::new(2, 7)?)?;
+    assert_eq!(wrapped(&p), [false, false]);
+    Ok(())
+}
+
+/// A row scrolled down to the screen's last row keeps its soft wrap, as
+/// xterm 411 keeps it, with alacritty and WezTerm: scrolled up again, it
+/// is still soft-wrapped (`fux-vt-compare replay --engines all --size 5x1
+/// --history 0 'll' '\e[4T' '\e[2S'`: row 2). A report that xterm ended
+/// it read xterm's printout, whose last row ends with no line feed, as
+/// unwrapped (agent A, HAR-47).
+#[test]
+fn a_row_scrolled_down_to_the_last_keeps_its_soft_wrap() -> Result {
+    let mut p = Parser::new(Size::new(5, 1)?, 0)?;
+    p.process(b"ll\x1b[4T")?;
+    assert!(p.screen().row_wrapped(4));
+    p.process(b"\x1b[2S")?;
+    let wrapped: Vec<bool> = (0..5).map(|y| p.screen().row_wrapped(y)).collect();
+    assert_eq!(wrapped, [false, false, true, false, false]);
+    Ok(())
+}
+
+/// Showing the alternate screen again after mode 1047 left it keeps the
+/// wrap pending on the primary screen: the clear 1047 put off to then was
+/// xterm's on leaving, which ended only the wrap pending at that time (all
+/// eight engines; `replay --engines all --size 1x4 '\e[?47h' 'ld' '@#'
+/// '89' ' ' '\e[?1047l' ' ' '\e[?47h' ' '`).
+#[test]
+fn showing_the_alternate_screen_again_keeps_the_wrap_pending() -> Result {
+    let mut p = Parser::new(Size::new(1, 4)?, 0)?;
+    p.process(b"\x1b[?47hld@#89 \x1b[?1047l \x1b[?47h")?;
+    assert!(p.screen().pending_wrap());
+    p.process(b" ")?;
+    assert_eq!(p.screen().cursor_position(), (0, 1));
     Ok(())
 }

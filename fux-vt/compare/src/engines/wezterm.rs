@@ -1,7 +1,6 @@
 //! WezTerm's terminal model, wezterm-term, read into a snapshot.
 //!
-//! Tested at wezterm commit `cab25161054c` (the revision `Cargo.lock`
-//! pins; `Cargo.toml` names no `rev`).
+//! Tested at wezterm commit `cab25161054c`, the `rev` Cargo.toml pins.
 //!
 //! How it is driven: `Terminal::new` with a configuration of its own
 //! (100000 rows of scrollback whatever fux-vt keeps, the kitty keyboard
@@ -300,7 +299,7 @@ pub const KIND: Kind = Kind {
         in_band_resize: false,
         link_group: false,
         prompt: false,
-        ..Can::ALL
+        ..Can::NO_DEVICE
     },
     blanks: Blanks {
         fg: false,
@@ -360,9 +359,9 @@ impl Wezterm {
         })
     }
 
-    /// Every reply so far: replies go through a writer thread, so a paste
-    /// is sent after them and waited for.
-    fn replies(&mut self) -> Result<Vec<String>, String> {
+    /// Every reply so far, as it was written: replies go through a writer
+    /// thread, so a paste is sent after them and waited for (and taken out).
+    fn heard(&mut self) -> Result<Vec<u8>, String> {
         self.terminal
             .send_paste(SYNC)
             .map_err(|e| format!("wezterm: sync: {e}"))?;
@@ -380,12 +379,12 @@ impl Wezterm {
                 |h| h.syncs < want,
             )
             .unwrap_or_else(PoisonError::into_inner);
-        let reports = snapshot::reports(&heard.bytes);
+        let bytes = heard.bytes.clone();
         drop(heard);
         if wait.timed_out() {
             return Err("wezterm: replies did not arrive".into());
         }
-        Ok(reports)
+        Ok(bytes)
     }
 }
 
@@ -394,6 +393,13 @@ fn u16_of(n: usize, what: &str) -> Result<u16, String> {
 }
 
 impl Engine for Wezterm {
+    fn replies(&mut self) -> Result<Vec<u8>, String> {
+        if let Some(why) = &self.broken {
+            return Err(why.clone());
+        }
+        self.heard()
+    }
+
     fn history_len(&mut self) -> Option<usize> {
         Some(self.terminal.screen().phys_row(0))
     }
@@ -410,7 +416,7 @@ impl Engine for Wezterm {
         if let Some(why) = &self.broken {
             return Err(why.clone());
         }
-        let reports = self.replies()?;
+        let reports = snapshot::reports(&self.heard()?);
         let t = &self.terminal;
         let s = t.screen();
         let (rows, cols) = (s.physical_rows, s.physical_cols);
@@ -468,6 +474,7 @@ impl Engine for Wezterm {
             reports,
             screen,
             history,
+            device: Default::default(),
         })
     }
 }

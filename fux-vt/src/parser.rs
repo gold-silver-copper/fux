@@ -174,6 +174,37 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     Some((char::from_u32(code)?, length))
 }
 
+/// The characters of the valid UTF-8 `bytes` begins with, decoded one by
+/// one, and how many bytes they took: decoding stops at the first byte
+/// that is not valid or complete UTF-8, or not past ASCII.
+pub(crate) struct Chars<'a> {
+    bytes: &'a [u8],
+    taken: usize,
+}
+
+impl<'a> Chars<'a> {
+    /// How many bytes the characters decoded so far took.
+    #[inline]
+    pub(crate) fn taken(&self) -> usize {
+        self.taken
+    }
+    /// The text of bytes `range`, decoded already.
+    pub(crate) fn text(&self, range: std::ops::Range<usize>) -> &'a str {
+        let bytes = self.bytes.get(range).unwrap_or_default();
+        str::from_utf8(bytes).unwrap_or_default()
+    }
+}
+
+impl Iterator for Chars<'_> {
+    type Item = char;
+    #[inline]
+    fn next(&mut self) -> Option<char> {
+        let (c, length) = self.bytes.get(self.taken..).and_then(decode)?;
+        self.taken = self.taken.saturating_add(length);
+        Some(c)
+    }
+}
+
 /// Whether an OSC's payload keeps `byte`, one that does not end it: a
 /// command string holds 00/08 to 00/13 and 02/00 to 07/14 (ECMA-48 8.3.89,
 /// 5.6), and here the bytes of UTF-8 too; the other controls are left out,
@@ -207,11 +238,9 @@ const fn lead(first: u8) -> Option<(usize, u8, u8)> {
 /// it, setting its top bit where the byte's own is clear; one from 0x7f up
 /// has its top bit set once 1 is added to it, or before. A borrow or carry
 /// runs only into the bytes after the one it came from, so the first byte
-/// flagged is the first that is not printable.
+/// flagged is the first that is not printable. Its one caller checks the
+/// first byte; without that, the count would be off, not a panic.
 fn printable(bytes: &[u8]) -> usize {
-    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
-    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
-    debug_assert!(bytes.first().is_some_and(|b| (0x20..=0x7e).contains(b)));
     if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
         return 1;
     }
@@ -242,18 +271,60 @@ fn printable(bytes: &[u8]) -> usize {
 /// its top bit clear; a borrow runs only into the bytes after it, so the
 /// first byte flagged is the first ESC.
 fn esc_in(bytes: &[u8]) -> Option<usize> {
-    const ONES: u64 = u64::from_le_bytes([0x01; 8]);
-    const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+    first_flagged(bytes, |x| zeros(x ^ ONES.wrapping_mul(0x1b)), |b| b == 0x1b)
+}
+
+/// Where the first ESC, CAN or SUB in `bytes` is, a word at a time as
+/// `esc_in` finds an ESC: where an ignored string may end.
+fn string_end(bytes: &[u8]) -> Option<usize> {
+    let flag = |x: u64| {
+        zeros(x ^ ONES.wrapping_mul(0x1b))
+            | zeros(x ^ ONES.wrapping_mul(0x18))
+            | zeros(x ^ ONES.wrapping_mul(0x1a))
+    };
+    first_flagged(bytes, flag, |b| matches!(b, 0x18 | 0x1a | 0x1b))
+}
+
+/// Where the first C0 control or DEL in `bytes` is, a word at a time: a
+/// byte below 0x20 borrows when 0x20 is taken from it (as in `printable`),
+/// and DEL is a zero byte once XORed with DEL.
+fn control_in(bytes: &[u8]) -> Option<usize> {
+    let flag = |x: u64| {
+        (x.wrapping_sub(ONES.wrapping_mul(0x20)) & !x & TOPS) | zeros(x ^ ONES.wrapping_mul(0x7f))
+    };
+    first_flagged(bytes, flag, |b| b < 0x20 || b == 0x7f)
+}
+
+/// Every byte of a word 0x01.
+const ONES: u64 = u64::from_le_bytes([0x01; 8]);
+/// Every byte's top bit.
+const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
+
+/// The top bit of each zero byte of `x`, and perhaps of bytes after one: a
+/// zero byte alone borrows when 1 is taken from it with its top bit clear,
+/// and a borrow runs only into the bytes after it.
+const fn zeros(x: u64) -> u64 {
+    x.wrapping_sub(ONES) & !x & TOPS
+}
+
+/// Where the first byte of `bytes` is that `flag` flags in its word (the
+/// top bit of the byte, exact for the first one flagged), eight bytes at a
+/// time, then the rest by `byte`.
+#[inline(always)]
+fn first_flagged(
+    bytes: &[u8],
+    flag: impl Fn(u64) -> u64,
+    byte: impl Fn(u8) -> bool,
+) -> Option<usize> {
     let (words, tail) = bytes.as_chunks::<8>();
     for (i, word) in words.iter().enumerate() {
-        let x = u64::from_le_bytes(*word) ^ ONES.wrapping_mul(0x1b);
-        let zero = x.wrapping_sub(ONES) & !x & TOPS;
-        if zero != 0 {
-            let first = usize::try_from(zero.trailing_zeros() / 8).ok()?;
+        let flagged = flag(u64::from_le_bytes(*word));
+        if flagged != 0 {
+            let first = usize::try_from(flagged.trailing_zeros() / 8).ok()?;
             return i.checked_mul(8)?.checked_add(first);
         }
     }
-    let at = tail.iter().position(|&b| b == 0x1b)?;
+    let at = tail.iter().position(|&b| byte(b))?;
     words.len().checked_mul(8)?.checked_add(at)
 }
 
@@ -338,22 +409,44 @@ enum Phase {
 }
 
 /// Where a frame drawn in synchronized output ends, read from the bytes
-/// a host holds after its BSU ([`Parser::process_until_frame`]) as the
+/// a host holds after its BSU ([`Parser::process_until_stop`]) as the
 /// parser will read them, nothing carried out. ESC begins a sequence
 /// anywhere, in a string too, so only what follows each ESC is read: as
 /// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
 /// parameters, controls within, CAN and SUB cancelling). Made by
 /// [`Parser::frame_scan`]; it goes on from where it stopped, so each
-/// sequence is read once however the frame comes split.
+/// byte is read at most twice however the frame comes split (a CSI's,
+/// searched for its final byte, then read: `csi`).
 #[derive(Clone, Debug)]
 pub struct FrameScan {
-    /// Where in the held bytes it goes on: past what it has read, or at a
-    /// sequence they end in the middle of.
+    /// Where in the held bytes it goes on: past what it has read.
     from: usize,
+    /// Where it is in a sequence the bytes read so far end in the middle
+    /// of, kept so that no byte is read twice (`threats.md` B19).
+    pending: Pending,
     params: Parameters,
     options: Options,
     /// Whether XTSAVE holds synchronized output set, for XTRESTORE.
     saved: bool,
+}
+
+/// Where a frame scan is in the sequence it reads: none, an escape
+/// sequence (`plain` while no intermediate came), or a CSI.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pending {
+    #[default]
+    Ground,
+    Escape {
+        /// No intermediate yet: `[` begins a CSI, `c` is RIS.
+        plain: bool,
+    },
+    Csi {
+        /// Where `Phase::next` is in its parameters.
+        phase: Phase,
+        /// Read to its final byte and not carried out, as
+        /// `State::CsiIgnore` is.
+        ignored: bool,
+    },
 }
 
 impl FrameScan {
@@ -363,30 +456,49 @@ impl FrameScan {
     /// Reads `held`, the frame's bytes so far, from where it stopped: how
     /// many of them go up to and through the sequence that ends
     /// synchronized output, as the parser carries it out (DECRST naming
-    /// it, XTRESTORE of it saved reset, DECSTR, RIS); `None` if none does.
+    /// it, XTRESTORE of it saved reset, DECSTR, DECSCL, RIS); `None` if none
+    /// does.
+    /// Each byte is read at most twice, however the frame comes split.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
-            let Some(esc) = held.get(self.from..).and_then(esc_in) else {
-                self.from = held.len();
-                return None;
-            };
-            let at = self.from.checked_add(esc)?;
-            // A sequence the bytes end in the middle of is read again.
-            let (len, ended) = self.sequence(held.get(at..)?).or_else(|| {
-                self.from = at;
-                None
-            })?;
-            self.from = at.checked_add(len)?;
-            if ended {
+            let rest = held.get(self.from..)?;
+            if self.resume() == Pending::Ground {
+                // Between sequences, to the next ESC at once.
+                let Some(esc) = esc_in(rest) else {
+                    work!(scanned, rest.len());
+                    self.from = held.len();
+                    return None;
+                };
+                work!(scanned, esc);
+                let at = self.from.checked_add(esc)?;
+                // A sequence is read at once, as far as the bytes go; where
+                // one they end in the middle of got to is kept (`pending`),
+                // so that the next call goes on from there.
+                if let Some((len, ended)) = self.sequence(held.get(at..)?) {
+                    work!(scanned, len);
+                    self.from = at.checked_add(len)?;
+                    if ended {
+                        return Some(self.from);
+                    }
+                } else {
+                    work!(scanned, held.len().saturating_sub(at));
+                    self.from = held.len();
+                }
+                continue;
+            }
+            let &byte = rest.first()?;
+            work!(scanned, 1);
+            self.from = self.from.checked_add(1)?;
+            if self.step(byte) {
                 return Some(self.from);
             }
         }
     }
 
     /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
-    /// does: how many bytes it takes (up to an ESC or past CAN or SUB that
-    /// cut it short), and whether it ends the frame; `None` if it goes on
-    /// past them.
+    /// does, each byte at most twice (`csi`): how many bytes it takes (up to an ESC or past
+    /// CAN or SUB that cut it short), and whether it ends the frame; `None`
+    /// if it goes on past them, where it got to kept in `pending`.
     fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
         let mut plain = true;
         for (i, &byte) in bytes.iter().enumerate().skip(1) {
@@ -400,23 +512,30 @@ impl FrameScan {
                 _ => {}
             }
         }
+        self.pending = Pending::Escape { plain };
         None
     }
 
     /// Reads the CSI whose parameters begin at `start` of `bytes`, as
     /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
-    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading: the
-    /// others are passed at their final byte at once.
+    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading, as
+    /// `Phase::next` reads them, a second time (`ends`): the others are
+    /// passed at their final byte at once. One the bytes end in the middle
+    /// of is read again too, for the next call to go on from where it got.
+    /// Each read is counted, so a byte at most twice (threats.md B19).
     fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
         let csi = bytes.get(start..)?;
-        let end = csi.iter().position(|b| !(0x20..0x40).contains(b))?;
+        let end = csi.iter().position(|b| !(0x20..0x40).contains(b));
         // Every final byte but `l`, `p`, `r` and `s`.
-        if matches!(
-            csi.get(end),
-            Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
-        ) {
+        if let Some(end) = end
+            && matches!(
+                csi.get(end),
+                Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
+            )
+        {
             return Some((start.checked_add(end)?.checked_add(1)?, false));
         }
+        work!(scanned, end.map_or(csi.len(), |end| end.saturating_add(1)));
         let (mut phase, mut ignored) = (Phase::Entry, false);
         self.params.clear();
         for (i, &byte) in bytes.iter().enumerate().skip(start) {
@@ -436,7 +555,58 @@ impl FrameScan {
                 }
             }
         }
+        self.pending = Pending::Csi { phase, ignored };
         None
+    }
+
+    /// Where the scan is in a sequence, kept from the bytes read before.
+    fn resume(&self) -> Pending {
+        self.pending
+    }
+
+    /// Reads `byte` of a sequence, as `Parser::byte` does: CAN and SUB
+    /// cancel it, ESC begins another; whether it ends synchronized output.
+    fn step(&mut self, byte: u8) -> bool {
+        let (next, ended) = match (self.pending, byte) {
+            (Pending::Ground, _) => (Pending::Ground, false),
+            (_, 0x18 | 0x1a) => (Pending::Ground, false),
+            (_, 0x1b) => (Pending::Escape { plain: true }, false),
+            (Pending::Escape { .. }, 0x20..=0x2f) => (Pending::Escape { plain: false }, false),
+            (Pending::Escape { plain: true }, b'[') => {
+                self.params.clear();
+                let csi = Pending::Csi {
+                    phase: Phase::Entry,
+                    ignored: false,
+                };
+                (csi, false)
+            }
+            (Pending::Escape { plain: true }, b'c') => (Pending::Ground, Self::RESET),
+            // A final byte, or a control string's introducer among them.
+            (Pending::Escape { .. }, 0x30..=0x7e) => (Pending::Ground, false),
+            (Pending::Escape { .. }, _) => (self.pending, false),
+            (Pending::Csi { ignored: true, .. }, 0x40..=0x7e) => (Pending::Ground, false),
+            (Pending::Csi { ignored: true, .. }, _) => (self.pending, false),
+            (Pending::Csi { phase, .. }, _) => match phase.next(byte, &mut self.params) {
+                Next::Phase(phase) => (
+                    Pending::Csi {
+                        phase,
+                        ignored: false,
+                    },
+                    false,
+                ),
+                Next::Ignore => (
+                    Pending::Csi {
+                        phase,
+                        ignored: true,
+                    },
+                    false,
+                ),
+                Next::Control => (self.pending, false),
+                Next::Final(read) => (Pending::Ground, self.ends(read.as_slice(), byte)),
+            },
+        };
+        self.pending = next;
+        ended
     }
 
     /// Whether the CSI just read, `intermediates` and `byte` its own,
@@ -444,7 +614,8 @@ impl FrameScan {
     /// (`CSI ? Pm l`) with it among its parameters, each a group of one as
     /// `set_modes` reads them; XTRESTORE (`CSI ? Pm r`) of it while XTSAVE
     /// (`CSI ? Pm s`) holds it reset; DECSTR (`CSI ! p`), which resets it
-    /// with the modes `Modes::SOFT_RESET` names.
+    /// with the modes `Modes::SOFT_RESET` names, and DECSCL (`CSI 61 " p`,
+    /// `CSI 62 " p`), which does a soft reset.
     fn ends(&mut self, intermediates: &[u8], byte: u8) -> bool {
         let ours = |n: &u16| Mode::of(*n, true, &self.options) == Some(Mode::SynchronizedOutput);
         let named = || self.params.groups().any(|g| matches!(g, [n] if ours(n)));
@@ -457,8 +628,29 @@ impl FrameScan {
                 false
             }
             (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
+            // DECSCL of a level fux-vt supports, which resets as DECSTR does.
+            (b"\"", b'p') => {
+                Self::RESET
+                    && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput)
+                    && matches!(self.params.first(0, 0), 61 | 62)
+            }
             _ => false,
         }
+    }
+}
+
+/// The frame scan's part of the invariant checker (threats.md section 6).
+#[cfg(feature = "checks")]
+impl FrameScan {
+    /// 5: where the scan goes on is within `held`, the frame's bytes it
+    /// was given.
+    pub fn check(&self, held: &[u8]) -> crate::Checked {
+        let mut report = crate::Checked::default();
+        let found = crate::check::ensure(self.from <= held.len(), || {
+            format!("the scan goes on at {} of {} bytes", self.from, held.len())
+        });
+        report.record("frame_scan.from", "", found);
+        report
     }
 }
 
@@ -592,14 +784,19 @@ closed! {
         RectangleChecksums,
         /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
         /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
-        /// DECSCUSR) and the margins (`r`, DECSTBM), as xterm answers: `DCS 1 $
-        /// r Pt ST`, `Pt` the sequence that sets it, such as `0;1;4:3m`.
-        /// Another request is answered as invalid, `DCS 0 $ r ST`, and a cursor
-        /// shape left to the terminal (DECSCUSR 0, the default) not at all. A
-        /// request's first bytes are kept to tell it, nothing more. Programs
-        /// learn from the pen what the terminal draws: neovim sets a curly
-        /// underline and asks, and draws its diagnostics curly only if `4:3`
-        /// comes back. Off, DECRQSS is ignored, as every other DCS.
+        /// DECSCUSR), the margins (`r`, DECSTBM; `s`, DECSLRM), protection
+        /// (`"q`, DECSCA), the conformance level (`"p`, DECSCL) and the
+        /// attribute change extent (`*x`, DECSACE), as xterm 411 answers:
+        /// `DCS 1 $ r Pt ST`, `Pt` the sequence that sets it, such as
+        /// `0;1;4:3m`. Another request, or one over 4 bytes, is answered as
+        /// invalid, `DCS 0 $ r ST`, and a cursor shape left to the terminal
+        /// (DECSCUSR 0, the default) not at all. A request's first bytes are
+        /// kept to tell it, nothing more. XTGETTCAP (`DCS + q Pt ST`) is
+        /// answered as an invalid request, `DCS 0 + r ST`: fux-vt names no
+        /// capability. Programs learn from the pen what the terminal draws:
+        /// neovim sets a curly underline and asks, and draws its diagnostics
+        /// curly only if `4:3` comes back. Off, both are ignored, as every
+        /// other DCS.
         SettingReports,
         /// Keep the colours a program sets and answer its queries of them, as
         /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
@@ -612,12 +809,18 @@ closed! {
         /// Decode sixel graphics (`DCS P1 ; P2 ; P3 q … ST`) into pictures,
         /// read with [`Screen::pictures`], for a host that draws them: each
         /// takes the cells it covers, which hold [`crate::PLACEHOLDER`], and
-        /// a screen's pictures hold at most [`crate::PICTURE_BYTES`] of
-        /// pixels. Off, sixel is ignored, as every other DCS: nothing is
+        /// the pictures hold at most [`crate::PICTURE_BYTES`] of pixels
+        /// together ([`Parser::set_picture_bytes`]). Off, sixel is ignored, as every other DCS: nothing is
         /// decoded or kept, the cells are what the program wrote around
         /// it, and neither DA1 nor XTSMGRAPHICS says the terminal has sixel.
         Pictures,
     }
+}
+
+/// Whether a host's cell, its width and height in pixels, is smaller than
+/// a sixel band's 2 by 6 (`threats.md` P5).
+fn cell_too_small(cell: (u16, u16)) -> bool {
+    cell.0 < 2 || cell.1 < 6
 }
 
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
@@ -684,18 +887,27 @@ impl FromIterator<Feature> for Options {
     }
 }
 
-/// What a sequence did to a frame drawn in synchronized output
-/// ([`Mode::SynchronizedOutput`]), for [`Parser::process_until_frame`] to
-/// stop after.
+/// Why [`Parser::process_until_stop`] stopped before the end of its bytes:
+/// a sequence began or ended a frame drawn in synchronized output
+/// ([`Mode::SynchronizedOutput`]), or the call spent its work budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Frame {
-    /// It set the mode (BSU, `CSI ? 2026 h`, or XTRESTORE of it saved
-    /// set), even while it was set: a frame begins.
+pub enum Stop {
+    /// It set the mode while it was reset (BSU, `CSI ? 2026 h`, or
+    /// XTRESTORE of it saved set): a frame begins. Set again while set, the
+    /// frame being drawn goes on, and no stop is made.
     Begun,
     /// It reset the mode while it was set: the frame ends. ESU (`CSI ?
     /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,
     /// DECSTR and RIS do. A resize ends it too, which the host makes.
     Ended,
+    /// The call did as much work as one call may (threats.md P24: half of
+    /// the 50 M weighted units a 4 KiB call may do, so that what crossed it
+    /// fits in the rest). Nothing is lost: the parser stopped between two
+    /// bytes, and goes on from the next byte when it is given it. A host
+    /// that reads many programs on one thread gives it later, after the
+    /// others had their turn; one that has nothing else to do may give it
+    /// at once.
+    Budget,
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
@@ -844,6 +1056,22 @@ pub struct Parser {
     params: Parameters,
     /// The picture sixel data is drawing, in `State::Sixel`.
     sixel: Option<Box<crate::sixel::Decoder>>,
+    /// The string being ignored (`State::IgnoreString`) is an XTGETTCAP
+    /// (`DCS + q Pt ST`) with [`Feature::SettingReports`]: read to its end
+    /// and nothing kept, as fux-vt names no capability, and answered then
+    /// as an invalid request.
+    termcap: bool,
+    /// The work `process_until_stop` spent since it last stopped at the
+    /// budget ([`Stop::Budget`]), over as many calls as that took: so a
+    /// host that cuts its reads small still stops at the budget.
+    spent: u64,
+    /// Where this thread's spending (`budget::spent`) reaches the budget,
+    /// in the call of `process_until_stop` under way; `u64::MAX` in one of
+    /// `process_with`, which does not stop.
+    end: u64,
+    /// How many times carrying out the input was refused room
+    /// ([`Parser::refused`]).
+    refused: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -875,12 +1103,107 @@ impl Parser {
             state: State::Ground,
             params: Parameters::default(),
             sixel: None,
+            termcap: false,
+            spent: 0,
+            end: u64::MAX,
+            refused: 0,
+        })
+    }
+    /// Checks every invariant of the parser and its screen that the state
+    /// alone shows (threats.md section 6): which checks ran, and the faults
+    /// found. The work counters do not see it.
+    #[cfg(feature = "checks")]
+    pub fn check(&self) -> crate::Checked {
+        crate::check::unseen(|| {
+            let mut report = crate::Checked::default();
+            report.record("parser.osc", "", self.check_osc());
+            report.record("parser.params", "", self.check_params());
+            report.record("parser.sixel", "", self.check_sixel());
+            report.record("parser.utf8", "", self.check_utf8());
+            report.record("parser.termcap", "", self.check_termcap());
+            report.wait("parser.refused", "B44: Parser::refused");
+            report.merge(self.screen.check());
+            report
+        })
+    }
+    /// 1: the OSC payload held is within its limit, one byte past it
+    /// inside an OSC string, in room for no more than that.
+    #[cfg(feature = "checks")]
+    fn check_osc(&self) -> Result<(), String> {
+        let inside = matches!(self.state, State::Osc { .. });
+        let most = self.osc_limit.saturating_add(usize::from(inside));
+        crate::check::ensure(self.osc.len() <= most, || {
+            format!("{} OSC bytes held, {most} at most", self.osc.len())
+        })?;
+        let room = OSC_PAYLOAD_LIMIT.saturating_add(1);
+        crate::check::ensure(self.osc.capacity() <= room, || {
+            format!(
+                "room for {} OSC bytes, {room} at most (B20)",
+                self.osc.capacity()
+            )
+        })
+    }
+    /// 2: one parameter at least, and no more than are kept.
+    #[cfg(feature = "checks")]
+    fn check_params(&self) -> Result<(), String> {
+        let len = self.params.len;
+        crate::check::ensure((1..=self.params.values.len()).contains(&len), || {
+            format!("{len} parameters")
+        })
+    }
+    /// 3: a decoder exactly while in sixel data, and its picture within
+    /// what one may be; 31: its pixels and the pictures kept within their
+    /// budget.
+    #[cfg(feature = "checks")]
+    fn check_sixel(&self) -> Result<(), String> {
+        let sixel = matches!(self.state, State::Sixel);
+        crate::check::ensure(sixel == self.sixel.is_some(), || {
+            format!("in sixel {sixel}, with a decoder {}", self.sixel.is_some())
+        })?;
+        let Some(decoder) = &self.sixel else {
+            return Ok(());
+        };
+        decoder.check()?;
+        self.screen.check_picture_bytes(decoder.bytes())
+    }
+    /// 3a: an XTGETTCAP is being answered only while its string is read
+    /// (`State::IgnoreString`), so that no other string's end answers it.
+    #[cfg(feature = "checks")]
+    fn check_termcap(&self) -> Result<(), String> {
+        let string = matches!(self.state, State::IgnoreString);
+        crate::check::ensure(!self.termcap || string, || {
+            format!("an XTGETTCAP answered in {:?}", self.state)
+        })
+    }
+    /// 4: a character's first bytes are fewer than its lead byte says.
+    #[cfg(feature = "checks")]
+    fn check_utf8(&self) -> Result<(), String> {
+        let State::Utf8(read) = self.state else {
+            return Ok(());
+        };
+        let [first, ..] = read.bytes;
+        let need = lead(first).map_or(0, |(need, _, _)| need);
+        crate::check::ensure(read.len >= 1 && usize::from(read.len) < need, || {
+            format!("{} bytes of a character of {need}", read.len)
         })
     }
     /// The screen, for a test to reach into.
     #[cfg(test)]
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
+    }
+    /// Sets the most bytes of pixels its pictures may hold together, on
+    /// either screen, the one being drawn and its growth included
+    /// ([`crate::PICTURE_BYTES`] to begin with), and lets pictures go to fit
+    /// it: those no longer shown first, then the oldest. A picture being
+    /// drawn that alone is past it lets go of what it drew.
+    pub fn set_picture_bytes(&mut self, bytes: usize) {
+        let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
+        if !self.screen.set_picture_bytes(bytes, drawing)
+            && let Some(decoder) = &mut self.sixel
+        {
+            decoder.clear();
+        }
     }
     /// The bytes of pixels its pictures hold, the one being drawn's too.
     #[cfg(test)]
@@ -909,7 +1232,7 @@ impl Parser {
         self.screen.record_prints(on);
     }
     /// What was printed since the last call, while recording: each run
-    /// of text that changed cells, though drawn over since.
+    /// of text printed, though it changed no cell or was drawn over since.
     pub fn take_prints(&mut self) -> crate::Prints {
         self.screen.take_prints()
     }
@@ -948,8 +1271,16 @@ impl Parser {
     /// [`Feature::Pictures`]. Pictures are kept with the feature, whether
     /// the host shows them or not; what it shows of them is its own
     /// ([`Screen::pictures`]).
+    ///
+    /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
+    /// placing a picture costs a bounded number of cells (`threats.md` P5).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
         graphics.sixel &= self.options.has(Feature::Pictures);
+        if let Some(cell) = graphics.cell
+            && cell_too_small(cell)
+        {
+            graphics.cell = Some((cell.0.max(2), cell.1.max(6)));
+        }
         self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with
@@ -977,6 +1308,12 @@ impl Parser {
     pub fn options(&self) -> Options {
         self.options
     }
+    /// How many times carrying out output was refused room: history, the
+    /// alternate screen, a grid made anew (threats.md 1.3). Each refusal
+    /// loses only what it was for; the rest of the output is read.
+    pub fn refused(&self) -> u64 {
+        self.refused
+    }
     /// Process output while deliberately discarding terminal query replies.
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.process_with_replies(bytes, |_| {})
@@ -989,98 +1326,362 @@ impl Parser {
     ) -> Result<(), Error> {
         self.process_with(bytes, &mut Replies(reply))
     }
-    /// Process output, delivering replies and (with [`Feature::Events`]) events.
+    /// Process output, delivering replies and (with [`Feature::Events`])
+    /// events. Every byte is read: `Err(Error::Capacity)` says room was
+    /// refused on the way ([`Parser::refused`]), which cost only what it
+    /// was for.
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         self.run::<false>(bytes, sink).map(|_| ())
     }
     /// Process output as [`Parser::process_with`] does, but stop right after
     /// a sequence that begins or ends a frame drawn in synchronized output
-    /// ([`Frame`]), and say how many bytes that took and which it did;
-    /// `None` if no sequence did, and every byte was processed. Found
-    /// exactly as the parser reads it: split across calls, or beside other
-    /// modes in one sequence. A host that holds a program's frames holds
-    /// the rest from a [`Frame::Begun`] on, unread, until
-    /// [`Parser::frame_scan`] finds its end; one that reads output as it
-    /// comes learns from a [`Frame::Ended`] that the frame is whole.
-    pub fn process_until_frame(
+    /// ([`Stop::Begun`], [`Stop::Ended`]), or at the byte where the call has
+    /// spent its work budget ([`Stop::Budget`]), and say how
+    /// many bytes that took and why it stopped; `None` if it did not, and
+    /// every byte was processed. A frame's start or end is found exactly
+    /// as the parser reads it: split across calls, or beside other modes in
+    /// one sequence. A host that holds a program's frames holds the rest
+    /// from a [`Stop::Begun`] on, unread, until [`Parser::frame_scan`]
+    /// finds its end; one that reads output as it comes learns from a
+    /// [`Stop::Ended`] that the frame is whole. After a [`Stop::Budget`],
+    /// the rest is given again, in a later call, and a later call is made
+    /// even if no byte is left, while [`Parser::has_work_left`]: a call may
+    /// stop part way through a DECRQCRA checksum, unanswered, or before a
+    /// screen-wide sequence it left whole, or REP's copies. The next call,
+    /// of any bytes or none, does what is left first, before reading on,
+    /// and stops again if that spends its budget, before taking a byte;
+    /// replies keep their order.
+    ///
+    /// The budget is half the 50 M weighted units one 4 KiB call may do
+    /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
+    /// rectangle or a column edit, a scroll, REP, a search of history. It
+    /// runs over calls, from one budget stop to the next, so it stops a
+    /// host that cuts its reads small as well. The call looks at it after
+    /// each sequence or string, after each line feed, and after a glyph
+    /// whose wrap scrolled inside left and right margins; a host stopped
+    /// this way has had at most that much work done since the last stop,
+    /// plus what the sequence, line feed or wrap that crossed it did, plus
+    /// the text and other C0 controls before it, which do a few units a
+    /// byte and at most one style sweep (decisions 820 and 831).
+    ///
+    /// [`Parser::process_with`] is this call given the rest again until
+    /// none is left: its work has no ceiling but the bytes it is given. As
+    /// there, a refusal of room is counted ([`Parser::refused`]) and the
+    /// rest read; `Err(Error::Capacity)` says one happened in a call that
+    /// read every byte.
+    pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Frame)>, Error> {
+    ) -> Result<Option<(usize, Stop)>, Error> {
         self.run::<true>(bytes, sink)
     }
-    /// A [`FrameScan`] for the frame [`Parser::process_until_frame`] just
-    /// stopped at the start of ([`Frame::Begun`]).
+    /// Whether the last call of [`Parser::process_until_stop`] stopped at
+    /// its budget with work of a sequence it took left to do, which the
+    /// next call does first: one is owed, of no bytes if none wait.
+    pub fn has_work_left(&self) -> bool {
+        self.screen.left_over()
+    }
+    /// A [`FrameScan`] for the frame [`Parser::process_until_stop`] just
+    /// stopped at the start of ([`Stop::Begun`]).
     pub fn frame_scan(&self) -> FrameScan {
         FrameScan {
             from: 0,
+            pending: Pending::Ground,
             params: Parameters::default(),
             options: self.options,
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),
         }
     }
-    /// Processes `bytes`, stopping after a frame begins or ends if
-    /// `UNTIL_FRAME`; how many bytes it took if it stopped, and which. A
-    /// constant, so that `process_with`, which does not stop, compiles
-    /// without the check for one.
-    fn run<const UNTIL_FRAME: bool>(
+    /// Processes `bytes`, stopping after a frame begins or ends, or once
+    /// [`crate::budget::LIMIT`] is spent since the last budget stop, if
+    /// `UNTIL_STOP`; how many
+    /// bytes it took if it stopped, and why. A constant, so that
+    /// `process_with`, which does not stop, compiles without the checks for
+    /// a stop.
+    fn run<const UNTIL_STOP: bool>(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Frame)>, Error> {
+    ) -> Result<Option<(usize, Stop)>, Error> {
+        // No bytes: only what the last call left, if anything, out of the
+        // way of the loop below.
         if bytes.is_empty() {
+            return self.run_left::<UNTIL_STOP>(sink);
+        }
+        self.screen.begin();
+        let (start, refused) = (crate::budget::spent(), self.refused);
+        let degrades = crate::degrades();
+        // Where this call stops at its budget. A call of `process_with` has
+        // none, as every call leaves it: `end` and `stop_at` u64::MAX, and
+        // nothing stopped.
+        if UNTIL_STOP {
+            self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
+            (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        }
+        // What the last call stopped at the budget left goes first: a
+        // screen-wide CSI it held back, carried out in this call's budget,
+        // or a REP's copies, which may stop this one too.
+        if self.screen.left_over() && self.resumed::<UNTIL_STOP>(sink) {
+            (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+            self.spend_since(start, Stop::Budget);
+            self.count_degrades(degrades);
+            return Ok(Some((0, Stop::Budget)));
+        }
+        // A string the last call left open goes on at once.
+        let mut remaining = match matches!(self.state, State::Ground) {
+            true => bytes,
+            false => self.string_left(bytes),
+        };
+        while let Some((&byte, tail)) = remaining.split_first() {
+            let ground = matches!(self.state, State::Ground);
+            // A refusal costs what was refused, and the rest is read
+            // (`kept`, threats.md 1.3, B44).
+            let framed = if ground && (0x20..=0x7e).contains(&byte) {
+                let length = printable(remaining);
+                let (run, rest) = remaining
+                    .split_at_checked(length)
+                    .unwrap_or((remaining, &[]));
+                let taken = match self.screen.ascii(run) {
+                    Ok(taken) => taken,
+                    Err(_) => {
+                        self.refuse();
+                        length
+                    }
+                };
+                remaining = rest;
+                // A wrap scrolled inside margins past the budget: the rest
+                // of the run is for the next call (decision 831).
+                if UNTIL_STOP && self.screen.stopped {
+                    remaining = (bytes.len().saturating_sub(remaining.len()))
+                        .checked_sub(length)
+                        .and_then(|at| bytes.get(at.saturating_add(taken)..))
+                        .unwrap_or_default();
+                    self.screen.stopped = false;
+                    Some(Stop::Budget)
+                } else {
+                    None
+                }
+            } else if ground && byte < 0x20 && byte != 0x1b {
+                // A C0 control, as `ground` carries it out; CR LF, which
+                // ends most lines, as one.
+                let fed = if let [b'\r', b'\n', after @ ..] = remaining {
+                    if self.screen.carriage_return_line_feed().is_err() {
+                        self.refuse();
+                    }
+                    remaining = after;
+                    true
+                } else {
+                    if self.control(byte, sink).is_err() {
+                        self.refuse();
+                    }
+                    remaining = tail;
+                    matches!(byte, 0x0a..=0x0c)
+                };
+                self.screen.forget_repeat();
+                // A line feed at the bottom margin moves a row's text into
+                // history, spent: up to a row's text a byte (decision 820).
+                match fed {
+                    true => self.over::<UNTIL_STOP>(),
+                    false => None,
+                }
+            } else if ground
+                && byte >= 0x80
+                && let Some(length) = self.text(remaining)
+            {
+                remaining = remaining.get(length..).unwrap_or_default();
+                // As for ASCII: the text stopped after a glyph whose wrap
+                // scrolled inside margins past the budget.
+                (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
+            } else if ground && byte == 0x1b {
+                let (length, framed) = self.sequence(remaining, sink);
+                remaining = remaining.get(length..).unwrap_or_default();
+                framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
+            } else {
+                remaining = tail;
+                let sequence = !ground && !matches!(self.state, State::Utf8(_));
+                let fed = matches!(byte, 0x0a..=0x0c) && !self.in_string();
+                let framed = self.byte(byte, sink);
+                framed.or_else(|| self.over_after::<UNTIL_STOP>(sequence, fed))
+            };
+            // A sequence that began or ended a frame ends whatever was
+            // taken, and so does one that spent the budget (`over`): stop
+            // right after it.
+            if UNTIL_STOP && let Some(stop) = framed {
+                (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+                self.spend_since(start, stop);
+                self.count_degrades(degrades);
+                let taken = bytes.len().saturating_sub(remaining.len());
+                work!(bytes, taken);
+                return Ok(Some((taken, stop)));
+            }
+        }
+        if UNTIL_STOP {
+            (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+            self.spend_since(start, Stop::Ended);
+        }
+        work!(bytes, bytes.len());
+        self.count_degrades(degrades);
+        match self.refused == refused {
+            true => Ok(None),
+            false => Err(Error::Capacity),
+        }
+    }
+    /// `run` of no bytes: what the last call stopped at the budget left
+    /// (`resumed`), if anything, which may stop this call too, before any
+    /// byte; nothing else.
+    #[cold]
+    #[inline(never)]
+    fn run_left<const UNTIL_STOP: bool>(
+        &mut self,
+        sink: &mut impl Sink,
+    ) -> Result<Option<(usize, Stop)>, Error> {
+        if !self.screen.left_over() {
             return Ok(None);
         }
         self.screen.begin();
-        let mut remaining = bytes;
-        while let Some((&byte, tail)) = remaining.split_first() {
-            let ground = matches!(self.state, State::Ground);
-            let framed = if ground && (0x20..=0x7e).contains(&byte) {
-                let length = printable(remaining);
-                self.screen
-                    .ascii(remaining.get(..length).unwrap_or_default())?;
-                remaining = remaining.get(length..).unwrap_or_default();
-                None
-            } else if ground && byte < 0x20 && byte != 0x1b {
-                // A C0 control, as `ground` carries it out.
-                self.control(byte, sink)?;
-                self.screen.forget_repeat();
-                remaining = tail;
-                None
-            } else if ground
-                && byte >= 0x80
-                && let Some(length) = self.text(remaining)?
-            {
-                remaining = remaining.get(length..).unwrap_or_default();
-                None
-            } else if ground && byte == 0x1b {
-                let (length, framed) = self.sequence(remaining, sink)?;
-                remaining = remaining.get(length..).unwrap_or_default();
-                framed
-            } else {
-                remaining = tail;
-                self.byte(byte, sink)?
-            };
-            // A sequence that began or ended a frame ends whatever was
-            // taken: stop right after it.
-            if UNTIL_FRAME && let Some(frame) = framed {
-                let taken = bytes.len().saturating_sub(remaining.len());
-                return Ok(Some((taken, frame)));
+        let (start, refused) = (crate::budget::spent(), self.refused);
+        let degrades = crate::degrades();
+        self.end = match UNTIL_STOP {
+            true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
+            false => u64::MAX,
+        };
+        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        let stopped = self.resumed::<UNTIL_STOP>(sink);
+        (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
+        self.count_degrades(degrades);
+        if stopped {
+            self.spend_since(start, Stop::Budget);
+            return Ok(Some((0, Stop::Budget)));
+        }
+        if UNTIL_STOP {
+            self.spend_since(start, Stop::Ended);
+        }
+        match self.refused == refused {
+            true => Ok(None),
+            false => Err(Error::Capacity),
+        }
+    }
+    /// `bytes` past what goes on of a string the last call left open, if
+    /// it did: out of line, as most calls begin in ground.
+    #[inline(never)]
+    fn string_left<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
+            true => self.string(bytes),
+            false => bytes,
+        }
+    }
+    /// Counts in [`Parser::refused`] the refusals this call met and went on
+    /// past by their degrades (`crate::degraded`), since `degrades`: a test
+    /// in `run`, and the count out of line, as a call seldom meets one.
+    #[inline]
+    fn count_degrades(&mut self, degrades: u64) {
+        if crate::degrades() != degrades {
+            self.count_degrades_met(degrades);
+        }
+    }
+    /// `count_degrades` of a call that met some.
+    #[cold]
+    #[inline(never)]
+    fn count_degrades_met(&mut self, degrades: u64) {
+        let met = crate::degrades().saturating_sub(degrades);
+        self.refused = self.refused.saturating_add(met);
+    }
+    /// Keeps what was spent since `start`, in a call that stopped as `stop`
+    /// says (or ended, as for a frame's end): all of it, until a stop at the
+    /// budget begins the next budget.
+    fn spend_since(&mut self, start: u64, stop: Stop) {
+        self.end = u64::MAX;
+        self.spent = match stop {
+            Stop::Budget => 0,
+            Stop::Begun | Stop::Ended => {
+                (self.spent).saturating_add(crate::budget::spent().saturating_sub(start))
+            }
+        };
+    }
+    /// What `done` gave, or, if it was refused room (`Error::Capacity`, all
+    /// that carrying out the input can fail with), nothing, counted in
+    /// [`Parser::refused`]: the refusal costs what it was for, and the
+    /// rest of the input is read (threats.md 1.3, B44).
+    #[inline]
+    fn kept<T: Default>(&mut self, done: Result<T, Error>) -> T {
+        match done {
+            Ok(done) => done,
+            Err(_) => {
+                self.refuse();
+                T::default()
             }
         }
-        Ok(None)
+    }
+    /// Counts a refusal of room, out of the way of the paths that are
+    /// never refused.
+    #[cold]
+    #[inline(never)]
+    fn refuse(&mut self) {
+        self.refuse_many(1);
+    }
+    /// `refuse`, `count` times.
+    #[cold]
+    #[inline(never)]
+    fn refuse_many(&mut self, count: u64) {
+        self.refused = self.refused.saturating_add(count);
+    }
+    /// `over`, where `run` looks at the budget after a byte: where a
+    /// sequence or a string ended (the byte read in a `sequence`, and the
+    /// parser back in ground), and after a line feed (LF, VT, FF) carried
+    /// out (`fed`), in text or among an escape sequence's or a CSI's
+    /// bytes: where the work a few bytes can multiply is done
+    /// (`budget.rs`). A rule of states, so that the fast paths, which take
+    /// a sequence's bytes in loops of their own, look where `byte` alone
+    /// would; the budget is asked first, as it is seldom spent.
+    #[inline]
+    fn over_after<const UNTIL_STOP: bool>(&self, sequence: bool, fed: bool) -> Option<Stop> {
+        self.over::<UNTIL_STOP>()
+            .filter(|_| fed || sequence && matches!(self.state, State::Ground))
+    }
+    /// Whether the parser is in a string or a DCS, where a C0 control is
+    /// not carried out.
+    fn in_string(&self) -> bool {
+        matches!(
+            self.state,
+            State::Dcs(_)
+                | State::IgnoreString
+                | State::Sixel
+                | State::Request(_)
+                | State::Osc { .. }
+        )
+    }
+    /// Makes the copies a REP the last call stopped in left
+    /// (`Screen::resume_repeat`), counting a refusal; whether the call
+    /// stops at once, its budget spent again by a wrap's margin scroll.
+    /// Out of line, as only a REP inside margins at the budget leaves any.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
+        let resumed = self.screen.resume_repeat();
+        self.kept(resumed);
+        let stopped = std::mem::take(&mut self.screen.stopped);
+        UNTIL_STOP && stopped && self.over::<true>().is_some()
+    }
+    /// [`Stop::Budget`] if the call under way stops at its budget
+    /// (`UNTIL_STOP`) and spent it.
+    #[inline]
+    fn over<const UNTIL_STOP: bool>(&self) -> Option<Stop> {
+        (UNTIL_STOP && crate::budget::spent() >= self.end).then_some(Stop::Budget)
     }
     /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
     /// at once rather than byte by byte, and says how many
     /// bytes it took; `None`, with nothing done, if `bytes` begins with
-    /// invalid or incomplete UTF-8, which the byte-by-byte path handles.
-    fn text(&mut self, bytes: &[u8]) -> Result<Option<usize>, Error> {
-        let mut taken = 0usize;
-        while let Some((c, length)) = bytes.get(taken..).and_then(decode) {
-            self.screen.print(c)?;
-            taken = taken.saturating_add(length);
+    /// invalid or incomplete UTF-8, which the byte-by-byte path handles. A
+    /// character whose printing is refused is counted (`kept`), and the
+    /// rest printed.
+    fn text(&mut self, bytes: &[u8]) -> Option<usize> {
+        let mut chars = Chars { bytes, taken: 0 };
+        let refused = self.screen.text(&mut chars);
+        if refused > 0 {
+            self.refuse_many(refused);
         }
-        Ok((taken > 0).then_some(taken))
+        (chars.taken > 0).then_some(chars.taken)
     }
     /// Reads the escape sequence `bytes` begins with (its ESC read in
     /// ground state) as far as it is one programs send most: an escape
@@ -1092,11 +1693,7 @@ impl Parser {
     /// with the parser in the state `byte` would have left it in, for
     /// `byte` to go on from. Says how many bytes it took, at least the ESC,
     /// and whether the sequence it carried out began or ended a frame.
-    fn sequence(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Frame>), Error> {
+    fn sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         if bytes.get(1) == Some(&b'[') {
             return self.csi_sequence(bytes, sink);
         }
@@ -1115,29 +1712,92 @@ impl Parser {
                 },
                 b']' if first => {
                     let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
-                    return Ok((next.saturating_add(taken), None));
+                    return (next.saturating_add(taken), None);
                 }
-                // The other strings, which `byte` begins.
-                b'P' | b'X' | b'^' | b'_' if first => break,
+                // SOS, PM and APC, dropped up to what may end them.
+                b'X' | b'^' | b'_' if first => {
+                    self.state = State::IgnoreString;
+                    let rest = self.string(bytes.get(next..).unwrap_or_default());
+                    return (bytes.len().saturating_sub(rest.len()), None);
+                }
+                b'P' if first => {
+                    let taken = self.dcs(bytes.get(next..).unwrap_or_default());
+                    return (next.saturating_add(taken), None);
+                }
                 0x30..=0x7e => {
                     self.state = State::Ground;
-                    let framed = self.escape_dispatch(read.as_slice(), byte, sink)?;
+                    let framed = self.escape_dispatch(read.as_slice(), byte, sink);
+                    let framed = self.kept(framed);
                     self.screen.forget_repeat();
-                    return Ok((next, framed));
+                    return (next, framed);
                 }
                 _ => break,
             }
             at = next;
         }
         self.state = State::Escape(read);
-        Ok((at, None))
+        (at, None)
+    }
+    /// The string a DCS whose final byte is `byte`, its intermediates
+    /// `read`, begins: a DECRQSS, a sixel picture, or one that is dropped
+    /// (an XTGETTCAP, answered at its end). Out of line, as it is seldom
+    /// sent.
+    #[inline(never)]
+    fn dcs_string(&mut self, read: Intermediates, byte: u8) -> State {
+        // DECRQSS: `$ q` with no parameters; XTGETTCAP, `+ q`.
+        let request = |marker: &[u8]| {
+            self.options.has(Feature::SettingReports)
+                && byte == b'q'
+                && read.as_slice() == marker
+                && self.params.is_empty()
+        };
+        let (decrqss, termcap) = (request(b"$"), request(b"+"));
+        // Sixel: `q` with no intermediates.
+        let sixel =
+            self.options.has(Feature::Pictures) && byte == b'q' && read.as_slice().is_empty();
+        if decrqss {
+            State::Request(Some(Bytes::default()))
+        } else if termcap {
+            self.termcap = true;
+            State::IgnoreString
+        } else if sixel {
+            self.sixel = Some(crate::sixel::Decoder::new(
+                self.params.first(0, 0),
+                self.params.first(1, 0),
+            ));
+            State::Sixel
+        } else {
+            State::IgnoreString
+        }
+    }
+    /// Begins a DCS and reads the bytes `bytes` begins with up to its
+    /// final byte, as `byte` reads them; then, if its string is one that
+    /// is dropped, the string up to what may end it at once, as `string`
+    /// takes it. It stops before a CAN, SUB or ESC, which `byte` reads.
+    /// Says how many bytes it took. Out of line, as DCS is seldom sent.
+    #[inline(never)]
+    fn dcs(&mut self, bytes: &[u8]) -> usize {
+        self.params.clear();
+        self.state = State::Dcs(Phase::Entry);
+        for (at, &byte) in bytes.iter().enumerate() {
+            let State::Dcs(phase) = self.state else {
+                let rest = bytes.get(at..).unwrap_or_default();
+                return bytes.len().saturating_sub(self.string(rest).len());
+            };
+            if matches!(byte, 0x18 | 0x1a | 0x1b) {
+                return at;
+            }
+            self.state = match phase.next(byte, &mut self.params) {
+                Next::Phase(next) => State::Dcs(next),
+                Next::Ignore => State::IgnoreString,
+                Next::Control => State::Dcs(phase),
+                Next::Final(read) => self.dcs_string(read, byte),
+            };
+        }
+        bytes.len()
     }
     /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
-    fn csi_sequence(
-        &mut self,
-        bytes: &[u8],
-        sink: &mut impl Sink,
-    ) -> Result<(usize, Option<Frame>), Error> {
+    fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         self.params.clear();
         // The parameter being read and how many there are, kept here
         // rather than in `params` until the sequence ends or this does: one
@@ -1165,7 +1825,7 @@ impl Parser {
                             self.params.end(len, ended);
                             self.params.full = true;
                             self.state = State::Csi(Phase::Param(marker));
-                            return Ok((next, None));
+                            return (next, None);
                         }
                     }
                 }
@@ -1178,9 +1838,10 @@ impl Parser {
                     self.params
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));
                     self.state = State::Ground;
-                    let framed = self.csi_dispatch(marker.as_slice(), byte, sink)?;
+                    let framed = self.csi_dispatch(marker.as_slice(), byte, sink);
+                    let framed = self.kept(framed);
                     self.screen.forget_repeat();
-                    return Ok((next, framed));
+                    return (next, framed);
                 }
                 _ => break,
             }
@@ -1193,31 +1854,37 @@ impl Parser {
         } else {
             Phase::Param(marker)
         });
-        Ok((at, None))
+        (at, None)
     }
-    /// Begins an OSC string and takes its bytes `bytes` begins with, up to
-    /// the BEL, CAN, SUB or ESC that ends it, at once rather than each
-    /// through `byte`, keeping what `byte` would keep of them; how many it
-    /// took. Out of line: inlined into `sequence`, it cost each OSC more.
-    #[inline(never)]
+    /// Begins an OSC string and takes its bytes `bytes` begins with, as
+    /// `osc_more` takes them; how many it took.
+    #[inline]
     fn osc_string(&mut self, bytes: &[u8]) -> usize {
         self.osc.clear();
-        // The byte past the limit marks the string overflowed.
+        self.osc_more(bytes, true)
+    }
+    /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
+    /// CAN, SUB or ESC that ends it, at once rather than each through
+    /// `byte`, keeping what `byte` would keep of them, the string `whole`
+    /// so far or not; how many it took. Out of line: inlined into
+    /// `sequence`, it cost each OSC more.
+    #[inline(never)]
+    fn osc_more(&mut self, bytes: &[u8], whole: bool) -> usize {
+        // The byte past the limit marks the string overflowed, and one
+        // that is not whole holds as many as the limit already.
         let room = self.osc_limit.saturating_add(1);
         let mut length = 0;
         // Each run up to a control is copied whole, with the control if
         // the string holds it; a payload with none is one copy.
         loop {
             let rest = bytes.get(length..).unwrap_or_default();
-            let run = rest
-                .iter()
-                .position(|&byte| byte < 0x20 || byte == 0x7f)
-                .unwrap_or(rest.len());
+            let run = control_in(rest).unwrap_or(rest.len());
             let control = rest.get(run).copied();
             let ends = matches!(control, Some(0x07 | 0x18 | 0x1a | 0x1b) | None);
             let held = control.is_some_and(in_command_string);
             let kept = run.saturating_add(usize::from(held));
             let kept = kept.min(room.saturating_sub(self.osc.len()));
+            self.osc_room(kept);
             self.osc
                 .extend_from_slice(rest.get(..kept).unwrap_or_default());
             length = length.saturating_add(run);
@@ -1227,10 +1894,58 @@ impl Parser {
             length = length.saturating_add(1);
         }
         self.state = State::Osc {
-            whole: self.osc.len() <= self.osc_limit,
+            whole: whole && self.osc.len() <= self.osc_limit,
         };
         self.osc.truncate(self.osc_limit);
         length
+    }
+    /// The bytes `bytes` begins with that go on a string, taken at once
+    /// rather than each through `byte`, as it would take them: an OSC's
+    /// as `osc_more` takes them, and an ignored string's up to the ESC,
+    /// CAN or SUB that may end it; the rest of `bytes`.
+    #[inline(never)]
+    fn string<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        let taken = match self.state {
+            State::Osc { whole } => self.osc_more(bytes, whole),
+            State::IgnoreString => string_end(bytes).unwrap_or(bytes.len()),
+            State::Ground
+            | State::Utf8(_)
+            | State::Escape(_)
+            | State::EscapeIgnore
+            | State::Csi(_)
+            | State::CsiIgnore
+            | State::Dcs(_)
+            | State::Sixel
+            | State::Request(_) => 0,
+        };
+        bytes.get(taken..).unwrap_or_default()
+    }
+
+    /// Room in the OSC buffer for `more` bytes: grown by doubling, as a
+    /// `Vec` grows, up to 16 KiB, then at once to what a string keeps,
+    /// `OSC_PAYLOAD_LIMIT` and the byte that marks it overflowed. So the
+    /// buffer never holds more than that, nor more than that and 16 KiB
+    /// while it grows (threats.md B20): doubling alone left room for
+    /// 98,304 bytes, kept for good, and 98,304 live as it grew.
+    #[inline]
+    fn osc_room(&mut self, more: usize) {
+        let need = self.osc.len().saturating_add(more);
+        if need > self.osc.capacity() {
+            self.grow_osc(need);
+        }
+    }
+    /// `osc_room`'s growth to room for `need` bytes, out of the way of the
+    /// bytes that fit.
+    #[cold]
+    #[inline(never)]
+    fn grow_osc(&mut self, need: usize) {
+        const DOUBLING: usize = 16 << 10;
+        let doubled = need.max(self.osc.capacity().saturating_mul(2));
+        let room = match doubled > DOUBLING {
+            true => OSC_PAYLOAD_LIMIT.saturating_add(1),
+            false => doubled,
+        };
+        self.osc.reserve_exact(room.saturating_sub(self.osc.len()));
     }
 
     fn ground(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
@@ -1278,7 +1993,8 @@ impl Parser {
             // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
             // xterm. Then this byte is read again; it can be ESC.
             None => {
-                self.screen.print(char::REPLACEMENT_CHARACTER)?;
+                let printed = self.screen.print(char::REPLACEMENT_CHARACTER);
+                self.kept(printed);
                 self.ground(byte, sink)?;
             }
         }
@@ -1293,32 +2009,86 @@ impl Parser {
         self.screen.control(byte)
     }
 
+    /// BEL inside a string that rings it (sixel): as in text. Out of line,
+    /// off the path of the string's data.
+    #[cold]
+    #[inline(never)]
+    fn bell(&mut self, sink: &mut impl Sink) {
+        let done = self.control(0x07, sink);
+        self.kept(done);
+    }
+
+    /// CAN or SUB, `byte`, in `state`, any but ground: what is in progress
+    /// is cancelled, and SUB then shows its glyph (DEC STD 070, p. 5-132,
+    /// note 2; and in a control string, decisions.md 4); inside sixel SUB
+    /// is a blank sixel instead and the picture goes on, and CAN ends it
+    /// unplaced (the sixel chapter, 9.1). Out of line: seldom sent.
+    #[cold]
+    #[inline(never)]
+    fn cancel(&mut self, byte: u8, state: State) {
+        if byte == 0x1a
+            && matches!(state, State::Sixel)
+            && let Some(decoder) = &mut self.sixel
+        {
+            let screen = &mut self.screen;
+            decoder.push(b'?', &mut |bytes, evict| screen.make_room(bytes, evict));
+            return;
+        }
+        self.state = State::Ground;
+        self.sixel = None;
+        self.termcap = false;
+        if byte == 0x1a && !matches!(state, State::Sixel) {
+            let done = self.screen.substitute();
+            self.kept(done);
+        }
+        self.screen.forget_repeat();
+    }
+
     /// Reads one byte; whether it ended a sequence that began or ended a
-    /// frame.
-    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Result<Option<Frame>, Error> {
+    /// frame. What it carries out that is refused room is counted
+    /// (`kept`), and loses only what it was for.
+    fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Option<Stop> {
         let state = self.state;
         if matches!(state, State::Ground) {
-            return self.ground(byte, sink).map(|()| None);
+            let done = self.ground(byte, sink);
+            self.kept(done);
+            return None;
         }
         if let State::Utf8(read) = state {
-            return self.continuation(read, byte, sink).map(|()| None);
+            let done = self.continuation(read, byte, sink);
+            self.kept(done);
+            return None;
         }
-        // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence. ESC
-        // also begins ST, so it completes a pending OSC string or DECRQSS.
+        // Anywhere transitions: CAN/SUB cancel (`cancel`), ESC starts a new
+        // sequence. ESC also begins ST, so it completes a pending OSC
+        // string or DECRQSS.
         if matches!(byte, 0x18 | 0x1a) {
-            self.state = State::Ground;
-            self.sixel = None;
-            self.screen.forget_repeat();
-            return Ok(None);
+            self.cancel(byte, state);
+            return None;
         }
         if byte == 0x1b {
+            // The ESC begins a sequence whatever carrying out the string
+            // does: a refusal there leaves no string open (PAR-3).
+            self.state = State::Escape(Intermediates::default());
             match state {
-                State::Osc { whole } => self.dispatch_osc(whole, false, sink)?,
+                State::Osc { whole } => {
+                    let done = self.dispatch_osc(whole, false, sink);
+                    self.kept(done);
+                }
                 State::Request(request) => self.dispatch_request(request, sink),
+                // ctlseqs, XTGETTCAP: "DCS 0 + r ST for invalid requests";
+                // fux-vt knows no capability names.
+                State::IgnoreString if std::mem::take(&mut self.termcap) => {
+                    sink.reply(b"\x1bP0+r\x1b\\");
+                }
                 State::Sixel => {
-                    let picture = self.sixel.take().and_then(crate::sixel::Decoder::finish);
+                    let screen = &mut self.screen;
+                    let picture = (self.sixel.take()).and_then(|decoder| {
+                        decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
+                    });
                     if let Some(picture) = picture {
-                        self.screen.place_picture(picture)?;
+                        let placed = self.screen.place_picture(picture);
+                        self.kept(placed);
                     }
                 }
                 State::Ground
@@ -1330,8 +2100,7 @@ impl Parser {
                 | State::Dcs(_)
                 | State::IgnoreString => {}
             }
-            self.state = State::Escape(Intermediates::default());
-            return Ok(None);
+            return None;
         }
         let mut framed = None;
         match state {
@@ -1339,29 +2108,53 @@ impl Parser {
             State::Ground | State::Utf8(_) => {}
             State::Osc { whole } => match byte {
                 0x07 => {
-                    self.dispatch_osc(whole, true, sink)?;
                     self.state = State::Ground;
+                    let done = self.dispatch_osc(whole, true, sink);
+                    self.kept(done);
                 }
-                _ if !whole || !in_command_string(byte) => {}
-                _ if self.osc.len() < self.osc_limit => self.osc.push(byte),
+                // A string's data leaves it a string: it returns at once.
+                _ if !whole || !in_command_string(byte) => return None,
+                _ if self.osc.len() < self.osc_limit => {
+                    self.osc_room(1);
+                    self.osc.push(byte);
+                    return None;
+                }
                 // What came first stays: a prompt mark, and an OSC 8 too
                 // long to keep, which closes the link, are told by it.
-                _ => self.state = State::Osc { whole: false },
+                _ => {
+                    self.state = State::Osc { whole: false };
+                    return None;
+                }
             },
             // In UTF-8 a string ends only at ESC (ST is ESC \, ECMA-48
             // 8.3.143): the byte 0x9c, 8-bit ST, is part of a character
             // there, as in `\u{271c}` (e2 9c 9c).
+            // C0 controls are no part of a request: "all other control
+            // codes not used within a command string" are ignored (DEC STD
+            // 070, 3.5.4.4).
+            State::Request(_) if byte < 0x20 => {}
             State::Request(request) => {
                 self.state = State::Request(request.and_then(|r| r.push(byte)));
+                return None;
             }
-            State::IgnoreString => {}
+            State::IgnoreString => return None,
             State::Sixel => {
-                if let Some(decoder) = &mut self.sixel {
-                    decoder.push(byte);
+                // BEL rings as in text (DEC STD 070, sixel graphics, 9.1).
+                if byte == 0x07 {
+                    self.bell(sink);
+                    return None;
                 }
+                if let Some(decoder) = &mut self.sixel {
+                    let screen = &mut self.screen;
+                    decoder.push(byte, &mut |bytes, evict| screen.make_room(bytes, evict));
+                }
+                return None;
             }
             State::Escape(read) => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x20..=0x2f => {
                     self.state = read.push(byte).map_or(State::EscapeIgnore, State::Escape);
                 }
@@ -1381,27 +2174,38 @@ impl Parser {
                     ([], b'X' | b'^' | b'_') => self.state = State::IgnoreString,
                     (intermediates, _) => {
                         self.state = State::Ground;
-                        framed = self.escape_dispatch(intermediates, byte, sink)?;
+                        let done = self.escape_dispatch(intermediates, byte, sink);
+                        framed = self.kept(done);
                     }
                 },
                 _ => {}
             },
             State::EscapeIgnore => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x30..=0x7e => self.state = State::Ground,
                 _ => {}
             },
             State::Csi(phase) => match phase.next(byte, &mut self.params) {
                 Next::Phase(phase) => self.state = State::Csi(phase),
                 Next::Ignore => self.state = State::CsiIgnore,
-                Next::Control => self.control(byte, sink)?,
+                Next::Control => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 Next::Final(read) => {
                     self.state = State::Ground;
-                    framed = self.csi_dispatch(read.as_slice(), byte, sink)?;
+                    let done = self.csi_dispatch(read.as_slice(), byte, sink);
+                    framed = self.kept(done);
                 }
             },
             State::CsiIgnore => match byte {
-                0x00..=0x1f => self.control(byte, sink)?,
+                0x00..=0x1f => {
+                    let done = self.control(byte, sink);
+                    self.kept(done);
+                }
                 0x40..=0x7e => self.state = State::Ground,
                 _ => {}
             },
@@ -1409,28 +2213,7 @@ impl Parser {
                 Next::Phase(phase) => self.state = State::Dcs(phase),
                 Next::Ignore => self.state = State::IgnoreString,
                 Next::Control => {}
-                Next::Final(read) => {
-                    // DECRQSS: `$ q` with no parameters.
-                    let decrqss = self.options.has(Feature::SettingReports)
-                        && byte == b'q'
-                        && read.as_slice() == b"$"
-                        && self.params.is_empty();
-                    // Sixel: `q` with no intermediates.
-                    let sixel = self.options.has(Feature::Pictures)
-                        && byte == b'q'
-                        && read.as_slice().is_empty();
-                    self.state = if decrqss {
-                        State::Request(Some(Bytes::default()))
-                    } else if sixel {
-                        self.sixel = Some(crate::sixel::Decoder::new(
-                            self.params.first(0, 0),
-                            self.params.first(1, 0),
-                        ));
-                        State::Sixel
-                    } else {
-                        State::IgnoreString
-                    };
-                }
+                Next::Final(read) => self.state = self.dcs_string(read, byte),
             },
         }
         // A sequence or string ended, REP's included: there is no character
@@ -1438,7 +2221,30 @@ impl Parser {
         if matches!(self.state, State::Ground) {
             self.screen.forget_repeat();
         }
-        Ok(framed)
+        framed
+    }
+
+    /// Carries out what the last call stopped at the budget left: the
+    /// screen-wide CSI it held back (`Screen::holds_back`), as its final
+    /// byte would have, its parameters kept, which begins or ends no
+    /// frame; then a DECRQCRA checksum's rows left (`resume_checksum`),
+    /// replied to once summed, or a REP's copies left (`resume`); and
+    /// whether they stopped this call too.
+    #[inline(never)]
+    fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
+        if let Some((read, len, byte)) = self.screen.held_csi() {
+            let done = self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
+            self.kept(done);
+            self.screen.forget_repeat();
+        }
+        if let Some(reply) = self.screen.resume_checksum() {
+            sink.reply(reply.as_bytes());
+        }
+        // Rows of a checksum still left: the budget is spent again.
+        if self.screen.summing() {
+            return UNTIL_STOP;
+        }
+        self.screen.repeating() && self.resume::<UNTIL_STOP>()
     }
 
     /// Carries out the escape sequence whose final byte is `byte`, its
@@ -1448,7 +2254,7 @@ impl Parser {
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Frame>, Error> {
+    ) -> Result<Option<Stop>, Error> {
         let framing = self.screen.mode(Mode::SynchronizedOutput);
         // DECID, the VT100's request for its identity, which the VT220
         // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
@@ -1456,48 +2262,61 @@ impl Parser {
         if intermediates.is_empty() && byte == b'Z' {
             let reply = self.screen.primary_attributes(&self.options);
             sink.reply(reply.as_bytes());
-        } else if !self.screen.escape(intermediates, byte)? {
-            sink.unhandled(Unhandled::Escape {
-                intermediates,
-                action: byte,
-            });
+        } else {
+            // A refusal loses only what it was for: a RIS still ends the
+            // frame it resets.
+            let done = self.screen.escape(intermediates, byte);
+            if !self.kept(done.map(Some)).unwrap_or(true) {
+                sink.unhandled(Unhandled::Escape {
+                    intermediates,
+                    action: byte,
+                });
+            }
         }
         let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
-        Ok(ended.then_some(Frame::Ended))
+        Ok(ended.then_some(Stop::Ended))
     }
 
     /// Carries out the CSI sequence whose final byte is `byte`, its
     /// parameters collected; whether it began a frame (set synchronized
     /// output) or ended one (reset it while set), for
-    /// `Parser::process_until_frame` to stop after.
+    /// `Parser::process_until_stop` to stop after; or, for a screen-wide
+    /// one the screen left for the next call (`Screen::holds_back`), a
+    /// budget stop.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Frame>, Error> {
+    ) -> Result<Option<Stop>, Error> {
         let (begun, framing) = (
             self.screen.frames_begun(),
             self.screen.mode(Mode::SynchronizedOutput),
         );
-        let dispatch = self
-            .screen
-            .csi(&self.params, intermediates, byte, &self.options)?;
+        let dispatch = (self.screen).csi(&self.params, intermediates, byte, &self.options);
+        // A frame begun or ended is told even if room was refused on the
+        // way: the refusal loses only what it was for.
         let framed = if self.screen.frames_begun() != begun {
-            Some(Frame::Begun)
+            Some(Stop::Begun)
         } else {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
-            ended.then_some(Frame::Ended)
+            ended.then_some(Stop::Ended)
         };
-        match dispatch {
+        match self.kept(dispatch.map(Some)).unwrap_or(Dispatch::Done) {
             Dispatch::Done => {}
+            // Screen-wide, and left for the next call (`Screen::holds_back`):
+            // its bytes are taken, and the call stops at the budget.
+            Dispatch::Held => {
+                self.screen.hold(intermediates, byte);
+                return Ok(Some(Stop::Budget));
+            }
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
                 match self
                     .screen
                     .other_csi(&self.params, intermediates, byte, &self.options)
                 {
-                    Some(Dispatch::Done) => {}
+                    Some(Dispatch::Done | Dispatch::Held) => {}
                     Some(Dispatch::Reply(reply)) => sink.reply(reply.as_bytes()),
                     Some(Dispatch::Unhandled) | None => sink.unhandled(Unhandled::Csi {
                         params: Params(&self.params),
@@ -1538,11 +2357,18 @@ impl Parser {
     fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
         let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
-            Some(Setting::Written) => '1',
-            Some(Setting::Unknown) | None => '0',
+            Some(Setting::Written) => b'1',
+            Some(Setting::Unknown) | None => b'0',
             Some(Setting::Unanswered) => return,
         };
-        sink.reply(format!("\x1bP{status}$r{setting}\x1b\\").as_bytes());
+        // `DCS status $ r setting ST`, put together without the formatter.
+        let mut reply = Vec::with_capacity(setting.len().saturating_add(7));
+        reply.extend_from_slice(b"\x1bP");
+        reply.push(status);
+        reply.extend_from_slice(b"$r");
+        reply.extend_from_slice(setting.as_bytes());
+        reply.extend_from_slice(b"\x1b\\");
+        sink.reply(&reply);
     }
 
     fn osc_command(
@@ -1617,6 +2443,125 @@ impl Parser {
                 }
             }
         }
+        Ok(())
+    }
+}
+
+/// The parser's checks, each shown a parser with its one fault (HAR-26),
+/// and the whole checker's report of what ran.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn parser() -> Result<Parser, Error> {
+        let options = Feature::ALL.into_iter().collect();
+        let size = Size::new(4, 8).map_err(|_| Error::Capacity)?;
+        Parser::with_options(size, 1 << 12, options)
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut Parser)) -> Result<(), Error> {
+        let mut parser = parser()?;
+        assert!(parser.check().is_clean(), "{}", parser.check());
+        fault(&mut parser);
+        let report = parser.check();
+        assert!(
+            report.faults_of(check).next().is_some(),
+            "{check}: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("parser.osc", |p| {
+            p.osc = vec![b'x'; OSC_PAYLOAD_LIMIT.saturating_add(2)]
+        })?;
+        shows("parser.params", |p| p.params.len = 0)?;
+        shows("parser.sixel", |p| p.state = State::Sixel)?;
+        shows("parser.termcap", |p| p.termcap = true)?;
+        shows("parser.utf8", |p| {
+            p.state = State::Utf8(Bytes {
+                bytes: [0xc3, 0xa9, 0, 0],
+                len: 2,
+            });
+        })?;
+        Ok(())
+    }
+
+    /// Every check of the checker runs on a parser, and is named in its
+    /// report: one dropped from `check` would not be.
+    #[test]
+    fn every_check_is_reported() -> Result<(), Error> {
+        let mut parser = parser()?;
+        parser.record_prints(true);
+        parser.process(b"hello\r\n\x1bPq#1~~\x1b\\")?;
+        let report = parser.check();
+        let every = [
+            "parser.osc",
+            "parser.params",
+            "parser.sixel",
+            "parser.utf8",
+            "parser.termcap",
+            "grid.order",
+            "grid.slots",
+            "grid.blank_past_used",
+            "grid.blank_past_end",
+            "grid.wide_pairs",
+            "grid.text",
+            "grid.style_numbers",
+            "grid.recent",
+            "grid.charged",
+            "styles.table",
+            "styles.spread",
+            "grid.versions",
+            "grid.cursor",
+            "grid.margins",
+            "grid.keyboard",
+            "links.runs",
+            "links.held",
+            "history.counts",
+            "history.blocks",
+            "history.flags",
+            "history.budget",
+            "history.capacities",
+            "screen.ids",
+            "screen.structural",
+            "screen.tabs",
+            "screen.nest",
+            "pictures.count",
+            "pictures.bytes",
+            "pictures.shown",
+            "prints.runs",
+            "prints.cap",
+        ];
+        assert_eq!(report.ran(), every.as_slice(), "{report}");
+        assert!(report.is_clean(), "{report}");
+        let waiting: Vec<&str> = report.waiting().iter().map(|(check, _)| *check).collect();
+        assert!(waiting.contains(&"parser.refused"));
+        Ok(())
+    }
+
+    /// The checker does no work the counters see.
+    #[test]
+    fn the_checker_is_no_work() -> Result<(), Error> {
+        let mut parser = parser()?;
+        parser.process(b"hello\r\nworld")?;
+        let before = crate::Work::now();
+        let report = parser.check();
+        assert!(report.is_clean(), "{report}");
+        assert_eq!(crate::Work::now(), before);
+        Ok(())
+    }
+
+    /// The frame scan goes on within what it was given.
+    #[test]
+    fn a_frame_scan_past_its_bytes_is_a_fault() -> Result<(), Error> {
+        let parser = parser()?;
+        let mut scan = parser.frame_scan();
+        assert_eq!(scan.end(b"\x1b[1"), None);
+        assert!(scan.check(b"\x1b[1").is_clean());
+        scan.from = 99;
+        assert!(!scan.check(b"\x1b[1").is_clean());
         Ok(())
     }
 }

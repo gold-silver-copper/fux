@@ -17,9 +17,13 @@ No engine is the truth. When the panel outvotes fux-vt, the difference says
 where to look. xterm and the standards decide who is right, and fux-vt's
 deliberate choices are recorded with each family.
 
-fux's own gates and CI don't build or run it. It needs Zig, a Ghostty
-checkout and libvterm's source, which `run.sh` fetches, and, for the
-engines in their own processes, Node, tmux, xterm and Xvfb.
+It needs Zig, a Ghostty checkout and libvterm's source, which `run.sh`
+fetches, and, for the engines in their own processes, Node, tmux, xterm
+and Xvfb. Built without its default feature `engines`
+(`cargo build --release --no-default-features`), it links no other engine
+and needs only cargo: what needs none runs (`esctest` against fux-vt), and
+the others say they were not built. CI runs that `esctest` on every PR;
+`compare.yml`, on request, runs the rest beside every engine.
 
 ## Running it
 
@@ -29,17 +33,32 @@ its arguments, or one of the harness commands in `harness.sh`:
 | Command | When | Budget | Runs |
 | --- | --- | --- | --- |
 | `run.sh quick` | before a commit | 60 s | `corpus` beside xterm and the panel; `corpus --subject ghostty`; `transparency`; `run --cases 2000`; `cases`; `encoders`; the oracle (`diff/oracle.sh`, see [`diff/README.md`](../../diff/README.md)) |
-| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against master`; `footprint`; `bench --instructions` |
-| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
-| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | every fuzz target in `harness.sh`, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
+| `run.sh full` | before a PR | 600 s | `quick`; `run --cases 20000` with and without `--no-reflow`; `esctest`; `esctest --terminal ghostty --beside fux-vt`; `fux-bench --against REF`; `footprint`; `bench --instructions` |
+| `run.sh deep` | before a release, or when hunting | none (prints an estimate) | `full`; 20,000 random cases at the day's seed (`run --seed YYYYMMDD`, printed; seed 1 stays the gate); `verdicts` for seeds 1–20 (`FUX_DEEP_SEEDS`); `esctest --in-fux`, `--xterm`, and `--terminal E --unlisted` for every other engine; `transparency --multiplexers`; `fux-bench feel` and `info`; 10 minutes of fuzzing |
+| `run.sh fuzz [MINUTES]` | by hand | MINUTES (10) | the oracle's pin, then each fuzz directory built on its own, then every target `cargo fuzz list` names in those that built, sharing the time; a crash is minimized (`cargo fuzz tmin`) and listed, to be made a test |
 | `run.sh scoreboard` | after any of them | seconds | the last results, gathered (see "The scoreboard") |
 
-Each ends with a summary of its checks and exits 1 if any failed, or says
-so if it ran over its budget. Independent checks run side by side, while
-whatever times itself or counts instructions runs alone. Results, logs
-(`logs/NAME.log`), a stamp for each check (commit, time, seconds, exit
-status) and the fuzz ledger (`fuzz.jsonl`) go to
-`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`.
+Each takes `--jobs N` (at most N checks at once, a check with threads of
+its own alone with N, and N cargo jobs) and `--against REF` (what the
+oracle and the instruction counts compare with; the latest master by
+default). Each ends with a summary of its checks and exits 1 if any
+failed, or says so if it ran over its budget. Independent checks run side
+by side, while whatever times itself or counts instructions runs alone.
+
+Every required check is in [`manifest.toml`](manifest.toml): its command,
+what it needs, and its schedule, including those nothing runs yet. A
+command also fails when a check the manifest schedules for it did not run,
+and when it ran one the manifest does not list.
+
+Results (`NAME.json`), logs (`logs/NAME.log`), a stamp for each check
+(`NAME.stamp.json`: the product and harness commits, each the last
+commit that changed fux-vt and fux, or the tools, and `-dirty` if their
+files differ from it; the binary's SHA-256, the exact command, when, how long, the
+exit status) and the fuzz ledger (`fuzz.jsonl`) go to
+`fux-vt/compare/target/harness`, or `$FUX_HARNESS_OUT`. A check's earlier
+results and stamp are removed before it runs. `FUX_PRODUCT_COMMIT` names
+the product when it is not HEAD's (fux-vt at another commit, by a path
+override). The binaries are run from `CARGO_TARGET_DIR` when it is set.
 
 The single commands:
 
@@ -132,7 +151,16 @@ only on the parts it makes as xterm does (`Blanks` in `src/engine.rs`;
 `engines` lists the rest). Its differences there are still shown.
 
 An engine that fails or panics abstains for the rest of the case. The
-report says why, and the run goes on.
+report says why, and the run goes on. An abstention has a class
+(`engine::abstention`): *adapter-limited*, where the adapter cannot read
+what it was given (its error begins `cannot tell:`, as xterm's for SGR
+58), *engine*, a panic, or *infrastructure*, anything else (a reply or a
+print that never came). Every engine a LIST means must be able to run
+here, so a check is judged by the same engines wherever it runs;
+`--missing-ok` lets `panel`, `all` and `in-process` leave one out. A
+decided family's named case fails when none of its deciders gives a
+verdict, unless the family is a standard's and they could not read the
+case (an adapter's limit): its section's expected fields judge it then.
 
 **The default panel** is every voter that runs here: ghostty, alacritty,
 libvterm, avt and wezterm, all in this process and fast.
@@ -141,7 +169,9 @@ libvterm, avt and wezterm, all in this process and fast.
   choices are what the vote is meant to catch.
 - **xterm.js, tmux and xterm don't vote by default.** They run in
   processes of their own, about 20 times slower. Add them with `--engines
-  panel,xterm.js` and so on. `cases` uses every engine.
+  panel,xterm.js` and so on. `cases` runs beside every engine that votes
+  (`panel,xterm.js,tmux,xterm`: all but vt100), and judges every step of
+  a case, not its end alone.
 - **The panel can be wrong.** Where it splits, the standards and xterm
   decide: such a family is "decided" and checked by `verdicts` (see
   "Families").
@@ -175,6 +205,16 @@ Each engine's adapter is `src/engines/NAME.rs`. Its doc comment lists the
 engine's quirks against fux-vt and the others, each with a `replay`.
 `run.sh engines` prints what each one cannot tell and how its blanks
 differ from xterm's.
+
+The engines run in this process, so one that grows without end would
+take the machine: alacritty_terminal 0.26's resize loops forever
+narrowing a wide glyph's row to one column (`replay --engines alacritty
+--size 1x2 --history 0 '\u{4e00}' resize:1x1` took 55 GB on 2026-10-17).
+Its adapter refuses any shrink to one column, so alacritty abstains
+there, an engine defect. And `fux-vt-compare` limits its own data
+(`RLIMIT_DATA`, which its children inherit) to 4 GiB, or the bytes
+`FUX_VT_COMPARE_DATA_LIMIT` gives (0: no limit of its own), so anything
+else of the kind fails an allocation instead.
 
 | Engine | What, and pin | Votes | Notes |
 | --- | --- | --- | --- |
@@ -243,7 +283,14 @@ After creation and after every step, each engine is read into one
 - the title;
 - cursor position and status reports (`CSI r;c R`, `CSI 0 n`);
 - history: the text and wrap flag of every row fux-vt keeps, against the
-  engine's most recent rows.
+  engine's most recent rows;
+- the device's state DA claims (HAR-46), where an engine tells it: the
+  cursor's shape (DECSCUSR's Ps; fux-vt's own, the terminal's, is compared
+  with no one), the tab stops, each screen row's line rendition, and the
+  cells DECSCA or SPA protects. fux-vt's adapter reads all four (the stops
+  by HT and the protected cells by what DECSED leaves, on copies); xterm's
+  the first three (DECRQSS, DECTABSR and its print's `ESC # n`); the other
+  engines none.
 
 Normalized away:
 
@@ -258,9 +305,14 @@ Normalized away:
   terminal.
 - **An empty title on the engine's side is not compared.** Some engines
   clear the title on RIS.
-- **Only the history rows fux-vt keeps are compared.** Engines keep far
-  more than a case can fill. Cases that resize give fux-vt 10000 rows,
-  since a screen that grows pulls rows back from history.
+- **The history rows a case asks for are compared, or all fux-vt keeps,
+  the more.** Engines keep far more than a case can fill. fux-vt's budget
+  is in bytes: it gets the case's rows at 24 bytes and 8 a cell of the
+  history blocks they fill (a row's share of a block of 4096 cells), and
+  64 KiB beside them for its partly filled blocks and maps, so a subject
+  keeping fewer rows than the others differs on "history rows kept", as
+  one keeping more does. Cases that resize give fux-vt 10000 rows, since a screen
+  that grows pulls rows back from history.
 - **Random cases settle the cursor before each resize.** They send `CSI ? 7
   h`, CR, `.`, CR (`--newline-before-resize` in a replay), because engines
   choose differently whether a pending wrap survives a reflow, where the
@@ -289,14 +341,23 @@ The random cases come from families of sequences (`src/families.rs`).
   `by` is empty where no engine follows the standard all through (on
   screens of one or two columns xterm departs from DEC STD 070), and the
   test is then the check. `verdicts` runs a standard's test alone (`cargo
-  test --exact`), for every family it decides, and the test must pass. A
-  family xterm decides is checked by xterm agreeing. One whose check
-  can't be made (the test missing, citing something else or failing,
-  xterm not among `by` or not run) fails. The default
-  panel's majority is often the side the source decides against, so
-  `run` leaves these out. `verdicts` runs each family's named cases, then
-  random cases from it, beside `by`. `cases` fails a named case of a
-  decided family where those engines outvote fux-vt.
+  test --exact`), for every family it decides, and the test must pass.
+  Each named case of such a family has its expected fields
+  (`cases::EXPECTED`): what the section settles, by the key a difference
+  names (`row 0`, `cursor`, `pending wrap`, `cell (0,1) bold`), with the
+  section, its edition and the quoted passage the values were derived
+  from by hand. They judge those fields whatever the engines do, and `by`
+  judges only the rest, so an engine that departs from the section never
+  outvotes it, and a family with no engine beside it is still compared.
+  A family xterm decides is checked by xterm agreeing. One whose check
+  can't be made (the test missing, citing something else or failing, a
+  case without its expected fields, xterm not among `by` or not run)
+  fails. The default panel's majority is often the side the source
+  decides against, so `run` leaves these out. `verdicts` runs each
+  family's named cases, then random cases from it, beside `by` (the named
+  cases alone where `by` is empty). `cases` fails a named case of a
+  decided family where it departs from its expected fields, or those
+  engines outvote fux-vt on the rest.
 - **Differs** (`Status::Differs`): the panel splits on a documented fux-vt
   choice, or on something the engines agree on for reasons of their own,
   or fux-vt has a defect still to fix. The reason says which.
@@ -330,7 +391,11 @@ typed into them, byte for byte. Each scenario has:
   environment, the replies fux-vt gave, and each step's keys and where its
   output ends;
 - `corpus/keys/NAME.keys`: the keys, headed by a comment saying what the
-  scenario does.
+  scenario does;
+- its line in `corpus/SHA256SUMS`, which a test checks the bytes against;
+  `record` writes it, and, in the JSON, when, from which commit and on
+  what system the recording was made (`recorded`: the 113 recorded before
+  it have none).
 
 ### Recording
 
@@ -383,8 +448,8 @@ To add a recording:
 2. Add a case for NAME to `scenario` in `corpus/record.sh`, and add NAME
    to its `all` list.
 3. Run `corpus/record.sh NAME`.
-4. Give NAME a status in `STATUSES` (`src/corpus.rs`). A recording without
-   one fails `corpus`.
+4. Give NAME its exceptions in `STATUSES` (`src/corpus.rs`), none if it
+   agrees. A recording without a status fails `corpus`.
 5. Regenerate `corpus/INVENTORY.md`.
 
 ### Replaying
@@ -399,19 +464,36 @@ with fux's 10000 rows of history.
   from fux-vt fails the step.
 - **The panel decides the rest**: fields xterm cannot tell (underline
   colour, pending wrap, the kitty flags), and every field once xterm
-  abstains (from SGR 58 on). A field the panel outvotes fux-vt on while
-  xterm agrees with fux-vt is shown in the marks (`-alacritty`), not
-  failed.
+  abstains for a limit of its adapter's (from SGR 58 on). A field the
+  panel outvotes fux-vt on while xterm agrees with fux-vt is shown in the
+  marks (`-alacritty`), not failed. If xterm abstains for anything else
+  (infrastructure), the recording is *unjudged*, and the run fails: the
+  vote alone would judge the rest. Each recording's abstentions, with
+  their classes, are in the JSON.
 - **A resize is judged by the program's answer to it.** A resized step is
   two steps of the case: the resize, then the program's output. Only the
   second is judged, because right after a resize each engine shows its
   own way of resizing. fux's panes reflow, as Ghostty, wezterm and libvterm
   do; xterm doesn't.
 
-Each recording has a status, as a family has (`STATUSES` in
-`src/corpus.rs`): expected to agree, or differing for a recorded reason
-that says at which step and why, with a command that shows it. `corpus`
-exits 1 if a recording expected to agree fails, or one has no status.
+Each recording has its exceptions (`STATUSES` in `src/corpus.rs`): none
+where it is expected to agree, else each difference it is expected to
+show, by the recorded steps it shows at (`after step N`, as a report
+counts them), the fields (a difference's key, `*` for any run of
+characters: `cell (*) text`, `title`) and the reason, with a command that
+shows it. The comparison goes on past a covered difference to the
+recording's end. `corpus` exits 1 on a difference no exception covers, on
+an exception that no longer occurs, and on a recording with no status;
+`corpus NAME` lists each covered difference with its step.
+
+The replies a recording kept, what fux-vt answered the program as it ran,
+are compared too: the recording is replayed through a parser set up as
+`record` set it up, and fux-vt's replies now must be the ones kept, with
+version numbers aside (XTVERSION's, DA2's) and each change made since it
+was recorded applied (`REPLY_CHANGES`, each cited; one no recording shows
+any more fails). A recording whose replies changed otherwise is listed in
+`REPLIES_DIFFER` with why, and fails once it agrees again. So a change to
+DA, DECRQM or the colour replies shows in the corpus.
 `--json FILE` writes the results. The counts are in
 [`scoreboard/SCOREBOARD.md`](scoreboard/SCOREBOARD.md).
 
@@ -519,20 +601,38 @@ fux-vt/compare/run.sh esctest --in-fux --xterm   # also in a real fux pane, and 
 fux-vt/compare/run.sh esctest --json FILE --logs DIR
 fux-vt/compare/run.sh esctest --terminal ghostty # Ghostty's core under test
 fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt beside it, test by test
+fux-vt/compare/run.sh esctest --terminal alacritty --unlisted       # any engine in process, scored with no list
+fux-vt/compare/run.sh esctest --tmux             # also in a real tmux, held to no list, as xterm is
 ```
 
-- **Directly** (`src/esctest.rs`): each area (a test class) is one esctest
-  process on a 25×80 PTY. Its terminal is a fux-vt parser set up as fux's
-  panes are, plus rectangle checksums and DECXCPR (`ExtendedReplies`),
-  which panes leave off. Areas start on a fresh terminal and run in
-  parallel, up to `--jobs` (one per CPU by default). A read waits
-  `--timeout` (1 s) for its reply, so a missing report fails only that
-  test. An area past `--limit` (120 s) is stopped, and its unfinished tests
-  fail.
+- **Directly** (`src/esctest.rs`): each test is one esctest process on a
+  25×80 PTY, on a terminal made for it alone: every terminal (fux-vt, an
+  engine, a fux pane, xterm) is isolated the same way, so no test starts
+  from what an earlier one left (esctest's own reset before each test still
+  runs). Its terminal is a fux-vt parser set up as fux's panes are, plus
+  rectangle checksums and DECXCPR (`ExtendedReplies`), which panes leave
+  off. Tests run in parallel, up to `--jobs` (one per CPU by default), and
+  are reported by area (a test class). A read waits `--timeout` (1 s) for
+  its reply, so a missing report fails only that test. A test past
+  `--limit` (60 s) is stopped.
 - **Options passed to esctest:** `--expected-terminal=xterm` (fux-vt
   follows xterm), `--max-vt-level=4` (a VT420, xterm's default and the
-  level with DECRQCRA), and no `--options` (UTF-8, no window operations, like
-  a default xterm). VT520 tests are skipped.
+  level with DECRQCRA), `--xterm-reverse-wrap=383` (reverse wraparound as
+  xterm has it since patch 383), and no `--options` for fux-vt and the
+  engines (UTF-8, no window operations for programs). Real xterm's column
+  gets `--options xtermWinopsEnabled`, with every window operation
+  allowed and `precompose: false`, as esctest's README sets it up. VT520
+  tests are skipped. esctest2 is
+  pinned at 2798f121, and a checkout at another commit is refused.
+- **One denominator:** every terminal is scored over the tests esctest
+  runs (it skips the same ones for all). Each result is a pass; a failure
+  (the terminal's: an assertion, a report it did not give, or the engine's
+  own error); or unavailable, neither: *adapter-limited*, where the
+  harness cannot read the cells, or *infrastructure*, where its run gave no
+  result (a test stopped at `--limit`), which fails the run without
+  counting against the terminal. A pass or a failure is *native*, or
+  *adapter-observed* where the harness answered a report for the engine
+  in that test (below).
 - **The list**, `esctest-expected.txt`: every failing test with its reason,
   one of `departure`, `spec`, `not-implemented`, `xterm-too` or `bug` (the
   file's header defines them). The run fails on an unlisted failure and on
@@ -540,20 +640,29 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
   `[fux]` fails only in a pane, and `[direct]` only directly.
 - **In fux** (`--in-fux`): builds fux and runs each area in the only pane
   of a fux server of its own (under `fux-esctest-*` in `$TMPDIR` if it is
-  short, else `~/.cache/fux`; never the user's), with a client on a 26×80 PTY. Panes don't answer DECRQCRA, so
-  tests that read cells are skipped. A test that passes in one place and
-  fails in the other is printed, and points at fux.
+  short, else `~/.cache/fux`; never the user's), with a client on a 26×80
+  PTY. The pane runs esctest as the server's `SHELL`: `fux __serve` takes
+  no config, and a client's `config.fux` reaches only panes made after the
+  first. Panes don't answer DECRQCRA, so tests that read cells are
+  unavailable. A test that passes in one place and fails in the other is
+  printed, and points at fux.
 - **In xterm** (`--xterm`): each area also runs in a real xterm under Xvfb,
-  set up as esctest's README says, with DECRQCRA allowed and empty cells
-  counted as spaces. What passes there and fails in fux-vt is what fux-vt
-  lacks.
+  set up as esctest's README says, with DECRQCRA allowed and
+  `checksumExtension: 26` (empty cells counted as spaces, no attributes,
+  each cell's own character: without bit 4, xterm 411 sums a per-cell copy
+  that DCH, ICH and the scrolls never move, `screen.c:3209`). What passes
+  there and fails in fux-vt is what fux-vt lacks.
 - **Another engine** (`--terminal NAME`, any engine in this process): the
   engine is the terminal (`src/answering.rs`), and its replies go back in
   order. No engine but fux-vt answers DECRQCRA, so it is answered from the
-  engine's snapshot with xterm's checksum. In origin mode, where the
-  rectangle is relative to margins no snapshot gives, the test is skipped.
-  Ghostty is given its size as Ghostty's app gives it. The results are
-  checked against `esctest-expected-NAME.txt`.
+  engine's snapshot with xterm's checksum; the size report esctest asks
+  before every test (`CSI 18 t`) is answered from the snapshot too where the
+  engine gives none (libvterm, avt, vt100). Either makes the test
+  adapter-observed. In origin mode, where the rectangle is relative to
+  margins no snapshot gives, the test is adapter-limited; for an engine
+  whose origin mode cannot be read (vt100), from the program's DECSET 6 to
+  its DECRST 6, DECSTR or RIS. Ghostty is given its size as Ghostty's app
+  gives it. The results are checked against `esctest-expected-NAME.txt`.
 - **Beside** (`--beside NAME`, fux-vt or an engine): runs another terminal
   too, checked against its own list, and compares the two: each area's
   pass rate, and the tests one passes and the other fails, each with its
@@ -562,15 +671,19 @@ fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt   # with fux-vt
 
 `--json FILE` writes, for the scoreboard:
 
-- the run: `suite`, `expected_terminal`, `max_vt_level`, `timeout`,
+- the run: `suite`, `suite_commit`, `expected_terminal`, `max_vt_level`, `timeout`,
   `filter`, `tests`, and `terminal` with `--terminal`;
 - a column per place:
   - `direct`, plus `in_fux` and `xterm` with those flags, and one named for
     the `--beside` terminal (`fux_vt`);
   - each with `passed`, `passed_beyond_xterm`, `failed`, `skipped`,
-    `pass_rate` (passed over passed and failed), `seconds`, per-area
-    counts in `areas`, and each test's `outcome`, `message` and `listed`
-    reason in `tests`;
+    `unavailable` (`adapter_limited`, `infrastructure`), `run` (the
+    denominator: all but the skipped), `pass_rate` (passed over run),
+    `adapter_observed`, `seconds`, per-area counts in `areas`, and each
+    test's `outcome` (`pass`, `fail`, `skip`, `unavailable`), its `basis`
+    (`native` or `adapter-observed`), its `class` (`engine` for a failure,
+    `adapter-limited` or `infrastructure` for an unavailable result),
+    `message` and `listed` reason in `tests`;
 - `differences_in_fux` and `differences_xterm`;
 - with `--beside`, `comparison`: `terminals`, `total`, `areas`,
   `passes_only_in` (each with `test`, `kind`, `feature`, `source`,
@@ -610,10 +723,11 @@ each with the source that decides it, printed with every run:
 | Verdict | Decided by |
 | --- | --- |
 | `utf8-button`, `utf8-limit` | ctlseqs: in UTF-8 mouse mode Cb is UTF-8 encoded too, and 2015 is the last position; ghostty writes Cb raw and has no limit |
-| `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key but Shift with a printable is CSI 27 ; m ; k ~ |
+| `legacy-extras`, `f3`, `modify-other-keys` | xterm: with no keyboard mode a program gets legacy bytes (ghostty sends CSI u and CSI 27 forms, and kitty's F3); at modifyOtherKeys 2 every modified key is CSI 27 ; m ; k ~, Shift-letters too, but Ctrl alone on Backspace and Shift alone on a character Ctrl makes no control of (`!`, `)`, `+`), which types its text |
+| `ctrl-alt-question`, `shift-tab`, `ctrl-backspace-bs` | real xterm 411's key bytes (KEY-13, `tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL; Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~; Backspace with Ctrl and another modifier is BS (ESC BS, or CSI 27 ; m ; 8 ~ at modifyOtherKeys 2), where ghostty sends DEL |
 | `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
-| `ctrl-backspace` | a choice: fux-vt's Ctrl-Backspace is DEL, ghostty's BS |
-| `paste-controls`, `paste-newline` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces, and an unbracketed LF a CR; fux-vt passes a paste as pasted, removing only what would end its bracket |
+| `paste-controls` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces; fux-vt passes them as pasted, removing only what would end its bracket |
+| `paste-newline` | xterm 411 (`button.c`): each LF of a paste is sent as CR, bracketed too, as fux-vt sends it; ghostty keeps a bracketed paste's LF |
 | `paste-c1-end` | fux-vt: U+009B 201 ~ ends a bracket for a terminal that reads C1, so fux-vt removes it as it removes ESC [ 201 ~ |
 
 It needs no engine but ghostty, takes a few seconds, and is part of
@@ -622,8 +736,10 @@ It needs no engine but ghostty, takes a few seconds, and is part of
 ## Speed
 
 `bench` feeds each engine every workload in 4 KiB chunks, on a 50×200
-screen with 10000 rows of history, and prints MB/s, the best of three
-runs. The synthetic workloads follow alacritty's vtebench: ascii,
+screen with 10000 rows of history, and prints MB/s, the median of three
+rounds, each round taking every engine in turn (so a machine that drifts
+moves them alike; pin it with `taskset` to keep it on one set of cores,
+which the heading records). The synthetic workloads follow alacritty's vtebench: ascii,
 dense-cells, medium-cells, cursor-motion, scrolling, scroll-region and
 unicode. `corpus` is every recording in turn, at the first one's size
 (40x120). `bench corpus` adds each recording alone (`corpus:vim` and so
@@ -633,10 +749,11 @@ the pipe, so its figure is end to end and marked `*`.
 
 `bench --instructions` counts instructions retired per byte instead,
 because load doesn't move them, for every engine in this process. Each
-engine and workload runs in a child process (`src/count.rs`: `/usr/bin/time
+engine and workload runs in a child process (`bench/src/count.rs`, fux-bench's counter, built here too: `/usr/bin/time
 -l` on macOS, `perf` or cachegrind on Linux), less a baseline child that
-does everything but the feeding. The figure is the fewest of `--repeats`
-runs (3); the spread is its noise. With no workloads named it counts the
+does everything but the feeding. The figure is the median of `--repeats`
+(3) paired rounds, each run less its round's baseline, and a round at or
+below its baseline fails it; the widest round's deviation is its noise. With no workloads named it counts the
 synthetic ones and the corpus. `--jobs N` and `--json FILE` work as in
 `footprint`.
 
@@ -665,6 +782,75 @@ footprint beyond the same engine's empty screen, over the rows it holds.
 `--json FILE` writes every measure; `--jobs N` sets how many children run
 at once.
 
+## The conformance ledger
+
+`ledger.json` is one table of checks from every conformance suite that
+runs: each esctest2 test (567, 18 of them skipped by esctest), each named
+case (`cases`) and each corpus recording. Each check carries:
+
+- its **feature**, one of the frozen groups in `features` (an esctest
+  area's function, with the 18 colour-space tests as one feature and every
+  reverse-wrap test as one choice; a named case's family; a recording's
+  program);
+- its **authority**, an id in `authorities`: a standard's document,
+  edition, section and quoted text, with the levels the document gives the
+  function; xterm's ctlseqs at patch 411 where the standards are silent;
+  or `open` where none is known (never "engine-specific", never out of
+  scope);
+- its **level and mode** (esctest's `@vtLevel`, 7-bit or 8-bit controls,
+  options it needs), and its **applicability** (`applies`, `n/a: WHY`, or
+  `skipped: WHY` where the suite does not run it);
+- its **verdict**, how the suite's expectation stands to the authority:
+  `agrees`, `departs` (the suite expects what the text contradicts),
+  `allows` (the text also allows other answers), or `open` (not read);
+  with `follows` or `follows_when` saying which engines do what the text
+  says where the suite does not;
+- the **evidence** for each tag: the area's function, the test's own
+  decorators, its listed reason, `cases::EXPECTED`, a family's authority,
+  or a reading of the test against the quoted text.
+
+`fux-vt-compare ledger --results DIR` scores every engine whose results
+are in `DIR` (esctest's `--json` columns, `cases --json` and `corpus
+--json`, one file a subject), on one denominator a suite, four ways:
+
+| Score | What it counts |
+| --- | --- |
+| raw | the checks passed, as the suite reports, over the checks it runs |
+| standard-adjusted | each check scored by its verdict, over the checks that apply: a `departs` check passed is a fail |
+| xterm-compat | the checks passed among those real xterm passes, xterm's own column left out (the corpus is judged by xterm wherever xterm can tell a field, so there it is the raw score) |
+| feature | the features all of whose applying checks pass |
+
+A check an engine has no result for is unavailable: in the denominator,
+never a pass, and counted apart. `--table FILE` writes the whole ledger
+as one Markdown table. `run.sh deep` runs the subjects and the ledger.
+The tags were written by `<notes>/ledger-tools/gen.py` from the area
+tables, esctest's decorators and the lists; from checkpoint 0 on, the
+data file is the record, and a retag shows in the list-diff report.
+
+## The lists and the list-diff report
+
+Every list a comparison judges by is also data: `fux-vt-compare lists
+--json FILE` writes them as one JSON, each a map from an entry's id to
+the entry with its `citation` (the reason, section or quote it rests on):
+
+| List | From |
+| --- | --- |
+| `esctest-expected`, `esctest-expected-NAME` | `esctest-expected*.txt`: scope, kind, reason |
+| `corpus-statuses` | `corpus::STATUSES` |
+| `transparency-known` | `transparency::KNOWN`, by name |
+| `families` | `families::FAMILIES`: status, `by`, authority, reason |
+| `cases`, `expected-fields` | `cases::CASES` and `cases::EXPECTED` |
+| `encoder-verdicts` | `encoders::VERDICTS` |
+| `ledger` | `ledger.json`'s tags, by `SUITE:ID`: feature, authority and its section, verdict, applicability |
+
+`run.sh quick` writes them to `lists.json`. Checkpoint 0 freezes them as
+`lists-c0.json`; from then on `fux-vt-compare lists --against
+lists-c0.json [--esctest DIR]` prints, as Markdown for the PR, every
+entry added, removed or changed beside its line in `list-changes.txt`
+(`LIST ID CITATION`), and fails on a change with no line there or a line
+with no change. For a test added to an esctest list it names the engines
+whose esctest JSON in `DIR` has it passing.
+
 ## The scoreboard
 
 `run.sh scoreboard` gathers the last results in `target/harness` into
@@ -677,7 +863,10 @@ repository:
   if it is the same commit's.
 
 Commit both with the work they measure. It runs nothing itself. Any axis
-whose check has not run says `not run`.
+whose check has not run says `not run`, and one whose check failed says
+so: a check's results are read only beside its stamp, and only if it
+passed. It exits 1 when the stamps name more than one product commit: a
+column is one product's.
 
 The axes:
 
@@ -688,7 +877,14 @@ The axes:
 - latency;
 - footprint and bytes per frame;
 - robustness: fuzz time since the last crash;
-- fux-vt beside Ghostty's core, axis by axis;
+- fux-vt beside the best other engine, row by row (esctest's passes on one
+  denominator, the corpus beside Ghostty, instructions per byte, memory,
+  MB/s): ahead or behind only past the row's floor, a tie within it, and
+  unranked with no floor. The floors: exact for counts; the spread of the
+  repeats for instructions, or `floors.json`'s `instructions` share (in
+  percent) when measured apart; two pages over the divisor for memory (a
+  figure whose whole is under a page is under resolution); and
+  `floors.json`'s `mb_per_s` for MB/s, which is unranked without it;
 - each check's stamp.
 
 ## Files
@@ -697,6 +893,7 @@ The axes:
 | --- | --- |
 | `run.sh` | fetches and pins Zig, Ghostty and libvterm, installs node deps, builds, runs |
 | `harness.sh` | `quick`, `full`, `deep`, `fuzz` and `scoreboard`, run by `run.sh` |
+| `lib.sh` | the harness's step, spec and together, which `harness.sh` sources |
 | `build.rs` | compiles libvterm and its shim |
 | `src/main.rs` | the commands |
 | `src/engine.rs` | the `Engine` trait and its reading rules, `Can`, `Blanks`, the engine list |
@@ -716,9 +913,12 @@ The axes:
 | `src/encoders.rs` | `encoders`, with its recorded verdicts |
 | `src/answering.rs` | an engine as the terminal a program talks to, for `esctest --terminal` |
 | `src/bench.rs` | `bench`: the workloads and the speed table |
-| `src/instructions.rs`, `src/count.rs` | `bench --instructions`, counting a child's instructions as `bench/src/count.rs` does |
+| `src/instructions.rs` | `bench --instructions`, counting a child's instructions by fux-bench's own counter (`bench/src/count.rs`, built into this crate) |
 | `src/footprint.rs`, `src/memory.rs` | `footprint`, and the process's memory as the system and malloc count it |
 | `src/scoreboard.rs` | `scoreboard` |
+| `src/lists.rs` | `lists`: every judged list as JSON, and the list-diff report |
+| `src/ledger.rs`, `ledger.json` | `ledger`: the conformance ledger's tags, and its four scores |
+| `list-changes.txt` | each change to a judged list since checkpoint 0, with its citation |
 | `esctest-expected.txt`, `esctest-expected-ghostty.txt` | the esctest tests fux-vt and Ghostty's core fail, each with its reason |
 | `corpus/` | the recordings, their keys, `record.sh`, the man pages they show, and `INVENTORY.md` |
 | `scoreboard/` | the kept scoreboard and its history |

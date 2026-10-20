@@ -17,6 +17,9 @@ pub struct Recording {
     /// Each step's keys, as a legacy terminal sends them, and the program's
     /// output after them.
     pub steps: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The steps that resized the terminal (the JSON's `resize`): the
+    /// step's index and the size, rows and columns, its output came at.
+    pub resizes: Vec<(usize, u16, u16)>,
 }
 
 impl Recording {
@@ -26,6 +29,23 @@ impl Recording {
             .iter()
             .flat_map(|(_, bytes)| bytes.iter().copied())
             .collect()
+    }
+
+    /// What the program wrote, at each size the terminal had as it wrote
+    /// it: from its first size, a new one at each step that resized it.
+    /// fux-vt-compare's `Recording::segments` makes the same.
+    pub fn segments(&self) -> Vec<(u16, u16, Vec<u8>)> {
+        let mut out = Vec::new();
+        let (mut rows, mut cols, mut bytes) = (self.rows, self.cols, Vec::new());
+        for (i, (_, output)) in self.steps.iter().enumerate() {
+            if let Some(&(_, r, c)) = self.resizes.iter().find(|(at, _, _)| *at == i) {
+                out.push((rows, cols, std::mem::take(&mut bytes)));
+                (rows, cols) = (r, c);
+            }
+            bytes.extend_from_slice(output);
+        }
+        out.push((rows, cols, bytes));
+        out
     }
 }
 
@@ -53,6 +73,7 @@ fn load(path: &Path) -> Result<Recording, String> {
             .ok_or(format!("{}: a bad size", path.display()))
     };
     let mut steps = Vec::new();
+    let mut resizes = Vec::new();
     let mut from = 0usize;
     for step in field(&json, "steps", path)?
         .as_array()
@@ -67,6 +88,15 @@ fn load(path: &Path) -> Result<Recording, String> {
         let output = bytes
             .get(from..end)
             .ok_or(format!("{}: a step ends past the bytes", path.display()))?;
+        if let Some(size) = step.get("resize") {
+            let n = |i: usize| -> Result<u16, String> {
+                size.get(i)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u16::try_from(n).ok())
+                    .ok_or(format!("{}: a bad resize", path.display()))
+            };
+            resizes.push((steps.len(), n(0)?, n(1)?));
+        }
         steps.push((keys, output.to_vec()));
         from = end;
     }
@@ -81,6 +111,7 @@ fn load(path: &Path) -> Result<Recording, String> {
         rows: dimension(0)?,
         cols: dimension(1)?,
         steps,
+        resizes,
     })
 }
 

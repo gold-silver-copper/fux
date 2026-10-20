@@ -164,6 +164,12 @@ fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
+/// A shell line that runs `program` in place of the shell.
+fn exec_line(program: &[String]) -> String {
+    let words: Vec<String> = program.iter().map(|w| quoted(w)).collect();
+    format!("exec {}", words.join(" "))
+}
+
 /// A multiplexer running with a client on a terminal; stopped when
 /// dropped.
 struct Session {
@@ -232,17 +238,19 @@ impl Session {
         match self.mux {
             Mux::Direct => Err("no multiplexer".into()),
             Mux::Fux => {
+                // `new-tab` makes a tab with a shell, and takes no program
+                // (fux 0.25): the program is typed into it, as `exec`.
+                let line = program.map(exec_line);
                 let mut args = vec!["opts", "str", "main", "workspace", "in"];
-                args.extend(program_words(program.unwrap_or_default()));
+                if let Some(line) = &line {
+                    args.extend(["str", line.as_str(), "typed"]);
+                }
                 args.push("new-tab");
                 self.command(place, &args).map(drop)
             }
             Mux::Tmux => {
                 let mut args = vec!["new-window", "-d"];
-                let line = program.map(|p| {
-                    let words: Vec<String> = p.iter().map(|w| quoted(w)).collect();
-                    format!("exec {}", words.join(" "))
-                });
+                let line = program.map(exec_line);
                 if let Some(line) = &line {
                     args.push(line);
                 }
@@ -274,9 +282,8 @@ impl Session {
 
     /// Runs `program` in herdr's pane `pane`, in place of its shell.
     fn herdr_run(&self, place: &Place, pane: &str, program: &[String]) -> Result<(), String> {
-        let words: Vec<String> = program.iter().map(|w| quoted(w)).collect();
-        let line = format!("exec {}", words.join(" "));
-        self.command(place, &["pane", "run", pane, &line]).map(drop)
+        self.command(place, &["pane", "run", pane, &exec_line(program)])
+            .map(drop)
     }
 }
 
@@ -397,10 +404,7 @@ fn start(
         ("PS1".into(), "$ ".into()),
     ];
     let borrowed = |env: &[(String, String)]| -> Vec<(String, String)> { env.to_vec() };
-    let line = |p: &[String]| -> String {
-        let words: Vec<String> = p.iter().map(|w| quoted(w)).collect();
-        format!("exec {}", words.join(" "))
-    };
+    let line = |p: &[String]| exec_line(p);
     match mux {
         Mux::Direct => {
             let first = programs.first().ok_or("no program")?;
@@ -487,6 +491,12 @@ fn start(
                 env: borrowed(&env),
                 dir,
             };
+            // The first program in pane %1, typed into its shell; each
+            // other in a split beside it. A flooding program never settles,
+            // so nothing waits for it to (`0 timeout`). The last pane made
+            // is focused, as tmux, zellij and herdr focus theirs: keys
+            // typed at the client go to it (the echo, beside a flood).
+            let mut last = String::from("%1");
             for (i, p) in programs.iter().enumerate() {
                 if i == 0 {
                     let line = line(p);
@@ -500,15 +510,34 @@ fn start(
                         "str",
                         "Enter",
                         "key",
+                        "0",
+                        "timeout",
                         "send-keys",
                     ];
                     session.command(place, &args)?;
                 } else {
                     let mut args = vec!["str", "%1", "pane", "horizontal"];
                     args.extend(program_words(p));
-                    args.push("split");
-                    session.command(place, &args)?;
+                    args.extend(["0", "timeout", "split"]);
+                    let answer = session.command(place, &args)?;
+                    last = answer
+                        .split_whitespace()
+                        .next()
+                        .filter(|w| w.starts_with('%'))
+                        .ok_or(format!("fux split: no pane in {answer:?}"))?
+                        .to_owned();
                 }
+            }
+            if programs.len() > 1 {
+                let client = session.command(place, &["ls"])?;
+                let id = client
+                    .split_whitespace()
+                    .find(|w| {
+                        w.starts_with('c') && w.get(1..).is_some_and(|n| n.parse::<u32>().is_ok())
+                    })
+                    .ok_or(format!("fux: no client in {client:?}"))?
+                    .to_owned();
+                session.command(place, &["str", &id, "client", &last, "focus-pane"])?;
             }
             Ok(session)
         }
@@ -775,6 +804,12 @@ fn usage(pid: u32) -> Option<(u64, f64)> {
 
 /// The median and the 99th percentile of `values`, in ms, and their mean.
 fn summary(values: &mut [f64]) -> serde_json::Value {
+    // No key: no figures, said as none (null), never a NaN.
+    if values.is_empty() {
+        return serde_json::json!({
+            "keys": 0, "p50_ms": null, "p99_ms": null, "mean_ms": null, "max_ms": null,
+        });
+    }
     values.sort_by(f64::total_cmp);
     // The value `percent` of the way from the least to the most, nearest.
     let at = |percent: usize| -> f64 {
@@ -799,6 +834,7 @@ fn summary(values: &mut [f64]) -> serde_json::Value {
 /// Latency: `keys` keys typed at `session`'s client, one at a time.
 fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String> {
     let mut times = Vec::with_capacity(keys);
+    let mut waited = Vec::new();
     let mut missed = 0usize;
     // The first keys whose echo never came, and the bytes the client was
     // sent meanwhile: whether it was painted at all.
@@ -828,6 +864,9 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
             None => {
                 missed = missed.saturating_add(1);
                 in_a_row = in_a_row.saturating_add(1);
+                // At least the wait, in the quantiles: a key whose echo
+                // never came took longer than any that did.
+                waited.push(KEY_WAIT.as_secs_f64() * 1e3);
                 if misses.len() < 10 {
                     let (after, _) = session.terminal.counts();
                     misses.push(serde_json::json!({
@@ -845,19 +884,30 @@ fn type_keys(session: &Session, keys: usize) -> Result<serde_json::Value, String
         std::thread::sleep(Duration::from_millis(gap));
     }
     let (bytes_after, frames_after) = session.terminal.counts();
+    let completed = times.len();
+    times.extend(waited);
     let mut value = summary(&mut times);
     if let Some(map) = value.as_object_mut() {
-        map.insert("missed".into(), serde_json::json!(missed));
+        // Every key typed, those whose echo came, and those that timed out
+        // (KEY_WAIT), which the percentiles and the mean count at the wait,
+        // the least they took; a run stops after MISSES_IN_A_ROW in a row,
+        // so attempted can be fewer than asked.
+        map.insert("asked".into(), serde_json::json!(keys));
+        map.insert("attempted".into(), serde_json::json!(typed));
+        map.insert("completed".into(), serde_json::json!(completed));
+        map.insert("timed_out".into(), serde_json::json!(missed));
         map.insert("misses".into(), serde_json::json!(misses));
-        map.insert("typed".into(), serde_json::json!(typed));
         let typed = typed.max(1) as f64;
         map.insert(
             "client_bytes_per_key".into(),
             serde_json::json!((bytes_after.saturating_sub(bytes_before) as f64) / typed),
         );
+        // Paints are counted by the frame's marker (`CSI ? 2026 h`): none
+        // seen is none known (a multiplexer that does not send it), not 0.
+        let frames = frames_after.saturating_sub(frames_before);
         map.insert(
             "paints_per_key".into(),
-            serde_json::json!((frames_after.saturating_sub(frames_before) as f64) / typed),
+            serde_json::json!((frames > 0).then(|| (frames as f64) / typed)),
         );
     }
     Ok(value)
@@ -996,11 +1046,14 @@ pub fn run(options: &Options) -> Result<bool, String> {
     eprintln!("building fux…");
     output(
         Command::new("cargo")
-            .args(["build", "--release", "--quiet", "--bin", "fux"])
+            .args(["build", "--release", "--quiet", "--bin", "fux", "-j"])
+            .arg(crate::default_jobs().to_string())
             .current_dir(&root),
     )?;
-    let fux = root
-        .join("target/release/fux")
+    // Where cargo built it: CARGO_TARGET_DIR if set.
+    let fux = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), PathBuf::from)
+        .join("release/fux")
         .to_string_lossy()
         .into_owned();
     let mut versions = serde_json::Map::new();
@@ -1049,7 +1102,37 @@ pub fn run(options: &Options) -> Result<bool, String> {
     println!("{total:.0} s in all");
     crate::save_json(&options.json, &json)?;
     eprintln!("wrote {}", options.json.display());
-    Ok(true)
+    // A key that timed out or a load that never arrived is a measurement
+    // not made: the JSON says so, and the run fails.
+    let missing = incomplete(&json, "");
+    for what in &missing {
+        eprintln!("incomplete: {what}");
+    }
+    Ok(missing.is_empty())
+}
+
+/// Where `value` (feel's JSON, at `at`) says a measurement was not made:
+/// keys that timed out (`timed_out` above 0), a load whose `seconds` is
+/// null (it never arrived).
+fn incomplete(value: &serde_json::Value, at: &str) -> Vec<String> {
+    let Some(map) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if map
+        .get("timed_out")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|n| n > 0)
+    {
+        out.push(format!("{at}: keys timed out"));
+    }
+    if map.contains_key("bytes") && map.get("seconds").is_some_and(serde_json::Value::is_null) {
+        out.push(format!("{at}: the load did not arrive"));
+    }
+    for (key, inner) in map {
+        out.extend(incomplete(inner, &format!("{at}/{key}")));
+    }
+    out
 }
 
 type Parts = (serde_json::Value, serde_json::Value, serde_json::Value);
@@ -1211,18 +1294,35 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
     if get(&["latency"]).is_some_and(|l| l.as_object().is_some_and(|m| !m.is_empty())) {
         let _ = writeln!(
             out,
-            "keystroke latency, ms (key at the client's PTY to its echo painted)\n{:<8} {:>9} {:>9} {:>10} {:>10} {:>11}",
-            "", "idle p50", "idle p99", "flood p50", "flood p99", "bytes/key"
+            "keystroke latency, ms (key at the client's PTY to its echo painted); keys \
+             attempted/completed/timed out\n{:<8} {:>9} {:>9} {:>14} {:>10} {:>10} {:>14} {:>11}",
+            "",
+            "idle p50",
+            "idle p99",
+            "idle keys",
+            "flood p50",
+            "flood p99",
+            "flood keys",
+            "bytes/key"
         );
         for mux in muxes {
             let m = mux.name();
+            let keys = |setup: &str| {
+                let n = |k: &str| cell(number(&["latency", m, setup, k]), 0);
+                if get(&["latency", m, setup]).is_none() {
+                    return "-".to_owned();
+                }
+                format!("{}/{}/{}", n("attempted"), n("completed"), n("timed_out"))
+            };
             let _ = writeln!(
                 out,
-                "{m:<8} {:>9} {:>9} {:>10} {:>10} {:>11}",
+                "{m:<8} {:>9} {:>9} {:>14} {:>10} {:>10} {:>14} {:>11}",
                 cell(number(&["latency", m, "idle", "p50_ms"]), 2),
                 cell(number(&["latency", m, "idle", "p99_ms"]), 2),
+                keys("idle"),
                 cell(number(&["latency", m, "flood", "p50_ms"]), 2),
                 cell(number(&["latency", m, "flood", "p99_ms"]), 2),
+                keys("flood"),
                 cell(number(&["latency", m, "idle", "client_bytes_per_key"]), 0),
             );
         }
@@ -1309,6 +1409,42 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// No key that came is no figure, said as none, never NaN; a key that
+    /// timed out counts at the wait, the least it took (HAR-86).
+    #[test]
+    fn a_summary_counts_what_timed_out_and_says_none_for_nothing() {
+        let none = super::summary(&mut []);
+        assert_eq!(none.get("p50_ms"), Some(&serde_json::Value::Null));
+        let mut times = vec![1.0, 2.0, 3.0, 2000.0];
+        let some = super::summary(&mut times);
+        assert_eq!(
+            some.get("max_ms").and_then(serde_json::Value::as_f64),
+            Some(2000.0)
+        );
+    }
+
+    /// A key that timed out, or a load that never arrived, is a
+    /// measurement not made, and `feel` fails (at the parent it exited 0).
+    #[test]
+    fn a_measurement_not_made_fails_the_run() {
+        let fine = serde_json::json!({
+            "latency": { "fux": { "idle": { "attempted": 3, "completed": 3, "timed_out": 0 } } },
+            "throughput": { "fux": { "y": { "bytes": 10, "seconds": 0.5 } } },
+        });
+        assert!(super::incomplete(&fine, "").is_empty());
+        let late = serde_json::json!({
+            "latency": { "fux": { "flood": { "attempted": 3, "completed": 2, "timed_out": 1 } } },
+            "throughput": { "fux": { "y": { "bytes": 10, "seconds": null } } },
+        });
+        assert_eq!(
+            super::incomplete(&late, ""),
+            [
+                "/latency/fux/flood: keys timed out",
+                "/throughput/fux/y: the load did not arrive"
+            ]
+        );
+    }
     #[test]
     fn a_summary_has_its_percentiles() {
         let mut values: Vec<f64> = (1..=100).map(f64::from).collect();

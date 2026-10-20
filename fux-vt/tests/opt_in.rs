@@ -4,8 +4,8 @@
 //! stay fux's policy: no events and the original reply set.
 
 use fux_vt::{
-    Attributes, CellRef, Cells, Color, Event, Feature, Frame, Mode, OSC_PAYLOAD_LIMIT, Options,
-    Parser, Sink, Size,
+    Attributes, CellRef, Cells, Color, Event, Feature, Mode, OSC_PAYLOAD_LIMIT, Options, Parser,
+    Sink, Size, Stop,
 };
 #[path = "corpus/pieces.rs"]
 mod pieces;
@@ -282,43 +282,48 @@ fn synchronized_output_is_tracked_and_ended() -> Result {
     Ok(())
 }
 
-/// `Parser::process_until_frame` stops right after the sequence that sets
+/// `Parser::process_until_stop` stops right after the sequence that sets
 /// synchronized output, wherever it is: alone, beside other modes, or split
 /// across calls; and reads everything when none does.
 #[test]
-fn process_until_frame_stops_after_the_sequence_that_sets_2026() -> Result {
+fn process_until_stop_stops_after_the_sequence_that_sets_2026() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
-    let begun = |n| Some((n, Frame::Begun));
+    let begun = |n| Some((n, Stop::Begun));
     assert_eq!(
-        p.process_until_frame(b"ab\x1b[?2026hcd", &mut sink)?,
+        p.process_until_stop(b"ab\x1b[?2026hcd", &mut sink)?,
         begun(10)
     );
     p.process(b"\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?25;2026h!", &mut sink)?,
+        p.process_until_stop(b"\x1b[?25;2026h!", &mut sink)?,
         begun(11)
     );
     p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_frame(b"x\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_frame(b"26hy", &mut sink)?, begun(3));
-    // Set again while set: each set begins a frame.
-    assert_eq!(p.process_until_frame(b"\x1b[?2026h", &mut sink)?, begun(8));
+    assert_eq!(p.process_until_stop(b"x\x1b[?20", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"26hy", &mut sink)?, begun(3));
+    // Set again while set, the mode does not change: the frame being drawn
+    // goes on, and none begins (the mode 2026 spec: while it is set, the
+    // terminal keeps rendering the last state; setting it again is no new
+    // state). XTRESTORE of it saved set, while set, begins none either.
+    assert_eq!(p.process_until_stop(b"\x1b[?2026h", &mut sink)?, None);
+    p.process(b"\x1b[?2026s")?;
+    assert_eq!(p.process_until_stop(b"\x1b[?2026r", &mut sink)?, None);
     p.process(b"\x1b[?2026l")?;
-    assert_eq!(p.process_until_frame(b"plain text\r\n", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"plain text\r\n", &mut sink)?, None);
     Ok(())
 }
 
-/// `Parser::process_until_frame` stops right after whatever resets
+/// `Parser::process_until_stop` stops right after whatever resets
 /// synchronized output while it is set (ESU, beside other modes or split
 /// across calls; XTRESTORE of it saved reset; DECSTR; RIS), so a host that
 /// reads output as it comes knows the frame is whole; a reset while it is
 /// not set ends nothing.
 #[test]
-fn process_until_frame_stops_after_the_sequence_that_ends_a_frame() -> Result {
+fn process_until_stop_stops_after_the_sequence_that_ends_a_frame() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
-    let ended = |n| Some((n, Frame::Ended));
+    let ended = |n| Some((n, Stop::Ended));
     p.process(b"\x1b[?2026s")?;
     for (end, what) in [
         (&b"\x1b[?2026lz"[..], "ESU"),
@@ -330,35 +335,35 @@ fn process_until_frame_stops_after_the_sequence_that_ends_a_frame() -> Result {
         p.process(b"\x1b[?2026h")?;
         let taken = end.len().saturating_sub(1);
         assert_eq!(
-            p.process_until_frame(end, &mut sink)?,
+            p.process_until_stop(end, &mut sink)?,
             ended(taken),
             "{what}"
         );
     }
     p.process(b"\x1b[?2026h")?;
-    assert_eq!(p.process_until_frame(b"ab\x1b[?20", &mut sink)?, None);
-    assert_eq!(p.process_until_frame(b"26l", &mut sink)?, ended(3));
-    assert_eq!(p.process_until_frame(b"\x1b[?2026l\x1bc", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"ab\x1b[?20", &mut sink)?, None);
+    assert_eq!(p.process_until_stop(b"26l", &mut sink)?, ended(3));
+    assert_eq!(p.process_until_stop(b"\x1b[?2026l\x1bc", &mut sink)?, None);
     Ok(())
 }
 
 /// A frame begun by XTRESTORE (`CSI ? 2026 r`, the mode saved set) stops
-/// `process_until_frame` right after it, as one begun by BSU does; and an
+/// `process_until_stop` right after it, as one begun by BSU does; and an
 /// `h` read afterwards, inside a string or not, stops nothing.
 #[test]
-fn process_until_frame_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
+fn process_until_stop_stops_after_an_xtrestore_that_begins_a_frame() -> Result {
     let mut p = Parser::new(Size::new(2, 20)?, 0)?;
     let mut sink = Record::default();
     p.process(b"\x1b[?2026h\x1b[?2026s\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
-        Some((8, Frame::Begun))
+        p.process_until_stop(b"\x1b[?2026r\x1b]2;hello\x07", &mut sink)?,
+        Some((8, Stop::Begun))
     );
     assert!(p.screen().mode(Mode::SynchronizedOutput));
     // An `h` in a string, or printed, after the frame's sequence is read.
     p.process(b"\x1b[?2026l")?;
     assert_eq!(
-        p.process_until_frame(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
+        p.process_until_stop(b"\x1b[?1h\x1b]2;hhh\x07hh\x1bh", &mut sink)?,
         None
     );
     Ok(())
@@ -501,6 +506,36 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
             "{setup:?}"
         );
     }
+    // DECSCL's level and C1 replies, 7-bit (1), as fux-vt sends them
+    // whatever Pc asks (DEC STD 070, DECSCL; ECMA-35, 15.4).
+    for (setup, level) in [
+        ("", 62),
+        ("\x1b[61\"p", 61),
+        ("\x1b[62;0\"p", 62),
+        ("\x1b[61\"p\x1b[65;1\"p", 61),
+    ] {
+        let reply = format!("\x1bP1$r{level};1\"p\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q\"p\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
+    // DECSACE's Ps as it was set, 0 until set (DEC STD 070, DECRQSS; esctest
+    // sets 0 and expects `0*x`); one it does not take changes nothing.
+    for (setup, ps) in [
+        ("", 0),
+        ("\x1b[2*x", 2),
+        ("\x1b[1*x", 1),
+        ("\x1b[2*x\x1b[3*x", 2),
+    ] {
+        let reply = format!("\x1bP1$r{ps}*x\x1b\\");
+        assert_eq!(
+            ask(&format!("{setup}\x1bP$q*x\x1b\\"))?,
+            [reply],
+            "{setup:?}"
+        );
+    }
     // Requests fux-vt does not know, a long one among them, are invalid.
     for request in ["t", "$|", "mm", "a long request"] {
         assert_eq!(
@@ -509,11 +544,9 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
             "{request:?}"
         );
     }
-    // Not DECRQSS: parameters, another intermediate, XTGETTCAP, a string
-    // cancelled.
+    // Not DECRQSS: parameters, another intermediate, a string cancelled.
     for other in [
         "\x1bP1$qm\x1b\\",
-        "\x1bP+q536d756c78\x1b\\",
         "\x1bP$pm\x1b\\",
         "\x1bP$qm\x18",
         "\x1bPqm\x1b\\",
@@ -532,6 +565,46 @@ fn setting_reports_answer_the_pen_the_cursor_shape_and_the_margins() -> Result {
         .map(|c| c.contents().to_owned())
         .collect();
     assert_eq!(text, "abc");
+    Ok(())
+}
+
+/// DEC STD 070, 3.5.4.4 (control strings): "It is recommended that all
+/// other control codes not used within a command string be ignored by
+/// hardware". So C0 controls inside a DECRQSS request are no part of it:
+/// `DCS $ q NUL m ST` asks for the pen, as `DCS $ q m ST` does, and a line
+/// break inside it changes nothing.
+#[test]
+fn c0_controls_inside_a_setting_request_are_ignored() -> Result {
+    for request in ["\x00m", "\x01m", "m\x0d\x0a", "\x07m"] {
+        let replies = run(SETTINGS, format!("\x1bP$q{request}\x1b\\").as_bytes())?.replies;
+        let expected: &[u8] = b"\x1bP1$r0m\x1b\\";
+        assert_eq!(replies, [expected.to_vec()], "{request:?}");
+    }
+    Ok(())
+}
+
+/// XTGETTCAP, `DCS + q Pt ST` (xterm's ctlseqs): "xterm responds with DCS
+/// 1 + r Pt ST for valid requests ... or DCS 0 + r ST for invalid
+/// requests". fux-vt knows no capability names, so with
+/// `Feature::SettingReports` every request is answered invalid, its names
+/// not echoed, a request of any length once; one cancelled, or with
+/// parameters, is not answered, nor any without the option.
+#[test]
+fn xtgettcap_is_answered_as_an_invalid_request() -> Result {
+    let ask = |options: Options, input: &[u8]| -> Result<Vec<Vec<u8>>> {
+        Ok(run(options, input)?.replies)
+    };
+    let invalid: &[u8] = b"\x1bP0+r\x1b\\";
+    for request in [&b"544e"[..], b"536d756c78;544e", b"", b"not hex"] {
+        let input = [b"\x1bP+q", request, b"\x1b\\"].concat();
+        assert_eq!(ask(SETTINGS, &input)?, [invalid.to_vec()], "{request:?}");
+    }
+    let long = [&b"\x1bP+q"[..], &vec![b'4'; 100 << 10], b"\x1b\\"].concat();
+    assert_eq!(ask(SETTINGS, &long)?, [invalid.to_vec()]);
+    for other in [&b"\x1bP+q544e\x18"[..], b"\x1bP1+q544e\x1b\\"] {
+        assert!(ask(SETTINGS, other)?.is_empty(), "{other:?}");
+    }
+    assert!(ask(Options::new(), b"\x1bP+q544e\x1b\\")?.is_empty());
     Ok(())
 }
 
@@ -653,7 +726,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
     let input = format!("\x1b[1;4;38;5;208;48;2;1;2;3m界e\u{301}\x1b[m {family}");
     parser.process(input.as_bytes())?;
     let screen = parser.screen();
-    let mut copy = Cells::new(6);
+    let mut copy = Cells::new(6).unwrap_or_default();
     for col in 0..6 {
         let original = screen.cell(0, col).ok_or("cell")?;
         if original.is_wide_continuation() {
@@ -687,11 +760,15 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
 /// checksum of the rectangle's cells as xterm and the VT520 sum them
 /// (`xtermCheckRect`; ctlseqs, XTCHECKSUM): each character, plus 0x10
 /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16 bits
-/// and negated, four upper-case hex digits. An empty cell is a space; a
-/// character past Latin-1 is ESC; a DEC Special Graphics glyph, the code it
-/// was drawn with. The page is ignored, as in xterm; the rectangle defaults
-/// to the whole screen, and is relative to the margins in origin mode.
-/// Without the option, nothing is answered.
+/// and negated, four upper-case hex digits. A character past Latin-1 is
+/// ESC; a DEC Special Graphics glyph, its DEC code
+/// (`rectangle_checksums_sum_a_designated_glyph_as_xterm_does`). Two
+/// departures from xterm 411 (decisions.md 964): an empty cell is a space,
+/// as esctest reads it (xterm: nothing), and a UTF-8 é its Latin-1 code
+/// (xterm: 0x69). The page is ignored, as in xterm (decisions.md 47); the
+/// rectangle defaults to the whole screen, and counts from the margins in
+/// origin mode. An inverted rectangle has "the sequence ... ignored" (DEC
+/// STD 070, DECRQCRA): no reply. Without the option, nothing is answered.
 #[test]
 fn rectangle_checksums_sum_the_cells() -> Result {
     let checksum = |sum: u16| format!("{:04X}", sum.wrapping_neg());
@@ -719,7 +796,7 @@ fn rectangle_checksums_sum_the_cells() -> Result {
     p.process_with(input.as_bytes(), &mut record)?;
     // Origin mode: row 1 is the top margin, row 3.
     p.process_with(b"\x1b[3;3r\x1b[?6hz\x1b[11;0;1;1;1;1*y", &mut record)?;
-    let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x71 + 0x20 * 4;
+    let whole: u16 = 0x61 + 0x62 + 0x63 + 0x80 + 0x64 + 0x30 + 0xe9 + 0x1b * 2 + 0x1d + 0x20 * 4;
     let expected = [
         (1, checksum(0x61)),
         (2, checksum(0x61 + 0x62)),
@@ -727,10 +804,9 @@ fn rectangle_checksums_sum_the_cells() -> Result {
         (4, checksum(0x64 + 0x10 + 0x20)),
         (5, checksum(0xe9)),
         (6, checksum(0x1b * 2)),
-        (7, checksum(0x71)),
+        (7, checksum(0x1d)),
         (8, checksum(0x20)),
         (9, checksum(whole)),
-        (10, "0000".to_owned()),
         (11, checksum(0x7a)),
     ]
     .map(|(id, sum)| format!("\x1bP{id}!~{sum}\x1b\\").into_bytes());
@@ -740,5 +816,45 @@ fn rectangle_checksums_sum_the_cells() -> Result {
             .replies
             .is_empty()
     );
+    Ok(())
+}
+
+/// DECRQCRA over glyphs of a designated set, with
+/// `Feature::RectangleChecksums`: each counts as the DEC code xterm 411
+/// sums for it (`xtermCheckRect` by default calls `xtermCharSetDec`, whose
+/// `unmap_DEC_Spec_Graphic` and `unmap_DEC_Supp_Graphic` give the code of
+/// the cell's byte in its set), not the byte drawn. Each value is xterm
+/// 411's own reply, read from it under Xvfb (`decTerminalID: 420`) for the
+/// same bytes: Special Graphics' ─ 0x1d, ▒ 0x78, π 0xc6, ≤ 0x85, ° 0xb0,
+/// · 0xb7, £ 0xa3, a bold ─ 0x9d; DEC Supplemental's (`ESC ( % 5`) Œ 0x97,
+/// Ÿ 0x98, œ 0x99, Á 0xc1, ¤ 0xa4, and an empty position ESC.
+#[test]
+fn rectangle_checksums_sum_a_designated_glyph_as_xterm_does() -> Result {
+    let options = Options::new().with(Feature::RectangleChecksums);
+    let mut p = Parser::with_options(Size::new(2, 8)?, 0, options)?;
+    let mut record = Record::default();
+    p.process(b"\x1b(0qa{yf~}\x1b[1mq\x1b[m\x1b(B\r\n\x1b(%5W]wA($\x1b(B")?;
+    let cells = (1..=8u16)
+        .map(|col| (1, col))
+        .chain((1..=6).map(|col| (2, col)));
+    let mut input = String::new();
+    for (row, col) in cells.clone() {
+        input.push_str(&format!("\x1b[{row}{col};0;{row};{col};{row};{col}*y"));
+    }
+    p.process_with(input.as_bytes(), &mut record)?;
+    let sums: [u16; 14] = [
+        0x1d, 0x78, 0xc6, 0x85, 0xb0, 0xb7, 0xa3, 0x9d, // Special Graphics
+        0x97, 0x98, 0x99, 0xc1, 0xa4, 0x1b, // DEC Supplemental
+    ];
+    let expected: Vec<String> = cells
+        .zip(sums)
+        .map(|((row, col), sum)| format!("\x1bP{row}{col}!~{:04X}\x1b\\", sum.wrapping_neg()))
+        .collect();
+    let replies: Vec<String> = record
+        .replies
+        .iter()
+        .map(|r| String::from_utf8_lossy(r).into_owned())
+        .collect();
+    assert_eq!(replies, expected);
     Ok(())
 }

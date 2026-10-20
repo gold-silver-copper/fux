@@ -6,8 +6,9 @@
 //! `size `), which is how the oracle's own random cases seed the fuzzer
 //! (`fux-vt-oracle --seeds DIR`); or five header bytes, then operations.
 //!
-//! - Header: rows (1 to 16), columns (1 to 24), history (one of ten sizes,
-//!   0 to 100, so it fills), then two bytes of options: the first's bits
+//! - Header: rows (1 to 16), columns (1 to 24), history's budget (one of
+//!   ten, 0 to 8 MiB, fux's: the small ones fill), then two bytes of
+//!   options: the first's bits
 //!   turn on events, extended replies, mode reports, in-band resize, size
 //!   reports, colour-scheme updates, the kitty keyboard protocol and
 //!   reflow; the second's, hyperlinks, prompt marks, rectangle checksums,
@@ -17,17 +18,32 @@
 //!   1,100 columns or more (`n` picks), or to 65,535 by 65,535.
 //! - `fe` and eight bytes: a window (offset, rows, columns), two corners
 //!   and the copy's cell and byte limits.
-//! - `fd n` and n bytes: output through `process_until_frame`.
+//! - `fa k n`: a host's call, `k` naming which (`model::Call`), `n` its
+//!   argument.
+//! - `fd n` and n bytes: output through `process_until_stop`.
 //! - `fc n` and n bytes: a character of fux-vt's grapheme table for each,
 //!   so clusters of every kind come often.
 //! - Any other byte `b`: the next `b + 1` bytes as output.
 #![no_main]
 use fux_vt_oracle::graphemes::CHARACTERS;
-use fux_vt_oracle::model::{IDENTITIES, Selection, Setup};
+use fux_vt_oracle::model::{Call, IDENTITIES, Selection, Setup};
 use fux_vt_oracle::{Case, Step, check};
 use libfuzzer_sys::fuzz_target;
 
-const HISTORIES: [usize; 10] = [0, 1, 2, 3, 5, 8, 13, 20, 40, 100];
+/// History's budgets, in bytes: none, a row or a few, a block or more, and
+/// fux's 8 MiB.
+const HISTORIES: [usize; 10] = [
+    0,
+    64,
+    256,
+    1 << 10,
+    4 << 10,
+    16 << 10,
+    64 << 10,
+    256 << 10,
+    1 << 20,
+    8 << 20,
+];
 
 fn bit(byte: u8, n: u8) -> bool {
     byte.checked_shr(u32::from(n)).is_some_and(|b| b & 1 == 1)
@@ -42,7 +58,12 @@ const TEXT_STEPS: usize = 300;
 fn case(data: &[u8]) -> Option<Case> {
     if data.starts_with(b"size ") {
         let case = Case::from_text(std::str::from_utf8(data).ok()?).ok()?;
-        return (case.is_safe() && case.bytes() <= TEXT_BYTES && case.steps.len() <= TEXT_STEPS)
+        // Sizes it can compare quickly only (`Case::is_quick`): a screen
+        // of 65,535 columns compared at every step outran its timeout.
+        return (case.is_safe()
+            && case.is_quick()
+            && case.bytes() <= TEXT_BYTES
+            && case.steps.len() <= TEXT_STEPS)
             .then_some(case);
     }
     let (header, mut input) = data.split_at_checked(5)?;
@@ -70,7 +91,7 @@ fn case(data: &[u8]) -> Option<Case> {
     let mut case = Case {
         rows: 1 + u16::from(rows % 16),
         cols: 1 + u16::from(cols % 24),
-        history: HISTORIES
+        history_bytes: HISTORIES
             .get(usize::from(history % 10))
             .copied()
             .unwrap_or(0),
@@ -111,6 +132,24 @@ fn case(data: &[u8]) -> Option<Case> {
                     } else {
                         cells.saturating_mul(4)
                     },
+                }));
+            }
+            0xfa => {
+                let (&[which, n], rest) = input.split_first_chunk::<2>()?;
+                input = rest;
+                let side = |n: u8| u16::from(n % 20).saturating_add(1);
+                case.steps.push(Step::Host(match which % 9 {
+                    0 => {
+                        Call::HistoryBytes(HISTORIES.get(usize::from(n % 10)).copied().unwrap_or(0))
+                    }
+                    1 => Call::ClearHistory,
+                    2 => Call::Tick,
+                    3 => Call::Palette(n),
+                    4 => Call::Graphics(side(n), side(n / 20)),
+                    5 => Call::Nonce(n.is_multiple_of(2)),
+                    6 => Call::Submit,
+                    7 => Call::Record(!n.is_multiple_of(4)),
+                    _ => Call::Prints,
                 }));
             }
             0xfd | 0xfc => {

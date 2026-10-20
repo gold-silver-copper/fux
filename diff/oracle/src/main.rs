@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 const USAGE: &str = "\
 usage: fux-vt-oracle [--seed N] [--cases N] [--streams N] [--cells N]
                      [--no-corpus] [--shrink SECONDS] [--threads N]
+                     (--threads: default CARGO_BUILD_JOBS, else 4)
        fux-vt-oracle --replay FILE
        fux-vt-oracle --seeds DIR [--seed N] [--cases N] [--streams N]
        fux-vt-oracle --baseline
@@ -20,7 +21,9 @@ Runs the working tree's fux-vt beside fux-vt at the commit Cargo.lock pins
 (diff/oracle.sh pins it for the run, to the latest master unless told another),
 comparing everything its API shows after every step: over every corpus
 recording (as fux sets up a pane, and with every option off; each step in
-pieces of up to 2048 bytes), --cases random cases (default 10000), --streams
+pieces of up to 2048 bytes; and the working tree's worst 4 KiB read and a
+resize of a full history, in work units, held to the ceiling U), --cases
+random cases (default 10000), --streams
 resize-heavy streams with history full (default 50), the limits, and
 --cells runs of the standalone types (default 300). A difference is shrunk
 for up to --shrink seconds (default 60) and written to diff/target/oracle/
@@ -63,7 +66,12 @@ fn pinned() -> &'static str {
 
 fn parse() -> Result<Asked, String> {
     let mut args = std::env::args().skip(1);
-    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    // CARGO_BUILD_JOBS's, as the harness's --jobs sets it, else 4: never
+    // every core unasked.
+    let threads = (std::env::var("CARGO_BUILD_JOBS").ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4);
     let mut o = Options {
         seed: 1,
         cases: 10_000,
@@ -272,14 +280,15 @@ fn run(o: &Options) -> Result<bool, String> {
         for recording in inputs::corpus()? {
             jobs.push((
                 format!("corpus {} as a pane", recording.name),
-                recording.case(inputs::PANE_HISTORY, Setup::pane(), PIECE),
+                recording.case(inputs::PANE_HISTORY_BYTES, Setup::pane(), PIECE),
             ));
             jobs.push((
                 format!("corpus {} with every option off", recording.name),
-                recording.case(inputs::PANE_HISTORY, Setup::default(), PIECE),
+                recording.case(inputs::PANE_HISTORY_BYTES, Setup::default(), PIECE),
             ));
         }
         alike &= cases_part("corpus", jobs, o);
+        alike &= part("ceiling", Instant::now(), fux_vt_oracle::ceiling::check());
     }
     let jobs = inputs::random_cases(o.seed ^ 0x5241_4e44, o.cases)
         .into_iter()

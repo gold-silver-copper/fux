@@ -51,7 +51,7 @@ pub fn pane(
             if !*wrapped {
                 *line = line.saturating_add(1);
             }
-            *wrapped = !view.wrapped && row.wrapped();
+            *wrapped = !view.wrapped && row.continues();
             Some(*line)
         })
         .collect();
@@ -107,7 +107,7 @@ pub fn pane(
             Some(last) if wraps => last.extend(cells),
             _ => lines.push(cells),
         }
-        wraps = !view.wrapped && row.wrapped();
+        wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
     let state = json.then(|| state(pane, Instant::now(), copy_mode));
@@ -340,6 +340,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
                 MouseProtocolMode::None => Json::Null,
                 MouseProtocolMode::Press => Json::str("press"),
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
+                MouseProtocolMode::Highlight => Json::str("highlight"),
                 MouseProtocolMode::ButtonMotion => Json::str("button_motion"),
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },
@@ -382,16 +383,19 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
 }
 
 /// Where a picture is, for `json`: its top row (negative once scrolled
-/// above the screen), first column, the cells it covers, and its size in
+/// above the screen), first column, the cells it covers, its first rows
+/// that are gone (`cropped`: scrolled off a region's top or a screen's
+/// that keeps no history, the rest shown below them), and its size in
 /// pixels.
 fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
     Json::Object(vec![
         ("row", Json::Number(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
+        ("cropped", Json::int(shown.cropped)),
         ("cols", Json::int(shown.cols)),
-        ("width", Json::int(shown.picture.width)),
-        ("height", Json::int(shown.picture.height)),
+        ("width", Json::int(shown.picture.width())),
+        ("height", Json::int(shown.picture.height())),
     ])
 }
 
@@ -409,11 +413,11 @@ fn print(
     // What a selection is drawn with: reverse video, or a background
     // other than the screen's own.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    // A blank's style shows on the screen: a background, reverse video, a
-    // line under or through it. One bold or coloured in front shows none.
-    let painted = |a: &Attributes| {
-        a.background() != Color::Default || a.inverse() || a.underline() || a.strikeout()
-    };
+    // A blank's style shows on the screen: a background other than the
+    // screen's own, reverse video, a line under or through it. One bold or
+    // coloured in front shows none.
+    let painted =
+        |a: &Attributes| a.background() != base || a.inverse() || a.underline() || a.strikeout();
     // Blanks at a line's end are trimmed, unless they show: highlighted
     // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
     // and runs, a painted surface kept whole); plain text trims them all
@@ -443,8 +447,8 @@ fn print(
     out.push('\n');
     // JSON's lines are the text's, trimmed alike.
     let json = state.map(|state| {
-        // On a blank row trimmed away, it is still where it is: past the
-        // lines printed.
+        // The screen's own row and column, as the state line says them,
+        // whatever blank rows are trimmed from the lines.
         let cursor = cursor.map_or(Json::Null, |(y, x)| {
             Json::Array(vec![Json::int(y), Json::int(x)])
         });
@@ -591,6 +595,38 @@ mod tests {
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(&pane, None, view, false, false).0;
         assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
+
+    /// With `styles`, a blank at a line's end is kept when it shows: on a
+    /// screen painted in one background (a full-screen program's), blanks
+    /// in that background are the screen's own, and trimmed, as a
+    /// selection's highlight is told from it.
+    #[test]
+    fn blanks_in_the_screen_s_own_background_are_trimmed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let view = CaptureView {
+            styles: true,
+            ..CaptureView::default()
+        };
+        let size = fux_vt::Size::new(3, 8)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        pane.output(b"\x1b[44m\x1b[2J\x1b[Hab\x1b[2;1Hcd\x1b[41m  ");
+        let text = super::pane(&pane, None, view, false, false).0;
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines
+                .first()
+                .map(|l| l.trim_end_matches("\x1b[0m").ends_with("ab")),
+            Some(true),
+            "{lines:?}"
+        );
+        // The red blanks are painted, kept; the blue past them, trimmed.
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("\x1b[0;44mcd\x1b[0;41m  \x1b[0m"),
+            "{lines:?}"
+        );
         Ok(())
     }
 }

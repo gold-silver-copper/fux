@@ -82,3 +82,86 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
     );
     Ok(())
 }
+
+/// A frame whose reading takes several turns, as one spending more than a
+/// parser call's work budget does (threats.md P24), is shown only once
+/// read whole: the client keeps the last frame shown meanwhile ("keep
+/// rendering the last rendered state", the spec's "Rendering"). Each REP
+/// is spent as 65,535 copies: 4,000 of them spend two budgets. A row of
+/// eight X's is the frame half read: the line typed has none.
+#[test]
+fn a_frame_read_over_several_turns_is_shown_only_whole() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    type_now(
+        &server,
+        "%1",
+        "printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
+         printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''",
+    )?;
+    let deadline = after(Duration::from_secs(60));
+    loop {
+        client.pump()?;
+        let text = client.text();
+        assert!(
+            !text.contains("XXXXXXXX"),
+            "half a frame was shown:\n{text}"
+        );
+        if text.contains("DONE") {
+            return Ok(());
+        }
+        assert!(Instant::now() < deadline, "no frame shown:\n{text}");
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// A pane drawing frame after frame, each read over several turns, holds
+/// up only itself (threats.md P24): the client is painted the rest of its
+/// screen meanwhile, that pane as it was last painted, never half a frame.
+#[test]
+fn a_pane_part_way_through_frames_holds_up_no_other() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(10, 60)?;
+    client.wait_for("$")?;
+    server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    type_now(
+        &server,
+        "%2",
+        "sleep 2; while :; do printf '\\033[?2026h'; printf 'X\\033[65535b%.0s' $(seq 4000); \
+         printf '\\033[2J\\033[HDO%sNE\\033[?2026l' ''; done",
+    )?;
+    // Both lines are typed before the frames begin: in an unoptimized
+    // build a turn takes seconds, past a new client's patience for the
+    // server's greeting. HELLO comes once they have.
+    type_now(&server, "%1", "sleep 4; echo HE''LLO")?;
+    // How long a frame of the flood takes in this build (two budgets and
+    // more: seconds unoptimized, on a slow runner more) sets the wait. The
+    // flood never ends, so a pane it starved would show HELLO never; one
+    // painted between the flood's turns shows it within a few frames of
+    // its echo, which comes once the first frame does if not before.
+    let started = Instant::now();
+    let first = after(Duration::from_secs(300));
+    let mut deadline = None;
+    loop {
+        client.pump()?;
+        let text = client.text();
+        assert!(
+            !text.contains("XXXXXXXX"),
+            "half a frame was shown:\n{text}"
+        );
+        if text.contains("HELLO") {
+            return Ok(());
+        }
+        if deadline.is_none() && text.contains("DONE") {
+            let frame = started.elapsed();
+            deadline = Some(after(Duration::from_secs(4) + frame * 5));
+        }
+        let by = deadline.unwrap_or(first);
+        assert!(
+            Instant::now() < by,
+            "the other pane was not painted:\n{text}"
+        );
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}

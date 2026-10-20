@@ -12,17 +12,29 @@
 /// One side: `side!(work, fux_vt, "work")` expands to `pub mod work`,
 /// which reads the crate `fux_vt` into the model (`model::State`, its
 /// cells, rows, events and errors) through fux-vt's public API, with
-/// `NAME` `"work"` naming the side in a report.
+/// `NAME` `"work"` naming the side in a report. With `checked` after the
+/// name, `side!(work, fux_vt, "work", checked)`, its `Side::faults` are
+/// what `Parser::check` finds, but for the checks known to fail at BASE
+/// (`fux-vt/tests/corpus/known.rs`): the side's fux-vt has the checker.
 macro_rules! side {
+    (@faults checked, $terminal:expr) => {{
+        let report = $terminal.parser.check();
+        let unknown = crate::known::unknown(&report);
+        (!unknown.is_empty()).then(|| report.to_string())
+    }};
+    (@faults, $terminal:expr) => {{
+        let _ = $terminal;
+        None
+    }};
     (
         $module:ident,
         $vt:ident,
-        $name:literal $(,)?
+        $name:literal $(, $checked:ident)? $(,)?
     ) => {
         pub mod $module {
             use crate::model::{
-                self, Blink, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup, State,
-                Style, Underline,
+                self, Blink, Call, Cell, Color, Error, Heard, Lookup, Marked, Row, Seen, Setup,
+                State, Stop, Style, Underline,
             };
             use $vt as vt;
 
@@ -125,17 +137,47 @@ macro_rules! side {
                 s.size().into()
             }
 
-    /// Every mode both read, by name.
-            #[rustfmt::skip]
+            /// Every mode (`Mode::ALL`), by name: all but DECHCCM, which is
+            /// permanent and which the DECRQM probe compares.
             fn modes(s: &vt::Screen) -> Vec<(String, bool)> {
-                use vt::Mode::*;
-                [
-                    ShowCursor, ApplicationCursor, ApplicationKeypad, BracketedPaste,
-                    SynchronizedOutput, InBandResize, ColorSchemeUpdates, FocusReporting,
-                    AlternateScreen, Autowrap, Insert, Origin,
-                ]
-                .map(|m| (format!("{m:?}"), s.mode(m)))
-                .into()
+                (vt::Mode::ALL.into_iter())
+                    .filter(|m| !matches!(m, vt::Mode::HorizontalCursorCoupling))
+                    .map(|m| (format!("{m:?}"), s.mode(m)))
+                    .collect()
+            }
+
+            /// FNV-1a over `bytes`, folded into `h`.
+            fn fold(h: u64, bytes: &[u8]) -> u64 {
+                (bytes.iter()).fold(h, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+            }
+
+            /// A row's cells, hashed: each one's text, halves and style, the
+            /// style as the model reads it, so the two sides hash alike.
+            fn cells_hash(row: vt::Row<'_>) -> u64 {
+                let mut h = crate::side::Fnv(0xcbf2_9ce4_8422_2325);
+                for c in row.cells() {
+                    std::hash::Hash::hash(&(c.contents(), c.is_wide(), c.is_wide_continuation()), &mut h);
+                    std::hash::Hash::hash(&getters(&c), &mut h);
+                }
+                std::hash::Hasher::finish(&h)
+            }
+
+            /// A picture's pixels, hashed at an 8 by 8 grid of them (all of
+            /// them is millions, every step).
+            fn pixels_hash(p: &vt::sixel::Picture) -> u64 {
+                let (w, h) = (p.width(), p.height());
+                let mut hash = 0xcbf2_9ce4_8422_2325;
+                for y in 0..8u32 {
+                    for x in 0..8u32 {
+                        let at = (x.saturating_mul(w) / 8, y.saturating_mul(h) / 8);
+                        hash = fold(hash, &p.pixel(at.0, at.1).unwrap_or_default());
+                    }
+                }
+                hash
+            }
+
+            fn rgb(c: Option<vt::Rgb>) -> Option<(u8, u8, u8)> {
+                c.map(|c| (c.r, c.g, c.b))
             }
 
             /// The number in a `RowId` or `Mark`, which shows it only in
@@ -213,11 +255,15 @@ macro_rules! side {
             impl crate::Side for Terminal {
                 const NAME: &'static str = $name;
 
-                fn new(rows: u16, cols: u16, history: usize, setup: &Setup) -> Result<Self, Error> {
+                fn faults(&self) -> Option<String> {
+                    side!(@faults $($checked)?, self)
+                }
+
+                fn new(rows: u16, cols: u16, history_bytes: usize, setup: &Setup) -> Result<Self, Error> {
                     // A size of none is no `Size`: refused as such.
                     let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
                     let parser =
-                        vt::Parser::with_options(size, history, options(setup)).map_err(error)?;
+                        vt::Parser::with_options(size, history_bytes, options(setup)).map_err(error)?;
                     Ok(Terminal {
                         parser,
                         marks: Vec::new(),
@@ -231,24 +277,56 @@ macro_rules! side {
                         .map_err(error)
                 }
 
-                fn process_until_frame(
+                fn process_until_stop(
                     &mut self,
                     bytes: &[u8],
                     heard: &mut Vec<Heard>,
-                ) -> Result<Option<(usize, bool)>, Error> {
-                    let frame = self.parser.process_until_frame(bytes, &mut Sink(heard));
-                    let begun = |frame| match frame {
-                        vt::Frame::Begun => true,
-                        vt::Frame::Ended => false,
+                ) -> Result<Option<(usize, Stop)>, Error> {
+                    let stop = self.parser.process_until_stop(bytes, &mut Sink(heard));
+                    let why = |stop| match stop {
+                        vt::Stop::Begun => Stop::Begun,
+                        vt::Stop::Ended => Stop::Ended,
+                        vt::Stop::Budget => Stop::Budget,
                     };
-                    frame
-                        .map(|f| f.map(|(taken, frame)| (taken, begun(frame))))
+                    stop.map(|s| s.map(|(taken, stop)| (taken, why(stop))))
                         .map_err(error)
                 }
 
                 fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error> {
                     let size = vt::Size::new(rows, cols).map_err(|_| crate::side::zero_size())?;
                     self.parser.resize(size).map_err(error)
+                }
+
+                fn host(&mut self, call: Call) -> String {
+                    let p = &mut self.parser;
+                    match call {
+                        Call::HistoryBytes(n) => p.set_history_bytes(n),
+                        Call::ClearHistory => p.clear_history(),
+                        Call::Tick => return p.tick().to_string(),
+                        Call::Palette(n) => {
+                            let mut palette = [None; 16];
+                            if let Some(entry) = palette.get_mut(usize::from(n % 16)) {
+                                *entry = Some(vt::Rgb { r: n, g: !n, b: n / 2 });
+                            }
+                            p.set_host_palette(palette);
+                        }
+                        Call::Graphics(w, h) => p.set_host_graphics(vt::Graphics {
+                            cell: Some((w, h)),
+                            sixel: true,
+                        }),
+                        Call::Nonce(on) => {
+                            p.require_mark_nonce(on.then_some(b"n1"), on.then_some(b"n2"))
+                        }
+                        Call::Submit => p.note_submit(),
+                        Call::Record(on) => p.record_prints(on),
+                        Call::Prints => {
+                            let prints = p.take_prints();
+                            return (prints.iter())
+                                .map(|r| format!("{} {:?} {:?}\n", number(r.row), r.cols, r.text))
+                                .collect();
+                        }
+                    }
+                    String::new()
                 }
 
                 fn state(&self) -> State {
@@ -281,6 +359,29 @@ macro_rules! side {
                             .checked_sub(1)
                             .is_none_or(|last| back(s, last).is_some())
                             && back(s, retained).is_none(),
+                        left_right_margins: s.left_right_margins(),
+                        palette: (0..=u8::MAX).map(|i| rgb(s.palette_color(i))).collect(),
+                        dynamic: (10..=19).map(|n| rgb(s.dynamic_color(n))).collect(),
+                        pictures: (s.pictures())
+                            .map(|p| {
+                                let size = (p.picture.width(), p.picture.height());
+                                (p.id, p.row, p.col, p.cols, p.rows, size, pixels_hash(p.picture))
+                            })
+                            .collect(),
+                        inactive: {
+                            // The live rows alone: the main screen's history
+                            // is the rows' own comparison's while it shows.
+                            let other = if s.mode(vt::Mode::AlternateScreen) {
+                                s.main_rows()
+                            } else {
+                                s.alternate_rows()
+                            };
+                            let history = other.len().saturating_sub(usize::from(rows));
+                            (other.skip(history))
+                                .map(|r| (number(r.id()), r.wrapped(), cells_hash(r)))
+                                .collect()
+                        },
+                        let_go: s.let_go(),
                     }
                 }
 
@@ -556,7 +657,7 @@ macro_rules! side {
                 }
 
                 fn run(len: usize) -> vt::Cells {
-                    vt::Cells::new(len)
+                    vt::Cells::new(len).unwrap_or_default()
                 }
 
                 fn apply(run: &mut vt::Cells, edit: &crate::cells::Edit) -> String {
@@ -597,8 +698,8 @@ macro_rules! side {
                             style,
                         } => {
                             let cell = vt::CellRef::new(text, *wide, attributes(style));
-                            run.resize(*len, cell);
-                            stored(&cell)
+                            let made = run.resize(*len, cell);
+                            format!("{} {}", made.is_ok(), stored(&cell))
                         }
                         Edit::Copy { i, from } => {
                             let was = run.clone();
@@ -655,10 +756,25 @@ macro_rules! side {
     };
 }
 
-side!(work, fux_vt, "work");
+side!(work, fux_vt, "work", checked);
 side!(base, base_vt, "base");
 
 /// The commit's error for a size of no rows or no columns, as read.
+/// FNV-1a as a `Hasher`: the sides hash what they read with it, the same
+/// whichever fux-vt they are.
+pub(crate) struct Fnv(pub(crate) u64);
+
+impl std::hash::Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = (self.0 ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
 fn zero_size() -> crate::model::Error {
     crate::model::Error("ZeroSize: terminal dimensions must be nonzero".to_owned())
 }

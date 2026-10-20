@@ -1,0 +1,4 @@
+# The bound rows known to fail at BASE (9a38df95): a row and a scale a
+# line, then, in backticks, what its error says at every chunking, then
+# why, as measured. tests/bounds.rs reads it: a row on it must fail so; a
+# fix takes its rows off (a row on it that passes fails the suite).

@@ -14,7 +14,6 @@ use crate::view::{Mode, View};
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
 use std::io::Write;
-use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Debug)]
 pub struct Grid {
@@ -96,7 +95,20 @@ pub struct Visible {
 /// The same picture in the same place, showing the same part.
 impl PartialEq for Visible {
     fn eq(&self, other: &Visible) -> bool {
-        (self.pane, self.id, self.area, self.crop) == (other.pane, other.id, other.area, other.crop)
+        self.sixel_key() == other.sixel_key() && self.area == other.area
+    }
+}
+
+impl Visible {
+    /// What its sixel data is kept by (`Sixels`): its pane, its number
+    /// there, its crop (left, top, width, height, as `crop`), and the
+    /// picture's address. A pane's program started again (`respawn`)
+    /// numbers its pictures from 0 again; while an old picture's data is
+    /// kept, the client's list of what it shows holds that picture, so a
+    /// new one has another address.
+    fn sixel_key(&self) -> SixelKey {
+        let address = std::sync::Arc::as_ptr(&self.picture).addr();
+        (self.pane, self.id, self.crop, address)
     }
 }
 
@@ -126,7 +138,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                 .row
                 .saturating_add(i64::from(shown.rows))
                 .min(i64::from(rect.h()));
-            let start = shown.row.max(0);
+            let start = shown.row.saturating_add(i64::from(shown.cropped)).max(0);
             let right = shown.col.saturating_add(shown.cols).min(rect.w());
             let (Ok(top), Ok(bottom)) = (u16::try_from(start), u16::try_from(end)) else {
                 continue;
@@ -159,14 +171,63 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     visible
 }
 
-/// What shows `picture` on a terminal that draws sixel, its cursor kept:
-/// at its area's top left, its crop of pixels.
-pub fn picture_into(picture: &Visible, out: &mut Vec<u8>) {
-    let (row, col, _, _) = picture.area;
-    out.extend_from_slice(b"\x1b7");
-    goto(out, row, col);
-    fux_vt::sixel::encode(&picture.picture, picture.crop, out);
-    out.extend_from_slice(b"\x1b8");
+/// The sixel data of the pictures a client was last sent, each by its pane,
+/// number, crop and address (`Visible::sixel_key`): a picture that only moves is sent again with the same
+/// data at its new place, encoded once (`threats.md` B08). At most
+/// `SIXEL_BYTES` are kept; a picture past them is encoded each time it is
+/// sent.
+#[derive(Debug, Default)]
+pub struct Sixels {
+    kept: Vec<(SixelKey, Vec<u8>)>,
+    /// How many pictures were encoded: for the tests.
+    #[cfg(test)]
+    encoded: usize,
+}
+
+/// What a picture's sixel data is kept by (`Visible::sixel_key`).
+type SixelKey = (PaneId, u64, (u32, u32, u32, u32), usize);
+
+/// The most sixel data a client keeps to send again: 16 MiB, a fixed
+/// bound on what the cache holds per client. At `threats.md` B08's worst,
+/// 12 bytes a pixel, that is the data of 1.4 million pixels (a 1,600 by
+/// 870 picture); a picture of few colours, as most are, encodes to far
+/// less, so it holds a screenful of them. One past it is not kept but
+/// encoded each time it is sent, its work bounded by B08.
+const SIXEL_BYTES: usize = 16 << 20;
+
+impl Sixels {
+    /// What shows `picture` on a terminal that draws sixel, its cursor
+    /// kept: at its area's top left, its crop of pixels, from the data
+    /// kept for its crop or encoded now.
+    pub fn picture_into(&mut self, picture: &Visible, out: &mut Vec<u8>) {
+        let (row, col, _, _) = picture.area;
+        out.extend_from_slice(b"\x1b7");
+        goto(out, row, col);
+        let key = picture.sixel_key();
+        if let Some((_, data)) = self.kept.iter().find(|(k, _)| *k == key) {
+            out.extend_from_slice(data);
+        } else {
+            let mut data = Vec::new();
+            fux_vt::sixel::encode(&picture.picture, picture.crop, &mut data);
+            #[cfg(test)]
+            {
+                self.encoded = self.encoded.saturating_add(1);
+            }
+            out.extend_from_slice(&data);
+            let held: usize = self.kept.iter().map(|(_, d)| d.len()).sum();
+            if held.saturating_add(data.len()) <= SIXEL_BYTES {
+                self.kept.push((key, data));
+            }
+        }
+        out.extend_from_slice(b"\x1b8");
+    }
+
+    /// Lets go of the data of every picture not in `shown`, the pictures
+    /// the client now shows.
+    pub fn keep(&mut self, shown: &[Visible]) {
+        self.kept
+            .retain(|(key, _)| shown.iter().any(|p| p.sixel_key() == *key));
+    }
 }
 
 /// Grids are equal when they show the same.
@@ -181,7 +242,9 @@ impl Eq for Grid {}
 /// identity and version of each pane row put in it. A row of a fux-vt
 /// screen keeps its identity while it is retained, no later row takes it,
 /// and its version changes with every edit of its cells, soft wrap or
-/// links; pane ids are never reused. So a grid composed again for its
+/// links; pane ids are never reused, and a pane's program started again
+/// (`respawn`), whose new screen numbers its rows from the start again,
+/// makes another frame. So a grid composed again for its
 /// memo's frame needs only the pane rows whose keys changed put again
 /// (`Memo::update`), and two grids of one frame show the same cells on a
 /// row of the pane area whose pane rows have the same keys in both
@@ -198,7 +261,8 @@ struct Memo {
 type RowKey = Option<(fux_vt::RowId, u64)>;
 
 /// Everything about a grid composed in normal mode but its panes' rows: its
-/// size, where each pane and separator is and its window's size, and the
+/// size, where each pane and separator is, each pane's screen
+/// (`Pane::starts`, which program's) and its window's size, and the
 /// focused pane, which colours the separators. Only for a tab with panes
 /// (one without shows a hint, and focuses none) none of which is in
 /// colours of its own (`recolour`), whose rows depend on more than their
@@ -207,7 +271,7 @@ type RowKey = Option<(fux_vt::RowId, u64)>;
 struct Frame {
     rows: u16,
     cols: u16,
-    panes: Vec<(PaneId, Rect, (u16, u16))>,
+    panes: Vec<(PaneId, u64, Rect, (u16, u16))>,
     separators: Vec<crate::layout::Separator>,
     focus: PaneId,
 }
@@ -224,11 +288,12 @@ impl Frame {
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
         for (id, rect) in &placement.panes {
-            let screen = session.panes.get(id)?.screen();
+            let pane = session.panes.get(id)?;
+            let screen = pane.screen();
             if own_colours(screen) {
                 return None;
             }
-            panes.push((*id, *rect, screen.size().into()));
+            panes.push((*id, pane.starts, *rect, screen.size().into()));
         }
         Some(Frame {
             rows: view.rows,
@@ -244,7 +309,7 @@ impl Memo {
     /// Puts again on `grid`, which this memo's frame composed and composes
     /// now, the pane rows that changed since: the grid's memo then.
     fn update(mut self, grid: &mut Grid, session: &Session) -> Memo {
-        for ((id, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
+        for ((id, _, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
             let Some(pane) = session.panes.get(id) else {
                 continue;
             };
@@ -285,7 +350,7 @@ impl<'a> SameFrame<'a> {
         y < self.frame.rows.saturating_sub(1)
             && (self.frame.panes.iter())
                 .zip(self.keys.0.iter().zip(self.keys.1))
-                .all(|((_, rect, _), (a, b))| {
+                .all(|((_, _, rect, _), (a, b))| {
                     let i = y.checked_sub(rect.y()).filter(|i| *i < rect.h());
                     i.is_none_or(|i| a.get(usize::from(i)) == b.get(usize::from(i)))
                 })
@@ -303,10 +368,16 @@ fn draw_row(
     colours: Option<&Screen>,
 ) {
     let (gy, gx, width) = (line.y(), line.x(), line.w().min(window_cols));
-    // The pane's own row, well formed, goes whole onto the cells.
-    let len = row.map_or(0, |row| row.len());
+    // The pane's own row, well formed, goes whole onto the cells; one drawn
+    // twice as wide (DECDWL, DECDHL) is drawn over it, covering the width
+    // itself.
+    let mut len = row.map_or(0, |row| row.len());
     if let Some(row) = row {
         grid.put_row(gy, gx, pane, row, width);
+        if row.rendition().is_double() {
+            grid.put_doubled_row(gy, gx, pane, &row, width);
+            len = usize::from(width);
+        }
     }
     // At most `width`, which is at most the line's.
     let end = u16::try_from(len).unwrap_or(width).min(width);
@@ -383,11 +454,17 @@ impl PartialEq for Links {
 impl Eq for Links {}
 
 impl Grid {
+    /// A blank grid `rows` by `cols`; one of no cells if that is more than
+    /// fux-vt's cells hold (`Cells::new`), which draws nothing.
     pub fn new(rows: u16, cols: u16) -> Grid {
+        let (rows, cols, cells) = match Cells::new(cell_count(rows, cols)) {
+            Ok(cells) => (rows, cols, cells),
+            Err(_) => (0, 0, Cells::default()),
+        };
         Grid {
             rows,
             cols,
-            cells: Cells::new(cell_count(rows, cols)),
+            cells,
             links: Links::default(),
             cursor: None,
             modes: Modes::default(),
@@ -409,11 +486,15 @@ impl Grid {
                 self.cells.fill(0..self.cells.len(), CellRef::default());
             }
         } else {
-            self.rows = rows;
-            self.cols = cols;
-            self.cells.resize(0, CellRef::default());
-            self.cells
-                .resize(cell_count(rows, cols), CellRef::default());
+            (self.rows, self.cols) = (rows, cols);
+            let blank = CellRef::default();
+            // Past what fux-vt's cells hold, a grid of none, which draws
+            // nothing.
+            let made = (self.cells.resize(0, blank))
+                .and_then(|()| self.cells.resize(cell_count(rows, cols), blank));
+            if made.is_err() {
+                (self.rows, self.cols) = (0, 0);
+            }
         }
         self.cursor = None;
         self.modes = Modes::default();
@@ -519,6 +600,49 @@ impl Grid {
             self.links.set(i, link, len);
         }
     }
+    /// `put_row` for a row drawn twice as wide (`fux_vt::LineRendition`),
+    /// as no terminal can draw half a line so: each cell takes two
+    /// columns, its glyph and a blank in its colours, a wide glyph four;
+    /// what the doubled cells do not reach of `width` is blank. A double
+    /// height half is drawn as double width.
+    #[cold]
+    #[inline(never)]
+    fn put_doubled_row(&mut self, y: u16, x: u16, pane: PaneId, row: &Row<'_>, width: u16) {
+        let Some(start) = self.index(y, x) else {
+            return;
+        };
+        let room = usize::from(self.cols.saturating_sub(x).min(width));
+        let len = self.cells.len();
+        for at in 0..room {
+            let (col, second) = (at / 2, at % 2 == 1);
+            let i = start.saturating_add(at);
+            let Some(cell) = row.cell(col) else {
+                self.cells.set(i, CellRef::default());
+                self.links.unlink(i..i.saturating_add(1));
+                continue;
+            };
+            // A wide glyph's two halves take the first two of its four
+            // columns, if both fit.
+            let fits = at.saturating_add(1) < room;
+            let shown = match (cell.is_wide(), second) {
+                (true, false) if fits => Some(cell),
+                (true, true) => row.cell(col.saturating_add(1)),
+                (false, false) if !cell.is_wide_continuation() => Some(cell),
+                _ => None,
+            };
+            match shown {
+                Some(shown) => {
+                    self.cells.set(i, shown);
+                }
+                None => {
+                    self.cells.set(i, CellRef::default());
+                    self.cells.set_attributes(i, cell.attributes());
+                }
+            }
+            let link = row.link(col).map(|link| (pane, link));
+            self.links.set(i, link, len);
+        }
+    }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
     /// row as `draw_row` put it, blanks too, in the colours its program set
     /// (`pane_colours`): so a pane whose program changed a palette entry,
@@ -601,40 +725,18 @@ impl Grid {
             .to_owned()
     }
 
-    /// Writes `text` from (y, x), clipped at `limit`, wide glyphs whole; the
-    /// column after it is returned.
+    /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
+    /// `limit`, wide glyphs whole; the column after it is returned.
     fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         let mut x = x;
-        // The cell last written, where its cluster starts in `text`, and
-        // whether it is wide: a char of no width joins that cell's cluster,
-        // as fux-vt's `Screen::print` appends one to the cell before the
-        // cursor, on a wide glyph's first half.
-        let mut last: Option<(u16, usize, bool)> = None;
-        for (at, c) in text.char_indices() {
-            if c.is_control() {
-                last = None;
-                continue;
-            }
-            let width = cells(c);
-            if width == 0 {
-                let end = at.saturating_add(c.len_utf8());
-                if let Some((x, start, wide)) = last
-                    && let Some(cluster) = text.get(start..end)
-                {
-                    self.set(y, x, CellRef::new(cluster, wide, style));
-                }
-                continue;
-            }
+        for (cluster, width) in clusters(text).filter(|(_, width)| *width > 0) {
             let Some(end) = x
                 .checked_add(width)
                 .filter(|end| *end <= limit.min(self.cols))
             else {
                 break;
             };
-            let mut buffer = [0u8; 4];
-            let cell = CellRef::new(c.encode_utf8(&mut buffer), width == 2, style);
-            self.set(y, x, cell);
-            last = Some((x, at, width == 2));
+            self.set(y, x, CellRef::new(cluster, width == 2, style));
             if width == 2
                 && let Some(second) = x.checked_add(1)
             {
@@ -643,6 +745,22 @@ impl Grid {
             x = end;
         }
         x
+    }
+
+    /// Shows `area` as `shown`, a grid of the same size, shows it
+    /// (`compose_held`).
+    fn keep_area(&mut self, shown: &Grid, area: Rect) {
+        let len = self.cells.len();
+        for y in area.rows() {
+            for x in area.cols() {
+                if let Some(i) = self.index(y, x)
+                    && let Some(cell) = shown.cells.get(i)
+                {
+                    self.cells.set(i, cell);
+                    self.links.set(i, shown.links.get(i), len);
+                }
+            }
+        }
     }
 
     fn fill(&mut self, area: Rect, style: Attributes) {
@@ -697,18 +815,86 @@ fn cell_count(rows: u16, cols: u16) -> usize {
     usize::from(rows).saturating_mul(usize::from(cols))
 }
 
-/// A char's display width in cells.
+/// A char's display width in cells, as fux-vt lays out what it holds
+/// (`fux_vt::char_width`: 0, 1 or 2), so the painter and the screen agree.
 fn cells(c: char) -> u16 {
-    // Widths are 0, 1 or 2; a larger one could never fit, so it saturates.
-    c.width()
-        .map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
+    fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// Display width of a string, controls dropped.
+/// The grapheme clusters (UAX #29) of fux's own text, as fux-vt joins
+/// what is printed (`fux_vt::continues_cluster`), controls dropped: each
+/// with the columns it takes by fux-vt's width rule (`fux_vt::str_width`),
+/// at most 2, as a cell holds, so that fux lays its text out as a pane
+/// would. Of a cluster longer than a cell keeps
+/// (`fux_vt::CLUSTER_CAPACITY`), the characters past it are dropped, as a
+/// pane drops them; it is looked at no further, so a long one costs no more
+/// than one a cell keeps.
+fn clusters(text: &str) -> Clusters<'_> {
+    Clusters { text, at: 0 }
+}
+
+/// The clusters of `text` from byte `at` on (`clusters`).
+struct Clusters<'a> {
+    text: &'a str,
+    at: usize,
+}
+
+impl<'a> Iterator for Clusters<'a> {
+    type Item = (&'a str, u16);
+
+    fn next(&mut self) -> Option<(&'a str, u16)> {
+        let text = self.text;
+        loop {
+            let start = self.at;
+            let bytes = text.as_bytes();
+            // Printable ASCII before ASCII, or at the end, is a cluster of
+            // one column alone (no ASCII character joins another, UAX
+            // #29): most of fux's text, which the bar lays out at every
+            // paint, needs no decoding and no look in fux-vt's tables.
+            if let Some(&byte) = bytes.get(start)
+                && byte.is_ascii()
+                && bytes.get(start.saturating_add(1)).is_none_or(u8::is_ascii)
+            {
+                self.at = start.saturating_add(1);
+                if byte.is_ascii_control() {
+                    continue;
+                }
+                return Some((text.get(start..self.at).unwrap_or_default(), 1));
+            }
+            let first = text.get(start..)?.chars().next()?;
+            self.at = start.saturating_add(first.len_utf8());
+            if first.is_control() {
+                continue;
+            }
+            // Where the kept text ends: a control ends the cluster, as one
+            // does in a pane.
+            let mut kept = self.at;
+            for c in text.get(self.at..).unwrap_or_default().chars() {
+                let cluster = text.get(start..kept).unwrap_or_default();
+                if c.is_control() || !fux_vt::continues_cluster(cluster, c) {
+                    break;
+                }
+                self.at = self.at.saturating_add(c.len_utf8());
+                if self.at.saturating_sub(start) <= fux_vt::CLUSTER_CAPACITY {
+                    kept = self.at;
+                }
+            }
+            let cluster = text.get(start..kept).unwrap_or_default();
+            let width = fux_vt::str_width(cluster).min(2);
+            return Some((cluster, u16::try_from(width).unwrap_or(2)));
+        }
+    }
+}
+
+/// Display width of a string, controls dropped: its clusters' (`clusters`).
 pub fn width(text: &str) -> u16 {
-    text.chars()
-        .filter(|c| !c.is_control())
-        .map(cells)
+    // ASCII, as most of it is: a column a character.
+    if text.is_ascii() {
+        let printable = text.bytes().filter(|b| !b.is_ascii_control()).count();
+        return u16::try_from(printable).unwrap_or(u16::MAX).min(4096);
+    }
+    clusters(text)
+        .map(|(_, width)| width)
         .fold(0, u16::saturating_add)
         .min(4096)
 }
@@ -724,12 +910,12 @@ pub fn fit(text: &str, cols: u16) -> Cow<'_, str> {
         return Cow::Borrowed("");
     };
     let mut out = String::new();
-    for c in text.chars().filter(|c| !c.is_control()) {
-        let Some(left) = room.checked_sub(cells(c)) else {
+    for (cluster, width) in clusters(text) {
+        let Some(left) = room.checked_sub(width) else {
             break;
         };
         room = left;
-        out.push(c);
+        out.push_str(cluster);
     }
     out.push('…');
     Cow::Owned(out)
@@ -750,6 +936,37 @@ pub(crate) fn compose(session: &Session, client: ClientId) -> Option<Grid> {
 /// placement are reused, not made again; the frame's memo, the bar's text
 /// and the like are made each time.
 pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: &mut Placement) {
+    compose_held(session, view, grid, placement, None);
+}
+
+/// What a client was last painted: the grid, and where each pane was on
+/// it. A pane part way through a frame (`Pane::mid_frame`) shows as it was
+/// there.
+#[derive(Clone, Copy)]
+pub struct Painted<'a> {
+    pub grid: &'a Grid,
+    pub panes: &'a [(PaneId, Rect)],
+}
+
+impl Painted<'_> {
+    /// Whether pane `id` was painted at `rect` on a grid of this size.
+    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16) -> bool {
+        (self.grid.rows, self.grid.cols) == (rows, cols) && self.panes.contains(&(id, rect))
+    }
+}
+
+/// [`compose_view`], each pane part way through a frame shown as `painted`
+/// showed it where it is still in the same place, else blank, so a client
+/// is never painted half a frame; the rest of the screen, fux's bar and
+/// panels over it too, as it is, so one pane holds up no other (threats.md
+/// P24). Its cursor, if focused, is the one painted there, if any.
+pub fn compose_held(
+    session: &Session,
+    view: &View,
+    grid: &mut Grid,
+    placement: &mut Placement,
+    painted: Option<Painted<'_>>,
+) {
     let area = Session::pane_area(view);
     session.placement_into(view, placement);
     let placement = &*placement;
@@ -766,6 +983,15 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         None
     };
     put_panes(grid, session, view, placement, focus, copy);
+    let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
+    let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
+    for &(id, rect) in placement.panes.iter().filter(|(id, _)| held(id)) {
+        match kept(id, rect) {
+            Some(painted) => grid.keep_area(painted.grid, rect),
+            None => grid.blank(rect),
+        }
+        grid.memo = None;
+    }
     if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
         // Its keys are the client's: the server names what to do.
         let hint = "empty tab: split it or close it";
@@ -790,9 +1016,12 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
         match copy.filter(|(c, _)| c.pane == focus) {
             Some((_, at)) => {
                 // Within the rows shown, which a smaller client can make
-                // fewer than the rect.
+                // fewer than the rect; on a row drawn twice as wide, at its
+                // glyph's first half, as the normal cursor.
                 if let Some((y, x)) = at.cursor_in_view(rect.h().min(screen.size().rows()))
-                    && let Some(at) = rect.at(y, x)
+                    && let doubled =
+                        (at.top.window().row(y)).is_some_and(|r| r.rendition().is_double())
+                    && let Some(at) = rect.at(y, if doubled { x.saturating_mul(2) } else { x })
                 {
                     grid.cursor = Some(at);
                     // The copy cursor is a block.
@@ -801,6 +1030,9 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
             }
             None => {
                 let (y, x) = screen.cursor_position();
+                // On a row drawn twice as wide, at its glyph's first half.
+                let doubled = screen.line_rendition(y).is_double();
+                let x = if doubled { x.saturating_mul(2) } else { x };
                 if screen.mode(fux_vt::Mode::ShowCursor)
                     && view.mode.is_normal()
                     && let Some(at) = rect.at(y, x)
@@ -808,6 +1040,16 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
                     grid.cursor = Some(at);
                     grid.modes.cursor_shape = screen.cursor_shape();
                 }
+            }
+        }
+        // Only where a pane's own cursor shows: in normal mode (none under
+        // an overlay, copy mode's its own).
+        if held(&focus) && view.mode.is_normal() {
+            let painted = kept(focus, rect);
+            let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
+            grid.cursor = at;
+            if let Some(painted) = painted.filter(|_| at.is_some()) {
+                grid.modes.cursor_shape = painted.grid.modes.cursor_shape;
             }
         }
     }
@@ -910,14 +1152,18 @@ fn put_panes(
             let (Some(at), Some(row)) = (at, row) else {
                 continue;
             };
+            // A row drawn twice as wide shows each cell in two columns.
+            let doubled = row.rendition().is_double();
             for x in 0..width {
                 // A wide glyph is selected if either half is, as `y`
                 // copies it whole.
+                let col = if doubled { x / 2 } else { x };
                 if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
                     && let Some(cell) = grid.cells.get(i)
                     && !cell.is_wide_continuation()
-                    && (at.selected(&row, x)
-                        || cell.is_wide() && x.checked_add(1).is_some_and(|x| at.selected(&row, x)))
+                    && (at.selected(&row, col)
+                        || cell.is_wide()
+                            && col.checked_add(1).is_some_and(|col| at.selected(&row, col)))
                 {
                     let attrs = cell.attributes().with_inverse(!cell.inverse());
                     grid.cells.set_attributes(i, attrs);
@@ -938,15 +1184,15 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     if width(&line) <= room {
         return line;
     }
-    let chars: Vec<char> = line.chars().filter(|c| !c.is_control()).collect();
-    let bar = before.chars().filter(|c| !c.is_control()).count();
+    let chars: Vec<(&str, u16)> = clusters(&line).collect();
+    let bar = clusters(before).count();
     // An ellipsis each side, at most.
     let inner = room.saturating_sub(2);
     let ahead = inner / 4;
     let (mut start, mut end) = (bar, bar.saturating_add(1));
     let mut used: u16 = 1;
-    let fits = |used: u16, c: Option<&char>| {
-        c.and_then(|c| used.checked_add(cells(*c)))
+    let fits = |used: u16, c: Option<&(&str, u16)>| {
+        c.and_then(|(_, width)| used.checked_add(*width))
             .filter(|n| *n <= inner)
     };
     // A little of what follows, then what comes before, then the rest after.
@@ -968,7 +1214,13 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     if start > 0 {
         out.push('…');
     }
-    out.extend(chars.get(start..end).unwrap_or_default());
+    out.extend(
+        chars
+            .get(start..end)
+            .unwrap_or_default()
+            .iter()
+            .map(|(c, _)| *c),
+    );
     if end < chars.len() {
         out.push('…');
     }
@@ -1347,8 +1599,9 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
 
 /// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
 /// cells painted one after another, where it is not one byte of ASCII or
-/// follows a glyph that `joined` the one before it; whether it joins the one
-/// before it.
+/// follows a glyph that `joined` the one before it; whether the next glyph
+/// is to be placed by a cursor move: it joins the one before it, or it was
+/// measured otherwise.
 ///
 /// A glyph that continues the cluster of the one before it (an emoji
 /// modifier a program put after an emoji with a cursor move of its own, as
@@ -1356,6 +1609,10 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
 /// the client's terminal joins it to the glyph before, or not, as it does
 /// when the program writes it directly, and the next glyph is where fux-vt
 /// has it either way.
+///
+/// So is what follows a cluster whose width fux-vt makes other than the sum
+/// of its characters' widths, which a terminal measuring each character
+/// alone would advance by.
 ///
 /// Zero-width characters after a glyph that leaves the cursor in the last
 /// column: with autowrap off, as fux's client has it, Ghostty puts them on
@@ -1386,7 +1643,12 @@ fn cluster(
     if marks_at_the_edge {
         out.extend_from_slice(b"\x1b[?7l");
     }
-    joins
+    // A cluster fux-vt makes wider or narrower than its characters' sum (a
+    // VS16 emoji widened, jamo capped at 2): a terminal that measures each
+    // character alone, as xterm does through wcwidth, advances by the sum,
+    // so the next glyph is placed too.
+    let measured_apart = text.chars().map(cells).fold(0, u16::saturating_add) != width;
+    joins || measured_apart
 }
 
 /// A row or column as the terminal counts it, from 1; exact in a u32.
@@ -1411,7 +1673,7 @@ pub fn mouse_level(mode: fux_vt::MouseProtocolMode) -> u16 {
     use fux_vt::MouseProtocolMode as M;
     match mode {
         M::None => 0,
-        M::Press | M::PressRelease => 1000,
+        M::Press | M::PressRelease | M::Highlight => 1000,
         M::ButtonMotion => 1002,
         M::AnyMotion => 1003,
     }
@@ -1497,7 +1759,9 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     // another glyph of one column is written too, and the cursor put where
     // it is after, should the terminal draw it at another width. Nothing
     // that may join a neighbour: one character, not a regional indicator
-    // (two make a flag), and short of the emoji's planes.
+    // (two make a flag), short of the emoji's planes, and none that joins
+    // what is before it (an Extend or SpacingMark character alone, ZWJ),
+    // which the terminal would join to the cell on its left.
     let mut ascii = true;
     let mut printable = |c: Option<CellRef<'_>>| {
         c.is_some_and(|c| {
@@ -1514,7 +1778,8 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
                     ascii = false;
                     u32::from(ch) < 0x1_F000
                         && !('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
-                        && UnicodeWidthChar::width(ch) == Some(1)
+                        && fux_vt::char_width(ch) == Some(1)
+                        && !fux_vt::continues_cluster("a", ch)
                 }
                 _ => false,
             }
@@ -1600,7 +1865,8 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
             goto(out, y, start);
             let mut cx = start;
             // Whether the glyph before was one the client's terminal may
-            // have joined to the one before it (see `cluster`).
+            // have joined to the one before it, or measured otherwise (see
+            // `cluster`): then the next is placed by a cursor move.
             let mut joined = false;
             while cx < new.cols
                 && (cx == start
@@ -1659,6 +1925,82 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
+    /// A picture that moves, its crop the same, is encoded once, and sent
+    /// at each place with the same data; a new crop is encoded again, and
+    /// a picture no longer shown is let go of (`threats.md` B08).
+    #[test]
+    fn a_moving_picture_is_encoded_once() -> Result<(), String> {
+        let rgba: Vec<u8> = std::iter::repeat_n([255, 0, 0, 255], 20 * 12)
+            .flatten()
+            .collect();
+        let picture =
+            std::sync::Arc::new(fux_vt::sixel::Picture::new(20, 12, rgba).ok_or("20 by 12")?);
+        let at = |row: u16, crop: (u32, u32, u32, u32)| Visible {
+            pane: PaneId::of(1),
+            id: 7,
+            area: (row, 0, 1, 2),
+            crop,
+            picture: std::sync::Arc::clone(&picture),
+        };
+        let whole = (0, 0, 20, 12);
+        let mut sixels = Sixels::default();
+        let mut sent = Vec::new();
+        for row in 0..100 {
+            let mut out = Vec::new();
+            sixels.picture_into(&at(row, whole), &mut out);
+            sixels.keep(&[at(row, whole)]);
+            sent.push(out);
+        }
+        assert_eq!(sixels.encoded, 1, "encoded each time it moved");
+        let mut alone = Vec::new();
+        fux_vt::sixel::encode(&picture, whole, &mut alone);
+        assert_eq!(
+            sent.last(),
+            Some(&[b"\x1b7\x1b[100;1H".as_slice(), &alone, b"\x1b8"].concat())
+        );
+        let mut out = Vec::new();
+        sixels.picture_into(&at(0, (0, 6, 20, 6)), &mut out);
+        assert_eq!(sixels.encoded, 2, "a new crop is encoded");
+        sixels.keep(&[]);
+        assert!(sixels.kept.is_empty(), "kept what no longer shows");
+        Ok(())
+    }
+
+    /// A pane's program started again (`respawn`) numbers its pictures
+    /// from 0 again: a new picture with an old one's number, place and
+    /// crop is another picture, sent with its own data.
+    #[test]
+    fn a_new_picture_with_an_old_number_is_sent_anew() -> Result<(), String> {
+        let solid = |rgba: [u8; 4]| {
+            let pixels = std::iter::repeat_n(rgba, 20 * 12).flatten().collect();
+            fux_vt::sixel::Picture::new(20, 12, pixels)
+                .map(std::sync::Arc::new)
+                .ok_or("20 by 12")
+        };
+        let (red, blue) = (solid([255, 0, 0, 255])?, solid([0, 0, 255, 255])?);
+        let at = |picture: &std::sync::Arc<fux_vt::sixel::Picture>| Visible {
+            pane: PaneId::of(1),
+            id: 1,
+            area: (0, 0, 1, 2),
+            crop: (0, 0, 20, 12),
+            picture: std::sync::Arc::clone(picture),
+        };
+        assert!(at(&red) != at(&blue), "another picture shows");
+        let mut sixels = Sixels::default();
+        let mut out = Vec::new();
+        sixels.picture_into(&at(&red), &mut out);
+        sixels.keep(&[at(&red), at(&blue)]);
+        out.clear();
+        sixels.picture_into(&at(&blue), &mut out);
+        let mut alone = Vec::new();
+        fux_vt::sixel::encode(&blue, (0, 0, 20, 12), &mut alone);
+        assert_eq!(
+            out,
+            [b"\x1b7\x1b[1;1H".as_slice(), &alone, b"\x1b8"].concat()
+        );
+        Ok(())
+    }
+
     /// `compose` into a grid and placement kept, as the server composes:
     /// false if there is no such client.
     fn compose_into(s: &Session, c: ClientId, grid: &mut Grid, placement: &mut Placement) -> bool {
@@ -1816,6 +2158,29 @@ mod tests {
             }
         }
         assert!(short > 500, "{short} echoes painted the short way");
+        Ok(())
+    }
+
+    /// A lone mark that joins what is before it (a spacing mark after a
+    /// cursor move, U+0CCB, U+09BE) is no echo:
+    /// written raw, the terminal joins it to the cell on its left, which
+    /// draws that glyph wrong. A letter there is one.
+    #[test]
+    fn a_mark_that_joins_its_neighbour_is_not_echoed() -> Result<(), String> {
+        for (typed, echoed) in [("\u{ccb}", false), ("\u{9be}", false), ("x", true)] {
+            let (mut s, c) = crate::session::testing::attached(10, 40)?;
+            let id = *s.panes.keys().next().ok_or("no pane")?;
+            let mut placement = Placement::default();
+            let (mut before, mut after) = (Grid::new(0, 0), Grid::new(0, 0));
+            s.output(id, b"$ ab");
+            compose_into(&s, c, &mut before, &mut placement);
+            s.output(id, format!("\x1b[C{typed}").as_bytes());
+            compose_into(&s, c, &mut after, &mut placement);
+            let alone =
+                (0..after.cols).any(|x| after.get(0, x).is_some_and(|c| c.contents() == typed));
+            assert!(alone, "{typed:?} is no cell of its own");
+            assert_eq!(echo(&before, &after, &mut Vec::new()), echoed, "{typed:?}");
+        }
         Ok(())
     }
 
@@ -2004,6 +2369,28 @@ mod tests {
         Ok(())
     }
 
+    /// A line a program made double width (DECDWL) or double height
+    /// (DECDHL) is drawn twice as wide, each cell over two columns, a wide
+    /// glyph over four, and the cursor at its glyph's first half; a single
+    /// width line beside it is drawn as it is.
+    #[test]
+    fn a_double_width_line_is_drawn_twice_as_wide() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, c) = crate::session::testing::attached(10, 30)?;
+        s.output(
+            PaneId::of(1),
+            "\x1b#6a界b\r\n\x1b#3\x1b[7mx\x1b[m\r\nplain\x1b[1;3H".as_bytes(),
+        );
+        let grid = compose(&s, c).ok_or("a screen")?;
+        let text = |y| grid.row_text(y);
+        assert_eq!(text(0), "a 界  b");
+        assert_eq!(text(1), "x");
+        assert_eq!(text(2), "plain");
+        // The blank beside x is in its colours.
+        assert!(grid.get(1, 1).is_some_and(|cell| cell.inverse()));
+        assert_eq!(grid.cursor, Some((0, 4)));
+        Ok(())
+    }
+
     /// A block whose edge falls on a wide glyph's second half in one of its
     /// rows highlights that glyph, as `y` copies it whole.
     #[test]
@@ -2061,6 +2448,191 @@ mod tests {
         Ok(())
     }
 
+    /// fux's own text (the bar, titles, panels) takes the columns a pane
+    /// gives the same text, cluster by cluster (fux-vt's width rule): an
+    /// emoji presentation sequence, U+2764 U+FE0F, takes two, though its
+    /// characters alone take one and none.
+    #[test]
+    fn fux_text_takes_a_cluster_s_columns() {
+        let heart = "\u{2764}\u{FE0F}";
+        assert_eq!(width(heart), 2);
+        let mut grid = Grid::new(1, 10);
+        let end = grid.text(0, 0, &format!("{heart}x"), Attributes::default(), 10);
+        assert_eq!(end, 3);
+        let at = |x| {
+            grid.get(0, x)
+                .map(|c| (c.contents().to_owned(), c.is_wide()))
+        };
+        assert_eq!(at(0), Some((heart.to_owned(), true)));
+        assert_eq!(at(2), Some(("x".to_owned(), false)));
+        assert_eq!(
+            fit(&format!("{heart}{heart}{heart}"), 4),
+            format!("{heart}…")
+        );
+    }
+
+    /// On a line drawn twice as wide (DECDWL, DEC STD 070 5.6.1), copy
+    /// mode's cursor and selection take each cell's two columns, as the
+    /// normal cursor does: a cell at column 1 shows at columns 2 and 3.
+    #[test]
+    fn copy_mode_on_a_double_width_line_takes_two_columns_a_cell() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        s.output(PaneId::of(1), b"\x1b[2J\x1b[H\x1b#6ABCD\x1b[H");
+        s.input(c, b"\x02cl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        assert_eq!(grid.cursor, Some((0, 2)), "on B's first column");
+        s.input(c, b"vl");
+        let grid = compose(&s, c).ok_or("a screen")?;
+        assert_eq!(grid.cursor, Some((0, 4)), "on C's first column");
+        let inverse: Vec<bool> = (0..8)
+            .map(|x| grid.get(0, x).is_some_and(|cell| cell.inverse()))
+            .collect();
+        assert_eq!(
+            inverse,
+            [false, false, true, true, true, true, false, false],
+            "B and C selected"
+        );
+        Ok(())
+    }
+
+    /// A pane's program started again (`respawn`) draws on a new screen,
+    /// whose rows are numbered from the start again: a grid composed
+    /// again from its memo shows the new screen, not the rows of the old
+    /// one that had the same numbers and versions.
+    #[test]
+    fn a_respawned_pane_is_composed_anew() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(6, 30)?;
+        let id = PaneId::of(1);
+        s.output(id, b"A");
+        let mut grid = Grid::new(0, 0);
+        let mut placement = Placement::default();
+        assert!(compose_into(&s, c, &mut grid, &mut placement));
+        let launch = crate::pane::Launch {
+            argv: vec!["x".into()],
+            cwd: "/".into(),
+            env: Vec::new(),
+        };
+        let pane = s.panes.get_mut(&id).ok_or("the pane")?;
+        pane.respawned(launch, crate::pane::Process::Absent, 1 << 10)
+            .map_err(|e| e.to_string())?;
+        s.output(id, b"B");
+        assert!(compose_into(&s, c, &mut grid, &mut placement));
+        assert_eq!(grid.row_text(0), "B");
+        Ok(())
+    }
+
+    /// While a pane is part way through a frame, its cursor is the one the
+    /// client was last painted there, if any: focus moved away from it
+    /// takes the cursor to the pane focused, and focus moved onto it shows
+    /// none there till the frame is whole.
+    #[test]
+    fn a_held_pane_keeps_only_its_own_cursor() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
+        s.output(PaneId::of(1), &frame_past_a_budget());
+        assert!(
+            s.panes
+                .get(&PaneId::of(1))
+                .is_some_and(crate::pane::Pane::mid_frame)
+        );
+        let (held, other) = (place(&s, c, 1)?, place(&s, c, 2)?);
+        let panes = [(PaneId::of(1), held), (PaneId::of(2), other)];
+        let compose = |s: &Session, painted: &Grid| {
+            let mut grid = Grid::new(0, 0);
+            let painted = Some(Painted {
+                grid: painted,
+                panes: &panes,
+            });
+            if let Some(view) = s.views.get(&c) {
+                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+            }
+            grid
+        };
+        // Focus on %2, the cursor last painted in %1: %2's own.
+        let mut painted = compose(&s, &Grid::new(0, 0));
+        painted.cursor = Some((held.y(), held.x()));
+        let fresh = compose(&s, &painted);
+        assert!(
+            fresh.cursor.is_some_and(|(y, x)| other.contains(y, x)),
+            "{:?}",
+            fresh.cursor
+        );
+        // Focus on %1, the cursor last painted in %2: none.
+        crate::session::testing::run(&mut s, "str c1 client str next focus")?;
+        painted.cursor = Some((other.y(), other.x()));
+        assert_eq!(compose(&s, &painted).cursor, None);
+        // And its own, as painted.
+        painted.cursor = Some((held.y(), held.x().saturating_add(1)));
+        assert_eq!(compose(&s, &painted).cursor, painted.cursor);
+        // But none under fux's own panel, as for any pane.
+        s.input(c, b"\x02x");
+        assert_eq!(compose(&s, &painted).cursor, None, "under a confirmation");
+        Ok(())
+    }
+
+    /// A frame whose reading spends more than a parser call's budget.
+    fn frame_past_a_budget() -> Vec<u8> {
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(std::iter::repeat_n(b"X\x1b[65535b", 4000).flatten());
+        frame.extend_from_slice(b"\x1b[?2026l");
+        frame
+    }
+
+    /// Where client `c` shows pane `%id`.
+    fn place(s: &Session, c: ClientId, id: u32) -> Result<Rect, String> {
+        let mut placement = Placement::default();
+        if let Some(view) = s.views.get(&c) {
+            s.placement_into(view, &mut placement);
+        }
+        placement
+            .rect(PaneId::of(id))
+            .ok_or_else(|| format!("%{id}'s place"))
+    }
+
+    /// A pane part way through a frame that the client was never painted
+    /// where it is (a client attached mid-frame, a layout changed) shows
+    /// blank, never half the frame; fux's own panels show over it.
+    #[test]
+    fn a_held_pane_not_painted_before_is_blank_under_fux_s_panels() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(10, 40)?;
+        s.output(PaneId::of(1), &frame_past_a_budget());
+        assert!(
+            s.panes
+                .get(&PaneId::of(1))
+                .is_some_and(crate::pane::Pane::mid_frame)
+        );
+        let compose = |s: &Session, painted: Option<Painted<'_>>| {
+            let mut grid = Grid::new(0, 0);
+            if let Some(view) = s.views.get(&c) {
+                compose_held(s, view, &mut grid, &mut Placement::default(), painted);
+            }
+            (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>()
+        };
+        let rows = compose(&s, None);
+        assert!(rows.iter().all(|r| !r.contains('X')), "{rows:#?}");
+        // A confirmation over it, painted as it was before (all X): shown.
+        let mut before = Grid::new(10, 40);
+        let xs: String = std::iter::repeat_n('X', 40).collect();
+        for y in 0..9 {
+            before.text(y, 0, &xs, Attributes::default(), 40);
+        }
+        s.input(c, b"\x02x");
+        let panes = [(PaneId::of(1), place(&s, c, 1)?)];
+        let rows = compose(
+            &s,
+            Some(Painted {
+                grid: &before,
+                panes: &panes,
+            }),
+        );
+        assert!(rows.iter().any(|r| r.contains("close")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|r| r.contains("XXXX")),
+            "the pane as painted: {rows:#?}"
+        );
+        Ok(())
+    }
+
     /// At the widest a terminal can be, the last column is u16::MAX - 1:
     /// one past it must stop a wide glyph, not overflow (in release, wrap).
     #[test]
@@ -2079,6 +2651,44 @@ mod tests {
         // The glyph is painted as a blank, and moving past it stops the run.
         let bytes = paint(None, &grid);
         assert!(bytes.ends_with(b"\x1b[?2026l"));
+    }
+
+    /// A cluster whose width fux-vt makes other than the sum of its
+    /// characters' (a VS16 emoji widened, jamo capped at 2) is followed by
+    /// a cursor move: a client terminal that measures each character alone
+    /// (xterm, through wcwidth) would put what follows elsewhere (TXT-11).
+    #[test]
+    fn a_cluster_measured_otherwise_apart_is_followed_by_a_cursor_move() -> Result<(), String> {
+        // A heart VS16 widened, and four leading jamo capped at 2: a client
+        // terminal measuring each character alone advances 1 and 8, so
+        // what follows is placed where fux-vt has it, column 2.
+        for cluster in ["\u{2764}\u{fe0f}", "\u{1100}\u{1100}\u{1100}\u{1100}"] {
+            let mut grid = Grid::new(1, 12);
+            grid.set(0, 0, CellRef::new(cluster, true, Attributes::default()));
+            grid.set(0, 1, CellRef::wide_continuation());
+            grid.text(0, 2, "ab", Attributes::default(), 12);
+            let bytes = paint(None, &grid);
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(text.contains(&format!("{cluster}\x1b[1;3Hab")), "{text:?}");
+            let mut parser = terminal(1, 12)?;
+            assert_eq!(apply(&bytes, &mut parser), grid_lines(&grid));
+        }
+        // A flag is two columns either way, and a mark adds none: no move.
+        for cluster in ["\u{1f1ef}\u{1f1f5}", "e\u{301}"] {
+            let mut grid = Grid::new(1, 12);
+            let wide = cluster.starts_with('\u{1f1ef}');
+            grid.set(0, 0, CellRef::new(cluster, wide, Attributes::default()));
+            let next = if wide {
+                grid.set(0, 1, CellRef::wide_continuation());
+                2
+            } else {
+                1
+            };
+            grid.text(0, next, "ab", Attributes::default(), 12);
+            let text = String::from_utf8_lossy(&paint(None, &grid)).into_owned();
+            assert!(text.contains(&format!("{cluster}ab")), "{text:?}");
+        }
+        Ok(())
     }
 
     /// A glyph that continues the cluster of the one before it (an emoji
