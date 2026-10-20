@@ -259,7 +259,9 @@ fn a_remote_program_with_no_marks_through_koh() -> Outcome {
 /// A line editor of its own (a calculator's) `koh connect -- PROG` runs,
 /// no shell: a line it reads again after says nothing of marks, a line
 /// edited says where the cursor is, as a capture does, and a key sent on
-/// after the one that ended it is said to have likely gone nowhere.
+/// after the one that ended it is said to have gone nowhere: each key goes
+/// once koh said its program took the one before, and koh says it ended
+/// having read the first.
 #[test]
 #[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
 fn a_remote_line_editor_through_koh() -> Outcome {
@@ -285,8 +287,49 @@ fn a_remote_line_editor_through_koh() -> Outcome {
     assert_eq!(head(&read), at, "{read}");
     let quit = ["str", "C-q", "key", "2", "times", "send-keys"];
     let out = server.ok(&[&p[..], &quit[..]].concat())?;
-    let lost = "it ended before its relay said its program read C-q, which likely went nowhere";
+    let lost = "it exited before reading C-q, which went nowhere";
     assert_eq!(head(&out), format!("{pane} exited 0 · {lost}"), "{out}");
+    Ok(())
+}
+
+/// A full-screen program `koh connect -- PROG` runs that reads its last
+/// keys at once and ends without reading again (an editor's save and quit,
+/// sent whole): koh says it read them all, so the answer says nothing of
+/// keys gone nowhere, and shows the last screen it drew.
+#[test]
+#[ignore = "needs koh: FUX_KOH=path/to/koh cargo test --test koh -- --ignored"]
+fn a_remote_editor_that_saves_and_quits_through_koh() -> Outcome {
+    let server = Server::start("")?;
+    let editor = "import os, sys, time, tty\n\
+                  tty.setraw(0); os.write(1, b'\\x1b[?1049hed> ')\n\
+                  time.sleep(0.5); got = os.read(0, 100)\n\
+                  open(sys.argv[1], 'wb').write(got); os.write(1, b'\\x1b[?1049l')\n";
+    let script = server.dir.join("editor.py");
+    std::fs::write(&script, editor).map_err(e)?;
+    let saved = server.dir.join("saved");
+    let (script, to) = (script.to_string_lossy(), saved.to_string_lossy());
+    let (_serve, pane, _) = connect(&server, &["--", "python3", &script, &to], &[])?;
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "ed>", "wait-text", "wait"]].concat())?;
+    let keys = [
+        "str",
+        "hi",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        ":wq",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    let out = server.ok(&[&p[..], &keys[..]].concat())?;
+    assert_eq!(head(&out), format!("{pane} exited 0"), "{out}");
+    assert!(out.contains("\ned>"), "{out}");
+    assert_eq!(std::fs::read(&saved).map_err(e)?, b"hi\r:wq\r");
     Ok(())
 }
 

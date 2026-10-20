@@ -72,7 +72,8 @@ fux ls                                                  # what there is: workspa
   paste`, `str HEX bytes`, `MS pause` between two, `N times`.
 - **Remote:** fux sees a remote client (plain `ssh`), not what it runs
   there: its `reading` or `waiting` says nothing of that, and `line` gives
-  no `done`; the answer says so. A remote command: `fux opts str 'ssh -n
+  no `done`; the first answer says so (again once something else runs
+  there; the JSON every time). A remote command: `fux opts str 'ssh -n
   host make' command run`, then `%2 wait-exit wait` (ssh ends with it;
   `-n`: it reads nothing of the pane). A terminal there: wait for the text
   you expect (`%2 str '$ ' wait-text wait`). `koh connect` reports its
@@ -132,8 +133,10 @@ reports nothing of what it runs (plain `ssh`, `mosh`, `telnet`: not
 fux cannot tell whether it waits or works: `%2 wait-exit wait` waits for
 its end` (a command on a pipe there, which ssh ends with), or `· ssh
 shows another machine's terminal, …: `%2 str TEXT wait-text wait` waits
-for a text it shows`; it is `waiting` once quiet a second, never
-`reading`, and a text wait runs to its limit, never status 7. `· cursor
+for a text it shows`, said once for what runs there (the first answer,
+and again once another program runs in the pane; `remote` and
+`wait_with` in every answer's JSON); it is `waiting` once quiet a second,
+never `reading`, and a text wait runs to its limit, never status 7. `· cursor
 ROW,COL` gives the cursor, from 0 as a mouse event counts cells (on a
 double-width row, COL is the cell: a click there is at 2×COL), wherever it
 matters: after keys that edited a line a program reads (text typed, Left,
@@ -147,12 +150,18 @@ it too, whenever it shows on a row with text (`%2 reading · cursor 4,7`),
 as JSON's `cursor` does. A program that exited runs no command: its state is `exited N`
 alone, and an answer tells it with what it printed once: a later wait
 says `%2 exited 0 · told before: `%2 capture` reads its last screen`.
+A full-screen program that ended there (an editor quit) answers with the
+last screen it drew, then what came on the main screen after.
 Keys it never read go nowhere, and are named: `%2 exited 0 · it
 exited before reading C-q, "ab", which went nowhere` (sent on after the
-key that quit it); through a relay (`koh connect`), which reads them all,
-the keys sent on after the first key or line its program did not say it
-read: `· it ended before its relay said its program read C-q, which
-likely went nowhere`. Sent once it exited, keys are refused (`not_running`).
+key that quit it). Through a relay (`koh connect`), which reads them all,
+each key goes once the relay says its program took the one before (but
+on a full screen, whose answers need no pacing), and koh says when its
+program ended having read every key: then nothing is said, or the keys
+after are named as above. Where it did not say so, the keys sent on
+after the first key or line its program did not say it read: `· it ended
+before its relay said its program read C-q, which likely went nowhere`.
+Sent once it exited, keys are refused (`not_running`).
 
 ## start: Starting programs
 
@@ -411,12 +420,16 @@ though the program waits on the network meanwhile: `line` answers
 `· done STATUS`, or `busy` at the time limit. A relay that can see the
 remote program says what it does, `ESC ] 133 ; S ; activity=STATE ;
 nonce=N BEL` (STATE `reading`, `polling`, `waiting`, `busy`, `idle` or
-`unknown`, as fux's own probe has them; the nonce as for its marks), as
+`unknown`, as fux's own probe has them; or `ended`, once, as its program
+ended having read every key the relay sent it; the nonce as for its
+marks), as
 `koh connect` does: its last report stands for fux's probe while no mark
 came after it and it came after your last input, the screen quiet a moment
 after it (what the program drew before it may come just after), so a remote `less`,
 `sudo` or REPL answers `reading` as a local one does, its `line` too.
-A relay reports after every input its program takes, as koh does: one
+A relay reports after every input its program takes, as koh does: each
+piece of input goes once it reported after the one before, as a local
+program takes them one by one (a second at most); one
 that has reported and owes a report since your input, still running, is
 quiet 5s before it is taken as `waiting` (its program may have ended
 there, `exit`, the relay closing its link): its end is told, `exited 0`

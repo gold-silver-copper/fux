@@ -13,7 +13,8 @@
 //!
 //! `S ; activity=STATE`, a state report, says what the program a relay runs
 //! does (a remote one, which the host cannot probe): `reading`, `polling`,
-//! `waiting`, `busy`, `idle` or `unknown`. It counts as a mark does, and
+//! `waiting`, `busy`, `idle` or `unknown`; or `ended`, once, as the program
+//! ended having read every key the relay sent it. It counts as a mark does, and
 //! holds until the next mark ([`Commands::report`]).
 
 use super::Screen;
@@ -76,6 +77,9 @@ pub enum Reported {
     Idle,
     /// The system does not say.
     Unknown,
+    /// It ended, having read every key the relay sent it: said once, as the
+    /// relay goes, so a host knows the last keys reached it.
+    Ended,
 }
 
 impl Reported {
@@ -88,6 +92,7 @@ impl Reported {
             b"busy" => Reported::Busy,
             b"idle" => Reported::Idle,
             b"unknown" => Reported::Unknown,
+            b"ended" => Reported::Ended,
             _ => return None,
         })
     }

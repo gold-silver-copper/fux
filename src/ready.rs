@@ -244,6 +244,8 @@ fn reported(pane: &Pane) -> Option<Activity> {
         Reported::Busy => Activity::Busy,
         Reported::Idle => Activity::Idle,
         Reported::Unknown => Activity::Unknown,
+        // Its program ended, the relay on its way out: its end is to come.
+        Reported::Ended => Activity::Busy,
     })
 }
 
@@ -264,8 +266,16 @@ pub fn owed(pane: &Pane) -> bool {
 }
 
 /// What the program of `child`, `pane`'s, is blocked in by `now`
-/// (`activity`); `None` while keys wait in its terminal unread.
+/// (`activity`); `None` while keys wait in its terminal unread. A relay's
+/// program takes keys on another machine: the relay, which reads them all
+/// at once, takes them only once it reports after them (busy until then),
+/// so each piece of input goes to the program there once it took the one
+/// before, as to a program here.
 pub fn taking(pane: &Pane, child: &Child, now: Instant) -> Option<Activity> {
-    let activity = activity(pane, child, now);
+    let activity = match reported(pane) {
+        Some(reported) => reported,
+        None if owed(pane) => Activity::Busy,
+        None => activity(pane, child, now),
+    };
     (!child.master.keys_unread()).then_some(activity)
 }

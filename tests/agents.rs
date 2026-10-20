@@ -913,6 +913,58 @@ for _ in range(20):
     Ok(())
 }
 
+/// A relay's full-screen program that reads its last keys at once and ends
+/// without reading again (an editor's save and quit) says so as it goes
+/// (`S;activity=ended`, as koh does once every key reached it): the answer
+/// says nothing of keys gone nowhere, and shows the last full screen it
+/// drew, not the main screen from before it, which its end uncovered.
+#[test]
+fn keys_a_relays_program_read_as_it_ended_reached_it() -> Outcome {
+    if !PROBED {
+        return Ok(());
+    }
+    let relay = r#"
+import os, sys, time, tty
+nonce = os.environ.get("FUX_MARK_NONCE")
+def mark(m):
+    os.write(1, ("\x1b]133;" + m + (";nonce=" + nonce if nonce else "") + "\x07").encode())
+tty.setraw(0); os.write(1, b"before\r\n\x1b[?1049h\x1b[Hed> "); mark("S;activity=reading")
+time.sleep(0.3); got = os.read(0, 100)
+open(sys.argv[1], "wb").write(got)
+mark("S;activity=ended"); os.write(1, b"\x1b[?1049l")
+"#;
+    let server = Server::start("")?;
+    let saved = server.dir.join("saved");
+    let to = saved.to_string_lossy().into_owned();
+    let pane = id(&server.ok(&run(
+        &["str", "ed>", "wait-text"],
+        &["python3", "-c", relay, &to],
+    ))?);
+    let keys = [
+        "str",
+        &pane,
+        "pane",
+        "str",
+        "hi",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "str",
+        ":wq",
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    let quit = server.ok(&keys)?;
+    assert_eq!(head(&quit), format!("{pane} exited 0"), "{quit}");
+    assert_eq!(body(&quit), "ed>\n", "{quit}");
+    assert_eq!(std::fs::read(&saved).map_err(e)?, b"hi\r:wq\r");
+    Ok(())
+}
+
 /// In a shell pane, a relay's report counts with the nested nonce alone,
 /// as its marks do: one without it is output, and `line` waits on.
 #[test]
@@ -2221,11 +2273,15 @@ fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
                  whether it waits or works: `{pane} wait-exit wait` waits for its end"
             )
         );
+        // Said once for what runs there: later answers say the state
+        // alone, their JSON what it said.
         let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
         assert!(
             json.contains(r#""remote":"ssh","wait_with":"wait-exit""#),
             "{json}"
         );
+        let again = server.ok(&["str", &pane, "pane", "wait"])?;
+        assert_eq!(head(&again), format!("{pane} waiting"), "{again}");
     }
     let built = server.fux(&[
         "str",
