@@ -1910,6 +1910,25 @@ impl Screen {
             return Ok(Some(end));
         }
         let row = g.cursor.row();
+        // Without margins or a row half as long, as below: above the
+        // bottom margin, the row soft-wrapped unless it is the screen's
+        // last, and the cursor down a row at its start; at it, the row
+        // soft-wrapped and the line feed made from the first column.
+        if !g.narrow() {
+            let (bottom, last, version) = (g.lines.last(), g.size().lines().last(), self.version);
+            let g = self.grid_mut();
+            if row != bottom {
+                g.wrap_onto(row, row < last, version);
+                g.cursor.pending_wrap = false;
+                g.set_col(0);
+                g.set_row(row.saturating_add(1));
+                return Ok(Some(end));
+            }
+            g.wrap_onto(row, true, version);
+            g.set_col(0);
+            self.linefeed()?;
+            return Ok(Some(end));
+        }
         // The glyph goes on to the next line, so this row is soft-wrapped,
         // whatever its last column holds: blank when a wide glyph did not
         // fit, or after an erase the wrap outlived; at the right margin
@@ -2780,6 +2799,16 @@ impl Screen {
     /// Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<usize, Error> {
         let all = bytes.len();
+        // One glyph, as a short line or a cursor moved to it has, where
+        // nothing below would take it otherwise.
+        if let [byte] = bytes
+            && !self.charsets.graphics()
+            && !self.mode(Mode::Insert)
+            && !self.last_print.is_some_and(|p| p.cluster.prepended())
+            && self.ascii_glyph(*byte)
+        {
+            return Ok(all);
+        }
         // DEC Special Graphics print other characters, and insert mode
         // moves what is there, one glyph at a time, each stopping where a
         // wrap scrolled inside margins past the budget.
@@ -2799,12 +2828,6 @@ impl Screen {
         {
             self.print(char::from(first))?;
             bytes = tail;
-        }
-        // One glyph, as a short line or a cursor moved to it has.
-        if let [byte] = bytes
-            && self.ascii_glyph(*byte)
-        {
-            return Ok(all);
         }
         let taken = |bytes: &[u8]| all.saturating_sub(bytes.len());
         while let Some((&first, tail)) = bytes.split_first() {

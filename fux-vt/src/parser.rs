@@ -1412,11 +1412,13 @@ impl Parser {
         self.screen.begin();
         let (start, refused) = (crate::budget::spent(), self.refused);
         let degrades = crate::degrades();
-        self.end = match UNTIL_STOP {
-            true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
-            false => u64::MAX,
-        };
-        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        // Where this call stops at its budget. A call of `process_with` has
+        // none, as every call leaves it: `end` and `stop_at` u64::MAX, and
+        // nothing stopped.
+        if UNTIL_STOP {
+            self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
+            (self.screen.stop_at, self.screen.stopped) = (self.end, false);
+        }
         // What the last call stopped at the budget left goes first: a
         // screen-wide CSI it held back, carried out in this call's budget,
         // or a REP's copies, which may stop this one too.
@@ -1427,9 +1429,9 @@ impl Parser {
             return Ok(Some((0, Stop::Budget)));
         }
         // A string the last call left open goes on at once.
-        let mut remaining = match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
-            true => self.string(bytes),
-            false => bytes,
+        let mut remaining = match matches!(self.state, State::Ground) {
+            true => bytes,
+            false => self.string_left(bytes),
         };
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
@@ -1560,11 +1562,28 @@ impl Parser {
             false => Err(Error::Capacity),
         }
     }
-    /// Counts in [`Parser::refused`] the refusals this call met and went on
-    /// past by their degrades (`crate::degraded`), since `degrades`. Out of
-    /// line, so that `run` stays as small as before.
+    /// `bytes` past what goes on of a string the last call left open, if
+    /// it did: out of line, as most calls begin in ground.
     #[inline(never)]
+    fn string_left<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+        match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
+            true => self.string(bytes),
+            false => bytes,
+        }
+    }
+    /// Counts in [`Parser::refused`] the refusals this call met and went on
+    /// past by their degrades (`crate::degraded`), since `degrades`: a test
+    /// in `run`, and the count out of line, as a call seldom meets one.
+    #[inline]
     fn count_degrades(&mut self, degrades: u64) {
+        if crate::degrades() != degrades {
+            self.count_degrades_met(degrades);
+        }
+    }
+    /// `count_degrades` of a call that met some.
+    #[cold]
+    #[inline(never)]
+    fn count_degrades_met(&mut self, degrades: u64) {
         let met = crate::degrades().saturating_sub(degrades);
         self.refused = self.refused.saturating_add(met);
     }

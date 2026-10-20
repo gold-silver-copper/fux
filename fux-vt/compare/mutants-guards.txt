@@ -142,8 +142,8 @@ fux-vt/src/sixel.rs:133:5: replace grid_of -> (u32, u32) with (1, 0)
 fux-vt/src/sixel.rs:133:5: replace grid_of -> (u32, u32) with (1, 1)
 fux-vt/src/sixel.rs:138:13: replace >= with < in grid_of
 # B04 [new] SUB as a blank sixel, frozen as a match arm `0x1a => self.sixel(0, repeat)` in Parser::byte's sixel state: not written as an arm. CAN and SUB go to Parser::cancel (parser.rs:1846), where `byte == 0x1a && matches!(state, State::Sixel)` pushes a blank `?` sixel and returns. Its body, the == and the first && are the replacement; the second && (parser.rs:1849:13, `&& let Some(decoder)`) is a let-chain whose || is unviable, left out. Test: extended.rs sub_inside_sixel_is_a_blank_sixel_and_can_ends_it
-fux-vt/src/parser.rs:2010:9: replace Parser::cancel with ()
-fux-vt/src/parser.rs:2010:17: replace == with != in Parser::cancel
+fux-vt/src/parser.rs:2029:9: replace Parser::cancel with ()
+fux-vt/src/parser.rs:2029:17: replace == with != in Parser::cancel
 # unviable at d6cbde3c (does not build, so no test runs it): dropped: fux-vt/src/parser.rs:1848:13: replace && with || in Parser::cancel
 # B05 [now] Decoder::finish's `self.background && pixel[3] == 0` (faf8bf00 sixel.rs:297:32 &&, gone at 9a38df95; :297:44 == -> 9a38df95 :304): the fill loop is gone, the background is read when shown (threats.md B05: "a declared extent allocates and paints nothing"). The `pixel[3] == 0` test is now Picture::pixel's `.filter(|pixel| pixel[3] != 0)` (sixel.rs:88). The P2 = 1 "stays clear" check is `background: p2 != 1` in Decoder::new (sixel.rs:253), which cargo-mutants skips (a `new` in an impl); guarded by extended.rs:1055 sixel_background_select_and_extent
 fux-vt/src/sixel.rs:88:38: replace != with == in Picture::pixel
@@ -304,10 +304,10 @@ fux-vt/src/grid.rs:1024:29: delete ! in Grid::find_table_style
 fux-vt/src/grid.rs:1033:26: replace || with && in Grid::find_table_style
 fux-vt/src/history.rs:414:9: replace History::charge with ()
 # B11 and B13 [new] P22's memo(place, op): not written (decision 826: no per-grid memo); replaced by a 16-entry memo local to the call in Screen::change_attributes (screen.rs:3135-3154): its reset on a sweep, its hit test and its slot
-fux-vt/src/screen.rs:3839:23: replace != with == in Screen::change_attributes
-fux-vt/src/screen.rs:3843:73: replace == with != in Screen::change_attributes
-fux-vt/src/screen.rs:3850:51: replace % with / in Screen::change_attributes
-fux-vt/src/screen.rs:3850:51: replace % with + in Screen::change_attributes
+fux-vt/src/screen.rs:3862:23: replace != with == in Screen::change_attributes
+fux-vt/src/screen.rs:3866:73: replace == with != in Screen::change_attributes
+fux-vt/src/screen.rs:3873:51: replace % with / in Screen::change_attributes
+fux-vt/src/screen.rs:3873:51: replace % with + in Screen::change_attributes
 # B14 [now] Links::insert's limit (link.rs:297 -> :418); LINK_BYTES = 4 << 20 (link.rs:32)
 fux-vt/src/link.rs:449:39: replace > with == in Links::insert
 fux-vt/src/link.rs:449:39: replace > with < in Links::insert
@@ -447,49 +447,49 @@ fux-vt/src/parser.rs:465:30: replace == with != in FrameScan::end
 fux-vt/src/parser.rs:570:9: replace FrameScan::step -> bool with true
 fux-vt/src/parser.rs:570:9: replace FrameScan::step -> bool with false
 # B19 upstream: frame-end tests `framing && !mode(SynchronizedOutput)` (9a38df95 parser.rs:1463, :1487 -> escape_dispatch :2065, csi_dispatch :2089)
-fux-vt/src/parser.rs:2257:29: replace && with || in Parser::escape_dispatch
-fux-vt/src/parser.rs:2257:32: delete ! in Parser::escape_dispatch
-fux-vt/src/parser.rs:2283:33: replace && with || in Parser::csi_dispatch
-fux-vt/src/parser.rs:2283:36: delete ! in Parser::csi_dispatch
+fux-vt/src/parser.rs:2276:29: replace && with || in Parser::escape_dispatch
+fux-vt/src/parser.rs:2276:32: delete ! in Parser::escape_dispatch
+fux-vt/src/parser.rs:2302:33: replace && with || in Parser::csi_dispatch
+fux-vt/src/parser.rs:2302:36: delete ! in Parser::csi_dispatch
 
 # B20 [now] OSC buffer: the byte path's limit `self.osc.len() < self.osc_limit` (parser.rs:1297 -> 9a38 :1344 -> :1934)
-fux-vt/src/parser.rs:2098:37: replace < with == in Parser::byte
-fux-vt/src/parser.rs:2098:37: replace < with > in Parser::byte
-fux-vt/src/parser.rs:2098:37: replace < with <= in Parser::byte
-fux-vt/src/parser.rs:2098:22: replace match guard self.osc.len() < self.osc_limit with true in Parser::byte
-fux-vt/src/parser.rs:2098:22: replace match guard self.osc.len() < self.osc_limit with false in Parser::byte
+fux-vt/src/parser.rs:2117:37: replace < with == in Parser::byte
+fux-vt/src/parser.rs:2117:37: replace < with > in Parser::byte
+fux-vt/src/parser.rs:2117:37: replace < with <= in Parser::byte
+fux-vt/src/parser.rs:2117:22: replace match guard self.osc.len() < self.osc_limit with true in Parser::byte
+fux-vt/src/parser.rs:2117:22: replace match guard self.osc.len() < self.osc_limit with false in Parser::byte
 # B20 [now] OSC string bytes (DEL, 0x1f): the `< || ==` at parser.rs:1166 (9a38 :1212) is gone; PAR-20/21/22 (decision 100) moved it to `in_command_string` (parser.rs:212, a matches!, no comparison) used by osc_more and byte's guard (:1933), and `control_in` (:292) finds the run's end
 fux-vt/src/parser.rs:213:5: replace in_command_string -> bool with true
 fux-vt/src/parser.rs:213:5: replace in_command_string -> bool with false
 fux-vt/src/parser.rs:213:5: delete ! in in_command_string
-fux-vt/src/parser.rs:2097:22: replace match guard !whole || !in_command_string(byte) with true in Parser::byte
-fux-vt/src/parser.rs:2097:22: replace match guard !whole || !in_command_string(byte) with false in Parser::byte
-fux-vt/src/parser.rs:2097:29: replace || with && in Parser::byte
-fux-vt/src/parser.rs:2097:32: delete ! in Parser::byte
+fux-vt/src/parser.rs:2116:22: replace match guard !whole || !in_command_string(byte) with true in Parser::byte
+fux-vt/src/parser.rs:2116:22: replace match guard !whole || !in_command_string(byte) with false in Parser::byte
+fux-vt/src/parser.rs:2116:29: replace || with && in Parser::byte
+fux-vt/src/parser.rs:2116:32: delete ! in Parser::byte
 # B20 [now] the bulk path's limit (decision 100): osc_more keeps the string whole only while `self.osc.len() <= self.osc_limit` (parser.rs:1715); the `.min(room - len)` clamp at :1704 is a bare min (no mutant)
-fux-vt/src/parser.rs:1878:26: replace && with || in Parser::osc_more
-fux-vt/src/parser.rs:1878:44: replace <= with > in Parser::osc_more
-fux-vt/src/parser.rs:1856:9: replace Parser::osc_more -> usize with 0
-fux-vt/src/parser.rs:1856:9: replace Parser::osc_more -> usize with 1
+fux-vt/src/parser.rs:1897:26: replace && with || in Parser::osc_more
+fux-vt/src/parser.rs:1897:44: replace <= with > in Parser::osc_more
+fux-vt/src/parser.rs:1875:9: replace Parser::osc_more -> usize with 0
+fux-vt/src/parser.rs:1875:9: replace Parser::osc_more -> usize with 1
 # B20 [now] OSC_PAYLOAD_LIMIT = 64 * 1024 (parser.rs:516 -> :697)
 fux-vt/src/parser.rs:708:41: replace * with +
 fux-vt/src/parser.rs:708:41: replace * with /
 # B20 [new] osc_room: written as `fn osc_room(&mut self, more: usize)` (parser.rs:1749, no return value, so no 0/1 mutants) with `need > capacity`, growing in grow_osc (:1759) by doubling to 16 KiB then at once to OSC_PAYLOAD_LIMIT + 1
-fux-vt/src/parser.rs:1913:9: replace Parser::osc_room with ()
-fux-vt/src/parser.rs:1914:17: replace > with == in Parser::osc_room
-fux-vt/src/parser.rs:1914:17: replace > with < in Parser::osc_room
-fux-vt/src/parser.rs:1914:17: replace > with >= in Parser::osc_room
-fux-vt/src/parser.rs:1923:9: replace Parser::grow_osc with ()
-fux-vt/src/parser.rs:1923:36: replace << with >> in Parser::grow_osc
-fux-vt/src/parser.rs:1925:34: replace > with == in Parser::grow_osc
-fux-vt/src/parser.rs:1925:34: replace > with < in Parser::grow_osc
-fux-vt/src/parser.rs:1925:34: replace > with >= in Parser::grow_osc
+fux-vt/src/parser.rs:1932:9: replace Parser::osc_room with ()
+fux-vt/src/parser.rs:1933:17: replace > with == in Parser::osc_room
+fux-vt/src/parser.rs:1933:17: replace > with < in Parser::osc_room
+fux-vt/src/parser.rs:1933:17: replace > with >= in Parser::osc_room
+fux-vt/src/parser.rs:1942:9: replace Parser::grow_osc with ()
+fux-vt/src/parser.rs:1942:36: replace << with >> in Parser::grow_osc
+fux-vt/src/parser.rs:1944:34: replace > with == in Parser::grow_osc
+fux-vt/src/parser.rs:1944:34: replace > with < in Parser::grow_osc
+fux-vt/src/parser.rs:1944:34: replace > with >= in Parser::grow_osc
 
 # B21 [new] request_full: not written. The DECRQSS request is `Bytes<REQUEST_LIMIT>` (parser.rs:366), REQUEST_LIMIT = 4 a bare literal (:708, no mutant); Bytes::push (:390) refuses a 5th byte by `get_mut(len)?` on its array (no operator). Its body mutants are the guard; the literal is guarded by tests/opt_in.rs:539-545 ("a long request" answered invalid) and the bounds row b21 (tests/bounds/rows.rs:773)
 fux-vt/src/parser.rs:391:9: replace Bytes<N>::push -> Option<Self> with None
 fux-vt/src/parser.rs:391:9: replace Bytes<N>::push -> Option<Self> with Some(Default::default())
 # B21 upstream: the Pictures gate on sixel, `options.has(Feature::Pictures) && byte == b'q'` (9a38df95 parser.rs:1417 -> Parser::dcs_string :1575)
-fux-vt/src/parser.rs:1738:49: replace && with || in Parser::dcs_string
+fux-vt/src/parser.rs:1757:49: replace && with || in Parser::dcs_string
 # B21 upstream: `graphics.sixel &= self.options.has(Feature::Pictures)` (9a38df95 parser.rs:950 -> :1252)
 fux-vt/src/parser.rs:1278:24: replace &= with |= in Parser::set_host_graphics
 
@@ -631,44 +631,44 @@ fux-vt/src/compact.rs:647:9: replace Text::long_limit -> usize with 0
 fux-vt/src/compact.rs:647:9: replace Text::long_limit -> usize with 1
 
 # B31 [new] TXT-2 append_failed_here: not written. Replaced by `Kept::Full` in the last print's state (screen.rs:2079, `kept = known != Kept::Full`; join stops calling line.append once one failed there, :2082), cleared with the last print by break_cluster (:2152)
-fux-vt/src/screen.rs:2492:30: replace != with == in Screen::join
-fux-vt/src/screen.rs:2495:29: replace && with || in Screen::join
-fux-vt/src/screen.rs:2566:9: replace Screen::break_cluster with ()
+fux-vt/src/screen.rs:2511:30: replace != with == in Screen::join
+fux-vt/src/screen.rs:2514:29: replace && with || in Screen::join
+fux-vt/src/screen.rs:2585:9: replace Screen::break_cluster with ()
 # B31 store_long compacts only when compacting would make room, `live_long() + text.len() <= limit` (compact.rs:585, "threats.md B31")
 fux-vt/src/compact.rs:1003:60: replace <= with > in Line<'_, C>::store_long
 
 # B32 to B36 [now] REP: Screen::repeat's body (faf8bf00 screen.rs:1470:9 -> 9a38df95 :1488 -> now :2176)
-fux-vt/src/screen.rs:2592:9: replace Screen::repeat -> Result<(), Error> with Ok(())
+fux-vt/src/screen.rs:2611:9: replace Screen::repeat -> Result<(), Error> with Ok(())
 # B33 and B34 [now] REP: per_row's zero filter (faf8bf00 screen.rs:1478:80 -> :1496 -> now :2184:80)
-fux-vt/src/screen.rs:2630:67: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2630:67: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2630:67: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2649:67: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2649:67: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2649:67: replace > with >= in Screen::copies_needed
 # B33 [now] REP: the ASCII run loop (faf8bf00 screen.rs:1495:25 -> :1513 -> now :2208:25, `while count > 0`)
-fux-vt/src/screen.rs:2728:25: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2728:25: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2728:25: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2747:25: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2747:25: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2747:25: replace > with >= in Screen::copies
 # B33: the other copies' loop (`while count > 0 && !self.stopped`), written since d6cbde3c
-fux-vt/src/screen.rs:2750:21: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2750:21: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2750:21: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2769:21: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2769:21: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2769:21: replace > with >= in Screen::copies
 # B33: REP's copies counted before they are made (Screen::copies_needed, B's 3e6f3c3a), its clamps for a glyph wider than the screen and for a cursor below the region, and the copies a stop leaves (Screen::copies)
-fux-vt/src/screen.rs:2611:9: replace Screen::copies_needed -> usize with 0
-fux-vt/src/screen.rs:2611:9: replace Screen::copies_needed -> usize with 1
-fux-vt/src/screen.rs:2613:18: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2613:18: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2613:18: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2622:36: replace > with == in Screen::copies_needed
-fux-vt/src/screen.rs:2622:36: replace > with < in Screen::copies_needed
-fux-vt/src/screen.rs:2622:36: replace > with >= in Screen::copies_needed
-fux-vt/src/screen.rs:2719:22: replace > with == in Screen::copies
-fux-vt/src/screen.rs:2719:22: replace > with < in Screen::copies
-fux-vt/src/screen.rs:2719:22: replace > with >= in Screen::copies
+fux-vt/src/screen.rs:2630:9: replace Screen::copies_needed -> usize with 0
+fux-vt/src/screen.rs:2630:9: replace Screen::copies_needed -> usize with 1
+fux-vt/src/screen.rs:2632:18: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2632:18: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2632:18: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2641:36: replace > with == in Screen::copies_needed
+fux-vt/src/screen.rs:2641:36: replace > with < in Screen::copies_needed
+fux-vt/src/screen.rs:2641:36: replace > with >= in Screen::copies_needed
+fux-vt/src/screen.rs:2738:22: replace > with == in Screen::copies
+fux-vt/src/screen.rs:2738:22: replace > with < in Screen::copies
+fux-vt/src/screen.rs:2738:22: replace > with >= in Screen::copies
 # B33 [new] repeat_clamp: not written as a function. The clamp is inline in Screen::repeat (screen.rs:2190-2199):
 # `full` from history's row capacity `history_bytes() / 32` (B33's budget / 32 rows), then `count.checked_sub(full)`,
 # which has no operator mutant. Its one mutable site is the `/ 32` of history's row capacity, below; the
 # clamp itself is guarded by bounds/rows.rs b33 (2x10, 1 KiB of history, count 65,535: cells <= 720).
-fux-vt/src/screen.rs:2639:40: replace / with % in Screen::copies_needed
-fux-vt/src/screen.rs:2639:40: replace / with * in Screen::copies_needed
+fux-vt/src/screen.rs:2658:40: replace / with % in Screen::copies_needed
+fux-vt/src/screen.rs:2658:40: replace / with * in Screen::copies_needed
 # B34a [new] joins_full_cluster: written as Printed::full (screen.rs:162, `self.kept == Kept::Full`), which repeat's
 # non-ASCII loop reads at screen.rs:2219 to skip copies once the cluster is full
 fux-vt/src/screen.rs:177:9: replace Printed::full -> bool with true
@@ -786,7 +786,7 @@ fux-vt/src/lib.rs:171:5: replace reserve -> Result<(), Error> with Ok(())
 fux-vt/src/lib.rs:161:5: replace degraded with ()
 fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 0
 fux-vt/src/lib.rs:166:5: replace degrades -> u64 with 1
-fux-vt/src/parser.rs:1568:9: replace Parser::count_degrades with ()
+fux-vt/src/parser.rs:1579:9: replace Parser::count_degrades with ()
 # B44 [new] let_row_go: written as Grid::scroll_past_history (grid.rs:1646, a row history has no room for goes as with no history)
 fux-vt/src/grid.rs:1878:9: replace Grid::scroll_past_history with ()
 # B44 [new] blank_in_place: inline in Grid::clear's refused arm (grid.rs:2098-2103), behind Grid::holds_its_rows;
@@ -801,8 +801,8 @@ fux-vt/src/grid.rs:480:12: delete ! in Grid::make
 # B44 [new] refused(): Parser::refused (parser.rs:1288), and the counting it reads (Parser::refuse, refuse_many)
 fux-vt/src/parser.rs:1315:9: replace Parser::refused -> u64 with 0
 fux-vt/src/parser.rs:1315:9: replace Parser::refused -> u64 with 1
-fux-vt/src/parser.rs:1602:9: replace Parser::refuse with ()
-fux-vt/src/parser.rs:1608:9: replace Parser::refuse_many with ()
+fux-vt/src/parser.rs:1621:9: replace Parser::refuse with ()
+fux-vt/src/parser.rs:1627:9: replace Parser::refuse_many with ()
 # B44 PAR-3's state set before dispatch: no mutant moves a statement; guarded by bounds/rows.rs b44
 # (`ESC]133;A BEL hello` with a forced refusal) and degrades (rows.rs:1653).
 # Checker [new] each check_<name>(&self, report) -> Result<(), Fault>: written as check_<name>(&self) -> Result<(), String>,
