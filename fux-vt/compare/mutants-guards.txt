@@ -867,4 +867,3 @@ fux-vt/src/palette.rs:267:14: replace > with >= in answer
 fux-vt/src/palette.rs:270:48: replace >> with << in answer
 fux-vt/src/palette.rs:271:47: replace & with | in answer
 fux-vt/src/palette.rs:271:47: replace & with ^ in answer
-
