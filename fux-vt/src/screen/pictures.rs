@@ -22,7 +22,7 @@ const MAX_PICTURES: usize = 64;
 /// The most bytes of pixels a terminal's pictures hold together by
 /// default ([`crate::Parser::set_picture_bytes`]), however large their data
 /// says they are: those kept on either screen, the one being drawn, and its
-/// old pixels while it grows (`threats.md` B01). Past it, pictures no
+/// old pixels while it grows (`THREATS.md` B01). Past it, pictures no
 /// longer shown go first, then the oldest. It holds the largest picture,
 /// 4096 by 2160 (`sixel::MAX_SIDE`), twice.
 pub const PICTURE_BYTES: usize = 96 << 20;
@@ -366,7 +366,7 @@ impl Screen {
 
     /// Follows the pictures whose top rows have gone into the main screen's
     /// history since last followed, so that each is found there by its
-    /// number, not by a search of history (`threats.md` B09): the rows
+    /// number, not by a search of history (`THREATS.md` B09): the rows
     /// come since are read once, each looked for among those tops, with
     /// nothing to do if none came or no picture's top is still to follow.
     /// Rows go into history only from the screen's top and stay in the
@@ -429,7 +429,7 @@ impl Screen {
     /// row up, those gone cropped (DEC STD 070-9, 11.2.4: what scrolls off
     /// is gone, the rest stays): those above the oldest row kept, or above
     /// the top margin, which the region's scrolls took; and the cells read
-    /// of its rows changed since it was last found whole (`threats.md`
+    /// of its rows changed since it was last found whole (`THREATS.md`
     /// B09), and, its top gone, of its first row left, which a row edit
     /// rather than a scroll may have made another's.
     fn shown<'a>(&'a self, placement: &'a Placement) -> Option<Shown<'a>> {
@@ -544,7 +544,7 @@ impl Screen {
     }
 }
 
-/// The pictures' part of the invariant checker (threats.md section 6).
+/// The pictures' part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
     /// 30: at most [`MAX_PICTURES`] on both screens together, their
@@ -632,7 +632,7 @@ fn overlaps(
     row < e && r < end && col < ri && c < right
 }
 
-/// The pictures' checks, each shown pictures with their one fault (HAR-26).
+/// The pictures' checks, each shown pictures with their one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

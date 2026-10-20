@@ -422,7 +422,7 @@ pub struct FrameScan {
     /// Where in the held bytes it goes on: past what it has read.
     from: usize,
     /// Where it is in a sequence the bytes read so far end in the middle
-    /// of, kept so that no byte is read twice (`threats.md` B19).
+    /// of, kept so that no byte is read twice (`THREATS.md` B19).
     pending: Pending,
     params: Parameters,
     options: Options,
@@ -522,7 +522,7 @@ impl FrameScan {
     /// `Phase::next` reads them, a second time (`ends`): the others are
     /// passed at their final byte at once. One the bytes end in the middle
     /// of is read again too, for the next call to go on from where it got.
-    /// Each read is counted, so a byte at most twice (threats.md B19).
+    /// Each read is counted, so a byte at most twice (THREATS.md B19).
     fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
         let csi = bytes.get(start..)?;
         let end = csi.iter().position(|b| !(0x20..0x40).contains(b));
@@ -639,7 +639,7 @@ impl FrameScan {
     }
 }
 
-/// The frame scan's part of the invariant checker (threats.md section 6).
+/// The frame scan's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl FrameScan {
     /// 5: where the scan goes on is within `held`, the frame's bytes it
@@ -818,7 +818,7 @@ closed! {
 }
 
 /// Whether a host's cell, its width and height in pixels, is smaller than
-/// a sixel band's 2 by 6 (`threats.md` P5).
+/// a sixel band's 2 by 6 (`THREATS.md` B05).
 fn cell_too_small(cell: (u16, u16)) -> bool {
     cell.0 < 2 || cell.1 < 6
 }
@@ -900,7 +900,7 @@ pub enum Stop {
     /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,
     /// DECSTR and RIS do. A resize ends it too, which the host makes.
     Ended,
-    /// The call did as much work as one call may (threats.md P24: half of
+    /// The call did as much work as one call may (THREATS.md 4.4: half of
     /// the 50 M weighted units a 4 KiB call may do, so that what crossed it
     /// fits in the rest). Nothing is lost: the parser stopped between two
     /// bytes, and goes on from the next byte when it is given it. A host
@@ -1110,7 +1110,7 @@ impl Parser {
         })
     }
     /// Checks every invariant of the parser and its screen that the state
-    /// alone shows (threats.md section 6): which checks ran, and the faults
+    /// alone shows (THREATS.md section 6): which checks ran, and the faults
     /// found. The work counters do not see it.
     #[cfg(feature = "checks")]
     pub fn check(&self) -> crate::Checked {
@@ -1273,7 +1273,7 @@ impl Parser {
     /// ([`Screen::pictures`]).
     ///
     /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
-    /// placing a picture costs a bounded number of cells (`threats.md` P5).
+    /// placing a picture costs a bounded number of cells (`THREATS.md` B05).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
         graphics.sixel &= self.options.has(Feature::Pictures);
         if let Some(cell) = graphics.cell
@@ -1309,7 +1309,7 @@ impl Parser {
         self.options
     }
     /// How many times carrying out output was refused room: history, the
-    /// alternate screen, a grid made anew (threats.md 1.3). Each refusal
+    /// alternate screen, a grid made anew (THREATS.md 1.3). Each refusal
     /// loses only what it was for; the rest of the output is read.
     pub fn refused(&self) -> u64 {
         self.refused
@@ -1353,7 +1353,7 @@ impl Parser {
     /// replies keep their order.
     ///
     /// The budget is half the 50 M weighted units one 4 KiB call may do
-    /// (threats.md 4.4, P24), spent by the work a few bytes can multiply: a
+    /// (THREATS.md 4.4), spent by the work a few bytes can multiply: a
     /// rectangle or a column edit, a scroll, REP, a search of history. It
     /// runs over calls, from one budget stop to the next, so it stops a
     /// host that cuts its reads small as well. The call looks at it after
@@ -1362,7 +1362,7 @@ impl Parser {
     /// this way has had at most that much work done since the last stop,
     /// plus what the sequence, line feed or wrap that crossed it did, plus
     /// the text and other C0 controls before it, which do a few units a
-    /// byte and at most one style sweep (decisions 820 and 831).
+    /// byte and at most one style sweep (THREATS.md 4.4).
     ///
     /// [`Parser::process_with`] is this call given the rest again until
     /// none is left: its work has no ceiling but the bytes it is given. As
@@ -1436,7 +1436,7 @@ impl Parser {
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
             // A refusal costs what was refused, and the rest is read
-            // (`kept`, threats.md 1.3, B44).
+            // (`kept`, THREATS.md 1.3, B44).
             let framed = if ground && (0x20..=0x7e).contains(&byte) {
                 let length = printable(remaining);
                 let (run, rest) = remaining
@@ -1451,7 +1451,7 @@ impl Parser {
                 };
                 remaining = rest;
                 // A wrap scrolled inside margins past the budget: the rest
-                // of the run is for the next call (decision 831).
+                // of the run is for the next call.
                 if UNTIL_STOP && self.screen.stopped {
                     remaining = (bytes.len().saturating_sub(remaining.len()))
                         .checked_sub(length)
@@ -1480,7 +1480,7 @@ impl Parser {
                 };
                 self.screen.forget_repeat();
                 // A line feed at the bottom margin moves a row's text into
-                // history, spent: up to a row's text a byte (decision 820).
+                // history, spent: up to a row's text a byte.
                 match fed {
                     true => self.over::<UNTIL_STOP>(),
                     false => None,
@@ -1602,7 +1602,7 @@ impl Parser {
     /// What `done` gave, or, if it was refused room (`Error::Capacity`, all
     /// that carrying out the input can fail with), nothing, counted in
     /// [`Parser::refused`]: the refusal costs what it was for, and the
-    /// rest of the input is read (threats.md 1.3, B44).
+    /// rest of the input is read (THREATS.md 1.3, B44).
     #[inline]
     fn kept<T: Default>(&mut self, done: Result<T, Error>) -> T {
         match done {
@@ -1925,7 +1925,7 @@ impl Parser {
     /// `Vec` grows, up to 16 KiB, then at once to what a string keeps,
     /// `OSC_PAYLOAD_LIMIT` and the byte that marks it overflowed. So the
     /// buffer never holds more than that, nor more than that and 16 KiB
-    /// while it grows (threats.md B20): doubling alone left room for
+    /// while it grows (THREATS.md B20): doubling alone left room for
     /// 98,304 bytes, kept for good, and 98,304 live as it grew.
     #[inline]
     fn osc_room(&mut self, more: usize) {
@@ -2020,9 +2020,10 @@ impl Parser {
 
     /// CAN or SUB, `byte`, in `state`, any but ground: what is in progress
     /// is cancelled, and SUB then shows its glyph (DEC STD 070, p. 5-132,
-    /// note 2; and in a control string, decisions.md 4); inside sixel SUB
-    /// is a blank sixel instead and the picture goes on, and CAN ends it
-    /// unplaced (the sixel chapter, 9.1). Out of line: seldom sent.
+    /// note 2; and in a control string, README, "SUB shows its error
+    /// character"); inside sixel SUB is a blank sixel instead and the
+    /// picture goes on, and CAN ends it unplaced (the sixel chapter, 9.1).
+    /// Out of line: seldom sent.
     #[cold]
     #[inline(never)]
     fn cancel(&mut self, byte: u8, state: State) {
@@ -2068,7 +2069,7 @@ impl Parser {
         }
         if byte == 0x1b {
             // The ESC begins a sequence whatever carrying out the string
-            // does: a refusal there leaves no string open (PAR-3).
+            // does: a refusal there leaves no string open.
             self.state = State::Escape(Intermediates::default());
             match state {
                 State::Osc { whole } => {
@@ -2447,7 +2448,7 @@ impl Parser {
     }
 }
 
-/// The parser's checks, each shown a parser with its one fault (HAR-26),
+/// The parser's checks, each shown a parser with its one fault,
 /// and the whole checker's report of what ran.
 #[cfg(all(test, feature = "checks"))]
 mod faults {

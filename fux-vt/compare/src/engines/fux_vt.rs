@@ -92,8 +92,8 @@ const BLOCK_CELLS: usize = 1 << 12;
 /// more than its own cells where `cols` does not divide [`BLOCK_CELLS`]);
 /// and, with any history, [`HISTORY_ROOM`] beside them: so fux-vt keeps at
 /// least the rows of plain cells (styles count in the budget too,
-/// `threats.md` B11), and a row lost is seen. The adapter's and `bench`'s
-/// fux-vt+prints'.
+/// `fux-vt/THREATS.md` B11), and a row lost is seen. The adapter's and
+/// `bench`'s fux-vt+prints'.
 pub fn history_bytes(rows: usize, cols: u16) -> usize {
     if rows == 0 {
         return 0;
@@ -206,7 +206,7 @@ impl Engine for Vt {
 /// The device's state fux-vt's API shows, and what only its answers to
 /// input do, read on copies: the tab stops by HT from the first column,
 /// and the protected cells by what a selective erase of the whole screen
-/// leaves (DECSED, `CSI ? 2 J`): those holding text (HAR-46).
+/// leaves (DECSED, `CSI ? 2 J`): those holding text.
 fn device(parser: &Parser) -> Device {
     struct Deaf;
     impl fux_vt::Sink for Deaf {}

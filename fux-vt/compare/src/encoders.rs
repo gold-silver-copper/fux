@@ -8,7 +8,7 @@
 //! the recorded verdicts below, each with who decides it.
 //!
 //! The comparison is in `beside`, built with the `engines` feature (it
-//! links libghostty-vt); the verdicts are here, for `lists` too.
+//! links libghostty-vt); the verdicts are here.
 #[cfg(feature = "engines")]
 mod beside;
 #[cfg(feature = "engines")]
@@ -16,6 +16,7 @@ pub use beside::run;
 
 /// Differences decided in fux-vt's favour or recorded as a choice, and the
 /// source that decides each.
+#[cfg(feature = "engines")]
 pub const VERDICTS: &[(&str, &str)] = &[
     (
         "utf8-button",
@@ -49,7 +50,7 @@ pub const VERDICTS: &[(&str, &str)] = &[
     (
         "ctrl-backspace-bs",
         "Backspace with Ctrl and another modifier is BS (8): real xterm 411 sends ESC BS for \
-         Ctrl-Alt and Ctrl-Alt-Shift (KEY-13, `tests/data/keys/xterm-keys.txt` lines 420 and \
+         Ctrl-Alt and Ctrl-Alt-Shift (`tests/data/keys/xterm-keys.txt` lines 420 and \
          422: `C-M-BSpace \\e\\x08`, `C-M-S-BSpace \\e\\x08`), and under modifyOtherKeys 2 \
          `CSI 27 ; m ; 8 ~` (lines 1659, 1660 and 1662: C-S `\\e[27;6;8~`, C-M \
          `\\e[27;7;8~`, C-M-S `\\e[27;8;8~`), as fux-vt does; ghostty sends DEL (127). Plain \
@@ -66,14 +67,14 @@ pub const VERDICTS: &[(&str, &str)] = &[
     (
         "ctrl-alt-question",
         "Ctrl-Alt-? with no kitty flags and no modifyOtherKeys 2: real xterm 411 sends ESC ?, \
-         its Ctrl-? being DEL by its own translation, which Alt passes by (KEY-13, \
+         its Ctrl-? being DEL by its own translation, which Alt passes by (\
          `tests/data/keys/xterm-keys.txt`: `CMS slash legacy C-M-? \\e?`), as fux-vt does; \
          ghostty sends ESC DEL",
     ),
     (
         "shift-tab",
         "Shift-Tab under modifyOtherKeys 2: real xterm 411 sends CSI Z, ISO_Left_Tab's, with \
-         Shift alone (KEY-13, `tests/data/keys/xterm-keys.txt`: `S Tab legacy mok=2 S-Tab \
+         Shift alone (`tests/data/keys/xterm-keys.txt`: `S Tab legacy mok=2 S-Tab \
          \\e[Z`), as fux-vt does; ghostty sends CSI 27 ; 2 ; 9 ~",
     ),
     (

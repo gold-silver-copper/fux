@@ -472,7 +472,7 @@ fn key_verdict(
     if key == Key::Backspace && mods.ctrl && bs_form && ghostty_del {
         return Some("ctrl-backspace-bs");
     }
-    // xterm 411's bytes (KEY-13).
+    // xterm 411's bytes.
     let plain = flags == 0;
     if key == Key::Char('?') && mods.ctrl && mods.alt && plain && !other_keys && ours == b"\x1b?" {
         return Some("ctrl-alt-question");

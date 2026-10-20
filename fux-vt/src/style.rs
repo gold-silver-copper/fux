@@ -23,7 +23,7 @@
 //! after one that keeps L styles the next comes only after max(floor − L,
 //! L) new ones, at least half the floor, which is an eighth of the grid's
 //! cells or more: so a style costs a few cell reads however many there
-//! are (`threats.md` B13). No reader sees a style's number.
+//! are (`THREATS.md` B13). No reader sees a style's number.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
@@ -42,7 +42,7 @@ const FLOOR: usize = 4096;
 
 /// A grid's table of styles: their attributes by place, and each one's
 /// place by its attributes, found by a keyed hash ([`Keyed`]), so that a
-/// program can't choose styles that collide (`threats.md` B12). Probes per
+/// program can't choose styles that collide (`THREATS.md` B12). Probes per
 /// insert are expected O(1); the ceiling is the table's length, which a
 /// sweep bounds (B13).
 #[derive(Clone, Default)]
@@ -252,13 +252,13 @@ fn table_bytes(entries: usize, room: usize) -> usize {
 
 /// The bytes a screen of `cells` cells may keep in its style table beside
 /// history's budget: a table of twice its cells' styles, or the floor's
-/// (`threats.md` B11, S(2N)).
+/// (`THREATS.md` B11, S(2N)).
 pub(crate) fn screen_share(cells: usize) -> usize {
     let entries = cells.saturating_mul(2).max(FLOOR).next_power_of_two();
     table_bytes(entries, entries.saturating_mul(7) / 8)
 }
 
-/// The table's part of the invariant checker (threats.md section 6).
+/// The table's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Styles {
     /// 15 and 16: each style is found at its place, no other, and the
@@ -290,7 +290,7 @@ impl Styles {
 
     /// 15: no more than [`SPREAD`] styles share a place in `places` by
     /// `hash` (the table's own hash, [`Keyed`]): a program that can't see
-    /// the keys can't make styles collide (`threats.md` B12), so the most
+    /// the keys can't make styles collide (`THREATS.md` B12), so the most
     /// a place gets is a few, as for random hashes, where one fold of
     /// both words, unkeyed, gave every style of a chosen family one place.
     pub(crate) fn check_spread(&self, hash: impl Fn(&Attributes) -> u64) -> Result<(), String> {
@@ -356,7 +356,7 @@ mod tests {
     /// differ write differently, and a keyed hash leaves no family a
     /// program could choose to collide. At BASE they wrote one word, `a ^
     /// b.rotate_left(23)` mixed, which rust-opus's family of 32,768 styles
-    /// shares (`threats.md` B12).
+    /// shares (`THREATS.md` B12).
     #[test]
     fn attributes_hash_both_their_words() {
         for (a, b) in [(direct(1), direct(2)), (direct(7), direct(200))] {
@@ -494,7 +494,7 @@ mod tests {
     }
 }
 
-/// The table's check, shown a table with its one fault (HAR-26).
+/// The table's check, shown a table with its one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

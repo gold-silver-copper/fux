@@ -4,7 +4,8 @@ name: fux-vt beside other terminals
 # wezterm-term from git and libvterm, and drives xterm.js, tmux and xterm,
 # too much for every push (ci.yml runs esctest against fux-vt alone, built
 # without them). run.sh checks Zig and libvterm by SHA-256; what it fetches,
-# Zig's build cache and cargo's are kept between runs.
+# Zig's build cache and cargo's are kept between runs. The steps' results
+# end as a scoreboard in the run's summary, and as its artifact.
 
 on:
   workflow_dispatch:
@@ -41,6 +42,7 @@ jobs:
       - name: tmux, Xvfb and what xterm builds with
         run: |
           set -euo pipefail
+          echo "R=$RUNNER_TEMP/results" >>"$GITHUB_ENV"
           sudo apt-get update -q
           sudo apt-get install -y -q tmux xvfb libxaw7-dev libxft-dev libncurses-dev pkg-config
 
@@ -78,7 +80,9 @@ jobs:
           git diff --exit-code -- fux-vt/src/unicode/tables.rs fux-vt/tests/data
 
       - name: The named cases, beside every engine
-        run: fux-vt/compare/run.sh cases
+        run: |
+          mkdir -p "$R"
+          fux-vt/compare/run.sh cases --json "$R/cases.json"
 
       - name: The families expected to agree, beside the voting panel
         run: fux-vt/compare/run.sh --cases 20000
@@ -96,18 +100,35 @@ jobs:
           git init -q references/xterm/esctest2
           git -C references/xterm/esctest2 fetch -q --depth 1 https://github.com/ThomasDickey/esctest2 "$commit"
           git -C references/xterm/esctest2 -c advice.detachedHead=false checkout -q FETCH_HEAD
-          fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt
+          fux-vt/compare/run.sh esctest --json "$R/esctest.json"
+          fux-vt/compare/run.sh esctest --terminal ghostty --beside fux-vt --json "$R/esctest-ghostty.json"
 
       - name: The recorded programs, beside xterm and the panel
-        run: fux-vt/compare/run.sh corpus
+        run: |
+          fux-vt/compare/run.sh corpus --json "$R/corpus.json"
+          fux-vt/compare/run.sh corpus --subject ghostty --json "$R/corpus-ghostty.json"
 
       - name: The recorded programs through fux, beside themselves
-        run: fux-vt/compare/run.sh transparency
+        run: fux-vt/compare/run.sh transparency --json "$R/transparency.json"
 
       - name: Each engine's memory
-        run: fux-vt/compare/run.sh footprint
+        run: fux-vt/compare/run.sh footprint --json "$R/footprint.json"
 
       # On a shared runner the MB/s measure nothing; this checks that
       # every engine in this process takes every workload.
       - name: Each engine's speed, a short run
         run: fux-vt/compare/run.sh bench --engines in-process --mb 2
+
+      - name: The scoreboard
+        if: always()
+        run: |
+          mkdir -p "$R"
+          fux-vt/compare/target/release/fux-vt-compare scoreboard "$R" >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: compare-results
+          path: ${{ runner.temp }}/results/
+          retention-days: 30
+          if-no-files-found: ignore

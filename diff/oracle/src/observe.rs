@@ -343,7 +343,7 @@ pub fn probes<S: Side>(s: &S) -> Vec<String> {
     let _ = write!(stops, "back {}", copy.state().cursor.1);
     out.push(format!("tab stops: {stops} {heard:?}"));
     // Each row's end, where the cursor stops going right, which a line
-    // rendition halves (HAR-46): with origin mode off, row by row.
+    // rendition halves: with origin mode off, row by row.
     let mut ends = String::new();
     let mut copy = s.clone();
     let _ = copy.process(b"\x1b[?6l\x1b[?69l", &mut heard);
@@ -394,8 +394,7 @@ mod tests {
     use super::common_modes;
 
     /// A mode only one side has, or the two sides' orders, make no
-    /// difference; a mode both have, set on one side alone, does
-    /// (FA-RE-B-11).
+    /// difference; a mode both have, set on one side alone, does.
     #[test]
     fn modes_are_compared_by_name_over_those_both_sides_have() {
         let mode = |name: &str, on: bool| (name.to_string(), on);

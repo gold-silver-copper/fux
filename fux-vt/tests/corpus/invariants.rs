@@ -99,7 +99,7 @@ pub fn check(p: &Parser) {
 }
 
 /// Two parsers fed the same bytes, split differently, alike in everything
-/// a host reads (`threats.md` section 6, 29): `equal`, and the screen not
+/// a host reads (`THREATS.md` section 6, 29): `equal`, and the screen not
 /// in use too.
 pub fn same_feed(a: &Parser, b: &Parser) {
     equal(a, b);

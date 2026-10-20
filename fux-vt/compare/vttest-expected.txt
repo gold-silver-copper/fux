@@ -52,7 +52,7 @@ fux-vt 11.3.7.3.5#1 failed fux-policy: DSR macro space (CSI ? 62 n), answered `C
 fux-vt 11.3.7.3.6#1 failed fux-policy: DSR memory checksum (CSI ? 63 ; Pid n), answered `DCS Pid ! ~ 0000 ST` (no macros)
 fux-vt 11.3.7.3.7#1 failed fux-policy: DSR data integrity (CSI ? 75 n), answered `CSI ? 73 n`, then `CSI ? 70 n`
 fux-vt 11.3.7.3.8#1 failed fux-policy: DSR multiple sessions (CSI ? 85 n), answered `CSI ? 83 n` (no sessions)
-fux-vt 11.3.7.3.9#1 failed xterm-too: DECRQCRA (GL) is not answered by default, as xterm 411's is not (decision 870; `Feature::RectangleChecksums`)
+fux-vt 11.3.7.3.9#1 failed xterm-too: DECRQCRA (GL) is not answered by default, as xterm 411's is not (`Feature::RectangleChecksums`)
 fux-vt 11.3.7.3.10#1 failed xterm-too: DECRQCRA (GR), as 11.3.7.3.9
 fux-vt 11.4.5.2.3.2#1 failed xterm-too: DECRQSS for DECATC (alternate text colour)
 fux-vt 11.4.5.2.3.3#1 failed xterm-too: DECRQSS for DECAC (assign colour)

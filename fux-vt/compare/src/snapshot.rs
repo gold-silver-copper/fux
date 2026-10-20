@@ -309,8 +309,8 @@ impl Snapshot {
     }
 }
 
-/// What a terminal keeps that DA claims and a screen's text doesn't show
-/// (HAR-46): the cursor's shape, the tab stops, each screen row's line
+/// What a terminal keeps that DA claims and a screen's text doesn't show:
+/// the cursor's shape, the tab stops, each screen row's line
 /// rendition and the cells protected from selective erase.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Device {
@@ -935,7 +935,7 @@ mod tests {
     }
 
     /// The device's state DA claims is compared where an engine can tell
-    /// it, and with no one where it can't (HAR-46): a double-width row, a
+    /// it, and with no one where it can't: a double-width row, a
     /// tab stop, the cursor's shape and a protected cell.
     #[test]
     fn the_device_state_is_compared_where_it_is_told() {

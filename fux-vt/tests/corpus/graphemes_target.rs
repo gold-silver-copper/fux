@@ -1,5 +1,5 @@
 //! The `graphemes` fuzz target's input and what it checks, shared with
-//! `tests/properties.rs`, which replays the target's frozen seeds
+//! `fuzz/tests/graphemes_seeds.rs`, which replays the target's frozen seeds
 //! (`fuzz/seeds/graphemes`) on every test run.
 //!
 //! The input is structured (`arbitrary`): lines of characters, each picked

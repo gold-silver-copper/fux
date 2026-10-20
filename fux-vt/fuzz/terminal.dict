@@ -86,7 +86,7 @@ spa="\x1BV"
 epa="\x1BW"
 decsed="\x1B[?2J"
 decsel="\x1B[?K"
-# Sixel (DEC STD 070 chapter 7; SIX-21, HAR-28): its introducer at each
+# Sixel (DEC STD 070 chapter 7): its introducer at each
 # macro aspect and background choice, raster attributes, colours, repeats,
 # bands and its end, and the controls that cut it short.
 sixel_start="\x1BPq"

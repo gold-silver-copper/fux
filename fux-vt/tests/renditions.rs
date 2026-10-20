@@ -222,7 +222,7 @@ fn decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions() -> Result {
     let p = run(2, 10, b"\x1b#6\x1b[2J")?;
     assert_eq!(rendition(&p, 0), Some(Single), "ED");
     // ED once protection was used, sparing nothing on the line: single
-    // width (FA-RE-B-2).
+    // width.
     let p = run(2, 10, b"\x1b#6\x1b[1\"q\x1b[2J")?;
     assert_eq!(rendition(&p, 0), Some(Single), "ED after DECSCA 1");
     let p = run(2, 10, b"\x1bVx\x1bW\r\n\x1b#6\x1b[2J")?;
@@ -323,7 +323,7 @@ fn a_wide_glyph_wrapped_onto_a_halved_line_too_short_is_not_printed() -> Result 
 /// A wide glyph a halved line a column long drops carries out a wrap
 /// waiting first, as a glyph wider than the screen does (xterm's
 /// `dotext`; DEC STD 070's Last Column Flag): on 2x2, `ESC # 6`, `a`, then
-/// U+1F44D leaves the cursor at the second line's start (FA-RE-F-10).
+/// U+1F44D leaves the cursor at the second line's start.
 #[test]
 fn a_dropped_wide_glyph_carries_out_the_wrap_waiting() -> Result {
     let mut parser = Parser::new(Size::new(2, 2)?, 0)?;

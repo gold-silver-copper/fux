@@ -897,7 +897,7 @@ pub const FAMILIES: &[Family] = &[
         name: "protection",
         about: "DECSCA and SPA/EPA, then DECSED and DECSEL, ED, EL and ECH",
         status: Status::Decided {
-            why: "DECSCA protects a glyph from DECSED and DECSEL, and SPA/EPA from ED, EL and ECH too (ISO 6429's protection), each glyph keeping its own, and a selective erase leaves each position its rendition (DEC STD 070, DECSCA, DECSED and DECSEL; ECMA-48 8.3.112 and 8.3.48), as fux-vt does; xterm gives the erased positions the pen's colours, and no engine of the panel but xterm keeps protection, so the test alone checks it (HAR-46, so that the oracle draws it)",
+            why: "DECSCA protects a glyph from DECSED and DECSEL, and SPA/EPA from ED, EL and ECH too (ISO 6429's protection), each glyph keeping its own, and a selective erase leaves each position its rendition (DEC STD 070, DECSCA, DECSED and DECSEL; ECMA-48 8.3.112 and 8.3.48), as fux-vt does; xterm gives the erased positions the pen's colours, and no engine of the panel but xterm keeps protection, so the test alone checks it (so that the oracle draws it)",
             by: &[],
             authority: Authority::Standard {
                 section: "DEC STD 070, DECSEL and DECSED",
@@ -1234,7 +1234,7 @@ pub const FAMILIES: &[Family] = &[
         name: "substitute",
         about: "SUB in ground and inside sequences and strings, and CAN",
         status: Status::Decided {
-            why: "SUB displays the error character, a reversed question mark (U+2426), at the active position, in ground and in place of a sequence it aborts, as DEC STD 070's SUBSTITUTE (p. 5-132, note 2) and its C0 table (5.9.1) say and xterm does; CAN shows none. Every other engine of the panel drops SUB as CAN, outvoting fux-vt (`replay --engines all --size 1x6 'a\\x1ab'`). The standard contradicts itself in its parsing algorithm (3.5.5), which cancels with no glyph; chapter 5, the function's own page, decides (decisions.md 4). Inside a control string, which SUB ends (3.5.4.4), the glyph shows too, as in xterm",
+            why: "SUB displays the error character, a reversed question mark (U+2426), at the active position, in ground and in place of a sequence it aborts, as DEC STD 070's SUBSTITUTE (p. 5-132, note 2) and its C0 table (5.9.1) say and xterm does; CAN shows none. Every other engine of the panel drops SUB as CAN, outvoting fux-vt (`replay --engines all --size 1x6 'a\\x1ab'`). The standard contradicts itself in its parsing algorithm (3.5.5), which cancels with no glyph; chapter 5, the function's own page, decides (README, 'SUB shows its error character'). Inside a control string, which SUB ends (3.5.4.4), the glyph shows too, as in xterm",
             by: XTERM,
             authority: Authority::Standard {
                 section: "DEC STD 070, SUBSTITUTE",

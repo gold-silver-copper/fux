@@ -172,7 +172,7 @@ fn departs(c: char) -> bool {
     crate::char_width(c) != c.width()
 }
 
-/// fux-vt's widths (threats.md B32): no character takes more than 2
+/// fux-vt's widths (THREATS.md B32): no character takes more than 2
 /// columns, U+17D8 KHMER SIGN BEYYAL, the one unicode-width makes 3,
 /// takes 1, as in xterm 411; the 34 spacing marks (Mc) of combining
 /// class 0 it makes 0, as Grapheme_Extend, take 1, as in wcwidth 0.9.2;

@@ -359,9 +359,9 @@ fn what_follows_a_character_joined_at_no_width_after_a_zero_width_prepend_is_seg
 /// A zero-width Prepend character joins the cell before it, and stays
 /// apart from what UAX #29's GB9b would join it to, as the README's
 /// departure says: `x\u{605}A` is `x\u{605}` and `A`, and
-/// `x\u{605}\u{4e00}` three columns (FA-TXT-1); so too when it joins a
+/// `x\u{605}\u{4e00}` three columns; so too when it joins a
 /// cluster, after another zero-width Prepend or after a Prepend glyph,
-/// U+0600 (FA-RE-B-5).
+/// U+0600.
 #[test]
 fn a_zero_width_prepend_character_joins_nothing_after_it() -> Result {
     for (text, first) in [

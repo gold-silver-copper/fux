@@ -1,6 +1,6 @@
 #!/bin/bash
 # Records real xterm 411's bytes for every key fux names, in every legacy
-# mode fux-vt encodes (KEY-13), into fux-vt/tests/data/keys/xterm-keys.txt:
+# mode fux-vt encodes, into fux-vt/tests/data/keys/xterm-keys.txt:
 # xterm on a private Xvfb display (:197, no socket or lock file written),
 # the keys typed through XTest, about 6 minutes. Needs xterm 411, Xvfb and
 # libXtst. Verdicts are kept from the file as it is: a new or changed case

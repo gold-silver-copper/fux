@@ -33,7 +33,7 @@ table lookups) that edge coverage misses.
 | Target | Input | Checked against |
 | --- | --- | --- |
 | `terminal` | Raw bytes: a header, then operations (below) | The fast target: whole, byte-at-a-time and chunked processing agree, fux-vt's invariant checker and row versions after every operation |
-| `deep` | Raw bytes: six header bytes, then operations (`fuzz_targets/deep.rs` lists them) | Large state: up to 511 by 511 cells, 8 MiB of history, every `Feature`, sixel drawn in a host cell the input chooses, up to 1 MiB of output a run in 4 KiB reads by `process_until_stop`, each call within the frozen ceiling of work (`threats.md` 4.4); every host call (resize, history budgets, prints, palette, nonces, pictures listed and encoded within `encode`'s bound, the picture budget, windows); a byte-at-a-time copy with row versions checked after every byte while it holds at most 2,048 rows and until they have hashed 2^27 cells; the checker after every operation |
+| `deep` | Raw bytes: six header bytes, then operations (`fuzz_targets/deep.rs` lists them) | Large state: up to 511 by 511 cells, 8 MiB of history, every `Feature`, sixel drawn in a host cell the input chooses, up to 1 MiB of output a run in 4 KiB reads by `process_until_stop`, each call within the frozen ceiling of work (`THREATS.md` 4.4); every host call (resize, history budgets, prints, palette, nonces, pictures listed and encoded within `encode`'s bound, the picture budget, windows); a byte-at-a-time copy with row versions checked after every byte while it holds at most 2,048 rows and until they have hashed 2^27 cells; the checker after every operation |
 | `graphemes` | Structured (`arbitrary`): lines of characters from `tests/corpus/graphemes.rs` or any scalar value, SGR between them, piece sizes, a width to reflow to | Every row holds the cells `tests/corpus/models.rs` makes of its line (UAX #29 by unicode-segmentation, widths by unicode-width), the cursor after the last; again after reflowing narrower and back |
 | `cells` | Structured: a run's length and edits of every kind to `Cells` | The plain list of cells in `tests/corpus/models.rs`; the text budget; exact copies |
 | `keys` | One byte choosing a piece size (0 for the stream whole), then a terminal's input bytes, into `keys::decode::Decoder`, the Escape deadline passing only at the end | The same inputs whole, in pieces and byte by byte; no paste longer than `PASTE_LIMIT` chars (the limit counts bytes, and invalid UTF-8 becomes U+FFFD) |
@@ -105,7 +105,7 @@ What a run adds, and the `graphemes` and `cells` corpora, stay local (git
 ignores them); a crash becomes a named regression test.
 
 `seeds/terminal`, `seeds/deep` and `seeds/keys` hold the frozen seeds:
-each safety reproducer of `threats.md` (`b01-raster-pictures`,
+each safety reproducer of `THREATS.md` 2 (`b01-raster-pictures`,
 `b20-long-osc`, …) in the target's format, written from its definition
 in `tests/seeds.rs`: a `terminal` one past that target's 4,096 bytes in
 `deep`'s (64 KiB, 128 operations, a repeated pattern as `f2`); `tests/seeds.rs`
@@ -119,7 +119,7 @@ can't hold or takes too long on, one of host calls no target makes) is on
 kept as `tests/seeds/*.bin`. They are kept apart from `corpus/`, which is cut to
 the targets' lengths: give `seeds/TARGET` to a run as a second corpus
 directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
-the inputs that target found (FA-SB-2), which
+the inputs that target found, which
 `fux-vt/fuzz/tests/graphemes_seeds.rs` reads as the target does and
 checks as it checks (`tests/corpus/graphemes_target.rs`, shared with the
 target), on every test run.

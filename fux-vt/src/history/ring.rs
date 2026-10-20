@@ -2,7 +2,7 @@
 //! number of rows: one is made as the last fills and let go as the first
 //! empties, so the room the records take is what they keep and at most two
 //! chunks more, and no record moves as the ring grows or shrinks
-//! (`threats.md` B17).
+//! (`THREATS.md` B17).
 
 use super::Kept;
 use crate::Error;

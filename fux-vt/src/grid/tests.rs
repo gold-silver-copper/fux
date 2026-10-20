@@ -17,7 +17,7 @@ fn heap(grid: &Grid) -> [usize; 4] {
 /// A full history's storage, metadata included, stops growing: the
 /// screen's as much after 20,000 scrolls as after 10,000, and history's
 /// within its budget. A resize builds the new screen and history before
-/// it lets the old go (`threats.md` B37): the new history within its
+/// it lets the old go (`THREATS.md` B37): the new history within its
 /// budget and a tenth more and 64 KiB (3.2's resize term), the new screens'
 /// cells exactly their size, so the peak is the old and those together.
 #[test]
@@ -38,7 +38,7 @@ fn storage_with_history_full_stops_growing_and_a_resize_holds_its_bound() -> Res
     assert_eq!(now.get(..3), plateau.get(..3));
     assert!(now.iter().zip(plateau).skip(3).all(|(h, _)| *h <= BUDGET));
     // 240,000 bytes hold 19 of the ring's chunks of 512 empty rows (12,288
-    // bytes each, threats.md B17): the newest of them filling, and the
+    // bytes each, THREATS.md B17): the newest of them filling, and the
     // oldest let go only once all its rows have gone.
     assert!((18 * 512 + 1..=19 * 512).contains(&primary.history_len()));
     let resized_primary = primary.resized(Size::of(60, 120), &mut next, 20_001)?;
@@ -383,7 +383,7 @@ fn scrolling_between_full_margins_is_scrolling_rows() -> Result<(), Error> {
 
 /// Turning rows that cross the ring's end turns those rows and no others,
 /// as turning them where the ring starts at its top does, each way and
-/// by every count (FA-SIZE-1).
+/// by every count.
 #[test]
 fn a_rotation_across_the_rings_end_turns_only_its_rows() {
     for top in 0..6 {

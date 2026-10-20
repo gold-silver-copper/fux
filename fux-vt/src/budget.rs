@@ -1,11 +1,11 @@
-//! The work one call may do before it stops (threats.md P24, decision 6).
+//! The work one call may do before it stops (THREATS.md 4.4).
 //!
 //! A few bytes of input can ask for work in proportion to the screen, or
 //! to history: a rectangle edit, a column shift, a scroll, REP, a search of
 //! history's rows. At fux's largest sizes a 4 KiB read of such sequences
-//! would do far more than the frozen per-call ceiling U (threats.md 4.4),
+//! would do far more than the frozen per-call ceiling U (THREATS.md 4.4),
 //! and fux reads every pane on one thread. So the work of those kinds is
-//! spent here, weighed by its measured weights (`weight`, decision 950), and
+//! spent here, weighed by its measured weights (`weight`), and
 //! [`Parser::process_until_stop`](crate::Parser::process_until_stop) stops
 //! at the first byte boundary once [`LIMIT`] is spent since its last such
 //! stop, for the host to go on from there later
@@ -21,7 +21,7 @@
 //! steps of XParseColor's colour arithmetic (`palette/xcms.rs`), of which
 //! one OSC spends at most a quarter of U (`palette::ALLOWANCE`). The
 //! work at most a row's a sequence, or a few units a byte, is not, as the
-//! call's length bounds it (threats.md 4.2's rows that hold): examining
+//! call's length bounds it (THREATS.md 4.2): examining
 //! bytes, printing, joining a cluster, EL, ICH and DCH, recording prints,
 //! finding a style, decoding sixel. The spending is kept per thread, as
 //! the `checks` counters are, so the grid and history spend without being
@@ -32,14 +32,14 @@
 //! out, after each line feed (LF, VT, FF) it carries out, whose scroll can
 //! copy a row's text into history for one byte, and after a printed
 //! glyph whose wrap scrolled inside left and right margins, which copies
-//! the region's span of every row (`Parser::run`, decisions 820 and 831).
-//! Not after other text or C0 controls: what they spend between two looks
-//! is at most one style sweep, for the one new style an SGR before them
-//! gave the pen (B13, at most 4 M units, P21), and a scroll into history
-//! of the row a wrap leaves, which the row's own printed cells pay for.
+//! the region's span of every row (`Parser::run`). Not after other text
+//! or C0 controls: what they spend between two looks is at most one style
+//! sweep, for the one new style an SGR before them gave the pen, spent
+//! whole where it is done (THREATS.md B13), and a scroll into history of
+//! the row a wrap leaves, which the row's own printed cells pay for.
 //! One margin scroll can itself cost up to 3 cells and a cell's text for
 //! every cell of the region, which at fux's largest pane is past U / 2
-//! (decision 831).
+//! (THREATS.md B35, 4.4).
 
 use std::cell::Cell;
 
@@ -49,8 +49,8 @@ thread_local! {
     static SPENT: Cell<u64> = const { Cell::new(0) };
 }
 
-/// The most weighted work one call may do: U, 50,000,000 units (threats.md
-/// 4.4, P14), in twentieths of a unit; `Work::CEILING` under `checks`.
+/// The most weighted work one call may do: U, 50,000,000 units (THREATS.md
+/// 4.4), in twentieths of a unit; `Work::CEILING` under `checks`.
 pub(crate) const CEILING: u64 = 50_000_000 * 20;
 
 /// The most a call of `process_until_stop` spends before it stops, in
@@ -59,12 +59,12 @@ pub(crate) const CEILING: u64 = 50_000_000 * 20;
 pub(crate) const LIMIT: u64 = CEILING / 2;
 
 /// Each counter's weight, in twentieths of a unit: an upper bound of its
-/// ns a unit on desk, times 20, so that U units are at most 50 ms there
-/// (decision 950). Each was measured over every bounds probe fed 4 KiB a
-/// call in fux's build, from the calls of 5 ms or more whose work is that
-/// kind's (each probe's 95th percentile), the kinds before it paid at
-/// their weights, times 1.25; the kinds no such call needs more of keep
-/// threats.md 4.4's (P23). Named as the
+/// ns a unit on an i5-9600K, times 20, so that U units are at most 50 ms
+/// there (THREATS.md 4.4). Each was measured over every bounds probe fed
+/// 4 KiB a call in fux's build, from the calls of 5 ms or more whose work
+/// is that kind's (each probe's 95th percentile), the kinds before it paid
+/// at their weights, times 1.25; the kinds no such call needs more of keep
+/// the weights first frozen for them, before any was measured. Named as the
 /// counters are ([`crate::Work`]'s fields), for `spend!` to name them; the
 /// kinds no site spends are kept for the `checks` counters alone.
 #[expect(
@@ -90,7 +90,7 @@ pub(crate) mod weight {
     /// A row text byte copied or rescanned: 1.06 ns, a scroll inside left
     /// and right margins over rows of 17-byte clusters at 1000x500, which
     /// spends each byte of the span's text twice, read and written
-    /// (2.12 ns a byte read, decision 969), past its cells and spans, times
+    /// (2.12 ns a byte read), past its cells and spans, times
     /// 1.2.
     pub(crate) const text: u64 = 26;
     /// A sixel pixel painted, filled, copied or zeroed: 0.96 ns, B04's.
@@ -112,7 +112,7 @@ pub(crate) mod weight {
     /// A byte the key decoder scanned or copied.
     #[cfg(feature = "checks")]
     pub(crate) const keys: u64 = 20;
-    /// A step of XParseColor's colour arithmetic (palette/xcms.rs): desk's
+    /// A step of XParseColor's colour arithmetic (palette/xcms.rs): the
     /// costliest, 7.0 ns a step (OSC 4s of the CIEXYZ colour whose square
     /// roots take the most steps), times 1.5.
     pub(crate) const colours: u64 = 210;
@@ -131,7 +131,7 @@ pub(crate) mod weight {
 /// The most one screen-wide sequence may spend at a screen of `size`, in
 /// twentieths of a unit: each cell read and written, rewritten, summed and
 /// its text copied (a cell's text is at most 49 bytes: 32 long and 17
-/// short, threats.md B35), and each row's slot turned, walked and its span
+/// short, THREATS.md B35), and each row's slot turned, walked and its span
 /// copied, at the most each kind costs. The parser looks at it before such
 /// a sequence (`Screen::holds_back`): one that would take the call past U, in a
 /// call that spent already, is left for the next call, to be carried out

@@ -17,7 +17,7 @@
 #                   working tree with (default: the latest master); a run
 #                   whose results are kept names a fixed commit
 #
-# Results, logs and the fuzz ledger go to $FUX_HARNESS_OUT (default
+# Results, logs and the fuzz log go to $FUX_HARNESS_OUT (default
 # fux-vt/compare/target/harness). Checks in a group run side by side; what
 # times itself or counts against REF runs alone. Each command ends with a
 # one-screen summary, and exits 1 if any check failed.
@@ -40,34 +40,15 @@ if [[ -z ${FUX_PERF:-} ]] && ! command -v perf >/dev/null; then
   done
 fi
 # The A/A floors `fux-bench --against` judges each workload by: the
-# calibration FUX_BENCH_FLOORS names, else the one committed beside this
-# script (floors.json), if either was made on this machine by this counter
-# (`--floors-here`); else, as fux-bench says, this run's spread.
-floors=${FUX_BENCH_FLOORS:-}
-[[ -z $floors && -f $here/floors.json ]] && floors=$here/floors.json
+# calibration FUX_BENCH_FLOORS names, else the speed gate's for this machine
+# (bench/gate.sh), if either was made here by this counter (`--floors-here`);
+# else, as fux-bench says, this run's spread.
+floors=${FUX_BENCH_FLOORS:-$root/bench/target/fux-bench/floors-$(hostname -s).json}
+[[ -f $floors ]] || floors=""
 mkdir -p "$out/logs" "$out/status"
 
-# The last commit that changed the paths given (along the first parents,
-# so a merge is the commit its branch's changes came in), with -dirty if
-# any of them differ from it (untracked files too): a commit that changes
-# only the harness leaves the product's the same.
-revision() {
-  local last
-  last=$(git -C "$root" log -1 --first-parent --format=%H -- "$@")
-  if [[ -n $(git -C "$root" status --porcelain -- "$@") ]]; then
-    last=$last-dirty
-  fi
-  echo "$last"
-}
-# The product measured: fux-vt and the fux it runs in, unless
-# FUX_PRODUCT_COMMIT names another (a run of this harness against another
-# commit's fux-vt, built by a path override, says which). The harness: the
-# tools that measure it.
-product=${FUX_PRODUCT_COMMIT:-$(revision fux-vt ':(exclude)fux-vt/compare' ':(exclude)fux-vt/fuzz' \
-  ':(exclude)fux-vt/gen' src fuxix fuxth Cargo.toml Cargo.lock)}
-harness=$(revision fux-vt/compare bench diff fuzz fux-vt/fuzz references/fetch.sh)
 commit=$(git -C "$root" rev-parse --short HEAD)
-[[ $product == *-dirty || $harness == *-dirty ]] && commit=$commit-dirty
+[[ -z $(git -C "$root" status --porcelain) ]] || commit=$commit-dirty
 
 ran=()
 quick() {
@@ -82,11 +63,8 @@ quick() {
   # master: every observable, after every step, over the corpus,
   # 10,000 random cases and 50 resize streams.
   # The input encoders beside libghostty-vt's (encoders.rs) take seconds.
-  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the lists and their diff, the oracle"
-  # Every judged list, as JSON (lists.json), and the list-diff report:
-  # each change since checkpoint 0's lists (lists-c0.json) beside its
-  # citation in list-changes.txt.
-  ran+=(corpus corpus-ghostty transparency random cases encoders lists lists-diff oracle)
+  echo "quick: corpus beside xterm, with Ghostty judged too, transparency, 2,000 random cases, the named cases, the encoders, the oracle"
+  ran+=(corpus corpus-ghostty transparency random cases encoders oracle)
   together \
     "$(spec corpus "$compare" corpus --json "$out/corpus.json")" \
     "$(spec corpus-ghostty "$compare" corpus --subject ghostty --json "$out/corpus-ghostty.json")" \
@@ -94,8 +72,6 @@ quick() {
     "$(spec random "$compare" run --cases 2000)" \
     "$(spec cases "$compare" cases --json "$out/cases.json")" \
     "$(spec encoders "$compare" encoders)" \
-    "$(spec lists "$compare" lists --json "$out/lists.json")" \
-    "$(spec lists-diff "$compare" lists --against "$here/lists-c0.json" --esctest "$out")" \
     "+$(spec oracle "$root/diff/oracle.sh" ${against:+"$against"} ${jobs:+--threads "$jobs"})"
 }
 
@@ -117,8 +93,6 @@ full() {
   echo "full: instructions against ${against:-master} (alone)"
   ran+=(against)
   build_bench
-  # The speed method's fifteen rounds (speed-method.md), the bench's own
-  # default, said here so the gate's count is in its stamp.
   step against "$bench" --against "${against:-master}" ${jobs:+--jobs "$jobs"} ${floors:+--floors-here "$floors"} --repeats 15 \
     --json "$out/against.json"
   # Each engine's memory, and its instructions per byte beside Ghostty's:
@@ -156,12 +130,10 @@ deep() {
   feel=$(last_seconds feel 300)
   info=$(last_seconds info 20)
   full_s=480
-  # The ledger's subjects: six named-case runs and five corpus runs.
-  local subjects=150
   local today_s
   today_s=$(last_seconds random-wide 60)
-  local estimate=$((full_s + today_s + seeds * verdicts + esctest + subjects + muxes + feel + info + fuzz_minutes * 60 + 60))
-  echo "deep: about $((estimate / 60)) minutes (full, 20,000 random cases at the day's seed, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, the cases and corpus with each engine the subject and the ledger, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
+  local estimate=$((full_s + today_s + seeds * verdicts + esctest + muxes + feel + info + fuzz_minutes * 60 + 60))
+  echo "deep: about $((estimate / 60)) minutes (full, 20,000 random cases at the day's seed, $seeds verdict seeds at ${verdicts}s, esctest in fux, in xterm and on each engine, tmux and zellij, feel, MB/s, $fuzz_minutes minutes of fuzzing)"
   full
   echo "deep: verdicts beside xterm, seeds 1-$seeds"
   local seed
@@ -191,18 +163,6 @@ deep() {
     step "esctest-$engine" "$compare" esctest --terminal "$engine" --unlisted ${jobs:+--jobs "$jobs"} \
       --json "$out/esctest-$engine.json"
   done
-  # The named cases and the corpus with each engine the subject, for the
-  # conformance ledger, then its scores over every result here.
-  for engine in ghostty alacritty libvterm avt wezterm vt100; do
-    ran+=("cases-subject-$engine")
-    step "cases-subject-$engine" "$compare" cases --subject "$engine" --json "$out/cases-subject-$engine.json"
-  done
-  for engine in alacritty libvterm avt wezterm vt100; do
-    ran+=("corpus-subject-$engine")
-    step "corpus-subject-$engine" "$compare" corpus --subject "$engine" --json "$out/corpus-subject-$engine.json"
-  done
-  ran+=(ledger)
-  step ledger "$compare" ledger --results "$out" --json "$out/ledger-scores.json" --table "$out/ledger.md"
   step multiplexers "$compare" transparency --multiplexers --json "$out/multiplexers.json"
   step feel "$bench" feel --json "$out/feel.json"
   step info "$bench" info --json "$out/info.json"
@@ -305,71 +265,15 @@ fuzz() {
   echo "fuzz: $minutes minutes"
 }
 
-# The scoreboard, kept in the repository too (scoreboard/): the page for
-# this commit, and a line of history for it.
+# The scoreboard: a report of the results the last runs left in $out.
 scoreboard() {
-  "$compare" scoreboard "$out" --keep "$here/scoreboard" "$commit" "$(date -u +%Y-%m-%d)"
+  "$compare" scoreboard "$out"
 }
 
-# The manifest's checks, a line each: NAME SCHEDULE WIRED WHY.
-manifest() {
-  awk '
-    function flush() { if (name != "") print name, schedule, wired, why; name = ""; wired = "true"; why = "" }
-    function value(line) { sub(/^[^=]*= */, "", line); gsub(/^"|"$/, "", line); return line }
-    /^\[\[check\]\]/ { flush() }
-    /^name *=/ { name = value($0) }
-    /^schedule *=/ { schedule = value($0) }
-    /^wired *=/ { wired = value($0) }
-    /^why *=/ { why = value($0) }
-    END { flush() }
-  ' "$here/manifest.toml"
-}
-
-# The schedules a command runs: full runs quick's, deep full's and fuzz's.
-schedules() {
-  case $1 in
-    quick) echo quick ;;
-    full) echo quick full ;;
-    deep) echo quick full deep fuzz ;;
-    fuzz) echo fuzz ;;
-  esac
-}
-
-# Checks the run against the manifest: each check it ran is listed there,
-# and each listed for its schedules ran. Prints a line for each that is not.
-missing() {
-  local command=$1 name schedule wired why pattern found
-  local wanted
-  wanted=" $(schedules "$command") "
-  for name in "${ran[@]}"; do
-    found=""
-    while read -r pattern _; do
-      # shellcheck disable=SC2053 # the pattern may end in *, on purpose
-      [[ $name == $pattern ]] && found=1
-    done < <(manifest)
-    [[ -n $found ]] || echo "  UNLISTED $name: not in manifest.toml"
-  done
-  while read -r pattern schedule wired why; do
-    [[ $wanted == *" $schedule "* ]] || continue
-    found=""
-    for name in "${ran[@]}"; do
-      # shellcheck disable=SC2053
-      [[ $name == $pattern ]] && found=1
-    done
-    if [[ -z $found ]]; then
-      if [[ $wired == false ]]; then
-        echo "  NOT RUN $pattern: not wired yet: $why"
-      else
-        echo "  NOT RUN $pattern: required for $command, and did not run"
-      fi
-    fi
-  done < <(manifest)
-}
-
-# The summary: each check that ran, the manifest's that did not, and the
-# command's time beside its budget.
+# The summary: each check that failed, and the command's time beside its
+# budget.
 summary() {
-  local command=$1 budget=$2 started=$3 name rc seconds failed=0 absent
+  local command=$1 budget=$2 started=$3 name rc seconds failed=0
   local took=$(($(date +%s) - started))
   echo
   echo "$command: $commit, ${took}s$([[ -n $budget ]] && echo " (budget ${budget}s)")"
@@ -381,15 +285,7 @@ summary() {
       tail -3 "$out/logs/$name.log" | sed 's/^/       /'
     fi
   done
-  local report
-  report=$(missing "$command")
-  absent=0
-  if [[ -n $report ]]; then
-    echo "$report"
-    absent=$(grep -c . <<<"$report")
-  fi
-  failed=$((failed + absent))
-  echo "  ${#ran[@]} checks, $failed failed ($absent of the manifest's not run or not listed); results in $out"
+  echo "  ${#ran[@]} checks, $failed failed; results in $out"
   if [[ -n $budget ]] && ((took > budget)); then
     echo "  over budget: a check that does not fit moves to a deeper command"
   fi

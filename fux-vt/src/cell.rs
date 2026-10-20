@@ -194,7 +194,7 @@ pub struct Attributes {
 /// Hashed as `bits`, both words whole, so that attributes that differ
 /// write different words: a keyed hasher then gives a program no way to
 /// choose attributes that collide (a style table's, `style.rs`;
-/// `threats.md` B12).
+/// `THREATS.md` B12).
 impl std::hash::Hash for Attributes {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let (a, b) = self.bits();
@@ -736,7 +736,7 @@ impl Cells {
     }
     /// `len` blank cells; `Error::Capacity` past `MAX_CELLS` (64 Mi, as a
     /// screen holds at most) or if there is no memory for them
-    /// (`threats.md` B39).
+    /// (`THREATS.md` B39).
     pub fn new(len: usize) -> Result<Self, Error> {
         let mut cells = Self::default();
         cells.room_for(len)?;

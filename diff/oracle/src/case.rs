@@ -507,7 +507,7 @@ mod tests {
 
     /// A case that resizes to 65,535 columns, which fux-vt takes, is left
     /// to the oracle's own runs: compared at every step, its wide rows took
-    /// the fuzz target 7 s (FA-SB-3's artifact); its refused sizes alone
+    /// the fuzz target 7 s; its refused sizes alone
     /// would not have.
     #[test]
     fn a_case_too_wide_to_compare_quickly_is_not_fuzzed() -> Result<(), String> {
@@ -592,7 +592,7 @@ mod tests {
         );
     }
 
-    /// What this pass changes is seen (HAR-32): two terminals whose sixel
+    /// What this pass changes is seen: two terminals whose sixel
     /// pictures differ only in the last band, whose palettes differ, or
     /// whose screens not in use differ, read as different states; and the
     /// host's calls are steps a case can hold and replay.

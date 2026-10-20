@@ -15,7 +15,7 @@
 //! in is a few loads and stores, its cells going after the newest block's;
 //! whatever else (a block to start or leave, text, links) is out of line.
 //! The grid trims it to its budget of bytes once a row is in (`trim`): what
-//! it holds counts, as the memory it takes (`threats.md` B17): the ring of
+//! it holds counts, as the memory it takes (`THREATS.md` B17): the ring of
 //! rows' records (`Kept`) and every block as their capacity, the rows'
 //! text, and the maps' buckets. While it holds more than its budget the
 //! oldest rows go, a run of them at a time (`pop_run`). The ring's room
@@ -259,13 +259,13 @@ pub(crate) struct History {
     /// maps' share of it.
     held: usize,
     maps: usize,
-    /// The bytes the rows' links' runs take (`threats.md` B15).
+    /// The bytes the rows' links' runs take (`THREATS.md` B15).
     runs: usize,
     texts: ByRow<Text>,
     linked: ByRow<KeptLinks>,
     /// The room each map's table was made with, its buckets as allocated:
     /// `HashMap::capacity` counts out the entries removed since, whose
-    /// buckets the table keeps (FA-RE-F-9), so it is noted when the table
+    /// buckets the table keeps, so it is noted when the table
     /// grows or is made anew, and read for what the maps hold.
     texts_room: usize,
     linked_room: usize,
@@ -278,7 +278,7 @@ pub(crate) struct History {
     /// The rows by identity (`position`): its first `spans::FREE_SPANS`
     /// spans at no cost to the budget, so that what a history keeps does
     /// not change with how its rows' identities run; the rest counted in
-    /// it, `spans::SPAN_BYTES` each (`threats.md` B40).
+    /// it, `spans::SPAN_BYTES` each (`THREATS.md` B40).
     spans: Spans,
     /// The cells the rows keep, for `storage_cells`.
     cells: usize,
@@ -287,7 +287,7 @@ pub(crate) struct History {
     /// The most bytes the rows hold (`bytes`) once trimmed.
     budget: usize,
     /// Bytes counted in the budget beside the rows': the grid's style
-    /// table's beyond the screen's share (`threats.md` B11).
+    /// table's beyond the screen's share (`THREATS.md` B11).
     charged: usize,
     /// What the rows may hold: the budget less what is charged.
     room: usize,
@@ -576,7 +576,7 @@ impl History {
         })
     }
     /// Where the row with identity `id` is, oldest first: found by its
-    /// span (`Spans`), one row read (`threats.md` B40).
+    /// span (`Spans`), one row read (`THREATS.md` B40).
     pub(crate) fn position(&self, id: RowId) -> Option<usize> {
         let index = self.index_of_number(self.spans.number_of(id.0)?)?;
         spend!(rows, 1);
@@ -915,7 +915,7 @@ impl History {
     /// After a map's entries changed: each gives back its room when it
     /// holds room for more than four times its entries and 64, so that a
     /// map that grows by doubling as rows come and go doesn't shrink back
-    /// at once (`threats.md` B17); and what history holds is counted again.
+    /// at once (`THREATS.md` B17); and what history holds is counted again.
     fn maps_changed(&mut self) {
         let shrink = |capacity: usize, len: usize| capacity > most_room(len);
         if shrink(self.texts_room, self.texts.len()) {
@@ -1063,7 +1063,7 @@ impl History {
     }
 }
 
-/// History's part of the invariant checker (threats.md section 6).
+/// History's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl History {
     /// Runs every check of history, of the grid named `which`, into
@@ -1197,7 +1197,7 @@ impl History {
     }
 
     /// 21: the ring holds room for at most two chunks more than it keeps,
-    /// and the maps at most four times what they keep and 64 (threats.md
+    /// and the maps at most four times what they keep and 64 (THREATS.md
     /// B17).
     fn check_capacities(&self) -> Result<(), String> {
         let ring = self
@@ -1239,7 +1239,7 @@ impl History {
 #[cfg(test)]
 mod tests;
 
-/// History's checks, each shown a history with its one fault (HAR-26).
+/// History's checks, each shown a history with its one fault.
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;

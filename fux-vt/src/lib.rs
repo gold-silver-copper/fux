@@ -59,7 +59,7 @@ macro_rules! reply {
     };
 }
 
-/// Counts `n` units of work of the kind `counter` names (threats.md 4.1),
+/// Counts `n` units of work of the kind `counter` names (THREATS.md 4.1),
 /// with the `checks` feature; without it, nothing at all, so a build without
 /// it carries no trace of the count: `work!(cells, n)` expands to
 /// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::budget::units(n)));`.
@@ -71,7 +71,7 @@ macro_rules! work {
 }
 
 /// Counts `n` units of work of the kind `counter` names, as `work!` does,
-/// and spends them from the call's budget too (`budget`, threats.md P24),
+/// and spends them from the call's budget too (`budget`, THREATS.md 4.4),
 /// with or without the `checks` feature: for the work one sequence can
 /// multiply. `spend!(cells, n)` expands to
 /// `{ let n = crate::budget::units(n); crate::budget::spend(n,
@@ -148,7 +148,7 @@ pub(crate) fn split_semicolon(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
 
 thread_local! {
     /// How many refusals of room this thread's calls have met and gone on
-    /// past, each with its defined degrade (threats.md 1.3, SCR-10).
+    /// past, each with its defined degrade (THREATS.md 1.3).
     static DEGRADED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -502,7 +502,7 @@ impl<'a> Row<'a> {
 /// is a run with no text and no columns: the topmost of those moved.
 ///
 /// It keeps at most [`Prints::cap`] bytes of text, 4 a screen cell and
-/// 16 KiB at least, and [`PRINT_RUNS`] runs, between takes (`threats.md`
+/// 16 KiB at least, and [`PRINT_RUNS`] runs, between takes (`THREATS.md`
 /// B10). Past either, and after a resize while it holds something, it
 /// records nothing more and says so ([`Prints::lost`]): a host then takes
 /// everything as changed. A resize while it holds nothing makes it anew,
@@ -719,7 +719,7 @@ fn text_cap(cells: usize) -> usize {
     }
 }
 
-/// `Prints`' part of the invariant checker (threats.md section 6).
+/// `Prints`' part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Prints {
     /// 33: within its caps, its room too.

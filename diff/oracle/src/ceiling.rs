@@ -1,5 +1,5 @@
 //! The work one call does, in fux-vt's own units: the `checks` counters
-//! weighted as threats.md 4.4 weighs them (`fux_vt::Work::cost`), where
+//! weighted as fux-vt/THREATS.md 4.4 weighs them (`fux_vt::Work::cost`), where
 //! the per-call ceiling U (`Work::CEILING`) is 50 ms on the machine the
 //! weights were measured on. The working tree's fux-vt alone, set up as fux
 //! sets up a pane (`Setup::pane`, 8 MiB of history):

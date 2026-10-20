@@ -542,8 +542,8 @@ keys.py:416	legacy	?	none	na: a modifier key pressed alone, which fux has no Key
 keys.py:417	legacy	?	none	na: a modifier key pressed alone, which fux has no Key for
 keys.py:420	legacy	a	a	agree
 keys.py:421	legacy	a	a	agree
-keys.py:422	legacy	a	a	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
-keys.py:423	legacy	a	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:422	legacy	a	a	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+keys.py:423	legacy	a	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
 keys.py:427	kitty=1	a code=97 mods=0	a	agree
 keys.py:428	kitty=1	Escape code=27 mods=0	\e[27u	agree
 keys.py:429	kitty=1	Enter code=13 mods=0	\x0d	agree
@@ -563,20 +563,20 @@ keys.py:439	kitty=1	C-0 code=57399 mods=4	\e[57399;5u	agree
 keys.py:440	kitty=1	Up mods=0	\e[A	agree
 keys.py:441	kitty=1	C-Up mods=4	\e[1;5A	agree
 keys.py:445	kitty=2	a code=97 mods=0	a	agree
-keys.py:446	kitty=2	a code=97 mods=0	\e[97;1:2u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
-keys.py:447	kitty=2	a code=97 mods=0	\e[97;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
-keys.py:448	kitty=2	A code=97 mods=1	\e[97;2:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:446	kitty=2	a code=97 mods=0	\e[97;1:2u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+keys.py:447	kitty=2	a code=97 mods=0	\e[97;1:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
+keys.py:448	kitty=2	A code=97 mods=1	\e[97;2:3u	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
 keys.py:450	kitty=3	BSpace code=127 mods=0	\x7f	agree
-keys.py:451	kitty=3	BSpace code=127 mods=0	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:451	kitty=3	BSpace code=127 mods=0	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
 keys.py:453	kitty=3	Enter code=13 mods=192	\x0d	agree
-keys.py:454	kitty=3	Enter code=13 mods=192	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:454	kitty=3	Enter code=13 mods=192	none	na: a release event: fux sends presses alone (the kitty flags it keeps leave report event types out)
 keys.py:458	kitty=4	a code=97 mods=0	a	agree
 keys.py:459	kitty=4	a code=97 mods=0 shifted=65	a	agree
 keys.py:460	kitty=4	A code=97 mods=1 shifted=65	\e[97:65;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: A
 keys.py:461	kitty=4	a code=97 mods=0 base=65	\e[97::65u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: a
 keys.py:462	kitty=4	A code=97 mods=1 shifted=65 base=98	\e[97:65:98;2u	differs: the kitty spec: report alternate keys "is a pure enhancement to the form of the escape code used to represent key events, only key events represented as escape codes due to the other enhancements in effect will be affected", and with it alone a text key is text; kitty itself sends an escape; fux: A
 keys.py:466	kitty=8	a code=97 mods=0	\e[97u	agree
-keys.py:467	kitty=8	a code=97 mods=0	\e[97u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out, KEY-22)
+keys.py:467	kitty=8	a code=97 mods=0	\e[97u	na: a repeat event: fux sends presses alone (the kitty flags it keeps leave report event types out)
 keys.py:468	kitty=8	C-a code=97 mods=4	\e[97;5u	agree
 keys.py:469	kitty=8	Up mods=0	\e[A	agree
 keys.py:470	kitty=8	? mods=0	\e[57441u	na: a modifier key pressed alone, which fux has no Key for

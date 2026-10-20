@@ -1,4 +1,4 @@
-External fuzz corpora replayed by tests/external_corpora.rs (HAR-71), each
+External fuzz corpora replayed by tests/external_corpora.rs, each
 file as the terminal output its fuzzer makes of it.
 
 ghostty/  vendored, MIT (ghostty/LICENSE)

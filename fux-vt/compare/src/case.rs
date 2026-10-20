@@ -995,7 +995,7 @@ mod tests {
         );
     }
 
-    /// A random case's RIS begins a write of its own (FA-E2-1): in no
+    /// A random case's RIS begins a write of its own: in no
     /// write of the reset family's cases does RIS follow other output.
     #[test]
     fn ris_is_written_alone_in_random_cases() {
@@ -1240,7 +1240,7 @@ mod tests {
         Ok(())
     }
 
-    /// A subject that can't tell the device's state (HAR-46: the cursor's
+    /// A subject that can't tell the device's state (the cursor's
     /// shape, the tab stops, the line renditions, protection) agrees, read
     /// again for coverage, where it agrees on everything else: those
     /// fields are left out of its comparison, not counted unavailable at

@@ -123,7 +123,7 @@ fn printed_text_is_segmented_as_the_model_says() -> Result {
 }
 
 /// U+17D8 KHMER SIGN BEYYAL, three columns wide by unicode-width, takes one
-/// column, as in xterm 411 and glibc (threats.md B32: a cell holds 1 or 2):
+/// column, as in xterm 411 and glibc (THREATS.md B32: a cell holds 1 or 2):
 /// over text, it leaves none of it stale, and in a region of 2 columns
 /// it is printed, the cursor 1 on.
 #[test]

@@ -136,7 +136,7 @@ const MOMENTS: [Moment; 3] = [
     (
         "vt/late-c",
         "400,000 empty lines of history, then 290 OSC 133;C marks with no prompt anywhere in \
-         one 4 KiB call (SCR-4: each mark looks back through history for a prompt)",
+         one 4 KiB call (each mark looks back through history for a prompt)",
         |shrink| repeated(b"\n", 400_000_usize.checked_div(shrink).unwrap_or(1)),
         |_| repeated(b"\x1b]133;C;late\x07", 290 * 14),
     ),
@@ -1235,7 +1235,7 @@ fn unread(s: &mut fux::session::Session) {
 mod tests {
     /// A recording that resizes is fed at each size it was written at:
     /// zsh-resize's loads are its size, then each resize's, in order, its
-    /// bytes whole (HAR-78).
+    /// bytes whole.
     #[test]
     fn a_recording_is_fed_at_each_size_it_was_written_at() -> Result<(), String> {
         let recordings = crate::corpus::recordings(&dir())?;
@@ -1277,7 +1277,7 @@ mod tests {
     }
 
     /// A vt workload whose parser can't be made (a size of no rows) fails,
-    /// never counted as having fed its bytes (HAR-77).
+    /// never counted as having fed its bytes.
     #[test]
     fn a_vt_workload_that_cannot_be_set_up_fails() {
         let load = super::Load {
@@ -1399,7 +1399,7 @@ mod tests {
 
     /// A pane is given what one of fux's server's reads brings, 16 KiB
     /// (src/server.rs, read_pane's buffer), not a tick's 64 KiB: a tick is
-    /// four calls, and the fairness record says so (HAR-79).
+    /// four calls, and the fairness record says so.
     #[test]
     fn a_pane_is_given_what_one_server_read_brings() {
         let tick = vec![b'x'; super::PANE_READ];

@@ -307,7 +307,7 @@ fn a_late_start_follows_the_line_submitted_last() -> Result {
 }
 
 /// A late `C` looks for its prompt, and for the line submitted, on the
-/// screen alone (threats.md B29): one whose prompt and line scrolled into
+/// screen alone (THREATS.md B29): one whose prompt and line scrolled into
 /// history starts its output at the cursor, where a `C` would, rather than
 /// after a prompt it would read all history to find.
 #[test]
@@ -349,7 +349,7 @@ fn prints_are_recorded_though_drawn_over() -> Result {
 /// What is recorded is what was printed, however the output is split
 /// across calls: `OUT0016` printed over `OUT0011`, whole or a byte a
 /// call, or split inside, is recorded as `OUT0016`, as fux's text waits
-/// need (its oracle, mode full, seed 5: FA-TXT-2); a glyph left as it was
+/// need; a glyph left as it was
 /// goes with the text printed beside it, before or after, and a redraw of
 /// it all is none, however split; text that is not ASCII and REP's copies
 /// the same.
@@ -386,7 +386,7 @@ fn what_is_recorded_does_not_depend_on_how_the_output_is_split() -> Result {
 
 /// What is recorded may hold 4 bytes a cell of the screen it is printed
 /// on: a resize with nothing recorded yet makes room for the new size, as
-/// taking the prints does, and loses nothing (FA-PAR-5).
+/// taking the prints does, and loses nothing.
 #[test]
 fn a_resize_with_nothing_recorded_keeps_room_for_the_new_size() -> Result {
     let mut p = Parser::with_options(Size::new(10, 10)?, 10, Options::new())?;
@@ -421,8 +421,8 @@ fn a_tick_falls_between_pieces() -> Result {
     Ok(())
 }
 
-/// A row's prompt mark is part of what a host redraws from (`threats.md`
-/// P12, section 6's invariant 28): marking a row, or taking its mark away,
+/// A row's prompt mark is part of what a host redraws from (`THREATS.md`
+/// section 6, invariant 28): marking a row, or taking its mark away,
 /// gives it a new version, and the mark shows in `dirty_rows_since`; a
 /// mark that stays as it was changes nothing.
 #[test]

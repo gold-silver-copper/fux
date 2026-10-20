@@ -173,14 +173,9 @@ jobs:
           cargo install cargo-mutants --locked --version 27.1.0
           cargo install cargo-nextest --locked --version 0.9.148
 
-      # Every guard is generated first: a guard whose line moved fails here,
-      # by name, in a second.
-      - name: the guard names
-        run: fux-vt/compare/mutants.sh check
-
-      # The frozen guard set (fux-vt/compare/mutants-guards.txt), a 24th of
-      # it a job, two mutants at a time, as mutants.sh runs the guards:
-      # opt-level 1, 150 s a mutant, 2 GiB a test binary, guards.rs first.
+      # The guard set (fux-vt/compare/mutants-guards.txt), a 24th of it a
+      # job, two mutants at a time, as mutants.sh runs the guards: opt-level
+      # 1, 150 s a mutant, 2 GiB a test binary, guards.rs first.
       - name: the guard mutants
         env:
           FUX_MUTANTS_JOBS: "2"

@@ -1411,7 +1411,7 @@ fn report(json: &serde_json::Value, muxes: &[Mux]) -> String {
 mod tests {
 
     /// No key that came is no figure, said as none, never NaN; a key that
-    /// timed out counts at the wait, the least it took (HAR-86).
+    /// timed out counts at the wait, the least it took.
     #[test]
     fn a_summary_counts_what_timed_out_and_says_none_for_nothing() {
         let none = super::summary(&mut []);

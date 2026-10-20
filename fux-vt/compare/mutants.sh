@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Mutation testing (threats.md section 5, HAR-31): cargo-mutants over the
-# mutants a change makes, or over the frozen guard set, each mutant tried
-# against fux-vt's tests and fux's unit tests (which kill some that
-# fux-vt's miss, such as palette::answer's; FUX_MUTANTS_TESTS, a nextest
-# filter, says otherwise), with the `checks` feature the bounds tests
-# need, two at a time, in the dev profile (no LTO), on the CPUs
-# FUX_MUTANTS_CPUS names, if any (one core type, for steady timeouts).
+# Mutation testing (fux-vt/THREATS.md section 5): cargo-mutants over the
+# mutants a change makes, or over the guard set, each mutant tried against
+# fux-vt's tests and fux's unit tests (which kill some that fux-vt's miss,
+# such as palette::answer's; FUX_MUTANTS_TESTS, a nextest filter, says
+# otherwise), with the `checks` feature the bounds tests need, two at a
+# time, in the dev profile (no LTO), on the CPUs FUX_MUTANTS_CPUS names, if
+# any (one core type, for steady timeouts).
 #
 #   fux-vt/compare/mutants.sh diff [REF]  the mutants in the diff from REF
 #                                         (default HEAD~1) to the working tree
-#   fux-vt/compare/mutants.sh guards      the frozen guard set: each line of
-#                                         fux-vt/compare/mutants-guards.txt a
-#                                         mutant's name as `--list` prints it
-#   fux-vt/compare/mutants.sh check       only that every guard is generated,
-#                                         and every mutant listed equivalent
-#                                         is a guard (a second): run it after
-#                                         moving a guard's line, and fix the
-#                                         name in both lists
+#   fux-vt/compare/mutants.sh guards      the guard set, mutants-guards.txt
+#   fux-vt/compare/mutants.sh check       only that every guard and every
+#                                         equivalent names a mutant (seconds)
+#
+# A guard is named as `cargo mutants --list` names a mutant, its line and
+# column replaced by the line's code: `FILE: WHAT @ CODE`. So a guard
+# follows its line wherever it moves, and only a change to the guarded
+# line itself (or its function's name) makes `check` fail, naming the
+# guard to look at again. Every mutant a guard's name matches is a guard;
+# `FILE:COLUMN: WHAT @ CODE` names one of several alike on a line, as each
+# equivalent must.
 #
 # The guards run as the nightly job does: built at opt-level 1, each mutant
 # under a 150-second timeout (FUX_MUTANTS_TIMEOUT), each test binary
@@ -28,10 +31,10 @@
 # It prints each outcome apart (caught, missed, timeout, unviable,
 # equivalent, unattempted) and fails unless every mutant that builds is
 # caught or listed as equivalent, with its reason, in mutants-equivalent.txt
-# (a name, a tab, the reason). It fails on an empty selection, and in
-# `guards` on a guard that isn't generated. Timeout and unattempted are
-# never caught. Results go to $FUX_MUTANTS_OUT (default target/mutants), and
-# temporary trees under $TMPDIR.
+# (a name as a guard is named, a tab, the reason). It fails on an empty
+# selection. Timeout and unattempted are never caught. Results go to
+# $FUX_MUTANTS_OUT (default target/mutants), and temporary trees under
+# $TMPDIR.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -59,7 +62,7 @@ if [[ ${1-} == guards ]]; then
 fi
 # FUX_MUTANTS_JOBS mutants at a time (2 if unset); FUX_MUTANTS_SHARD, as
 # K/N, runs only the Kth of N shards of the selection (for CI's matrix).
-args=(--workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
+args=(--colors never --workspace --test-workspace=true --features fux-vt/checks --jobs "${FUX_MUTANTS_JOBS:-2}"
   --output "$out" --test-tool nextest --timeout "${FUX_MUTANTS_TIMEOUT:-150}"
   --build-timeout "${FUX_MUTANTS_BUILD_TIMEOUT:-600}")
 # The first failure ends a mutant's tests at once: a test the mutant made
@@ -77,18 +80,48 @@ case ${1-} in
     ;;
   guards | check)
     guards=$here/mutants-guards.txt
-    names=$(grep -v '^#' "$guards" | sed '/^$/d' || true)
-    [[ -n $names ]] || { echo "mutants: no guards in $guards" >&2; exit 1; }
-    # One alternation of the names, each matched whole.
-    re=$(printf '%s\n' "$names" | sed 's/[][\.*^$()+?{}|]/\\&/g; s/.*/^&$/' | paste -sd'|')
-    args+=(--re "$re")
-    # cargo-mutants 27.1.0 adds every "delete field" mutant of the files
-    # it looks at whatever --re says: it looks only at the guards' files,
-    # and only the guards are judged below.
+    files=$(grep -v '^#' "$guards" | sed -n 's/^\([^:]*\): .*/\1/p' | sort -u)
+    [[ -n $files ]] || { echo "mutants: no guards in $guards" >&2; exit 1; }
     while read -r file; do
       args+=(-f "$file")
-    done < <(printf '%s\n' "$names" | cut -d: -f1 | sort -u)
-    printf '%s\n' "$names" >"$out/guards.txt"
+    done <<<"$files"
+    # Every mutant of the guards' files, each named as a guard is: the
+    # ones a guard names are the guards, by their names this run.
+    (cd "$root" && cargo mutants --list "${args[@]}" "${after[@]}") >"$out/listed.txt"
+    python3 - "$root" "$out/listed.txt" "$guards" "$equivalent" >"$out/guards.txt" <<'EOF'
+import re, sys
+root, listed, guards, equivalent = sys.argv[1:]
+sources = {}
+def named(mutant):
+    """The mutant's names: without its column, and with it."""
+    path, line, column, what = re.match(r"([^:]+):(\d+):(\d+): (.*)", mutant).groups()
+    if path not in sources:
+        sources[path] = open(f"{root}/{path}").read().split("\n")
+    code = sources[path][int(line) - 1].strip()
+    return f"{path}: {what} @ {code}", f"{path}:{column}: {what} @ {code}"
+names = {}
+for mutant in open(listed).read().split("\n"):
+    if mutant:
+        for name in named(mutant):
+            names.setdefault(name, []).append(mutant)
+wanted = [l for l in open(guards).read().split("\n") if l and not l.startswith("#")]
+lost = [g for g in wanted if g not in names]
+listed = [l.split("\t")[0] for l in open(equivalent).read().split("\n") if l and not l.startswith("#")]
+guarded = {m for g in wanted for m in names.get(g, [])}
+stale = [e for e in listed if not set(names.get(e, [])) <= guarded or not names.get(e)]
+vague = [e for e in listed if len(names.get(e, [])) > 1]
+if lost:
+    sys.exit("mutants: guards that name no mutant (their line changed: look at it again):\n" + "\n".join(lost))
+if stale:
+    sys.exit("mutants: listed equivalent but not guards:\n" + "\n".join(stale))
+if vague:
+    sys.exit("mutants: equivalents that name several mutants (name one by its column, FILE:COLUMN: ...):\n" + "\n".join(vague))
+for g in wanted:
+    print("\n".join(names[g]))
+EOF
+    # One alternation of the names, each matched whole.
+    re=$(sed 's/[][\.*^$()+?{}|]/\\&/g; s/.*/^&$/' "$out/guards.txt" | paste -sd'|')
+    args+=(--re "$re")
     ;;
   *)
     sed -n '2,/^set -euo/{/^set -euo/!p}' "$0" | sed 's/^# \{0,1\}//'
@@ -104,18 +137,9 @@ if [[ $1 == guards || $1 == check ]]; then
     printf 'mutants: guards not generated:\n%s\n' "$missing" >&2
     exit 1
   fi
-  # Every mutant listed equivalent is a guard, and so generated: a name
-  # left behind when its line moved would excuse nothing, and its guard,
-  # renamed, would be missed.
-  listed=$(grep -v '^#' "$equivalent" | sed '/^$/d' | cut -f1 || true)
-  stale=$(printf '%s\n' "$listed" | sed '/^$/d' | grep -vxF -f "$out/guards.txt" || true)
-  if [[ -n $stale ]]; then
-    printf 'mutants: listed equivalent but not guards:\n%s\n' "$stale" >&2
-    exit 1
-  fi
 fi
 if [[ $1 == check ]]; then
-  echo "mutants: all $(wc -l <"$out/guards.txt") guards generated"
+  echo "mutants: all $(grep -c '^[^#]' "$here/mutants-guards.txt") guards name a mutant ($(wc -l <"$out/guards.txt") mutants)"
   exit 0
 fi
 if [[ -n ${FUX_MUTANTS_SHARD-} ]]; then
@@ -143,13 +167,22 @@ fi
 # cargo-mutants exits 2 when a mutant is missed, 3 on a timeout: judged below.
 case $status in 0 | 2 | 3) ;; *) echo "mutants: cargo-mutants failed ($status)" >&2; exit 1 ;; esac
 
-python3 - "$out/mutants.out/outcomes.json" "$out/judged.txt" "$equivalent" <<'EOF'
-import json, sys
-outcomes = json.load(open(sys.argv[1]))["outcomes"]
-selected = [l.rstrip("\n") for l in open(sys.argv[2]) if l.strip()]
+python3 - "$root" "$out/mutants.out/outcomes.json" "$out/judged.txt" "$equivalent" <<'EOF'
+import json, re, sys
+root = sys.argv[1]
+sources = {}
+def named(mutant):
+    """The mutant's names: without its column, and with it."""
+    path, line, column, what = re.match(r"([^:]+):(\d+):(\d+): (.*)", mutant).groups()
+    if path not in sources:
+        sources[path] = open(f"{root}/{path}").read().split("\n")
+    code = sources[path][int(line) - 1].strip()
+    return f"{path}: {what} @ {code}", f"{path}:{column}: {what} @ {code}"
+outcomes = json.load(open(sys.argv[2]))["outcomes"]
+selected = [l.rstrip("\n") for l in open(sys.argv[3]) if l.strip()]
 judged = set(selected)
 equivalent = {}
-for line in open(sys.argv[3]):
+for line in open(sys.argv[4]):
     if line.strip() and not line.startswith("#"):
         name, _, why = line.rstrip("\n").partition("\t")
         if not why.strip():
@@ -169,7 +202,7 @@ for o in outcomes:
     kind = kinds.get(o["summary"], "unattempted")
     # Only a mutant no test caught can be equivalent: one that timed out
     # changed behaviour (it hung), whatever the list says.
-    if kind == "missed" and name in equivalent:
+    if kind == "missed" and any(n in equivalent for n in named(name)):
         kind = "equivalent"
     tally[kind].append(name)
 tally["unattempted"] += [n for n in selected if n not in tried]
@@ -177,7 +210,8 @@ for kind, names in tally.items():
     print(f"{kind}: {len(names)}")
     if kind != "caught":
         for n in names:
-            print(f"  {n}" + (f"  ({equivalent[n]})" if n in equivalent else ""))
+            why = next((equivalent[k] for k in named(n) if k in equivalent), None)
+            print(f"  {n}" + (f"  ({why})" if why else ""))
 # Unviable mutants don't build, so no test could catch them: reported,
 # not failed.
 bad = sum(len(tally[k]) for k in ["missed", "timeout", "unattempted"])

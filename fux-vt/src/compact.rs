@@ -841,7 +841,7 @@ fn shifted(cells: &[Compact]) -> (&[Compact], &[Compact], &[Compact]) {
     (from(2), from(1), cells)
 }
 
-/// The text's part of the invariant checker (threats.md section 6, 13).
+/// The text's part of the invariant checker (THREATS.md section 6, 13).
 #[cfg(feature = "checks")]
 impl Text {
     /// Whether the text of a row of `width` cells, `cells` those kept, is
@@ -999,7 +999,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             }
             // Compacted, the text is what the cells hold, end to end: if
             // that leaves no room either, compacting would copy it all for
-            // nothing (threats.md B31).
+            // nothing (THREATS.md B31).
             if self.live_long().saturating_add(text.len()) <= limit {
                 self.compact(true, 0..0);
             }

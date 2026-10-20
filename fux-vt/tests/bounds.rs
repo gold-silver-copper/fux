@@ -1,4 +1,4 @@
-//! The bounds suite (`threats.md` sections 2 to 4): each bound row's
+//! The bounds suite (`THREATS.md` sections 2 to 4): each bound row's
 //! reproducer fed at 1×, 10× and 100× and at several chunkings, its work
 //! counted by fux-vt's counters ([`fux_vt::Work`], the `checks` feature)
 //! and its memory by a counting allocator, independent of fux-vt's own
@@ -62,7 +62,7 @@ const MIB: usize = 1 << 20;
 /// test harness's code on it does.
 const SLACK: usize = 64 << 10;
 
-/// What the bounds tests rely on the allocator for (`threats.md` 3.5): it
+/// What the bounds tests rely on the allocator for (`THREATS.md` 3.5): it
 /// counts what is live, a reset peak starts again from what is live, a
 /// growth by `realloc` counts the old block and the new while both live,
 /// and what another thread holds meanwhile is not the probe's.
@@ -164,7 +164,7 @@ fn fails_as_known(found: &[String], known: &str) -> bool {
 
 /// A row known to fail fails so at every chunking, each on its own: one
 /// chunking's error saying it four times, the others failing otherwise,
-/// or passing, is not as known (FA-RE-B-10).
+/// or passing, is not as known.
 #[test]
 fn a_known_failure_is_matched_at_each_chunking() {
     let known = "past its bound";
@@ -211,7 +211,7 @@ fn judge(row: &str, scale: Scale) -> Result {
 }
 
 /// A bound naming a counter there is none of fails, rather than passing
-/// for counting nothing (FA-HAR-D11).
+/// for counting nothing.
 #[test]
 fn a_bound_naming_no_counter_fails() -> Result {
     let _one = one_at_a_time();
@@ -247,6 +247,23 @@ fn the_known_failing_list_names_rows_and_scales() {
             "{line}"
         );
     }
+}
+
+/// `THREATS.md`'s table of bounds (section 2) lists exactly the suite's
+/// rows, in its order.
+#[test]
+fn the_threats_table_lists_the_suites_rows() -> Result {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/THREATS.md"))?;
+    let table: Vec<&str> = (text.lines())
+        .skip_while(|l| !l.starts_with("## 2 "))
+        .take_while(|l| !l.starts_with("## 3 "))
+        .filter_map(|l| l.strip_prefix("| B")?.split(' ').next())
+        .collect();
+    let suite: Vec<&str> = (rows::ROWS.iter())
+        .filter_map(|(name, _)| name.strip_prefix('B'))
+        .collect();
+    assert_eq!(table, suite);
+    Ok(())
 }
 
 /// The tests of one bound row: `bound!(b01, "B01", b01_1x, b01_10x,
@@ -318,10 +335,10 @@ bound!("B43", b43_1x, b43_10x, b43_100x);
 bound!("B44", b44_1x, b44_10x, b44_100x);
 bound!("B45", b45_1x, b45_10x, b45_100x);
 
-/// The per-call work budget (`threats.md` P24, decision 6): at fux's
+/// The per-call work budget (`THREATS.md` 4.4): at fux's
 /// largest pane, 4095×4096, each class of screen-wide function stops a
 /// call at the budget, no call does more than its ceiling (U, or one such
-/// function alone, `Work::ceiling`, decision 950), and the
+/// function alone, `Work::ceiling`), and the
 /// screen after every call equals that of one call given it all.
 mod budget {
     use fux_vt::{Parser, Size, Stop, Work};
@@ -399,8 +416,7 @@ mod budget {
     /// A REP inside left and right margins whose wraps scroll past the
     /// budget stops where the budget is spent, its copies left made by
     /// the next call, and text in DEC Special Graphics after it stops so
-    /// too: the screen is that of one call given it all (FA-RE-F-5, F-8,
-    /// F-11).
+    /// too: the screen is that of one call given it all.
     #[test]
     fn a_rep_inside_margins_stops_at_the_budget_and_goes_on() -> Result {
         let _one = one_at_a_time();

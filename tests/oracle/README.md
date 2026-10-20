@@ -71,6 +71,5 @@ each piece of a write is its own `write` record.
 
 ## Side-log format (frozen)
 
-[side-log-format.md](side-log-format.md), copied unchanged from the notes
-(`notes/projects/fux/fux-provenance/side-log-format.md`). The fixture writes
-it and the checker reads it as written.
+[side-log-format.md](side-log-format.md). The fixture writes it and the
+checker reads it as written.
