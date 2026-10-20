@@ -114,9 +114,10 @@ pub(crate) mod weight {
     /// costliest, 7.0 ns a step (OSC 4s of the CIEXYZ colour whose square
     /// roots take the most steps), times 1.5.
     pub(crate) const colours: u64 = 210;
-    /// A cell a checksum read, past its cell and its text: 23.3 ns,
-    /// DECRQCRA's over cells of clusters at 50x200.
-    pub(crate) const sums: u64 = 583;
+    /// A cell a checksum read, past its cell and its text: 10.3 ns,
+    /// DECRQCRA's over cells of 31-byte clusters at 4095x4096 (38.15 ns a
+    /// cell in all), times 1.25.
+    pub(crate) const sums: u64 = 258;
     /// A row a margin scroll copied a span of, past its cells and text:
     /// 96 ns, a wrap's scroll between 2-column margins at 4095x4096.
     pub(crate) const spans: u64 = 2408;

@@ -456,16 +456,16 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
 }
 
 /// A DECRQCRA whose rows cost more than a call's budget is summed over
-/// calls of `process_until_stop`: at 1000x1000 its cells cost past the
+/// calls of `process_until_stop`: at 2000x1000 its cells cost past the
 /// budget (`budget::LIMIT`), so the first call stops after it, at the
 /// budget, unanswered; the next sums the rows left first and replies
 /// before anything after it is read. The reply is the one `process_with`
 /// gives, which sums every row in one call.
 #[test]
 fn a_checksum_past_the_budget_is_summed_over_calls() -> Result<(), Error> {
-    let size = Size::of(1000, 1000);
+    let size = Size::of(2000, 1000);
     let options = Options::new().with(Feature::RectangleChecksums);
-    let cells = crate::budget::units(1_000_000u32);
+    let cells = crate::budget::units(2_000_000u32);
     let cost = cells.saturating_mul(crate::budget::weight::cells + crate::budget::weight::sums);
     assert!(cost > crate::budget::LIMIT);
     let input: &[u8] = b"\x1b[1;1*y\x1b[5n";
