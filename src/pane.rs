@@ -562,14 +562,6 @@ pub struct Pane {
     /// Escape from a sequence may wait a moment for the rest, on a timer
     /// fux need not see (`ready::ESCAPE`).
     pub escape_open: bool,
-    /// An answer told its program's exit: later ones say so, not its
-    /// output again.
-    pub exit_told: std::cell::Cell<bool>,
-    /// What runs in it that an answer said is a remote client reporting
-    /// nothing of what it runs there (the program's start, the foreground
-    /// job, and whether it shows a terminal there): said once, until what
-    /// runs changes.
-    pub remote_told: std::cell::Cell<Option<(u64, Option<Pid>, bool)>>,
     /// The last action's input ended in an edit of the line (text, a cursor
     /// key): where the cursor is next matters.
     pub edited: bool,
@@ -825,8 +817,6 @@ impl Pane {
             written_at: None,
             line_ended: false,
             escape_open: false,
-            exit_told: std::cell::Cell::new(false),
-            remote_told: std::cell::Cell::new(None),
             edited: false,
             sent: Vec::new(),
             written: (0, 0),

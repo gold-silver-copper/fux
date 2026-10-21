@@ -125,15 +125,12 @@ that is no full-screen program, maybe at work, blocked off its
 terminal, or a relay that said nothing since the input, and the wait word
 that waits for its end; with `remote`, `"wait-exit"` or `"wait-text"`),
 `remote` (the name of a remote client in front, `"ssh"`, that reports
-nothing of what it runs, in every answer, though its text says so once for
-what runs there: its state is the client's, not that program's;
+nothing of what it runs, in every answer, as its text says: its state is the client's, not that program's;
 `wait_with` says how to wait for it: `"wait-exit"` for a command run on
 a pipe there, which the client ends with, `"wait-text"` for a terminal
 there), `cursor_rows` (with `cursor`, on a line wrapped at the pane's width,
 which the answer prints joined: `{"from":ROW,"text":["…","…"]}`, the
-screen rows the line takes, four at most), `told_before` (`true`: an
-earlier answer told the program's exit, with what it printed, which is
-not said again), `cursor` (`[ROW,COL]` of the screen
+screen rows the line takes, four at most), `cursor` (`[ROW,COL]` of the screen
 after keys or a mouse event: after a line edited where a program reads
 it, when text shows under or right of the cursor on its row, or when the
 input moved the cursor alone; never while it is hidden or its program

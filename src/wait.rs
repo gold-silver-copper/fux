@@ -72,11 +72,10 @@ pub struct Waiting {
 }
 
 /// A pane of a wait: still looked at, or its answer, which no look
-/// changes, and whether it tells the pane's program's exit (`Pane::
-/// exit_told`, marked once the wait's answer goes out).
+/// changes.
 enum Look {
     Looking(Watch),
-    Told(Reply, bool),
+    Told(Reply),
 }
 
 /// What a wait follows, which decides how it reads its panes and what its
@@ -262,12 +261,6 @@ impl Waiting {
                 (cursor(pane).filter(|_| live && on_text)).map(|(note, _)| format!(" · {note}"));
             outcome.text = format!("{line}{}\n{read}", cursor.unwrap_or_default());
         }
-        // The answer goes out now: the exits it tells are told.
-        for (id, look) in &self.watches {
-            if let (Look::Told(_, true), Some(pane)) = (look, session.panes.get(id)) {
-                pane.exit_told.set(true);
-            }
-        }
         Some(outcome)
     }
 
@@ -278,7 +271,6 @@ impl Waiting {
     fn look(&mut self, session: &Session, now: Instant) -> Option<Reply> {
         let (wait, texts, limit) = (&self.wait, self.texts.as_slice(), self.limit);
         let (window, mode) = ((self.began, now), self.follows.mode());
-        let capture = matches!(self.follows, Follows::Capture(..));
         let late = now >= self.deadline;
         for (id, look) in &mut self.watches {
             let watch = match look {
@@ -286,22 +278,20 @@ impl Waiting {
                 Look::Told(..) => continue,
             };
             let Some(pane) = session.panes.get(id) else {
-                *look = Look::Told(wait.gone(*id), false);
+                *look = Look::Told(wait.gone(*id));
                 continue;
             };
             if let Some(told) = watch.verdict(pane, wait, texts, window, mode) {
-                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
-                *look = Look::Told(reply, exit);
+                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
             } else if late && !watch.lasts(pane, wait) {
                 let told = Told::TimedOut(watch.hint(pane, texts));
-                let (reply, exit) = wait.told(pane, told, limit, watch, (mode.2, capture));
-                *look = Look::Told(reply, exit);
+                *look = Look::Told(wait.told(pane, told, limit, watch, mode.2));
             }
         }
         let answers: Vec<&Reply> = (self.watches.iter())
             .map(|(_, look)| match look {
                 Look::Looking(_) => None,
-                Look::Told(reply, _) => Some(reply),
+                Look::Told(reply) => Some(reply),
             })
             .collect::<Option<_>>()?;
         if let [one] = answers.as_slice() {
@@ -358,15 +348,8 @@ impl Wait {
     }
 
     /// The outcome of a wait that ended so in `pane`, after an action if
-    /// `action`, for a capture if `capture`.
-    fn told(
-        &self,
-        pane: &Pane,
-        told: Told,
-        limit: Duration,
-        watch: &Watch,
-        (action, capture): (bool, bool),
-    ) -> (Reply, bool) {
+    /// `action`.
+    fn told(&self, pane: &Pane, told: Told, limit: Duration, watch: &Watch, action: bool) -> Reply {
         let (id, now) = (pane.id, Instant::now());
         let state = || watch.state(pane, now);
         let came = || since_text(pane, watch, self.marks);
@@ -516,7 +499,6 @@ impl Wait {
             }
         };
         let mut notes = self.notes(pane, state, watch, action);
-        let found = met.is_some();
         // What met it, or with nothing met, what waits on while it is busy.
         match met {
             Some(met) => notes.push(met),
@@ -540,23 +522,7 @@ impl Wait {
             }
             None => {}
         }
-        // An exit an earlier answer told is said once: a later one says so,
-        // not what the program printed again.
-        // A capture tells no exit, nor does a text met.
-        let tells = matches!(state, State::Exited(_)) && !capture && !found;
-        let told_before = tells && pane.exit_told.get();
-        let body = match told_before {
-            true => {
-                let note = format!("told before: `{id} capture` reads its last screen");
-                notes.push((note, vec![("told_before", Json::Bool(true))]));
-                Note::default()
-            }
-            false => body,
-        };
-        (
-            said(id, state.word(), notes, body, end),
-            tells && !told_before,
-        )
+        said(id, state.word(), notes, body, end)
     }
 }
 
@@ -575,10 +541,7 @@ fn said(id: PaneId, state: String, notes: Vec<Note>, body: Note, end: End) -> Re
     let pane = ("pane", Json::str(id.to_string()));
     let mut fields = vec![pane, ("state", Json::str(state))];
     for (note, said) in notes {
-        // A note said before, its fields alone.
-        if !note.is_empty() {
-            line.push_str(&format!(" · {note}"));
-        }
+        line.push_str(&format!(" · {note}"));
         fields.extend(said);
     }
     fields.push(("status", Json::int(end.status())));
@@ -633,34 +596,27 @@ impl Wait {
             .flatten();
         if let Some(remote) = &remote {
             let (id, name) = (pane.id, &remote.name);
-            // Said once for what runs there; its fields every time.
-            let runs = Some((pane.starts, pane.process.job(), remote.terminal));
-            let again = pane.remote_told.replace(runs) == runs;
-            let (said, word) = match remote.terminal {
+            // Said on every answer, so kept short: what waits right there.
+            let (wait, word) = match remote.terminal {
                 true => (
-                    format!(
-                        "{name} shows another machine's terminal, so fux cannot tell whether \
-                         what runs there waits or works: `{id} str TEXT wait-text wait` waits \
-                         for a text it shows"
-                    ),
+                    format!("`{id} str TEXT wait-text wait` waits for a text"),
                     "wait-text",
                 ),
                 // Ended with its command: the client's end, or the shell
                 // command's that runs it.
                 false => {
                     let word = if running { "wait-done" } else { "wait-exit" };
-                    let said = format!(
-                        "{name} runs its command on another machine, so fux cannot tell whether \
-                         it waits or works: `{id} {word} wait` waits for its end"
-                    );
-                    (said, word)
+                    (format!("`{id} {word} wait` waits for its end"), word)
                 }
             };
             let fields = vec![
                 ("remote", Json::str(name.clone())),
                 ("wait_with", Json::str(word)),
             ];
-            notes.push((if again { String::new() } else { said }, fields));
+            notes.push((
+                format!("{name} is remote, its state unseen: {wait}"),
+                fields,
+            ));
         } else if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
             let word = if running { "wait-done" } else { "wait-exit" };
             let id = pane.id;

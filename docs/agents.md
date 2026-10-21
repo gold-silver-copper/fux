@@ -25,6 +25,7 @@ fux opts str web name 100 30 size str ./app program str --fast arg run  # start:
 fux %2 str y text str Enter key send-keys               # keys, then send-keys (str T paste send-keys pastes): answers as run does
 fux %2 str y type; fux %2 str Enter press               # the same, bundled
 fux %3 str 'make test' line                             # a shell command: %3 reading · done 0, its output
+fux opts str 'cargo test' command run wait-exit wait   # start and wait for its end: its status and output
 fux %2 wait                                             # settle again (30s; `%2 300 timeout wait` longer), what came since your input
 fux %2 str 'listening on' wait-text wait                # wait for a text (case ignored); also wait-gone, wait-bell
 fux %2 all-history capture                              # read: the screen once settled
@@ -51,7 +52,7 @@ fux ls                                                  # what there is: workspa
                                not a full-screen program, blocked on the network or a pipe (`koh exec`, a download)
 %2 busy · still at work at the 30s limit, not failed: `%2 wait` waits on
                                the time ran out (status 124); a shell command: `wait-done`
-%2 waiting · ssh runs its command on another machine, so fux cannot tell whether it waits or works: …
+%2 waiting · ssh is remote, its state unseen: `%2 wait-exit wait` waits for its end
                                a remote client that reports nothing: its state is the client's, not the program's there
 %2 exited 3                    the program ended; what it printed since your input follows
 %2 exited 0 · it exited before reading C-q, which went nowhere
@@ -129,13 +130,12 @@ once the program drew after them, else 750ms on: a program telling a
 lone Escape from a key's sequence waits for the rest that long at most,
 maybe on a timer fux cannot see (an alarm). A remote client in front that
 reports nothing of what it runs (plain `ssh`, `mosh`, `telnet`: not
-`koh connect`) says so: `· ssh runs its command on another machine, so
-fux cannot tell whether it waits or works: `%2 wait-exit wait` waits for
-its end` (a command on a pipe there, which ssh ends with), or `· ssh
-shows another machine's terminal, …: `%2 str TEXT wait-text wait` waits
-for a text it shows`, said once for what runs there (the first answer,
-and again once another program runs in the pane; `remote` and
-`wait_with` in every answer's JSON); it is `waiting` once quiet a second,
+`koh connect`) says so in every answer: `· ssh is remote, its state
+unseen: `%2 wait-exit wait` waits for its end` (a command on a pipe
+there, which ssh ends with), or `…: `%2 str TEXT wait-text wait` waits
+for a text` (a terminal there); fux sees the client, not what runs on
+the other machine, so it cannot tell whether that waits or works
+(`remote` and `wait_with` in the JSON). It is `waiting` once quiet a second,
 never `reading`, and a text wait runs to its limit, never status 7. `· cursor
 ROW,COL` gives the cursor, from 0 as a mouse event counts cells (on a
 double-width row, COL is the cell: a click there is at 2×COL), wherever it
@@ -148,8 +148,10 @@ joined, it names the rows the line takes: `· cursor 1,13 on rows 0-1
 "> abcdefghij日本語🙂" "klmnopqrstuvwxyz"`. A capture's state line says
 it too, whenever it shows on a row with text (`%2 reading · cursor 4,7`),
 as JSON's `cursor` does. A program that exited runs no command: its state is `exited N`
-alone, and an answer tells it with what it printed once: a later wait
-says `%2 exited 0 · told before: `%2 capture` reads its last screen`.
+alone, and every answer tells it with what it printed since your input:
+no answer leans on an earlier one, so a chain's last word answers in full
+(`fux opts str 'cargo test' command run wait-exit wait`), and so does a
+wait asked again.
 A full-screen program that ended there (an editor quit) answers with the
 last screen it drew, then what came on the main screen after.
 Keys it never read go nowhere, and are named: `%2 exited 0 · it
