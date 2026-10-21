@@ -666,7 +666,7 @@ fn a_remote_client_asking_at_its_prompt_reads() -> Outcome {
             READING,
             "{name}: {answer}"
         );
-        assert!(!answer.contains("another machine"), "{name}: {answer}");
+        assert!(!answer.contains("is remote"), "{name}: {answer}");
     }
     Ok(())
 }

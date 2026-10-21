@@ -67,22 +67,18 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         format!("{pane} exited 3\n10 40\nstarted\n"),
         "run answers once it settles: here, once it exits"
     );
-    // A met wait for the exit is 0: the program's status is its state's;
-    // its exit told already, its output is not said again.
+    // A met wait for the exit is 0: the program's status is its state's.
+    // Asked again, it answers in full again: no answer leans on another.
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (ended.status, ended.stdout.as_str()),
-        (
-            0,
-            format!("{pane} exited 3 · told before: `{pane} capture` reads its last screen\n")
-                .as_str()
-        ),
-        "its state, said once"
+        (0, started.as_str()),
+        "the same answer as run's"
     );
     let json = server.ok(&["str", &pane, "pane", "wait-exit", "wait", "json"])?;
     assert!(
         json.starts_with(&format!(
-            r#"{{"pane":"{pane}","state":"exited 3","told_before":true,"status":0}}"#
+            r#"{{"pane":"{pane}","state":"exited 3","status":0,"#
         )),
         "{json}"
     );
@@ -345,10 +341,7 @@ fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
             .ok(&["str", &pane, "pane", "wait-exit", "wait"])?
             .lines()
             .next(),
-        Some(
-            format!("{pane} exited 0 · told before: `{pane} capture` reads its last screen")
-                .as_str()
-        )
+        Some(format!("{pane} exited 0").as_str())
     );
     Ok(())
 }
@@ -521,12 +514,9 @@ fn waits_see_what_scrolled_past_and_end_when_the_program_does() -> Outcome {
     assert!(ended.stderr.contains("exited 2"), "{}", ended.stderr);
     let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
     assert_eq!(ended.status, 0);
-    assert!(
-        ended
-            .stdout
-            .starts_with(&format!("{pane} exited 2 · told before")),
-        "{}",
-        ended.stdout
+    assert_eq!(
+        ended.stdout.lines().next(),
+        Some(format!("{pane} exited 2").as_str())
     );
     // run waits from the program's first output: a flood cannot outrun it.
     let flood = "echo 'a needle'; seq 300; exec cat";
@@ -1388,10 +1378,7 @@ fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
     let kill = server.fux(&["str", "stub", "pane", "wait-exit", "wait"])?;
     assert_eq!(
         (kill.status, kill.stdout.lines().next()),
-        (
-            0,
-            Some("%4 killed by SIGKILL · told before: `%4 capture` reads its last screen")
-        )
+        (0, Some("%4 killed by SIGKILL"))
     );
     // A program that exits first: its last words come with its answer.
     let crash = server.fux(&run(
@@ -2055,36 +2042,19 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
-/// An exit is told by the first answer that tells it, not by a capture,
-/// which reads the screen and tells no exit: a wait after a capture still
-/// tells the exit, with what came.
+/// A chain prints its last word's answer alone: a program that ended
+/// before `run` settled still has its exit and its output there.
 #[test]
-fn a_capture_tells_no_exit() -> Outcome {
+fn a_chain_ends_with_the_whole_answer() -> Outcome {
     let server = Server::start("")?;
-    let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
-    server.ok(&[
-        "str",
-        &ends,
-        "pane",
-        "str",
-        "Enter",
-        "key",
-        "0",
-        "timeout",
-        "send-keys",
-    ])?;
-    eventually("the exit", || {
-        Ok(server
-            .ok(&["str", &ends, "pane", "str", "state", "get"])?
-            .trim()
-            == "exited 0")
-    })?;
-    let read = server.ok(&["str", &ends, "pane", "capture"])?;
-    assert!(read.contains("BYE"), "{read}");
-    let told = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
-    assert!(!told.contains("told before"), "{told}");
-    let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
-    assert!(again.contains("told before"), "{again}");
+    let words = [
+        &run(&[], &["sh", "-c", "echo BYE"])[..],
+        &["wait-exit", "wait"],
+    ]
+    .concat();
+    let ended = server.ok(&words)?;
+    let pane = id(&ended);
+    assert_eq!(ended, format!("{pane} exited 0\nBYE\n"));
     Ok(())
 }
 
@@ -2092,7 +2062,6 @@ fn a_capture_tells_no_exit() -> Outcome {
 /// in JSON's lines and runs as in its text; plain lines trim them. The
 /// cursor is the screen's row and column in JSON as in answers, and an
 /// answer on a line wrapped at the pane's width names the rows it takes.
-/// An exit is told once: a later wait says so, not its output again.
 #[test]
 fn captures_and_answers_agree_on_the_screen() -> Outcome {
     let server = Server::start("")?;
@@ -2130,9 +2099,9 @@ fn captures_and_answers_agree_on_the_screen() -> Outcome {
         "{keys}"
     );
     let again = server.ok(&["str", &ends, "pane", "wait-exit", "wait"])?;
-    assert_eq!(
-        again,
-        format!("{ends} exited 0 · told before: `{ends} capture` reads its last screen\n")
+    assert!(
+        again.starts_with(&format!("{ends} exited 0\n")) && again.contains("BYE"),
+        "{again}"
     );
     Ok(())
 }
@@ -2248,7 +2217,7 @@ fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
 /// A remote client that reports nothing of what it runs (here a stand-in
 /// named `ssh`, watching its terminal in a select, as ssh does beside its
 /// socket while its command runs there) is no program waiting for keys: once quiet it is `waiting`, the
-/// answer says fux cannot tell and how to wait, and a text wait runs to
+/// answer says fux cannot see its state and how to wait, and a text wait runs to
 /// its limit, never told it cannot come (7).
 #[test]
 fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
@@ -2266,22 +2235,19 @@ fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
     let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;
     let pane = id(&started);
     if PROBED {
-        assert_eq!(
-            head(&started),
-            format!(
-                "{pane} waiting · ssh runs its command on another machine, so fux cannot tell \
-                 whether it waits or works: `{pane} wait-exit wait` waits for its end"
-            )
+        let said = format!(
+            "{pane} waiting · ssh is remote, its state unseen: \
+             `{pane} wait-exit wait` waits for its end"
         );
-        // Said once for what runs there: later answers say the state
-        // alone, their JSON what it said.
+        assert_eq!(head(&started), said);
+        // Said on every answer, as it is still so.
+        let again = server.ok(&["str", &pane, "pane", "wait"])?;
+        assert_eq!(head(&again), said, "{again}");
         let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
         assert!(
             json.contains(r#""remote":"ssh","wait_with":"wait-exit""#),
             "{json}"
         );
-        let again = server.ok(&["str", &pane, "pane", "wait"])?;
-        assert_eq!(head(&again), format!("{pane} waiting"), "{again}");
     }
     let built = server.fux(&[
         "str",
@@ -3223,8 +3189,8 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
     assert_eq!(out.status, 3, "{}", out.stderr);
-    // Its exit told by run, it is not told again with its output.
-    let answer = format!("{pane} exited 2 · told before: `{pane} capture` reads its last screen");
+    // Its exit, and its last output, as run told it.
+    let answer = format!("{pane} exited 2\nLAST");
     assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
@@ -4785,10 +4751,7 @@ fn an_exited_program_runs_no_command() -> Outcome {
     let marked = "printf '\\033]133;A\\007$ \\033]133;C\\007'; sleep 0.3; echo bye";
     let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", marked]))?);
     let ended = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert!(
-        head(&ended).starts_with(&format!("{pane} exited 0 · told before")),
-        "{ended}"
-    );
+    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
     assert!(json.contains(r#""command_running":false"#), "{json}");
     Ok(())
