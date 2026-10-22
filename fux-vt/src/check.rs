@@ -2,7 +2,8 @@
 //! [`crate::Parser::check`] asserts every invariant that can be read from
 //! the state alone. Invariants that compare two states live in the tests
 //! (`tests/corpus/invariants.rs`). The checker's own reads are not counted
-//! as work.
+//! as work. Each check is shown a state with its one fault by a test
+//! beside it (`mod faults`), so a check that stops checking fails there.
 
 use std::{cell::Cell, fmt};
 

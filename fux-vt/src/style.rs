@@ -466,3 +466,38 @@ mod tests {
         assert!(!styles.wants_sweep(0));
     }
 }
+
+/// The table's check, shown a table with its one fault.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+    use crate::Color;
+
+    #[test]
+    fn a_style_found_at_another_place_is_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..4u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check(), Ok(()));
+        if let Some(place) = styles.places.values_mut().next() {
+            *place = place.wrapping_add(1) % 4;
+        }
+        assert!(styles.check().is_err());
+        styles.places.clear();
+        assert!(styles.check().is_err());
+    }
+
+    /// Styles that hash alike are a fault of the spread: 65 at one place.
+    #[test]
+    fn styles_that_hash_alike_are_a_fault() {
+        let mut styles = Styles::default();
+        for n in 0..65u8 {
+            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
+            assert!(styles.insert(attributes).is_some());
+        }
+        assert_eq!(styles.check_spread(|a| Keyed.hash_one(a)), Ok(()));
+        assert!(styles.check_spread(|_| 7).is_err());
+    }
+}

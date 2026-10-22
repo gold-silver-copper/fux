@@ -1174,3 +1174,66 @@ impl History {
 
 #[cfg(test)]
 mod tests;
+
+/// History's checks, each shown a history with its one fault.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    /// A history of six rows of three cells.
+    fn history() -> History {
+        let mut history = History::new(1 << 12);
+        let cells = [Compact::ascii(b'x', 0); 3];
+        for id in 0..6u64 {
+            let row = Arriving {
+                id: RowId(id),
+                version: 1,
+                flags: 0,
+                cells: &cells,
+                width: 4,
+            };
+            assert!(history.push(row).is_ok());
+            history.trim();
+        }
+        history
+    }
+
+    fn faulted(history: &History) -> Vec<&'static str> {
+        let mut report = crate::Checked::default();
+        history.check("history", &mut report);
+        report.faults().iter().map(|f| f.check).collect()
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut History)) {
+        let mut history = history();
+        assert_eq!(faulted(&history), Vec::<&str>::new());
+        fault(&mut history);
+        let found = faulted(&history);
+        assert!(found.contains(&check), "{check}: {found:?}");
+    }
+
+    #[test]
+    fn each_check_names_its_fault() {
+        shows("history.counts", |h| h.cells = h.cells.saturating_add(1));
+        shows("history.blocks", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.place = (kept.place & !0xffff) | 0x7fff;
+            }
+        });
+        shows("history.flags", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.set(TEXT, true);
+            }
+        });
+        shows("history.flags", |h| {
+            (h.renditions.0).push_back((u64::MAX, LineRendition::DoubleWidth));
+        });
+        shows("history.flags", |h| {
+            if let Some(kept) = h.rows.back_mut() {
+                kept.id = RowId(1 << 40);
+            }
+        });
+        shows("history.budget", |h| h.budget = 0);
+        shows("history.capacities", |h| h.texts.0.reserve(1000));
+    }
+}

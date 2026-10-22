@@ -703,3 +703,47 @@ mod tests {
         assert_eq!(parse(b"id=\x01;http://a"), None);
     }
 }
+
+/// The links' checks, each shown links with their one fault.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn link(key: u64, id: Option<&str>) -> Hyperlink {
+        Hyperlink::new(key, "http://a", id)
+    }
+
+    #[test]
+    fn runs_out_of_order_or_past_the_row_are_faults() {
+        let mut row = RowLinks::default();
+        assert!(row.set(0..2, Some(&link(1, None))));
+        assert!(row.set(3..4, Some(&link(2, None))));
+        assert_eq!(row.runs().check(4), Ok(()));
+        assert!(row.runs().check(3).is_err(), "past the row");
+        row.0.reverse();
+        assert!(row.runs().check(4).is_err(), "out of order");
+    }
+
+    #[test]
+    fn links_held_for_less_than_the_rows_cost_or_lost_ids_are_faults() {
+        let mut links = Links::default();
+        let opened = link(1, Some("i"));
+        let Some(held) = links.insert(&opened) else {
+            return;
+        };
+        let mut row = RowLinks::default();
+        assert!(row.set(0..1, Some(&held)));
+        assert_eq!(links.check([row.runs()].into_iter()), Ok(()));
+        links.held = 0;
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "held too little"
+        );
+        links.held = held.cost();
+        links.ids.clear();
+        assert!(
+            links.check([row.runs()].into_iter()).is_err(),
+            "an id not found"
+        );
+    }
+}

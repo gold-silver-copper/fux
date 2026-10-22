@@ -2834,3 +2834,142 @@ impl Grid {
         self.links.check(links)
     }
 }
+
+/// The grid's checks, each shown a grid with its one fault: a
+/// check that stops checking fails here.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    /// A grid of 3 rows of 4, with a few rows of history.
+    fn grid() -> Result<Grid, Error> {
+        let size = Size::new(3, 4).map_err(|_| Error::Capacity)?;
+        let mut next = 1;
+        let mut grid = Grid::new(size, 1 << 12, &mut next, 1)?;
+        for _ in 0..5 {
+            let _ = grid.write_ascii(0, 0, b"ab", 0, 1);
+            grid.scroll(
+                size.lines(),
+                1,
+                Scroll::Up { history: true },
+                0,
+                &mut next,
+                1,
+            );
+        }
+        Ok(grid)
+    }
+
+    /// The checks that found a fault in `grid`.
+    fn faulted(grid: &Grid) -> Vec<&'static str> {
+        let mut report = crate::Checked::default();
+        grid.check("grid", 1, &mut report);
+        report.faults().iter().map(|f| f.check).collect()
+    }
+
+    /// Whether `grid` is clean, and `fault` makes it fail `check` alone.
+    fn shows(check: &str, fault: impl FnOnce(&mut Grid)) -> Result<(), Error> {
+        let mut grid = grid()?;
+        assert_eq!(faulted(&grid), Vec::<&str>::new());
+        fault(&mut grid);
+        let found = faulted(&grid);
+        assert!(found.contains(&check), "{check}: {found:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("grid.order", |g| {
+            if let [first, second, ..] = g.order.slots.as_mut_slice() {
+                *first = *second;
+            }
+        })?;
+        shows("grid.slots", |g| {
+            g.texts.pop();
+        })?;
+        shows("grid.blank_past_used", |g| {
+            if let Some(cell) = g.cells.get_mut(1) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 0);
+        })?;
+        shows("grid.blank_past_end", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            let at = g.order.get(0).map(|slot| slot * 4 + 3);
+            if let Some(cell) = at.and_then(|at| g.cells.get_mut(at)) {
+                *cell = Compact::ascii(b'x', 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.wide_pairs", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                *cell = Compact::glyph('一', 2, 0);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.text", |g| {
+            let long = "e\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
+            g.mutate_line(0, 1, 1, |line| line.set(0, Compact::glyph('e', 1, 0), long));
+            if let Some(&slot) = g.order.get(0)
+                && let Some(text) = g.texts.get_mut(slot)
+            {
+                *text = Text::default();
+            }
+        })?;
+        shows("grid.style_numbers", |g| {
+            if let Some(cell) = g.cells.get_mut(0) {
+                cell.set_style(crate::style::TABLE | 5);
+            }
+            g.meta.iter_mut().for_each(|m| m.used = 4);
+        })?;
+        shows("grid.recent", |g| {
+            let bold = Attributes::default().with_bold(true);
+            if let Some(slot) = g.recent.get_mut(0) {
+                *slot = (bold, crate::style::TABLE | 3);
+            }
+        })?;
+        shows("grid.charged", |g| g.history.charge(1))?;
+        // A run past the row's 4 cells, and a link the links held never
+        // counted (guard mutants: the grid's calls to each check).
+        shows("links.runs", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(3..5, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
+        shows("links.held", |g| {
+            if let Some(&slot) = g.order.get(0)
+                && let Some(row) = g.linked.get_mut(slot)
+            {
+                let _ = row.set(0..1, Some(&Hyperlink::new(9, "http://a", None)));
+            }
+        })?;
+        shows("grid.versions", |g| {
+            g.meta.iter_mut().for_each(|m| m.version = 2);
+        })?;
+        shows("grid.cursor", |g| g.cursor.row = 3)?;
+        shows("grid.cursor", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            (g.cursor.row, g.cursor.col) = (0, g.size.cols().saturating_sub(1));
+        })?;
+        shows("grid.margins", |g| g.narrow = LR)?;
+        shows("grid.margins", |g| {
+            g.set_rendition(0, LineRendition::DoubleWidth, 1);
+            g.narrow = 0;
+        })?;
+        shows("grid.keyboard", |g| g.keyboard.0.extend([1; 33]))?;
+        Ok(())
+    }
+}
+
+/// What a fault test needs of a grid it breaks on purpose.
+#[cfg(all(test, feature = "checks"))]
+impl Grid {
+    /// Gives live row `row` identity `id`, another row's maybe.
+    pub(crate) fn give_id(&mut self, row: u16, id: RowId) {
+        if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
+            m.id = id;
+        }
+    }
+}

@@ -4109,3 +4109,56 @@ fn spend_scroll(region: Span, count: u16, size: Size) {
     crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
     crate::budget::spend(crate::budget::units(slots), crate::budget::weight::slots);
 }
+
+/// The screen's checks, each shown a screen with its one fault.
+#[cfg(all(test, feature = "checks"))]
+mod faults {
+    use super::*;
+
+    fn screen() -> Result<Screen, Error> {
+        let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
+        let mut screen = Screen::new(size, 1 << 12)?;
+        screen.record_prints(true);
+        let _ = screen.ascii(b"hello")?;
+        Ok(screen)
+    }
+
+    fn shows(check: &str, fault: impl FnOnce(&mut Screen)) -> Result<(), Error> {
+        let mut screen = screen()?;
+        assert!(screen.check().is_clean(), "{}", screen.check());
+        fault(&mut screen);
+        let report = screen.check();
+        assert!(
+            report.faults_of(check).next().is_some(),
+            "{check}: {report}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_check_names_its_fault() -> Result<(), Error> {
+        shows("screen.ids", |s| {
+            let id = s.primary.live_row(0).map(|r| r.id());
+            if let Some(id) = id {
+                s.alternate.give_id(0, id);
+            }
+        })?;
+        shows("screen.structural", |s| {
+            s.structural = s.version.saturating_add(1)
+        })?;
+        shows("screen.tabs", |s| {
+            s.terminal.tabs.stops = vec![false; 70_000]
+        })?;
+        shows("prints.runs", |s| {
+            if let Some(prints) = &mut s.prints {
+                prints.text.push('x');
+            }
+        })?;
+        shows("prints.cap", |s| {
+            if let Some(prints) = &mut s.prints {
+                prints.text.reserve(prints.cap().saturating_add(1));
+            }
+        })?;
+        Ok(())
+    }
+}
