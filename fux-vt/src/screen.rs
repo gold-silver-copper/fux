@@ -9,7 +9,7 @@ use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
     Options, Prints, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
-    grid::{Cursor, Erase, Grid, Scroll, Written},
+    grid::{Cursor, Erase, Grid, Scroll, put},
     palette::Colours,
     parser::Parameters,
 };
@@ -1056,31 +1056,6 @@ fn run_width(properties: Properties, col: u16, end: u16, cluster: Cluster) -> Op
     (cluster.never_joins(properties) && col.checked_add(width)? <= end).then_some(width)
 }
 
-/// Whether a glyph `width` wide at `i` has its second half after it, if it
-/// needs one. Kept out of line, as `unchanged` is (grid.rs), so that the
-/// print that usually follows compiles as if it were not there.
-#[inline(never)]
-fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
-    width != 2
-        || i.checked_add(1)
-            .and_then(|j| cells.get(j))
-            .is_some_and(|c| *c == Compact::continuation())
-}
-
-/// `Screen::fill`'s sweep of copies of `unit` over `cells`, which hold no
-/// half of a wide glyph: writes the copies from the first that changes a
-/// cell, and says whether one did.
-fn sweep<const N: usize>(cells: &mut [Compact], unit: [Compact; N]) -> bool {
-    let (copies, _) = cells.as_chunks_mut::<N>();
-    let Some(first) = copies.iter().position(|c| *c != unit) else {
-        return false;
-    };
-    for copy in copies.iter_mut().skip(first) {
-        *copy = unit;
-    }
-    true
-}
-
 impl Screen {
     pub(crate) fn new(size: Size, history: usize) -> Result<Self, Error> {
         let mut next_id = 1;
@@ -2085,56 +2060,12 @@ impl Screen {
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
         }
         let (row, col) = self.grid().cursor.at();
-        let style = self.pen_style();
-        // The glyph is protected while the pen protects; what it clears
-        // around it is not.
-        let protect = self.protect;
-        // A narrow glyph over a wide one's first half leaves a space in its
-        // second, which no link printed.
-        let split = self.links_seen
-            && width == 1
-            && self.grid().stored(row, col).is_some_and(Compact::is_wide);
+        let glyph = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
         let mut changed = false;
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
-                let i = usize::from(col);
-                let glyph = Compact::glyph(c, usize::from(width), style | protect);
-                // Already this glyph, whole, as a redraw finds it: the row is
-                // as it was. Otherwise what follows writes a cell that
-                // differs, the glyph or its second half.
-                let Some(current) = cells.get(i) else {
-                    return false;
-                };
-                if *current == glyph && whole(cells, i, width) {
-                    return false;
-                }
-                // An overwrite at either half removes the other half too.
-                if cells.get(i).is_some_and(Compact::is_wide_continuation)
-                    && let Some(other) = cells.get_mut(i.wrapping_sub(1))
-                {
-                    *other = Compact::blank(style);
-                }
-                if cells.get(i).is_some_and(Compact::is_wide)
-                    && let Some(other) = cells.get_mut(i + 1)
-                {
-                    *other = Compact::glyph(' ', 1, style);
-                }
-                if width == 2
-                    && cells.get(i + 1).is_some_and(Compact::is_wide)
-                    && let Some(other) = cells.get_mut(i + 2)
-                {
-                    *other = Compact::blank(style);
-                }
-                if let Some(cell) = cells.get_mut(i) {
-                    *cell = glyph;
-                }
-                if width == 2
-                    && let Some(cell) = cells.get_mut(i + 1)
-                {
-                    *cell = Compact::continuation();
-                }
-                changed = true;
-                true
+                changed = put(cells, usize::from(col), glyph, width);
+                changed
             });
             // Past the glyph; in the last column it waits there to wrap.
             g.advance_within(col.saturating_add(width), end);
@@ -2143,10 +2074,6 @@ impl Screen {
         if self.links_seen {
             let at = usize::from(col);
             self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
-            if split {
-                let next = at.saturating_add(1);
-                self.link_cells(row, next..next.saturating_add(1), false);
-            }
         }
         self.last_print = Some(Printed::of((row, col), properties));
         if self.prints.is_some() {
@@ -2241,34 +2168,8 @@ impl Screen {
                 let mut changed = None;
                 let mut glyph = Some((first, properties, width));
                 while let Some((c, properties, width)) = glyph {
-                    let i = usize::from(col);
-                    let wide = width == 2;
-                    let halves = |cell: Option<&Compact>| {
-                        cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
-                    };
-                    // A glyph on no half of a wide one; or a wide glyph on
-                    // the first half of one, and so on both its halves,
-                    // which `print` leaves as the new glyph alone.
-                    let over = if wide {
-                        let first = cells.get(i);
-                        (!halves(first) && !halves(cells.get(i + 1)))
-                            || first.is_some_and(Compact::is_wide)
-                    } else {
-                        !halves(cells.get(i))
-                    };
-                    if !over {
-                        stopped = Some((c, properties));
-                        break;
-                    }
                     let cell = Compact::glyph(c, usize::from(width), style);
-                    // Already this glyph, whole, as a redraw finds it.
-                    if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
-                        if let Some(slot) = cells.get_mut(i) {
-                            *slot = cell;
-                        }
-                        if wide && let Some(slot) = cells.get_mut(i + 1) {
-                            *slot = Compact::continuation();
-                        }
+                    if put(cells, usize::from(col), cell, width) {
                         changed = col.checked_add(width);
                     }
                     last = Some((col, c, properties));
@@ -2309,12 +2210,11 @@ impl Screen {
 
     /// REP's copies of `c`, whose properties are `properties`, as `run`
     /// writes text: up to `copies` of them along the cursor's row from the
-    /// cursor, while each fits and joins nothing and lands on no half of a
-    /// wide glyph; says how many, none where `print` must write the next.
-    /// The glyph is the same each time, so it is looked up and made once.
-    /// `text` is the copies' text while the host records prints, as long
-    /// as a row's worth of them; it is given every copy written, as `run`
-    /// gives its glyphs.
+    /// cursor, while each fits and joins nothing; says how many, none where
+    /// `print` must write the next. The glyph is the same each time, so it
+    /// is looked up and made once. `text` is the copies' text while the
+    /// host records prints, as long as a row's worth of them; it is given
+    /// every copy written, as `run` gives its glyphs.
     fn fill(&mut self, c: char, properties: Properties, copies: usize, text: &str) -> usize {
         let g = self.grid();
         let (row, start) = g.cursor.at();
@@ -2327,9 +2227,11 @@ impl Screen {
             return 0;
         };
         let room = usize::from(end.saturating_sub(start).checked_div(width).unwrap_or(0));
-        let copies = copies.min(room);
+        let made = copies.min(room);
+        let Some(last) = made.checked_sub(1) else {
+            return 0;
+        };
         let cell = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
-        let wide = width == 2;
         // The column copy `k` is written at.
         let at = move |k: usize| {
             u16::try_from(k)
@@ -2337,63 +2239,20 @@ impl Screen {
                 .and_then(|k| k.checked_mul(width))
                 .map_or(end, |cols| start.saturating_add(cols))
         };
-        let (mut made, mut any) = (0, false);
+        let mut any = false;
         self.with_grid(|g, _, version| {
             g.mutate_row_to(row, version, |cells| {
-                let from = usize::from(start);
-                let to = from.saturating_add(copies.saturating_mul(usize::from(width)));
-                // On no half of a wide glyph, as on a row the copies have
-                // just scrolled onto, every copy lands: those that change
-                // cells are written in one sweep.
-                if let Some(cells) = cells.get_mut(from..to)
-                    && !Compact::any_halves(cells)
-                {
-                    made = copies;
-                    let changed = match wide {
-                        false => sweep(cells, [cell]),
-                        true => sweep(cells, [cell, Compact::continuation()]),
-                    };
-                    any = changed;
-                    return changed.then(|| u16::try_from(to).ok()).flatten();
-                }
-                let half = |cell: Option<&Compact>| {
-                    cell.is_none_or(|c| c.is_wide() || c.is_wide_continuation())
-                };
                 let mut changed = None;
-                for k in 0..copies {
-                    let i = usize::from(start).saturating_add(k.saturating_mul(usize::from(width)));
-                    // As `run`: on no half of a wide glyph, or a wide glyph
-                    // on the first half of one, and so on both its halves.
-                    let over = if wide {
-                        (!half(cells.get(i)) && !half(cells.get(i.saturating_add(1))))
-                            || cells.get(i).is_some_and(Compact::is_wide)
-                    } else {
-                        !half(cells.get(i))
-                    };
-                    if !over {
-                        break;
+                for k in 0..made {
+                    if put(cells, usize::from(at(k)), cell, width) {
+                        changed = Some(at(k.saturating_add(1)));
                     }
-                    if cells.get(i) != Some(&cell) || !whole(cells, i, width) {
-                        if let Some(slot) = cells.get_mut(i) {
-                            *slot = cell;
-                        }
-                        if wide && let Some(slot) = cells.get_mut(i.saturating_add(1)) {
-                            *slot = Compact::continuation();
-                        }
-                        changed = u16::try_from(i).ok().and_then(|i| i.checked_add(width));
-                    }
-                    made = k.saturating_add(1);
                 }
                 any = changed.is_some();
                 changed
             });
-            if made > 0 {
-                g.advance_within(at(made), end);
-            }
+            g.advance_within(at(made), end);
         });
-        let Some(last) = made.checked_sub(1) else {
-            return 0;
-        };
         work!(cells, at(made).saturating_sub(start));
         if self.links_seen {
             self.link_cells(row, usize::from(start)..usize::from(at(made)), true);
@@ -2801,21 +2660,10 @@ impl Screen {
     }
 
     /// Prints a run of ASCII straight into cells, wrapping at the right
-    /// margin itself (`wrap_for`); a cell that needs the general glyph path
-    /// (a wide glyph's half there, a cluster to extend) takes `print`.
-    /// Never enters parser dispatch.
+    /// margin itself (`wrap_for`); a glyph that joins a Prepend character
+    /// printed last takes `print`. Never enters parser dispatch.
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<usize, Error> {
         let all = bytes.len();
-        // One glyph, as a short line or a cursor moved to it has, where
-        // nothing below would take it otherwise.
-        if let [byte] = bytes
-            && !self.charsets.graphics()
-            && !self.mode(Mode::Insert)
-            && !self.last_print.is_some_and(|p| p.cluster.prepended())
-            && self.ascii_glyph(*byte)
-        {
-            return Ok(all);
-        }
         // DEC Special Graphics print other characters, and insert mode
         // moves what is there, one glyph at a time, each stopping where a
         // wrap scrolled inside margins past the budget.
@@ -2853,46 +2701,24 @@ impl Screen {
             }
             let (row, col) = self.grid().cursor.at();
             // `wrap_for` left room for at least one cell, before the right
-            // margin or the screen's edge; without it, the run could not
-            // advance.
+            // margin or the screen's edge.
             let Some(room) = line.checked_sub(col).filter(|r| *r > 0) else {
                 return Ok(all);
             };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
             let style = self.pen_style() | self.protect;
-            let mut run = bytes.get(..usize::from(count)).unwrap_or_default();
-            // A run that meets half of a wide glyph, which the general path
-            // repairs, is written up to it, and the glyph there printed.
-            let written = loop {
-                match self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v)) {
-                    written @ (Written::All | Written::Same) => {
-                        if self.prints.is_some() {
-                            let end = col.saturating_add(u16::try_from(run.len()).unwrap_or(0));
-                            match written {
-                                Written::Same => self.printed_over_itself(row, col..end, run),
-                                Written::All | Written::Before(_) => {
-                                    let text = str::from_utf8(run).unwrap_or_default();
-                                    self.printed_as(true, row, col..end, text);
-                                }
-                            }
-                        }
-                        break true;
-                    }
-                    Written::Before(n) => match run.get(..n) {
-                        Some(before) if !before.is_empty() && n < run.len() => run = before,
-                        Some(_) | None => break false,
-                    },
+            let run = bytes.get(..usize::from(count)).unwrap_or_default();
+            let changed = self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v));
+            let end = col.saturating_add(count);
+            if self.prints.is_some() {
+                if changed {
+                    let text = str::from_utf8(run).unwrap_or_default();
+                    self.printed_as(true, row, col..end, text);
+                } else {
+                    self.printed_over_itself(row, col..end, run);
                 }
-            };
-            let end = u16::try_from(run.len())
-                .ok()
-                .and_then(|n| col.checked_add(n));
-            let Some(end) = end.filter(|_| written) else {
-                self.print(char::from(first))?;
-                bytes = tail;
-                continue;
-            };
+            }
             self.grid_mut().advance_within(end, line);
             // The cells' links, after the cells: before, the call would make
             // the write above load again what it had in hand.
@@ -2901,53 +2727,13 @@ impl Screen {
             }
             // The run's last glyph, which a mark or selector may join, and
             // REP repeats.
-            self.last_print = end
-                .checked_sub(1)
-                .zip(run.last())
-                .map(|(last, &byte)| Printed::new((row, last), char::from(byte)));
             if let Some(&last) = run.last() {
+                self.last_print = Some(Printed::new((row, end.saturating_sub(1)), char::from(last)));
                 self.repeat = Some(char::from(last));
             }
             bytes = bytes.get(run.len()..).unwrap_or_default();
         }
         Ok(all)
-    }
-
-    /// `ascii` of one glyph, `byte`, where it needs no wrap and finds no
-    /// half of a wide glyph: as the run loop writes a run of one, without
-    /// its set-up. Whether it did; if not, nothing changed.
-    #[inline]
-    fn ascii_glyph(&mut self, byte: u8) -> bool {
-        let g = self.grid();
-        let line = g.line_end();
-        let (row, col) = g.cursor.at();
-        if g.cursor.pending_wrap || col >= line {
-            return false;
-        }
-        let style = self.pen_style() | self.protect;
-        match self.with_grid(|g, _, v| g.write_ascii(row, col, &[byte], style, v)) {
-            written @ (Written::All | Written::Same) => {
-                if self.prints.is_some() {
-                    let cols = col..col.saturating_add(1);
-                    match written {
-                        Written::Same => self.printed_over_itself(row, cols, &[byte]),
-                        Written::All | Written::Before(_) => {
-                            let text = str::from_utf8(std::slice::from_ref(&byte));
-                            self.printed_as(true, row, cols, text.unwrap_or_default());
-                        }
-                    }
-                }
-            }
-            Written::Before(_) => return false,
-        }
-        let end = col.saturating_add(1);
-        self.grid_mut().advance_within(end, line);
-        if self.links_seen {
-            self.link_cells(row, usize::from(col)..usize::from(end), true);
-        }
-        self.last_print = Some(Printed::new((row, col), char::from(byte)));
-        self.repeat = Some(char::from(byte));
-        true
     }
 
     /// CR then LF, as `control` carries out the one and then the other:

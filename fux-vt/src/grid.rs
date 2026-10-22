@@ -843,9 +843,8 @@ impl Grid {
     }
     /// Writes the ASCII `run` from column `col` of live row `row`, in style
     /// `style`, as `mutate_row` writes, taking `version` only if a cell
-    /// changed; unless a cell there is half of a wide glyph, which the
-    /// general path repairs, when it writes nothing and says how many
-    /// bytes come before the first such cell, which it could write.
+    /// changed; whether one did. A wide glyph it overwrites half of loses
+    /// its other half (`put`).
     #[inline]
     pub fn write_ascii(
         &mut self,
@@ -854,31 +853,16 @@ impl Grid {
         run: &[u8],
         style: u32,
         version: u64,
-    ) -> Written {
+    ) -> bool {
         let Some(slot) = self.slot(row) else {
-            return Written::Before(0);
+            return false;
         };
         work!(cells, run.len());
         let start = usize::from(col);
-        let Some(dst) = start
-            .checked_add(run.len())
-            .and_then(|end| self.slice_mut(slot).get_mut(start..end))
-        else {
-            return Written::Before(0);
+        let end = start.saturating_add(run.len());
+        let Some(dst) = self.slice_mut(slot).get_mut(start..end) else {
+            return false;
         };
-        // One glyph, as at a cursor moved to it: the cell alone, without
-        // the set-up the loops below take for a run.
-        if let ([cell], [byte]) = (&mut *dst, run) {
-            if cell.is_wide() || cell.is_wide_continuation() {
-                return Written::Before(0);
-            }
-            if cell.is_ascii(*byte, style) {
-                return Written::Same;
-            }
-            *cell = Compact::ascii(*byte, style);
-            self.changed(slot, start.saturating_add(1), version);
-            return Written::All;
-        }
         // A short run, a word between colours, cell by cell; a long one by
         // the loops that move words, whose set-up a short one would not
         // repay.
@@ -888,13 +872,21 @@ impl Grid {
             Compact::any_halves(dst)
         };
         if halves {
-            return Written::Before(first_half(dst));
+            let cells = self.slice_mut(slot);
+            let mut changed = false;
+            for (i, &byte) in (start..).zip(run) {
+                changed |= put(cells, i, Compact::ascii(byte, style), 1);
+            }
+            if changed {
+                self.changed(slot, end, version);
+            }
+            return changed;
         }
         // Already these very cells, as a redraw finds them: the row is as
         // it was. New text differs at the first cell.
         let first = dst.first().zip(run.first());
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
-            return Written::Same;
+            return false;
         }
         if run.len() < LONG_RUN {
             for (cell, byte) in dst.iter_mut().zip(run) {
@@ -903,8 +895,8 @@ impl Grid {
         } else {
             Compact::fill_ascii(dst, run, style);
         }
-        self.changed(slot, start.saturating_add(run.len()), version);
-        Written::All
+        self.changed(slot, end, version);
+        true
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
     pub fn mutate_line(
@@ -2794,30 +2786,6 @@ fn set_link(
     }
 }
 
-/// What `write_ascii` made of a run.
-#[must_use]
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum Written {
-    /// It wrote all of it.
-    All,
-    /// The cells were already the run: nothing changed.
-    Same,
-    /// It wrote none of it, as it meets half of a wide glyph, which the
-    /// general path repairs, after this many bytes: those it would write.
-    Before(usize),
-}
-
-/// How many of `cells` come before the first that is half of a wide
-/// glyph. Out of line: a run seldom meets one.
-#[cold]
-#[inline(never)]
-fn first_half(cells: &[Compact]) -> usize {
-    cells
-        .iter()
-        .position(|c| c.is_wide() || c.is_wide_continuation())
-        .unwrap_or(cells.len())
-}
-
 /// The run of ASCII from which `write_ascii` writes a word a cell.
 const LONG_RUN: usize = 8;
 
@@ -2880,6 +2848,47 @@ fn repair_wide_at(cells: &mut [Compact], at: usize) {
     {
         *cell = cell.blanked();
     }
+}
+
+/// Whether a glyph `width` wide at `i` has its second half after it, if it
+/// needs one.
+fn whole(cells: &[Compact], i: usize, width: u16) -> bool {
+    width != 2
+        || i.checked_add(1)
+            .and_then(|j| cells.get(j))
+            .is_some_and(|c| *c == Compact::continuation())
+}
+
+/// Writes `glyph`, `width` columns wide, at cell `i` of `cells`, as every
+/// printing path does: a wide glyph it overwrites half of loses its other
+/// half, blanked in the glyph's style. Whether a cell changed: not if the
+/// glyph was there whole already, as a redraw finds it.
+#[inline]
+pub(crate) fn put(cells: &mut [Compact], i: usize, glyph: Compact, width: u16) -> bool {
+    if cells.get(i) == Some(&glyph) && whole(cells, i, width) {
+        return false;
+    }
+    let blank = Compact::blank(glyph.style());
+    if cells.get(i).is_some_and(Compact::is_wide_continuation)
+        && let Some(other) = i.checked_sub(1).and_then(|j| cells.get_mut(j))
+    {
+        *other = blank;
+    }
+    let last = i.saturating_add(usize::from(width)).saturating_sub(1);
+    if cells.get(last).is_some_and(Compact::is_wide)
+        && let Some(other) = cells.get_mut(last.saturating_add(1))
+    {
+        *other = blank;
+    }
+    if let Some(cell) = cells.get_mut(i) {
+        *cell = glyph;
+    }
+    if width == 2
+        && let Some(cell) = cells.get_mut(i.saturating_add(1))
+    {
+        *cell = Compact::continuation();
+    }
+    true
 }
 
 pub(crate) fn repair_wide(cells: &mut [Compact]) {
