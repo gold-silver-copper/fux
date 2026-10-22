@@ -108,34 +108,19 @@ impl crate::Screen {
     /// as `CSI ? 1005 / 1006 / 1015 / 1016 h` say), and returns whether there
     /// was one ([`mouse_bytes`]). SGR with pixels (1016) reports the middle
     /// of the event's cell, the host's cell size (`Parser::set_host_graphics`)
-    /// or else 10 by 20 pixels: a host that knows the pointer's pixel gives
-    /// it to [`Self::encode_mouse_at_pixel`]. With no mouse reporting asked
-    /// for, on the alternate screen, with alternate scroll set (`CSI ? 1007
-    /// h`), a wheel turn sends the cursor keys instead (xterm 411's
-    /// `AlternateScroll`, scrollbar.c): Up or Down, in the cursor key mode,
-    /// 5 times, or half the screen's rows with Ctrl.
+    /// or else 10 by 20 pixels. With no mouse reporting asked for, on the
+    /// alternate screen, with alternate scroll set (`CSI ? 1007 h`), a wheel
+    /// turn sends the cursor keys instead (xterm 411's `AlternateScroll`,
+    /// scrollbar.c): Up or Down, in the cursor key mode, 5 times, or half
+    /// the screen's rows with Ctrl.
     pub fn encode_mouse(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {
-        let (width, height) = self.cell_pixels();
-        self.encode_mouse_at_pixel(
-            event,
-            (middle(event.col, width), middle(event.row, height)),
-            out,
-        )
-    }
-
-    /// [`Self::encode_mouse`] with the pointer at `pixel` (column, row, from
-    /// zero at the screen's top left), which SGR with pixels (1016) reports.
-    pub fn encode_mouse_at_pixel(
-        &self,
-        event: MouseEvent,
-        pixel: (u32, u32),
-        out: &mut Vec<u8>,
-    ) -> bool {
         let mode = self.mouse_protocol_mode();
         if mode == MouseProtocolMode::None && self.alternate_scroll(event, out) {
             return true;
         }
-        mouse_bytes_at(event, pixel, mode, self.mouse_protocol_encoding(), out)
+        let (width, height) = self.cell_pixels();
+        let pixel = (middle(event.col, width), middle(event.row, height));
+        report(event, pixel, mode, self.mouse_protocol_encoding(), out)
     }
 
     /// A wheel turn as cursor keys, with alternate scroll set and the
@@ -197,7 +182,7 @@ fn middle(n: u16, size: u16) -> u32 {
 ///   button, for any position; urxvt (1015) `CSI code ; column ; row M`, the
 ///   code plus 32 and a release unnamed (xterm 411's `EditorButton`); SGR
 ///   with pixels (1016) SGR's form, the position the middle of the cell in
-///   10 by 20 pixels ([`mouse_bytes_at`] takes another).
+///   10 by 20 pixels.
 pub fn mouse_bytes(
     event: MouseEvent,
     mode: MouseProtocolMode,
@@ -206,12 +191,12 @@ pub fn mouse_bytes(
 ) -> bool {
     let (width, height) = crate::screen::CELL;
     let pixel = (middle(event.col, width), middle(event.row, height));
-    mouse_bytes_at(event, pixel, mode, encoding, out)
+    report(event, pixel, mode, encoding, out)
 }
 
 /// [`mouse_bytes`] with the pointer at `pixel` (column, row, from zero),
 /// which SGR with pixels (1016) reports, from one.
-pub fn mouse_bytes_at(
+fn report(
     event: MouseEvent,
     pixel: (u32, u32),
     mode: MouseProtocolMode,

@@ -53,7 +53,6 @@ use crate::keys::{
     Kitty, Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
-use std::borrow::Cow;
 use std::num::NonZeroU8;
 use std::time::{Duration, Instant};
 
@@ -247,39 +246,31 @@ struct Expecting {
 
 /// Drops `bytes` of an answer's string past its limit to its end, `bel` if
 /// BEL ends it too (OSC; a DCS ends with ST alone), `escape` if the last
-/// read ended with an ESC that may begin its ST; the bytes after it, if it
-/// ends within them, else whether they end with such an ESC. An Escape that
-/// ends it unfinished begins what follows, put back if the last read ended
-/// with it.
-/// The ESC that begins them is the last read's: it is put back before
-/// them, a copy of at most the longest held sequence and a byte, as a long
-/// read comes in pieces (`held_first`).
+/// read ended with an ESC that may begin its ST, `csi` if it is a CSI,
+/// which its final byte ends: the bytes after it, if it ends within them,
+/// with whether an ESC, the last read's, begins them (an Escape that ends
+/// the string unfinished begins what follows); else whether they end with
+/// an ESC that may begin its ST.
 #[cold]
 fn drop_to_end(
     bel: bool,
     mut escape: bool,
     csi: bool,
     bytes: &[u8],
-) -> Result<Cow<'_, [u8]>, bool> {
+) -> Result<(bool, &[u8]), bool> {
     // Every byte is looked at, at most: those after the end are decoded
     // again, and counted again there.
     work!(keys, bytes.len());
     // A CSI past its window ends with its final byte, as one read whole does
-    // (`long_answer`).
+    // (`long_answer`); any other byte begins what comes next.
     if csi {
         let end = bytes
             .iter()
             .position(|b| !(0x20..=0x3f).contains(b))
             .ok_or(false)?;
-        // A final byte is dropped with it; any other byte begins what comes
-        // next, as `long_answer` has it.
         let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
-        let rest = if final_byte {
-            end.saturating_add(1)
-        } else {
-            end
-        };
-        return Ok(Cow::Borrowed(bytes.get(rest..).unwrap_or_default()));
+        let rest = end.saturating_add(usize::from(final_byte));
+        return Ok((false, bytes.get(rest..).unwrap_or_default()));
     }
     for (i, &byte) in bytes.iter().enumerate() {
         let rest = match (escape, byte) {
@@ -289,14 +280,14 @@ fn drop_to_end(
             // and the ESC begins what comes next.
             (true, _) => match i.checked_sub(1) {
                 Some(escape) => escape,
-                None => return Ok(Cow::Owned([b"\x1b", bytes].concat())),
+                None => return Ok((true, bytes)),
             },
             (false, byte) => {
                 escape = byte == 0x1b;
                 continue;
             }
         };
-        return Ok(Cow::Borrowed(bytes.get(rest..).unwrap_or_default()));
+        return Ok((false, bytes.get(rest..).unwrap_or_default()));
     }
     Err(escape)
 }
@@ -422,21 +413,17 @@ impl Decoder {
     }
 
     /// When `timeout` is due: `ESCAPE_DELAY` after decoding began waiting,
-    /// as marked, or `REPLY_DELAY` if what waits is an answer begun, or a
-    /// bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
+    /// as marked, or `REPLY_DELAY` if what waits is an answer or a character
+    /// begun, or a bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
     /// expected; `PASTE_DELAY` after a paste's last bytes; none while it is
     /// not waiting.
     pub fn deadline(&self) -> Option<Instant> {
         let (since, wait) = match &self.state {
-            // A character begun, after an Escape or not, waits for its
-            // bytes with no deadline (`single`).
-            State::Pending { held, .. }
-                if utf8_begun(held.strip_prefix(b"\x1b").unwrap_or(held)) =>
-            {
-                return None;
-            }
             State::Pending { held, since } => {
+                // A character begun, after an Escape or not, waits for its
+                // bytes as long as an answer: a slow link may split it.
                 let reply = match held.as_slice() {
+                    held if utf8_begun(held.strip_prefix(b"\x1b").unwrap_or(held)) => true,
                     b"\x1b]" | b"\x1bP" | b"\x1bP0" | b"\x1bP1" => self.expecting.is_some(),
                     held => {
                         held.starts_with(b"\x1b]") || held.starts_with(b"\x1b[?") || dcs_begun(held)
@@ -475,12 +462,6 @@ impl Decoder {
     /// Decodes `bytes`, appending what they complete to `out`; an incomplete
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
-        // What is held, or an ESC that may end a dropped string, takes only
-        // what decides it of a long read (`held_first`), not a copy of all;
-        // and so does a sequence a long read begins, left unfinished.
-        if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-            return self.held_first(bytes, out);
-        }
         self.feed(bytes, false, out);
     }
 
@@ -493,95 +474,90 @@ impl Decoder {
 
     /// Goes on with what the decoder was in the middle of, with `bytes`
     /// after it; `flush` once the deadline has passed.
-    fn feed(&mut self, bytes: &[u8], flush: bool, out: &mut Vec<Input>) {
-        let (rest, since) = match std::mem::take(&mut self.state) {
-            State::Idle => (Cow::Borrowed(bytes), None),
-            State::Pending { mut held, since } => {
-                work!(keys, bytes.len());
-                held.extend_from_slice(bytes);
-                (Cow::Owned(held), since)
-            }
-            State::Dropping {
-                bel,
-                escape,
-                csi,
-                since,
-            } => match drop_to_end(bel, escape, csi, bytes) {
-                Ok(rest) => (rest, None),
-                Err(_) if flush => return,
-                Err(escape) => {
-                    self.state = State::Dropping {
-                        bel,
-                        escape,
-                        csi,
-                        since,
-                    };
+    fn feed(&mut self, mut bytes: &[u8], flush: bool, out: &mut Vec<Input>) {
+        loop {
+            self.state = match std::mem::take(&mut self.state) {
+                State::Idle => {
+                    self.state = self.run(bytes, None, flush, out);
                     return;
                 }
-            },
-            State::Paste { pasted, since } => match paste(pasted, bytes, self.paste_limit, out) {
-                Ok(rest) => (Cow::Borrowed(rest), None),
-                Err(pasted) if flush => {
-                    out.extend(pasted.end(self.paste_limit));
-                    return;
-                }
-                Err(pasted) => {
-                    // Bytes of it came: its wait begins again when marked.
-                    let since = since.filter(|_| bytes.is_empty());
-                    self.state = State::Paste { pasted, since };
-                    return;
-                }
-            },
-        };
-        self.state = self.run(&rest, since, flush, out);
-    }
-
-    /// Whether what the decoder is in may hold the bytes a read brings:
-    /// a sequence held, an ESC that may end a string being dropped, or
-    /// nothing begun, which a sequence the read begins may leave held.
-    fn may_hold(&self) -> bool {
-        matches!(
-            self.state,
-            State::Idle | State::Pending { .. } | State::Dropping { escape: true, .. }
-        )
-    }
-
-    /// `bytes` of a read longer than any sequence held, while one is held
-    /// (or an ESC that may end a string being dropped): the held sequence
-    /// is given from the front of them only what decides it, no more than
-    /// the longest held and one byte, past which every sequence is decided
-    /// (THREATS.md B24); then the rest, whole, where it lies. A
-    /// sequence what was given begins and leaves held is read again from
-    /// where it begins in the read, not copied with the rest; an ESC left
-    /// that may end a string being dropped is given the one byte that
-    /// decides it. At most 2 × 258 keys a read past 2 a byte (decision
-    /// 821), and nothing of the read held but a sequence it ends with.
-    #[cold]
-    #[inline(never)]
-    fn held_first(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
-        let piece = HELD.saturating_add(1);
-        let mut fed = piece.min(bytes.len());
-        self.feed(bytes.get(..fed).unwrap_or_default(), false, out);
-        while fed < bytes.len() {
-            let step = match &self.state {
-                State::Pending { held, .. } => {
-                    let start = fed.checked_sub(held.len());
-                    let begun = start.filter(|&at| bytes.get(at..fed) == Some(held.as_slice()));
-                    if let Some(start) = begun {
-                        self.state = State::Idle;
-                        self.feed(bytes.get(start..).unwrap_or_default(), false, out);
+                State::Pending { mut held, since } => {
+                    // A held sequence is decided within `HELD` + 1 bytes of
+                    // its start: only those are copied to it, and the rest
+                    // is read where it lies (THREATS.md B24).
+                    let room = (HELD.saturating_add(1)).saturating_sub(held.len());
+                    let (piece, rest) = bytes.split_at_checked(room).unwrap_or((bytes, &[]));
+                    work!(keys, piece.len());
+                    held.extend_from_slice(piece);
+                    let state = self.run(&held, since, flush && rest.is_empty(), out);
+                    if rest.is_empty() {
+                        self.state = state;
                         return;
                     }
-                    piece
+                    match state {
+                        // A sequence begun in the piece, left held, is read
+                        // again from where it begins, with the rest.
+                        State::Pending { held: begun, .. } if begun.len() <= piece.len() => {
+                            let start = piece.len().saturating_sub(begun.len());
+                            bytes = bytes.get(start..).unwrap_or_default();
+                            State::Idle
+                        }
+                        state @ (State::Idle
+                        | State::Pending { .. }
+                        | State::Dropping { .. }
+                        | State::Paste { .. }) => {
+                            bytes = rest;
+                            state
+                        }
+                    }
                 }
-                State::Dropping { escape: true, .. } => 1,
-                State::Idle | State::Dropping { .. } | State::Paste { .. } => break,
+                State::Dropping {
+                    bel,
+                    escape,
+                    csi,
+                    since,
+                } => match drop_to_end(bel, escape, csi, bytes) {
+                    Ok((escape, rest)) => {
+                        bytes = rest;
+                        match escape {
+                            true => State::Pending {
+                                held: vec![0x1b],
+                                since: None,
+                            },
+                            false => State::Idle,
+                        }
+                    }
+                    Err(_) if flush => return,
+                    Err(escape) => {
+                        self.state = State::Dropping {
+                            bel,
+                            escape,
+                            csi,
+                            since,
+                        };
+                        return;
+                    }
+                },
+                State::Paste { pasted, since } => {
+                    match paste(pasted, bytes, self.paste_limit, out) {
+                        Ok(rest) => {
+                            bytes = rest;
+                            State::Idle
+                        }
+                        Err(pasted) if flush => {
+                            out.extend(pasted.end(self.paste_limit));
+                            return;
+                        }
+                        Err(pasted) => {
+                            // Bytes of it came: its wait begins again when marked.
+                            let since = since.filter(|_| bytes.is_empty());
+                            self.state = State::Paste { pasted, since };
+                            return;
+                        }
+                    }
+                }
             };
-            let next = fed.saturating_add(step).min(bytes.len());
-            self.feed(bytes.get(fed..next).unwrap_or_default(), false, out);
-            fed = next;
         }
-        self.feed(bytes.get(fed..).unwrap_or_default(), false, out);
     }
 
     /// Decodes `bytes`, with nothing begun before them but what they begin
@@ -713,11 +689,10 @@ fn utf8_begun(bytes: &[u8]) -> bool {
 }
 
 /// One control byte or character, without an Escape prefix, and how many
-/// bytes it takes; none while it is incomplete. Always inlined into
-/// `decode`, as most keys are one byte: left to the compiler, it was not,
-/// and a key cost up to 9% more (`decode/legacy`).
+/// bytes it takes; none while it is incomplete (until `flush`). Always
+/// inlined into `decode`, as most keys are one byte.
 #[inline(always)]
-fn single(bytes: &[u8]) -> Option<(usize, KeyPress)> {
+fn single(bytes: &[u8], flush: bool) -> Option<(usize, KeyPress)> {
     let first = *bytes.first()?;
     if let Some(control) = Control::of(first.into()) {
         return Some((1, KeyPress::plain(control.key())));
@@ -736,9 +711,9 @@ fn single(bytes: &[u8]) -> Option<(usize, KeyPress)> {
                 0xf0..=0xf7 => 4,
                 _ => 1,
             };
-            // A well-formed beginning waits for the rest, however long it
-            // takes: a character is never cut short by a deadline.
-            if utf8_begun(bytes) {
+            // A well-formed beginning waits for the rest until the deadline,
+            // then is one U+FFFD.
+            if !flush && utf8_begun(bytes) {
                 return None;
             }
             let take = need.min(bytes.len());
@@ -768,7 +743,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
         return Step::Incomplete;
     };
     if first != 0x1b {
-        return single(bytes).map_or(Step::Incomplete, |(n, key)| {
+        return single(bytes, flush).map_or(Step::Incomplete, |(n, key)| {
             Step::Done(n, Some(Input::Key(key.into())))
         });
     }
@@ -801,7 +776,7 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
             Step::Incomplete
         }
         // The Escape and what followed it; within `bytes`, so exact.
-        _ => match single(bytes.get(1..).unwrap_or_default()) {
+        _ => match single(bytes.get(1..).unwrap_or_default(), flush) {
             Some((n, KeyPress { key, mods })) => {
                 let mods = Modifiers { alt: true, ..mods };
                 Step::Done(n.saturating_add(1), press(key, mods))
@@ -828,8 +803,7 @@ fn ss3(bytes: &[u8], flush: bool) -> Step {
 /// `ESC ESC`: an Escape before a whole CSI or SS3 key is that key with Alt;
 /// before anything else, or alone, an Escape, and what follows is decoded
 /// on its own. It calls `csi` and `ss3`, not `decode`, so that `decode` is
-/// no recursive function and stays inlined into the decoder's loop: called
-/// recursively it was not, and a key cost 12% more (`decode/legacy`).
+/// no recursive function and stays inlined into the decoder's loop.
 #[cold]
 #[inline(never)]
 fn escape_prefix(bytes: &[u8], flush: bool) -> Step {
@@ -1244,33 +1218,16 @@ fn csi(bytes: &[u8], flush: bool) -> Step {
 
 /// The first three parts of each of the first three parameters of a CSI
 /// key, `params`, its parameters `;`-separated and their parts
-/// `:`-separated, each as `str::parse::<u32>` reads it (an empty part, or
-/// one that is no number, is none); all none if `params` is not UTF-8.
-/// No key reads more, and nothing is allocated.
+/// `:`-separated, each a number if it is one (an empty part is none). No
+/// key reads more, and nothing is allocated.
 fn parts(params: &[u8]) -> [[Option<u32>; 3]; 3] {
     let mut groups = [[None; 3]; 3];
-    if str::from_utf8(params).is_err() {
-        return groups;
-    }
     for (group, text) in groups.iter_mut().zip(params.split(|&b| b == b';')) {
         for (part, text) in group.iter_mut().zip(text.split(|&b| b == b':')) {
-            *part = number(text);
+            *part = str::from_utf8(text).ok().and_then(|t| t.parse().ok());
         }
     }
     groups
-}
-
-/// `text` as `str::parse::<u32>` reads it: an optional `+`, then decimal
-/// digits, at least one, that fit.
-fn number(text: &[u8]) -> Option<u32> {
-    let digits = text.strip_prefix(b"+").unwrap_or(text);
-    if digits.is_empty() {
-        return None;
-    }
-    digits.iter().try_fold(0u32, |n, &b| {
-        let digit = b.checked_sub(b'0').filter(|d| *d < 10)?;
-        n.checked_mul(10)?.checked_add(u32::from(digit))
-    })
 }
 
 /// The key that `code` names in both forms that carry one, xterm's
@@ -1332,8 +1289,8 @@ fn typed(c: char, kitty: &Kitty) -> char {
 
 /// A kitty functional key, numbered in the Private Use Area, as the key
 /// fux knows it by: a keypad key is the key it copies, as legacy terminals
-/// send it. Keys fux has no name for (the media, lock and modifier keys)
-/// are none, and dropped.
+/// send it. Keys fux has no name for (keypad Begin, the media, lock and
+/// modifier keys) are none, and dropped.
 fn functional(code: u32) -> Option<Key> {
     let key = match code {
         57376..=57398 => Key::F(Function::new(u8::try_from(code.checked_sub(57363)?).ok()?)?),
@@ -1419,49 +1376,6 @@ mod tests {
                 | Input::Reply(_) => None,
             })
             .collect()
-    }
-
-    /// A CSI key's parts read as `str::parse::<u32>` reads each part of
-    /// its `;` and `:` splits: every short string of the bytes that matter
-    /// (digits, the separators, signs, a letter, a byte not UTF-8 alone),
-    /// and numbers at and past `u32::MAX`.
-    #[test]
-    fn parts_read_as_str_parse_reads_them() {
-        let reference = |params: &[u8]| -> Vec<Vec<Option<u32>>> {
-            str::from_utf8(params)
-                .unwrap_or("")
-                .split(';')
-                .map(|p| p.split(':').map(|n| n.parse().ok()).collect())
-                .collect()
-        };
-        let alphabet = [b'0', b'7', b'9', b';', b':', b'+', b'-', b'a', 0xff];
-        let mut cases: Vec<Vec<u8>> = vec![
-            b"4294967295".to_vec(),
-            b"4294967296".to_vec(),
-            b"+4294967295:1;99999999999".to_vec(),
-            b"1:2:3:4;5:6:7:8;9:10:11:12;13".to_vec(),
-        ];
-        for len in 0..=5u32 {
-            for n in 0..alphabet.len().pow(len) {
-                let mut case = Vec::new();
-                let mut rest = n;
-                for _ in 0..len {
-                    case.extend(alphabet.get(rest % alphabet.len()));
-                    rest /= alphabet.len();
-                }
-                cases.push(case);
-            }
-        }
-        for case in cases {
-            let want = reference(&case);
-            let got = parts(&case);
-            for (g, group) in got.iter().enumerate() {
-                for (i, part) in group.iter().enumerate() {
-                    let expected = want.get(g).and_then(|p| p.get(i)).copied().flatten();
-                    assert_eq!(*part, expected, "{:?} part {g}.{i}", case.escape_ascii());
-                }
-            }
-        }
     }
 
     #[test]
@@ -1553,34 +1467,31 @@ mod tests {
     }
 
     /// A character typed a byte at a time, as a slow link or a terminal
-    /// that writes each byte apart sends it, waits for its bytes however
-    /// long they take: a well-formed beginning (Unicode 17.0, 3.9, Table
-    /// 3-7) has no deadline, and a timeout leaves it waiting, alone or after
-    /// an Escape (Alt). A byte that cannot go on with it still gives the
-    /// maximal subpart's U+FFFD at once.
+    /// that writes each byte apart sends it, waits for its bytes as long as
+    /// an answer (`REPLY_DELAY`), alone or after an Escape (Alt); at its
+    /// deadline it is one U+FFFD, so it never holds the keys after it. A
+    /// byte that cannot go on with it gives the maximal subpart's U+FFFD at
+    /// once.
     #[test]
     fn a_character_split_across_reads_waits_for_its_bytes() {
         for (bytes, expected) in [
-            (&b"\xc3\xa9"[..], key("\u{e9}")),
-            ("\u{4e16}".as_bytes(), key("\u{4e16}")),
             ("\u{1f600}".as_bytes(), key("\u{1f600}")),
-            (b"\x1b\xc3\xa9", key("M-\u{e9}")),
             ("\x1b\u{1f600}".as_bytes(), key("M-\u{1f600}")),
         ] {
             // An Escape and the lead byte come in one read, as Alt sends
-            // them; the rest a byte a read, a deadline apart.
+            // them; the rest a byte a read.
             let first = if bytes.first() == Some(&0x1b) { 2 } else { 1 };
             let (head, tail) = bytes.split_at_checked(first).unwrap_or((bytes, &[]));
             let reads = std::iter::once(head).chain(tail.iter().map(std::slice::from_ref));
             let mut d = Decoder::default();
             let mut out = Vec::new();
-            for (i, read) in reads.enumerate() {
+            let t0 = Instant::now();
+            for read in reads {
                 d.bytes(read, &mut out);
-                d.mark(Instant::now());
+                d.mark(t0);
                 if out.is_empty() {
-                    assert_eq!(d.deadline(), None, "{bytes:x?} after read {i}");
+                    assert_eq!(d.deadline(), Some(after(t0, REPLY_DELAY)), "{bytes:x?}");
                 }
-                d.timeout(&mut out);
             }
             assert_eq!(out, vec![expected], "{bytes:x?}");
         }
@@ -1589,11 +1500,12 @@ mod tests {
         d.bytes(b"\xe4\xb8", &mut out);
         d.bytes(b"A", &mut out);
         assert_eq!(out, vec![key("\u{fffd}"), key("A")]);
-        // So a mouse report's ESC, after the deadline, ends it: its U+FFFD,
-        // then the report, which is still one.
+        // Cut short by its deadline: a mouse report's ESC after it is still
+        // one.
         out.clear();
         d.bytes(b"\xe9", &mut out);
         d.timeout(&mut out);
+        assert_eq!(out, vec![key("\u{fffd}")]);
         d.bytes(b"\x1b[<0;10;5M", &mut out);
         let press = crate::keys::mouse::MouseAction::Press(crate::keys::mouse::MouseButton::Left);
         let (mods, row, col) = (Modifiers::NONE, 4, 9);

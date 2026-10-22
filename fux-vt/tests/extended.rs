@@ -3,8 +3,7 @@
 //! reported as unhandled; and the opt-in kitty keyboard protocol, identity
 //! replies and reflow on resize.
 
-use fux_vt::keys::Modifiers;
-use fux_vt::keys::encode::{OtherKeys, OtherKeysLevel};
+use fux_vt::keys::encode::OtherKeysLevel;
 use fux_vt::{
     Blink, CLUSTER_CAPACITY, CellRef, Color, Error, Feature, Identity, Options, Parser, Sink, Size,
     Unhandled,
@@ -507,56 +506,18 @@ fn xtqmodkeys_answers_the_modify_other_keys_level() -> Result {
     Ok(())
 }
 
-/// XTMODKEYS with a mask of modifiers to factor out (ctlseqs, "Alt and Meta
-/// Keys"), as xterm 411 reads it (`CASE_SET_MOD_FKEYS`): the mask a
-/// subparameter of the level, `CSI > 4 ; 2 : 1 m`, kept until the level is
-/// set again; one of the resource, ctlseqs' own example `CSI > 4 : 1 m`,
-/// ignored, as xterm 411 ignores it (fux-vt/compare/xterm-keys, the `ct`
-/// mode recorded beside xterm-keys-factored.txt). XTQMODKEYS answers the
-/// level alone (`report_mod_fkeys`).
-#[test]
-fn modify_other_keys_takes_a_mask_to_factor_out() -> Result {
-    let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
-    let factored = |shift, ctrl, alt| Modifiers { shift, ctrl, alt };
-    p.process(b"\x1b[>4;2:5m")?;
-    let keys = p.screen().modify_other_keys().ok_or("no modifyOtherKeys")?;
-    assert_eq!(keys.level(), OtherKeysLevel::All);
-    assert_eq!(keys.factored(), factored(true, true, false));
-    assert_eq!(run(&mut p, b"\x1b[?4m")?.replies, ["\x1b[>4;2m"]);
-    p.process(b"\x1b[>4:1m")?;
-    assert_eq!(p.screen().modify_other_keys(), Some(keys));
-    p.process(b"\x1b[>4;1:8m")?;
-    let keys = p.screen().modify_other_keys().ok_or("no modifyOtherKeys")?;
-    assert_eq!(
-        (keys.level(), keys.factored()),
-        (OtherKeysLevel::Usual, factored(false, false, true))
-    );
-    p.process(b"\x1b[>4;1m")?;
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::Usual))
-    );
-    Ok(())
-}
-
 #[test]
 fn modify_other_keys_levels_survive_split_sequences() -> Result {
     let mut p = Parser::with_options(Size::new(5, 20)?, 0, KEYBOARD)?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;2m")?;
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::All))
-    );
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::All));
     p.process(b"\x1b[>4;0m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     for byte in b"\x1b[>4;1m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::Usual))
-    );
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
     p.process(b"\x1b[>4m")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     // No parameters reset every resource (ctlseqs, XTMODKEYS: "If no
@@ -572,10 +533,7 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     for byte in b"\x1b[>0m" {
         p.process(&[*byte])?;
     }
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::All))
-    );
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::All));
     for byte in b"\x1b[>m" {
         p.process(&[*byte])?;
     }
@@ -586,15 +544,9 @@ fn modify_other_keys_levels_survive_split_sequences() -> Result {
     p.process(b"\x1b[>4;2m\x1b[>4n")?;
     assert_eq!(p.screen().modify_other_keys(), None);
     p.process(b"\x1b[>4;1m")?;
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::Usual))
-    );
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
     let record = run(&mut p, b"\x1b[>n\x1b[>2n")?;
-    assert_eq!(
-        p.screen().modify_other_keys(),
-        Some(OtherKeys::from(OtherKeysLevel::Usual))
-    );
+    assert_eq!(p.screen().modify_other_keys(), Some(OtherKeysLevel::Usual));
     assert_eq!(record.unhandled, ["CSI >0n", "CSI >2n"]);
     p.process(b"\x1b[>4n")?;
     // Other resources are not modifyOtherKeys, and not SGR either.
