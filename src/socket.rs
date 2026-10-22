@@ -3,14 +3,14 @@
 //! - The path is `str PATH socket`'s, or `str NAME server`'s
 //!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
 //!   there: fux's directory is `$XDG_RUNTIME_DIR/fux`, else `$TMPDIR/fux`.
-//! - Its directory is owned by the user, mode 0700, reached only through
-//!   directories no other user can rewrite. The socket is mode 0600, set
+//! - Its directory is owned by the user, mode 0700; the directories above
+//!   it are not checked (`private_directory`). The socket is mode 0600, set
 //!   before `listen`.
 //! - A lock file beside the socket makes one server its only owner.
 //! - A leftover socket is replaced only when nothing answers on it.
 //! - At exit the socket is removed only if it is still the one this server
 //!   bound. On Linux an `O_PATH` descriptor keeps its inode allocated so the
-//!   number cannot be reused by a replacement (bevy-final finding 014).
+//!   number cannot be reused by a replacement.
 //! - Every accepted peer must run as the server's own user.
 use fuxix::process::geteuid;
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -627,7 +627,7 @@ mod tests {
     /// A socket that replaces fux's own after fux's listener closed keeps
     /// its place when fux's endpoint is dropped, and a stale socket's pin
     /// tells a replacement from the file it pinned, even where the
-    /// replacement gets the freed inode number (bevy-final finding 014).
+    /// replacement gets the freed inode number.
     /// The test says whether its filesystem reuses numbers, since only
     /// there does it test anything a plain identity check would not.
     #[test]

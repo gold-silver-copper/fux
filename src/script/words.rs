@@ -962,12 +962,6 @@ const SCREENS: &[(&str, Opens)] = &[
     ("confirm-close", Opens::Target(Open::Confirm)),
 ];
 
-/// Whether `word` opens one of a client's own screens: a key's program
-/// that may open one holds the keys typed after it for the screen.
-pub fn opens(word: &str) -> bool {
-    SCREENS.iter().any(|(name, _)| *name == word)
-}
-
 impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
