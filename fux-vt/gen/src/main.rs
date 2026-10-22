@@ -81,9 +81,6 @@ const EMOJI_STYLE: u16 = 1 << 10;
 const TEXT_STYLE: u16 = 1 << 11;
 /// Bit 12: Emoji_Modifier_Base.
 const MODIFIER_BASE: u16 = 1 << 12;
-/// Bit 13: a combining mark (Mn, Mc, Me) that is Default_Ignorable: it
-/// interrupts no ligature in unicode-width's string rule.
-const LIGATURE_TRANSPARENT: u16 = 1 << 13;
 /// Bit 14: a character the cluster width rule looks at, before or after
 /// it (`src/unicode/width.rs`): a line feed, a spacing mark unicode-width
 /// makes 0 and fux-vt 1, ZWJ, the
@@ -226,14 +223,6 @@ fn main() -> Result<()> {
         properties[code] |= CONTEXT;
     }
     emoji_bits(&mut properties, &emoji, &props, &variations)?;
-    let marks = categories(&data, &["Mn", "Mc", "Me"])?;
-    for (range, fields) in entries(&derived) {
-        if fields[0] == "Default_Ignorable_Code_Point" {
-            for code in range.filter(|&c| marks[c]) {
-                properties[code] |= LIGATURE_TRANSPARENT;
-            }
-        }
-    }
 
     for range in IN_CONTEXT {
         for p in &mut properties[range] {
@@ -453,35 +442,6 @@ fn emoji_bits(properties: &mut [u16], emoji: &str, props: &str, variations: &str
     Ok(())
 }
 
-/// Whether each code point is of one of the General_Categories `of` (Mn,
-/// Mc and Me: a combining mark), by UnicodeData.txt.
-fn categories(data: &str, of: &[&str]) -> Result<Vec<bool>> {
-    let mut marks = vec![false; CODE_POINTS];
-    let mut first = None;
-    for line in data.lines() {
-        let mut fields = line.split(';');
-        let (Some(code), Some(name), Some(category)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            return Err(format!("UnicodeData: {line:?}").into());
-        };
-        let code = usize::from_str_radix(code, 16)?;
-        let mark = of.contains(&category);
-        // A range is given by its first and last code points.
-        let from = match name.ends_with(", Last>") {
-            true => first
-                .take()
-                .ok_or(format!("UnicodeData: {line:?} begins no range"))?,
-            false => code,
-        };
-        if name.ends_with(", First>") {
-            first = Some(code);
-        }
-        marks[from..=code].fill(mark);
-    }
-    Ok(marks)
-}
-
 /// The two-character canonical decompositions (UnicodeData.txt's field 5)
 /// whose second is one of `marks`, as (composed, first, second), in the
 /// order of (first, second).
@@ -574,9 +534,9 @@ fn tables(properties: &[u16], version: &str) -> Result<String> {
          //! Indic_Conjunct_Break (0 None, 1 Consonant, 2 Extend, 3 Linker),\n\
          //! bits 7-8 the columns it takes alone (3: a control), bit 9 emoji\n\
          //! presentation, bits 10 and 11 an emoji and a text presentation\n\
-         //! sequence starting with it, bit 12 Emoji_Modifier_Base, bit 13 a\n\
-         //! combining mark that is Default_Ignorable, bit 14 a character the\n\
-         //! cluster width rule looks at, bit 15 a spacing mark (Mc).\n\
+         //! sequence starting with it, bit 12 Emoji_Modifier_Base, bit 14 a\n\
+         //! character the cluster width rule looks at, bit 15 a spacing mark\n\
+         //! (Mc).\n\
          //! `BLOCK` holds the block each run of `1 << SHIFT` code points uses;\n\
          //! `PROPERTIES` holds the distinct blocks.\n"
     )?;
