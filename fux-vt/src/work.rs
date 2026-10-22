@@ -47,10 +47,6 @@ pub struct Work {
     pub prints: u64,
     /// Bytes the key decoder scans, and the bytes it copies.
     pub keys: u64,
-    /// Steps of XParseColor's colour arithmetic: a Newton step of a
-    /// square or cube root, an arithmetic-geometric-mean step of an arc
-    /// tangent, or a step of the TekHVC chroma search (palette/xcms.rs).
-    pub colours: u64,
     /// Cells DECRQCRA's checksum reads, each decoded with its attributes:
     /// several times a cell another edit moves or fills costs.
     pub sums: u64,
@@ -89,7 +85,6 @@ impl Work {
         links: 0,
         prints: 0,
         keys: 0,
-        colours: 0,
         sums: 0,
         spans: 0,
         edits: 0,
@@ -129,7 +124,7 @@ impl Work {
     }
 
     /// Each counter, by name, in the order THREATS.md 4.1 lists them.
-    pub fn counters(&self) -> [(&'static str, u64); 17] {
+    pub fn counters(&self) -> [(&'static str, u64); 16] {
         [
             ("bytes", self.bytes),
             ("scanned", self.scanned),
@@ -144,7 +139,6 @@ impl Work {
             ("links", self.links),
             ("prints", self.prints),
             ("keys", self.keys),
-            ("colours", self.colours),
             ("sums", self.sums),
             ("spans", self.spans),
             ("edits", self.edits),
@@ -152,7 +146,7 @@ impl Work {
     }
 
     /// Each counter, by name, to write.
-    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 17] {
+    fn counters_mut(&mut self) -> [(&'static str, &mut u64); 16] {
         [
             ("bytes", &mut self.bytes),
             ("scanned", &mut self.scanned),
@@ -167,7 +161,6 @@ impl Work {
             ("links", &mut self.links),
             ("prints", &mut self.prints),
             ("keys", &mut self.keys),
-            ("colours", &mut self.colours),
             ("sums", &mut self.sums),
             ("spans", &mut self.spans),
             ("edits", &mut self.edits),
@@ -177,7 +170,7 @@ impl Work {
     /// Each counter's weight, in twentieths of a unit, so that every
     /// weight is whole: an upper bound of its ns a unit on an i5-9600K,
     /// times 20 (`budget::weight`, THREATS.md 4.4).
-    pub const WEIGHTS: [(&'static str, u64); 17] = {
+    pub const WEIGHTS: [(&'static str, u64); 16] = {
         use crate::budget::weight::*;
         [
             ("bytes", bytes),
@@ -193,7 +186,6 @@ impl Work {
             ("links", links),
             ("prints", prints),
             ("keys", keys),
-            ("colours", colours),
             ("sums", sums),
             ("spans", spans),
             ("edits", edits),
@@ -260,10 +252,6 @@ impl Work {
     pub(crate) fn keys(&mut self, n: u64) {
         self.keys = self.keys.saturating_add(n);
     }
-    /// Counts steps of XParseColor's colour arithmetic.
-    pub(crate) fn colours(&mut self, n: u64) {
-        self.colours = self.colours.saturating_add(n);
-    }
     /// Counts cells a checksum read.
     pub(crate) fn sums(&mut self, n: u64) {
         self.sums = self.sums.saturating_add(n);
@@ -288,7 +276,7 @@ mod tests {
     #[test]
     fn each_counter_counts_its_own_work_and_is_weighed_by_its_weight() {
         let before = Work::now();
-        let adds: [fn(&mut Work, u64); 17] = [
+        let adds: [fn(&mut Work, u64); 16] = [
             Work::bytes,
             Work::scanned,
             Work::cells,
@@ -302,7 +290,6 @@ mod tests {
             Work::links,
             Work::prints,
             Work::keys,
-            Work::colours,
             Work::sums,
             Work::spans,
             Work::edits,

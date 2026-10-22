@@ -17,9 +17,7 @@
 //! a line moves, REP's copies; and, where it is done, by the `spend!`
 //! sites: DECCRA's copy, scrolls inside margins, the alignment pattern,
 //! checksums, a screen made anew, the searches and sweeps of history's
-//! rows, a line feed's copy of the row it scrolls into history, and the
-//! steps of XParseColor's colour arithmetic (`palette/xcms.rs`), of which
-//! one OSC spends at most a quarter of U (`palette::ALLOWANCE`). The
+//! rows, and a line feed's copy of the row it scrolls into history. The
 //! work at most a row's a sequence, or a few units a byte, is not, as the
 //! call's length bounds it (THREATS.md 4.2): examining
 //! bytes, printing, joining a cluster, EL, ICH and DCH, recording prints,
@@ -112,10 +110,6 @@ pub(crate) mod weight {
     /// A byte the key decoder scanned or copied.
     #[cfg(feature = "checks")]
     pub(crate) const keys: u64 = 20;
-    /// A step of XParseColor's colour arithmetic (palette/xcms.rs): the
-    /// costliest, 7.0 ns a step (OSC 4s of the CIEXYZ colour whose square
-    /// roots take the most steps), times 1.5.
-    pub(crate) const colours: u64 = 210;
     /// A cell a checksum read, past its cell and its text: 10.3 ns,
     /// DECRQCRA's over cells of 31-byte clusters at 4095x4096 (38.15 ns a
     /// cell in all), times 1.25.
