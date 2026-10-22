@@ -43,7 +43,7 @@ macro_rules! counters {
 }
 
 /// How many counters there are.
-const COUNTERS: usize = 17;
+const COUNTERS: usize = 16;
 
 counters! {
     /// Input bytes examined by the parser's loop and its bulk scans.
