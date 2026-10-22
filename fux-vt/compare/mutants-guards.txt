@@ -23,8 +23,8 @@ fux-vt/src/screen/pictures.rs: replace > with >= in Screen::over_budget @ self.p
 fux-vt/src/screen/pictures.rs: replace << with >> @ pub const PICTURE_BYTES: usize = 96 << 20;
 
 # B01 and B02
-fux-vt/src/screen/pictures.rs: replace == with != in Screen::place_picture @ p.alternate == alternate
-fux-vt/src/screen/pictures.rs: replace && with || in Screen::place_picture @ && screen.shown(p).is_none_or(|s| {
+fux-vt/src/screen/pictures.rs: replace == with != in Screen::place_picture @ p.alternate == alternate && screen.shown(p).is_none_or(covered)
+fux-vt/src/screen/pictures.rs: replace && with || in Screen::place_picture @ p.alternate == alternate && screen.shown(p).is_none_or(covered)
 fux-vt/src/screen/pictures.rs: replace >= with < in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))
 fux-vt/src/screen/pictures.rs: replace || with && in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))
 fux-vt/src/screen/pictures.rs: delete ! in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))

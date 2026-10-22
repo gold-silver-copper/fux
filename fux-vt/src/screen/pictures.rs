@@ -271,17 +271,22 @@ impl Screen {
         });
         // Its rows, and others', may have gone into history.
         self.track_pictures();
+        // Its own line feeds scrolled the rows they took off the region
+        // before it was kept for `crop_pictures` to crop.
+        let region = self.grid().lines;
+        if !self.keeps_rows(region)
+            && let Some(lost) = (self.pictures.back()).and_then(|p| self.lost_off(p, region))
+            && let Some(p) = self.pictures.back_mut()
+        {
+            p.cropped = lost;
+        }
         // Pictures it now covers, wholly or not, are gone: their cells hold
         // its placeholder, not theirs.
         let placed = self.pictures.len().saturating_sub(1);
-        let mine = (self.pictures.back())
-            .and_then(|p| self.shown(p))
-            .map(|s| (s.row, col, across, rows));
+        let mine = (self.pictures.back()).and_then(|p| Some(self.shown(p)?.area()));
+        let covered = |s: Shown<'_>| mine.is_some_and(|mine| overlaps(s.area(), mine));
         let gone = |p: &Placement, screen: &Screen| {
-            p.alternate == alternate
-                && screen.shown(p).is_none_or(|s| {
-                    mine.is_some_and(|mine| overlaps((s.row, s.col, s.cols, s.rows), mine))
-                })
+            p.alternate == alternate && screen.shown(p).is_none_or(covered)
         };
         let keep: Vec<bool> = (self.pictures.iter().enumerate())
             .map(|(at, p)| at >= placed || !gone(p, self))
@@ -504,33 +509,38 @@ impl Screen {
         region: crate::geometry::Span,
         direction: crate::grid::Scroll,
     ) {
-        let g = self.grid();
-        let kept = direction == (crate::grid::Scroll::Up { history: true })
-            && region.first() == 0
-            && g.history_bytes() > 0;
-        if kept || direction == crate::grid::Scroll::Down {
+        use crate::grid::Scroll;
+        let kept = direction == (Scroll::Up { history: true }) && self.keeps_rows(region);
+        if kept || direction == Scroll::Down {
             return;
         }
-        let alternate = self.alternate_active;
-        let history = i64::try_from(self.grid().history_len()).unwrap_or(i64::MAX);
-        let top = i64::from(region.first());
-        let found: Vec<Option<i64>> = (self.pictures.iter())
-            .map(|p| {
-                if p.alternate != alternate || self.top_index(p).is_some() {
-                    return None;
-                }
-                let last = i64::from(p.rows.saturating_sub(1));
-                let at = i64::try_from(self.grid().screen_index_of(p.bottom)?).ok()?;
-                Some(at.saturating_sub(last).saturating_sub(history))
-            })
+        let lost: Vec<Option<u16>> = (self.pictures.iter())
+            .map(|p| self.lost_off(p, region))
             .collect();
-        for (p, first) in self.pictures.iter_mut().zip(found) {
-            let Some(first) = first else {
-                continue;
-            };
-            let above = top.saturating_sub(first).clamp(0, i64::from(p.rows));
-            p.cropped = p.cropped.max(u16::try_from(above).unwrap_or(p.rows));
+        for (p, lost) in self.pictures.iter_mut().zip(lost) {
+            p.cropped = p.cropped.max(lost.unwrap_or(0));
         }
+    }
+
+    /// Whether a scroll up of `region` that may keep its rows takes them
+    /// into history (`Grid::scroll`), not off the screen.
+    fn keeps_rows(&self, region: crate::geometry::Span) -> bool {
+        region.first() == 0 && self.grid().history_bytes() > 0
+    }
+
+    /// The rows of `p`, its top row gone, above `region`'s top margin:
+    /// those a scroll up of the region that kept none took off it.
+    fn lost_off(&self, p: &Placement, region: crate::geometry::Span) -> Option<u16> {
+        if p.alternate != self.alternate_active || self.top_index(p).is_some() {
+            return None;
+        }
+        let history = i64::try_from(self.grid().history_len()).ok()?;
+        let at = i64::try_from(self.grid().screen_index_of(p.bottom)?).ok()?;
+        let first = at
+            .saturating_sub(i64::from(p.rows.saturating_sub(1)))
+            .saturating_sub(history);
+        let above = i64::from(region.first()).saturating_sub(first);
+        Some(u16::try_from(above.clamp(0, i64::from(p.rows))).unwrap_or(p.rows))
     }
 
     /// The pixel size of the text area, for a program's `CSI 14 t`.
@@ -615,6 +625,16 @@ impl Screen {
             }
         }
         Ok(())
+    }
+}
+
+impl Shown<'_> {
+    /// The cells it covers: its top row left, first column, columns and
+    /// rows left, its cropped rows being others'.
+    fn area(&self) -> (i64, u16, u16, u16) {
+        let row = self.row.saturating_add(i64::from(self.cropped));
+        let rows = self.rows.saturating_sub(self.cropped);
+        (row, self.col, self.cols, rows)
     }
 }
 

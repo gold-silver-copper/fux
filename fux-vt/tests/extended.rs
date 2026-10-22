@@ -1018,6 +1018,35 @@ fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
     Ok(())
 }
 
+/// A picture taller than the region below it scrolls its own top off the
+/// region's top margin as it is placed, which is cropped as a later
+/// scroll's would be: the rest shown on the region's rows, and the row
+/// above the margin, another picture's, neither taken as it nor taken
+/// from that picture, and the checker reads it so too (the terminal fuzz
+/// target, "picture 53 shown without its cells").
+#[test]
+fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
+    let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: Some((2, 6)),
+        sixel: true,
+    });
+    // Two rows on the screen's first two, then five from the region's
+    // first, the third row of the screen, to its last: one row scrolled off.
+    p.process(b"\x1b[3;6r\x1b[1;1H\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\")?;
+    p.process(b"\x1b[3;1H\x1bPq\"1;1#1;2;100;0;0~-~-~-~-~\x1b\\")?;
+    let shown: Vec<_> = (p.screen().pictures())
+        .map(|s| (s.id, s.row, s.rows, s.cropped))
+        .collect();
+    assert_eq!(shown, [(1, 0, 2, 0), (2, 1, 5, 1)]);
+    #[cfg(feature = "checks")]
+    {
+        let report = p.check();
+        assert!(report.is_clean(), "{report}");
+    }
+    Ok(())
+}
+
 /// The rows a region's scroll took from a picture stay taken, whatever
 /// margins are set after (README, "A picture whose top scrolls off a
 /// region's top margin is cropped there"): with the margins reset, as
