@@ -60,6 +60,17 @@ impl Spans {
         self.by_id.insert(id, number);
         self.order.push_back((number, id));
     }
+    /// The row numbered `number`, the newest, went: the span it began
+    /// goes with it, and the next row begins one.
+    pub(crate) fn pop(&mut self, number: u64) {
+        if let Some(&(start, id)) = self.order.back()
+            && start == number
+        {
+            self.order.pop_back();
+            self.by_id.remove(&id);
+        }
+        self.next = u64::MAX;
+    }
     /// How many spans it holds.
     pub(crate) fn len(&self) -> usize {
         self.by_id.len()

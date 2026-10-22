@@ -415,8 +415,7 @@ enum Phase {
 /// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
 /// parameters, controls within, CAN and SUB cancelling). Made by
 /// [`Parser::frame_scan`]; it goes on from where it stopped, so each
-/// byte is read at most twice however the frame comes split (a CSI's,
-/// searched for its final byte, then read: `csi`).
+/// byte is read once however the frame comes split.
 #[derive(Clone, Debug)]
 pub struct FrameScan {
     /// Where in the held bytes it goes on: past what it has read.
@@ -457,36 +456,21 @@ impl FrameScan {
     /// many of them go up to and through the sequence that ends
     /// synchronized output, as the parser carries it out (DECRST naming
     /// it, XTRESTORE of it saved reset, DECSTR, DECSCL, RIS); `None` if none
-    /// does.
-    /// Each byte is read at most twice, however the frame comes split.
+    /// does. Between sequences it goes to the next ESC at once; each byte
+    /// is read once, however the frame comes split.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
-            let rest = held.get(self.from..)?;
-            if self.resume() == Pending::Ground {
-                // Between sequences, to the next ESC at once.
+            if self.pending == Pending::Ground {
+                let rest = held.get(self.from..)?;
                 let Some(esc) = esc_in(rest) else {
                     work!(scanned, rest.len());
                     self.from = held.len();
                     return None;
                 };
                 work!(scanned, esc);
-                let at = self.from.checked_add(esc)?;
-                // A sequence is read at once, as far as the bytes go; where
-                // one they end in the middle of got to is kept (`pending`),
-                // so that the next call goes on from there.
-                if let Some((len, ended)) = self.sequence(held.get(at..)?) {
-                    work!(scanned, len);
-                    self.from = at.checked_add(len)?;
-                    if ended {
-                        return Some(self.from);
-                    }
-                } else {
-                    work!(scanned, held.len().saturating_sub(at));
-                    self.from = held.len();
-                }
-                continue;
+                self.from = self.from.checked_add(esc)?;
             }
-            let &byte = rest.first()?;
+            let &byte = held.get(self.from)?;
             work!(scanned, 1);
             self.from = self.from.checked_add(1)?;
             if self.step(byte) {
@@ -495,82 +479,12 @@ impl FrameScan {
         }
     }
 
-    /// Reads the sequence `bytes` begins with, at its ESC, as `Parser::byte`
-    /// does, each byte at most twice (`csi`): how many bytes it takes (up to an ESC or past
-    /// CAN or SUB that cut it short), and whether it ends the frame; `None`
-    /// if it goes on past them, where it got to kept in `pending`.
-    fn sequence(&mut self, bytes: &[u8]) -> Option<(usize, bool)> {
-        let mut plain = true;
-        for (i, &byte) in bytes.iter().enumerate().skip(1) {
-            match byte {
-                0x18 | 0x1a | 0x1b => return Some((i, false)),
-                0x20..=0x2f => plain = false,
-                b'[' if plain => return self.csi(bytes, i.checked_add(1)?),
-                b'c' if plain => return Some((i.checked_add(1)?, Self::RESET)),
-                // A control string's introducer among them.
-                0x30..=0x7e => return Some((i.checked_add(1)?, false)),
-                _ => {}
-            }
-        }
-        self.pending = Pending::Escape { plain };
-        None
-    }
-
-    /// Reads the CSI whose parameters begin at `start` of `bytes`, as
-    /// `sequence` does. Its parameters and intermediates are 0x20 to 0x3f;
-    /// only DECRST's, XTRESTORE's, XTSAVE's and DECSTR's need reading, as
-    /// `Phase::next` reads them, a second time (`ends`): the others are
-    /// passed at their final byte at once. One the bytes end in the middle
-    /// of is read again too, for the next call to go on from where it got.
-    /// Each read is counted, so a byte at most twice (THREATS.md B19).
-    fn csi(&mut self, bytes: &[u8], start: usize) -> Option<(usize, bool)> {
-        let csi = bytes.get(start..)?;
-        let end = csi.iter().position(|b| !(0x20..0x40).contains(b));
-        // Every final byte but `l`, `p`, `r` and `s`.
-        if let Some(end) = end
-            && matches!(
-                csi.get(end),
-                Some(0x40..=0x6b | 0x6d..=0x6f | 0x71 | 0x74..=0x7e)
-            )
-        {
-            return Some((start.checked_add(end)?.checked_add(1)?, false));
-        }
-        work!(scanned, end.map_or(csi.len(), |end| end.saturating_add(1)));
-        let (mut phase, mut ignored) = (Phase::Entry, false);
-        self.params.clear();
-        for (i, &byte) in bytes.iter().enumerate().skip(start) {
-            let next = match byte {
-                0x18 | 0x1a | 0x1b => return Some((i, false)),
-                0x40..=0x7e if ignored => return Some((i.checked_add(1)?, false)),
-                _ if ignored => continue,
-                _ => phase.next(byte, &mut self.params),
-            };
-            match next {
-                Next::Phase(next) => phase = next,
-                Next::Ignore => ignored = true,
-                Next::Control => {}
-                Next::Final(read) => {
-                    let ended = self.ends(read.as_slice(), byte);
-                    return Some((i.checked_add(1)?, ended));
-                }
-            }
-        }
-        self.pending = Pending::Csi { phase, ignored };
-        None
-    }
-
-    /// Where the scan is in a sequence, kept from the bytes read before.
-    fn resume(&self) -> Pending {
-        self.pending
-    }
-
     /// Reads `byte` of a sequence, as `Parser::byte` does: CAN and SUB
     /// cancel it, ESC begins another; whether it ends synchronized output.
     fn step(&mut self, byte: u8) -> bool {
         let (next, ended) = match (self.pending, byte) {
-            (Pending::Ground, _) => (Pending::Ground, false),
-            (_, 0x18 | 0x1a) => (Pending::Ground, false),
             (_, 0x1b) => (Pending::Escape { plain: true }, false),
+            (Pending::Ground, _) | (_, 0x18 | 0x1a) => (Pending::Ground, false),
             (Pending::Escape { .. }, 0x20..=0x2f) => (Pending::Escape { plain: false }, false),
             (Pending::Escape { plain: true }, b'[') => {
                 self.params.clear();
@@ -1428,11 +1342,7 @@ impl Parser {
             self.count_degrades(degrades);
             return Ok(Some((0, Stop::Budget)));
         }
-        // A string the last call left open goes on at once.
-        let mut remaining = match matches!(self.state, State::Ground) {
-            true => bytes,
-            false => self.string_left(bytes),
-        };
+        let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
             // A refusal costs what was refused, and the rest is read
@@ -1493,10 +1403,13 @@ impl Parser {
                 // As for ASCII: the text stopped after a glyph whose wrap
                 // scrolled inside margins past the budget.
                 (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
-            } else if ground && byte == 0x1b {
-                let (length, framed) = self.sequence(remaining, sink);
+            } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
+                let (length, framed) = self.csi_sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
                 framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
+            } else if let Some(rest) = self.string(remaining) {
+                remaining = rest;
+                None
             } else {
                 remaining = tail;
                 let sequence = !ground && !matches!(self.state, State::Utf8(_));
@@ -1560,15 +1473,6 @@ impl Parser {
         match self.refused == refused {
             true => Ok(None),
             false => Err(Error::Capacity),
-        }
-    }
-    /// `bytes` past what goes on of a string the last call left open, if
-    /// it did: out of line, as most calls begin in ground.
-    #[inline(never)]
-    fn string_left<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
-        match matches!(self.state, State::Osc { .. } | State::IgnoreString) {
-            true => self.string(bytes),
-            false => bytes,
         }
     }
     /// Counts in [`Parser::refused`] the refusals this call met and went on
@@ -1683,61 +1587,6 @@ impl Parser {
         }
         (chars.taken > 0).then_some(chars.taken)
     }
-    /// Reads the escape sequence `bytes` begins with (its ESC read in
-    /// ground state) as far as it is one programs send most: an escape
-    /// sequence of intermediates and a final byte, a CSI of parameters
-    /// alone (a private marker, digits, `;` and `:`, and a final byte), or
-    /// an OSC string up to what ends it. The bytes are taken in a loop of
-    /// their own rather than each through `byte`, but each is done exactly
-    /// as `byte` does it. It stops before any other byte, or at the end,
-    /// with the parser in the state `byte` would have left it in, for
-    /// `byte` to go on from. Says how many bytes it took, at least the ESC,
-    /// and whether the sequence it carried out began or ended a frame.
-    fn sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
-        if bytes.get(1) == Some(&b'[') {
-            return self.csi_sequence(bytes, sink);
-        }
-        // The intermediates, kept here rather than in `state` until the
-        // sequence ends or this does.
-        let mut read = Intermediates::default();
-        let mut at = 1usize;
-        while let Some(&byte) = bytes.get(at) {
-            let next = at.wrapping_add(1);
-            let first = read.as_slice().is_empty();
-            match byte {
-                0x20..=0x2f => match read.push(byte) {
-                    Some(more) => read = more,
-                    // One too many, which `byte` reads.
-                    None => break,
-                },
-                b']' if first => {
-                    let taken = self.osc_string(bytes.get(next..).unwrap_or_default());
-                    return (next.saturating_add(taken), None);
-                }
-                // SOS, PM and APC, dropped up to what may end them.
-                b'X' | b'^' | b'_' if first => {
-                    self.state = State::IgnoreString;
-                    let rest = self.string(bytes.get(next..).unwrap_or_default());
-                    return (bytes.len().saturating_sub(rest.len()), None);
-                }
-                b'P' if first => {
-                    let taken = self.dcs(bytes.get(next..).unwrap_or_default());
-                    return (next.saturating_add(taken), None);
-                }
-                0x30..=0x7e => {
-                    self.state = State::Ground;
-                    let framed = self.escape_dispatch(read.as_slice(), byte, sink);
-                    let framed = self.kept(framed);
-                    self.screen.forget_repeat();
-                    return (next, framed);
-                }
-                _ => break,
-            }
-            at = next;
-        }
-        self.state = State::Escape(read);
-        (at, None)
-    }
     /// The string a DCS whose final byte is `byte`, its intermediates
     /// `read`, begins: a DECRQSS, a sixel picture, or one that is dropped
     /// (an XTGETTCAP, answered at its end). Out of line, as it is seldom
@@ -1770,33 +1619,14 @@ impl Parser {
             State::IgnoreString
         }
     }
-    /// Begins a DCS and reads the bytes `bytes` begins with up to its
-    /// final byte, as `byte` reads them; then, if its string is one that
-    /// is dropped, the string up to what may end it at once, as `string`
-    /// takes it. It stops before a CAN, SUB or ESC, which `byte` reads.
-    /// Says how many bytes it took. Out of line, as DCS is seldom sent.
-    #[inline(never)]
-    fn dcs(&mut self, bytes: &[u8]) -> usize {
-        self.params.clear();
-        self.state = State::Dcs(Phase::Entry);
-        for (at, &byte) in bytes.iter().enumerate() {
-            let State::Dcs(phase) = self.state else {
-                let rest = bytes.get(at..).unwrap_or_default();
-                return bytes.len().saturating_sub(self.string(rest).len());
-            };
-            if matches!(byte, 0x18 | 0x1a | 0x1b) {
-                return at;
-            }
-            self.state = match phase.next(byte, &mut self.params) {
-                Next::Phase(next) => State::Dcs(next),
-                Next::Ignore => State::IgnoreString,
-                Next::Control => State::Dcs(phase),
-                Next::Final(read) => self.dcs_string(read, byte),
-            };
-        }
-        bytes.len()
-    }
-    /// `sequence` for a CSI, `bytes` beginning with `ESC [`.
+    /// Reads the CSI `bytes` begins with, `ESC [` read in ground state, as
+    /// far as it is one programs send most: a private marker, digits, `;`
+    /// and `:`, and a final byte. The bytes are taken in a loop of their
+    /// own rather than each through `byte`, but each is done exactly as
+    /// `byte` does it. It stops before any other byte, or at the end, with
+    /// the parser in the state `byte` would have left it in, for `byte` to
+    /// go on from. Says how many bytes it took, and whether the sequence
+    /// began or ended a frame.
     fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         self.params.clear();
         // The parameter being read and how many there are, kept here
@@ -1856,13 +1686,6 @@ impl Parser {
         });
         (at, None)
     }
-    /// Begins an OSC string and takes its bytes `bytes` begins with, as
-    /// `osc_more` takes them; how many it took.
-    #[inline]
-    fn osc_string(&mut self, bytes: &[u8]) -> usize {
-        self.osc.clear();
-        self.osc_more(bytes, true)
-    }
     /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
     /// CAN, SUB or ESC that ends it, at once rather than each through
     /// `byte`, keeping what `byte` would keep of them, the string `whole`
@@ -1899,12 +1722,13 @@ impl Parser {
         self.osc.truncate(self.osc_limit);
         length
     }
-    /// The bytes `bytes` begins with that go on a string, taken at once
-    /// rather than each through `byte`, as it would take them: an OSC's
-    /// as `osc_more` takes them, and an ignored string's up to the ESC,
-    /// CAN or SUB that may end it; the rest of `bytes`.
+    /// In an OSC or an ignored string, the bytes `bytes` begins with that
+    /// go on it, taken at once rather than each through `byte`, as it would
+    /// take them: an OSC's as `osc_more` takes them, and an ignored
+    /// string's up to the ESC, CAN or SUB that may end it; the rest of
+    /// `bytes`, or `None` if it took none.
     #[inline(never)]
-    fn string<'a>(&mut self, bytes: &'a [u8]) -> &'a [u8] {
+    fn string<'a>(&mut self, bytes: &'a [u8]) -> Option<&'a [u8]> {
         let taken = match self.state {
             State::Osc { whole } => self.osc_more(bytes, whole),
             State::IgnoreString => string_end(bytes).unwrap_or(bytes.len()),
@@ -1918,7 +1742,7 @@ impl Parser {
             | State::Sixel
             | State::Request(_) => 0,
         };
-        bytes.get(taken..).unwrap_or_default()
+        (taken > 0).then(|| bytes.get(taken..).unwrap_or_default())
     }
 
     /// Room in the OSC buffer for `more` bytes: grown by doubling, as a
@@ -2228,22 +2052,14 @@ impl Parser {
     /// Carries out what the last call stopped at the budget left: the
     /// screen-wide CSI it held back (`Screen::holds_back`), as its final
     /// byte would have, its parameters kept, which begins or ends no
-    /// frame; then a DECRQCRA checksum's rows left (`resume_checksum`),
-    /// replied to once summed, or a REP's copies left (`resume`); and
-    /// whether they stopped this call too.
+    /// frame; then a REP's copies left (`resume`); and whether they stopped
+    /// this call too.
     #[inline(never)]
     fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
         if let Some((read, len, byte)) = self.screen.held_csi() {
             let done = self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
             self.kept(done);
             self.screen.forget_repeat();
-        }
-        if let Some(reply) = self.screen.resume_checksum() {
-            sink.reply(reply.as_bytes());
-        }
-        // Rows of a checksum still left: the budget is spent again.
-        if self.screen.summing() {
-            return UNTIL_STOP;
         }
         self.screen.repeating() && self.resume::<UNTIL_STOP>()
     }

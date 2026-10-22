@@ -1,4 +1,4 @@
-use crate::compact::{Compact, PROTECTED, Text};
+use crate::compact::{Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS_KEPT;
 use crate::keys::encode::{OtherKeys, OtherKeysLevel, factored_mask};
 use crate::link::Held;
@@ -375,137 +375,14 @@ fn special_graphics(c: char) -> char {
         .unwrap_or(c)
 }
 
-/// What a stored cell's text adds to a DECRQCRA checksum
-/// (`Screen::rectangle_checksum`), and the bytes of it read, its text in
-/// `text` if it is not inline; its attributes are summed apart
-/// (`rendition_of`), once a run of one style. As xterm 411 counts it by
-/// default (`xtermCheckRect`, `xtermCharSetDec`) but for the cells the
-/// README's RectangleChecksums row lists: its character
-/// within Latin-1, a DEC Special Graphics or DEC Supplemental glyph past it
-/// as its DEC code (`dec_code`), any other past Latin-1 or below a space as
-/// ESC; its combining marks as they are. The sum is of the character the
-/// cell shows, where xterm sums the byte written and the set it came from:
-/// Special Graphics' °, ±, £ and · count as their Latin-1 codes, as in
-/// xterm, but its blank (0x5f), kept as a space, as a space, and a UTF-8 é
-/// as 0xe9 (xterm 0x69). The text is decoded from its bytes, not read as
-/// UTF-8 first: a cell's text is always a whole cluster's, so every cell of
-/// the screen is summed at a few nanoseconds.
-#[inline]
-fn checksum_of(cell: &Compact, text: &Text) -> (u16, usize) {
-    match cell.inline_word() {
-        // A blank cell, or the second half of a wide glyph.
-        Some(0) => (empty_sum(cell), 0),
-        // One ASCII character, as most cells hold.
-        Some(word @ 0x20..0x80) => (u16::try_from(word).unwrap_or(ESC), 1),
-        Some(word) => match one_character(word) {
-            Some((code, bytes)) => (code_sum(code), bytes),
-            None => cluster_sum(cell, &word.to_le_bytes()),
-        },
-        None => cluster_sum(cell, text.bytes_of(cell)),
-    }
-}
-
 /// ESC, which a DECRQCRA checksum sums for a character it has no code for.
 const ESC: u16 = 0x1b;
-
-/// What a cell with no text adds to a checksum: ESC for the second half of
-/// a wide glyph, a space for any other.
-fn empty_sum(cell: &Compact) -> u16 {
-    if cell.is_wide_continuation() {
-        ESC
-    } else {
-        0x20
-    }
-}
-
-/// The character an inline cell's `word` holds, if it holds just one, and
-/// its bytes: decoded in each of UTF-8's four lengths and the one its lead
-/// byte says chosen, with no branch on the length, as the cells of a page
-/// of mixed glyphs would mispredict.
-#[inline]
-fn one_character(word: u32) -> Option<(u32, usize)> {
-    let [lead, b1, b2, b3] = word.to_le_bytes();
-    let follow = |b: u8, at: u32| u32::from(b & 0x3f).wrapping_shl(at);
-    let codes = [
-        u32::from(lead),
-        u32::from(lead & 0x1f).wrapping_shl(6) | follow(b1, 0),
-        u32::from(lead & 0x0f).wrapping_shl(12) | follow(b1, 6) | follow(b2, 0),
-        u32::from(lead & 0x07).wrapping_shl(18) | follow(b1, 12) | follow(b2, 6) | follow(b3, 0),
-    ];
-    // The bytes the lead says, and the bytes the word holds.
-    let length = lead.leading_ones().max(1);
-    let held = 32u32.saturating_sub(word.leading_zeros()).div_ceil(8);
-    let code = codes.get(usize::try_from(length.saturating_sub(1)).ok()?)?;
-    (length == held).then_some((*code, usize::try_from(held).ok()?))
-}
-
-/// What a cell's cluster, its UTF-8 `bytes` up to the first NUL, adds to a
-/// checksum (`checksum_of`), and how many bytes it has: its first
-/// character's code, and each later one's as it is.
-fn cluster_sum(cell: &Compact, bytes: &[u8]) -> (u16, usize) {
-    let mut rest = bytes;
-    let mut sum: Option<u16> = None;
-    while let Some((&lead, tail)) = rest.split_first().filter(|(lead, _)| **lead != 0) {
-        let (more, first) = match lead {
-            0..0x80 => (0, lead),
-            0x80..0xe0 => (1, lead & 0x1f),
-            0xe0..0xf0 => (2, lead & 0x0f),
-            0xf0.. => (3, lead & 0x07),
-        };
-        let (follow, next) = tail.split_at_checked(more).unwrap_or((tail, &[]));
-        let code = follow.iter().fold(u32::from(first), |code, byte| {
-            code.wrapping_shl(6) | u32::from(byte & 0x3f)
-        });
-        rest = next;
-        sum = Some(match sum {
-            None => code_sum(code),
-            // Exact: the low 16 bits.
-            Some(sum) => sum.wrapping_add(u16::try_from(code & 0xffff).unwrap_or(0)),
-        });
-    }
-    let read = bytes.len().saturating_sub(rest.len());
-    (sum.unwrap_or_else(|| empty_sum(cell)), read)
-}
-
-/// What a checksum sums for a cell whose first character is `code`: the
-/// code within Latin-1 and from a space, a DEC glyph's DEC code
-/// (`dec_code`), or ESC (`CODE_SUMS`).
-#[inline]
-fn code_sum(code: u32) -> u16 {
-    let at = usize::try_from(code).map_or(LAST_CODE, |at| at.min(LAST_CODE));
-    CODE_SUMS.get(at).map_or(ESC, |sum| u16::from(*sum))
-}
-
-/// One past the last character `dec_code` knows, U+25C6: where
-/// `CODE_SUMS` sums every character past it, as ESC.
-const LAST_CODE: usize = 0x25c7;
-
-/// `code_sum` of each character to U+25C6, and ESC for all past it: a
-/// lookup a cell, where `dec_code`'s match is a search.
-const CODE_SUMS: [u8; LAST_CODE + 1] = {
-    let mut sums = [0; LAST_CODE + 1];
-    let mut slots: &mut [u8] = &mut sums;
-    let mut code = 0u32;
-    while let [slot, rest @ ..] = slots {
-        *slot = match char::from_u32(code) {
-            Some(c @ ' '..='\u{ff}') => c as u8,
-            Some(c) => match dec_code(c) {
-                Some(dec) => dec,
-                None => 0x1b,
-            },
-            None => 0x1b,
-        };
-        slots = rest;
-        code = code.wrapping_add(1);
-    }
-    sums
-};
 
 /// The DEC code xterm 411 sums for a Special Graphics or DEC Supplemental
 /// glyph past Latin-1 (`unmap_DEC_Spec_Graphic`, `unmap_DEC_Supp_Graphic`
 /// in its charsets.h): the code of the glyph in DEC's internal set, not the
 /// byte it was drawn with.
-const fn dec_code(c: char) -> Option<u8> {
+fn dec_code(c: char) -> Option<u8> {
     Some(match c {
         '◆' => 0x14,
         '▒' => 0x78,
@@ -541,8 +418,7 @@ const fn dec_code(c: char) -> Option<u8> {
     })
 }
 
-/// What a cell's VT100 attributes add to a DECRQCRA checksum
-/// (`checksum_of`).
+/// What a cell's VT100 attributes add to a DECRQCRA checksum.
 fn rendition_of(a: Attributes) -> u16 {
     [
         (a.hidden(), 0x08),
@@ -666,18 +542,6 @@ enum Left {
     /// (at most two), how many, and its final byte; its parameters are
     /// the parser's still.
     Csi([u8; 2], usize, u8),
-    /// A DECRQCRA checksum's rows left to sum (`resume_checksum`).
-    Sum(Checksum),
-}
-
-/// A DECRQCRA checksum under way (`Screen::sum_rows`): its id, the rows
-/// left to sum and the rectangle's columns, and the sum of the rows before.
-#[derive(Clone, Copy, Debug)]
-struct Checksum {
-    id: u16,
-    lines: Span,
-    columns: Span,
-    sum: u16,
 }
 
 /// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
@@ -1675,12 +1539,13 @@ impl Screen {
         self.last_print = None;
         let version = self.version.wrapping_add(1);
         let mut next = self.next_id;
-        let mut primary = if reflow {
+        let (mut primary, kept) = if reflow {
             self.primary.reflowed(size, &mut next, version)?
         } else {
             self.primary.resized(size, &mut next, version)?
         };
-        let mut alternate = self.alternate.resized(size, &mut next, version)?;
+        let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
+        primary.adopt_history(&mut self.primary, kept);
         // The links' tables go along, as the cells keep their links, and
         // the keyboard stacks.
         primary.links = mem::take(&mut self.primary.links);
@@ -2465,7 +2330,7 @@ impl Screen {
     /// undefined, as in xterm.
     ///
     /// Once the copies have filled every row they can reach, the screen's,
-    /// and history's that a scroll of the whole screen feeds, each further
+    /// and history's that a scroll at the top of the screen feeds, each further
     /// row's worth leaves all of it as it was, so whole rows' worth past
     /// that are skipped: what shows is exactly what printing them all would
     /// show. With autowrap off, every copy past the line's end writes its
@@ -2515,11 +2380,11 @@ impl Screen {
         let Some(per_row) = line.checked_div(width).filter(|n| *n > 0) else {
             return asked.min(1);
         };
-        // History's rows of copies, when a scroll of the whole screen feeds
-        // it: each is 24 bytes and 8 a cell, so at least 32, and no more
-        // than a grid may have (THREATS.md B33: history's bytes read as
-        // rows never clamped). Inside margins nothing reaches it.
-        let feeds = !g.lr() && g.lines == g.size().lines() && !below;
+        // History's rows of copies, when a scroll of a region at the top
+        // feeds it: each is 24 bytes and 8 a cell, so at least 32, and no
+        // more than a grid may have (THREATS.md B33: history's bytes read
+        // as rows never clamped). Inside margins nothing reaches it.
+        let feeds = !g.lr() && g.lines.first() == 0 && !below;
         let kept = match feeds {
             true => (g.history_bytes() / 32).min(crate::grid::MAX_ROWS),
             false => 0,
@@ -3161,8 +3026,8 @@ impl Screen {
 
     /// DECSLRM (`CSI Pl ; Pr s`, DEC STD 070, 5-27), while DECLRMM is set:
     /// margins with the left one left of the right are set, and the cursor
-    /// goes home, obeying DECOM; others are ignored, a right margin past
-    /// the screen too (notes 2 and 3; xterm takes it as the last column).
+    /// goes home, obeying DECOM; others are ignored (note 2). A right
+    /// margin past the screen is its last column, as xterm takes it.
     /// Out of line, as `csi` is on every CSI's way.
     #[inline(never)]
     fn set_left_right_margins(&mut self, p: &Parameters) {
@@ -3387,107 +3252,53 @@ impl Screen {
     /// XTCHECKSUM): each cell's character, plus 0x08 hidden, 0x10
     /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16
     /// bits and negated. A character past Latin-1 or below a space, and a
-    /// wide glyph's second half, count as ESC (0x1b), and a cluster's
-    /// combining marks are added as they are, as xterm counts them. An
-    /// empty cell counts as a space: on DEC's terminals an erased cell holds
-    /// one; xterm skips cells nothing was ever written to, a difference
-    /// esctest allows. The page `Pp` is ignored, as xterm ignores it (DEC
-    /// has 0 mean all pages): there is one. The rectangle's coordinates are
-    /// one-based and relative to the top and left margins in origin mode,
-    /// clamped to the screen whatever the margins (`page_position`), with
-    /// absent or 0 meaning its whole extent; one whose top is below its
-    /// bottom, or left past its right, has no reply.
-    ///
-    /// A call of `process_until_stop` sums the rows while its budget lasts
-    /// and leaves the rest for the next call, which finishes them first
-    /// and replies (`resume_checksum`): every cell of fux's largest screen,
-    /// of long clusters, is more than one call may do. Until then the
-    /// call stops after it, as at any budget stop, so no later reply comes
-    /// first.
+    /// wide glyph's second half, count as ESC (0x1b), but for a DEC Special
+    /// Graphics or Supplemental glyph, which counts as its DEC code
+    /// (`dec_code`); a cluster's combining marks are added as they are, as
+    /// xterm counts them. An empty cell counts as a space: on DEC's
+    /// terminals an erased cell holds one; xterm skips cells nothing was
+    /// ever written to, a difference esctest allows. The page `Pp` is
+    /// ignored, as xterm ignores it (DEC has 0 mean all pages): there is
+    /// one. The rectangle's coordinates are one-based and relative to the
+    /// top and left margins in origin mode, clamped to the screen whatever
+    /// the margins (`page_position`), with absent or 0 meaning its whole
+    /// extent; one whose top is below its bottom, or left past its right,
+    /// has no reply ("the sequence ... ignored", DEC STD 070, DECRQCRA).
     pub(crate) fn rectangle_checksum(&mut self, p: &Parameters) -> Option<Reply> {
-        // A rectangle whose top is below its bottom, or left past its
-        // right, has "the sequence ... ignored" (DEC STD 070, DECRQCRA):
-        // no reply.
         let (lines, columns) = self.rectangle(p, 2)?;
         let id = p.first(0, 0);
-        self.sum_rows(Checksum {
-            id,
-            lines,
-            columns,
-            sum: 0,
-        })
-    }
-
-    /// Sums `checksum`'s rows, its reply once all are; `None` if the
-    /// call's budget was spent first, the rows left kept for the next call
-    /// (`resume_checksum`). At least one row is summed.
-    fn sum_rows(&mut self, mut checksum: Checksum) -> Option<Reply> {
         let g = self.grid();
-        let columns = checksum.columns;
-        // The last cell's style and its rendition, looked up once a run of
-        // one style.
-        let mut last: Option<(u32, u16)> = None;
-        let mut left = None;
-        for y in checksum.lines.each() {
-            spend!(cells, columns.len());
-            spend!(sums, columns.len());
-            // The clusters' bytes each cell's checksum reads (`checksum_of`).
-            let mut read = 0usize;
-            if let Some((stored, text)) = g.live_cells_and_text(y) {
-                // A double-width line holds half the columns (DEC STD 070,
-                // 5.6.1): the rectangle stops at its end.
-                let end = usize::from(g.row_end(y).min(columns.end())).min(stored.len());
-                let cells = stored
-                    .get(usize::from(columns.first())..end)
-                    .unwrap_or_default();
-                for cell in cells {
-                    let style = cell.style();
-                    let rendition = match last {
-                        Some((of, rendition)) if of == style => rendition,
-                        _ => {
-                            let rendition = rendition_of(g.styles().get(style));
-                            last = Some((style, rendition));
-                            rendition
-                        }
-                    };
-                    let (glyph, bytes) = checksum_of(cell, text);
-                    read = read.saturating_add(bytes);
-                    checksum.sum = checksum.sum.wrapping_add(glyph).wrapping_add(rendition);
-                }
-            }
-            spend!(text, read);
-            // The parser stops after this sequence once the budget is spent
-            // (`Parser::over`): the rows left wait for the next call.
-            if crate::budget::spent() >= self.stop_at {
-                left = checksum.lines.starting_at(y.saturating_add(1));
-                if left.is_some() {
-                    break;
-                }
+        let mut sum = 0u16;
+        for y in lines.each() {
+            // A double-width line holds half the columns (DEC STD 070,
+            // 5.6.1): the rectangle stops at its end.
+            let row = columns.each().take_while(|x| *x < g.row_end(y));
+            let cells: Vec<CellRef<'_>> = row.filter_map(|x| g.cell(y, x)).collect();
+            spend!(cells, cells.len());
+            spend!(sums, cells.len());
+            let read = cells.iter().map(|cell| cell.contents().len());
+            spend!(text, read.fold(0usize, usize::saturating_add));
+            for cell in cells {
+                let mut chars = cell.contents().chars();
+                let base = match chars.next() {
+                    None if cell.is_wide_continuation() => ESC,
+                    None => 0x20,
+                    Some(c) => match u16::try_from(u32::from(c)) {
+                        Ok(code @ 0x20..=0xff) => code,
+                        _ => dec_code(c).map_or(ESC, u16::from),
+                    },
+                };
+                let marks = chars.fold(0u16, |sum, c| {
+                    sum.wrapping_add(u16::try_from(u32::from(c) & 0xffff).unwrap_or(0))
+                });
+                sum = sum
+                    .wrapping_add(base)
+                    .wrapping_add(marks)
+                    .wrapping_add(rendition_of(cell.attributes()));
             }
         }
-        if let Some(lines) = left {
-            self.left = Some(Left::Sum(Checksum { lines, ..checksum }));
-            return None;
-        }
-        let (id, sum) = (checksum.id, checksum.sum.wrapping_neg());
+        let sum = sum.wrapping_neg();
         Some(reply!("\x1bP{id}!~{sum:04X}\x1b\\"))
-    }
-
-    /// The rows of a DECRQCRA checksum the last call left, summed first by
-    /// the call after it, and its reply once all are (`sum_rows`).
-    pub(crate) fn resume_checksum(&mut self) -> Option<Reply> {
-        match self.left.take() {
-            Some(Left::Sum(checksum)) => self.sum_rows(checksum),
-            other => {
-                self.left = other;
-                None
-            }
-        }
-    }
-
-    /// Whether a DECRQCRA checksum stopped at the budget left rows to sum.
-    pub(crate) fn summing(&self) -> bool {
-        matches!(self.left, Some(Left::Sum(..)))
     }
 
     /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
@@ -4161,10 +3972,7 @@ impl Screen {
             b'H' | b'f' => self
                 .grid_mut()
                 .position(n.saturating_sub(1), p.first(1, 1).saturating_sub(1)),
-            // DECSLRM (`CSI Pl ; Pr s`, DEC STD 070, 5-27) while DECLRMM is
-            // set: margins with the left one left of the right are set,
-            // and the cursor goes home, obeying DECOM; others are ignored,
-            // a right margin past the screen too (notes 2 and 3).
+            // DECSLRM while DECLRMM is set.
             b's' if self.mode(Mode::LeftRightMargins) => self.set_left_right_margins(p),
             // SCOSC and SCORC share DECSC's slot and, like DECSC, save and
             // restore the attributes with the position.
@@ -4288,8 +4096,8 @@ impl Screen {
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
             // bottom are set, and the cursor goes home, obeying DECOM;
-            // others are ignored, a bottom past the screen too (notes 2
-            // and 3; xterm takes it as the last line).
+            // others are ignored (note 2). A bottom past the screen is its
+            // last line, as xterm takes it.
             b'r' => {
                 let lines = self.grid().size().lines();
                 let bottom = p.first(1, lines.end()).saturating_sub(1);

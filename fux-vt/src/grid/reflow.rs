@@ -18,7 +18,16 @@ impl Grid {
     /// so no line is ever gathered in memory of its own. The k-th row of a
     /// reflowed line keeps the identity of the line's k-th row before, if it
     /// had one; every row takes `version`.
-    pub fn reflowed(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
+    ///
+    /// The lines wholly in history whose rows it lays out as they were (at
+    /// the same width) stay as they are, as `resized` keeps history: it
+    /// says how many of them the new grid takes (`adopt_history`).
+    pub fn reflowed(
+        &self,
+        size: Size,
+        next: &mut u64,
+        version: u64,
+    ) -> Result<(Self, usize), Error> {
         Self::check_size(size)?;
         let cols = size.cols();
         // The cursor and the saved cursor go with their characters; one
@@ -52,6 +61,7 @@ impl Grid {
         let total = layout.rows.saturating_sub(drop);
         let live_top = total.saturating_sub(screen).min(cursor_row);
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
+        let kept = layout.same.min(live_top);
         // A row on the screen, the first if above it, the last if below;
         // one past the last column of the text is the last column, waiting
         // to wrap, and any column past the text's end at most the last.
@@ -86,7 +96,7 @@ impl Grid {
         replacement.reserve_screen()?;
         let mut copy = Fill {
             grid: &mut replacement,
-            rows: 0..end,
+            rows: kept..end,
             screen: live_top,
             next,
             version,
@@ -102,7 +112,7 @@ impl Grid {
             replacement.push_screen_row(meta, &[], None, None);
         }
         replacement.fit_cursor();
-        Ok(replacement)
+        Ok((replacement, kept))
     }
 
     /// Lays every retained row out again at `width` columns, one logical
@@ -124,6 +134,7 @@ impl Grid {
                 marks: [None; 2],
                 trailing_blank: 0,
                 screen_line: 0,
+                same: 0,
             },
             target,
         };
@@ -159,8 +170,21 @@ impl Grid {
             } else {
                 LineRendition::Single
             };
+            let first = pass.out.rows;
             self.lay_out_runs((start, end), (length, rendition), &mut pass)?;
-            start = end.saturating_add(1);
+            // A line wholly in history laid out in as many rows as it had,
+            // each as wide, after lines that all were: as it was.
+            let next = end.saturating_add(1);
+            let rows = pass.out.rows.saturating_sub(first);
+            if pass.out.same == start
+                && first == start
+                && rows == next.saturating_sub(start)
+                && next <= self.history_len()
+                && (start..next).all(|i| self.facts_at(i).1 == width)
+            {
+                pass.out.same = next;
+            }
+            start = next;
         }
         Ok(pass.out)
     }
@@ -487,6 +511,9 @@ struct Reflowed {
     /// The laid-out row the screen's line begins on: the line holding the
     /// screen's first row before.
     screen_line: usize,
+    /// How many rows of history, from its oldest, are laid out as they
+    /// were.
+    same: usize,
 }
 
 struct Layout;

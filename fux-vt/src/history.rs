@@ -458,6 +458,17 @@ impl History {
         self.spans = Spans::default();
         self.recount();
     }
+    /// Lets every row go, its budget, what is charged and the numbers of
+    /// the rows to come kept.
+    pub(crate) fn clear(&mut self) {
+        let mut fresh = Self::new(self.budget);
+        let versions = self.rows.iter().map(|kept| kept.version);
+        fresh.let_go = versions.fold(self.let_go, u64::max);
+        fresh.first_row = self.numbers().1;
+        fresh.followed = self.followed.clone();
+        fresh.charge(self.charged);
+        *self = fresh;
+    }
     /// Holds at most `budget` bytes from now on, letting the oldest rows
     /// go at once if it holds more: the rows that fit are kept anew, in
     /// storage made for the new budget, with their numbers.
@@ -477,7 +488,7 @@ impl History {
     }
     /// Takes in `old`'s rows, oldest first, letting the oldest go as it
     /// fills; fails only if there is no memory for them.
-    fn take(&mut self, old: &Self) -> Result<(), Error> {
+    pub(crate) fn take(&mut self, old: &Self) -> Result<(), Error> {
         for index in 0..old.len() {
             let Some(found) = old.get(index) else {
                 continue;
@@ -862,6 +873,39 @@ impl History {
             // Its chunk of the ring went with it.
             self.recount();
         }
+    }
+
+    /// Lets the newest rows go until it keeps `len`: rows a resize takes
+    /// back onto the screen.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        while self.rows.len() > len {
+            let Some((gone, freed)) = self.rows.pop_back() else {
+                return;
+            };
+            let number = self.number(self.rows.len()).unwrap_or(u64::MAX);
+            work!(rows, 1);
+            self.cells = self.cells.saturating_sub(gone.len());
+            if gone.flags() & (TEXT | LINKED) != 0 {
+                self.forget(number, gone.flags());
+            }
+            while self.renditions.back().is_some_and(|&(n, _)| n >= number) {
+                self.renditions.pop_back();
+            }
+            while self.ended.back().is_some_and(|&n| n >= number) {
+                self.ended.pop_back();
+            }
+            // Its cells, if they end the newest block, leave room there.
+            let end = gone.start().saturating_add(gone.len());
+            if gone.len() > 0 && gone.block() == self.newest_block && end == self.newest.len() {
+                self.newest.truncate(gone.start());
+            }
+            self.spans.pop(number);
+            if freed {
+                self.recount();
+            }
+        }
+        self.maps_changed();
+        self.recount();
     }
 
     /// Starts `block`, empty, after the newest, if there is one; it has

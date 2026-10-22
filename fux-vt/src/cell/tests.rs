@@ -28,6 +28,27 @@ fn stored_cells_read_back_as_they_were_made() {
     }
 }
 
+/// Past the 16 MiB a cell's locator reaches, a cluster is not kept whole,
+/// and `set` says so: every cell `set` says it kept reads back whole.
+#[test]
+fn cells_past_a_locator_s_reach_say_their_text_was_not_kept() -> Result<(), Error> {
+    let cluster: String = std::iter::once('e')
+        .chain(std::iter::repeat_n('\u{301}', 15))
+        .collect();
+    let mut cells = Cells::new(1 << 20)?;
+    let set = |cells: &mut Cells, i: usize| {
+        cells.set(i, CellRef::new(&cluster, false, Attributes::default()))
+    };
+    let mut i = 0;
+    while set(&mut cells, i) {
+        assert_eq!(cells.get(i).map(|c| c.contents()), Some(cluster.as_str()));
+        i = i.saturating_add(1);
+    }
+    assert!(i > 500_000 && cells.text_len() <= 1 << 24, "{i} kept");
+    assert!(!set(&mut cells, i.saturating_add(1)) && !set(&mut cells, i.saturating_add(2)));
+    Ok(())
+}
+
 /// The underline's style takes three bits of the flags, apart from every
 /// other style's: each style, set over any other attributes, reads back
 /// alone, and setting it changes nothing else.

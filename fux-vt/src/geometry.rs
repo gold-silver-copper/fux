@@ -68,10 +68,12 @@ impl Span {
         Self { first: 0, last }
     }
     /// Margins within this span, the screen's, as DECSTBM and DECSLRM set
-    /// them: `None` unless `first` is before `last` and `last` is in it
-    /// (DEC STD 070, DECSTBM and DECSLRM, notes 2 and 3).
+    /// them: `last` past the span is its last, as xterm takes it, and then
+    /// `None` unless `first` is before `last` (DEC STD 070, DECSTBM and
+    /// DECSLRM, note 2).
     pub fn margins(self, first: u16, last: u16) -> Option<Self> {
-        (first < last && last <= self.last).then_some(Self { first, last })
+        let last = last.min(self.last);
+        (first < last).then_some(Self { first, last })
     }
     /// The part `first` to `last` of this span, `None` if `first` is past
     /// `last` or `last` past this span: a side of a rectangle (DEC STD 070,

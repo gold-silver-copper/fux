@@ -138,6 +138,21 @@ impl Ring {
             self.start = 0;
         }
     }
+    /// Takes the last record, its chunk going once it holds none; and
+    /// whether the ring's room changed.
+    pub(crate) fn pop_back(&mut self) -> Option<(Kept, bool)> {
+        let freed = self.last.is_empty() && !self.full().is_empty();
+        if freed && let Some(chunk) = self.full.pop() {
+            self.last = chunk;
+        }
+        let kept = self.last.pop()?;
+        self.len = self.len.saturating_sub(1);
+        if self.len == 0 {
+            self.last.clear();
+            self.head = 0;
+        }
+        Some((kept, freed))
+    }
     /// Record `index`, oldest first.
     #[inline(always)]
     pub(crate) fn get(&self, index: usize) -> Option<&Kept> {

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crate::compact::{BLANK, Compact, Line, Restyled, Text};
+use crate::compact::{BLANK, Compact, Line, Text};
 use crate::geometry::{Size, Span};
 use crate::history::{Arriving, ENDS, History, PROMPT, RENDITION_SHIFT, WRAPPED, trimmed};
 use crate::link::{Held, Hyperlink, KeptLinks, Links, RowLinks, Runs};
@@ -438,9 +438,7 @@ impl Grid {
 
     /// Lets every row of history go, its budget kept.
     pub(crate) fn clear_history(&mut self) {
-        let budget = self.history.budget();
-        self.history.set_budget(0);
-        self.history.set_budget(budget);
+        self.history.clear();
     }
 
     pub(crate) fn set_history_bytes(&mut self, bytes: usize) {
@@ -586,15 +584,6 @@ impl Grid {
         if text.is_some() || links.is_some() {
             self.history.attach(text.map(|text| text.exact()), links);
         }
-        self.history.trim();
-        Ok(())
-    }
-
-    /// Keeps a row in history as it is, `cells` of `width`, their blank
-    /// tail left: a row with no text or links, as another history or the
-    /// screen kept it.
-    fn keep_history_row(&mut self, meta: Meta, cells: &[Compact], width: u16) -> Result<(), Error> {
-        self.history.push(meta.arriving(trimmed(cells), width))?;
         self.history.trim();
         Ok(())
     }
@@ -790,11 +779,6 @@ impl Grid {
     /// A live row's cells as stored.
     pub fn live_cells(&self, row: u16) -> &[Compact] {
         self.slot(row).map_or(&[], |slot| self.slice(slot))
-    }
-    /// A live row's cells as stored, and its text.
-    pub(crate) fn live_cells_and_text(&self, row: u16) -> Option<(&[Compact], &Text)> {
-        let slot = self.slot(row)?;
-        Some((self.slice(slot), self.texts.get(slot)?))
     }
     /// A live row's cell as stored, for what its halves and whether it
     /// has text say, which need neither its text nor its attributes.
@@ -1414,34 +1398,29 @@ impl Grid {
         all: Option<u32>,
         version: u64,
     ) {
-        #[cfg(test)]
-        if tests::PER_CELL.with(std::cell::Cell::get) {
-            return self.erase_to_spaces_per_cell(row, (start, end), all, version);
-        }
         let span = usize::from(start)..usize::from(end);
         work!(cells, span.len());
         self.mutate_row(row, version, end, |cells| {
             // Whether the glyph before is protected, which keeps its
             // second half if the span starts there.
             let before = span.start.checked_sub(1).and_then(|i| cells.get(i));
-            let kept = before.is_some_and(|c| all.is_none() && c.is_protected());
-            let Some(run) = cells.get_mut(span.clone()) else {
-                return false;
-            };
-            let changed = Compact::erase_run(run, all, kept);
-            // Inside the span a glyph and its second half go or stay
-            // together: only one the span's edges cut may have lost its
-            // other half (`repair_wide`, the rest of the row being whole).
-            let last = span.end.saturating_sub(1);
-            let edges = [
-                span.start.checked_sub(1),
-                Some(span.start),
-                Some(last),
-                Some(span.end),
-            ];
-            for at in edges.into_iter().flatten() {
-                repair_wide_at(cells, at);
+            let mut kept = all.is_none() && before.is_some_and(Compact::is_protected);
+            let mut changed = false;
+            for cell in cells.get_mut(span.clone()).into_iter().flatten() {
+                if cell.is_wide_continuation() {
+                    if !kept {
+                        *cell = cell.blanked();
+                        changed = true;
+                    }
+                    continue;
+                }
+                kept = all.is_none() && cell.is_protected();
+                if cell.has_contents() && !kept {
+                    *cell = Compact::ascii(b' ', all.unwrap_or(cell.style()));
+                    changed = true;
+                }
             }
+            repair_wide(cells);
             changed
         });
         if all.is_some() {
@@ -1453,15 +1432,9 @@ impl Grid {
     /// screen's row `row`: each occupied cell, a wide glyph's second half
     /// too, takes the style `restyle` gives for its own, and with `fill`
     /// (DECSACE 2) each unoccupied one becomes a space in it first (DEC STD
-    /// 070, DECSACE). Their text, protection and links stay.
-    ///
-    /// The cells go a run at a time (`Compact::restyle_run`), with the
-    /// styles `restyle` gave lately (`Restyled`); a cell of another style
-    /// asks it again. Asking again for a style it gave would give the same,
-    /// as a style made stays in the table until a sweep. Making one may
-    /// sweep the table, numbering every cell's style anew: the cell it was
-    /// asked for then takes the answer alone, and those given are
-    /// forgotten.
+    /// 070, DECSACE). Their text, protection and links stay. `restyle` may
+    /// sweep the table, numbering every cell's style anew: each cell is
+    /// read when its turn comes.
     pub fn restyle(
         &mut self,
         row: u16,
@@ -1470,54 +1443,38 @@ impl Grid {
         version: u64,
         restyle: &mut impl FnMut(&mut Self, u32) -> u32,
     ) {
-        #[cfg(test)]
-        if tests::PER_CELL.with(std::cell::Cell::get) {
-            return self.restyle_per_cell(row, (start, end), fill, version, restyle);
-        }
         let Some(slot) = self.slot(row) else {
             return;
         };
         let end = end.min(self.size.cols());
         work!(cells, end.saturating_sub(start));
-        let end = usize::from(end);
-        let (mut col, mut changed) = (usize::from(start), false);
-        let mut given = Restyled::default();
-        loop {
-            // The next cell `restyle` is asked of.
-            let cells = self.slice(slot).get(col..end).unwrap_or_default();
-            let Some(at) = cells.iter().position(|c| fill || occupied(c)) else {
+        let mut changed = false;
+        for col in usize::from(start)..usize::from(end) {
+            let Some(&cell) = self.slice(slot).get(col) else {
                 break;
             };
-            let Some(old) = cells.get(at).map(Compact::style) else {
+            let occupied = cell.has_contents() || cell.is_wide_continuation();
+            if !occupied && !fill {
+                continue;
+            }
+            let style = restyle(self, cell.style());
+            let Some(at) = self.slice_mut(slot).get_mut(col) else {
                 break;
             };
-            col = col.saturating_add(at);
-            let sweeps = self.sweeps;
-            let new = restyle(self, old);
-            let swept = self.sweeps != sweeps;
-            let Some(cells) = self.slice_mut(slot).get_mut(col..end) else {
-                break;
+            let new = if occupied {
+                let mut new = *at;
+                new.set_style(style);
+                new
+            } else {
+                Compact::ascii(b' ', style)
             };
-            let cells = match (swept, cells) {
-                (true, [cell, ..]) => {
-                    given = Restyled::default();
-                    given.give(cell.style(), new);
-                    std::slice::from_mut(cell)
-                }
-                (_, cells) => {
-                    given.give(old, new);
-                    cells
-                }
-            };
-            let (done, run) = match fill {
-                true => Compact::restyle_run::<true>(cells, &given),
-                false => Compact::restyle_run::<false>(cells, &given),
-            };
-            changed |= run;
-            col = col.saturating_add(done.max(1));
+            if new != *at {
+                *at = new;
+                changed = true;
+            }
         }
         if changed {
-            self.changed(slot, end, version);
+            self.changed(slot, usize::from(end), version);
         }
     }
 
@@ -1540,147 +1497,40 @@ impl Grid {
         for (from, y) in rows {
             // To a double-width line's end (DEC STD 070, 5.6.1).
             let end = end.min(self.row_end(y)).max(col);
-            if !self.copy_plain_cells(from, y, span.clone(), col..end, version) {
-                self.copy_cells(from, y, span.clone(), col..end, version);
-            }
+            self.copy_cells(from, y, span.clone(), col..end, version);
             self.set_link(y, usize::from(col)..usize::from(end), None, version);
         }
     }
 
     /// DECCRA's copy of the cells `span` of live row `from` to the columns
-    /// `to` of live row `y`, if neither keeps text in its row's (`Text`),
-    /// as most don't: moved as a run, the row's text left as it is, and the
-    /// halves of a glyph the source's edges cut blanked as `copy_cells`
-    /// blanks them. Whether it did.
-    fn copy_plain_cells(
-        &mut self,
-        from: u16,
-        y: u16,
-        span: Range<usize>,
-        to: Range<u16>,
-        version: u64,
-    ) -> bool {
-        let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) else {
-            return false;
-        };
-        let (Some(rows), Some(dest)) = (self.cells_of(source), self.cells_of(target)) else {
-            return false;
-        };
-        let (start, end) = (usize::from(to.start), usize::from(to.end));
-        let len = span.len().min(end.saturating_sub(start));
-        let src = rows.start.saturating_add(span.start);
-        let src = src..src.saturating_add(len).min(rows.end);
-        let dst = dest.start.saturating_add(start);
-        let dst = dst..dst.saturating_add(len).min(dest.end);
-        let (Some(cells), Some(olds)) = (self.cells.get(src.clone()), self.cells.get(dst.clone()))
-        else {
-            return false;
-        };
-        let whole = self.live_cells(from).get(span.clone()).unwrap_or_default();
-        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
-            return false;
-        }
-        // The halves of a glyph the source's edges cut.
-        let first = len > 0 && whole.first().is_some_and(Compact::is_wide_continuation);
-        let last = whole.last().is_some_and(|c| c.is_wide()) && len == span.len();
-        // Each cell read, then written; and the row's text, as `copy_cells`
-        // clones it.
-        let text = self.texts.get(source).map_or(0, Text::bytes);
-        spend!(cells, span.len().saturating_mul(2));
-        spend!(edits, span.len());
-        spend!(text, text);
-        // A row that keeps text has it compacted, as `copy_cells`'s
-        // `clear_for` compacts it; the span, none of whose cells keeps any,
-        // is not blanked first, as it may be the source too.
-        if self.texts.get(target).is_some_and(|text| !text.is_empty())
-            && let Some(mut line) = self.line(target)
-        {
-            line.clear_for(start..start);
-        }
-        let _ = crate::bytes::copy_within(&mut self.cells, src, dst.start);
-        let row = self.slice_mut(target);
-        let edges = [
-            (first, start),
-            (last, start.saturating_add(len).saturating_sub(1)),
-        ];
-        for (cut, at) in edges {
-            if let Some(cell) = row.get_mut(at).filter(|_| cut) {
-                *cell = cell.blanked();
-            }
-        }
-        repair_wide(row);
-        self.changed(target, end, version);
-        true
-    }
-
-    /// DECCRA's copy of a row's cells with the clusters' text, over the
-    /// columns `to` cleared first (`clear_for`), the text of a run of
-    /// clusters at once (`Line::write`; `copy_plain_cells` says what is
-    /// copied).
+    /// `to` of live row `y`, with their clusters' text: the columns are
+    /// cleared first (`clear_for`), then each cell written; the halves of a
+    /// glyph the source's edges cut are blanked.
     fn copy_cells(&mut self, from: u16, y: u16, span: Range<usize>, to: Range<u16>, version: u64) {
-        let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) else {
-            return;
-        };
-        let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
-        // Each cell read, then written; and the row's text, as a copy of it
-        // costs.
+        let text = self.slot(from).and_then(|slot| self.texts.get(slot));
+        let text = text.cloned().unwrap_or_default();
+        let mut cells = self.live_cells(from).get(span).unwrap_or_default().to_vec();
+        // Each cell read, then written; and the row's text, as its copy
+        // costs; and the text written into the target row, counted by its
+        // stores as they go, at most the row's: spent here too.
         spend!(cells, cells.len().saturating_mul(2));
         spend!(edits, cells.len());
-        let bytes = self.texts.get(source).map_or(0, Text::bytes);
-        spend!(text, bytes);
-        // And the text written into the target row, counted by its stores
-        // as they go, at most the row's: spent here too.
-        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
+        spend!(text, text.bytes());
+        crate::budget::spend(crate::budget::units(text.bytes()), crate::budget::weight::text);
         cut(&mut cells);
-        let columns = usize::from(to.start)..usize::from(to.end);
-        let cells = cells.get(..columns.len()).unwrap_or(&cells);
-        let fill = |line: &mut Line<'_>, text: &Text| {
-            line.write_over(columns.clone(), cells, text);
-            if Compact::any_halves(line.cells) {
-                repair_wide(line.cells);
+        self.mutate_line(y, version, to.end, |line| {
+            let span = usize::from(to.start)..usize::from(to.end);
+            line.clear_for(span.clone());
+            for (at, cell) in span.zip(&cells) {
+                if cell.is_spilled() {
+                    line.set(at, *cell, text.of(cell));
+                } else if let Some(slot) = line.cells.get_mut(at) {
+                    *slot = *cell;
+                }
             }
-        };
-        let written = if source == target {
-            // The row over itself: its text as it was, which clearing the
-            // columns gives back.
-            self.line(target).map(|mut line| {
-                let text = line.clear_outside(columns.clone());
-                fill(&mut line, &text);
-            })
-        } else {
-            self.with_source(source, target, |line, _, text| {
-                let _ = line.clear_outside(columns.clone());
-                fill(line, text);
-            })
-        };
-        if written.is_none() {
-            return;
-        }
-        self.changed(target, columns.end, version);
-    }
-
-    /// Runs `f` on slot `target`'s cells and text, to write into, beside
-    /// slot `source`'s, another, to read.
-    fn with_source<R>(
-        &mut self,
-        source: usize,
-        target: usize,
-        f: impl FnOnce(&mut Line<'_>, &[Compact], &Text) -> R,
-    ) -> Option<R> {
-        let (from, to) = (self.cells_of(source)?, self.cells_of(target)?);
-        let [text, written] = self.texts.get_disjoint_mut([source, target]).ok()?;
-        let (cells, writing) = if from.start < to.start {
-            let (low, high) = self.cells.split_at_mut_checked(to.start)?;
-            (low.get(from)?, high.get_mut(..to.len())?)
-        } else {
-            let (low, high) = self.cells.split_at_mut_checked(from.start)?;
-            (high.get(..from.len())?, low.get_mut(to)?)
-        };
-        let mut line = Line {
-            cells: writing,
-            text: written,
-        };
-        Some(f(&mut line, cells, text))
+            repair_wide(line.cells);
+            true
+        });
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
@@ -1823,8 +1673,10 @@ impl Grid {
         }
     }
 
-    /// Moves slots, not cells. Only whole-screen upward scrolling enters
-    /// history. The rows brought in are blank in `blank`.
+    /// Moves slots, not cells. An upward scroll of a region at the top of
+    /// the screen takes its rows into history, as xterm keeps them (a
+    /// status line below the region stays). The rows brought in are blank
+    /// in `blank`.
     #[inline]
     pub fn scroll(
         &mut self,
@@ -1838,45 +1690,27 @@ impl Grid {
         // A line feed at the bottom of the screen, the commonest scroll,
         // goes straight to history.
         if direction == (Scroll::Up { history: true })
-            && region == self.size.lines()
+            && region.first() == 0
             && self.history_bytes() > 0
         {
-            let count = count.min(self.size.rows());
+            let count = count.min(region.len());
             for done in 0..count {
-                if self.scroll_into_history(blank, next, version).is_err() {
+                if self
+                    .scroll_into_history(region.last(), blank, next, version)
+                    .is_err()
+                {
+                    // No room in history: these go as with none
+                    // (THREATS.md 1.3), counted.
+                    crate::degraded();
                     let rest = count.saturating_sub(done);
-                    self.scroll_past_history(rest, blank, next, version);
+                    let up = Scroll::Up { history: false };
+                    self.scroll_region(region, rest, up, blank, next, version);
                     break;
                 }
             }
             return;
         }
         self.scroll_region(region, count, direction, blank, next, version);
-    }
-
-    /// No room in history for the rows a scroll of the screen takes into
-    /// it: these `count` go as with no history (THREATS.md 1.3),
-    /// counted. Out of line, as no scroll but a refused one comes here.
-    #[cold]
-    #[inline(never)]
-    fn scroll_past_history(&mut self, count: u16, blank: u32, next: &mut u64, version: u64) {
-        crate::degraded();
-        if !self.links.none() {
-            self.unlink_rows(self.size.lines(), count, false);
-        }
-        // Each top row goes, its slot a new blank row under the screen's
-        // last, as `scroll_into_history` makes one.
-        for _ in 0..count {
-            let Some(&slot) = self.order.get(0) else {
-                return;
-            };
-            let id = next_id(next);
-            self.recycle(slot, id, version);
-            if blank != 0 {
-                self.colour(slot, blank);
-            }
-            self.order.turn();
-        }
     }
 
     /// A scroll inside left and right margins (DEC STD 070, 5.4.3; xterm's
@@ -1939,9 +1773,7 @@ impl Grid {
         let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
             return;
         };
-        if !self.copy_plain_span(source, target, span.clone(), version) {
-            self.copy_span_cells(source, target, span.clone(), version);
-        }
+        self.copy_span_cells(source, target, span.clone(), version);
         // The links, a cell at a time: each takes its source's, or none.
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
@@ -1954,65 +1786,45 @@ impl Grid {
     }
 
     /// `copy_span`'s copy of the cells `span` of slot `source` over those
-    /// of slot `target`, if neither keeps text in its row's (`Text`), as
-    /// most spans don't: compared and moved a run at once, the row's text
-    /// left as it is, as none of it is the span's. Whether it did.
-    fn copy_plain_span(
-        &mut self,
-        source: usize,
-        target: usize,
-        span: Range<usize>,
-        version: u64,
-    ) -> bool {
-        let (Some(from), Some(to)) = (self.cells_of(source), self.cells_of(target)) else {
-            return false;
-        };
-        let at = |cells: &Range<usize>| {
-            let start = cells.start.saturating_add(span.start);
-            start..start.saturating_add(span.len()).min(cells.end)
-        };
-        let (from, to) = (at(&from), at(&to));
-        let (Some(cells), Some(olds)) = (self.cells.get(from.clone()), self.cells.get(to.clone()))
-        else {
-            return false;
-        };
-        if cells.len() != olds.len() || Compact::any_spilled(cells) || Compact::any_spilled(olds) {
-            return false;
-        }
-        // Each cell read, compared with the one it goes over, and written.
+    /// of slot `target`, with their clusters' text. While each cluster goes
+    /// over one as long, its text is written where that one's lies, which
+    /// needs no room (B35); else the span is cleared first (`clear_for`).
+    fn copy_span_cells(&mut self, source: usize, target: usize, span: Range<usize>, version: u64) {
+        let cells = self.slice(source).get(span.clone()).unwrap_or_default().to_vec();
+        let text = self.texts.get(source).cloned().unwrap_or_default();
+        // Each cell read, compared with the one it goes over, and written;
+        // the span's own text, each cluster's, read and written.
         spend!(cells, cells.len().saturating_mul(3));
         spend!(spans, 1);
-        if cells != olds {
-            let _ = crate::bytes::copy_within(&mut self.cells, from, to.start);
-            self.changed(target, span.end, version);
-        }
-        true
-    }
-
-    /// `copy_span`'s copy of a span with clusters (`Line::copy`).
-    fn copy_span_cells(&mut self, source: usize, target: usize, span: Range<usize>, version: u64) {
-        let len = self.slice(source).get(span.clone()).map_or(0, <[_]>::len);
-        // Each cell read, compared with the one it goes over, and written.
-        spend!(cells, len.saturating_mul(3));
-        spend!(spans, 1);
-        // The span's own text, each cluster's, not the whole row's: a row
-        // of long clusters holds far more than a few cells copy.
-        let cells = self.slice(source).get(span.clone()).unwrap_or_default();
-        let bytes = Compact::spilled_bytes(cells);
+        let bytes = cells.iter().filter(|c| c.is_spilled()).map(|c| text.of(c).len());
+        let bytes = bytes.fold(0usize, usize::saturating_add);
         spend!(text, bytes);
         // And the text written into the target row, which its stores count
-        // as they go (`Line::copy`), at most what was read: spent here, so
-        // the budget prices what the counters count.
+        // as they go: spent here, so the budget prices what they count.
         crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
-        // A span over itself is as it was.
-        let changed = self.with_source(source, target, |line, cells, text| {
-            line.copy(
-                span.start,
-                cells.get(span.clone()).unwrap_or_default(),
-                text,
-            )
-        });
-        if changed == Some(true) {
+        let mut changed = false;
+        if let Some(mut line) = self.line(target) {
+            let olds = line.cells.get(span.clone()).unwrap_or_default();
+            changed = (cells.iter().zip(olds))
+                .any(|(cell, old)| !old.holds(line.text, cell, text.of(cell)));
+            let in_place = (cells.iter().zip(span.clone()))
+                .all(|(cell, at)| !cell.is_spilled() || line.replaces(at, text.of(cell).len()));
+            if changed && !in_place {
+                line.clear_for(span.clone());
+            }
+            for (at, cell) in span.clone().zip(&cells).filter(|_| changed) {
+                if !cell.is_spilled() {
+                    if let Some(slot) = line.cells.get_mut(at) {
+                        *slot = *cell;
+                    }
+                } else if in_place {
+                    line.replace(at, *cell, text.of(cell));
+                } else {
+                    line.set(at, *cell, text.of(cell));
+                }
+            }
+        }
+        if changed {
             self.changed(target, span.end, version);
         }
     }
@@ -2106,12 +1918,14 @@ impl Grid {
     }
 
     /// Moves the screen's top row into history, the oldest row there going
-    /// if there are more than the limit, and puts a new blank row under
-    /// the screen's last, in style `blank`, with a new identity, in the top
-    /// row's slot. Nothing moves if there is no room in history.
+    /// if there are more than the limit, and puts a new blank row in its
+    /// slot at row `bottom`, the rows below the top up to it moving up a
+    /// row, in style `blank`, with a new identity. Nothing moves if there
+    /// is no room in history.
     #[inline]
     fn scroll_into_history(
         &mut self,
+        bottom: u16,
         blank: u32,
         next: &mut u64,
         version: u64,
@@ -2144,7 +1958,11 @@ impl Grid {
         if blank != 0 {
             self.colour(slot, blank);
         }
-        self.order.turn();
+        if bottom == self.size.lines().last() {
+            self.order.turn();
+        } else {
+            self.move_row(0, usize::from(bottom));
+        }
         Ok(())
     }
 
@@ -2227,8 +2045,16 @@ impl Grid {
     /// This grid at `rows` by `cols` without reflow: each row keeps its
     /// cells, cut or padded to the new width (`reflowed` rewraps them). The
     /// new storage is built before anything changes, so a failed allocation
-    /// leaves this grid as it was.
-    pub fn resized(&self, size: Size, next: &mut u64, version: u64) -> Result<Self, Error> {
+    /// leaves this grid as it was. History's rows stay as they are: the
+    /// new grid's history holds the rows that go into it after the first
+    /// of this one's it keeps, how many it says, which it takes from this
+    /// one once the resize is made (`adopt_history`).
+    pub fn resized(
+        &self,
+        size: Size,
+        next: &mut u64,
+        version: u64,
+    ) -> Result<(Self, usize), Error> {
         Self::check_size(size)?;
         let (rows, cols) = (size.rows(), size.cols());
         let history = self.history_len();
@@ -2281,7 +2107,8 @@ impl Grid {
         // Each row is laid out whole in `row`, as wide as it is, then kept.
         let mut row = Vec::new();
         let same_width = self.size.cols() == cols;
-        for source in 0..end {
+        let kept = history.min(live_top);
+        for source in kept..end {
             let old = self.row_at(source).filter(|_| source < old_retained);
             let is_history = source < live_top;
             let id = old.map_or_else(|| next_id(next), |r| r.id);
@@ -2303,18 +2130,6 @@ impl Grid {
             meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
             if wrapped && old.is_some_and(|r| !r.continues()) {
                 meta.flags |= ENDS;
-            }
-            // A row of history keeps its width, so its cells go into the
-            // new history as they are, unless it has text or links to store
-            // again or a rendition to cut it to: no row to lay out.
-            if let Some(old) = old.filter(|r| {
-                is_history
-                    && r.text.is_empty()
-                    && r.links.is_none()
-                    && r.rendition() == LineRendition::Single
-            }) {
-                replacement.keep_history_row(meta, old.cells, width)?;
-                continue;
             }
             row.clear();
             row.resize(usize::from(width), BLANK);
@@ -2351,7 +2166,24 @@ impl Grid {
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
         replacement.fit_cursor();
-        Ok(replacement)
+        Ok((replacement, kept))
+    }
+
+    /// Takes `old`'s history once a resize made this grid of it, its first
+    /// `kept` rows as they are, before the rows this grid's history was
+    /// given: the rows of history a resize leaves alone are not copied. A
+    /// row it has no room for goes, counted (THREATS.md 1.3).
+    pub(crate) fn adopt_history(&mut self, old: &mut Self, kept: usize) {
+        if kept == 0 {
+            return;
+        }
+        let mut history = std::mem::take(&mut old.history);
+        history.truncate(kept);
+        let given = std::mem::replace(&mut self.history, history);
+        if self.history.take(&given).is_err() {
+            crate::degraded();
+        }
+        self.charge_styles(if self.unmade { 0 } else { self.size.cells() });
     }
 
     /// Starts the grid again, as `new` makes it. A grid that holds only its
@@ -2740,12 +2572,6 @@ impl Grid {
     }
 }
 
-/// Whether DECCARA and DECRARA change `cell` with DECSACE 0 or 1: a glyph,
-/// or a wide glyph's second half.
-fn occupied(cell: &Compact) -> bool {
-    cell.has_contents() || cell.is_wide_continuation()
-}
-
 /// The column one past `col` if a wrap is pending there, else `col`.
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
@@ -2833,21 +2659,6 @@ fn split_wide(cells: &mut [Compact], at: usize) -> bool {
         *cell = cell.blanked();
     }
     true
-}
-
-/// `repair_wide`'s work on the cell `at` of `cells` alone.
-fn repair_wide_at(cells: &mut [Compact], at: usize) {
-    let next = at.checked_add(1).and_then(|j| cells.get(j));
-    let previous = at.checked_sub(1).and_then(|j| cells.get(j));
-    let (next, previous) = (
-        next.is_some_and(Compact::is_wide_continuation),
-        previous.is_some_and(Compact::is_wide),
-    );
-    if let Some(cell) = cells.get_mut(at)
-        && (cell.is_wide() && !next || cell.is_wide_continuation() && !previous)
-    {
-        *cell = cell.blanked();
-    }
 }
 
 /// Whether a glyph `width` wide at `i` has its second half after it, if it
