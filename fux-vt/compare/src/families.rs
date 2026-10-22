@@ -1452,14 +1452,14 @@ const WRAP_BELOW_REGION: Departure = Departure {
           first column, the line going on in no row, so fux-vt leaves the row unwrapped (a soft \
           wrap is a line going on in the next row, `Row::wrapped`); xterm 411's WrapLine sets \
           LINEWRAPPED before xtermIndex, which cannot move there (charproc.c, cursor.c), and \
-          the flag shows once a scroll brings the row up",
+          the flag shows once a scroll brings the row up, on the screen or into history",
     when: |bytes, rows, _| {
         csis(bytes).iter().any(|(p, params, last)| {
             let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
             p.is_none() && *last == b'r' && bottom > 0 && bottom < u32::from(rows)
         })
     },
-    fields: &["row * soft-wrapped"],
+    fields: &["row * soft-wrapped", "history row * soft-wrapped"],
 };
 
 /// The engine `family` is judged beside and its departures, if it is
