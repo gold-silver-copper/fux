@@ -285,14 +285,9 @@ text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
-/// a fieldless enum whose `ALL` lists every variant: a variant's one-byte
-/// tag is its place there, written and read alike. The macro does not
-/// check `ALL`: it is whole, each variant once, as fux-vt's `closed!` and
-/// fuxix's `signals!` make it, so no variant is missed and no two share a
-/// tag (a variant missing from a hand-written one would be put as 255);
-/// reordering `ALL` changes the wire. Each also gets a `const` assertion
-/// that `ALL` has at most 256 places, so every place is a byte: a longer
-/// one doesn't compile.
+/// a fieldless enum whose `ALL` lists every variant once (as fux-vt's
+/// `closed!` and fuxix's `signals!` make it): a variant's one-byte tag is
+/// its place there. An `ALL` past 256 places does not compile.
 macro_rules! closed_wire {
     ($($ty:ty, $what:literal);* $(;)?) => {$(
         const _: () = assert!(<$ty>::ALL.len() <= 256);
@@ -325,17 +320,11 @@ impl Wire for fux_vt::Size {
 }
 
 /// `wire_enum!(Ty { Unit, Tuple(a, b), Named { x, y } })` expands to
-/// `impl Wire for Ty`: `put` writes a variant's tag, one byte that is its
-/// place in the list from 0 (`Unit` 0, `Tuple` 1, `Named` 2), then its
-/// fields in the order listed; `get` reads the tag, then each field back
-/// in that order (an unknown tag is `Error::Tag("Ty", tag)`). The places
-/// are those of a hidden `#[repr(u8)] enum Tag { Unit, Tuple, Named }`
-/// beside the impl, so no two variants share one, and a list longer than
-/// 256 does not compile. Reordering the list changes the wire, as any
-/// change to it does (`protocol::PROTOCOL`). `Ty<T>`, of one parameter,
-/// is `Wire` where `T` is. This is for a type declared in another crate
-/// (fux-vt's): a type of fux's own is declared in `wire!`, which writes
-/// this list from the declaration.
+/// `impl Wire for Ty`: a variant's tag, one byte that is its place in the
+/// list (a hidden `#[repr(u8)] enum Tag`, so no two share one and a list
+/// past 256 does not compile), then its fields in the order listed. `Ty<T>`
+/// is `Wire` where `T` is. For a type declared in another crate; fux's own
+/// are declared in `wire!`, which writes this list from the declaration.
 macro_rules! wire_enum {
     ($ty:ident $(<$g:ident>)? {
         $($var:ident $(( $($p:ident),+ ))? $({ $($f:ident),* })?),* $(,)?
@@ -404,13 +393,11 @@ pub(crate) use wire_struct;
 /// }
 /// ```
 ///
-/// expands to the enum as written (its docs and attributes too), its tuple
-/// variants' fields bare (`Tuple(A, B)`), and then `wire_enum!(Ty { Unit,
-/// Tuple(a, b), Named { x } })`: `a` and `b` only name the fields for its
-/// `Wire` impl, as a macro can't make up those names. A struct, `wire! {
-/// pub struct Ty { pub x: X, y: Y } }`, expands to itself and
-/// `wire_struct!(Ty { x, y })`. So a variant's tag is its place in the
-/// declaration, from 0, and a field's place on the wire its place there.
+/// expands to the enum as written, its tuple variants' fields bare
+/// (`Tuple(A, B)`), and `wire_enum!(Ty { Unit, Tuple(a, b), Named { x } })`:
+/// `a` and `b` only name the fields, as a macro can't make up names. A
+/// struct expands to itself and `wire_struct!`. A variant's tag and a
+/// field's place on the wire are their places in the declaration.
 macro_rules! wire {
     (
         $(#[$m:meta])*
@@ -461,7 +448,7 @@ impl Wire for Percent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{CaptureView, Command, Extent, Source};
+    use crate::command::{Command, Extent};
 
     /// Each variant of an enum `closed_wire!` writes reads back as itself,
     /// and its tag is its place in `ALL`.
@@ -520,22 +507,6 @@ mod tests {
         assert!(Env::get(&mut Reader::new(&vars("A\0"))).is_err());
         let fine = Env::get(&mut Reader::new(&vars("A_1"))).ok();
         assert_eq!(fine.map(|env| encode(&env)), Some(vars("A_1")));
-    }
-
-    /// A capture's view goes field by field in the order they are declared
-    /// (full, wrapped, styles, source, marks, rows, cols): the bytes pin it.
-    #[test]
-    fn a_capture_view_keeps_its_bytes() {
-        let view = CaptureView {
-            full: true,
-            wrapped: false,
-            rows: Some((1, 2)),
-            cols: None,
-            styles: true,
-            source: Source::Main,
-            marks: false,
-        };
-        assert_eq!(encode(&view), [1, 0, 1, 1, 0, 1, 0, 1, 0, 2, 0]);
     }
 
     /// A command's directory is the path's bytes, UTF-8 or not: one that

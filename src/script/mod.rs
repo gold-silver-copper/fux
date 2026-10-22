@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub use words::{WORDS, Word, opens, usage};
+pub use words::{WORDS, Word, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
 /// prompt see.
