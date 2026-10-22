@@ -3723,8 +3723,9 @@ impl Screen {
                 // A double-width line moved under the cursor holds it.
                 self.grid_mut().fit_cursor();
             }
-            // DECSTBM (DEC STD 070, 5-25): margins with the top above the
-            // bottom are set and the cursor goes home; others are ignored.
+            // DECSTBM (DEC STD 070, 5-25): a bottom past the screen is the
+            // last line, as xterm takes it; margins with the top above the
+            // bottom are set and the cursor goes home, others are ignored.
             b'r' => {
                 let lines = self.grid().size().lines();
                 let bottom = p.first(1, lines.end()).saturating_sub(1);

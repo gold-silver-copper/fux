@@ -489,6 +489,8 @@ fux-vt/src/compact.rs: replace match guard room with false in Line<'_, C>::store
 fux-vt/src/compact.rs: replace > with == in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
 fux-vt/src/compact.rs: replace > with < in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
 fux-vt/src/compact.rs: replace > with >= in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
+fux-vt/src/compact.rs: replace Line<'_, C>::store_short -> bool with true @ if let Some(inline) = cell.holding(text) {
+fux-vt/src/compact.rs: replace Line<'_, C>::store_short -> bool with false @ if let Some(inline) = cell.holding(text) {
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::store_long @ let room = long.len().saturating_add(text.len()) <= limit;
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::append @ && store.len().saturating_add(encoded.len()) <= room
 fux-vt/src/compact.rs: replace Text::long_limit -> usize with 0 @ cells
@@ -652,6 +654,12 @@ fux-vt/src/screen.rs: replace Screen::check -> crate::Checked with Default::defa
 fux-vt/src/parser.rs: replace Parser::check -> crate::Checked with Default::default() @ crate::check::unseen(|| {
 fux-vt/src/parser.rs: replace FrameScan::check -> crate::Checked with Default::default() @ let mut report = crate::Checked::default();
 fux-vt/src/keys/decode.rs: replace Decoder::check -> crate::Checked with Default::default() @ let mut report = crate::Checked::default();
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((true, Vec::leak(Vec::new()))) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((true, Vec::leak(vec![0]))) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((true, Vec::leak(vec![1]))) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((false, Vec::leak(Vec::new()))) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((false, Vec::leak(vec![0]))) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<(bool, &[u8]), bool> with Ok((false, Vec::leak(vec![1]))) @ work!(keys, bytes.len());
 fux-vt/src/palette.rs: replace answer -> Reply with Default::default() @ const HEX: &[u8; 16] = b"0123456789abcdef";
 fux-vt/src/palette.rs: replace > with == in answer @ if i > 0 {
 fux-vt/src/palette.rs: replace > with < in answer @ if i > 0 {

@@ -1287,17 +1287,8 @@ pub struct Departure {
 /// family, and resize, which reflows where xterm does not and differs from
 /// Ghostty's reflow by design (its status).
 pub const DEPARTURES: &[(&str, &str, &[Departure])] = &[
-    (
-        "scroll",
-        "xterm",
-        &[
-            BOTTOM_PAST_SCREEN,
-            SCROLL_ZERO,
-            REGION_HISTORY,
-            WRAP_BELOW_REGION,
-        ],
-    ),
-    ("origin", "xterm", &[BOTTOM_PAST_SCREEN, REGION_HISTORY]),
+    ("scroll", "xterm", &[SCROLL_ZERO, WRAP_BELOW_REGION]),
+    ("origin", "xterm", &[]),
     ("alternate", "xterm", &[]),
     ("insert-mode", "xterm", &[]),
     (
@@ -1445,27 +1436,6 @@ const MARK_ON_ONE_COLUMN: Departure = Departure {
     fields: &["*"],
 };
 
-/// A DECSTBM in the output whose bottom is past the screen.
-fn bottom_past_screen(bytes: &[u8], rows: u16, _: u16) -> bool {
-    csis(bytes).iter().any(|(private, params, last)| {
-        *last == b'r'
-            && private.is_none()
-            && params
-                .get(1)
-                .copied()
-                .flatten()
-                .is_some_and(|b| b > u32::from(rows))
-    })
-}
-
-const BOTTOM_PAST_SCREEN: Departure = Departure {
-    why: "a DECSTBM whose bottom is past the screen is ignored, as DEC STD 070 says (DECSTBM, \
-          note 3), where xterm takes it as the last line: what follows is laid out in other \
-          margins",
-    when: bottom_past_screen,
-    fields: &["*"],
-};
-
 const SCROLL_ZERO: Departure = Departure {
     why: "`CSI 0 T` scrolls a line, fux-vt's parameters not telling 0 from empty, where xterm \
           reads it as mouse tracking",
@@ -1475,20 +1445,6 @@ const SCROLL_ZERO: Departure = Departure {
         })
     },
     fields: &["*"],
-};
-
-const REGION_HISTORY: Departure = Departure {
-    why: "a region whose top is the screen's keeps no history in fux-vt, which keeps only the \
-          lines whole-screen scrolls push off (documented), where xterm keeps those that scroll \
-          off such a region too",
-    when: |bytes, rows, _| {
-        csis(bytes).iter().any(|(p, params, last)| {
-            let top = params.first().copied().flatten().unwrap_or(1);
-            let bottom = params.get(1).copied().flatten().unwrap_or(u32::from(rows));
-            p.is_none() && *last == b'r' && top <= 1 && bottom < u32::from(rows)
-        })
-    },
-    fields: &["history *"],
 };
 
 const WRAP_BELOW_REGION: Departure = Departure {
@@ -1548,12 +1504,6 @@ mod tests {
     /// The departures' triggers find what they name, and nothing else.
     #[test]
     fn a_departure_is_made_by_what_it_names() {
-        assert!(super::bottom_past_screen(b"x\x1b[2;99rX", 24, 80));
-        assert!(!super::bottom_past_screen(
-            b"x\x1b[2;24rX\x1b[?2;99r",
-            24,
-            80
-        ));
         let lone = super::LONE_INDICATOR.when;
         assert!(lone("a\u{1f1fa}b".as_bytes(), 4, 10));
         assert!(!lone("\u{1f1fa}\u{1f1f8}".as_bytes(), 4, 10));
