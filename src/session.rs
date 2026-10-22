@@ -2308,9 +2308,9 @@ impl Session {
                 log,
                 ids,
             } => {
+                let (dir, fit, _) = self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 // Its place is out of every client's way: no client follows.
-                let (dir, fit, size) =
-                    self.opening(*ids, cwd.as_deref(), *size, Here::NOWHERE, &starting)?;
+                let size = self.start_size(fit, Here::NOWHERE);
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
