@@ -1111,6 +1111,31 @@ fn last_frames(
 mod tests {
     use super::*;
 
+    /// Keys typed while any program the client ran is running wait for it,
+    /// whatever its words (a config's word may open a menu); the prefix,
+    /// then Esc, stops it, and the keys go on once it is done.
+    #[test]
+    fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::default(), false)?;
+        let now = Instant::now();
+        let run = ToAttached::Run("begin false until".into());
+        assert!(keyboard.frame(run).is_empty());
+        assert!(keyboard.bytes(b"x", now).is_empty(), "a key went past it");
+        let mut stopping = keyboard.bytes(b"\x02\x1b", now);
+        stopping.extend(keyboard.timeout());
+        assert!(
+            matches!(stopping.as_slice(), [Act::Notice { error: false, .. }]),
+            "{stopping:?}"
+        );
+        let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        fuxix::poll::poll(&mut done, Some(door::ANSWER))?;
+        let acts = keyboard.ran();
+        assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
+        assert!(keyboard.idle());
+        Ok(())
+    }
+
     /// Leaving sets no cursor shape: DECSCUSR 0 is a blinking block (ctlseqs),
     /// not the terminal's own, and the server gives back one a pane set.
     #[test]

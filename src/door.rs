@@ -458,14 +458,9 @@ mod tests {
                 .map_err(io::Error::other)
         });
         let wait = Duration::from_secs(5);
-        let started = std::time::Instant::now();
-        let mut fifos = loop {
-            match door.knocks().pop() {
-                Some(fifos) => break fifos,
-                None if started.elapsed() > wait => return Err(io::ErrorKind::TimedOut.into()),
-                None => std::thread::sleep(Duration::from_millis(5)),
-            }
-        };
+        // The knock, written whole once the client's FIFOs are made.
+        poll(&mut [PollFd::new(door.fd(), Events::IN)], Some(wait))?;
+        let mut fifos = door.knocks().pop().ok_or(io::ErrorKind::TimedOut)?;
         let mut got = [0u8; 2];
         fuxix::io::set_nonblocking(&fifos.up, false)?;
         fifos.up.read_exact(&mut got)?;
