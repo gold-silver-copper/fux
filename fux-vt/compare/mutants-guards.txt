@@ -180,11 +180,8 @@ fux-vt/src/lib.rs: replace << with >> @ const PRINT_TEXT_FLOOR: usize = 16 << 10
 fux-vt/src/lib.rs: replace Prints::lost -> bool with true @ self.lost
 fux-vt/src/lib.rs: replace Prints::lost -> bool with false @ self.lost
 fux-vt/src/lib.rs: replace Prints::lose with () @ self.lost = true;
-fux-vt/src/lib.rs: replace text_cap -> usize with 0 @ let four = cells.saturating_mul(4);
-fux-vt/src/lib.rs: replace text_cap -> usize with 1 @ let four = cells.saturating_mul(4);
-fux-vt/src/lib.rs: replace > with == in text_cap @ if four > PRINT_TEXT_FLOOR {
-fux-vt/src/lib.rs: replace > with < in text_cap @ if four > PRINT_TEXT_FLOOR {
-fux-vt/src/lib.rs: replace > with >= in text_cap @ if four > PRINT_TEXT_FLOOR {
+fux-vt/src/lib.rs: replace text_cap -> usize with 0 @ cells.saturating_mul(4).max(PRINT_TEXT_FLOOR)
+fux-vt/src/lib.rs: replace text_cap -> usize with 1 @ cells.saturating_mul(4).max(PRINT_TEXT_FLOOR)
 src/pane.rs: delete ! in Pane::record @ let tell = self.redraws < REDRAWS && !prints.lost();
 src/pane.rs: replace && with || in Pane::record @ let tell = self.redraws < REDRAWS && !prints.lost();
 src/log.rs: replace Log::prints_lost_after -> bool with true @ self.printed_after(seq).any(|(_, p)| p.prints.lost())
@@ -239,10 +236,7 @@ fux-vt/src/style.rs: replace / with % in screen_share @ table_bytes(entries, ent
 fux-vt/src/style.rs: replace / with * in screen_share @ table_bytes(entries, entries.saturating_mul(7) / 8)
 fux-vt/src/grid.rs: replace Grid::make_style_room -> bool with true @ let share = crate::style::screen_share(self.cells.len());
 fux-vt/src/grid.rs: replace Grid::make_style_room -> bool with false @ let share = crate::style::screen_share(self.cells.len());
-fux-vt/src/grid.rs: delete ! in Grid::make_style_room @ !(after > self.history.budget())
-fux-vt/src/grid.rs: replace > with == in Grid::make_style_room @ !(after > self.history.budget())
-fux-vt/src/grid.rs: replace > with < in Grid::make_style_room @ !(after > self.history.budget())
-fux-vt/src/grid.rs: replace > with >= in Grid::make_style_room @ !(after > self.history.budget())
+fux-vt/src/grid.rs: replace <= with > in Grid::make_style_room @ after <= self.history.budget()
 fux-vt/src/grid.rs: replace && with || in Grid::find_table_style @ if grows && !self.make_style_room() {
 fux-vt/src/grid.rs: delete ! in Grid::find_table_style @ if grows && !self.make_style_room() {
 fux-vt/src/grid.rs: replace || with && in Grid::find_table_style @ if grows || swept || copied {
@@ -330,8 +324,8 @@ fux-vt/src/history.rs: replace >= with < in History::make_room @ if self.older.l
 fux-vt/src/history.rs: replace History::recount with () @ self.maps = self.maps_bytes();
 fux-vt/src/history.rs: replace History::rows_bytes -> usize with 0 @ self.held.saturating_add(self.text)
 fux-vt/src/history.rs: replace History::rows_bytes -> usize with 1 @ self.held.saturating_add(self.text)
-fux-vt/src/history.rs: replace History::maps_bytes -> usize with 0 @ (self.texts_room.saturating_mul(TEXT_BUCKET))
-fux-vt/src/history.rs: replace History::maps_bytes -> usize with 1 @ (self.texts_room.saturating_mul(TEXT_BUCKET))
+fux-vt/src/history.rs: replace History::maps_bytes -> usize with 0 @ (self.texts.bytes())
+fux-vt/src/history.rs: replace History::maps_bytes -> usize with 1 @ (self.texts.bytes())
 fux-vt/src/history.rs: replace History::block_cells -> usize with 0 @ (self.budget / 64).clamp(1, BLOCK)
 fux-vt/src/history.rs: replace History::block_cells -> usize with 1 @ (self.budget / 64).clamp(1, BLOCK)
 fux-vt/src/history.rs: replace / with % in History::block_cells @ (self.budget / 64).clamp(1, BLOCK)
@@ -342,10 +336,10 @@ fux-vt/src/history.rs: replace > with < in History::make_room @ let capacity = i
 fux-vt/src/history.rs: replace > with >= in History::make_room @ let capacity = if first || len > block / 2 { len } else { block };
 fux-vt/src/history.rs: replace / with % in History::make_room @ let capacity = if first || len > block / 2 { len } else { block };
 fux-vt/src/history.rs: replace / with * in History::make_room @ let capacity = if first || len > block / 2 { len } else { block };
-fux-vt/src/history.rs: replace History::maps_changed with () @ let shrink = |capacity: usize, len: usize| capacity > most_room(len);
-fux-vt/src/history.rs: replace > with == in History::maps_changed @ let shrink = |capacity: usize, len: usize| capacity > most_room(len);
-fux-vt/src/history.rs: replace > with < in History::maps_changed @ let shrink = |capacity: usize, len: usize| capacity > most_room(len);
-fux-vt/src/history.rs: replace > with >= in History::maps_changed @ let shrink = |capacity: usize, len: usize| capacity > most_room(len);
+fux-vt/src/history.rs: replace History::maps_changed with () @ self.texts.shrink();
+fux-vt/src/history.rs: replace > with == in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
+fux-vt/src/history.rs: replace > with < in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
+fux-vt/src/history.rs: replace > with >= in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
 fux-vt/src/history.rs: replace most_room -> usize with 0 @ len.saturating_mul(4).saturating_add(64)
 fux-vt/src/history.rs: replace most_room -> usize with 1 @ len.saturating_mul(4).saturating_add(64)
 fux-vt/src/history/ring.rs: replace Ring::advance -> bool with true @ self.head = self.head.saturating_add(n);
@@ -361,20 +355,7 @@ fux-vt/src/parser.rs: delete ! @ const RESET: bool = !Modes::DEFAULT.contains(Mo
 fux-vt/src/parser.rs: replace FrameScan::end -> Option<usize> with None @ loop {
 fux-vt/src/parser.rs: replace FrameScan::end -> Option<usize> with Some(0) @ loop {
 fux-vt/src/parser.rs: replace FrameScan::end -> Option<usize> with Some(1) @ loop {
-fux-vt/src/parser.rs: delete match arm 0x18 | 0x1a | 0x1b in FrameScan::sequence @ 0x18 | 0x1a | 0x1b => return Some((i, false)),
-fux-vt/src/parser.rs: delete match arm 0x20..= 0x2f in FrameScan::sequence @ 0x20..=0x2f => plain = false,
-fux-vt/src/parser.rs: delete match arm 0x30..= 0x7e in FrameScan::sequence @ 0x30..=0x7e => return Some((i.checked_add(1)?, false)),
-fux-vt/src/parser.rs: replace match guard plain with true in FrameScan::sequence @ b'[' if plain => return self.csi(bytes, i.checked_add(1)?),
-fux-vt/src/parser.rs: replace match guard plain with false in FrameScan::sequence @ b'[' if plain => return self.csi(bytes, i.checked_add(1)?),
-fux-vt/src/parser.rs: replace match guard plain with true in FrameScan::sequence @ b'c' if plain => return Some((i.checked_add(1)?, Self::RESET)),
-fux-vt/src/parser.rs: replace match guard plain with false in FrameScan::sequence @ b'c' if plain => return Some((i.checked_add(1)?, Self::RESET)),
-fux-vt/src/parser.rs: delete match arm 0x18 | 0x1a | 0x1b in FrameScan::csi @ 0x18 | 0x1a | 0x1b => return Some((i, false)),
-fux-vt/src/parser.rs: replace match guard ignored with true in FrameScan::csi @ 0x40..=0x7e if ignored => return Some((i.checked_add(1)?, false)),
-fux-vt/src/parser.rs: replace match guard ignored with false in FrameScan::csi @ 0x40..=0x7e if ignored => return Some((i.checked_add(1)?, false)),
-fux-vt/src/parser.rs: replace match guard ignored with true in FrameScan::csi @ _ if ignored => continue,
-fux-vt/src/parser.rs: replace match guard ignored with false in FrameScan::csi @ _ if ignored => continue,
-fux-vt/src/parser.rs: replace FrameScan::resume -> Pending with Default::default() @ self.pending
-fux-vt/src/parser.rs: replace == with != in FrameScan::end @ if self.resume() == Pending::Ground {
+fux-vt/src/parser.rs: replace == with != in FrameScan::end @ if self.pending == Pending::Ground {
 fux-vt/src/parser.rs: replace FrameScan::step -> bool with true @ let (next, ended) = match (self.pending, byte) {
 fux-vt/src/parser.rs: replace FrameScan::step -> bool with false @ let (next, ended) = match (self.pending, byte) {
 fux-vt/src/parser.rs: replace && with || in Parser::escape_dispatch @ let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
@@ -444,12 +425,9 @@ fux-vt/src/keys/decode.rs: replace > with == in csi @ if window.len() > limit {
 fux-vt/src/keys/decode.rs: replace > with < in csi @ if window.len() > limit {
 fux-vt/src/keys/decode.rs: replace > with >= in csi @ if window.len() > limit {
 fux-vt/src/keys/decode.rs: replace == with != in csi @ let answer = body.first() == Some(&b'?');
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Borrowed(Vec::leak(Vec::new()))) @ work!(keys, bytes.len());
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Owned(Vec::leak(Vec::new()).to_owned())) @ work!(keys, bytes.len());
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Borrowed(Vec::leak(vec![0]))) @ work!(keys, bytes.len());
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Owned(Vec::leak(vec![0]).to_owned())) @ work!(keys, bytes.len());
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Borrowed(Vec::leak(vec![1]))) @ work!(keys, bytes.len());
-fux-vt/src/keys/decode.rs: replace drop_to_end -> Result<Cow<'_, [u8]>, bool> with Ok(Cow::Owned(Vec::leak(vec![1]).to_owned())) @ work!(keys, bytes.len());
+fux-vt/src/keys/decode.rs: replace match guard begun.len() <= piece.len() with true in Decoder::feed @ State::Pending { held: begun, .. } if begun.len() <= piece.len() => {
+fux-vt/src/keys/decode.rs: replace match guard begun.len() <= piece.len() with false in Decoder::feed @ State::Pending { held: begun, .. } if begun.len() <= piece.len() => {
+fux-vt/src/keys/decode.rs: replace <= with > in Decoder::feed @ State::Pending { held: begun, .. } if begun.len() <= piece.len() => {
 
 # B23
 fux-vt/src/keys/decode.rs: replace <= with > in paste @ if !too_long && tail <= limit {
@@ -469,18 +447,7 @@ fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec:
 fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec::leak(vec![1])) @ let (mut text, too_long) = match pasted {
 
 # B24
-fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-fux-vt/src/keys/decode.rs: replace > with == in Decoder::bytes @ if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-fux-vt/src/keys/decode.rs: replace > with < in Decoder::bytes @ if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-fux-vt/src/keys/decode.rs: replace > with >= in Decoder::bytes @ if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-fux-vt/src/keys/decode.rs: replace && with || in Decoder::bytes @ if bytes.len() > HELD && self.may_hold() && !matches!(self.state, State::Idle) {
-fux-vt/src/keys/decode.rs: replace Decoder::held_first with () @ let piece = HELD.saturating_add(1);
-fux-vt/src/keys/decode.rs: replace < with == in Decoder::held_first @ while fed < bytes.len() {
-fux-vt/src/keys/decode.rs: replace < with > in Decoder::held_first @ while fed < bytes.len() {
-fux-vt/src/keys/decode.rs: replace < with <= in Decoder::held_first @ while fed < bytes.len() {
-fux-vt/src/keys/decode.rs: replace == with != in Decoder::held_first @ let begun = start.filter(|&at| bytes.get(at..fed) == Some(held.as_slice()));
-fux-vt/src/keys/decode.rs: replace Decoder::may_hold -> bool with true @ matches!(
-fux-vt/src/keys/decode.rs: replace Decoder::may_hold -> bool with false @ matches!(
+fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ self.feed(bytes, false, out);
 fux-vt/src/keys/decode.rs: replace + with - @ const HELD: usize = DCS_LIMIT + 2;
 fux-vt/src/keys/decode.rs: replace + with * @ const HELD: usize = DCS_LIMIT + 2;
 
@@ -521,7 +488,6 @@ fux-vt/src/compact.rs: replace match guard room with false in Line<'_, C>::store
 fux-vt/src/compact.rs: replace > with == in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
 fux-vt/src/compact.rs: replace > with < in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
 fux-vt/src/compact.rs: replace > with >= in Line<'_, C>::store_short @ if self.text.short.len().saturating_add(text.len()) > limit {
-fux-vt/src/compact.rs: replace Line<'_, C>::store_short with () @ if let Some(inline) = cell.holding(text) {
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::store_long @ let room = long.len().saturating_add(text.len()) <= limit;
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::append @ && store.len().saturating_add(encoded.len()) <= room
 fux-vt/src/compact.rs: replace Text::long_limit -> usize with 0 @ cells
@@ -578,32 +544,12 @@ fux-vt/src/grid.rs: replace > with < in Order::rotate @ if high < low || high >=
 fux-vt/src/grid.rs: replace > with >= in Order::rotate @ if high < low || high >= self.slots.len() || by > len {
 
 # B35
-fux-vt/src/budget.rs: replace * with + @ pub(crate) const CEILING: u64 = 50_000_000 * 20;
-fux-vt/src/budget.rs: replace * with / @ pub(crate) const CEILING: u64 = 50_000_000 * 20;
 fux-vt/src/budget.rs: replace units -> u64 with 0 @ n.try_into().unwrap_or(u64::MAX)
 fux-vt/src/budget.rs: replace units -> u64 with 1 @ n.try_into().unwrap_or(u64::MAX)
 fux-vt/src/budget.rs: replace spend with () @ SPENT.with(|spent| spent.set(spent.get().saturating_add(n.saturating_mul(weight))));
 fux-vt/src/budget.rs: replace spent -> u64 with 0 @ SPENT.with(Cell::get)
 fux-vt/src/budget.rs: replace spent -> u64 with 1 @ SPENT.with(Cell::get)
 fux-vt/src/work.rs: replace add with () @ WORK.with_borrow_mut(count);
-fux-vt/src/work.rs: replace Work::bytes with () @ self.bytes = self.bytes.saturating_add(n);
-fux-vt/src/work.rs: replace Work::scanned with () @ self.scanned = self.scanned.saturating_add(n);
-fux-vt/src/work.rs: replace Work::cells with () @ self.cells = self.cells.saturating_add(n);
-fux-vt/src/work.rs: replace Work::slots with () @ self.slots = self.slots.saturating_add(n);
-fux-vt/src/work.rs: replace Work::rows with () @ self.rows = self.rows.saturating_add(n);
-fux-vt/src/work.rs: replace Work::text with () @ self.text = self.text.saturating_add(n);
-fux-vt/src/work.rs: replace Work::pixels with () @ self.pixels = self.pixels.saturating_add(n);
-fux-vt/src/work.rs: replace Work::styles with () @ self.styles = self.styles.saturating_add(n);
-fux-vt/src/work.rs: replace Work::inserts with () @ self.inserts = self.inserts.saturating_add(n);
-fux-vt/src/work.rs: replace Work::lookups with () @ self.lookups = self.lookups.saturating_add(n);
-fux-vt/src/work.rs: replace Work::links with () @ self.links = self.links.saturating_add(n);
-fux-vt/src/work.rs: replace Work::prints with () @ self.prints = self.prints.saturating_add(n);
-fux-vt/src/work.rs: replace Work::keys with () @ self.keys = self.keys.saturating_add(n);
-
-# B32 to B36
-fux-vt/src/work.rs: replace Work::sums with () @ self.sums = self.sums.saturating_add(n);
-fux-vt/src/work.rs: replace Work::spans with () @ self.spans = self.spans.saturating_add(n);
-fux-vt/src/work.rs: replace Work::edits with () @ self.edits = self.edits.saturating_add(n);
 
 # B37
 fux-vt/src/screen.rs: replace Screen::resize -> Result<(), Error> with Ok(()) @ if self.size() == size {
@@ -650,7 +596,6 @@ fux-vt/src/lib.rs: replace degraded with () @ DEGRADED.with(|n| n.set(n.get().sa
 fux-vt/src/lib.rs: replace degrades -> u64 with 0 @ DEGRADED.with(std::cell::Cell::get)
 fux-vt/src/lib.rs: replace degrades -> u64 with 1 @ DEGRADED.with(std::cell::Cell::get)
 fux-vt/src/parser.rs: replace Parser::count_degrades with () @ if crate::degrades() != degrades {
-fux-vt/src/grid.rs: replace Grid::scroll_past_history with () @ crate::degraded();
 fux-vt/src/grid.rs: delete ! in Grid::clear @ if !self.holds_its_rows() {
 fux-vt/src/grid.rs: replace Grid::holds_its_rows -> bool with true @ let rows = usize::from(self.size.rows());
 fux-vt/src/grid.rs: replace Grid::holds_its_rows -> bool with false @ let rows = usize::from(self.size.rows());
