@@ -231,4 +231,3 @@ def main(root):
             failures += 1
             print('FAIL %s: %s: %s' % (scenario['name'], type(exc).__name__, exc), flush=True)
     return bool(failures)
-
