@@ -25,9 +25,9 @@ fux-vt = { path = "../fux-vt" }
 fuxix = { path = "../fuxix" }
 # The baseline it is run beside: the last release of each, as published.
 # Bump these after each release.
-baseline = { package = "fux", version = "=0.31.0" }
-baseline-vt = { package = "fux-vt", version = "=0.10.0" }
-baseline-ix = { package = "fuxix", version = "=0.6.1" }
+baseline = { package = "fux", version = "=0.33.1" }
+baseline-vt = { package = "fux-vt", version = "=0.12.1" }
+baseline-ix = { package = "fuxix", version = "=0.6.2" }
 
 [profile.release]
 # Overflow is an error here, as in a debug build.
