@@ -11,11 +11,13 @@ use crate::layout::{Axis, Placement, Rect};
 use crate::overlay;
 use crate::session::Session;
 use crate::view::{Mode, View};
+use fux_vt::sixel::Picture;
 use fux_vt::{Attributes, CellRef, Cells, Color, CursorShape, Hyperlink, Rgb, Row, Screen};
 use std::borrow::Cow;
 use std::io::Write;
+use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Grid {
     pub rows: u16,
     pub cols: u16,
@@ -31,8 +33,24 @@ pub struct Grid {
     /// painted as they are, else as plain underlines (`sgr`).
     pub underline_styles: bool,
     /// What composed the grid, if it can say (`Memo`). Not what the grid
-    /// shows: grids compare equal whatever composed them.
+    /// shows: grids compare equal whatever composed them, and a copy has
+    /// none.
     memo: Option<Memo>,
+}
+
+impl Clone for Grid {
+    fn clone(&self) -> Grid {
+        Grid {
+            rows: self.rows,
+            cols: self.cols,
+            cells: self.cells.clone(),
+            links: self.links.clone(),
+            cursor: self.cursor,
+            modes: self.modes,
+            underline_styles: self.underline_styles,
+            memo: None,
+        }
+    }
 }
 
 /// The modes a paint sets on the client's terminal from its focused pane,
@@ -79,36 +97,25 @@ pub fn cursor_shape(was: CursorShape, shape: CursorShape, out: &mut Vec<u8>) {
     }
 }
 
-/// A picture a client is shown: the pane it is in and its number there,
-/// the cells of the client's screen it takes (top row, first column, rows,
-/// columns), and the part of its pixels those show (left, top, width,
-/// height).
+/// A picture a client is shown: the pane it is in, the cells of the
+/// client's screen it takes (top row, first column, rows, columns), and the
+/// part of its pixels those show (left, top, width, height).
 #[derive(Clone, Debug)]
 pub struct Visible {
     pub pane: PaneId,
-    pub id: u64,
     pub area: (u16, u16, u16, u16),
     pub crop: (u32, u32, u32, u32),
-    pub picture: std::sync::Arc<fux_vt::sixel::Picture>,
+    pub picture: Arc<Picture>,
 }
 
-/// The same picture in the same place, showing the same part.
+/// The same picture in the same place, showing the same part. Pictures are
+/// told apart by their `Arc`, which both sides hold, so no other picture
+/// can take its address meanwhile.
 impl PartialEq for Visible {
     fn eq(&self, other: &Visible) -> bool {
-        self.sixel_key() == other.sixel_key() && self.area == other.area
-    }
-}
-
-impl Visible {
-    /// What its sixel data is kept by (`Sixels`): its pane, its number
-    /// there, its crop (left, top, width, height, as `crop`), and the
-    /// picture's address. A pane's program started again (`respawn`)
-    /// numbers its pictures from 0 again; while an old picture's data is
-    /// kept, the client's list of what it shows holds that picture, so a
-    /// new one has another address.
-    fn sixel_key(&self) -> SixelKey {
-        let address = std::sync::Arc::as_ptr(&self.picture).addr();
-        (self.pane, self.id, self.crop, address)
+        Arc::ptr_eq(&self.picture, &other.picture)
+            && self.crop == other.crop
+            && self.area == other.area
     }
 }
 
@@ -151,7 +158,6 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
             let (width, height) = (u32::from(cell.0), u32::from(cell.1));
             visible.push(Visible {
                 pane: id,
-                id: shown.id,
                 area: (
                     rect.y().saturating_add(top),
                     rect.x().saturating_add(shown.col),
@@ -164,28 +170,36 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                     u32::from(cols).saturating_mul(width),
                     u32::from(rows).saturating_mul(height),
                 ),
-                picture: std::sync::Arc::clone(shown.picture),
+                picture: Arc::clone(shown.picture),
             });
         }
     }
     visible
 }
 
-/// The sixel data of the pictures a client was last sent, each by its pane,
-/// number, crop and address (`Visible::sixel_key`): a picture that only moves is sent again with the same
+/// The sixel data of the pictures a client was last sent, each with its
+/// picture and crop: a picture that only moves is sent again with the same
 /// data at its new place, encoded once (`fux-vt/THREATS.md` B08). At most
 /// `SIXEL_BYTES` are kept; a picture past them is encoded each time it is
 /// sent.
 #[derive(Debug, Default)]
 pub struct Sixels {
-    kept: Vec<(SixelKey, Vec<u8>)>,
-    /// How many pictures were encoded: for the tests.
-    #[cfg(test)]
-    encoded: usize,
+    kept: Vec<Kept>,
 }
 
-/// What a picture's sixel data is kept by (`Visible::sixel_key`).
-type SixelKey = (PaneId, u64, (u32, u32, u32, u32), usize);
+/// A picture's sixel data for its crop.
+#[derive(Debug)]
+struct Kept {
+    picture: Arc<Picture>,
+    crop: (u32, u32, u32, u32),
+    data: Vec<u8>,
+}
+
+impl Kept {
+    fn shows(&self, picture: &Visible) -> bool {
+        Arc::ptr_eq(&self.picture, &picture.picture) && self.crop == picture.crop
+    }
+}
 
 /// The most sixel data a client keeps to send again: 16 MiB, a fixed
 /// bound on what the cache holds per client. At `fux-vt/THREATS.md` B08's
@@ -203,20 +217,16 @@ impl Sixels {
         let (row, col, _, _) = picture.area;
         out.extend_from_slice(b"\x1b7");
         goto(out, row, col);
-        let key = picture.sixel_key();
-        if let Some((_, data)) = self.kept.iter().find(|(k, _)| *k == key) {
-            out.extend_from_slice(data);
+        if let Some(kept) = self.kept.iter().find(|kept| kept.shows(picture)) {
+            out.extend_from_slice(&kept.data);
         } else {
             let mut data = Vec::new();
             fux_vt::sixel::encode(&picture.picture, picture.crop, &mut data);
-            #[cfg(test)]
-            {
-                self.encoded = self.encoded.saturating_add(1);
-            }
             out.extend_from_slice(&data);
-            let held: usize = self.kept.iter().map(|(_, d)| d.len()).sum();
+            let held: usize = self.kept.iter().map(|k| k.data.len()).sum();
             if held.saturating_add(data.len()) <= SIXEL_BYTES {
-                self.kept.push((key, data));
+                let (picture, crop) = (Arc::clone(&picture.picture), picture.crop);
+                self.kept.push(Kept { picture, crop, data });
             }
         }
         out.extend_from_slice(b"\x1b8");
@@ -225,15 +235,16 @@ impl Sixels {
     /// Lets go of the data of every picture not in `shown`, the pictures
     /// the client now shows.
     pub fn keep(&mut self, shown: &[Visible]) {
-        self.kept
-            .retain(|(key, _)| shown.iter().any(|p| p.sixel_key() == *key));
+        self.kept.retain(|kept| shown.iter().any(|p| kept.shows(p)));
     }
 }
 
 /// Grids are equal when they show the same.
 impl PartialEq for Grid {
     fn eq(&self, other: &Grid) -> bool {
-        self.head() == other.head() && self.cells == other.cells
+        self.head() == other.head()
+            && self.cells == other.cells
+            && (0..self.rows).all(|y| self.links.row_eq(&other.links, y))
     }
 }
 impl Eq for Grid {}
@@ -397,61 +408,53 @@ fn draw_row(
     }
 }
 
-/// Each cell's hyperlink (OSC 8), with the pane whose it is: none past
-/// the end, so that a grid none of whose cells has one, as most, holds
-/// nothing; and two grids whose cells have the same links are equal.
+/// Each row's hyperlinks (OSC 8), a cell each, with the pane whose each
+/// is: none for a row with none, as most, so that two such rows compare by
+/// their cells alone; rows past the end have none.
 #[derive(Clone, Debug, Default)]
-struct Links(Vec<Option<(PaneId, Hyperlink)>>);
+struct Links(Vec<Option<Vec<Link>>>);
+
+/// A cell's hyperlink, and the pane whose it is.
+type Link = Option<(PaneId, Hyperlink)>;
 
 impl Links {
-    /// The link of cell `i`.
-    fn get(&self, i: usize) -> Option<(PaneId, &Hyperlink)> {
-        let (pane, link) = self.0.get(i)?.as_ref()?;
+    fn row(&self, y: u16) -> Option<&[Link]> {
+        self.0.get(usize::from(y))?.as_deref()
+    }
+    fn get(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
+        let (pane, link) = self.row(y)?.get(usize::from(x))?.as_ref()?;
         Some((*pane, link))
     }
-    /// Gives cell `i` of a grid of `len` cells `link`.
-    fn set(&mut self, i: usize, link: Option<(PaneId, &Hyperlink)>, len: usize) {
-        if link.is_some() && self.0.is_empty() {
-            self.0.resize(len, None);
+    /// Gives cell `x` of row `y`, `cols` wide, `link`.
+    fn set(&mut self, y: u16, x: u16, link: Option<(PaneId, &Hyperlink)>, cols: u16) {
+        let y = usize::from(y);
+        if link.is_none() && self.0.get(y).is_none_or(Option::is_none) {
+            return;
         }
-        if let Some(at) = self.0.get_mut(i) {
+        if self.0.len() <= y {
+            self.0.resize(y.saturating_add(1), None);
+        }
+        let row = self.0.get_mut(y).map(|r| r.get_or_insert_with(|| vec![None; usize::from(cols)]));
+        if let Some(at) = row.and_then(|r| r.get_mut(usize::from(x))) {
             *at = link.map(|(pane, link)| (pane, link.clone()));
         }
     }
-    /// Cells `range` have no link. Inlined, as most grids have none: the
-    /// paths that set cells cost no call for them.
-    #[inline(always)]
-    fn unlink(&mut self, range: std::ops::Range<usize>) {
-        if !self.0.is_empty() {
-            self.unlink_some(range);
+    /// Cells `xs` of row `y` have no link.
+    fn unlink(&mut self, y: u16, xs: std::ops::Range<u16>) {
+        if let Some(Some(row)) = self.0.get_mut(usize::from(y)) {
+            let run = usize::from(xs.end.saturating_sub(xs.start));
+            row.iter_mut().skip(usize::from(xs.start)).take(run).for_each(|l| *l = None);
         }
     }
-    /// `unlink` for a grid whose cells may have links.
-    #[inline(never)]
-    fn unlink_some(&mut self, range: std::ops::Range<usize>) {
-        if let Some(run) = self.0.get_mut(range) {
-            run.fill(None);
+    /// Whether row `y` has the same links as `other`'s.
+    fn row_eq(&self, other: &Links, y: u16) -> bool {
+        match (self.row(y), other.row(y)) {
+            (Some(a), Some(b)) => a == b,
+            (Some(row), None) | (None, Some(row)) => row.iter().all(Option::is_none),
+            (None, None) => true,
         }
     }
-    /// Whether no cell has a link, as far as can be told without reading
-    /// them all: `false` if one may.
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
-
-impl PartialEq for Links {
-    fn eq(&self, other: &Links) -> bool {
-        let (long, short) = if self.0.len() < other.0.len() {
-            (&other.0, &self.0)
-        } else {
-            (&self.0, &other.0)
-        };
-        let short = short.iter().chain(std::iter::repeat(&None));
-        long.iter().zip(short).all(|(a, b)| a == b)
-    }
-}
-impl Eq for Links {}
 
 impl Grid {
     /// A blank grid `rows` by `cols`; one of no cells if that is more than
@@ -474,13 +477,13 @@ impl Grid {
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
     pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        self.links.get(self.index(y, x)?)
+        self.links.get(y, x)
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
     /// blanks it if `blank`, as a resized grid is anyway.
     fn reset(&mut self, rows: u16, cols: u16, blank: bool) {
-        self.links = Links::default();
+        self.links.0.clear();
         if (self.rows, self.cols) == (rows, cols) {
             if blank {
                 self.cells.fill(0..self.cells.len(), CellRef::default());
@@ -532,41 +535,25 @@ impl Grid {
             }
         }
     }
-    /// Forgets what composed the grid (`Memo`): it shows the same, and is
-    /// composed whole next time and painted by comparing every row. For
-    /// the oracles that check the memo against working without it.
-    #[doc(hidden)]
-    pub fn forget_memo(&mut self) {
-        self.memo = None;
-    }
-    /// All the grid shows but its cells.
+    /// All the grid shows but its cells and links.
     fn head(&self) -> impl PartialEq + '_ {
         (
             (self.rows, self.cols, self.cursor),
             (self.modes, self.underline_styles),
-            &self.links,
         )
     }
-    /// Whether the grid shows what `other` shows: the same as `==`, without
-    /// comparing the rows their memos show are the same (`SameFrame`).
-    pub fn same_as(&self, other: &Grid) -> bool {
-        if self.head() != other.head() {
-            return false;
-        }
-        let memo = SameFrame::of(self, other);
-        (0..self.rows)
-            .all(|y| memo.as_ref().is_some_and(|m| m.same_row(y)) || self.row_eq(other, y))
-    }
-    /// Whether row `y` has the same cells as `other`'s, a grid of its size:
-    /// compared by `Cells::range_eq`, without reading each cell's text.
+    /// Whether row `y` shows what `other`'s, a grid of its size, does: its
+    /// cells, compared by `Cells::range_eq` without reading each one's
+    /// text, and its links.
     fn row_eq(&self, other: &Grid, y: u16) -> bool {
-        self.cells.range_eq(&other.cells, self.span(y))
+        self.cells.range_eq(&other.cells, self.span(y)) && self.links.row_eq(&other.links, y)
     }
-    /// Whether the cell at (`y`, `x`) is the same as `other`'s, a grid of
-    /// its size, as `row_eq` compares them.
+    /// Whether the cell at (`y`, `x`) shows what `other`'s, a grid of its
+    /// size, does.
     fn cell_eq(&self, other: &Grid, y: u16, x: u16) -> bool {
         let i = cell_count(y, self.cols).saturating_add(usize::from(x));
         self.cells.range_eq(&other.cells, i..i.saturating_add(1))
+            && self.link(y, x) == other.link(y, x)
     }
     /// The cells of row `y`; none past the last row.
     pub fn row(&self, y: u16) -> impl Iterator<Item = CellRef<'_>> + Clone {
@@ -590,14 +577,15 @@ impl Grid {
         for (i, cell) in (start..).zip(row.cells().take(room)) {
             self.cells.set(i, cell);
         }
+        // At most the grid's width, a u16.
+        let room = u16::try_from(room).unwrap_or(u16::MAX);
         if !row.has_links() {
-            self.links.unlink(start..start.saturating_add(room));
+            self.links.unlink(y, x..x.saturating_add(room));
             return;
         }
-        let len = self.cells.len();
-        for (i, col) in (start..).zip(0..room) {
-            let link = row.link(col).map(|link| (pane, link));
-            self.links.set(i, link, len);
+        for (gx, col) in (x..).zip(0..room) {
+            let link = row.link(usize::from(col)).map(|link| (pane, link));
+            self.links.set(y, gx, link, self.cols);
         }
     }
     /// `put_row` for a row drawn twice as wide (`fux_vt::LineRendition`),
@@ -605,20 +593,18 @@ impl Grid {
     /// columns, its glyph and a blank in its colours, a wide glyph four;
     /// what the doubled cells do not reach of `width` is blank. A double
     /// height half is drawn as double width.
-    #[cold]
-    #[inline(never)]
     fn put_doubled_row(&mut self, y: u16, x: u16, pane: PaneId, row: &Row<'_>, width: u16) {
         let Some(start) = self.index(y, x) else {
             return;
         };
-        let room = usize::from(self.cols.saturating_sub(x).min(width));
-        let len = self.cells.len();
+        let room = self.cols.saturating_sub(x).min(width);
         for at in 0..room {
-            let (col, second) = (at / 2, at % 2 == 1);
-            let i = start.saturating_add(at);
+            let (col, second) = (usize::from(at / 2), at % 2 == 1);
+            let i = start.saturating_add(usize::from(at));
+            let gx = x.saturating_add(at);
             let Some(cell) = row.cell(col) else {
                 self.cells.set(i, CellRef::default());
-                self.links.unlink(i..i.saturating_add(1));
+                self.links.unlink(y, gx..gx.saturating_add(1));
                 continue;
             };
             // A wide glyph's two halves take the first two of its four
@@ -640,7 +626,7 @@ impl Grid {
                 }
             }
             let link = row.link(col).map(|link| (pane, link));
-            self.links.set(i, link, len);
+            self.links.set(y, gx, link, self.cols);
         }
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
@@ -670,7 +656,7 @@ impl Grid {
     fn put(&mut self, y: u16, x: u16, cell: CellRef<'_>) {
         if let Some(i) = self.index(y, x) {
             self.cells.set(i, cell);
-            self.links.unlink(i..i.saturating_add(1));
+            self.links.unlink(y, x..x.saturating_add(1));
         }
     }
     /// Blanks `area`, clipped at the grid's edge.
@@ -680,9 +666,9 @@ impl Grid {
             let Some(start) = self.index(y, area.x()) else {
                 return;
             };
-            let cells = start..start.saturating_add(count);
-            self.cells.fill(cells.clone(), CellRef::default());
-            self.links.unlink(cells);
+            self.cells
+                .fill(start..start.saturating_add(count), CellRef::default());
+            self.links.unlink(y, area.x()..area.right());
         }
     }
     /// Sets a cell, keeping wide glyphs whole: overwriting either half of
@@ -700,7 +686,7 @@ impl Grid {
             && self.cells.get(leader).is_some_and(|c| c.is_wide())
         {
             self.cells.set(leader, CellRef::default());
-            self.links.unlink(leader..index);
+            self.links.unlink(y, x.saturating_sub(1)..x);
         }
         if was_wide
             && !cell.is_wide()
@@ -711,10 +697,11 @@ impl Grid {
                 .is_some_and(|c| c.is_wide_continuation())
         {
             self.cells.set(rest, CellRef::default());
-            self.links.unlink(rest..rest.saturating_add(1));
+            let after = x.saturating_add(1);
+            self.links.unlink(y, after..after.saturating_add(1));
         }
         self.cells.set(index, cell);
-        self.links.unlink(index..index.saturating_add(1));
+        self.links.unlink(y, x..x.saturating_add(1));
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
@@ -750,14 +737,13 @@ impl Grid {
     /// Shows `area` as `shown`, a grid of the same size, shows it
     /// (`compose_held`).
     fn keep_area(&mut self, shown: &Grid, area: Rect) {
-        let len = self.cells.len();
         for y in area.rows() {
             for x in area.cols() {
                 if let Some(i) = self.index(y, x)
                     && let Some(cell) = shown.cells.get(i)
                 {
                     self.cells.set(i, cell);
-                    self.links.set(i, shown.links.get(i), len);
+                    self.links.set(y, x, shown.link(y, x), self.cols);
                 }
             }
         }
@@ -1692,32 +1678,34 @@ pub(crate) fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 
 /// Appends the bytes that turn `shown`, what the client shows if `known`
 /// (else what it last showed, whose cursor shape it keeps), into `new` to
-/// `out`.
-pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
-    if known && echo(shown, new, out) {
-        return;
+/// `out`; false, appending nothing, if the client shows `new` already.
+/// Each row is compared once.
+pub fn paint_into(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) -> bool {
+    let full = !known
+        || (shown.rows, shown.cols, shown.underline_styles)
+            != (new.rows, new.cols, new.underline_styles);
+    let rows = differing_rows((!full).then_some(shown), new);
+    if !full && rows.is_empty() && (shown.cursor, shown.modes) == (new.cursor, new.modes) {
+        return false;
     }
-    paint_whole(shown, known, new, out);
-}
-
-/// Whether row `y` of two grids of a size shows the same: its cells, and,
-/// if either grid has links (`links`), its cells' links.
-#[inline]
-fn same_row(old: &Grid, new: &Grid, y: u16, links: bool) -> bool {
-    old.row_eq(new, y) && (!links || (0..new.cols).all(|x| old.link(y, x) == new.link(y, x)))
+    if !full && echo(shown, new, &rows, out) {
+        return true;
+    }
+    paint_whole(shown, known, (!full).then_some(shown), new, &rows, out);
+    true
 }
 
 /// The rows of `new` that differ from `old`, a grid of its size (every
 /// row, if there is none): those whose memo does not show them the same
 /// and whose cells or links differ.
-fn differing_rows<'a>(old: Option<&'a Grid>, new: &'a Grid) -> impl Iterator<Item = u16> + 'a {
-    let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
+fn differing_rows(old: Option<&Grid>, new: &Grid) -> Vec<u16> {
     let memo = old.and_then(|o| SameFrame::of(o, new));
-    (0..new.rows).filter(move |&y| {
-        // An unchanged row costs this one comparison.
-        !memo.as_ref().is_some_and(|m| m.same_row(y))
-            && old.is_none_or(|o| !same_row(o, new, y, links))
-    })
+    (0..new.rows)
+        .filter(|&y| {
+            // An unchanged row costs this one comparison.
+            !memo.as_ref().is_some_and(|m| m.same_row(y)) && old.is_none_or(|o| !o.row_eq(new, y))
+        })
+        .collect()
 }
 
 /// A keystroke's echo, painted as a terminal shows it typed: when all that
@@ -1728,22 +1716,17 @@ fn differing_rows<'a>(old: Option<&'a Grid>, new: &'a Grid) -> impl Iterator<Ite
 /// attributes, from the default every paint leaves. Nothing else changes
 /// for the terminal: not the cursor's shape or visibility, the mouse, a
 /// link, a wide glyph. Whether it was so; if not, nothing is written.
-fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
-    if (old.rows, old.cols, old.underline_styles, old.modes)
-        != (new.rows, new.cols, new.underline_styles, new.modes)
-        || !old.links.is_empty()
-        || !new.links.is_empty()
-    {
-        return false;
-    }
+fn echo(old: &Grid, new: &Grid, rows: &[u16], out: &mut Vec<u8>) -> bool {
     let (Some((oy, ox)), Some((y, to))) = (old.cursor, new.cursor) else {
         return false;
     };
-    if to == 0 || to >= new.cols {
-        return false;
-    }
-    let mut rows = differing_rows(Some(old), new);
-    if rows.next() != Some(y) || rows.next().is_some() {
+    if old.modes != new.modes
+        || to == 0
+        || to >= new.cols
+        || rows != [y]
+        || old.links.row(y).is_some()
+        || new.links.row(y).is_some()
+    {
         return false;
     }
     // The run is from the first changed cell of the row to the cursor's
@@ -1824,33 +1807,27 @@ fn echo(old: &Grid, new: &Grid, out: &mut Vec<u8>) -> bool {
     }
     true
 }
-/// [`paint_into`] without the echo's short way.
-fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
-    let old = known.then_some(shown);
+/// [`paint_into`] without the echo's short way: `rows` painted, compared
+/// cell by cell with `before`, what the client shows if it is not painted
+/// whole.
+fn paint_whole(
+    shown: &Grid,
+    known: bool,
+    before: Option<&Grid>,
+    new: &Grid,
+    rows: &[u16],
+    out: &mut Vec<u8>,
+) {
     out.extend_from_slice(b"\x1b[?2026h\x1b[?25l");
-    // Learning that the terminal draws underline styles repaints it whole,
-    // so that what it shows takes them.
-    let full = old.is_none_or(|o| {
-        o.rows != new.rows || o.cols != new.cols || o.underline_styles != new.underline_styles
-    });
-    if full {
+    if before.is_none() {
         out.extend_from_slice(b"\x1b[0m\x1b[H\x1b[2J");
     }
     let mut current: Option<Attributes> = None;
     // The hyperlink the client's terminal has open.
     let mut open = None;
-    // Whether either grid has a link: if neither does, no cell's changed.
-    let links = !new.links.is_empty() || old.is_some_and(|o| !o.links.is_empty());
-    // What the client shows, unless all is painted whole: a grid of the same
-    // size, so the two index their cells alike. Grids of one frame show the
-    // same cells on a pane row whose keys are the same in both (`Memo`): no
-    // comparison needed.
-    let before = old.filter(|_| !full);
-    for y in differing_rows(before, new) {
+    for &y in rows {
         let cell = |x: u16| new.get(y, x);
-        let changed = |x: u16| {
-            before.is_none_or(|o| !o.cell_eq(new, y, x) || links && o.link(y, x) != new.link(y, x))
-        };
+        let changed = |x: u16| before.is_none_or(|o| !o.cell_eq(new, y, x));
         let mut x = 0u16;
         while x < new.cols {
             // Moving right stops at the last column, where the loop ends.
@@ -1891,12 +1868,10 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
                     sgr(out, attrs, new.underline_styles);
                     current = Some(attrs);
                 }
-                if links {
-                    let link = new.link(y, cx);
-                    if link != open {
-                        hyperlink(out, link);
-                        open = link;
-                    }
+                let link = new.link(y, cx);
+                if link != open {
+                    hyperlink(out, link);
+                    open = link;
                 }
                 let width = if wide { 2 } else { 1 };
                 // Most cells hold one byte of ASCII, which neither joins the
@@ -1926,79 +1901,46 @@ fn paint_whole(shown: &Grid, known: bool, new: &Grid, out: &mut Vec<u8>) {
 
 #[cfg(test)]
 mod tests {
-    /// A picture that moves, its crop the same, is encoded once, and sent
-    /// at each place with the same data; a new crop is encoded again, and
-    /// a picture no longer shown is let go of (`fux-vt/THREATS.md` B08).
+    /// A picture that moves, its crop the same, is encoded once and sent at
+    /// each place with the same data; a new crop is encoded again; another
+    /// picture in the same place and crop (a respawned pane's) is sent its
+    /// own data; and a picture no longer shown is let go of
+    /// (`fux-vt/THREATS.md` B08).
     #[test]
     fn a_moving_picture_is_encoded_once() -> Result<(), String> {
-        let rgba: Vec<u8> = std::iter::repeat_n([255, 0, 0, 255], 20 * 12)
-            .flatten()
-            .collect();
-        let picture =
-            std::sync::Arc::new(fux_vt::sixel::Picture::new(20, 12, rgba).ok_or("20 by 12")?);
-        let at = |row: u16, crop: (u32, u32, u32, u32)| Visible {
-            pane: PaneId::of(1),
-            id: 7,
-            area: (row, 0, 1, 2),
-            crop,
-            picture: std::sync::Arc::clone(&picture),
-        };
-        let whole = (0, 0, 20, 12);
-        let mut sixels = Sixels::default();
-        let mut sent = Vec::new();
-        for row in 0..100 {
-            let mut out = Vec::new();
-            sixels.picture_into(&at(row, whole), &mut out);
-            sixels.keep(&[at(row, whole)]);
-            sent.push(out);
-        }
-        assert_eq!(sixels.encoded, 1, "encoded each time it moved");
-        let mut alone = Vec::new();
-        fux_vt::sixel::encode(&picture, whole, &mut alone);
-        assert_eq!(
-            sent.last(),
-            Some(&[b"\x1b7\x1b[100;1H".as_slice(), &alone, b"\x1b8"].concat())
-        );
-        let mut out = Vec::new();
-        sixels.picture_into(&at(0, (0, 6, 20, 6)), &mut out);
-        assert_eq!(sixels.encoded, 2, "a new crop is encoded");
-        sixels.keep(&[]);
-        assert!(sixels.kept.is_empty(), "kept what no longer shows");
-        Ok(())
-    }
-
-    /// A pane's program started again (`respawn`) numbers its pictures
-    /// from 0 again: a new picture with an old one's number, place and
-    /// crop is another picture, sent with its own data.
-    #[test]
-    fn a_new_picture_with_an_old_number_is_sent_anew() -> Result<(), String> {
         let solid = |rgba: [u8; 4]| {
             let pixels = std::iter::repeat_n(rgba, 20 * 12).flatten().collect();
-            fux_vt::sixel::Picture::new(20, 12, pixels)
-                .map(std::sync::Arc::new)
-                .ok_or("20 by 12")
+            Picture::new(20, 12, pixels).map(Arc::new).ok_or("20 by 12")
         };
         let (red, blue) = (solid([255, 0, 0, 255])?, solid([0, 0, 255, 255])?);
-        let at = |picture: &std::sync::Arc<fux_vt::sixel::Picture>| Visible {
+        let at = |picture: &Arc<Picture>, row: u16, crop| Visible {
             pane: PaneId::of(1),
-            id: 1,
-            area: (0, 0, 1, 2),
-            crop: (0, 0, 20, 12),
-            picture: std::sync::Arc::clone(picture),
+            area: (row, 0, 1, 2),
+            crop,
+            picture: Arc::clone(picture),
         };
-        assert!(at(&red) != at(&blue), "another picture shows");
+        let whole = (0, 0, 20, 12);
+        let sent = |picture: &Arc<Picture>, row: u16| {
+            let mut alone = Vec::new();
+            fux_vt::sixel::encode(picture, whole, &mut alone);
+            [format!("\x1b7\x1b[{};1H", row + 1).as_bytes(), &alone, b"\x1b8"].concat()
+        };
         let mut sixels = Sixels::default();
+        for row in 0..100 {
+            let mut out = Vec::new();
+            sixels.picture_into(&at(&red, row, whole), &mut out);
+            sixels.keep(&[at(&red, row, whole)]);
+            assert_eq!(out, sent(&red, row));
+            assert_eq!(sixels.kept.len(), 1, "encoded again as it moved");
+        }
+        sixels.picture_into(&at(&red, 0, (0, 6, 20, 6)), &mut Vec::new());
+        assert_eq!(sixels.kept.len(), 2, "a new crop is encoded");
+        assert!(at(&red, 0, whole) != at(&blue, 0, whole));
         let mut out = Vec::new();
-        sixels.picture_into(&at(&red), &mut out);
-        sixels.keep(&[at(&red), at(&blue)]);
-        out.clear();
-        sixels.picture_into(&at(&blue), &mut out);
-        let mut alone = Vec::new();
-        fux_vt::sixel::encode(&blue, (0, 0, 20, 12), &mut alone);
-        assert_eq!(
-            out,
-            [b"\x1b7\x1b[1;1H".as_slice(), &alone, b"\x1b8"].concat()
-        );
+        sixels.picture_into(&at(&blue, 0, whole), &mut out);
+        assert_eq!(out, sent(&blue, 0));
+        sixels.keep(&[]);
+        assert!(sixels.kept.is_empty(), "kept what no longer shows");
         Ok(())
     }
 
@@ -2139,11 +2081,12 @@ mod tests {
                     continue;
                 }
                 let bytes = paint(painted.then_some(&showing), &spare);
-                let (mut plain_old, mut plain_new) = (showing.clone(), spare.clone());
-                plain_old.forget_memo();
-                plain_new.forget_memo();
+                // Copies, which have no memo.
+                let (plain_old, plain_new) = (showing.clone(), spare.clone());
+                let before = painted.then_some(&plain_old);
+                let rows = differing_rows(before, &plain_new);
                 let mut slow = Vec::new();
-                paint_whole(&plain_old, painted, &plain_new, &mut slow);
+                paint_whole(&plain_old, painted, before, &plain_new, &rows, &mut slow);
                 if !bytes.starts_with(b"\x1b[?2026h") {
                     short += 1;
                 }
@@ -2180,7 +2123,9 @@ mod tests {
             let alone =
                 (0..after.cols).any(|x| after.get(0, x).is_some_and(|c| c.contents() == typed));
             assert!(alone, "{typed:?} is no cell of its own");
-            assert_eq!(echo(&before, &after, &mut Vec::new()), echoed, "{typed:?}");
+            let rows = differing_rows(Some(&before), &after);
+            let echoes = echo(&before, &after, &rows, &mut Vec::new());
+            assert_eq!(echoes, echoed, "{typed:?}");
         }
         Ok(())
     }
@@ -2190,8 +2135,8 @@ mod tests {
     /// rows that may differ: through random output into split panes,
     /// scrolling, the alternate screen, links, resizes, copy mode, a
     /// notice and splits, after every step the grid is what composing
-    /// whole gives, its paint is the paint comparing every row, and
-    /// `same_as` is `==`.
+    /// whole gives, its paint is the paint comparing every row, and it
+    /// paints nothing just when the grids are equal.
     #[test]
     fn composing_in_part_is_composing_whole() -> Result<(), String> {
         use crate::id::PaneId;
@@ -2255,17 +2200,16 @@ mod tests {
                 let whole = compose(&s, c).ok_or("no client")?;
                 assert!(spare == whole, "case {case}, step {step}: composed in part");
                 let fast = paint(painted.then_some(&shown), &spare);
-                let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
-                plain_old.forget_memo();
-                plain_new.forget_memo();
+                // Copies, which have no memo.
+                let (plain_old, plain_new) = (shown.clone(), spare.clone());
                 let slow = paint(painted.then_some(&plain_old), &plain_new);
                 assert!(
                     fast == slow,
                     "case {case}, step {step}: the memo's paint differs"
                 );
                 assert_eq!(
-                    spare.same_as(&shown),
-                    spare == shown,
+                    fast.is_empty(),
+                    painted && spare == shown,
                     "case {case}, step {step}"
                 );
                 std::mem::swap(&mut spare, &mut shown);

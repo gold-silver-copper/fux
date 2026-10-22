@@ -4,6 +4,7 @@
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
 use crate::code::Code;
+use crate::command::{Command, Request};
 use crate::decode::Input;
 use crate::door::{self, Link};
 use crate::keymap::Keymap;
@@ -278,10 +279,17 @@ impl Requests {
 
     /// Sends `asked`, and waits for its reply, which may come in pieces:
     /// what the server streams before it (`events`) goes to `out` as it
-    /// comes.
+    /// comes. A request that may start programs carries this process's
+    /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         self.stream.set_read_timeout(None);
-        send(&mut self.stream, asked)?;
+        if starts_programs(&asked.request) && asked.context.env.is_empty() {
+            let mut asked = asked.clone();
+            asked.context.env = environment();
+            send(&mut self.stream, &asked)?;
+        } else {
+            send(&mut self.stream, asked)?;
+        }
         let mut parts = Vec::new();
         loop {
             while let Some(frame) = self.decoder.frame()? {
@@ -312,17 +320,34 @@ impl Requests {
 }
 
 /// Where requests from this process come from: its directory, its pane
-/// and that pane's server, its environment.
+/// and that pane's server. Its environment goes only with the requests
+/// that may start programs (`Requests::ask`).
 pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
         cwd: std::env::current_dir().unwrap_or_default(),
         pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
-        env: environment(),
+        env: Vec::new(),
         client: None,
         restoring: false,
     }
+}
+
+/// Whether `request` may start programs: the only requests whose caller's
+/// environment the server reads.
+fn starts_programs(request: &Request) -> bool {
+    let (Request::Do(command) | Request::Then(command, _)) = request else {
+        return false;
+    };
+    matches!(
+        command,
+        Command::NewWorkspace { .. }
+            | Command::NewTab { .. }
+            | Command::Run { .. }
+            | Command::Respawn { .. }
+            | Command::Split { .. }
+    )
 }
 
 /// This process's environment, its values as the bytes they are, its

@@ -485,15 +485,14 @@ impl Run {
             );
             let old = painted.then_some(&*shown);
             let fast = paint(old, spare);
-            let (mut plain_old, mut plain_new) = (shown.clone(), spare.clone());
-            plain_old.forget_memo();
-            plain_new.forget_memo();
+            // Copies, which have no memo.
+            let (plain_old, plain_new) = (shown.clone(), spare.clone());
             let slow = paint(painted.then_some(&plain_old), &plain_new);
             assert!(fast == slow, "{c}: the memo's paint differs");
             assert_eq!(
-                spare.same_as(shown),
-                *spare == *shown,
-                "{c}: same_as is not =="
+                fast.is_empty(),
+                *painted && *spare == *shown,
+                "{c}: painted nothing, or something, for the same screen"
             );
             std::mem::swap(spare, shown);
             *painted = true;
