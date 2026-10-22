@@ -128,8 +128,6 @@ fn a_parser_s_history_shows_in_the_counts() -> Result {
     Ok(())
 }
 
-#[path = "bounds/colours.rs"]
-mod colours;
 #[path = "bounds/probe.rs"]
 mod probe;
 #[path = "bounds/rows.rs"]

@@ -645,7 +645,7 @@ fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
     assert_eq!(pasted((64 << 10) + 1), [Input::PasteTooLong]);
 }
 
-/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs, `-` and `*`), `held_first`'s `bytes.len() > HELD` (decode.rs, `>=`) and its `&&` (decode.rs, `||`): a long read gives what is held the 259 bytes that decide it, reads the rest where it lies, and returns.
+/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs, `-` and `*`) and `feed`'s room (decode.rs): a long read gives what is held the bytes that make it 259, which decide it, reads the rest where it lies, and returns.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
@@ -667,14 +667,14 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
         let idle = fux_vt::Work::now().since(before).keys;
         Ok((held, idle))
     })?;
-    // Each byte decoded once, after the 259 copied once behind the Escape.
-    assert_eq!(held, 1001 + 259);
+    // Each byte decoded once, after the 258 copied once behind the Escape.
+    assert_eq!(held, 1001 + 258);
     // Each byte decoded once, and the Escape left held copied once.
     assert_eq!(idle, 517 + 1);
     Ok(())
 }
 
-/// B24, `Decoder::may_hold` (decode.rs, `true`): a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
+/// B24: a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_while_a_string_is_dropped_is_read_whole() {
@@ -955,7 +955,7 @@ fn a_repeat_on_a_one_column_screen_makes_every_copy() -> Result {
     Ok(())
 }
 
-/// B24, `Decoder::held_first`'s `fed < bytes.len()` (decode.rs, `<` to `<=`): a held read of exactly 259 bytes that ends on the ESC of an answer dropped past its limit returns, and the `\` after it ends the drop.
+/// B24: a held read of exactly 259 bytes that ends on the ESC of an answer dropped past its limit returns, and the `\` after it ends the drop.
 #[test]
 fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Result {
     let (dropped, after, typed) = in_time(|| {

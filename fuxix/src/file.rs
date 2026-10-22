@@ -44,7 +44,7 @@ pub fn scratch() -> std::io::Result<std::path::PathBuf> {
 /// A descriptor naming the file at `path`, a symbolic link refused,
 /// without opening it for reading or writing (`O_PATH`). While it is held
 /// the file's inode stays allocated, so its number cannot be given to
-/// another file (bevy-final finding 014).
+/// another file.
 #[cfg(not(target_os = "macos"))]
 pub fn pin(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;

@@ -75,37 +75,49 @@ impl Master {
     /// poll that does not wait says. Not `FIONREAD`: on Linux a write to
     /// the slave reaches the master's count only once a kernel worker has
     /// moved it on (`flush_to_ldisc`), which a poll or a read waits for and
-    /// `FIONREAD` does not (just after a write it said 0 nearly every time);
-    /// on macOS `FIONREAD` on a master counts the keys its program has yet
-    /// to read instead (xnu's `ttnread`).
+    /// `FIONREAD` does not; on macOS `FIONREAD` on a master counts the keys
+    /// its program has yet to read instead (xnu's `ttnread`).
     pub fn output_unread(&self) -> bool {
-        let mut fds = [crate::poll::PollFd::new(&self.0, crate::poll::Events::IN)];
-        let polled = crate::poll::poll(&mut fds, Some(std::time::Duration::ZERO));
-        polled.is_ok_and(|n| n > 0)
-            && (fds.iter()).any(|fd| fd.revents().intersects(crate::poll::Events::IN))
+        readable(&self.0)
     }
 
-    /// Whether keys wait in the terminal for its program to read: blocked
-    /// in a read still, it has yet to be woken (a busy machine) to read
-    /// them. Where the slave is not held, it is opened only to ask, so
-    /// that its program's end still closes it.
+    /// Whether keys wait in the terminal for its program to read.
     pub fn keys_unread(&self) -> bool {
         self.keys_waiting() > 0
     }
 
-    /// How many bytes of keys wait in the terminal for its program to read.
+    /// How many bytes of keys wait in the terminal for its program to read
+    /// (at least 1 while a poll of the slave says it is readable). On Linux
+    /// the slave is opened to ask (so that its program's end still closes
+    /// it), and polled first: a poll moves on what the master's writes left
+    /// on their way (`flush_to_ldisc`, as for `output_unread`), which
+    /// `FIONREAD` alone misses; `FIONREAD` then counts what a poll of a
+    /// read waiting for more keys (`VMIN`) does not. On macOS the held
+    /// slave's `FIONREAD` counts them.
     pub fn keys_waiting(&self) -> usize {
         #[cfg(target_os = "macos")]
-        let unread = crate::io::unread(&self.2);
+        let slave = Ok::<_, Errno>(self.2.as_fd());
         #[cfg(not(target_os = "macos"))]
-        let unread = std::fs::OpenOptions::new()
+        let opened = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-            .open(&self.1)
-            .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
-            .and_then(crate::io::unread);
-        unread.unwrap_or(0)
+            .open(&self.1);
+        #[cfg(not(target_os = "macos"))]
+        let slave = opened.as_ref().map(AsFd::as_fd);
+        slave.map_or(0, |slave| {
+            let polled = usize::from(readable(slave));
+            crate::io::unread(slave).unwrap_or(0).max(polled)
+        })
     }
+}
+
+/// Whether `fd` is readable, as a poll that does not wait says.
+fn readable(fd: impl AsFd) -> bool {
+    use crate::poll::{Events, PollFd, poll};
+    let fd = fd.as_fd();
+    let mut fds = [PollFd::new(&fd, Events::IN)];
+    poll(&mut fds, Some(std::time::Duration::ZERO)).is_ok_and(|n| n > 0)
+        && fds.iter().any(|fd| fd.revents().intersects(Events::IN))
 }
 
 impl AsFd for Master {
@@ -518,6 +530,24 @@ mod tests {
         Ok(())
     }
 
+    /// Keys written to the master are counted at once, though on Linux they
+    /// have yet to be moved on to the slave; read, they are not.
+    #[test]
+    fn keys_in_transit_are_waiting() -> std::result::Result<(), String> {
+        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
+        let mut modes = terminal::attributes(&slave).map_err(|e| e.to_string())?;
+        modes.make_raw();
+        terminal::set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
+        for _ in 0..100 {
+            assert!(!master.keys_unread());
+            assert_eq!(crate::io::write(&master, b"keys"), Ok(4));
+            assert_eq!(master.keys_waiting(), 4);
+            let mut buffer = [0u8; 8];
+            assert_eq!(crate::io::read(&slave, &mut buffer), Ok(4));
+        }
+        Ok(())
+    }
+
     /// On macOS the master is close-on-exec from its opening, where the
     /// system takes `O_CLOEXEC`: as `posix_openpt` gave it, before anything
     /// else could set the flag.
@@ -561,51 +591,30 @@ mod tests {
         (result, calls, sleeps)
     }
 
+    /// The races are retried, with growing sleeps, up to the bound: then
+    /// `AGAIN` for `EREDRIVEOPEN` (never the kernel's -6), and `ENXIO` as it
+    /// is (no PTY is free). Every other result is returned at once.
     #[test]
-    fn a_redriven_open_is_tried_again_and_its_success_returned() {
-        let (result, calls, sleeps) = redrive_script(&[Err(Errno::REDRIVEOPEN), Ok(7)]);
-        assert_eq!(result, Ok(7));
-        assert_eq!(calls, 2);
-        assert_eq!(sleeps, [std::time::Duration::from_millis(1)]);
-    }
-
-    #[test]
-    fn an_open_redriven_every_time_gives_again_after_the_bound() {
-        let (result, calls, sleeps) = redrive_script(&[]);
-        assert_eq!(result, Err(Errno::AGAIN), "never the kernel's -6");
-        assert_eq!(calls, usize::try_from(REDRIVE_TRIES).unwrap_or(0));
-        let slept: std::time::Duration = sleeps.iter().sum();
+    fn only_the_races_are_tried_again_and_within_the_bound() {
+        let tries = usize::try_from(REDRIVE_TRIES).unwrap_or(0);
+        let ms = std::time::Duration::from_millis;
         assert_eq!(
-            slept,
-            std::time::Duration::from_millis(28),
-            "the documented worst case"
+            redrive_script(&[Err(Errno::REDRIVEOPEN), Ok(7)]),
+            (Ok(7), 2, vec![ms(1)])
         );
-    }
-
-    /// ENXIO from a lost race with a close is retried; one that lasts, as
-    /// every PTY being in use does, is returned as ENXIO after the bound.
-    #[test]
-    fn an_open_lost_to_a_close_is_tried_again() {
-        let (result, calls, _) = redrive_script(&[Err(Errno::NXIO), Ok(5)]);
-        assert_eq!((result, calls), (Ok(5), 2));
-        let always = vec![Err(Errno::NXIO); usize::try_from(REDRIVE_TRIES).unwrap_or(0)];
-        let (result, calls, _) = redrive_script(&always);
-        assert_eq!(result, Err(Errno::NXIO), "not AGAIN: no PTY is free");
-        assert_eq!(calls, usize::try_from(REDRIVE_TRIES).unwrap_or(0));
-    }
-
-    #[test]
-    fn other_results_are_returned_at_once() {
+        assert_eq!(redrive_script(&[Err(Errno::NXIO), Ok(5)]).0, Ok(5));
+        let (result, calls, sleeps) = redrive_script(&[]);
+        assert_eq!((result, calls), (Err(Errno::AGAIN), tries));
+        assert_eq!(sleeps.iter().sum::<std::time::Duration>(), ms(28));
+        let (result, calls, _) = redrive_script(&vec![Err(Errno::NXIO); tries]);
+        assert_eq!((result, calls), (Err(Errno::NXIO), tries));
         for first in [
             Ok(3),
             Err(Errno::INTR),
             Err(Errno::MFILE),
             Err(Errno::AGAIN),
         ] {
-            let (result, calls, sleeps) = redrive_script(&[first]);
-            assert_eq!(result, first);
-            assert_eq!(calls, 1, "{first:?} is not retried");
-            assert!(sleeps.is_empty(), "{first:?} does not sleep");
+            assert_eq!(redrive_script(&[first]), (first, 1, vec![]), "{first:?}");
         }
     }
 
@@ -776,6 +785,7 @@ mod tests {
     /// Many threads of one process opening PTYs at once: none fails, and on
     /// macOS none is slowed by the kernel's retry loop.
     #[test]
+    #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
     fn concurrent_opens_in_one_process_neither_fail_nor_stall() -> std::result::Result<(), String> {
         let _alone = STRESS
             .lock()
@@ -806,6 +816,7 @@ mod tests {
     /// ours stands between them: none fails. The test runs its own binary as
     /// the workers.
     #[test]
+    #[ignore = "opens thousands of PTYs on every core: cargo test -p fuxix -- --ignored"]
     fn concurrent_opens_across_processes_never_fail() -> std::result::Result<(), String> {
         const NAME: &str = "pty::tests::concurrent_opens_across_processes_never_fail";
         if let Some(rounds) = std::env::var_os(STRESS_WORKER) {
