@@ -58,58 +58,23 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
 - An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
   its pane settles, with its state and what came since: `%3 reading · done
   0`, then the output. A `line` waits for the shell command it typed to end
-  (or to take the full screen, or to wait for keys: a prompt, or a REPL
-  polling its terminal as it edits a line, quiet a second); keys sent into a command that runs on
-  settle once it reads or is quiet, `%3 waiting · command running`. A
-  full-screen program that redraws by itself (a clock, `top`) is never
-  quiet: it settles once it read the keys and drew after them, `%3 waiting ·
-  redraws on its own` (a later capture may differ; `str TEXT wait-text`
-  waits for a text). A pane `waiting` that is no full-screen program says it
-  may be at work, or, blocked off its terminal (a build over `koh exec`, a
-  download), that fux cannot tell when it waits for input, and names
-  `%3 wait-exit wait` (`wait-done` for a marked command) to wait for its end. After keys, the state line names what plain text
-  hides: a selection they highlighted anew (`· highlight 6,16-25
-  "1761.5"`), and the cursor after a line edited, when text goes on under
-  or right of it, or when the keys moved it alone (`· cursor 3,7`; a
-  capture's state line says it too); keys a program that exited never
-  read went nowhere, and are named (`%3 exited 0 · it exited before
-  reading C-q, which went nowhere`). A relay
-  (`koh connect`) says what the remote program does with a state report,
-  `OSC 133 ; S ; activity=reading ; nonce=N`, which stands for fux's own
-  probe while no mark came after it and it came after the last input, once
-  the screen is quiet a moment after it: a
-  remote pager or REPL answers `reading` as a local one does. A relay that
-  owes a report since the last input (its program may have ended there) is
-  quiet 5s before it is `waiting`, so a remote `exit` answers `exited 0`
-  once koh closes its link. A line a shell in front reads again where
-  nothing marks commands (a plain `sh`, `koh connect SERVER -- sh`) says
-  `· no status: nothing here marks its commands`: no `done` comes (not
-  said of a REPL's line, or a calculator's). A remote client that reports
-  nothing (plain `ssh`, `mosh`, `telnet`) reads its terminal whatever runs
-  on the other machine, so fux cannot tell whether that waits or works: it
-  is `waiting` once quiet a second, never `reading` (nor status 7), and the
-  answer says so with the wait that fits: `· ssh runs its command on another
-  machine, …: `%3 wait-exit wait` waits for its end` (a command on a pipe,
-  which ssh ends with: `fux opts str 'ssh -n HOST make' command run`, then
-  `%3 wait-exit wait`), or, for a terminal there, `str TEXT wait-text`.
-  Keys that end in an Escape alone (or a sequence begun) settle once the
-  program drew after them, or 750ms on: programs wait that long at most to
-  tell a lone Escape from a key's sequence. A failure prints `fux: CODE: MESSAGE` on stderr,
-  with the file, line and word, and exits 1 (2 for `usage`); an action's or wait's own
-  status is the exit status, while its answer is left (`drop` it, and it
-  is 0): 3 the program exited first, 4 the pane closed, 5 the shell
-  command a `wait-done` lasted for ended first,
-  7 the program reads its terminal and the waited text has not come, 124
-  still busy at the time limit, which is no failure of the program (the
-  answer says `· still at work at the 30s limit, not failed: `%3 wait` waits
-  on`; `SECS timeout` on the pane,
-  `%3 0 timeout str ls line`; the `wait-seconds`
-  setting, 30, by default; `0 timeout` answers at once). A wait met by its program's exit
-  (`wait-exit`) exits 0: the program's own status is in the answer
-  (`%3 exited 2`, `str exited get`), not in fux's.
-- `fux FILE` runs a file (a word with a `/` or ending `.fux`); `fux -` runs
-  what stdin says; a single word with spaces is a whole program
-  (`fux 'ls json'`). `#` starts a comment. A paste is at most 900 KiB.
+  (or to take the full screen, or to wait for keys). A full-screen program
+  that redraws by itself (a clock, `top`) settles once it read the keys and
+  drew after them (`· redraws on its own`). Notes after the state say what
+  plain text hides: a selection highlighted anew, keys an exited program
+  never read, a shell that marks no commands. [docs/agents.md](docs/agents.md)
+  says what each state and note means. A failure prints `fux: CODE:
+  MESSAGE` on stderr, with the file, line and word, and exits 1; an action's
+  or wait's own status is the exit status, while its answer is left (`drop`
+  it, and it is 0): 3 the program exited first, 4 the pane closed, 5 the
+  shell command a `wait-done` lasted for ended first, 7 the program reads
+  its terminal and the waited text has not come, 124 still busy at the time
+  limit (`SECS timeout` on the pane; 30 s by default; `0 timeout` answers at
+  once). A wait met by its program's exit (`wait-exit`) exits 0: the
+  program's own status is in the answer (`%3 exited 2`).
+- A single argument with spaces is a whole program (`fux 'ls json'`);
+  otherwise `fux FILE` runs a file (one with a `/` or ending `.fux`), and
+  `fux -` runs what stdin says. `#` starts a comment. A paste is at most 900 KiB.
 - The language's core is small on purpose: 21 words (`drop pick roll`, `add
   sub mul div`, `lt eq`, `len at slice concat push put`, `code char`, `kind
   string print fail`) and its parsing words: `str WORD`, `define NAME …
@@ -126,12 +91,10 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   upper lower number join contains starts-with pad`), lists (`range sort
   reverse sum count first last pack`) and more; `fux help` lists them all.
 - A program is checked before it runs: a word given fewer values than the
-  stack surely holds, a value its words never take (`str a 1 add`, `1 if`,
-  `%3 capture str x text`), or keys or options left that no word acts on
-  (`%3 str x text`), fails before any word acts; a wait left last on the
-  pane waits (`%3 str x wait-text`). What can't be known
-  before it runs (a loop that leaves values, a list's elements) is never
-  refused, and is checked as it runs.
+  stack surely holds, a value the core's words never take (`str a 1 add`,
+  `1 if`), or keys or options left that no word acts on (`%3 str x text`),
+  fails before any word acts. What can't be known before it runs (a
+  library word's values, a loop, a list's elements) is checked as it runs.
 - No word is a character a shell treats specially, so a program needs no
   quoting beyond the text you give `str`.
 
