@@ -337,9 +337,10 @@ fux-vt/src/history.rs: replace > with >= in History::make_room @ let capacity = 
 fux-vt/src/history.rs: replace / with % in History::make_room @ let capacity = if first || len > block / 2 { len } else { block };
 fux-vt/src/history.rs: replace / with * in History::make_room @ let capacity = if first || len > block / 2 { len } else { block };
 fux-vt/src/history.rs: replace History::maps_changed with () @ self.texts.shrink();
-fux-vt/src/history.rs: replace > with == in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
-fux-vt/src/history.rs: replace > with < in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
-fux-vt/src/history.rs: replace > with >= in History::maps_changed @ if self.ended.capacity() > most_room(self.ended.len()) {
+fux-vt/src/history.rs: replace shrink with () @ if deque.capacity() > most_room(deque.len()) {
+fux-vt/src/history.rs: replace > with == in shrink @ if deque.capacity() > most_room(deque.len()) {
+fux-vt/src/history.rs: replace > with < in shrink @ if deque.capacity() > most_room(deque.len()) {
+fux-vt/src/history.rs: replace > with >= in shrink @ if deque.capacity() > most_room(deque.len()) {
 fux-vt/src/history.rs: replace most_room -> usize with 0 @ len.saturating_mul(4).saturating_add(64)
 fux-vt/src/history.rs: replace most_room -> usize with 1 @ len.saturating_mul(4).saturating_add(64)
 fux-vt/src/history/ring.rs: replace Ring::advance -> bool with true @ self.head = self.head.saturating_add(n);

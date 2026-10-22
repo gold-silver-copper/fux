@@ -68,6 +68,7 @@ impl<T> ByRow<T> {
         let at = self.at(number).ok()?;
         self.0.remove(at).map(|(_, value)| value)
     }
+    #[cfg(feature = "checks")]
     fn len(&self) -> usize {
         self.0.len()
     }
@@ -88,12 +89,8 @@ impl<T> ByRow<T> {
             self.0.pop_back();
         }
     }
-    /// Gives back room past four times its entries and 64, so that a map
-    /// growing by doubling doesn't shrink back at once (`THREATS.md` B17).
     fn shrink(&mut self) {
-        if self.0.capacity() > most_room(self.len()) {
-            self.0.shrink_to(self.len());
-        }
+        shrink(&mut self.0);
     }
 }
 
@@ -178,6 +175,14 @@ impl Kept {
 /// The most room a map holds for `len` entries before giving some back.
 fn most_room(len: usize) -> usize {
     len.saturating_mul(4).saturating_add(64)
+}
+
+/// Gives back `deque`'s room past [`most_room`] for its entries, so that
+/// one growing by doubling doesn't shrink back at once (`THREATS.md` B17).
+fn shrink<T>(deque: &mut VecDeque<T>) {
+    if deque.capacity() > most_room(deque.len()) {
+        deque.shrink_to(deque.len());
+    }
 }
 
 /// The cells of a row before its blank tail: those history keeps.
@@ -887,9 +892,7 @@ impl History {
         self.texts.shrink();
         self.linked.shrink();
         self.renditions.shrink();
-        if self.ended.capacity() > most_room(self.ended.len()) {
-            self.ended.shrink_to(self.ended.len());
-        }
+        shrink(&mut self.ended);
         self.recount();
     }
 
@@ -1156,6 +1159,7 @@ impl History {
             )
         })?;
         for (name, capacity, len) in [
+            ("ended lines", self.ended.capacity(), self.ended.len()),
             ("texts", self.texts.0.capacity(), self.texts.len()),
             ("links", self.linked.0.capacity(), self.linked.len()),
             (

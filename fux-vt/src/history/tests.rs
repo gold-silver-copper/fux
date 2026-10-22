@@ -248,3 +248,19 @@ fn spans_of_rows_let_go_while_history_is_made_anew_go_too() -> Result<(), Error>
     }
     Ok(())
 }
+
+/// The room history's deques keep: up to four times their entries and 64,
+/// and no more, so one that grew by doubling and lost entries gives room
+/// back only past that (`shrink`, `THREATS.md` B17).
+#[test]
+fn a_deque_keeps_room_for_four_times_its_entries_and_64() {
+    let mut deque = VecDeque::<u64>::with_capacity(128);
+    let room = deque.capacity();
+    assert!(room >= 64 && room.is_multiple_of(4), "{room}");
+    deque.extend(0..u64::try_from(room.saturating_sub(64) / 4).unwrap_or(0));
+    shrink(&mut deque);
+    assert_eq!(deque.capacity(), room, "at the most it keeps");
+    deque.pop_back();
+    shrink(&mut deque);
+    assert!(deque.capacity() < room, "past it");
+}

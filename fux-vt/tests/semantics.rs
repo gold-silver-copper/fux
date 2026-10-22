@@ -672,6 +672,18 @@ fn a_resize_without_reflow_keeps_a_pending_wrap_and_resets_the_region() -> Resul
     Ok(())
 }
 
+/// A resize keeps the cursor DECSC saved, as xterm keeps it: on its row,
+/// which a resize that takes no row away leaves where it was.
+#[test]
+fn a_resize_keeps_the_saved_cursor() -> Result {
+    let mut p = Parser::new(Size::new(5, 10)?, 0)?;
+    p.process(b"\x1b[3;4H\x1b7\x1b[1;1H")?;
+    p.resize(Size::new(6, 12)?)?;
+    p.process(b"\x1b8")?;
+    assert_eq!(p.screen().cursor_position(), (2, 3));
+    Ok(())
+}
+
 /// Without reflow, a resize that keeps the width keeps the screen's rows'
 /// soft wraps, as it keeps history's: the rows are as they were, and a copy
 /// joins them still (`Row::wrapped`'s contract). One that changes the width

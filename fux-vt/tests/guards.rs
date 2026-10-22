@@ -672,6 +672,61 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
     Ok(())
 }
 
+/// B24, `feed`'s re-read (decode.rs, the guard with `false`, and `<=` with `>`): a sequence begun in the bytes given what is held, and left held by them, is read again where it lies in the read, with the rest after it, not copied with them: each byte is decoded as a short read would, once, after the 258 copied once behind the Escape, and the sequence's 8 read and copied as held once before.
+#[cfg(feature = "checks")]
+#[test]
+fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Result {
+    // An Escape held, then 250 `a`s and 8 bytes of a CSI that end the 258
+    // given it, the CSI's end and 1,000 `b`s.
+    let mut read = vec![b'a'; 250];
+    read.extend_from_slice(b"\x1b[1;2;3;4A");
+    read.extend([b'b'; 1000]);
+    let (keys, out) = in_time(move || {
+        let mut out = Vec::new();
+        let mut d = Decoder::default();
+        d.bytes(b"\x1b", &mut out);
+        let before = fux_vt::Work::now();
+        d.bytes(&read, &mut out);
+        Ok((fux_vt::Work::now().since(before).keys, out))
+    })?;
+    assert_eq!(keys, 1 + 1260 + 258 + 2 * 8);
+    let mut short = Vec::new();
+    let mut d = Decoder::default();
+    d.bytes(b"\x1b", &mut short);
+    for byte in [vec![b'a'; 250], b"\x1b[1;2;3;4A".to_vec(), vec![b'b'; 1000]].concat() {
+        d.bytes(&[byte], &mut short);
+    }
+    assert_eq!(out, short);
+    Ok(())
+}
+
+/// B24, `feed`'s re-read (decode.rs, the guard with `true`): a sequence begun in what was held, and left held by the bytes given it, is held on, not read again from the read: `ESC ESC` held while an answer is expected, then a read that its second Escape begins a DCS answer of 256 bytes with gives an Escape and the answer, as short reads do, and types none of the answer.
+#[test]
+fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
+    let mut payload = b"1+r536d756c78=".to_vec();
+    payload.resize(256, b'0');
+    let read = [b"P".as_slice(), &payload, b"\x1b\\x"].concat();
+    let decoded = |reads: &[&[u8]]| {
+        let mut d = Decoder::default();
+        d.expect(Instant::now());
+        let mut out = Vec::new();
+        d.bytes(b"\x1b\x1b", &mut out);
+        for read in reads {
+            d.bytes(read, &mut out);
+        }
+        out
+    };
+    let long = decoded(&[read.as_slice()]);
+    let short: Vec<&[u8]> = read.iter().map(std::slice::from_ref).collect();
+    assert_eq!(long, decoded(&short));
+    assert_eq!(
+        long.iter().filter(|i| matches!(i, Input::Key(_))).count(),
+        2,
+        "{long:?}"
+    );
+    Ok(())
+}
+
 /// B24: a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
 #[cfg(feature = "checks")]
 #[test]
