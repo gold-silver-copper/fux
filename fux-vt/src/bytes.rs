@@ -2,12 +2,9 @@
 //! input waiting to be decoded, its output waiting to be written.
 use std::ops::Range;
 
-/// `slice::copy_within`, checked: copies the run `src` of `slice` to start at
-/// `dest`, if both runs lie within it.
-///
-/// `copy_within` panics on a range out of bounds, so fux calls it here, after
-/// this check, and nowhere else but `Grid::move_row`, whose ranges are its
-/// run's own (clippy.toml says why).
+/// `slice::copy_within`, checked: `None` unless both runs lie within
+/// `slice`. `copy_within` panics out of bounds, so fux calls it only here
+/// and in `Grid::move_row` (clippy.toml says why).
 fn copy_within<T: Copy>(slice: &mut [T], src: Range<usize>, dest: usize) -> Option<()> {
     let fits = src.start <= src.end
         && src.end <= slice.len()
@@ -51,34 +48,27 @@ impl ByteQueue {
         self.bytes.extend_from_slice(more);
     }
     /// Appends what `write` adds to the end of the queue's buffer, in place.
-    /// The bytes already there are the queue's: `write` should only add
-    /// after them, or take back what it added. One that truncates below
-    /// them leaves the queue holding what is left, and what is pushed
-    /// later is not lost.
+    /// `write` should only add after the queued bytes; one that truncates
+    /// them leaves the queue holding what is left.
     pub fn push_with<T>(&mut self, write: impl FnOnce(&mut Vec<u8>) -> T) -> T {
         self.compact();
         let wrote = write(&mut self.bytes);
         self.clamp_taken();
         wrote
     }
-    /// Takes no more than the buffer holds: after a `push_with` whose
-    /// closure cut the buffer short, what was taken ends at its end.
+    /// Keeps `taken` within a buffer `push_with`'s closure cut short.
     fn clamp_taken(&mut self) {
         if self.taken > self.bytes.len() {
             self.taken = self.bytes.len();
         }
     }
-    /// Reclaims the space taken, once at least as much has been taken as is
-    /// left.
+    /// Reclaims the space taken once it is at least as large as what is
+    /// left, so each byte is copied at most once on average.
     fn compact(&mut self) {
-        // What is left moves to the front, into the space taken, which is at
-        // least as large. Only what is left is copied.
         if self.taken >= self.len() {
             self.move_to_front();
         }
     }
-    /// Moves what is left to the front of the buffer, over what was taken,
-    /// if any was.
     fn move_to_front(&mut self) {
         let (taken, end) = (self.taken, self.bytes.len());
         if taken > 0 && copy_within(&mut self.bytes, taken..end, 0).is_some() {
@@ -87,8 +77,7 @@ impl ByteQueue {
         }
     }
     /// Gives back the buffer's memory beyond `keep` bytes, once no more than
-    /// that is queued: a queue that once held a large frame or paint does
-    /// not keep its size for the life of the connection.
+    /// that is queued, so one large frame does not pin its size.
     pub fn shrink(&mut self, keep: usize) {
         if self.len() > keep || self.bytes.capacity() <= keep {
             return;
@@ -156,8 +145,6 @@ mod tests {
         let len = queue.len();
         assert_eq!(queue.take_front(len), b"abc");
         assert!(queue.is_empty() && queue.as_slice().is_empty());
-        // Bytes taken from the front are lent until the next push, which
-        // reclaims their space once the queue is empty.
         queue.push(b"frame");
         assert_eq!(queue.take_front(3), b"fra");
         assert_eq!(queue.take_front(9), b"me");
@@ -190,7 +177,6 @@ mod tests {
         let mut queue = ByteQueue::default();
         let mut out: Vec<u8> = Vec::new();
         let mut rest = stream.as_slice();
-        // Pushes of 7 and takes of 5 bytes, then a drain at the end.
         while let Some((piece, after)) = rest.split_at_checked(7) {
             queue.push(piece);
             out.extend(queue.as_slice().iter().take(5));

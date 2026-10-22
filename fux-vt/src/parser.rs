@@ -1,6 +1,6 @@
-//! Direct DEC ANSI transition parser, based on Paul Williams's transition
-//! model (reference and attribution in the crate README), with UTF-8 ground decoding.
-//! Ignored control strings retain no payload. No parser dependency is used.
+//! DEC ANSI parser after Paul Williams's transition model (attribution in
+//! the crate README), with UTF-8 decoding in ground. Ignored control
+//! strings retain no payload.
 
 use crate::mode::{Mode, Modes};
 use crate::{
@@ -20,13 +20,11 @@ pub(crate) struct Parameters {
     sub: u32,
     len: usize,
     /// Whether a separator came after the last slot: the parameters past
-    /// it are ignored, and the sequence runs with the first 32, as DEC
-    /// STD 070 (3.5.3.1) lets parameters "beyond the maximum number
-    /// supported" be.
+    /// it are ignored, as DEC STD 070 (3.5.3.1) lets parameters "beyond the
+    /// maximum number supported" be.
     full: bool,
-    /// After a private marker, whether a digit or a separator was read,
-    /// which tells `CSI > m`, with no parameter, from `CSI > 0 m`; kept
-    /// only there, as only XTMODKEYS reads it.
+    /// After a private marker, whether a digit or a separator was read:
+    /// XTMODKEYS tells `CSI > m` from `CSI > 0 m`.
     pub(crate) given: bool,
 }
 impl Default for Parameters {
@@ -63,25 +61,21 @@ impl Parameters {
         self.continue_group(self.len, colon);
         self.len = len;
     }
-    /// Marks value `index` as continuing the previous group if `colon`.
     #[inline]
     fn continue_group(&mut self, index: usize, colon: bool) {
         if colon && let Ok(index) = u32::try_from(index) {
             self.sub |= 1u32.wrapping_shl(index);
         }
     }
-    /// Whether value `index` continues the previous group.
     fn continues(&self, index: usize) -> bool {
         u32::try_from(index)
             .ok()
             .and_then(|i| self.sub.checked_shr(i))
             .is_some_and(|bits| bits & 1 != 0)
     }
-    /// `separator` for a reader that keeps the parameter being read and
-    /// how many there are itself (`Parser::sequence`): the parameter
-    /// `len` ends with `value`, and the next begins, continuing its group
-    /// if `colon`. The new count, or `None`, with nothing changed, where
-    /// there is no slot for another (`separator` is then `full`).
+    /// `separator` for a reader that keeps the current value and count
+    /// itself (`Parser::csi_sequence`). The new count, or `None`, with nothing
+    /// changed, where there is no slot for another.
     #[inline]
     fn next(&mut self, len: usize, value: u16, colon: bool) -> Option<usize> {
         let more = len.checked_add(1).filter(|n| *n <= self.values.len())?;
@@ -89,8 +83,7 @@ impl Parameters {
         self.continue_group(len, colon);
         Some(more)
     }
-    /// The parameters as such a reader leaves them: `len` of them, the
-    /// last `value`.
+    /// Stores such a reader's count and last value.
     #[inline]
     fn end(&mut self, len: usize, value: u16) {
         if let Some(slot) = len.checked_sub(1).and_then(|i| self.values.get_mut(i)) {
@@ -99,8 +92,7 @@ impl Parameters {
         self.len = len;
     }
     /// Back to one empty parameter, touching only what `separator` and
-    /// `digit` read: a CSI or DCS is begun often, so this is kept to
-    /// four stores rather than rewriting all the parameters.
+    /// `digit` read, as a CSI or DCS is begun often.
     fn clear(&mut self) {
         self.len = 1;
         self.sub = 0;
@@ -129,9 +121,8 @@ impl Parameters {
         self.len == 1 && self.values.first() == Some(&0)
     }
     /// The first value of the group `index`, or `default` if it is 0 or
-    /// there is no such group. Without colons the group is the value: a
-    /// load, inlined into every caller, where a sequence with colons asks
-    /// `grouped` out of line.
+    /// there is no such group. Without colons the group is the value, a
+    /// plain load; with colons `grouped` is called out of line.
     #[inline(always)]
     pub fn first(&self, index: usize, default: u16) -> u16 {
         let value = if self.sub != 0 {
@@ -147,7 +138,6 @@ impl Parameters {
             Some(value) => value,
         }
     }
-    /// The first value of the group `index`, if there is one.
     #[inline(never)]
     fn grouped(&self, index: usize) -> Option<u16> {
         self.groups().nth(index).and_then(|g| g.first()).copied()
@@ -156,8 +146,7 @@ impl Parameters {
 
 /// The non-ASCII character a valid UTF-8 sequence at the start of `bytes`
 /// encodes, and its length; `None` for ASCII, and for a sequence invalid or
-/// cut short, which the byte-by-byte path reads. The checks are `lead`'s,
-/// which that path makes too.
+/// cut short, which the byte-by-byte path reads.
 fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     let &first = bytes.first()?;
     let (length, low, high) = lead(first)?;
@@ -174,21 +163,18 @@ fn decode(bytes: &[u8]) -> Option<(char, usize)> {
     Some((char::from_u32(code)?, length))
 }
 
-/// The characters of the valid UTF-8 `bytes` begins with, decoded one by
-/// one, and how many bytes they took: decoding stops at the first byte
-/// that is not valid or complete UTF-8, or not past ASCII.
+/// The non-ASCII characters of the valid UTF-8 `bytes` begins with, and how
+/// many bytes they took.
 pub(crate) struct Chars<'a> {
     bytes: &'a [u8],
     taken: usize,
 }
 
 impl<'a> Chars<'a> {
-    /// How many bytes the characters decoded so far took.
     #[inline]
     pub(crate) fn taken(&self) -> usize {
         self.taken
     }
-    /// The text of bytes `range`, decoded already.
     pub(crate) fn text(&self, range: std::ops::Range<usize>) -> &'a str {
         let bytes = self.bytes.get(range).unwrap_or_default();
         str::from_utf8(bytes).unwrap_or_default()
@@ -232,14 +218,12 @@ const fn lead(first: u8) -> Option<(usize, u8, u8)> {
 }
 
 /// How many bytes `bytes` begins with are printable ASCII, 0x20 to 0x7e,
-/// its first being one: a run of one, as a character between sequences
-/// is, by the second byte alone; else eight at a time, as a word, then one
-/// at a time. In a word, a byte below 0x20 borrows when 0x20 is taken from
-/// it, setting its top bit where the byte's own is clear; one from 0x7f up
-/// has its top bit set once 1 is added to it, or before. A borrow or carry
-/// runs only into the bytes after the one it came from, so the first byte
-/// flagged is the first that is not printable. Its one caller checks the
-/// first byte; without that, the count would be off, not a panic.
+/// its first being one (its caller checks; else the count is off, not a
+/// panic). Eight at a time, as a word: a byte below 0x20 borrows when 0x20
+/// is taken from it, setting its top bit where the byte's own is clear; one
+/// from 0x7f up has its top bit set once 1 is added to it, or before. A
+/// borrow or carry runs only into later bytes, so the first byte flagged is
+/// the first that is not printable.
 fn printable(bytes: &[u8]) -> usize {
     if !bytes.get(1).is_some_and(|b| (0x20..=0x7e).contains(b)) {
         return 1;
@@ -265,17 +249,14 @@ fn printable(bytes: &[u8]) -> usize {
     )
 }
 
-/// Where the first ESC in `bytes` is: eight bytes at a time, as a word, as
-/// `printable` reads them, then one at a time. XOR with ESC makes an ESC
-/// a zero byte, and a zero byte alone borrows when 1 is taken from it with
-/// its top bit clear; a borrow runs only into the bytes after it, so the
-/// first byte flagged is the first ESC.
+/// Where the first ESC in `bytes` is, a word at a time: XOR with ESC makes
+/// an ESC a zero byte, which `zeros` flags.
 fn esc_in(bytes: &[u8]) -> Option<usize> {
     first_flagged(bytes, |x| zeros(x ^ ONES.wrapping_mul(0x1b)), |b| b == 0x1b)
 }
 
-/// Where the first ESC, CAN or SUB in `bytes` is, a word at a time as
-/// `esc_in` finds an ESC: where an ignored string may end.
+/// Where the first ESC, CAN or SUB in `bytes` is, a word at a time: where an
+/// ignored string may end.
 fn string_end(bytes: &[u8]) -> Option<usize> {
     let flag = |x: u64| {
         zeros(x ^ ONES.wrapping_mul(0x1b))
@@ -295,9 +276,7 @@ fn control_in(bytes: &[u8]) -> Option<usize> {
     first_flagged(bytes, flag, |b| b < 0x20 || b == 0x7f)
 }
 
-/// Every byte of a word 0x01.
 const ONES: u64 = u64::from_le_bytes([0x01; 8]);
-/// Every byte's top bit.
 const TOPS: u64 = u64::from_le_bytes([0x80; 8]);
 
 /// The top bit of each zero byte of `x`, and perhaps of bytes after one: a
@@ -307,9 +286,8 @@ const fn zeros(x: u64) -> u64 {
     x.wrapping_sub(ONES) & !x & TOPS
 }
 
-/// Where the first byte of `bytes` is that `flag` flags in its word (the
-/// top bit of the byte, exact for the first one flagged), eight bytes at a
-/// time, then the rest by `byte`.
+/// Where the first byte of `bytes` is that `flag` flags in its word (exact
+/// for the first one flagged), then the tail by `byte`.
 #[inline(always)]
 fn first_flagged(
     bytes: &[u8],
@@ -334,34 +312,30 @@ fn first_flagged(
 enum State {
     #[default]
     Ground,
-    /// A character's first bytes, its lead byte first.
+    /// A character's first bytes.
     Utf8(Bytes<4>),
-    /// An escape sequence and its intermediates: none yet, at its ESC.
     Escape(Intermediates),
     /// An escape sequence with more intermediates than are kept: read to
     /// its final byte, and not carried out.
     EscapeIgnore,
-    /// A CSI; its parameters are the parser's.
     Csi(Phase),
-    /// A CSI that will not be carried out, read to its final byte.
     CsiIgnore,
-    /// A DCS before its final byte; its parameters are the parser's.
+    /// A DCS before its final byte.
     Dcs(Phase),
     /// A string read to its end and dropped: a DCS fux-vt does not
     /// answer, SOS, PM or APC.
     IgnoreString,
-    /// Sixel data (`DCS P1 ; P2 ; P3 q … ST`), decoded as it comes by the
-    /// parser's decoder; its end places the picture.
+    /// Sixel data, decoded as it comes; its end places the picture.
     Sixel,
-    /// A DECRQSS (`DCS $ q Pt ST`) with [`Feature::SettingReports`]: its
-    /// request so far, `None` once it ran past any setting fux-vt knows.
+    /// A DECRQSS (`DCS $ q Pt ST`): its request so far, `None` once it ran
+    /// past any setting fux-vt knows.
     Request(Option<Bytes<REQUEST_LIMIT>>),
-    /// An OSC string, its payload the parser's: `whole` until it ran past
-    /// what is kept of one.
-    Osc { whole: bool },
+    /// `whole` until it ran past what is kept of one.
+    Osc {
+        whole: bool,
+    },
 }
 
-/// Up to `N` bytes, as many as were read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Bytes<const N: usize> {
     bytes: [u8; N],
@@ -382,11 +356,10 @@ impl<const N: usize> Default for Bytes<N> {
 }
 
 impl<const N: usize> Bytes<N> {
-    /// `byte` alone.
     fn of(byte: u8) -> Self {
         Self::default().push(byte).unwrap_or_default()
     }
-    /// These bytes and `byte`, or `None` if there is no room for it.
+    /// `None` if there is no room for `byte`.
     fn push(mut self, byte: u8) -> Option<Self> {
         *self.bytes.get_mut(usize::from(self.len))? = byte;
         self.len = self.len.checked_add(1)?;
@@ -402,26 +375,22 @@ impl<const N: usize> Bytes<N> {
 enum Phase {
     /// Nothing read after its introducer.
     Entry,
-    /// Reading parameters, after a private marker if there is one.
+    /// After a private marker if there is one.
     Param(Intermediates),
-    /// Reading intermediates.
     Intermediate(Intermediates),
 }
 
-/// Where a frame drawn in synchronized output ends, read from the bytes
-/// a host holds after its BSU ([`Parser::process_until_stop`]) as the
-/// parser will read them, nothing carried out. ESC begins a sequence
-/// anywhere, in a string too, so only what follows each ESC is read: as
-/// `Parser::byte` reads an escape sequence or a CSI (`Phase::next`, the
-/// parameters, controls within, CAN and SUB cancelling). Made by
-/// [`Parser::frame_scan`]; it goes on from where it stopped, so each
-/// byte is read once however the frame comes split.
+/// Finds where a frame drawn in synchronized output ends in the bytes a
+/// host holds after its BSU ([`Parser::process_until_stop`]), reading them
+/// as the parser will, nothing carried out. ESC begins a sequence anywhere,
+/// in a string too, so only what follows each ESC is read. Made by
+/// [`Parser::frame_scan`]; it goes on from where it stopped, so each byte
+/// is read once however the frame comes split.
 #[derive(Clone, Debug)]
 pub struct FrameScan {
-    /// Where in the held bytes it goes on: past what it has read.
     from: usize,
-    /// Where it is in a sequence the bytes read so far end in the middle
-    /// of, kept so that no byte is read twice (`THREATS.md` B19).
+    /// Where it is in a sequence the bytes so far end in the middle of,
+    /// so that no byte is read twice (`THREATS.md` B19).
     pending: Pending,
     params: Parameters,
     options: Options,
@@ -429,8 +398,7 @@ pub struct FrameScan {
     saved: bool,
 }
 
-/// Where a frame scan is in the sequence it reads: none, an escape
-/// sequence (`plain` while no intermediate came), or a CSI.
+/// Where a frame scan is in the sequence it reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Pending {
     #[default]
@@ -440,10 +408,8 @@ enum Pending {
         plain: bool,
     },
     Csi {
-        /// Where `Phase::next` is in its parameters.
         phase: Phase,
-        /// Read to its final byte and not carried out, as
-        /// `State::CsiIgnore` is.
+        /// Read to its final byte and not carried out (`State::CsiIgnore`).
         ignored: bool,
     },
 }
@@ -454,10 +420,8 @@ impl FrameScan {
     const RESET: bool = !Modes::DEFAULT.contains(Mode::SynchronizedOutput);
     /// Reads `held`, the frame's bytes so far, from where it stopped: how
     /// many of them go up to and through the sequence that ends
-    /// synchronized output, as the parser carries it out (DECRST naming
-    /// it, XTRESTORE of it saved reset, DECSTR, DECSCL, RIS); `None` if none
-    /// does. Between sequences it goes to the next ESC at once; each byte
-    /// is read once, however the frame comes split.
+    /// synchronized output (DECRST naming it, XTRESTORE of it saved reset,
+    /// DECSTR, DECSCL, RIS); `None` if none does.
     pub fn end(&mut self, held: &[u8]) -> Option<usize> {
         loop {
             if self.pending == Pending::Ground {
@@ -523,13 +487,10 @@ impl FrameScan {
         ended
     }
 
-    /// Whether the CSI just read, `intermediates` and `byte` its own,
-    /// ends synchronized output, as `Screen::csi` carries it out: DECRST
-    /// (`CSI ? Pm l`) with it among its parameters, each a group of one as
-    /// `set_modes` reads them; XTRESTORE (`CSI ? Pm r`) of it while XTSAVE
-    /// (`CSI ? Pm s`) holds it reset; DECSTR (`CSI ! p`), which resets it
-    /// with the modes `Modes::SOFT_RESET` names, and DECSCL (`CSI 61 " p`,
-    /// `CSI 62 " p`), which does a soft reset.
+    /// Whether the CSI just read ends synchronized output, as `Screen::csi`
+    /// carries it out: DECRST (`CSI ? Pm l`) naming it; XTRESTORE (`CSI ? Pm
+    /// r`) of it while XTSAVE holds it reset; DECSTR (`CSI ! p`) and DECSCL
+    /// (`CSI 61 " p`, `CSI 62 " p`), which do a soft reset.
     fn ends(&mut self, intermediates: &[u8], byte: u8) -> bool {
         let ours = |n: &u16| Mode::of(*n, true, &self.options) == Some(Mode::SynchronizedOutput);
         let named = || self.params.groups().any(|g| matches!(g, [n] if ours(n)));
@@ -542,7 +503,6 @@ impl FrameScan {
                 false
             }
             (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
-            // DECSCL of a level fux-vt supports, which resets as DECSTR does.
             (b"\"", b'p') => {
                 Self::RESET
                     && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput)
@@ -570,20 +530,16 @@ impl FrameScan {
 
 /// What a byte makes of a CSI or DCS in a [`Phase`].
 enum Next {
-    /// It goes on, in this phase.
     Phase(Phase),
-    /// It is malformed or past the bounds kept, and is read to its end
-    /// without being carried out.
+    /// Malformed or past the bounds kept: read to its end, not carried out.
     Ignore,
-    /// The byte is a C0 control, executed within a CSI.
+    /// A C0 control, executed within a CSI.
     Control,
-    /// The byte is its final byte, these its intermediates.
     Final(Intermediates),
 }
 
 impl Phase {
-    /// What `byte` makes of a CSI or DCS in this phase, its digits and
-    /// separators read into `params`.
+    /// Digits and separators are read into `params`.
     fn next(self, byte: u8, params: &mut Parameters) -> Next {
         let read = match self {
             Self::Entry => Intermediates::default(),
@@ -617,15 +573,13 @@ impl Phase {
 }
 
 /// The most OSC payload bytes retained for [`Event`] delivery, hyperlinks
-/// and the palette. A longer OSC string is consumed without an event or a link;
-/// nothing beyond this is ever buffered.
+/// and the palette. A longer OSC string is consumed and dropped; nothing
+/// beyond this is ever buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
-/// enough to tell a prompt mark, `133;A`, a prompt's kind, `133;P;k=i`, or
-/// a status and a nonce, `133;D;-2147483648;nonce=` and 32 bytes of it,
-/// or a state report and its nonce, `133;S;activity=unknown;nonce=` and
-/// fux's 16 hex digits.
+/// enough for the longest mark, `133;D;-2147483648;nonce=` and a 32-byte
+/// nonce.
 const OSC_PREFIX: usize = 64;
 
 /// The most bytes of a DECRQSS request kept: xterm's longest are two
@@ -645,88 +599,65 @@ closed! {
         /// Also answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`), DECXCPR
         /// (`CSI ? 6 n`) and secondary device attributes (`CSI > c`).
         ExtendedReplies,
-        /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, as
-        /// [`Feature::ExtendedReplies`] does with the rest: how programs learn
-        /// which modes the terminal knows, synchronized output (2026) among
-        /// them, without what DA2 and DECXCPR say about it.
+        /// Answer DECRQM (`CSI ? Ps $ p` and `CSI Ps $ p`) alone, without the
+        /// rest of [`Feature::ExtendedReplies`]: how programs learn which
+        /// modes, such as synchronized output (2026), the terminal knows.
         ModeReports,
         /// Mode 2048, in-band resize (`references/modern/mode_2048_in_band_resize.md`):
-        /// track it, report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a
-        /// program sets it, and give the host the report to send after a
-        /// resize ([`Parser::resize_report`]). Pixel sizes are reported as 0,
-        /// which the spec allows a terminal that does not know them. Off, the
-        /// mode is not recognized, and DECRQM says so.
+        /// report the size as `CSI 48 ; rows ; cols ; 0 ; 0 t` when a program
+        /// sets it and after a resize ([`Parser::resize_report`]). Pixel sizes
+        /// are 0, as the spec allows. Off, the mode is not recognized.
         InBandResize,
         /// Answer xterm's text-area size query (`CSI 18 t`, ctlseqs' window
-        /// manipulation) with `CSI 8 ; rows ; cols t`, the screen's size in
-        /// characters. The pixel query (`CSI 14 t`) stays unanswered: fux-vt
-        /// knows no pixels.
+        /// manipulation) with `CSI 8 ; rows ; cols t`.
         SizeReports,
         /// Mode 2031, colour-scheme change reports
-        /// (`references/modern/mode_2031_color_scheme_updates.md`): track it,
-        /// read with [`Screen::mode`], and report it to DECRQM.
-        /// State only: the host knows the colour scheme, and sends the reports
-        /// (`CSI ? 997 ; 1 n` dark, `CSI ? 997 ; 2 n` light) and answers
-        /// `CSI ? 996 n`, which stays unhandled. Off, the mode is not
-        /// recognized, and DECRQM says so.
+        /// (`references/modern/mode_2031_color_scheme_updates.md`): track it
+        /// and report it to DECRQM. State only: the host knows the colour
+        /// scheme, sends the reports (`CSI ? 997 ; 1 n` dark, `2` light) and
+        /// answers `CSI ? 996 n`. Off, the mode is not recognized.
         ColorSchemeUpdates,
         /// Track the kitty keyboard protocol's flag stacks (`CSI > u`, `CSI < u`,
         /// `CSI = u`) and xterm's modifyOtherKeys (`CSI > 4 ; Pv m`), and answer
-        /// the flag query `CSI ? u`. State only: the host encodes keys, reading
-        /// [`Screen::kitty_keyboard_flags`] and [`Screen::modify_other_keys`].
-        /// A host that cannot encode keys that way must leave this off, or
-        /// programs will believe it can.
+        /// the flag query `CSI ? u`. State only: the host encodes keys, and
+        /// must leave this off if it cannot, or programs will believe it can.
         KittyKeyboard,
         /// Re-wrap the primary screen and its history at the new width on
-        /// resize, keeping the cursor on its character. The alternate screen is
-        /// resized without reflow, as its programs redraw anyway.
+        /// resize. The alternate screen is not reflowed: its programs redraw.
         Reflow,
-        /// Keep hyperlinks (`OSC 8 ; params ; URI ST`): each cell printed while
-        /// one is open has it, read with [`crate::Row::link`]. The URIs are
-        /// kept, so OSC 8 payloads are buffered, up to [`OSC_PAYLOAD_LIMIT`],
-        /// and each screen holds up to 4 MiB of links. Off, OSC 8 is ignored.
+        /// Keep hyperlinks (`OSC 8 ; params ; URI ST`), read with
+        /// [`crate::Row::link`]; each screen holds up to 4 MiB of links. Off,
+        /// OSC 8 is ignored.
         Hyperlinks,
         /// Keep prompt marks (`OSC 133 ; A`, semantic prompts): the row a prompt
         /// starts on is marked, read with [`crate::Row::starts_prompt`], and `A`
-        /// and `L` start a fresh line. An OSC string's first bytes are kept to
-        /// tell one. Off, OSC 133 is ignored.
+        /// and `L` start a fresh line. Off, OSC 133 is ignored.
         PromptMarks,
         /// Answer DECRQCRA, a checksum of a rectangle of the screen, with
-        /// DECCKSR, as xterm and the VT520 sum it (`Screen::rectangle_checksum`).
-        /// It lets a program read what its screen shows, so xterm refuses it by
-        /// default, and fux's panes leave it off; esctest reads the screen so.
+        /// DECCKSR, as xterm and the VT520 sum it. It lets a program read what
+        /// its screen shows, so xterm refuses it by default.
         RectangleChecksums,
         /// Answer DECRQSS (`DCS $ q Pt ST`, xterm's ctlseqs; DECRPSS in the
-        /// VT510 manual) for the pen (`m`, SGR), the cursor shape (` q`,
-        /// DECSCUSR), the margins (`r`, DECSTBM; `s`, DECSLRM), protection
-        /// (`"q`, DECSCA), the conformance level (`"p`, DECSCL) and the
-        /// attribute change extent (`*x`, DECSACE), as xterm 411 answers:
-        /// `DCS 1 $ r Pt ST`, `Pt` the sequence that sets it, such as
-        /// `0;1;4:3m`. Another request, or one over 4 bytes, is answered as
-        /// invalid, `DCS 0 $ r ST`, and a cursor shape left to the terminal
-        /// (DECSCUSR 0, the default) not at all. A request's first bytes are
-        /// kept to tell it, nothing more. XTGETTCAP (`DCS + q Pt ST`) is
-        /// answered as an invalid request, `DCS 0 + r ST`: fux-vt names no
-        /// capability. Programs learn from the pen what the terminal draws:
-        /// neovim sets a curly underline and asks, and draws its diagnostics
-        /// curly only if `4:3` comes back. Off, both are ignored, as every
-        /// other DCS.
+        /// VT510 manual) for SGR (`m`), DECSCUSR (` q`), DECSTBM (`r`),
+        /// DECSLRM (`s`), DECSCA (`"q`), DECSCL (`"p`) and DECSACE (`*x`), as
+        /// xterm 411 answers: `DCS 1 $ r Pt ST`, `Pt` the sequence that sets
+        /// it. Another request is answered as invalid, `DCS 0 $ r ST`, and a
+        /// default cursor shape (DECSCUSR 0) not at all. XTGETTCAP (`DCS + q
+        /// Pt ST`) is answered as invalid, `DCS 0 + r ST`. Programs learn
+        /// from the pen what the terminal draws: neovim draws its diagnostics
+        /// curly only if `4:3` comes back. Off, both are ignored.
         SettingReports,
         /// Keep the colours a program sets and answer its queries of them, as
         /// xterm does: the palette (OSC 4, 104), the special colours (OSC 5,
-        /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119); `palette.rs`
-        /// says how. Read with [`Screen::palette_color`] and
-        /// [`Screen::dynamic_color`]. OSC payloads are buffered, up to
-        /// [`OSC_PAYLOAD_LIMIT`]. Off, these OSCs are ignored, and OSC 10 to 19
-        /// queries are events, with [`Feature::Events`].
+        /// 105) and the dynamic colours (OSC 10 to 19, 110 to 119). Off, these
+        /// OSCs are ignored, and OSC 10 to 19 queries are events, with
+        /// [`Feature::Events`].
         Palette,
         /// Decode sixel graphics (`DCS P1 ; P2 ; P3 q … ST`) into pictures,
-        /// read with [`Screen::pictures`], for a host that draws them: each
-        /// takes the cells it covers, which hold [`crate::PLACEHOLDER`], and
-        /// the pictures hold at most [`crate::PICTURE_BYTES`] of pixels
-        /// together ([`Parser::set_picture_bytes`]). Off, sixel is ignored, as every other DCS: nothing is
-        /// decoded or kept, the cells are what the program wrote around
-        /// it, and neither DA1 nor XTSMGRAPHICS says the terminal has sixel.
+        /// read with [`Screen::pictures`]: each takes the cells it covers,
+        /// which hold [`crate::PLACEHOLDER`], up to
+        /// [`Parser::set_picture_bytes`] of pixels in all. Off, sixel is
+        /// ignored, and neither DA1 nor XTSMGRAPHICS says the terminal has it.
         Pictures,
     }
 }
@@ -738,16 +669,11 @@ fn cell_too_small(cell: (u16, u16)) -> bool {
 }
 
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
-/// default (no feature, no identity) is fux's policy: child output causes
-/// no title, bell or clipboard side effects, OSC payloads are never
-/// retained, only DSR 5n/6n and primary DA are answered, keyboard protocol
-/// requests are ignored, hyperlinks and prompt marks are ignored, and a
-/// resize does not reflow.
+/// default (no feature, no identity) causes no side effects, retains no
+/// OSC payload, and answers only DSR 5n/6n and primary DA.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
-    /// Whether each feature is on, by its discriminant: a byte each, read
-    /// as a field of its own would be (a bit each would be one load the
-    /// compiler keeps live through the parser's dispatch, costing more).
+    /// Whether each feature is on, by its discriminant.
     on: [bool; Feature::ALL.len()],
     identity: Option<Identity>,
 }
@@ -807,32 +733,23 @@ impl FromIterator<Feature> for Options {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
     /// It set the mode while it was reset (BSU, `CSI ? 2026 h`, or
-    /// XTRESTORE of it saved set): a frame begins. Set again while set, the
-    /// frame being drawn goes on, and no stop is made.
+    /// XTRESTORE of it saved set): a frame begins.
     Begun,
-    /// It reset the mode while it was set: the frame ends. ESU (`CSI ?
-    /// 2026 l`, beside other modes too), XTRESTORE of it saved reset,
-    /// DECSTR and RIS do. A resize ends it too, which the host makes.
+    /// It reset the mode while it was set (ESU, `CSI ? 2026 l`, XTRESTORE,
+    /// DECSTR or RIS): the frame ends.
     Ended,
-    /// The call did as much work as one call may (THREATS.md 4.4: half of
-    /// the 50 M weighted units a 4 KiB call may do, so that what crossed it
-    /// fits in the rest). Nothing is lost: the parser stopped between two
-    /// bytes, and goes on from the next byte when it is given it. A host
-    /// that reads many programs on one thread gives it later, after the
-    /// others had their turn; one that has nothing else to do may give it
-    /// at once.
+    /// The call did as much work as one call may (THREATS.md 4.4). Nothing
+    /// is lost: the parser stopped between two bytes, and goes on from the
+    /// next byte when it is given it, later or at once as the host likes.
     Budget,
 }
 
 /// Who the terminal says it is. With [`Options::identity`] set, primary DA
-/// (`CSI c`) answers as level 2, the VT220's, with selective erase,
-/// horizontal scrolling, colour text and rectangular editing, and sixel
-/// when the host shows it (`Screen::primary_attributes` writes it);
+/// (`CSI c`) answers as level 2, the VT220's, with its extensions;
 /// secondary DA (`CSI > c`) answers `CSI > 1 ; Pv ; 0 c` with `version`
-/// encoded as `major * 10000 + minor * 100 + patch`, XTVERSION (`CSI > q`)
-/// answers `DCS > | name version ST`, and cursor reports (DSR 6n, DECXCPR)
-/// give a cursor waiting to wrap at the last column, as xterm does, rather
-/// than one past it.
+/// encoded as `major * 10000 + minor * 100 + patch`; XTVERSION (`CSI > q`)
+/// answers `DCS > | name version ST`; and cursor reports give a cursor
+/// waiting to wrap at the last column, as xterm does, not one past it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Identity {
     /// The terminal's name, as XTVERSION reports it.
@@ -849,7 +766,7 @@ impl Identity {
 
     /// The version as DA2's firmware field: its parts, at most three, as
     /// digits in base 100, anything past a `-` or `+` dropped: `0.5.0` is
-    /// 500, `1.2` is 102 (a test pins the short forms).
+    /// 500, `1.2` is 102.
     pub(crate) fn encoded_version(&self) -> u32 {
         let release = self.version.split(['-', '+']).next().unwrap_or_default();
         release.split('.').take(3).fold(0u32, |sum, part| {
@@ -869,9 +786,8 @@ pub enum Event<'a> {
     IconName(&'a [u8]),
     /// BEL executed outside a control string.
     Bell,
-    /// A desktop notification: OSC 9 (iTerm2's, its text), OSC 777
-    /// (`notify;title;body`, its title and body) or OSC 99 (kitty's, its
-    /// payload).
+    /// A desktop notification: OSC 9 (iTerm2), OSC 777 (`notify;title;body`)
+    /// or OSC 99 (kitty).
     Notification(&'a [u8]),
     /// OSC 52 set request; a `?` query is not an event.
     Clipboard {
@@ -881,14 +797,12 @@ pub enum Event<'a> {
         data: &'a [u8],
     },
     /// A query of one of xterm's dynamic colours, `OSC Ps ; ?` with `Ps`
-    /// from 10 to 19: 10 the text foreground, 11 the background, 12 the
-    /// cursor (ctlseqs, "Operating System Commands"). One OSC can ask for
-    /// several, each `?` the next colour (`OSC 10 ; ? ; ?` asks 10 and 11),
-    /// an event each, in order. xterm answers `OSC Ps ; rgb:RRRR/GGGG/BBBB`,
-    /// ended as the query was; the host knows the colours, so the answer
-    /// is its to make. A request to set a colour is no event; with
-    /// [`Feature::Palette`], neither is a query of a colour the program
-    /// set, which fux-vt answers itself.
+    /// from 10 to 19 (ctlseqs, "Operating System Commands"). One OSC can ask
+    /// for several, each `?` the next colour (`OSC 10 ; ? ; ?` asks 10 and
+    /// 11), an event each, in order. The host answers, as xterm does, `OSC
+    /// Ps ; rgb:RRRR/GGGG/BBBB`, ended as the query was. With
+    /// [`Feature::Palette`], a query of a colour the program set is no
+    /// event: fux-vt answers it itself.
     ColorQuery {
         /// The colour asked for, 10 to 19.
         number: u8,
@@ -957,48 +871,38 @@ impl<F: FnMut(&[u8])> Sink for Replies<F> {
 pub struct Parser {
     screen: Screen,
     options: Options,
-    /// The OSC string's payload, at most `osc_limit` bytes: read only in
-    /// `State::Osc`, emptied as one begins, its allocation kept.
+    /// At most `osc_limit` bytes; emptied as an OSC begins, its allocation
+    /// kept.
     osc: Vec<u8>,
-    /// `OSC_PAYLOAD_LIMIT` with `options.has(Feature::Events)`, `options.has(Feature::Hyperlinks)` or
-    /// `options.has(Feature::Palette)`, else `OSC_PREFIX` with `options.has(Feature::PromptMarks)`,
-    /// else 0: set once, as it is asked for every byte of an OSC.
+    /// Set once from the options, as it is asked for every byte of an OSC.
     osc_limit: usize,
     state: State,
-    /// The CSI's or DCS's parameters: read only in `State::Csi` and
-    /// `State::Dcs`, cleared as one begins.
     params: Parameters,
-    /// The picture sixel data is drawing, in `State::Sixel`.
     sixel: Option<Box<crate::sixel::Decoder>>,
-    /// The string being ignored (`State::IgnoreString`) is an XTGETTCAP
-    /// (`DCS + q Pt ST`) with [`Feature::SettingReports`]: read to its end
-    /// and nothing kept, as fux-vt names no capability, and answered then
-    /// as an invalid request.
+    /// The string being ignored is an XTGETTCAP (`DCS + q Pt ST`) with
+    /// [`Feature::SettingReports`], answered at its end as invalid.
     termcap: bool,
     /// The work `process_until_stop` spent since it last stopped at the
-    /// budget ([`Stop::Budget`]), over as many calls as that took: so a
-    /// host that cuts its reads small still stops at the budget.
+    /// budget, over as many calls as that took: so a host that cuts its
+    /// reads small still stops at the budget.
     spent: u64,
-    /// Where this thread's spending (`budget::spent`) reaches the budget,
-    /// in the call of `process_until_stop` under way; `u64::MAX` in one of
-    /// `process_with`, which does not stop.
+    /// Where this thread's spending reaches the budget in the call of
+    /// `process_until_stop` under way; `u64::MAX` in `process_with`, which
+    /// does not stop.
     end: u64,
-    /// How many times carrying out the input was refused room
-    /// ([`Parser::refused`]).
     refused: u64,
 }
 #[cfg(test)]
 mod tests;
 
 impl Parser {
-    /// A parser with a screen of `size` keeping up to `history_bytes` of
-    /// history, and [`Options::default`]: see [`Parser::with_options`].
+    /// [`Parser::with_options`] with [`Options::default`].
     pub fn new(size: Size, history_bytes: usize) -> Result<Self, Error> {
         Self::with_options(size, history_bytes, Options::default())
     }
     /// A parser with a screen of `size` keeping up to `history_bytes` of
-    /// history (none on the alternate screen; 24 bytes a row, 8 a cell, and
-    /// its text), with `options`. More cells than a grid may hold are refused.
+    /// history (24 bytes a row, 8 a cell, and its text). More cells than a
+    /// grid may hold are refused.
     pub fn with_options(size: Size, history_bytes: usize, options: Options) -> Result<Self, Error> {
         Ok(Self {
             screen: Screen::new(size, history_bytes)?,
@@ -1101,16 +1005,14 @@ impl Parser {
             format!("{} bytes of a character of {need}", read.len)
         })
     }
-    /// The screen, for a test to reach into.
     #[cfg(test)]
     pub(crate) fn screen_mut(&mut self) -> &mut Screen {
         &mut self.screen
     }
-    /// Sets the most bytes of pixels its pictures may hold together, on
-    /// either screen, the one being drawn and its growth included
-    /// ([`crate::PICTURE_BYTES`] to begin with), and lets pictures go to fit
-    /// it: those no longer shown first, then the oldest. A picture being
-    /// drawn that alone is past it lets go of what it drew.
+    /// Sets the most bytes of pixels its pictures may hold together, the
+    /// one being drawn included ([`crate::PICTURE_BYTES`] to begin with),
+    /// and lets pictures go to fit it: those no longer shown first, then
+    /// the oldest.
     pub fn set_picture_bytes(&mut self, bytes: usize) {
         let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
         if !self.screen.set_picture_bytes(bytes, drawing)
@@ -1119,7 +1021,6 @@ impl Parser {
             decoder.clear();
         }
     }
-    /// The bytes of pixels its pictures hold, the one being drawn's too.
     #[cfg(test)]
     pub(crate) fn picture_bytes(&self) -> usize {
         let drawing = self.sixel.as_ref().map_or(0, |d| d.bytes());
@@ -1133,9 +1034,8 @@ impl Parser {
     pub fn clear_history(&mut self) {
         self.screen.clear_history();
     }
-    /// A new number, after every one processing has taken so far
-    /// ([`Screen::version`]): for something the host records between
-    /// pieces of output, which the next piece's number follows.
+    /// A new [`Screen::version`], for something the host records between
+    /// pieces of output.
     pub fn tick(&mut self) -> u64 {
         self.screen.begin();
         self.screen.version()
@@ -1145,19 +1045,16 @@ impl Parser {
     pub fn record_prints(&mut self, on: bool) {
         self.screen.record_prints(on);
     }
-    /// What was printed since the last call, while recording: each run
-    /// of text printed, though it changed no cell or was drawn over since.
+    /// Each run of text printed since the last call, while recording.
     pub fn take_prints(&mut self) -> crate::Prints {
         self.screen.take_prints()
     }
-    /// Makes shell marks (OSC 133) count only if they carry
-    /// `nonce=NONCE` among their options; `None`, every one. A mark
-    /// without it is ignored: printed by a program, not by the shell
-    /// that was given the nonce. One that carries `nonce=NESTED` instead
-    /// is a program's the shell runs (a remote shell's, relayed; a nested
-    /// multiplexer's), which the shell gave `NESTED`: it counts while the
-    /// shell's command runs, and says which commands run within it, until
-    /// the shell's next mark ends that command (`Screen::commands`).
+    /// Makes shell marks (OSC 133) count only if they carry `nonce=NONCE`
+    /// among their options; `None`, every one. A mark without it was
+    /// printed by a program, not the shell, and is ignored. One carrying
+    /// `nonce=NESTED` is from a program the shell runs (a remote shell,
+    /// relayed): it counts while the shell's command runs, until the
+    /// shell's next mark.
     pub fn require_mark_nonce(&mut self, nonce: Option<&[u8]>, nested: Option<&[u8]>) {
         self.screen.require_mark_nonce(nonce, nested);
     }
@@ -1168,23 +1065,18 @@ impl Parser {
         self.screen.note_submit();
     }
     /// Tells the parser what the host's terminal shows for palette entries
-    /// 0 to 15, the ones themes change (`None`: the host does not know
-    /// that one), replacing what it told before, with `Feature::Palette`: a
-    /// program's query of an entry it has not set (`OSC 4 ; index ; ?`) is
-    /// answered with it rather than with xterm's default. A colour the
-    /// program set still wins, and no reset of the program's colours (OSC
-    /// 104, DECSTR, RIS) clears the host's. It changes no cell and no
-    /// colour drawn: [`Screen::palette_color`] stays the program's.
+    /// 0 to 15 (`None`: unknown). With `Feature::Palette`, a program's query
+    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it
+    /// rather than xterm's default. A colour the program set still wins,
+    /// and no reset (OSC 104, DECSTR, RIS) clears the host's. It changes no
+    /// colour drawn.
     pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
         self.screen.set_host_palette(palette);
     }
-    /// Tells the parser what the host's terminal draws, replacing what it
-    /// told before: the size of a cell in pixels, which a program's
-    /// `CSI 16 t` and `CSI 14 t` are answered with, and whether it shows
-    /// sixel graphics, which primary device attributes then say (`4`) with
-    /// [`Feature::Pictures`]. Pictures are kept with the feature, whether
-    /// the host shows them or not; what it shows of them is its own
-    /// ([`Screen::pictures`]).
+    /// Tells the parser what the host's terminal draws: the size of a cell
+    /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
+    /// whether it shows sixel graphics, which primary device attributes
+    /// then say (`4`) with [`Feature::Pictures`].
     ///
     /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
     /// placing a picture costs a bounded number of cells (`THREATS.md` B05).
@@ -1202,17 +1094,14 @@ impl Parser {
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
         self.screen.resize(size, self.options.has(Feature::Reflow))
     }
-    /// Keeps at most `bytes` of the primary screen's history from now on,
-    /// as `history_bytes` did when the parser was made: lowering it lets
-    /// the oldest rows go at once.
+    /// Keeps at most `bytes` of the primary screen's history from now on:
+    /// lowering it lets the oldest rows go at once.
     pub fn set_history_bytes(&mut self, bytes: usize) {
         self.screen.set_history_bytes(bytes);
     }
-    /// The size report a program that set in-band resize (mode 2048) is to
-    /// be sent after the terminal's size changed: `CSI 48 ; rows ; cols ; 0
-    /// ; 0 t`, or `None` if it did not set it or
-    /// [`Feature::InBandResize`] is off. The host sends it once the
-    /// program's terminal has the new size, as the spec requires.
+    /// The size report to send a program that set in-band resize (mode
+    /// 2048) once its terminal has the new size, as the spec requires:
+    /// `CSI 48 ; rows ; cols ; 0 ; 0 t`, or `None` if the mode is not set.
     pub fn resize_report(&self) -> Option<Vec<u8>> {
         self.screen
             .mode(Mode::InBandResize)
@@ -1222,9 +1111,8 @@ impl Parser {
     pub fn options(&self) -> Options {
         self.options
     }
-    /// How many times carrying out output was refused room: history, the
-    /// alternate screen, a grid made anew (THREATS.md 1.3). Each refusal
-    /// loses only what it was for; the rest of the output is read.
+    /// How many times carrying out output was refused room (THREATS.md
+    /// 1.3). Each refusal loses only what it was for.
     pub fn refused(&self) -> u64 {
         self.refused
     }
@@ -1242,47 +1130,35 @@ impl Parser {
     }
     /// Process output, delivering replies and (with [`Feature::Events`])
     /// events. Every byte is read: `Err(Error::Capacity)` says room was
-    /// refused on the way ([`Parser::refused`]), which cost only what it
-    /// was for.
+    /// refused on the way ([`Parser::refused`]).
     pub fn process_with(&mut self, bytes: &[u8], sink: &mut impl Sink) -> Result<(), Error> {
         self.run::<false>(bytes, sink).map(|_| ())
     }
     /// Process output as [`Parser::process_with`] does, but stop right after
     /// a sequence that begins or ends a frame drawn in synchronized output
     /// ([`Stop::Begun`], [`Stop::Ended`]), or at the byte where the call has
-    /// spent its work budget ([`Stop::Budget`]), and say how
-    /// many bytes that took and why it stopped; `None` if it did not, and
-    /// every byte was processed. A frame's start or end is found exactly
-    /// as the parser reads it: split across calls, or beside other modes in
-    /// one sequence. A host that holds a program's frames holds the rest
-    /// from a [`Stop::Begun`] on, unread, until [`Parser::frame_scan`]
-    /// finds its end; one that reads output as it comes learns from a
-    /// [`Stop::Ended`] that the frame is whole. After a [`Stop::Budget`],
-    /// the rest is given again, in a later call, and a later call is made
-    /// even if no byte is left, while [`Parser::has_work_left`]: a call may
-    /// stop part way through a DECRQCRA checksum, unanswered, or before a
-    /// screen-wide sequence it left whole, or REP's copies. The next call,
-    /// of any bytes or none, does what is left first, before reading on,
-    /// and stops again if that spends its budget, before taking a byte;
-    /// replies keep their order.
+    /// spent its work budget ([`Stop::Budget`]), and say how many bytes that
+    /// took and why; `None` if every byte was processed. A frame's start or
+    /// end is found exactly as the parser reads it, split across calls or
+    /// beside other modes in one sequence. A host that holds a program's
+    /// frames holds the rest from a [`Stop::Begun`] on, unread, until
+    /// [`Parser::frame_scan`] finds its end. After a [`Stop::Budget`], the
+    /// rest is given again in a later call, made even if no byte is left
+    /// while [`Parser::has_work_left`]: the next call finishes what the
+    /// last left (a DECRQCRA checksum, a screen-wide sequence, REP's copies)
+    /// before reading on; replies keep their order.
     ///
-    /// The budget is half the 50 M weighted units one 4 KiB call may do
-    /// (THREATS.md 4.4), spent by the work a few bytes can multiply: a
-    /// rectangle or a column edit, a scroll, REP, a search of history. It
-    /// runs over calls, from one budget stop to the next, so it stops a
-    /// host that cuts its reads small as well. The call looks at it after
-    /// each sequence or string, after each line feed, and after a glyph
-    /// whose wrap scrolled inside left and right margins; a host stopped
-    /// this way has had at most that much work done since the last stop,
-    /// plus what the sequence, line feed or wrap that crossed it did, plus
-    /// the text and other C0 controls before it, which do a few units a
-    /// byte and at most one style sweep (THREATS.md 4.4).
+    /// The budget (THREATS.md 4.4) is spent by the work a few bytes can
+    /// multiply: a rectangle or a column edit, a scroll, REP, a search of
+    /// history. It runs over calls, from one budget stop to the next, so a
+    /// host that cuts its reads small is stopped as well. It is looked at
+    /// after each sequence or string, each line feed, and each glyph whose
+    /// wrap scrolled inside left and right margins, so a call overruns it
+    /// by at most what crossed it and the text before (THREATS.md 4.4).
     ///
-    /// [`Parser::process_with`] is this call given the rest again until
-    /// none is left: its work has no ceiling but the bytes it is given. As
-    /// there, a refusal of room is counted ([`Parser::refused`]) and the
-    /// rest read; `Err(Error::Capacity)` says one happened in a call that
-    /// read every byte.
+    /// As in [`Parser::process_with`], a refusal of room is counted
+    /// ([`Parser::refused`]) and the rest read; `Err(Error::Capacity)` says
+    /// one happened in a call that read every byte.
     pub fn process_until_stop(
         &mut self,
         bytes: &[u8],
@@ -1291,8 +1167,8 @@ impl Parser {
         self.run::<true>(bytes, sink)
     }
     /// Whether the last call of [`Parser::process_until_stop`] stopped at
-    /// its budget with work of a sequence it took left to do, which the
-    /// next call does first: one is owed, of no bytes if none wait.
+    /// its budget with work left to do: another call is owed, of no bytes
+    /// if none wait.
     pub fn has_work_left(&self) -> bool {
         self.screen.left_over()
     }
@@ -1307,35 +1183,26 @@ impl Parser {
             saved: self.screen.saved_mode(Mode::SynchronizedOutput),
         }
     }
-    /// Processes `bytes`, stopping after a frame begins or ends, or once
-    /// [`crate::budget::LIMIT`] is spent since the last budget stop, if
-    /// `UNTIL_STOP`; how many
-    /// bytes it took if it stopped, and why. A constant, so that
-    /// `process_with`, which does not stop, compiles without the checks for
-    /// a stop.
+    /// Processes `bytes`, stopping as `process_until_stop` does if
+    /// `UNTIL_STOP`: a constant, so that `process_with` compiles without the
+    /// checks for a stop.
     fn run<const UNTIL_STOP: bool>(
         &mut self,
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
-        // No bytes: only what the last call left, if anything, out of the
-        // way of the loop below.
         if bytes.is_empty() {
             return self.run_left::<UNTIL_STOP>(sink);
         }
         self.screen.begin();
         let (start, refused) = (crate::budget::spent(), self.refused);
         let degrades = crate::degrades();
-        // Where this call stops at its budget. A call of `process_with` has
-        // none, as every call leaves it: `end` and `stop_at` u64::MAX, and
-        // nothing stopped.
+        // Every call leaves `end` and `stop_at` at u64::MAX: no budget.
         if UNTIL_STOP {
             self.end = start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent));
             (self.screen.stop_at, self.screen.stopped) = (self.end, false);
         }
-        // What the last call stopped at the budget left goes first: a
-        // screen-wide CSI it held back, carried out in this call's budget,
-        // or a REP's copies, which may stop this one too.
+        // What the last call left at its budget goes first.
         if self.screen.left_over() && self.resumed::<UNTIL_STOP>(sink) {
             (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
             self.spend_since(start, Stop::Budget);
@@ -1360,8 +1227,7 @@ impl Parser {
                     }
                 };
                 remaining = rest;
-                // A wrap scrolled inside margins past the budget: the rest
-                // of the run is for the next call.
+                // A wrap scrolled inside margins past the budget.
                 if UNTIL_STOP && self.screen.stopped {
                     remaining = (bytes.len().saturating_sub(remaining.len()))
                         .checked_sub(length)
@@ -1373,8 +1239,7 @@ impl Parser {
                     None
                 }
             } else if ground && byte < 0x20 && byte != 0x1b {
-                // A C0 control, as `ground` carries it out; CR LF, which
-                // ends most lines, as one.
+                // CR LF, which ends most lines, as one.
                 let fed = if let [b'\r', b'\n', after @ ..] = remaining {
                     if self.screen.carriage_return_line_feed().is_err() {
                         self.refuse();
@@ -1389,8 +1254,7 @@ impl Parser {
                     matches!(byte, 0x0a..=0x0c)
                 };
                 self.screen.forget_repeat();
-                // A line feed at the bottom margin moves a row's text into
-                // history, spent: up to a row's text a byte.
+                // A line feed can move a row's text into history.
                 match fed {
                     true => self.over::<UNTIL_STOP>(),
                     false => None,
@@ -1400,8 +1264,6 @@ impl Parser {
                 && let Some(length) = self.text(remaining)
             {
                 remaining = remaining.get(length..).unwrap_or_default();
-                // As for ASCII: the text stopped after a glyph whose wrap
-                // scrolled inside margins past the budget.
                 (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
             } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
                 let (length, framed) = self.csi_sequence(remaining, sink);
@@ -1417,9 +1279,6 @@ impl Parser {
                 let framed = self.byte(byte, sink);
                 framed.or_else(|| self.over_after::<UNTIL_STOP>(sequence, fed))
             };
-            // A sequence that began or ended a frame ends whatever was
-            // taken, and so does one that spent the budget (`over`): stop
-            // right after it.
             if UNTIL_STOP && let Some(stop) = framed {
                 (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
                 self.spend_since(start, stop);
@@ -1440,9 +1299,7 @@ impl Parser {
             false => Err(Error::Capacity),
         }
     }
-    /// `run` of no bytes: what the last call stopped at the budget left
-    /// (`resumed`), if anything, which may stop this call too, before any
-    /// byte; nothing else.
+    /// `run` of no bytes: only what the last call left at its budget.
     #[cold]
     #[inline(never)]
     fn run_left<const UNTIL_STOP: bool>(
@@ -1475,25 +1332,22 @@ impl Parser {
             false => Err(Error::Capacity),
         }
     }
-    /// Counts in [`Parser::refused`] the refusals this call met and went on
-    /// past by their degrades (`crate::degraded`), since `degrades`: a test
-    /// in `run`, and the count out of line, as a call seldom meets one.
+    /// Counts in [`Parser::refused`] the refusals this call went on past by
+    /// degrading (`crate::degraded`) since `degrades`; out of line, as a
+    /// call seldom meets one.
     #[inline]
     fn count_degrades(&mut self, degrades: u64) {
         if crate::degrades() != degrades {
             self.count_degrades_met(degrades);
         }
     }
-    /// `count_degrades` of a call that met some.
     #[cold]
     #[inline(never)]
     fn count_degrades_met(&mut self, degrades: u64) {
         let met = crate::degrades().saturating_sub(degrades);
         self.refused = self.refused.saturating_add(met);
     }
-    /// Keeps what was spent since `start`, in a call that stopped as `stop`
-    /// says (or ended, as for a frame's end): all of it, until a stop at the
-    /// budget begins the next budget.
+    /// Spending carries over calls until a stop at the budget.
     fn spend_since(&mut self, start: u64, stop: Stop) {
         self.end = u64::MAX;
         self.spent = match stop {
@@ -1503,10 +1357,9 @@ impl Parser {
             }
         };
     }
-    /// What `done` gave, or, if it was refused room (`Error::Capacity`, all
-    /// that carrying out the input can fail with), nothing, counted in
-    /// [`Parser::refused`]: the refusal costs what it was for, and the
-    /// rest of the input is read (THREATS.md 1.3, B44).
+    /// What `done` gave, or, if it was refused room (`Error::Capacity`),
+    /// nothing, counted in [`Parser::refused`]: the rest of the input is
+    /// read (THREATS.md 1.3, B44).
     #[inline]
     fn kept<T: Default>(&mut self, done: Result<T, Error>) -> T {
         match done {
@@ -1517,27 +1370,20 @@ impl Parser {
             }
         }
     }
-    /// Counts a refusal of room, out of the way of the paths that are
-    /// never refused.
     #[cold]
     #[inline(never)]
     fn refuse(&mut self) {
         self.refuse_many(1);
     }
-    /// `refuse`, `count` times.
     #[cold]
     #[inline(never)]
     fn refuse_many(&mut self, count: u64) {
         self.refused = self.refused.saturating_add(count);
     }
-    /// `over`, where `run` looks at the budget after a byte: where a
-    /// sequence or a string ended (the byte read in a `sequence`, and the
-    /// parser back in ground), and after a line feed (LF, VT, FF) carried
-    /// out (`fed`), in text or among an escape sequence's or a CSI's
-    /// bytes: where the work a few bytes can multiply is done
-    /// (`budget.rs`). A rule of states, so that the fast paths, which take
-    /// a sequence's bytes in loops of their own, look where `byte` alone
-    /// would; the budget is asked first, as it is seldom spent.
+    /// `over`, only where a sequence or string ended (`sequence`, and the
+    /// parser back in ground) or a line feed was carried out (`fed`): where
+    /// the work a few bytes can multiply is done (`budget.rs`). A rule of
+    /// states, so the fast paths look where `byte` alone would.
     #[inline]
     fn over_after<const UNTIL_STOP: bool>(&self, sequence: bool, fed: bool) -> Option<Stop> {
         self.over::<UNTIL_STOP>()
@@ -1555,10 +1401,8 @@ impl Parser {
                 | State::Osc { .. }
         )
     }
-    /// Makes the copies a REP the last call stopped in left
-    /// (`Screen::resume_repeat`), counting a refusal; whether the call
-    /// stops at once, its budget spent again by a wrap's margin scroll.
-    /// Out of line, as only a REP inside margins at the budget leaves any.
+    /// Makes the copies a REP the last call stopped in left; whether the
+    /// call stops at once, its budget spent again by a wrap's margin scroll.
     #[cold]
     #[inline(never)]
     pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
@@ -1567,18 +1411,13 @@ impl Parser {
         let stopped = std::mem::take(&mut self.screen.stopped);
         UNTIL_STOP && stopped && self.over::<true>().is_some()
     }
-    /// [`Stop::Budget`] if the call under way stops at its budget
-    /// (`UNTIL_STOP`) and spent it.
     #[inline]
     fn over<const UNTIL_STOP: bool>(&self) -> Option<Stop> {
         (UNTIL_STOP && crate::budget::spent() >= self.end).then_some(Stop::Budget)
     }
-    /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with, decoded
-    /// at once rather than byte by byte, and says how many
-    /// bytes it took; `None`, with nothing done, if `bytes` begins with
-    /// invalid or incomplete UTF-8, which the byte-by-byte path handles. A
-    /// character whose printing is refused is counted (`kept`), and the
-    /// rest printed.
+    /// Prints the run of valid non-ASCII UTF-8 `bytes` begins with; how many
+    /// bytes it took, or `None` for invalid or incomplete UTF-8, left to the
+    /// byte-by-byte path.
     fn text(&mut self, bytes: &[u8]) -> Option<usize> {
         let mut chars = Chars { bytes, taken: 0 };
         let refused = self.screen.text(&mut chars);
@@ -1587,10 +1426,9 @@ impl Parser {
         }
         (chars.taken > 0).then_some(chars.taken)
     }
-    /// The string a DCS whose final byte is `byte`, its intermediates
-    /// `read`, begins: a DECRQSS, a sixel picture, or one that is dropped
-    /// (an XTGETTCAP, answered at its end). Out of line, as it is seldom
-    /// sent.
+    /// The string a DCS with final byte `byte` and intermediates `read`
+    /// begins: a DECRQSS, a sixel picture, or one that is dropped (an
+    /// XTGETTCAP, answered at its end).
     #[inline(never)]
     fn dcs_string(&mut self, read: Intermediates, byte: u8) -> State {
         // DECRQSS: `$ q` with no parameters; XTGETTCAP, `+ q`.
@@ -1620,20 +1458,17 @@ impl Parser {
         }
     }
     /// Reads the CSI `bytes` begins with, `ESC [` read in ground state, as
-    /// far as it is one programs send most: a private marker, digits, `;`
-    /// and `:`, and a final byte. The bytes are taken in a loop of their
-    /// own rather than each through `byte`, but each is done exactly as
-    /// `byte` does it. It stops before any other byte, or at the end, with
-    /// the parser in the state `byte` would have left it in, for `byte` to
-    /// go on from. Says how many bytes it took, and whether the sequence
-    /// began or ended a frame.
+    /// far as it is the common shape: a private marker, digits, `;` and
+    /// `:`, and a final byte. Each byte is done exactly as `byte` does it;
+    /// it stops before any other byte with the parser in the state `byte`
+    /// would have left, for `byte` to go on from. Says how many bytes it
+    /// took, and whether the sequence began or ended a frame.
     fn csi_sequence(&mut self, bytes: &[u8], sink: &mut impl Sink) -> (usize, Option<Stop>) {
         self.params.clear();
-        // The parameter being read and how many there are, kept here
-        // rather than in `params` until the sequence ends or this does: one
-        // empty one, as `clear` left them. The value is read as
-        // `Parameters::digit` reads it, staying at u16::MAX once past it:
-        // `(v * 10).min(MAX) + d` saturated is `(v * 10 + d).min(MAX)`.
+        // The parameter being read and how many there are, kept here until
+        // the sequence ends. The value saturates at u16::MAX as
+        // `Parameters::digit` does: `(v * 10).min(MAX) + d` saturated is
+        // `(v * 10 + d).min(MAX)`.
         let (mut len, mut value) = (1usize, 0u32);
         let max = u32::from(u16::MAX);
         let mut marker = Intermediates::default();
@@ -1649,8 +1484,7 @@ impl Parser {
                     let ended = u16::try_from(value).unwrap_or(u16::MAX);
                     match self.params.next(len, ended, byte == b':') {
                         Some(more) => (len, value) = (more, 0),
-                        // The rest goes byte by byte, ignored up to
-                        // the final byte.
+                        // Past the slots: the rest goes byte by byte.
                         None => {
                             self.params.end(len, ended);
                             self.params.full = true;
@@ -1687,10 +1521,8 @@ impl Parser {
         (at, None)
     }
     /// Takes the OSC string's bytes `bytes` begins with, up to the BEL,
-    /// CAN, SUB or ESC that ends it, at once rather than each through
-    /// `byte`, keeping what `byte` would keep of them, the string `whole`
-    /// so far or not; how many it took. Out of line: inlined into
-    /// `sequence`, it cost each OSC more.
+    /// CAN, SUB or ESC that ends it, keeping what `byte` would keep of
+    /// them; how many it took.
     #[inline(never)]
     fn osc_more(&mut self, bytes: &[u8], whole: bool) -> usize {
         // The byte past the limit marks the string overflowed, and one
@@ -1698,7 +1530,7 @@ impl Parser {
         let room = self.osc_limit.saturating_add(1);
         let mut length = 0;
         // Each run up to a control is copied whole, with the control if
-        // the string holds it; a payload with none is one copy.
+        // the string holds it.
         loop {
             let rest = bytes.get(length..).unwrap_or_default();
             let run = control_in(rest).unwrap_or(rest.len());
@@ -1722,11 +1554,9 @@ impl Parser {
         self.osc.truncate(self.osc_limit);
         length
     }
-    /// In an OSC or an ignored string, the bytes `bytes` begins with that
-    /// go on it, taken at once rather than each through `byte`, as it would
-    /// take them: an OSC's as `osc_more` takes them, and an ignored
-    /// string's up to the ESC, CAN or SUB that may end it; the rest of
-    /// `bytes`, or `None` if it took none.
+    /// In an OSC or an ignored string, takes the bytes `bytes` begins with
+    /// that go on it, as `byte` would; the rest of `bytes`, or `None` if it
+    /// took none.
     #[inline(never)]
     fn string<'a>(&mut self, bytes: &'a [u8]) -> Option<&'a [u8]> {
         let taken = match self.state {
@@ -1745,12 +1575,9 @@ impl Parser {
         (taken > 0).then(|| bytes.get(taken..).unwrap_or_default())
     }
 
-    /// Room in the OSC buffer for `more` bytes: grown by doubling, as a
-    /// `Vec` grows, up to 16 KiB, then at once to what a string keeps,
-    /// `OSC_PAYLOAD_LIMIT` and the byte that marks it overflowed. So the
-    /// buffer never holds more than that, nor more than that and 16 KiB
-    /// while it grows (THREATS.md B20): doubling alone left room for
-    /// 98,304 bytes, kept for good, and 98,304 live as it grew.
+    /// Room in the OSC buffer for `more` bytes: grown by doubling up to 16
+    /// KiB, then at once to `OSC_PAYLOAD_LIMIT` and the byte that marks it
+    /// overflowed, so it never holds more than that (THREATS.md B20).
     #[inline]
     fn osc_room(&mut self, more: usize) {
         let need = self.osc.len().saturating_add(more);
@@ -1758,8 +1585,6 @@ impl Parser {
             self.grow_osc(need);
         }
     }
-    /// `osc_room`'s growth to room for `need` bytes, out of the way of the
-    /// bytes that fit.
     #[cold]
     #[inline(never)]
     fn grow_osc(&mut self, need: usize) {
@@ -1789,7 +1614,6 @@ impl Parser {
         Ok(())
     }
 
-    /// Reads `byte` after `read`, a character's first bytes.
     fn continuation(
         &mut self,
         read: Bytes<4>,
@@ -1825,7 +1649,6 @@ impl Parser {
         Ok(())
     }
 
-    /// Execute a C0 control. BEL becomes an event when events are enabled.
     fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
         if byte == 7 && self.options.has(Feature::Events) {
             sink.event(Event::Bell);
@@ -1833,8 +1656,7 @@ impl Parser {
         self.screen.control(byte)
     }
 
-    /// BEL inside a string that rings it (sixel): as in text. Out of line,
-    /// off the path of the string's data.
+    /// BEL inside a string that rings it (sixel): as in text.
     #[cold]
     #[inline(never)]
     fn bell(&mut self, sink: &mut impl Sink) {
@@ -1847,7 +1669,6 @@ impl Parser {
     /// note 2; and in a control string, README, "SUB shows its error
     /// character"); inside sixel SUB is a blank sixel instead and the
     /// picture goes on, and CAN ends it unplaced (the sixel chapter, 9.1).
-    /// Out of line: seldom sent.
     #[cold]
     #[inline(never)]
     fn cancel(&mut self, byte: u8, state: State) {
@@ -1869,9 +1690,7 @@ impl Parser {
         self.screen.forget_repeat();
     }
 
-    /// Reads one byte; whether it ended a sequence that began or ended a
-    /// frame. What it carries out that is refused room is counted
-    /// (`kept`), and loses only what it was for.
+    /// Reads one byte; whether it ended a frame-starting or -ending sequence.
     fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Option<Stop> {
         let state = self.state;
         if matches!(state, State::Ground) {
@@ -1884,9 +1703,8 @@ impl Parser {
             self.kept(done);
             return None;
         }
-        // Anywhere transitions: CAN/SUB cancel (`cancel`), ESC starts a new
-        // sequence. ESC also begins ST, so it completes a pending OSC
-        // string or DECRQSS.
+        // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence.
+        // ESC also begins ST, so it completes a pending string.
         if matches!(byte, 0x18 | 0x1a) {
             self.cancel(byte, state);
             return None;
@@ -1929,7 +1747,6 @@ impl Parser {
         }
         let mut framed = None;
         match state {
-            // Returned above; named for the match to be whole.
             State::Ground | State::Utf8(_) => {}
             State::Osc { whole } => match byte {
                 0x07 => {
@@ -1937,7 +1754,6 @@ impl Parser {
                     let done = self.dispatch_osc(whole, true, sink);
                     self.kept(done);
                 }
-                // A string's data leaves it a string: it returns at once.
                 _ if !whole || !in_command_string(byte) => return None,
                 _ if self.osc.len() < self.osc_limit => {
                     self.osc_room(1);
@@ -2041,8 +1857,8 @@ impl Parser {
                 Next::Final(read) => self.state = self.dcs_string(read, byte),
             },
         }
-        // A sequence or string ended, REP's included: there is no character
-        // for REP to repeat until one is printed.
+        // After a sequence or string, REP has no character to repeat until
+        // one is printed.
         if matches!(self.state, State::Ground) {
             self.screen.forget_repeat();
         }
@@ -2050,10 +1866,8 @@ impl Parser {
     }
 
     /// Carries out what the last call stopped at the budget left: the
-    /// screen-wide CSI it held back (`Screen::holds_back`), as its final
-    /// byte would have, its parameters kept, which begins or ends no
-    /// frame; then a REP's copies left (`resume`); and whether they stopped
-    /// this call too.
+    /// screen-wide CSI it held back (`Screen::holds_back`), then a REP's
+    /// copies; whether they stopped this call too.
     #[inline(never)]
     fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
         if let Some((read, len, byte)) = self.screen.held_csi() {
@@ -2064,8 +1878,7 @@ impl Parser {
         self.screen.repeating() && self.resume::<UNTIL_STOP>()
     }
 
-    /// Carries out the escape sequence whose final byte is `byte`, its
-    /// intermediates collected; whether it ended a frame (RIS).
+    /// Carries out an escape sequence; whether it ended a frame (RIS).
     fn escape_dispatch(
         &mut self,
         intermediates: &[u8],
@@ -2073,9 +1886,7 @@ impl Parser {
         sink: &mut impl Sink,
     ) -> Result<Option<Stop>, Error> {
         let framing = self.screen.mode(Mode::SynchronizedOutput);
-        // DECID, the VT100's request for its identity, which the VT220
-        // replaced by DA (ctlseqs: "Obsolete form of CSI c"): answered as
-        // DA1 is.
+        // DECID (ctlseqs: "Obsolete form of CSI c"): answered as DA1 is.
         if intermediates.is_empty() && byte == b'Z' {
             let reply = self.screen.primary_attributes(&self.options);
             sink.reply(reply.as_bytes());
@@ -2094,12 +1905,9 @@ impl Parser {
         Ok(ended.then_some(Stop::Ended))
     }
 
-    /// Carries out the CSI sequence whose final byte is `byte`, its
-    /// parameters collected; whether it began a frame (set synchronized
-    /// output) or ended one (reset it while set), for
-    /// `Parser::process_until_stop` to stop after; or, for a screen-wide
-    /// one the screen left for the next call (`Screen::holds_back`), a
-    /// budget stop.
+    /// Carries out a CSI sequence; whether it began or ended a frame, or,
+    /// for a screen-wide one left for the next call (`Screen::holds_back`),
+    /// a budget stop.
     fn csi_dispatch(
         &mut self,
         intermediates: &[u8],
@@ -2121,8 +1929,6 @@ impl Parser {
         };
         match self.kept(dispatch.map(Some)).unwrap_or(Dispatch::Done) {
             Dispatch::Done => {}
-            // Screen-wide, and left for the next call (`Screen::holds_back`):
-            // its bytes are taken, and the call stops at the budget.
             Dispatch::Held => {
                 self.screen.hold(intermediates, byte);
                 return Ok(Some(Stop::Budget));
@@ -2146,30 +1952,20 @@ impl Parser {
         Ok(framed)
     }
 
-    /// Carries out the completed OSC string, cut short by what is kept of
-    /// one unless `whole`, ended by BEL if `bel`, else
-    /// by ESC (ST): 133 (prompt marks), from its first bytes, with
-    /// [`Feature::PromptMarks`]; 8 (hyperlinks) with [`Feature::Hyperlinks`];
-    /// the colours (4, 5, 10 to 19, 104, 105, 110 to 119) with
-    /// [`Feature::Palette`]; 0, 1, 2, 52 and colour queries (10 to 19)
-    /// delivered as events with [`Feature::Events`]. An overflowed string is no event, and closes any
-    /// link; others are dropped.
-    ///
-    /// Kept out of line: inlined into `byte`, with the screen's OSC
-    /// handling, it made `byte` too large to inline into the parser's loop,
-    /// and escape-heavy output slower.
+    /// Carries out the completed OSC string, cut short unless `whole`,
+    /// ended by BEL if `bel`, else by ST. An overflowed string is no event,
+    /// and closes any link. Out of line, so `byte` stays small enough to
+    /// inline into the parser's loop.
     #[inline(never)]
     fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) -> Result<(), Error> {
         let payload = std::mem::take(&mut self.osc);
         let result = self.osc_command(&payload, whole, bel, sink);
-        // Reuse the allocation for the next OSC string.
         self.osc = payload;
         self.osc.clear();
         result
     }
 
-    /// Answers the DECRQSS whose string just ended (see
-    /// [`Feature::SettingReports`]). Out of line, as `dispatch_osc` is.
+    /// Answers the DECRQSS whose string just ended.
     #[inline(never)]
     fn dispatch_request(&mut self, request: Option<Bytes<REQUEST_LIMIT>>, sink: &mut impl Sink) {
         let mut setting = String::new();
@@ -2178,7 +1974,6 @@ impl Parser {
             Some(Setting::Unknown) | None => b'0',
             Some(Setting::Unanswered) => return,
         };
-        // `DCS status $ r setting ST`, put together without the formatter.
         let mut reply = Vec::with_capacity(setting.len().saturating_add(7));
         reply.extend_from_slice(b"\x1bP");
         reply.push(status);
@@ -2200,8 +1995,7 @@ impl Parser {
             b"133" if self.options.has(Feature::PromptMarks) => {
                 return self.screen.prompt_osc(rest);
             }
-            // A link too long to keep is no link: what follows is printed
-            // without one.
+            // A link too long to keep is no link.
             b"8" if self.options.has(Feature::Hyperlinks) => {
                 self.screen.hyperlink_osc(if whole { rest } else { &[] });
                 return Ok(());
@@ -2263,4 +2057,3 @@ impl Parser {
         Ok(())
     }
 }
-

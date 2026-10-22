@@ -1,29 +1,17 @@
 //! The work one call may do before it stops (THREATS.md 4.4).
 //!
-//! A few bytes of input can ask for work in proportion to the screen, or
-//! to history: a rectangle edit, a column shift, a scroll, REP, a search of
-//! history's rows. fux reads every pane on one thread, so the work of
-//! those kinds is spent here, as it is done (the `spend!` sites), and
+//! A few bytes of input can ask for work in proportion to the screen or to
+//! history (a rectangle edit, a scroll, REP, a history search). fux reads
+//! every pane on one thread, so such work is spent here as it is done (the
+//! `spend!` sites), and
 //! [`Parser::process_until_stop`](crate::Parser::process_until_stop) stops
-//! at the first byte boundary once [`LIMIT`] is spent since its last such
-//! stop, for the host to go on from there later
-//! ([`Stop::Budget`](crate::Stop::Budget)). The work of at most a row a
-//! sequence, or a few cells a byte, is not spent, as the call's length
-//! bounds it (THREATS.md 4.2): examining bytes, printing, joining a
-//! cluster, EL, ICH and DCH, recording prints, finding a style, decoding
-//! sixel. The spending is kept per thread, so the grid and history spend
-//! without being handed anything; a call compares what was spent before
-//! and after, so calls of several parsers on one thread don't mix.
+//! at the next byte boundary once [`LIMIT`] is spent
+//! ([`Stop::Budget`](crate::Stop::Budget)). Work of at most a row a
+//! sequence, or a few cells a byte, is not spent: the call's length bounds
+//! it (THREATS.md 4.2). Spending is kept per thread, and a call compares
+//! before and after, so several parsers on one thread don't mix.
 //!
-//! The parser looks at it after each escape sequence or string it carries
-//! out, after each line feed it carries out (whose scroll can copy a row's
-//! text into history), and after a printed glyph whose wrap scrolled
-//! inside left and right margins (`Parser::run`).
-//!
-//! Work is counted in cells: a unit of each kind costs as many cells'
-//! work as `weight` says, each a whole number at least the kind's cost
-//! measured against a cell's when the budget was set, so that the budget
-//! stops no later than it did.
+//! Work is counted in cells: a unit of each kind costs `weight` cells.
 
 use std::cell::Cell;
 
@@ -41,9 +29,8 @@ pub(crate) const CEILING: u64 = 32_000_000;
 /// site spends, fit in the other half.
 pub(crate) const LIMIT: u64 = CEILING / 2;
 
-/// What a unit of each kind of work costs, in cells, named as the counters
-/// are ([`crate::Work`]'s fields), for `spend!` to name them; the kinds no
-/// site spends are kept for the `checks` counters alone.
+/// What a unit of each kind of work costs, in cells, named as
+/// [`crate::Work`]'s fields; kinds no site spends exist for `checks` only.
 #[expect(
     non_upper_case_globals,
     reason = "named as the counters are, for spend! to name them"
@@ -94,12 +81,10 @@ pub(crate) mod weight {
 
 /// The most one screen-wide sequence may spend at a screen of `size`, in
 /// cells: each cell read and written, rewritten, summed and its text
-/// copied (a cell's text is at most 49 bytes: 32 long and 17 short,
-/// THREATS.md B35), and each row's slot turned, walked and its span
-/// copied. The parser looks at it before such a sequence
-/// (`Screen::holds_back`): one that would take the call past U, in a call
-/// that spent already, is left for the next call, to be carried out
-/// alone; a call of it alone does at most this.
+/// copied (a cell's text is at most 49 bytes, THREATS.md B35), and each
+/// row's slot turned, walked and its span copied. A sequence that would
+/// take a call that already spent past U is left for the next call
+/// (`Screen::holds_back`), so a call of it alone does at most this.
 pub(crate) fn sequence_most(size: crate::Size) -> u64 {
     let (rows, cells) = (units(size.rows()), units(size.cells()));
     let cell = weight::cells
@@ -120,12 +105,10 @@ pub(crate) fn units(n: impl TryInto<u64>) -> u64 {
     n.try_into().unwrap_or(u64::MAX)
 }
 
-/// Spends `n` units of a kind of work weighing `weight`.
 pub(crate) fn spend(n: u64, weight: u64) {
     SPENT.with(|spent| spent.set(spent.get().saturating_add(n.saturating_mul(weight))));
 }
 
-/// What this thread has spent so far.
 pub(crate) fn spent() -> u64 {
     SPENT.with(Cell::get)
 }

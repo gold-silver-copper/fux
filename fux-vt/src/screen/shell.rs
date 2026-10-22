@@ -1,27 +1,23 @@
 //! Shell integration's command marks (OSC 133, FinalTerm's semantic prompts):
 //! `C` where a command's output starts, `D ; status` where it ends and how.
 //! `C ; late`, sent only as the command ends (a line the shell could not
-//! parse, so never ran, has no start mark of its own), starts its output
-//! on the row after the line last submitted, as the host said
-//! (`Parser::note_submit`), else after the line of the prompt it was
-//! typed at. A host reads them to know when a command typed into a shell is done, its
-//! status, and its output ([`Screen::commands`], [`Commands::last_output`]).
+//! parse has no start mark of its own), starts its output on the row after
+//! the line last submitted (`Parser::note_submit`), else after its prompt's
+//! line. A host reads them to know when a command is done, its status and
+//! its output ([`Screen::commands`]).
 //! Given nonces (`Parser::require_mark_nonce`), a mark counts only with the
 //! shell's, or with the nested one while the shell's command runs: then the
 //! program that command started (a remote shell's marks, relayed) says what
 //! runs within it, until the shell marks again.
 //!
 //! `S ; activity=STATE`, a state report, says what the program a relay runs
-//! does (a remote one, which the host cannot probe): `reading`, `polling`,
-//! `waiting`, `busy`, `idle` or `unknown`; or `ended`, once, as the program
-//! ended having read every key the relay sent it. It counts as a mark does, and
-//! holds until the next mark ([`Commands::report`]).
+//! does (a remote one, which the host cannot probe). It counts as a mark
+//! does, and holds until the next mark ([`Commands::report`]).
 
 use super::Screen;
 use crate::RowId;
 
-/// A place in the retained rows: a row, which scrolling carries, and a
-/// column.
+/// A place in the retained rows, which scrolling carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mark {
     /// The row.
@@ -33,9 +29,8 @@ pub struct Mark {
 /// What the shell's marks say of its commands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Commands {
-    /// How many commands have begun (`C` with none running; one while
-    /// one runs, a relay placing its start anew, begins none): one that
-    /// grows began since.
+    /// How many commands have begun (`C` with none running; a `C` while one
+    /// runs, a relay placing its start anew, begins none).
     pub started: u64,
     /// How many commands have ended (`D`): a host waits for it to grow.
     pub finished: u64,
@@ -53,8 +48,7 @@ pub struct Commands {
     /// The shell drew a prompt (`A`) and has started no command since
     /// (`C`): it is reading its command line.
     pub prompt: bool,
-    /// How many marks have counted (a report among them): one that grows
-    /// came since.
+    /// How many marks have counted, reports among them.
     pub marks: u64,
     /// The last state report that counted (`S`), if any.
     pub report: Option<Report>,
@@ -69,7 +63,7 @@ pub enum Reported {
     Reading,
     /// Waiting on its terminal with a time limit: it may draw again alone.
     Polling,
-    /// Blocked on something else: the network, a pipe, another program.
+    /// Blocked on something else.
     Waiting,
     /// Running, sleeping on a timer, or starting.
     Busy,
@@ -103,8 +97,7 @@ impl Reported {
 pub struct Report {
     /// The state it said.
     pub activity: Reported,
-    /// [`Commands::marks`] as it came: while that is the same, no mark has
-    /// come since.
+    /// [`Commands::marks`] as it came.
     pub mark: u64,
 }
 
@@ -123,15 +116,12 @@ impl Commands {
 }
 
 impl Screen {
-    /// What the shell's marks say of its commands, on the primary screen,
-    /// where a shell runs.
+    /// What the shell's marks say of its commands.
     pub fn commands(&self) -> Commands {
         self.commands
     }
 
-    /// `C [; late]`, the output of the command just typed begins (`late`:
-    /// began after its prompt's line), or `D [; status]`, it ended: called
-    /// with the mark's payload after `133;`.
+    /// `C [; late]`, a command's output begins, or `D [; status]`, it ended.
     pub(crate) fn command_mark(&mut self, command: &[u8], option: Option<&[u8]>) {
         let Some(here) = self.cursor_mark() else {
             return;
@@ -170,8 +160,7 @@ impl Screen {
         }
     }
 
-    /// `S ; activity=STATE`, a state report, given its options after
-    /// `S`, that counted: one naming no state it knows is none.
+    /// `S ; activity=STATE`: one naming no state it knows does not count.
     pub(crate) fn report(&mut self, options: &[u8]) {
         let activity = (options.split(|b| *b == b';'))
             .find_map(|o| o.strip_prefix(b"activity="))
@@ -206,9 +195,8 @@ impl Screen {
     }
 
     /// The main screen erased whole while a command runs (`clear`): its
-    /// output begins again at the screen's top, what was above gone. The
-    /// alternate screen erased (a full-screen program the command ran) is
-    /// none of it: the marks are the main screen's.
+    /// output begins again at the screen's top. The alternate screen's
+    /// erases are ignored: the marks are the main screen's.
     pub(crate) fn screen_erased(&mut self) {
         if !self.commands.running() || self.mode(crate::Mode::AlternateScreen) {
             return;
@@ -223,9 +211,8 @@ impl Screen {
         }
     }
 
-    /// A prompt was drawn on the cursor's row, which starts one now: the
-    /// shell reads its command line, and a line submitted before is no
-    /// longer its.
+    /// A prompt was drawn on the cursor's row: a line submitted before is
+    /// no longer its.
     pub(crate) fn prompted(&mut self) {
         let (row, version) = (self.grid().cursor.row(), self.version);
         self.grid_mut().set_prompt(row, true, version);
@@ -233,10 +220,7 @@ impl Screen {
         self.submitted = None;
     }
 
-    /// The start of the row after the line the last prompt above the
-    /// cursor on the screen starts (its soft-wrapped rows with it), if that
-    /// is not below the cursor: where what a line typed at it brought
-    /// begins.
+    /// [`Self::line_after`] the last prompt above the cursor on the screen.
     fn after_prompt(&self) -> Option<Mark> {
         let grid = self.grid();
         let prompt = (grid.history_len()..=grid.cursor_index()?)
@@ -245,10 +229,8 @@ impl Screen {
         self.line_after(prompt)
     }
 
-    /// The start of the row after the line that row `at` is on, its
-    /// soft-wrapped rows with it, if that is not below the cursor: where
-    /// what followed a line submitted there, or typed at a prompt there,
-    /// begins.
+    /// The start of the row after the line (soft-wrapped rows included)
+    /// that row `at` is on, if that is not below the cursor.
     fn line_after(&self, at: usize) -> Option<Mark> {
         let grid = self.grid();
         let cursor = grid.cursor_index()?;

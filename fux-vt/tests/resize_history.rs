@@ -93,7 +93,6 @@ fn a_resize_without_reflow_keeps_each_row_it_puts_in_history()
 }
 
 #[test]
-fn a_reflow_that_keeps_the_width_keeps_history_s_rows()
--> Result<(), Box<dyn std::error::Error>> {
+fn a_reflow_that_keeps_the_width_keeps_history_s_rows() -> Result<(), Box<dyn std::error::Error>> {
     keeps_history(filled(true)?, &[(4, 20), (9, 20), (2, 20), (6, 20)])
 }

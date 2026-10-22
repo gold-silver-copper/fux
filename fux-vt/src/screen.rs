@@ -22,8 +22,7 @@ const UNKNOWN: u32 = u32::MAX;
 const TABLED: u32 = u32::MAX - 1;
 
 /// The mouse reporting a program asked for, the latest set winning
-/// (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`). fux-vt sends no report of its own;
-/// the host encodes one with `Screen::encode_mouse`, which reads this.
+/// (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`); `Screen::encode_mouse` reads it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolMode {
     /// No reporting.
@@ -33,12 +32,8 @@ pub enum MouseProtocolMode {
     Press,
     /// Mode 1000: presses and releases.
     PressRelease,
-    /// Mode 1001, highlight tracking (ctlseqs, "Highlight tracking"):
-    /// reported as 1000 is, as ctlseqs has the press ("the same
-    /// information as for normal tracking"). The highlight it then asks of
-    /// the program (`CSI func ; x ; y ; first ; last T`) and the release
-    /// it reports (`CSI t`, `CSI T`) are the host's selection's, which
-    /// fux-vt does not drive.
+    /// Mode 1001, highlight tracking (ctlseqs): reported as 1000 is; the
+    /// highlight itself is the host's to drive.
     Highlight,
     /// Mode 1002: also motion while a button is down.
     ButtonMotion,
@@ -46,11 +41,8 @@ pub enum MouseProtocolMode {
     AnyMotion,
 }
 closed! {
-    /// The cursor's style, as DECSCUSR sets it (`CSI Ps SP q`; ctlseqs,
-    /// "Set cursor style", VT520): Ps 0 and 1 are both a blinking block, 7
-    /// xterm's initial resources. A Ps it lists no style for is ignored.
-    /// Ps 0 is kept apart from 1, as many terminals read it as their own
-    /// shape: a host passes on the program's 0 as 0.
+    /// The cursor's style, as DECSCUSR sets it (`CSI Ps SP q`). Ps 0 is
+    /// kept apart from 1, as many terminals read it as their own shape.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
     pub enum CursorShape {
         /// Its Ps.
@@ -135,10 +127,8 @@ struct Printed {
     kept: Kept,
 }
 
-/// What a join knows of the text of the cell printed last, so that it asks
-/// whether the text has grown wide without reading it; and whether the
-/// cluster is full. One byte, which keeps `Printed` in the bytes it took
-/// with a flag for the full cluster alone.
+/// What a join knows of the cell printed last, so it can tell whether the
+/// text grew wide without reading it; and whether the cluster is full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kept {
     /// The character just printed there, alone.
@@ -184,15 +174,13 @@ impl Printed {
 /// one a single shift invokes for the next character. The national sets
 /// are not kept: another set is ASCII, as xterm reads one in UTF-8. At
 /// level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
-/// STD 070, 3.6.4.2), G0 and G1 ASCII. Four bytes, aligned as a `u32`,
-/// which `ascii` reads once a run.
+/// STD 070, 3.6.4.2), G0 and G1 ASCII.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
 pub(crate) struct Charsets {
     /// Which sets are not ASCII, a bit each (`Set::bit`), in the low four
     /// bits; which of those are DEC Supplemental rather than DEC Special
-    /// Graphics, in the high four. So whether GL's set is ASCII, which
-    /// `ascii` asks, is one test.
+    /// Graphics, in the high four.
     graphics: u8,
     /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
     gl: Set,
@@ -265,9 +253,8 @@ impl Charsets {
 }
 
 impl Charsets {
-    /// Whether text takes more than printing as it is: a single shift
-    /// waits, or the set in GL is DEC Special Graphics. `ascii` asks once
-    /// a run.
+    /// Whether text needs mapping: a single shift waits, or GL's set is
+    /// not ASCII.
     fn graphics(self) -> bool {
         self.single.is_some() || self.graphics & self.gl.bit() != 0
     }
@@ -284,8 +271,7 @@ impl Charsets {
         }
     }
     /// SCS of a set with an intermediate of its own (`ESC ( % 5`): DEC
-    /// Supplemental for `% 5`, else ASCII; `intermediates` the designator
-    /// and that one. Out of line, as such sets are rare.
+    /// Supplemental for `% 5`, else ASCII.
     #[cold]
     #[inline(never)]
     fn scs(&mut self, intermediates: &[u8], byte: u8) {
@@ -301,7 +287,6 @@ impl Charsets {
         };
         self.designate(set, kind);
     }
-    /// SCS: `set` designated as `kind`.
     fn designate(&mut self, set: Set, kind: Designated) {
         let bits = match kind {
             Designated::Ascii => 0,
@@ -316,10 +301,9 @@ impl Charsets {
 /// and VT340 manual's DEC Multinational set, Figure 2-5, its right half;
 /// DEC STD 070 leaves the set to DEC STD 169): Latin-1's character 0x80
 /// above, but for ¤ at 0x28, Œ at 0x57, Ÿ at 0x5d, œ at 0x77 and ÿ at
-/// 0x7d, and the positions the set leaves empty, which show U+2426, the
-/// reversed question mark DEC terminals and xterm show for a character
-/// they have none for (xterm's `map_DEC_Supp_Graphic`, which maps 0x5f to
-/// `_` where the manual has ß, and this follows the manual).
+/// 0x7d, and the positions the set leaves empty, which show U+2426, as
+/// DEC terminals and xterm do. 0x5f is ß, as the manual has it, where
+/// xterm has `_`.
 fn supplemental(c: char) -> char {
     match c {
         '\x24'
@@ -344,9 +328,8 @@ fn supplemental(c: char) -> char {
 
 /// What DECSC saves and DECRC restores: the cursor, with its pending wrap
 /// and origin mode (DEC STD 070, Appendix D.6.1), the pen, the character
-/// sets and DECSCA's selective erase attribute (as the VT420 manual lists
-/// it; SPA's guarded area is no state of the cursor's). Each grid keeps its
-/// own, as each of xterm's screens does.
+/// sets and DECSCA's attribute (VT420 manual). Each grid keeps its own,
+/// as each of xterm's screens does.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Saved {
     pub(crate) cursor: Cursor,
@@ -355,11 +338,8 @@ pub(crate) struct Saved {
     pub(crate) protect: u32,
 }
 
-/// The DEC Special Graphics character for `c`, as xterm draws it: 0x5f to
-/// 0x7e are a blank, a diamond, a checkerboard, control pictures, degree
-/// and plus-minus, line drawing, scan lines, comparisons, pi, not-equal,
-/// pound and a middle dot (VT520 manual, Special Graphics set; xterm,
-/// `fux-vt-compare replay --engines xterm` of `ESC ( 0` and the bytes 0x5f to 0x7e).
+/// The DEC Special Graphics character for `c`, 0x5f to 0x7e, as xterm
+/// draws it (VT520 manual, Special Graphics set).
 fn special_graphics(c: char) -> char {
     const GRAPHICS: [char; 32] = [
         ' ', '◆', '▒', '␉', '␌', '␍', '␊', '°', '±', '␤', '␋', '┘', '┐', '┌', '└', '┼', '⎺', '⎻',
@@ -377,9 +357,8 @@ fn special_graphics(c: char) -> char {
 const ESC: u16 = 0x1b;
 
 /// The DEC code xterm 411 sums for a Special Graphics or DEC Supplemental
-/// glyph past Latin-1 (`unmap_DEC_Spec_Graphic`, `unmap_DEC_Supp_Graphic`
-/// in its charsets.h): the code of the glyph in DEC's internal set, not the
-/// byte it was drawn with.
+/// glyph past Latin-1 (its charsets.h): the glyph's code in DEC's internal
+/// set, not the byte it was drawn with.
 fn dec_code(c: char) -> Option<u8> {
     Some(match c {
         '◆' => 0x14,
@@ -430,12 +409,10 @@ fn rendition_of(a: Attributes) -> u16 {
     .fold(0u16, |sum, (_, bit)| sum | bit)
 }
 
-/// The tab stops (ECMA-48: HTS sets one, TBC clears; HT, CHT and CBT move
-/// to them), one set for both screens, as in xterm: one every eight
+/// The tab stops, one set for both screens, as in xterm: one every eight
 /// columns at first and after RIS. Kept for every column the terminal has
-/// had, so a resize keeps them, as xterm keeps them; past those, a column
-/// is a stop if it is a multiple of eight and no TBC 3 came since the last
-/// reset.
+/// had, so a resize keeps them; past those, a column is a stop if it is a
+/// multiple of eight and no TBC 3 came since the last reset.
 #[derive(Clone, Debug)]
 struct TabStops {
     stops: Vec<bool>,
@@ -478,7 +455,6 @@ impl TabStops {
     /// comes before it.
     fn next(&self, col: u16, last: u16) -> u16 {
         if self.stops.is_empty() && self.beyond {
-            // A stop every eight columns.
             return (col / 8).saturating_add(1).saturating_mul(8).min(last);
         }
         let mut at = col;
@@ -511,9 +487,8 @@ pub(crate) enum Setting {
     /// A request fux-vt does not know, which xterm answers as invalid.
     Unknown,
     /// No answer: the terminal's own cursor shape (`CursorShape::Initial`),
-    /// which fux-vt does not know. xterm and Ghostty always know
-    /// theirs, and vim, the program that asks, takes an invalid answer for
-    /// keys.
+    /// which fux-vt does not know; vim, which asks, takes an invalid answer
+    /// for keys.
     Unanswered,
 }
 
@@ -536,15 +511,13 @@ enum Left {
     /// A REP's character and the copies of it left when a margin scroll
     /// stopped it at the budget (`resume_repeat`).
     Copies(char, usize),
-    /// A screen-wide CSI not carried out (`holds_back`): its intermediates
-    /// (at most two), how many, and its final byte; its parameters are
-    /// the parser's still.
+    /// A screen-wide CSI not carried out (`holds_back`): its intermediates,
+    /// how many, and its final byte; the parser keeps its parameters.
     Csi([u8; 2], usize, u8),
 }
 
-/// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
-/// power-up (73) until it has been reported once after the screen is made
-/// or RIS, then no error since the last report (70).
+/// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR):
+/// power-up (73) until reported once after power-up or RIS, then 70.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum Integrity {
@@ -563,22 +536,18 @@ impl Integrity {
     }
 }
 
-/// The cold state, which RIS starts again as it was made: one owner of
-/// both, so a field of it cannot be left out of either. The screen's
-/// other fields (`protected`, `modes`, `alternate_active`, `pictures`)
-/// are set in both by hand.
+/// The cold state, which RIS starts again as it was made, so a field of
+/// it cannot be left out of either.
 #[derive(Clone, Debug, Default)]
 struct Terminal {
     /// Left by 1047 with this pen: the alternate screen is cleared in its
-    /// colours when shown again, and keeps what the program drew till then
-    /// (`alternate_rows`).
+    /// colours when shown again, keeping what the program drew till then.
     clear_on_show: Option<Attributes>,
     tabs: TabStops,
     cursor_shape: CursorShape,
     mouse: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
     modify_other_keys: Option<OtherKeys>,
-    /// What DSR 75 reports of the data integrity flag.
     integrity: Integrity,
     /// The conformance level DECSCL selected last, level 2 until then.
     level: Level,
@@ -587,12 +556,10 @@ struct Terminal {
     extent: u8,
 }
 
-/// A conformance level DECSCL selects (DEC STD 070, DECSCL): fux-vt is
-/// a level 2 terminal (DA), which executes level 1 too (note 1). The
-/// level gates no function, a departure from note 3's "operations ...
-/// available in each level": a stray `CSI 61 " p` must not disable half
-/// the terminal. It decides what DECSTR designates (3.6.4.1, 3.6.4.2) and
-/// what DECRQSS reports.
+/// A conformance level DECSCL selects (DEC STD 070, DECSCL). The level
+/// gates no function, a departure from note 3: a stray `CSI 61 " p` must
+/// not disable half the terminal. It decides what DECSTR designates
+/// (3.6.4.1, 3.6.4.2) and what DECRQSS reports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Level {
     One,
@@ -607,16 +574,12 @@ pub struct Screen {
     alternate: Grid,
     /// Where the call under way stops at its budget (`Parser::run`'s
     /// `end`; `u64::MAX` for none), and whether a scroll inside left and
-    /// right margins, which a printed glyph's wrap can make, found it
-    /// spent: the text being printed stops after that glyph, for the
-    /// parser to stop at; a REP stops so too, its copies
-    /// left kept in `copies_left`.
+    /// right margins found it spent: printing stops after that glyph, and
+    /// a REP keeps the copies it has left in `left`.
     pub(crate) stop_at: u64,
     pub(crate) stopped: bool,
     /// What a call stopped at the budget left, done first by the next
-    /// call: a REP's copies (`resume_repeat`) or a screen-wide CSI
-    /// (`holds_back`), so that a call that stops does what one that
-    /// doesn't does.
+    /// call: a REP's copies or a screen-wide CSI (`holds_back`).
     left: Option<Left>,
     /// Pictures placed on either grid (`pictures`), the last one's number,
     /// and what the host's terminal draws.
@@ -634,11 +597,9 @@ pub struct Screen {
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
     /// fills with), if each is a style that is its own number (`style.rs`),
-    /// the same in either grid; else `TABLED`. The pen's is found when the
-    /// pen changes (`pen_changed`); the colours' is `UNKNOWN` until it is
-    /// first asked for after that. So printing and erasing in the pen look
-    /// nothing up but a `TABLED` style, which the grid finds among those it
-    /// found lately (`Grid::table_style`).
+    /// the same in either grid; else `TABLED`, which the grid looks up
+    /// (`Grid::table_style`). The pen's is found when the pen changes
+    /// (`pen_changed`); the colours' is `UNKNOWN` until next asked for.
     pen_style: u32,
     blank_style: u32,
     charsets: Charsets,
@@ -649,14 +610,11 @@ pub struct Screen {
     /// and RIS and DECSTR keep them, as xterm 411 does.
     saved_modes: Modes,
     /// [`PROTECTED`] while DECSCA 1 protects the glyphs printed from
-    /// DECSED and DECSEL (DEC STD 070, 5.11.1.2), else 0: or-ed into the
-    /// style they are written in. DECSC saves it, as xterm does.
+    /// DECSED and DECSEL (DEC STD 070, 5.11.1.2), else 0.
     protect: u32,
     /// `TABLED` while the glyphs printed are in SPA's guarded area
-    /// (ECMA-48 8.3.140), which ED, EL and ECH leave, else 0: or-ed into
-    /// the pen's style (`pen_changed`), it makes that the table's, where
-    /// the style keeps `Attributes::GUARDED` (`pen_style`). Folded so, the
-    /// guard costs `pen_changed`, which every SGR calls, no branch.
+    /// (ECMA-48 8.3.140), else 0: or-ed into the pen's style, it sends the
+    /// pen to the table, which keeps `Attributes::GUARDED`.
     guard: u32,
     /// Whether a glyph either protects may be on a grid: erases look for
     /// them only then. Set at DECSCA 1 and SPA; RIS clears it.
@@ -666,10 +624,8 @@ pub struct Screen {
     frames_begun: u64,
     /// What RIS starts again.
     terminal: Terminal,
-    /// The cell the last glyph was printed in, and the state of its
-    /// grapheme cluster, while the cursor has not moved nor the row been
-    /// edited since: a character that continues the cluster joins its cell
-    /// rather than taking one of its own.
+    /// The cell the last glyph was printed in, and its cluster's state,
+    /// while the cursor has not moved nor the row been edited since.
     last_print: Option<Printed>,
     /// The character REP (`CSI b`) repeats: the last one printed that took
     /// a cell of its own, as long as nothing but printing came after it.
@@ -677,8 +633,7 @@ pub struct Screen {
     /// The hyperlink the program opened (OSC 8), which glyphs printed take.
     link: Option<Hyperlink>,
     /// Whether a link was opened since the screen was made or reset: until
-    /// one is, no row has links, and printing, which asks this alone,
-    /// leaves the links be.
+    /// one is, printing leaves the links be.
     links_seen: bool,
     /// The key the next link opened takes (`Hyperlink::key`).
     next_link: u64,
@@ -686,8 +641,7 @@ pub struct Screen {
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<Colours>>,
     /// What was printed since the host last took it, while it records
-    /// (`record_prints`): text drawn and drawn over before it reads the
-    /// screen is there still.
+    /// (`record_prints`).
     prints: Option<Prints>,
     /// The nonce a shell mark must carry to count (`require_mark_nonce`):
     /// one without it is a program's output, not its shell's.
@@ -695,9 +649,8 @@ pub struct Screen {
     /// The nonce a mark of a program the shell runs carries to count, while
     /// the command that started it runs (`require_mark_nonce`).
     nested_nonce: Option<Box<[u8]>>,
-    /// The shell's running command, set aside while marks of a program it
-    /// runs say what runs: its output's start, and whether that began on
-    /// the alternate screen.
+    /// The shell's running command, set aside while a nested program's
+    /// marks count: its output's start, and whether on the alternate screen.
     outer: Option<(CommandMark, bool)>,
     /// Where the cursor was as the host last said a line was submitted
     /// (`note_submit`): a late `C` starts the output after that line.
@@ -722,10 +675,8 @@ fn joined_text(blank: bool, c: char, buf: &mut [u8; 8]) -> &str {
 /// The screen's part of the invariant checker (THREATS.md section 6).
 #[cfg(feature = "checks")]
 impl Screen {
-    /// Checks every invariant of the screen that its state alone shows:
-    /// both grids, their history, styles and links, the row identities,
-    /// the pictures and `Prints`; and which checks ran, and the faults
-    /// found ([`crate::Checked`]). The work counters do not see it.
+    /// Checks every invariant its state alone shows, and says which checks
+    /// ran and the faults found. The work counters do not see it.
     pub fn check(&self) -> crate::Checked {
         crate::check::unseen(|| {
             let mut report = crate::Checked::default();
@@ -757,9 +708,8 @@ impl Screen {
         )
     }
 
-    /// 20a: no row identity is two rows', in history or on either screen,
-    /// and each of the shown screen's rows, and history's oldest and
-    /// newest, is found by its identity where it is.
+    /// 20a: no row identity is two rows', and the shown rows and history's
+    /// ends are found by their identity where they are.
     fn check_ids(&self) -> Result<(), String> {
         let mut seen = std::collections::HashSet::new();
         for grid in [&self.primary, &self.alternate] {
@@ -802,9 +752,7 @@ impl Screen {
         })
     }
 
-    /// 36: tab stops are kept for no more columns than any grid has, a
-    /// column being a `u16`: for every column the screen has had, so that
-    /// a narrower screen keeps more than its own (`TabStops`).
+    /// 36: tab stops are kept for no more columns than a `u16` counts.
     fn check_tabs(&self) -> Result<(), String> {
         let kept = self.terminal.tabs.stops.len();
         crate::check::ensure(kept <= usize::from(u16::MAX).saturating_add(1), || {
@@ -900,12 +848,9 @@ fn latest<T: Copy + Default + PartialEq>(slot: &mut T, value: T, on: bool) {
     }
 }
 
-/// The columns a glyph whose properties are `properties` takes in
-/// `Screen::text`'s run, printed at column `col` of a line ending at `end`
-/// after a cluster whose state is `cluster`, if the run may write it: one
-/// or two, before the line's end, joining no cluster by the shortcut
-/// (`Cluster::never_joins`; a cluster of no Prepend, as after a glyph the
-/// run wrote, is the default's).
+/// The columns a glyph takes in `Screen::text`'s run at column `col` of a
+/// line ending at `end`, after a cluster in state `cluster`, if the run
+/// may write it: one or two, before the line's end, joining no cluster.
 #[inline]
 fn run_width(properties: Properties, col: u16, end: u16, cluster: Cluster) -> Option<u16> {
     let width = match properties.width() {
@@ -976,9 +921,7 @@ impl Screen {
             &self.primary
         }
     }
-    /// The scrollback, dropped; the screen stays. It is the main screen's,
-    /// on the alternate screen too, which keeps none (ctlseqs: ED 3 "Erase
-    /// Saved Lines").
+    /// Drops the main screen's scrollback; the screen stays (ctlseqs, ED 3).
     pub(crate) fn clear_history(&mut self) {
         self.primary.clear_history();
         self.structural = self.version;
@@ -991,9 +934,7 @@ impl Screen {
             &mut self.primary
         }
     }
-    /// The grid shown, with the next row id and the version, for `f`;
-    /// always inline, so that no edit's closure is left a call of its own
-    /// as `print`'s callers grow.
+    /// The grid shown, with the next row id and the version, for `f`.
     #[inline(always)]
     fn with_grid<T>(&mut self, f: impl FnOnce(&mut Grid, &mut u64, u64) -> T) -> T {
         let grid = if self.alternate_active {
@@ -1003,8 +944,7 @@ impl Screen {
         };
         f(grid, &mut self.next_id, self.version)
     }
-    /// Finds the pen's style again, and forgets the style of its colours
-    /// (`pen_style`, `blank_style`), to find it when next asked for: every
+    /// Finds the pen's style again and forgets its colours' style: every
     /// change of `attributes` is followed by this.
     fn pen_changed(&mut self) {
         self.pen_style = self.attributes.inline_style().unwrap_or(TABLED) | self.guard;
@@ -1024,7 +964,6 @@ impl Screen {
     /// alone, which erasing, scrolling and inserting fill cells with (`bce`).
     #[inline]
     fn blank_style(&mut self) -> u32 {
-        // Known, and inline: as most often.
         let style = self.blank_style;
         if style < TABLED {
             return style;
@@ -1055,18 +994,14 @@ impl Screen {
         self.grid().cursor.at()
     }
     /// Where DECSC, or `CSI ? 1049 h`, last saved the cursor on the
-    /// primary screen, whichever screen is shown: where DECRC there, or
-    /// `CSI ? 1049 l`, puts it back. A host that repaints the screen on
-    /// another terminal saves it there again.
+    /// primary screen, whichever screen is shown.
     pub fn main_saved_cursor(&self) -> (u16, u16) {
         self.primary.saved.cursor.at()
     }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
-    /// or the right margin's (DECSLRM, with DECLRMM set), with autowrap
-    /// on, and the next one first moves to the start of the next line,
-    /// wherever the cursor waits (a margin reset since leaves it where the
-    /// margin was). Cursor movements, line feeds, edits and resetting
-    /// autowrap end it; DECSC and SCOSC save it with the cursor.
+    /// or the right margin's, with autowrap on, and the next one first
+    /// moves to the start of the next line. Cursor movements, line feeds,
+    /// edits and resetting autowrap end it.
     pub fn pending_wrap(&self) -> bool {
         self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap)
     }
@@ -1117,8 +1052,7 @@ impl Screen {
         (lines.first(), lines.last())
     }
     /// The left and right margins (DECSLRM, with DECLRMM set), zero-based
-    /// and inclusive: the first and last columns unless a program set
-    /// them.
+    /// and inclusive.
     pub fn left_right_margins(&self) -> (u16, u16) {
         let columns = self.grid().columns();
         (columns.first(), columns.last())
@@ -1131,30 +1065,24 @@ impl Screen {
     pub fn mouse_protocol_encoding(&self) -> MouseProtocolEncoding {
         self.terminal.encoding
     }
-    /// The kitty keyboard protocol flags in force: the top of the current
-    /// screen's stack, 0 (legacy key reporting) when it is empty. Always 0
-    /// without [`Feature::KittyKeyboard`].
+    /// The kitty keyboard protocol flags in force, 0 (legacy) when none.
+    /// Always 0 without [`Feature::KittyKeyboard`].
     pub fn kitty_keyboard_flags(&self) -> u8 {
         self.grid().keyboard.top()
     }
     /// The xterm modifyOtherKeys level set by `CSI > 4 ; Pv m`, `None` when
-    /// it is off (`Pv` 0 or absent, or past 3, which ctlseqs gives no keys).
-    /// Always `None` without [`Feature::KittyKeyboard`].
+    /// off. Always `None` without [`Feature::KittyKeyboard`].
     pub fn modify_other_keys(&self) -> Option<OtherKeys> {
         self.terminal.modify_other_keys
     }
-    /// The one-based cursor position a DSR 6n or DECXCPR reports. The line
-    /// is counted as CUP addresses it: from the top margin with DECOM set
-    /// (DEC STD 070, CPR and DECXCPR, pages 5-53 to 5-56; xterm's
-    /// `CASE_CPR`), and a cursor above the margin, should one be, on the
-    /// first line. A cursor waiting to wrap is reported at its column, the
-    /// last: the Last Column Flag is a flag (DEC STD 070, D.6.1), and CPR
-    /// reports the active position (ECMA-48 8.3.14; DEC STD 070, CPR).
+    /// The one-based cursor position a DSR 6n or DECXCPR reports, counted
+    /// as CUP addresses it: from the margins with DECOM set (DEC STD 070,
+    /// CPR and DECXCPR). A cursor waiting to wrap is reported at its
+    /// column: the Last Column Flag is a flag (DEC STD 070, D.6.1).
     pub(crate) fn reported_cursor(&self) -> (u32, u32) {
         let g = self.grid();
         let col = g.cursor.col();
-        // In origin mode the column counts from the left margin, as xterm
-        // reports it.
+        // In origin mode from the left margin, as xterm reports it.
         let col = col.saturating_sub(g.addressed().1.first());
         (u32::from(g.cursor_line()) + 1, u32::from(col) + 1)
     }
@@ -1183,9 +1111,7 @@ impl Screen {
     }
 
     /// The colour palette entry `index` shows if the program changed it
-    /// (OSC 4, with `Feature::Palette`), as red, green and blue; `None`
-    /// while it is the terminal's own, and after OSC 104, DECSTR or RIS
-    /// reset it. A cell of `Color::Idx(index)` shows this colour.
+    /// (OSC 4, with `Feature::Palette`); `None` while it is the terminal's.
     pub fn palette_color(&self, index: u8) -> Option<Rgb> {
         self.colours.as_ref()?.palette(index)
     }
@@ -1196,17 +1122,12 @@ impl Screen {
         }
     }
     /// The colour dynamic colour `number` shows if the program set it (OSC
-    /// 10 to 19, with `Feature::Palette`): 10 the text foreground and 11
-    /// the background, which a cell of `Color::Default` shows, 12 the
-    /// cursor, and the others xterm's pointer, Tektronix and highlight
-    /// colours. `None` while it is the terminal's own, and after OSC 110 to
-    /// 119 reset it.
+    /// 10 to 19, with `Feature::Palette`): 10 the foreground, 11 the
+    /// background, 12 the cursor. `None` while it is the terminal's own.
     pub fn dynamic_color(&self, number: u8) -> Option<Rgb> {
         self.colours.as_ref()?.dynamic(number)
     }
-    /// Whether the program changed a palette entry or a dynamic colour, so
-    /// that a host drawing the screen knows to ask `palette_color` and
-    /// `dynamic_color`.
+    /// Whether the program changed a palette entry or a dynamic colour.
     pub fn colors_changed(&self) -> bool {
         self.colours.as_ref().is_some_and(|c| c.changed())
     }
@@ -1217,8 +1138,7 @@ impl Screen {
 
     /// OSC 8: opens the link `payload` names, or closes the open one
     /// (`link::parse`). A link without an `id` is a link of its own each
-    /// time it is opened, as VTE makes it (the spec's "Hover underlining and
-    /// the `id` parameter").
+    /// time it is opened, as VTE makes it.
     pub(crate) fn hyperlink_osc(&mut self, payload: &[u8]) {
         self.link = crate::link::parse(payload).and_then(|(uri, id)| {
             let key = self.next_link;
@@ -1232,10 +1152,7 @@ impl Screen {
         self.links_seen |= self.link.is_some();
     }
 
-    /// Gives the cells `span` of row `row` of the grid shown the open link,
-    /// if `open`, or none: what printing glyphs there does to their links,
-    /// once a link has been opened (`links_seen`). Out of line, so that
-    /// printing, which never needs it until then, carries none of it.
+    /// Gives the cells `span` of row `row` the open link, if `open`, or none.
     #[inline(never)]
     fn link_cells(&mut self, row: u16, span: Range<usize>, open: bool) {
         let version = self.version;
@@ -1254,8 +1171,7 @@ impl Screen {
     /// column, as the semantic prompt proposal and Ghostty have it. `N` is
     /// `A` that first ends the command running, as a `D` with no status.
     /// `C` and `D` mark a command (`command_mark`), `P` a prompt where it
-    /// is; the rest (`B` and others) change nothing. `S` reports a state
-    /// (`report`). Every mark that counts is counted (`Commands::marks`).
+    /// is; the rest change nothing. `S` reports a state (`report`).
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
         let carries = |nonce: &[u8]| {
@@ -1276,8 +1192,7 @@ impl Screen {
         if shell {
             self.unnest();
         } else if !(nested && self.nest()) {
-            // Printed by a program, not its shell nor one given the
-            // nested nonce while its command runs: no mark.
+            // Printed by a program, not its shell: no mark.
             return Ok(());
         }
         let command = parts.next().unwrap_or_default();
@@ -1288,8 +1203,7 @@ impl Screen {
         }
         // P (explicit start of prompt) of the primary kind, `k=i` or none,
         // marks where it is without a fresh line: shells send it in A's
-        // place (Ghostty's bash integration under ble.sh does). Right-side
-        // and continuation prompts (`k=r`, `k=c`, `k=s`) start none.
+        // place. Right-side and continuation prompts start none.
         if command == b"P" {
             let kind = parts.find_map(|option| option.strip_prefix(b"k="));
             if kind.is_none_or(|k| k == b"i") {
@@ -1300,8 +1214,7 @@ impl Screen {
         if !matches!(command, b"A" | b"N" | b"L") {
             return Ok(());
         }
-        // N "may first implicitly terminate a previous command": the one
-        // running, the only one fux-vt keeps (it keeps no `aid`).
+        // N "may first implicitly terminate a previous command".
         if command == b"N" {
             self.command_mark(b"D", None);
         }
@@ -1320,9 +1233,7 @@ impl Screen {
     pub fn row_wrapped(&self, row: u16) -> bool {
         self.grid().live_wrapped(row)
     }
-    /// The line rendition of row `row` of the screen (DECDWL, DECDHL),
-    /// read without making its `Row`: single width while no row of the
-    /// screen may be anything else.
+    /// The line rendition of row `row` of the screen (DECDWL, DECDHL).
     pub fn line_rendition(&self, row: u16) -> LineRendition {
         let g = self.grid();
         if !g.doubled() {
@@ -1348,8 +1259,7 @@ impl Screen {
         Rows::of(&self.primary)
     }
     /// The alternate screen's rows, whichever screen is in use: what a
-    /// full-screen program drew last, kept after it leaves (1049, 1047, 47)
-    /// until the alternate screen is shown again. None if it never was.
+    /// full-screen program drew last, kept until it is shown again.
     pub fn alternate_rows(&self) -> Rows<'_> {
         Rows::of(&self.alternate)
     }
@@ -1402,12 +1312,9 @@ impl Screen {
         }
     }
     /// Notes that `text` was printed at live row `row`, columns `cols`, if
-    /// recording: as `printed` if it `changed` cells, after the glyphs
-    /// printed over themselves just before it, held (`Prints::unchanged`),
-    /// read from their cells; one that changed none is recorded where the
-    /// text recorded last ended, and held otherwise. So a run printed over
-    /// what it partly was is recorded whole however the output was split,
-    /// and a redraw of what was there alone is not.
+    /// recording, so that a run printed over what it partly was is
+    /// recorded whole however the output was split, and a redraw of what
+    /// was there alone is not (`Prints::unchanged`).
     #[inline]
     fn printed_as(&mut self, changed: bool, row: u16, cols: Range<u16>, text: &str) {
         if !changed {
@@ -1420,8 +1327,7 @@ impl Screen {
         self.printed(row, cols, text);
     }
     /// `printed_as` of a glyph that changed no cell, its text as bytes:
-    /// read as text only if it is recorded, as it seldom is. Out of line,
-    /// beside the text that changed cells.
+    /// read as text only if it is recorded.
     #[inline(never)]
     fn printed_over_itself(&mut self, row: u16, cols: Range<u16>, text: &[u8]) {
         let Some(id) = self.grid().live_id(row) else {
@@ -1434,8 +1340,7 @@ impl Screen {
         }
     }
     /// Records the glyphs held that end at `col` of live row `row`, as
-    /// their cells hold them, and lets any others go. Out of line: only a
-    /// run printed over what it partly was comes here.
+    /// their cells hold them, and lets any others go.
     #[cold]
     #[inline(never)]
     fn take_held(&mut self, row: u16, col: u16) {
@@ -1458,8 +1363,7 @@ impl Screen {
         }
     }
     /// Notes that `c` joined the cell at live row `row`, column `col`,
-    /// after a space if it was `blank`, over the columns the cell takes now:
-    /// out of line, as only a host that records prints asks for it.
+    /// after a space if it was `blank`, over the columns the cell takes now.
     #[cold]
     #[inline(never)]
     fn mark_joined(&mut self, row: u16, col: u16, blank: bool, c: char) {
@@ -1492,9 +1396,8 @@ impl Screen {
     pub fn changed_since(&self, mark: Mark) -> bool {
         mark.0 != self.version
     }
-    /// Whether a reader of `mark` must read every row again: something
-    /// structural changed since (a scroll, resize, reset, switch of screens,
-    /// or rows leaving history).
+    /// Whether a reader of `mark` must read every row again: a scroll,
+    /// resize, reset or switch of screens happened since.
     pub fn full_refresh_since(&self, mark: Mark) -> bool {
         mark.0 < self.structural || mark.0 > self.version
     }
@@ -1506,8 +1409,7 @@ impl Screen {
     }
     /// The live rows changed since `mark`, each with its place on the screen
     /// (0 at the top), top to bottom; every live row after a full refresh.
-    /// Only the screen's rows are read, however much history there is: the
-    /// live rows `dirty_rows_since` yields, without walking the history.
+    /// History is not walked.
     pub fn dirty_live_rows_since(&self, mark: Mark) -> impl Iterator<Item = (u16, Row<'_>)> {
         let full = self.full_refresh_since(mark);
         let grid = self.grid();
@@ -1524,9 +1426,8 @@ impl Screen {
     }
 
     pub(crate) fn resize(&mut self, size: Size, reflow: bool) -> Result<(), Error> {
-        // A frame drawn for the old size is no frame for the new one; as in
-        // Ghostty, any resize ends synchronized output: one taken, or to
-        // the same size; a rejected one changes nothing.
+        // A frame drawn for the old size is no frame for the new one: as in
+        // Ghostty, any resize ends synchronized output.
         if self.size() == size {
             self.modes.set(Mode::SynchronizedOutput, false);
             return Ok(());
@@ -1541,8 +1442,7 @@ impl Screen {
         };
         let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
         primary.adopt_history(&mut self.primary, kept);
-        // The links' tables go along, as the cells keep their links, and
-        // the keyboard stacks.
+        // The links' tables and keyboard stacks go along.
         primary.links = mem::take(&mut self.primary.links);
         alternate.links = mem::take(&mut self.alternate.links);
         primary.keyboard = mem::take(&mut self.primary.keyboard);
@@ -1597,9 +1497,8 @@ impl Screen {
         if !self.pictures.is_empty() {
             self.crop_pictures(region, direction);
         }
-        // Rows moved within the screen (lines deleted or put in above
-        // them, a region scrolled) are recorded, their text unchanged: a
-        // whole screen scrolled into history moves none of its lines.
+        // Rows moved within the screen are recorded; a whole screen
+        // scrolled into history moves none of its lines.
         if self.prints.is_some()
             && !(direction == Scroll::Up { history: true } && region == self.grid().size().lines())
             && region.len() > count
@@ -1612,15 +1511,13 @@ impl Screen {
         }
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
-    /// its blanks in the pen's colours. Out of line: without margins it is
-    /// never reached.
+    /// its blanks in the pen's colours.
     #[inline(never)]
     fn scroll_columns(&mut self, region: Span, count: u16, direction: Scroll) {
         let blank = self.blank_style();
         let up = direction != Scroll::Down;
         self.with_grid(|g, _, version| g.scroll_columns(region, count, up, blank, version));
-        // It copies the region's cells, as much as a few bytes of text can
-        // ask for at each wrap.
+        // It copies the region's cells, which a few bytes can ask for.
         self.stopped |= crate::budget::spent() >= self.stop_at;
     }
     /// IND, and LF, VT and FF: down a line, scrolling at the bottom margin;
@@ -1639,18 +1536,14 @@ impl Screen {
             }
             self.scroll_rows(g.lines, 1, Scroll::Up { history: true });
         } else {
-            // Down a row, stopping at the last.
             let g = self.grid_mut();
             g.set_row(g.cursor.row().saturating_add(1));
         }
         Ok(())
     }
-    /// A line feed and a carriage return, NEL's and LNM's: the line feed
-    /// first, from the column the cursor is in, which with left and right
-    /// margins says whether it scrolls, then the return (xterm's
-    /// `CASE_NEL` and `CASE_VMOT`). Without margins the order does not
-    /// matter, as the line feed does not look at the column, and the return
-    /// comes first.
+    /// A line feed and a carriage return, NEL's and LNM's. With left and
+    /// right margins the line feed goes first, as the column says whether
+    /// it scrolls (xterm's `CASE_NEL`).
     fn new_line(&mut self) -> Result<(), Error> {
         let g = self.grid_mut();
         if g.lr() {
@@ -1660,8 +1553,7 @@ impl Screen {
         self.linefeed()
     }
     /// `new_line` with left and right margins: the line feed, then the
-    /// carriage to the left margin. Out of line, as margins are rare and
-    /// `new_line` is on every new line's way.
+    /// carriage to the left margin.
     #[inline(never)]
     fn new_line_in_margins(&mut self) -> Result<(), Error> {
         self.linefeed()?;
@@ -1682,41 +1574,29 @@ impl Screen {
         }
         Ok(())
     }
-    /// Makes room for a glyph `width` wide at the cursor, which is left
-    /// where it goes, with no wrap pending: a pending wrap, or a glyph too
-    /// wide for what is left of the row, moves it to the start of the next
-    /// line with autowrap on (DEC STD 070, Appendix D.6.1), and back to the
-    /// last column it fits in with autowrap off, but for a wide glyph,
-    /// which is not printed then, as xterm drops it.
-    ///
-    /// The end of the cursor's line after it (`Grid::line_end`), or none
-    /// for a glyph not printed. Whether the glyph fits is asked inline, on
-    /// every glyph's way; the wrap is out of line.
+    /// Moves the cursor to where a glyph `width` wide goes: on to the next
+    /// line with autowrap on (DEC STD 070, Appendix D.6.1), or back to the
+    /// last column it fits in with autowrap off. The end of the cursor's
+    /// line after it, or none for a glyph not printed (a wide one with
+    /// autowrap off, as xterm drops it).
     #[inline]
     fn wrap_for(&mut self, width: u16) -> Result<Option<u16>, Error> {
         let g = self.grid();
         let end = g.line_end();
-        // The last column a glyph this wide can start in, before the right
-        // margin while the cursor is not past it; a wider glyph is never
-        // printed.
+        // The last column a glyph this wide can start in.
         let Some(room) = end.checked_sub(width) else {
             return self.too_wide(end, width);
         };
-        // A pending wrap is carried out wherever it waits: at the line's
-        // end, or where the right margin was before DECLRMM was reset (DEC
-        // STD 070's Last Column Flag is no column; xterm and Ghostty wrap
-        // there too).
+        // A pending wrap is carried out wherever it waits, even where a
+        // reset right margin was, as xterm and Ghostty do.
         if !g.cursor.pending_wrap && g.cursor.col() <= room {
             return Ok(Some(end));
         }
         self.wrap(end, room, width)
     }
-    /// `wrap_for` for a glyph wider than the line: printed as it was
-    /// between left and right margins narrower than it, but not on a line
-    /// halved to less than it, which nothing past the line's end may take
-    /// (DEC STD 070, 5.6.1), as a glyph wider than the screen is not; a
-    /// wrap pending is carried out first, as xterm's `dotext` does for a
-    /// glyph it then drops.
+    /// `wrap_for` for a glyph wider than the line: printed between margins
+    /// narrower than it, but not on a halved line (DEC STD 070, 5.6.1); a
+    /// pending wrap is carried out first, as xterm does.
     #[cold]
     #[inline(never)]
     fn too_wide(&mut self, end: u16, width: u16) -> Result<Option<u16>, Error> {
@@ -1729,33 +1609,28 @@ impl Screen {
         }
         Ok(None)
     }
-    /// `wrap_for` where the glyph, `width` wide, does not fit: the cursor
-    /// goes to the next line, or back to `room`, the last column the glyph
-    /// fits in, on a line ending at `end`.
+    /// `wrap_for` where the glyph does not fit: the cursor goes to the next
+    /// line, or back to `room`, the last column the glyph fits in.
     #[inline(never)]
     fn wrap(&mut self, end: u16, room: u16, width: u16) -> Result<Option<u16>, Error> {
         let g = self.grid();
         let wrap = self.mode(Mode::Autowrap);
-        // xterm writes a wide glyph over none before it (`replay --engines
-        // xterm --size 2x4 '\e[?7labc\u{754c}'` keeps `abc`), unless it
-        // fits: the flag a glyph left at an old right margin is no wrap.
+        // xterm writes a wide glyph over none before it, unless it fits:
+        // the flag a glyph left at an old right margin is no wrap.
         if !wrap && width > 1 && g.cursor.col() > room {
             return Ok(None);
         }
         if !wrap {
-            // Back to the last column the glyph fits in; a wrap left
-            // pending where a right margin was overwrites there, as xterm
-            // does.
+            // A wrap left pending where a right margin was overwrites
+            // there, as xterm does.
             let g = self.grid_mut();
             g.set_col(g.cursor.col().min(room));
             g.cursor.pending_wrap = false;
             return Ok(Some(end));
         }
         let row = g.cursor.row();
-        // Without margins or a row half as long, as below: above the
-        // bottom margin, the row soft-wrapped unless it is the screen's
-        // last, and the cursor down a row at its start; at it, the row
-        // soft-wrapped and the line feed made from the first column.
+        // Without margins or a halved row: wrap onto the next row, or
+        // scroll at the bottom margin.
         if !g.narrow() {
             let (bottom, last, version) = (g.lines.last(), g.size().lines().last(), self.version);
             let g = self.grid_mut();
@@ -1771,13 +1646,9 @@ impl Screen {
             self.linefeed()?;
             return Ok(Some(end));
         }
-        // The glyph goes on to the next line, so this row is soft-wrapped,
-        // whatever its last column holds: blank when a wide glyph did not
-        // fit, or after an erase the wrap outlived; at the right margin
-        // too, as xterm marks it. Only where the line feed leaves the
-        // cursor on its row (the last row, below the scroll region; the
-        // bottom margin, right of the right margin) does the glyph stay on
-        // the same row.
+        // The row is soft-wrapped, whatever its last column holds, unless
+        // the line feed leaves the cursor on it (the last row below the
+        // scroll region; the bottom margin, outside the side margins).
         let wrapped = if g.lr() && row == g.lines.last() {
             g.in_columns()
         } else {
@@ -1786,8 +1657,7 @@ impl Screen {
         // Set before scrolling so a departing row carries its soft-wrap into history.
         self.with_grid(|g, _, v| g.wrap_onto(row, wrapped, v));
         // With margins, the line feed goes from the column the glyph did
-        // not fit in, which says whether it scrolls, then to the left
-        // margin (xterm's `WrapLine`).
+        // not fit in (xterm's `WrapLine`).
         self.new_line()?;
         let g = self.grid();
         if !g.narrow() {
@@ -1799,10 +1669,8 @@ impl Screen {
         Ok((width <= end || width <= g.row_end(g.cursor.row())).then_some(end))
     }
 
-    /// SUB (DEC STD 070, p. 5-132): the error character, a reversed
-    /// question mark (U+2426), placed at the active position as a glyph is,
-    /// in no character set: a single shift waits on for the next graphic
-    /// character.
+    /// SUB (DEC STD 070, p. 5-132): the error character (U+2426), printed
+    /// in no character set: a single shift waits on.
     #[cold]
     #[inline(never)]
     pub(crate) fn substitute(&mut self) -> Result<(), Error> {
@@ -1819,7 +1687,6 @@ impl Screen {
         } else {
             raw
         };
-        // One look in the table, for its width and its segmentation.
         self.print_as(c, Properties::of(c))
     }
 
@@ -1832,8 +1699,7 @@ impl Screen {
             return Ok(());
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
-        // still carries out (`replay --engines xterm --size 3x1 'a\u{754c}'`).
-        // It is still the preceding graphic character, which REP repeats.
+        // still carries out. REP still repeats it.
         if width > self.grid().size().cols() {
             self.repeat = Some(c);
             if self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap) {
@@ -1843,17 +1709,14 @@ impl Screen {
             return Ok(());
         }
         if self.extend_cluster(c, properties) {
-            // What joined is printed, over its cell as it is now, unless
-            // the cluster was full.
             if self.prints.is_some()
                 && let Some(Printed { at, kept, .. }) = self.last_print
                 && kept != Kept::Full
             {
                 self.mark_joined(at.0, at.1, false, c);
             }
-            // A Prepend character of no width joins nothing after it,
-            // joined to a cluster as when a cell of its own (README): what
-            // follows is segmented afresh, still after it.
+            // A Prepend character of no width joins nothing after it
+            // (README): what follows is segmented afresh.
             if width == 0
                 && properties.is_prepend()
                 && let Some(printed) = &mut self.last_print
@@ -1869,8 +1732,7 @@ impl Screen {
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
                 let end = col.saturating_add(1);
-                // The mark joins the cell's cluster; a cell already holding
-                // all it can takes no more (`append`).
+                // A full cell takes no more (`append`).
                 let mut joined = false;
                 self.with_grid(|g, _, v| {
                     g.mutate_line(row, v, end, |line| {
@@ -1883,17 +1745,13 @@ impl Screen {
                     let at = usize::from(col);
                     self.link_cells(row, at..at.saturating_add(1), true);
                 }
-                // The mark is printed, over its cell.
                 if joined && self.prints.is_some() {
                     self.mark_joined(row, col, blank, c);
                 }
-                // While text is being printed, what follows is segmented
-                // after the mark, as UAX #29 segments the cell's text; but
-                // after a Prepend character of no width, which joins no
-                // cluster here (README), afresh, as at a cell of its own.
-                // Dropped, as its cell is full, it is still where the text
-                // is segmented from: after a control, say, a new cluster
-                // begins, which the full cell takes none of.
+                // What follows is segmented after the mark, as UAX #29
+                // segments the cell's text; after a Prepend of no width,
+                // which joins nothing here (README), afresh. A mark dropped
+                // from a full cell is still where segmenting goes on from.
                 if self.last_print.is_some() {
                     self.last_print = Some(Printed {
                         at: (row, col),
@@ -1915,7 +1773,6 @@ impl Screen {
         };
         work!(cells, width);
         if self.mode(Mode::Insert) {
-            // Room for the glyph, what was there moving right (ICH).
             let blank = self.blank_style();
             self.with_grid(|g, _, v| g.edit_cells(width, true, blank, v));
         }
@@ -1930,7 +1787,6 @@ impl Screen {
             // Past the glyph; in the last column it waits there to wrap.
             g.advance_within(col.saturating_add(width), end);
         });
-        // The cells' links, after the cells, as `ascii` does them.
         if self.links_seen {
             let at = usize::from(col);
             self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
@@ -1946,13 +1802,10 @@ impl Screen {
 
     /// Prints the characters `chars` yields, as `print` prints each, and
     /// says how many of them were refused (`print`'s errors). A glyph one
-    /// or two columns wide that joins no cluster, fits before the line's
-    /// end without a wrap and lands on no half of a wide glyph is written
-    /// straight into its row, a row's worth at a time, with one borrow of
-    /// the row, its links and its print recorded once; anything else, and
-    /// every character under IRM, takes `print`. The first takes `print`
-    /// too, which spends a single shift; no character set maps what is not
-    /// ASCII.
+    /// or two columns wide that joins no cluster and fits before the line's
+    /// end without a wrap is written straight into its row (`run`);
+    /// anything else, and every character under IRM, takes `print`. The
+    /// first takes `print` too, which spends a single shift.
     pub(crate) fn text(&mut self, chars: &mut Chars<'_>) -> u64 {
         let mut refused = 0u64;
         let general = self.mode(Mode::Insert);
@@ -1966,8 +1819,7 @@ impl Screen {
         while !self.stopped
             && let Some(next) = chars.next()
         {
-            // A glyph begins a run; a mark, and what the run stops at, take
-            // the general path, looked up once.
+            // A glyph begins a run; a mark takes the general path.
             let (mut c, mut properties) = (next, Properties::of(next));
             if !general && matches!(properties.width(), Some(1 | 2)) {
                 let stopped = if recording {
@@ -1987,20 +1839,16 @@ impl Screen {
         refused
     }
 
-    /// `text`'s run: writes `first`, whose properties are `properties`,
-    /// and the glyphs `chars` yields after
-    /// it, while each fits and joins nothing, and says which it stopped at,
-    /// unwritten, if any.
-    /// `RECORDING` while the host records prints, a constant so that the
-    /// run without carries none of it.
+    /// `text`'s run: writes `first` and the glyphs `chars` yields after it,
+    /// while each fits and joins nothing, and says which it stopped at,
+    /// unwritten, if any. `RECORDING` while the host records prints.
     fn run<const RECORDING: bool>(
         &mut self,
         first: char,
         properties: Properties,
         chars: &mut Chars<'_>,
     ) -> Option<(char, Properties)> {
-        // Where `first` is in the text, and the end of the last glyph
-        // written.
+        // The run's text, from `first` to the last glyph written.
         let from = chars.taken().saturating_sub(first.len_utf8());
         let mut to = chars.taken();
         let g = self.grid();
@@ -2013,12 +1861,7 @@ impl Screen {
         let Some(width) = fits else {
             return Some((first, properties));
         };
-        // `print` takes the pen's style for a glyph that fits too.
         let style = self.pen_style() | self.protect;
-        // The last glyph written, and where; and the character the run
-        // stopped at. A host that records prints is given every glyph
-        // written, as `print` gives each: the run's text, from `first` to
-        // where it stopped.
         let mut last = None;
         let mut stopped = None;
         let mut col = start;
@@ -2049,12 +1892,9 @@ impl Screen {
                 any = changed.is_some();
                 changed
             });
-            // Past the glyphs; in the last column the cursor waits
-            // there to wrap.
             g.advance_within(col, end);
         });
         work!(cells, col.saturating_sub(start));
-        // The cells' links, after the cells, as `ascii` does them.
         if self.links_seen {
             self.link_cells(row, usize::from(start)..usize::from(col), true);
         }
@@ -2068,13 +1908,10 @@ impl Screen {
         stopped
     }
 
-    /// REP's copies of `c`, whose properties are `properties`, as `run`
-    /// writes text: up to `copies` of them along the cursor's row from the
-    /// cursor, while each fits and joins nothing; says how many, none where
-    /// `print` must write the next. The glyph is the same each time, so it
-    /// is looked up and made once. `text` is the copies' text while the
-    /// host records prints, as long as a row's worth of them; it is given
-    /// every copy written, as `run` gives its glyphs.
+    /// REP's copies of `c`, as `run` writes text: up to `copies` along the
+    /// cursor's row while each fits and joins nothing; says how many, none
+    /// where `print` must write the next. `text` is a row's worth of the
+    /// copies' text while the host records prints.
     fn fill(&mut self, c: char, properties: Properties, copies: usize, text: &str) -> usize {
         let g = self.grid();
         let (row, start) = g.cursor.at();
@@ -2092,7 +1929,6 @@ impl Screen {
             return 0;
         };
         let cell = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
-        // The column copy `k` is written at.
         let at = move |k: usize| {
             u16::try_from(k)
                 .ok()
@@ -2147,13 +1983,11 @@ impl Screen {
     /// Joins `c` to the cell printed last, if the cursor is just past it and
     /// `c` continues its grapheme cluster (UAX #29, see `unicode.rs`): a
     /// spacing vowel sign, a variation selector, a ZWJ sequence, a flag's
-    /// second regional indicator. Programs laid out with unicode-width give a
-    /// cluster one cell of its string width, so a narrow cell whose cluster
-    /// becomes two columns wide is widened, the cell under the cursor
-    /// becoming its second half, as kitty and Ghostty (mode 2027) do. A
-    /// zero-width mark joins the cell before the cursor, even after a
-    /// cursor move. Whether `c` was taken: joined, or dropped
-    /// because the cluster is full, which never splits it.
+    /// second regional indicator. A narrow cell whose cluster becomes two
+    /// columns wide is widened, as programs laid out with unicode-width
+    /// expect and kitty and Ghostty (mode 2027) do. A zero-width mark joins
+    /// the cell before the cursor, even after a cursor move. Whether `c`
+    /// was taken: joined, or dropped because the cluster is full.
     fn extend_cluster(&mut self, c: char, properties: Properties) -> bool {
         let anchor = match self.last_print {
             Some(printed) => printed,
@@ -2163,8 +1997,6 @@ impl Screen {
             },
             None => return false,
         };
-        // Most characters join no cluster (UAX #29): that is asked first,
-        // before the row is looked at.
         let mut cluster = anchor.cluster;
         if !cluster.push_properties(properties) {
             return false;
@@ -2173,8 +2005,7 @@ impl Screen {
     }
 
     /// What a mark joins with nothing printed last: the cell before the
-    /// cursor, on the cursor's row (on the row above, it fails `join`'s
-    /// row check), with its cluster's state from its text.
+    /// cursor, its cluster's state read from its text.
     fn mark_anchor(&self) -> Option<Printed> {
         let at = self.before_cursor()?;
         let cluster = Cluster::of(self.grid().cell(at.0, at.1)?.contents());
@@ -2185,9 +2016,8 @@ impl Screen {
         })
     }
 
-    /// `extend_cluster` once `c` continues the cluster of `anchor`, whose
-    /// state is already past `c`: joins it, if the cursor is just past
-    /// the anchor's cell on its row.
+    /// `extend_cluster` once `c` continues `anchor`'s cluster: joins it, if
+    /// the cursor is just past the anchor's cell on its row.
     fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> bool {
         let g = self.grid();
         let (row, col) = (g.cursor.row(), g.next_column());
@@ -2211,12 +2041,9 @@ impl Screen {
         let at = usize::from(anchor_col);
         let cursor = usize::from(col);
         work!(cells, 2);
-        // Within the right margin, while the cursor is not past it.
         let fits = col < g.line_end();
-        // Whether the text is narrow, summed, before `c`: a character
-        // printed alone in a narrow cell takes one column. And whether it
-        // is a regional indicator alone, which a second makes a flag,
-        // two columns wide.
+        // Whether the text is one column, summed, before `c`; and whether
+        // it is a lone regional indicator, which a second makes a flag.
         let first = matches!(known, Kept::Alone).then(|| cell.first()).flatten();
         let one = match known {
             Kept::Alone => {
@@ -2266,12 +2093,9 @@ impl Screen {
         true
     }
 
-    /// Widens cell `at` of `row`, its cluster grown to two columns, over
-    /// the cell under the cursor, `cursor`, which becomes its second half
-    /// as a glyph's would: under IRM what is there moves right first
-    /// (ECMA-48 7.2.10); a wide glyph whose first half it was keeps its
-    /// second as the pen's blank, as `print` repairs it; and the new half
-    /// takes the open link.
+    /// Widens cell `at` of `row` over the cell under the cursor, which
+    /// becomes its second half as a glyph's would: under IRM what is there
+    /// moves right first (ECMA-48 7.2.10).
     #[cold]
     #[inline(never)]
     fn widen(&mut self, row: u16, at: usize, cursor: usize) {
@@ -2311,10 +2135,8 @@ impl Screen {
         self.last_print = None;
     }
 
-    /// Forgets the character REP repeats. The parser calls it for every
-    /// control in ground state and every sequence or string it ends, as
-    /// xterm forgets its last character whenever its parser returns to the
-    /// ground state without printing.
+    /// Forgets the character REP repeats, as xterm does whenever its parser
+    /// returns to the ground state without printing.
     pub(crate) fn forget_repeat(&mut self) {
         self.repeat = None;
     }
@@ -2324,24 +2146,16 @@ impl Screen {
     /// but printing came after that character, where ECMA-48 leaves REP
     /// undefined, as in xterm.
     ///
-    /// Once the copies have filled every row they can reach, the screen's,
-    /// and history's that a scroll at the top of the screen feeds, each further
-    /// row's worth leaves all of it as it was, so whole rows' worth past
-    /// that are skipped: what shows is exactly what printing them all would
-    /// show. With autowrap off, every copy past the line's end writes its
-    /// last column again; and copies that print nothing (a glyph wider
-    /// than the screen) are one. An ASCII character is printed in runs, as
-    /// text is; another that joins nothing, but in insert mode, is written
-    /// a row's worth at a time, looked up and made once (`fill`).
+    /// Copies past those that fill every row they can reach, on the screen
+    /// and in history, change nothing, and whole rows' worth of them are
+    /// skipped (`copies_needed`).
     fn repeat(&mut self, count: u16) -> Result<(), Error> {
         let Some(c) = self.repeat else {
             return Ok(());
         };
         let count = self.copies_needed(c, usize::from(count));
-        // The copies skipped cost nothing (THREATS.md B33). Every copy made
-        // is spent from the call's budget here, two cells for each it
-        // writes, as printing counts them (the cell looked at and
-        // written): four for a wide glyph.
+        // The copies skipped cost nothing (THREATS.md B33); each made is
+        // spent as printing counts it, two units a cell.
         let width = crate::char_width(c).unwrap_or(1).max(1);
         crate::budget::spend(
             crate::budget::units(count.saturating_mul(width).saturating_mul(2)),
@@ -2358,27 +2172,23 @@ impl Screen {
         if width > usize::from(g.size().cols()) {
             return asked.min(1);
         }
-        // Without autowrap the copies stop at the line's end.
         if !self.mode(Mode::Autowrap) {
             return asked.min(usize::from(g.size().cols()).saturating_add(1));
         }
-        // Below the scroll region a wrap scrolls nothing: the copies go
-        // round the cursor's row, as long as its line is.
+        // Below the scroll region the copies go round the cursor's row.
         let below = g.cursor.row() > g.lines.last();
         let line = match below {
             true => usize::from(g.row_end(g.cursor.row()).min(g.columns().end()))
                 .saturating_sub(usize::from(g.columns().first())),
             false => usize::from(g.columns().len()),
         };
-        // Copies to a row, between the margins once the copies wrap: a wide
-        // glyph leaves an odd last column blank.
+        // Copies to a row; a wide glyph leaves an odd last column blank.
         let Some(per_row) = line.checked_div(width).filter(|n| *n > 0) else {
             return asked.min(1);
         };
-        // History's rows of copies, when a scroll of a region at the top
-        // feeds it: each is 24 bytes and 8 a cell, so at least 32, and no
-        // more than a grid may have (THREATS.md B33: history's bytes read
-        // as rows never clamped). Inside margins nothing reaches it.
+        // History's rows of copies, when a scroll at the top feeds it: at
+        // least 32 bytes a row, and no more than a grid may have
+        // (THREATS.md B33).
         let feeds = !g.lr() && g.lines.first() == 0 && !below;
         let kept = match feeds {
             true => (g.history_bytes() / 32).min(crate::grid::MAX_ROWS),
@@ -2395,7 +2205,7 @@ impl Screen {
     }
 
     /// The copies a REP stopped at the budget left, made first by the
-    /// call after it (`copies_left`).
+    /// call after it.
     pub(crate) fn resume_repeat(&mut self) -> Result<(), Error> {
         match self.left.take() {
             Some(Left::Copies(c, count)) => self.copies(c, count),
@@ -2418,12 +2228,10 @@ impl Screen {
     }
 
     /// Whether to leave a screen-wide sequence for the next call
-    /// (THREATS.md 4.4): in a call of `process_until_stop` that has spent
-    /// since its last budget stop, if what it spent and the most one such
-    /// sequence spends at this size (`budget::sequence_most`) would pass
-    /// the ceiling U. Its bytes are taken and the call stops at the
-    /// budget; the next call carries it out first, in a fresh budget
-    /// (`Parser::run`), so a call does at most U, or one such sequence.
+    /// (THREATS.md 4.4): if what the call spent since its last budget stop
+    /// and the most one such sequence spends (`budget::sequence_most`)
+    /// would pass the ceiling U. So a call does at most U, or one such
+    /// sequence.
     #[inline(never)]
     pub(crate) fn holds_back(&self) -> bool {
         // The spent since the last budget stop: `stop_at` is where it ends.
@@ -2458,7 +2266,7 @@ impl Screen {
 
     /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
     /// inside margins past the budget, the copies left kept for the next
-    /// call (`copies_left`).
+    /// call.
     fn copies(&mut self, c: char, mut count: usize) -> Result<(), Error> {
         let stop = |screen: &mut Self, count: usize| {
             if count > 0 {
@@ -2486,7 +2294,6 @@ impl Screen {
         }
         let properties = Properties::of(c);
         let insert = self.mode(Mode::Insert);
-        // The copies' text, as the host that records prints is given it.
         let per_row = usize::from(self.grid().size().cols());
         let text: String = match self.prints {
             Some(_) if !insert => std::iter::repeat_n(c, per_row).collect(),
@@ -2509,9 +2316,8 @@ impl Screen {
                     count.saturating_sub(1)
                 }
             };
-            // A glyph that joins its own cluster, once the cluster is
-            // full, drops every copy after: they change nothing, and are
-            // skipped (THREATS.md B34a).
+            // Once a self-joining glyph's cluster is full, the rest change
+            // nothing and are skipped (THREATS.md B34a).
             if self.last_print.is_some_and(Printed::full) {
                 break;
             }
@@ -2520,13 +2326,10 @@ impl Screen {
     }
 
     /// Prints a run of ASCII straight into cells, wrapping at the right
-    /// margin itself (`wrap_for`); a glyph that joins a Prepend character
-    /// printed last takes `print`. Never enters parser dispatch.
+    /// margin itself (`wrap_for`).
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<usize, Error> {
         let all = bytes.len();
-        // DEC Special Graphics print other characters, and insert mode
-        // moves what is there, one glyph at a time, each stopping where a
-        // wrap scrolled inside margins past the budget.
+        // Character sets and insert mode take `print`, a glyph at a time.
         if self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
@@ -2536,8 +2339,7 @@ impl Screen {
             }
             return Ok(all);
         }
-        // The first joins a Prepend character printed last (UAX #29, GB9b),
-        // as the general path joins it.
+        // The first joins a Prepend character printed last (UAX #29, GB9b).
         if self.last_print.is_some_and(|p| p.cluster.prepended())
             && let Some((&first, tail)) = bytes.split_first()
         {
@@ -2552,16 +2354,13 @@ impl Screen {
             let Some(line) = self.wrap_for(1)? else {
                 return Ok(all);
             };
-            // A wrap that scrolled inside margins past the budget: the
-            // glyph it was for is written, as `print` writes it, and the
-            // rest left for the parser to stop before.
+            // A wrap that scrolled past the budget: the glyph it was for is
+            // written, and the rest left for the parser.
             if self.stopped {
                 self.print(char::from(first))?;
                 return Ok(taken(tail));
             }
             let (row, col) = self.grid().cursor.at();
-            // `wrap_for` left room for at least one cell, before the right
-            // margin or the screen's edge.
             let Some(room) = line.checked_sub(col).filter(|r| *r > 0) else {
                 return Ok(all);
             };
@@ -2580,15 +2379,13 @@ impl Screen {
                 }
             }
             self.grid_mut().advance_within(end, line);
-            // The cells' links, after the cells: before, the call would make
-            // the write above load again what it had in hand.
             if self.links_seen {
                 self.link_cells(row, usize::from(col)..usize::from(end), true);
             }
-            // The run's last glyph, which a mark or selector may join, and
-            // REP repeats.
+            // The run's last glyph, which a mark may join and REP repeats.
             if let Some(&last) = run.last() {
-                self.last_print = Some(Printed::new((row, end.saturating_sub(1)), char::from(last)));
+                self.last_print =
+                    Some(Printed::new((row, end.saturating_sub(1)), char::from(last)));
                 self.repeat = Some(char::from(last));
             }
             bytes = bytes.get(run.len()..).unwrap_or_default();
@@ -2627,42 +2424,27 @@ impl Screen {
             g.cursor.pending_wrap = false;
         }
         match byte {
-            // Back a column, stopping at the left margin unless the cursor
-            // is already left of it (xterm's `CursorBack`).
             8 => g.backward(1),
             9 => self.forward_tab(1)?,
-            // LNM: a new line, the carriage returned too.
             10..=12 if new_line => self.new_line()?,
             10..=12 => self.linefeed()?,
             13 => g.carriage_return(),
             // SO puts G1 in GL, SI G0.
             14 => self.charsets.gl = Set::G1,
             15 => self.charsets.gl = Set::G0,
-            // SUB: its error character (DEC STD 070, p. 5-132).
             0x1a => self.substitute()?,
             _ => {}
         }
         Ok(())
     }
-    /// Moves the cursor `count` tab stops forward, stopping at the last
-    /// column, or back, stopping at the first.
-    /// Forward stops at the right margin, but from right of it or from a
-    /// line outside the scrolling region goes on to the last column (DEC
-    /// STD 070, HT, note 1; xterm's `TabToNextStop` stops at the margin
-    /// wherever the cursor is). Back, in origin mode, stops at the left
-    /// margin (`TabToPrevStop`). Without margins the right margin is the
-    /// last column.
+    /// Moves the cursor `count` tab stops forward or back. Forward stops at
+    /// the right margin, but from right of it or from a line outside the
+    /// scrolling region at the last column (DEC STD 070, HT, note 1). Back,
+    /// in origin mode, stops at the left margin. The work is the line's
+    /// width at most, whatever the count.
     ///
-    /// Each stop is found from the last, never past the column it stops
-    /// at, and once the cursor stops moving the rest of the count is
-    /// spent: the work is the line's width at most, whatever the count.
-    ///
-    /// It ends a pending wrap: DEC STD 070 (Appendix D.6.1) lists HT, CHT
-    /// is HT that many times, and CBT moves back from the last column
-    /// (xterm keeps the wrap through all three). With mode 41 set and
-    /// autowrap, forward from a wrap pending, the wrap is carried out
-    /// first, as a line feed to the first column (ctlseqs, more(1)'s fix;
-    /// xterm's `TabNext`), the row left not soft-wrapped.
+    /// It ends a pending wrap (DEC STD 070, Appendix D.6.1, lists HT; xterm
+    /// keeps it).
     fn tab(&mut self, count: u16, forward: bool) {
         let g = self.grid();
         let (mut col, mut last) = (g.cursor.col(), g.columns().last());
@@ -2687,7 +2469,7 @@ impl Screen {
         g.cursor.pending_wrap = false;
     }
     /// HT and CHT: `tab` forward, after the wrap mode 41 carries out
-    /// (`more_fix`). Apart from `tab`, which stays infallible.
+    /// (`more_fix`).
     #[inline(never)]
     fn forward_tab(&mut self, count: u16) -> Result<(), Error> {
         if self.mode(Mode::MoreFix) && self.grid().cursor.pending_wrap {
@@ -2696,7 +2478,7 @@ impl Screen {
         self.tab(count, true);
         Ok(())
     }
-    /// `tab`'s wrap carried out with mode 41, with autowrap on. Out of line.
+    /// `tab`'s wrap carried out with mode 41, with autowrap on.
     #[cold]
     #[inline(never)]
     fn more_fix(&mut self) -> Result<(), Error> {
@@ -2714,18 +2496,12 @@ impl Screen {
     }
 
     /// BS and CUB with reverse wraparound, as xterm 411 moves (`CursorBack`;
-    /// ctlseqs, `CSI ? 45 h` and `CSI ? 1045 h`): back `count` columns, and
-    /// at the first column on from the last column of the line before,
-    /// which takes one of the count. With 45 the line before is only a
-    /// soft-wrapped row above, so a line's text is gone back over and no
-    /// further (since xterm patch 383); with 1045 it is any row above, and
-    /// from the top margin the bottom margin. A cursor waiting to wrap
-    /// counts as one past the last column, so the first column back is
-    /// the one it waits in. Where xterm 411 crashes or leaves the screen
-    /// (45 past a soft-wrapped first row; 1045 above the top margin), the
-    /// cursor stops at the first row, as Ghostty's does. With left and
-    /// right margins the line runs from the left margin, unless the cursor
-    /// starts left of it, to the right margin, as in xterm.
+    /// ctlseqs, `CSI ? 45 h` and `CSI ? 1045 h`): back `count` columns,
+    /// going on from the last column of the line before. With 45 that is
+    /// only a soft-wrapped row above; with 1045 any row above, and from the
+    /// top margin the bottom margin. A cursor waiting to wrap counts as one
+    /// past the last column. Where xterm 411 crashes or leaves the screen,
+    /// the cursor stops at the first row, as Ghostty's does.
     fn cursor_back(&mut self, count: u16, pending: bool) {
         let extended = self.mode(Mode::ExtendedReverseWrap);
         let g = self.grid_mut();
@@ -2805,9 +2581,7 @@ impl Screen {
         // SCS (DEC STD 070, SCS): ESC ( F designates G0, ESC ) F G1, ESC * F
         // G2 and ESC + F G3; F `0` is DEC Special Graphics, `<` (the
         // user-preferred supplemental set) and `% 5` DEC Supplemental, and
-        // any other set is ASCII here. `ESC ( B` follows every SGR 0 that
-        // ncurses writes (xterm-256color's `sgr0`), so a final alone is
-        // read inline.
+        // any other set is ASCII here.
         match intermediates {
             b"(" => self.charsets.designate(Set::G0, Designated::of(byte)),
             b")" => self.charsets.designate(Set::G1, Designated::of(byte)),
@@ -2819,10 +2593,8 @@ impl Screen {
                 return Ok(true);
             }
             b"#" => return Ok(self.set_line_rendition(byte)),
-            // S7C1T and S8C1T (DEC STD 070, 1.7.2's level 2 list): replies
-            // are 7-bit, as S7C1T asks; S8C1T is accepted and changes
-            // nothing, a departure, as UTF-8 has no C1 bytes (ECMA-35,
-            // 15.4).
+            // S7C1T and S8C1T (DEC STD 070, 1.7.2): replies stay 7-bit, as
+            // UTF-8 has no C1 bytes (ECMA-35, 15.4).
             b" " if matches!(byte, b'F' | b'G') => return Ok(true),
             [] => {}
             _ => return Ok(false),
@@ -2843,22 +2615,15 @@ impl Screen {
             b'o' => self.charsets.gl = Set::G3,
             b'N' => self.charsets.single = Some(Set::G2),
             b'O' => self.charsets.single = Some(Set::G3),
-            // LS1R, LS2R and LS3R (ECMA-35, 9.3.2): G1, G2 or G3 into GR,
-            // which no byte reaches in UTF-8 (15.4): taken, and nothing
-            // prints otherwise, so no state is kept for them.
+            // LS1R, LS2R and LS3R (ECMA-35, 9.3.2): GR, which no byte
+            // reaches in UTF-8 (15.4), so no state is kept.
             b'~' | b'}' | b'|' => {}
             b'=' => self.modes.set(Mode::ApplicationKeypad, true),
             b'>' => self.modes.set(Mode::ApplicationKeypad, false),
-            // IND (DEC STD 070; xterm's ctlseqs): a line feed, scrolling
-            // at the bottom margin.
             b'D' => self.linefeed()?,
-            // NEL (ECMA-48 8.3.86): a line feed, whose column says whether
-            // it scrolls, then the carriage back as CR takes it, to the
-            // left margin (xterm's `CASE_NEL`).
             b'E' => self.new_line()?,
-            // SPA and EPA (ECMA-48 8.3.140, 8.3.49): the glyphs printed
-            // between them are a guarded area, which ED, EL and ECH leave
-            // (ISO protection).
+            // SPA and EPA (ECMA-48 8.3.140, 8.3.49): a guarded area, which
+            // ED, EL and ECH leave.
             b'V' | b'W' => {
                 let guarded = byte == b'V';
                 self.guard = if guarded { TABLED } else { 0 };
@@ -2876,10 +2641,8 @@ impl Screen {
             b'c' => {
                 let size = self.size();
                 let mut next = self.next_id;
-                // Both grids start again: in the storage they have, if both
-                // hold only their live rows at this size, else afresh. With
-                // no room for them afresh, each is cleared, which blanks it
-                // in place if it must (`Grid::clear`).
+                // Both grids start again: in their storage if they can,
+                // else afresh, else cleared in place (`Grid::clear`).
                 let recycle = [&self.primary, &self.alternate]
                     .iter()
                     .all(|g| g.recyclable() && g.size() == size);
@@ -2894,8 +2657,7 @@ impl Screen {
                     self.primary = primary;
                     self.alternate = alternate;
                 } else {
-                    // A grid that can be neither made anew nor blanked in
-                    // place stays as it was, and the rest is reset.
+                    // A grid that cannot be blanked stays; the rest resets.
                     for g in [&mut self.primary, &mut self.alternate] {
                         if g.clear(&mut next, self.version).is_err() {
                             crate::degraded();
@@ -2908,12 +2670,9 @@ impl Screen {
                 self.links_seen = false;
                 self.primary.reset_links();
                 self.alternate.reset_links();
-                // Nor a picture.
                 self.pictures.clear();
                 self.alternate_active = false;
-                // The pen, the character sets, protection and the palette,
-                // as DECSTR resets them; the grids' cursors, saved cursors
-                // and margins are new already.
+                // What DECSTR resets; the grids are new already.
                 self.terminal = Terminal::default();
                 self.soft_reset();
                 self.modes = Modes::DEFAULT;
@@ -2928,10 +2687,9 @@ impl Screen {
     }
 
     /// DECSWL (`ESC # 5`), DECDWL (`ESC # 6`) and DECDHL (`ESC # 3`, `ESC #
-    /// 4`): the cursor's line takes the rendition (`Grid::set_rendition`),
-    /// and a pending wrap ends (DEC STD 070, Appendix D.6.1). DECDWL and
-    /// DECDHL do nothing while DECLRMM is set (DECDWL, note 3; DECDHL, note
-    /// 4). Whether the sequence is one of the four.
+    /// 4`): the cursor's line takes the rendition. DECDWL and DECDHL do
+    /// nothing while DECLRMM is set (DEC STD 070, DECDWL, note 3). Whether
+    /// the sequence is one of the four.
     fn set_line_rendition(&mut self, byte: u8) -> bool {
         let rendition = match byte {
             b'3' => LineRendition::DoubleHeightTop,
@@ -2954,10 +2712,8 @@ impl Screen {
 
     /// DECIC (`insert`) and DECDC: `count` columns inserted or deleted at
     /// the cursor's column in every line of the scrolling region, between
-    /// the left and right margins, as ICH and DCH insert and delete cells
-    /// in one (DEC STD 070, 5.4.3; xterm's `xtermColScroll`). Nothing
-    /// outside the margins. The cursor stays, and so does a pending wrap,
-    /// as in xterm; DECDC ends each line's soft wrap, as DCH does.
+    /// the left and right margins (DEC STD 070, 5.4.3). Nothing outside
+    /// the margins. The cursor and a pending wrap stay, as in xterm.
     #[inline(never)]
     fn edit_columns(&mut self, count: u16, insert: bool) {
         let g = self.grid();
@@ -2968,13 +2724,9 @@ impl Screen {
     }
 
     /// DECBI (`ESC 6`) and DECFI (`forward`, `ESC 9`; DEC STD 070, Back
-    /// Index and Forward Index): the cursor a column back or forward,
-    /// ending a pending wrap. From the left margin back, or the right
-    /// margin forward, the columns between the margins of every line of
-    /// the scrolling region shift the other way instead, a blank one coming
-    /// in at that margin, and the cursor stays. Elsewhere the cursor moves,
-    /// never past the page's edge. Out of line, as `escape` is on every
-    /// sequence's way.
+    /// Index and Forward Index): the cursor a column back or forward. At
+    /// the margin it would cross, the columns between the margins shift
+    /// the other way instead, and the cursor stays.
     #[inline(never)]
     fn index_column(&mut self, forward: bool) {
         let g = self.grid_mut();
@@ -2996,10 +2748,7 @@ impl Screen {
     }
 
     /// The columns from `from` to the right margin of every line of the
-    /// scrolling region moved `count` right, or left, blanks coming in at
-    /// the side they leave; the cursor stays. SL and SR, and DECBI and
-    /// DECFI at a margin, from the left margin; DECIC and DECDC from the
-    /// cursor's column.
+    /// scrolling region moved `count` right, or left; the cursor stays.
     fn shift_columns(&mut self, from: u16, count: u16, right: bool) {
         let blank = self.blank_style();
         self.with_grid(|g, _, version| {
@@ -3017,7 +2766,6 @@ impl Screen {
     /// margins with the left one left of the right are set, and the cursor
     /// goes home, obeying DECOM; others are ignored (note 2). A right
     /// margin past the screen is its last column, as xterm takes it.
-    /// Out of line, as `csi` is on every CSI's way.
     #[inline(never)]
     fn set_left_right_margins(&mut self, p: &Parameters) {
         let cols = self.grid().size().cols();
@@ -3031,8 +2779,7 @@ impl Screen {
     }
 
     /// ECH while glyphs may be protected: the columns `start` to `end` of
-    /// row `row` erased but for their guarded glyphs (ISO's). Out of line,
-    /// as protection is rare and `csi` is on every CSI's way.
+    /// row `row` erased but for their guarded glyphs (ISO's).
     #[inline(never)]
     fn erase_kept(&mut self, row: u16, start: u16, end: u16) {
         let blank = self.blank_style();
@@ -3041,20 +2788,16 @@ impl Screen {
 
     /// ED or EL (`display`) while glyphs may be protected, or DECSED or
     /// DECSEL (`private`), in `mode`. DECSED and DECSEL make each glyph
-    /// DECSCA does not protect a space, its rendition and attributes as
-    /// they were, and leave empty positions empty (DEC STD 070, DECSEL and
-    /// DECSED; 5.11.1.2), as DECSERA does; one reaching the last column
-    /// ends the row's soft wrap, as ED's and xterm's do. ED and EL leave the
-    /// guarded glyphs (ECMA-48, SPA with ERM reset), the rest erased as
-    /// for ED and EL. An erase that finds no protected glyph leaves the
-    /// protection as it is (DEC STD 070, 5.11.1.2; ECMA-48 8.3.140), where
-    /// xterm ends it after an ED of the whole screen.
+    /// DECSCA does not protect a space in its own attributes, and leave
+    /// empty positions empty (DEC STD 070, 5.11.1.2). ED and EL leave the
+    /// guarded glyphs (ECMA-48, SPA with ERM reset). An erase that finds no
+    /// protected glyph leaves the protection as it is (DEC STD 070,
+    /// 5.11.1.2; ECMA-48 8.3.140), where xterm ends it.
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
         // DECSED leaves every line's rendition (DEC STD 070, DECSED, note
-        // 3); an ED that spares SPA's guarded glyphs erases whole, and so
-        // makes single width (ED, note 1), each line but those it spared a
+        // 3); ED makes single width (ED, note 1) each line it spared no
         // glyph of.
         let g = self.grid();
         let renditions: Vec<(u16, LineRendition)> = match display && g.doubled() {
@@ -3093,20 +2836,16 @@ impl Screen {
     /// manual, 5-17): the screen filled with E, the margins the whole
     /// screen, origin mode off, the cursor home with no wrap pending, and
     /// the pen's rendition off, as DEC STD 070's algorithm has it. As in
-    /// xterm 411, which DEC leaves the rest to: the pen keeps its colours
-    /// and loses every attribute, and the E's have neither. Each row's soft
-    /// wrap ends, as in Ghostty, alacritty and wezterm (xterm keeps it: a
-    /// screen of E's is no line going on), and its prompt mark goes, as an
-    /// ED erasing it whole takes it. A row already all plain E's is left
-    /// as it is, its version too.
+    /// xterm 411, the pen keeps its colours, and the E's have neither
+    /// colours nor attributes. Each row's soft wrap ends, as in Ghostty, and
+    /// its prompt mark goes.
     fn alignment(&mut self) {
         self.break_cluster();
         self.attributes = self.attributes.erased();
         self.pen_changed();
         let version = self.version;
         let g = self.grid_mut();
-        // Home, with origin mode off and no wrap pending, and the left and
-        // right margins too, as xterm resets them; DECLRMM stays as it is.
+        // Home, and the side margins reset as xterm does; DECLRMM stays.
         g.cursor = Cursor::default();
         g.reset_margins();
         // The default attributes, style 0 (`style.rs`).
@@ -3117,8 +2856,7 @@ impl Screen {
                 && g.live_cells(y).iter().all(|c| c.is_ascii(b'E', plain));
             spend!(cells, cols);
             if !filled {
-                // Erased whole first: its long clusters' text and its links
-                // go, as an erase takes them.
+                // Erased first, so its clusters' text and links go.
                 g.erase(y, 0, cols, plain, version);
                 g.mutate_row(y, version, cols, |cells| {
                     cells.fill(Compact::ascii(b'E', plain));
@@ -3133,10 +2871,9 @@ impl Screen {
     }
 
     /// DECSTR (`soft`), or DECSCL (`CSI Pl ; Pc " p`; DEC STD 070, DECSCL):
-    /// level 1 or 2, with a soft reset (note 3); a level fux-vt does not
-    /// support is ignored (note 4). Pc selects 7-bit or 8-bit C1 replies
-    /// (0, the default, and 2 are 8-bit): fux-vt's replies stay 7-bit, as
-    /// UTF-8 has no C1 bytes (ECMA-35, 15.4), a departure. Out of line.
+    /// level 1 or 2, with a soft reset (note 3); another level is ignored
+    /// (note 4). Replies stay 7-bit whatever Pc asks, as UTF-8 has no C1
+    /// bytes (ECMA-35, 15.4).
     #[inline(never)]
     fn soft_reset_or_level(&mut self, p: &Parameters, soft: bool) {
         if !soft {
@@ -3149,19 +2886,14 @@ impl Screen {
         self.soft_reset();
     }
 
-    /// DECSTR (`CSI ! p`), as xterm does it: the modes a program sets go
-    /// back to their defaults, as the VT520 manual's table (p. 5-150) and
-    /// DEC STD 070's Soft Terminal Reset (p. 4-37) list them: the cursor
-    /// shown, DECOM, DECCKM and DECKPAM off, the scroll region the whole
-    /// screen, the pen normal, the character sets ASCII with G0 in GL,
-    /// and the saved cursor home with them (`Modes::SOFT_RESET` has the
-    /// modes); the saved cursor is the shown screen's, as xterm resets it.
-    /// DECAWM goes back to its default, which both leave to the terminal's
-    /// setting (xterm's: on). The screen, the cursor, a pending wrap (the
-    /// Last Column Flag), the alternate screen, bracketed paste, focus
-    /// reporting, mouse modes and kitty keyboard flags stay as they are,
-    /// as in xterm. It resets synchronized output (2026), which
-    /// `parser::FrameScan::ends` restates: the two change together.
+    /// DECSTR (`CSI ! p`), as xterm does it: what the VT520 manual's table
+    /// (p. 5-150) and DEC STD 070's Soft Terminal Reset (p. 4-37) list goes
+    /// back to its default (`Modes::SOFT_RESET` has the modes), with the
+    /// pen, the character sets, the margins and the shown screen's saved
+    /// cursor. The screen, the cursor, a pending wrap, the alternate
+    /// screen, mouse modes and kitty keyboard flags stay, as in xterm. It
+    /// resets synchronized output (2026), which `parser::FrameScan::ends`
+    /// restates: the two change together.
     fn soft_reset(&mut self) {
         // DECAWM comes back on with no wrap pending if it was off, but
         // the Last Column Flag DECRC restored.
@@ -3169,8 +2901,7 @@ impl Screen {
             self.grid_mut().cursor.pending_wrap = false;
         }
         self.modes.reset(Modes::SOFT_RESET);
-        // The selective erase attribute, in the VT520 manual's table, and
-        // the guarded area, as xterm ends it.
+        // DECSCA (VT520 manual's table) and SPA's area, as xterm ends it.
         self.protect = 0;
         self.guard = 0;
         self.attributes = Attributes::default();
@@ -3182,17 +2913,15 @@ impl Screen {
             g.reset_margins();
         }
         self.grid_mut().saved = Saved::default();
-        // The palette, as xterm 411 resets it (in neither table); the
-        // dynamic and special colours stay.
+        // The palette, as xterm 411 resets it; dynamic colours stay.
         if let Some(colours) = &mut self.colours {
             colours.reset_palette();
         }
     }
 
-    /// Clears the alternate screen, its blanks in `pen`'s colours (`bce`),
-    /// as xterm clears it for 1047 and 1049. The cursor, origin mode, the
-    /// margins and the screen's saved cursor stay, and a pending wrap ends,
-    /// as ED's does (DEC STD 070, Appendix D.6.1).
+    /// Clears the alternate screen in `pen`'s colours (`bce`), as xterm
+    /// does for 1047 and 1049. The cursor, margins and saved cursor stay;
+    /// a pending wrap ends, as ED's does.
     fn clear_alternate(&mut self, pen: Attributes) -> Result<(), Error> {
         let g = &mut self.alternate;
         let (cursor, saved, lines, columns) = (g.cursor, g.saved, g.lines, g.columns());
@@ -3212,11 +2941,9 @@ impl Screen {
         Ok(())
     }
 
-    /// Shows the alternate screen, or the primary. The cursor, with its
-    /// pending wrap, origin mode and the margins go along, as in xterm,
-    /// where they are the terminal's rather than either screen's: a
-    /// program that switches finds the cursor where it left it. Each
-    /// screen keeps its own saved cursor, as each of xterm's does.
+    /// Shows the alternate screen, or the primary. The cursor and margins
+    /// go along, as in xterm, where they are the terminal's rather than
+    /// either screen's; each screen keeps its own saved cursor.
     fn switch_screen(&mut self, alternate: bool) {
         if self.alternate_active != alternate {
             let (from, to) = if alternate {
@@ -3235,23 +2962,17 @@ impl Screen {
     /// DECRQCRA (`CSI Pi ; Pp ; Pt ; Pl ; Pb ; Pr * y`, VT420 and up), with
     /// [`Feature::RectangleChecksums`]: the checksum of the rectangle's
     /// cells, as DECCKSR (`DCS Pi ! ~ xxxx ST`, four upper-case hex
-    /// digits). DEC's manuals leave the sum to the terminal; this is
-    /// xterm's default, which matches the VT520's (`xtermCheckRect`, ctlseqs'
-    /// XTCHECKSUM): each cell's character, plus 0x08 hidden, 0x10
-    /// underlined, 0x20 inverse, 0x40 blinking and 0x80 bold, summed in 16
-    /// bits and negated. A character past Latin-1 or below a space, and a
-    /// wide glyph's second half, count as ESC (0x1b), but for a DEC Special
-    /// Graphics or Supplemental glyph, which counts as its DEC code
-    /// (`dec_code`); a cluster's combining marks are added as they are, as
-    /// xterm counts them. An empty cell counts as a space: on DEC's
-    /// terminals an erased cell holds one; xterm skips cells nothing was
-    /// ever written to, a difference esctest allows. The page `Pp` is
-    /// ignored, as xterm ignores it (DEC has 0 mean all pages): there is
-    /// one. The rectangle's coordinates are one-based and relative to the
-    /// top and left margins in origin mode, clamped to the screen whatever
-    /// the margins (`page_position`), with absent or 0 meaning its whole
-    /// extent; one whose top is below its bottom, or left past its right,
-    /// has no reply ("the sequence ... ignored", DEC STD 070, DECRQCRA).
+    /// digits). The sum is xterm's default, which matches the VT520's
+    /// (`xtermCheckRect`, ctlseqs' XTCHECKSUM): each cell's character, plus
+    /// 0x08 hidden, 0x10 underlined, 0x20 inverse, 0x40 blinking and 0x80
+    /// bold, summed in 16 bits and negated. A character past Latin-1 or
+    /// below a space, and a wide glyph's second half, count as ESC, but for
+    /// a DEC Special Graphics or Supplemental glyph (`dec_code`); a
+    /// cluster's combining marks are added as they are, as xterm counts
+    /// them. An empty cell counts as a space, as on DEC's terminals. The
+    /// page `Pp` is ignored, as xterm ignores it. The rectangle is read as
+    /// `rectangle` reads it; an inverted one has no reply (DEC STD 070,
+    /// DECRQCRA).
     pub(crate) fn rectangle_checksum(&mut self, p: &Parameters) -> Option<Reply> {
         let (lines, columns) = self.rectangle(p, 2)?;
         let id = p.first(0, 0);
@@ -3292,12 +3013,9 @@ impl Screen {
     /// The rectangle `Pt ; Pl ; Pb ; Pr` of the parameters from `at` on, as
     /// the rectangular area operations and DECRQCRA take it (DEC STD 070,
     /// 5.12.1, 5.12.2): one-based, from the top and left margins in origin
-    /// mode ("affected by the setting of Origin Mode. This control is not
-    /// otherwise affected by the margins"), and clamped to the page ("If a
-    /// value exceeds the width or height of the active page, it is treated
-    /// as the width or height of the active page"); absent or 0 its whole
-    /// extent. `None` if its top is below its bottom or its left past its
-    /// right, which has the function ignored.
+    /// mode but otherwise not bound by them, and clamped to the page;
+    /// absent or 0 its whole extent. `None` if its top is below its bottom
+    /// or its left past its right, which has the function ignored.
     fn rectangle(&self, p: &Parameters, at: usize) -> Option<(Span, Span)> {
         let size = self.size();
         let (top, left) = self.page_position(p, at, (1, 1));
@@ -3308,10 +3026,8 @@ impl Screen {
         ))
     }
 
-    /// The line and column the parameters at `at` and `at + 1` name, as a
-    /// rectangle's corner or DECCRA's destination: one-based, `default`
-    /// if absent or 0, from the top and left margins in origin mode, and
-    /// clamped to the page, whatever the margins (DEC STD 070, 5.12.1).
+    /// The line and column the parameters at `at` and `at + 1` name, read
+    /// as `rectangle` reads a corner; `default` if absent or 0.
     fn page_position(&self, p: &Parameters, at: usize, default: (u16, u16)) -> (u16, u16) {
         let (lines, columns) = self.grid().addressed();
         let (page_lines, page_columns) = (self.size().lines(), self.size().columns());
@@ -3327,9 +3043,7 @@ impl Screen {
 
     /// DEC STD 070's rectangular area operations (5.12.1), by final byte:
     /// DECFRA (`x`), DECERA (`z`), DECSERA (`{`) and DECCRA (`v`), on the
-    /// rectangle their parameters name (`rectangle`), which none of the
-    /// margins bounds otherwise, the cursor staying where it is. A page
-    /// parameter is ignored: there is one. Out of line, as they are rare.
+    /// rectangle their parameters name; the cursor stays.
     #[inline(never)]
     fn rectangle_area(&mut self, p: &Parameters, byte: u8) {
         // DECFRA's rectangle follows its character.
@@ -3337,15 +3051,12 @@ impl Screen {
             return;
         };
         self.break_cluster();
-        // Each row's span, stopping at a double-width line's end (DEC STD
-        // 070, 5.6.1; DECDWL, note 2).
+        // Stopping at a double-width line's end (DEC STD 070, 5.6.1).
         let span = |g: &Grid, y: u16| {
             let end = columns.end().min(g.row_end(y)).max(columns.first());
             (columns.first(), end)
         };
-        // A fill or an erase of each row's span, its wide glyphs' halves
-        // erased first: twice the rectangle's cells (`budget`). DECCRA's
-        // copy spends as it goes.
+        // Twice the rectangle's cells (`budget`); DECCRA spends as it goes.
         if byte != b'v' {
             let cells = usize::from(lines.len()).saturating_mul(usize::from(columns.len()));
             spend!(edits, cells);
@@ -3353,9 +3064,8 @@ impl Screen {
             crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
         }
         match byte {
-            // DECFRA: Pch from 32 to 126 is that character in GL's set,
-            // 160 to 255 in GR's, Latin-1; another is ignored. The cells
-            // take the pen, as printing gives it.
+            // DECFRA: Pch 32 to 126 in GL's set, 160 to 255 Latin-1;
+            // another is ignored.
             b'x' => {
                 let c = match u8::try_from(p.first(0, 32)) {
                     Ok(byte @ 32..=126) => {
@@ -3369,16 +3079,14 @@ impl Screen {
                 let style = self.pen_style() | self.protect;
                 self.each_row(lines, |g, y, v| g.fill(y, span(g, y), c, style, v));
             }
-            // DECERA: every character a space in the pen's colours, as ED's
-            // blanks are.
+            // DECERA: blanks in the pen's colours, as ED's are.
             b'z' => {
                 let blank = self.blank_style();
                 self.each_row(lines, |g, y, v| {
                     g.erase_to_spaces(y, span(g, y), Some(blank), v);
                 });
             }
-            // DECSERA: the glyphs DECSCA does not protect, SPA's guard being
-            // no DECSCA, made spaces in their own attributes.
+            // DECSERA: unprotected glyphs made spaces in their attributes.
             b'{' => self.each_row(lines, |g, y, v| g.erase_to_spaces(y, span(g, y), None, v)),
             // DECCRA: to `Ptd ; Pld`, addressed as the rectangle is.
             _ => {
@@ -3389,15 +3097,10 @@ impl Screen {
     }
 
     /// DECCARA (`CSI Pt ; Pl ; Pb ; Pr ; Ps … $ r`) and DECRARA (`… $ t`,
-    /// `reverse`; DEC STD 070, 5.12.1): the renditions the parameters
-    /// after the rectangle name (`rendition_change`) changed, or reversed,
-    /// in each occupied position of the area, its characters and the
-    /// cursor staying. The area is the rectangle `rectangle` reads, or with
-    /// DECSACE 0 or 1 the stream of positions from its first corner to its
-    /// second, whole lines between; with DECSACE 2 its unoccupied
-    /// positions become spaces and change too. Each style of the area is
-    /// mapped once while a few are about, and found again by the grid's
-    /// table otherwise. Out of line, as they are rare.
+    /// `reverse`; DEC STD 070, 5.12.1): the renditions the parameters name
+    /// (`rendition_change`) changed, or reversed, in the area: the
+    /// rectangle with DECSACE 2, else the stream of positions from its
+    /// first corner to its second.
     #[inline(never)]
     fn change_attributes(&mut self, p: &Parameters, reverse: bool) {
         let Some((lines, columns)) = self.rectangle(p, 0) else {
@@ -3422,8 +3125,7 @@ impl Screen {
                 count = count.saturating_add(1);
             }
         }
-        // DECCARA with no valid parameter clears the renditions (0); DECRARA
-        // with none is ignored.
+        // With no valid parameter DECCARA clears (0), DECRARA is ignored.
         if count == 0 && reverse {
             return;
         }
@@ -3446,8 +3148,7 @@ impl Screen {
         let cells = cells.fold(0usize, usize::saturating_add);
         crate::budget::spend(crate::budget::units(cells), crate::budget::weight::cells);
         spend!(edits, cells);
-        // The last few styles mapped, and the sweeps they were mapped
-        // after: a sweep renumbers styles, and the memo goes.
+        // The last few styles mapped; a sweep renumbers styles, so it ends.
         let mut memo = [(0u32, 0u32); 16];
         let (mut kept, mut sweeps) = (0usize, None);
         let mut restyle = |g: &mut Grid, old: u32| {
@@ -3470,7 +3171,6 @@ impl Screen {
         };
         self.with_grid(|g, _, v| {
             for y in lines.each() {
-                // To a double-width line's end (DEC STD 070, 5.6.1).
                 let (start, end) = span(y);
                 let end = end.min(g.row_end(y)).max(start);
                 g.restyle(y, (start, end), rectangle, v, &mut restyle);
@@ -3478,9 +3178,8 @@ impl Screen {
         });
     }
 
-    /// `f` with the grid shown, each of the rows `lines` and the version,
-    /// each row keeping its soft wrap: a rectangular area operation changes
-    /// no line's (DEC STD 070, 5.12.1), as xterm keeps them.
+    /// `f` on each of the rows `lines`, each keeping its soft wrap: a
+    /// rectangular area operation changes none (DEC STD 070, 5.12.1).
     fn each_row(&mut self, lines: Span, mut f: impl FnMut(&mut Grid, u16, u64)) {
         self.with_grid(|g, _, v| {
             for y in lines.each() {
@@ -3491,19 +3190,15 @@ impl Screen {
         });
     }
 
-    /// The primary device attributes (DA1, `CSI c`; and DECID, `ESC Z`):
-    /// a VT220 with ANSI colour with an identity, else a VT100 with
-    /// advanced video, as the vt100 crate answered.
+    /// The primary device attributes (DA1 and DECID): a level 2 terminal
+    /// with an identity, else a VT100 with advanced video.
     pub(crate) fn primary_attributes(&self, options: &Options) -> Reply {
         // 4: sixel graphics, when the host's terminal shows them.
         let sixel = if self.graphics.sixel { ";4" } else { "" };
         if options.identity().is_some() {
-            // Level 2 (DEC STD 070, DA): fux-vt lacks level 3's terminal
-            // state reports and level 4's text macros. Its extensions
-            // (Table 1): selectively erasable characters (6: DECSCA,
-            // DECSED, DECSEL), horizontal scrolling (21: DECSLRM, DECIC,
-            // DECDC, DECBI, DECFI), colour text (22) and rectangular
-            // editing (28: DECFRA and the rest).
+            // Level 2 (DEC STD 070, DA, Table 1): selective erase (6),
+            // horizontal scrolling (21), colour text (22) and rectangular
+            // editing (28).
             reply!("\x1b[?62{sixel};6;21;22;28c")
         } else {
             reply!("\x1b[?1;2{sixel}c")
@@ -3534,8 +3229,7 @@ impl Screen {
                 None if mode.fixed().is_none() => self.saved_modes.contains(mode),
                 None => continue,
             };
-            // A mode refused room is left as it was, and the rest are set
-            // (`Parser::refused` counts it).
+            // A mode refused room is left as it was; the rest are set.
             match self.set_mode(mode, on) {
                 Ok(reports) => report |= reports,
                 Err(_) => crate::degraded(),
@@ -3584,9 +3278,8 @@ impl Screen {
                 }
                 self.modes.set(mode, on);
             }
-            // DECLRMM: reset, the margins go back to the screen's edges (DEC
-            // STD 070, DECLRMM; xterm's `set_left_right_margin_mode`).
-            // Set, every line is single width (DECLRMM, 5-29).
+            // DECLRMM (DEC STD 070, 5-29): reset, the margins go back to the
+            // screen's edges; set, every line is single width.
             Kind::Margins => {
                 self.modes.set(mode, on);
                 let version = self.version;
@@ -3601,8 +3294,7 @@ impl Screen {
             // Which sequences reset it, `parser::FrameScan::ends` restates:
             // it changes with this arm, DECSTR, RIS and XTRESTORE.
             Kind::Frame => {
-                // A frame begins when the mode is set from reset: set again
-                // while set, the frame being drawn goes on.
+                // A frame begins only when the mode is set from reset.
                 if on && !self.modes.contains(mode) {
                     self.frames_begun = self.frames_begun.wrapping_add(1);
                 }
@@ -3617,9 +3309,8 @@ impl Screen {
                 g.cursor.origin = on;
                 g.position(0, 0);
             }
-            // A switch of screens leaves the printed cell behind. The
-            // alternate screen is made when first shown, before anything
-            // changes, so that failing to make it changes nothing.
+            // The alternate screen is made before anything changes, so that
+            // failing to make it changes nothing.
             Kind::Screen(switch) => {
                 if on {
                     self.alternate.make()?;
@@ -3629,8 +3320,7 @@ impl Screen {
                     Switch::Plain => self.switch_screen(on),
                     // Cleared on leaving, as xterm does it, but only once
                     // shown again: till then, what the program drew is
-                    // kept to read. The clear's end of a pending wrap is
-                    // now.
+                    // kept to read.
                     Switch::ClearedOnLeaving => {
                         if !on && self.alternate_active {
                             self.terminal.clear_on_show = Some(self.attributes);
@@ -3649,9 +3339,8 @@ impl Screen {
                         self.restore();
                     }
                 }
-                // The clear 1047 deferred to now was xterm's on leaving,
-                // which ended a wrap pending then: one pending since, the
-                // cursor's on the primary screen, goes on with it.
+                // The clear 1047 deferred keeps a wrap pending since, as
+                // xterm's clear on leaving came before it.
                 if let Some(pen) = self.terminal.clear_on_show.take_if(|_| on) {
                     let pending = self.alternate.cursor.pending_wrap;
                     self.clear_alternate(pen)?;
@@ -3705,7 +3394,6 @@ impl Screen {
                 let (left, right) = (left.saturating_add(1), right.saturating_add(1));
                 let _ = write!(out, "{left};{right}s");
             }
-            // DECSACE's Ps, as it was set (esctest sets 0 and wants `0*x`).
             b"*x" => {
                 let _ = write!(out, "{}*x", self.terminal.extent);
             }
@@ -3735,8 +3423,7 @@ impl Screen {
         intermediates: &[u8],
         byte: u8,
     ) -> Option<Dispatch> {
-        // The flags, a bit set of those fux-vt honours; other bits are
-        // dropped.
+        // Flags fux-vt does not honour are dropped.
         let flags = |n: u16| u8::try_from(n & u16::from(KITTY_FLAGS_KEPT)).unwrap_or(0);
         match (intermediates, byte) {
             (b">", b'u') => self.grid_mut().keyboard.push(flags(p.first(0, 0))),
@@ -3752,11 +3439,9 @@ impl Screen {
             // XTMODKEYS with no parameters resets every resource,
             // modifyOtherKeys too (ctlseqs); 0 alone is modifyKeyboard's.
             (b">", b'm') if !p.given => self.terminal.modify_other_keys = None,
-            // Only resource 4 is modifyOtherKeys; other resources are unhandled.
-            // A subparameter of the level is a mask of modifiers to factor
-            // out (`CSI > 4 ; 2 : 1 m`), as xterm 411 reads it (charproc.c,
-            // CASE_SET_MOD_FKEYS); one of the resource (ctlseqs' example,
-            // `CSI > 4 : 1 m`) xterm 411 ignores, and so does this arm.
+            // Only resource 4, modifyOtherKeys, is handled. A subparameter
+            // of the level is a mask of modifiers to factor out
+            // (`CSI > 4 ; 2 : 1 m`), as xterm 411 reads it.
             (b">", b'm') if p.groups().next() == Some(&[4][..]) => {
                 let level = match p.first(1, 0) {
                     1 => Some(OtherKeysLevel::Usual),
@@ -3774,10 +3459,8 @@ impl Screen {
                 self.terminal.modify_other_keys =
                     level.map(|level| OtherKeys::new(level, factored_mask(mask)));
             }
-            // XTQMODKEYS (ctlseqs, `CSI ? Pp m`): "XTerm's response ... is
-            // formatted as an XTMODKEYS control, i.e., CSI > Pp m", its
-            // value 0 when off. Only modifyOtherKeys (4) is kept, so only
-            // it is answered.
+            // XTQMODKEYS (ctlseqs, `CSI ? Pp m`): answered as XTMODKEYS,
+            // 0 when off. Only modifyOtherKeys (4) is kept and answered.
             (b"?", b'm') if p.groups().next() == Some(&[4][..]) => {
                 // Without the mask, as xterm 411's report_mod_fkeys.
                 let level = match self.terminal.modify_other_keys.map(OtherKeys::level) {
@@ -3788,8 +3471,7 @@ impl Screen {
                 };
                 return Some(Dispatch::Reply(reply!("\x1b[>4;{level}m")));
             }
-            // Disables it (ctlseqs, `CSI > Ps n`: "a resource value of -1",
-            // which keys read as off).
+            // Disables it (ctlseqs, `CSI > Ps n`).
             (b">", b'n') if p.groups().next() == Some(&[4][..]) => {
                 self.terminal.modify_other_keys = None;
             }
@@ -3811,8 +3493,7 @@ impl Screen {
         byte: u8,
         options: &Options,
     ) -> Option<Dispatch> {
-        // SL, SR, DECIC, DECDC, the rectangle edits and DECRQCRA are
-        // screen-wide: one may be left for the next call (`holds_back`).
+        // Screen-wide sequences may be left for the next call (`holds_back`).
         let wide = matches!(
             (intermediates, byte),
             (b" ", b'@' | b'A')
@@ -3823,9 +3504,7 @@ impl Screen {
         if wide && self.holds_back() {
             return Some(Dispatch::Held);
         }
-        // DECSCUSR: its intermediate is a space.
         if intermediates == b" " && byte == b'q' {
-            // 0, the default, is a blinking block, as 1 is, kept apart.
             let ps = p.first(0, 0);
             if let Some(&shape) = CursorShape::ALL.iter().find(|s| s.number() == ps) {
                 self.terminal.cursor_shape = shape;
@@ -3852,9 +3531,8 @@ impl Screen {
         options: &Options,
     ) -> Result<Dispatch, Error> {
         let private = intermediates == b"?";
-        // A sequence with an intermediate, out of line, as most have none;
-        // of the private ones only the kitty flags' and XTQMODKEYS's
-        // queries (`CSI ? u`, `CSI ? 4 m`) are there, not the modes.
+        // A sequence with an intermediate; of the private ones only the
+        // kitty flags' and XTQMODKEYS's queries, not the modes.
         if !intermediates.is_empty() && (!private || matches!(byte, b'u' | b'm')) {
             if let Some(dispatch) = self.csi_intermediate(p, intermediates, byte, options) {
                 return Ok(dispatch);
@@ -3866,8 +3544,7 @@ impl Screen {
         if matches!(byte, b'h' | b'l') {
             return self.set_modes(p, private, Some(byte == b'h'), options);
         }
-        // Every sequence that moves the cursor or edits a row; not SGR,
-        // modes or queries.
+        // Every sequence that moves the cursor or edits a row.
         if matches!(
             byte,
             b'A'..=b'H'
@@ -3893,10 +3570,8 @@ impl Screen {
         ) {
             self.break_cluster();
         }
-        // XTSAVE and XTRESTORE (ctlseqs). Their private marker tells them
-        // from DECSLRM (`CSI Pl ; Pr s`) and SCOSC (`CSI s`), and from
-        // DECSTBM (`CSI Pt ; Pb r`); `CSI s` is DECSLRM below while DECLRMM
-        // is set, and SCOSC otherwise.
+        // XTSAVE and XTRESTORE (ctlseqs): the private marker tells them
+        // from DECSLRM, SCOSC and DECSTBM.
         if private && matches!(byte, b's' | b'r') {
             return self.save_or_restore_modes(p, byte == b's', options);
         }
@@ -3907,19 +3582,15 @@ impl Screen {
         let (row, col) = self.grid().cursor.at();
         let pending = self.grid().cursor.pending_wrap;
         // Every cursor movement, erase and edit ends a pending wrap (DEC STD
-        // 070, Appendix D.6.1, which lists them), as xterm does; ED, EL, IL,
-        // DL and DECSTBM below, once they are carried out, and CHT and CBT
-        // in `tab`. SU and SD are not among them: the cursor stays waiting
-        // to wrap, as in xterm.
+        // 070, Appendix D.6.1); some below, once carried out. SU and SD
+        // keep it, as in xterm.
         if matches!(byte, b'A'..=b'H' | b'X' | b'`' | b'a' | b'd' | b'e' | b'f') {
             self.grid_mut().cursor.pending_wrap = false;
         }
         match byte {
             // CUU, CUD, CNL and CPL, each stopping at the margin it comes
-            // to: up at the top margin from at or below it, down at the
-            // bottom margin from at or above it, else at the screen's edge
-            // (xterm's `CursorUp` and `CursorDown`). CNL and CPL go to the
-            // column CR goes to, the left margin (xterm's `CursorNextLine`).
+            // to, else at the screen's edge (xterm's `CursorUp`). CNL and
+            // CPL then return the carriage.
             b'A' | b'B' | b'E' | b'F' => {
                 let g = self.grid_mut();
                 let lines = g.lines;
@@ -3939,39 +3610,27 @@ impl Screen {
                     g.carriage_return();
                 }
             }
-            // CUF: stops at the right margin, unless the cursor is past it
-            // already, then at the last column (xterm's `CursorForward`;
-            // DEC STD 070, 5.4.3).
+            // CUF stops at the right margin, unless already past it (DEC
+            // STD 070, 5.4.3).
             b'C' => self.grid_mut().forward(n, false),
-            // HPR: a position, as CUP sets it (VT520 manual, HPR), so it
-            // passes the right margin outside origin mode, unlike CUF, and
-            // stops there in it (xterm's `CASE_HPR`).
+            // HPR sets a position as CUP does (VT520 manual), so unlike CUF
+            // it passes the right margin outside origin mode.
             b'a' => self.grid_mut().forward(n, true),
             // CUB; with reverse wraparound, back over line ends too.
             b'D' if self.reverse_wraps() => self.cursor_back(n, pending),
-            // CUB stops at the left margin, unless the cursor is left of it
-            // already (xterm's `CursorBack`).
+            // CUB stops at the left margin, unless already left of it.
             b'D' => self.grid_mut().backward(n),
-            // CHA, and HPA: the column as CUP addresses it, from the left
-            // margin in origin mode. Coordinates are one-based, and 0
-            // means 1.
+            // CHA and HPA address the column as CUP does.
             b'G' | b'`' => self.grid_mut().column(n.saturating_sub(1)),
-            // CUP, and HVP, which is CUP with another final byte.
             b'H' | b'f' => self
                 .grid_mut()
                 .position(n.saturating_sub(1), p.first(1, 1).saturating_sub(1)),
-            // DECSLRM while DECLRMM is set.
             b's' if self.mode(Mode::LeftRightMargins) => self.set_left_right_margins(p),
-            // SCOSC and SCORC share DECSC's slot and, like DECSC, save and
-            // restore the attributes with the position.
+            // SCOSC and SCORC share DECSC's slot, attributes too.
             b's' => self.save(),
             b'u' => self.restore(),
-            // VPA and VPR address lines as CUP does, from the top margin in
-            // origin mode, within the margins there and the screen
-            // otherwise (DEC STD 070, DECOM: in displaced mode the active
-            // position cannot leave the margins), as xterm does. VPR
-            // counts from the cursor's line, so unlike CUD it passes the
-            // bottom margin with DECOM reset.
+            // VPA and VPR address lines as CUP does (DEC STD 070, DECOM),
+            // so unlike CUD, VPR passes the bottom margin with DECOM reset.
             b'd' | b'e' => {
                 let g = self.grid_mut();
                 let line = if byte == b'd' {
@@ -3985,8 +3644,7 @@ impl Screen {
                 let blank = self.blank_style();
                 self.with_grid(|g, _, v| g.edit_cells(n, byte == b'@', blank, v));
             }
-            // Erased cells take the pen's colours alone, as xterm's do.
-            // Guarded glyphs (SPA's) stay.
+            // Erased cells take the pen's colours; guarded glyphs stay.
             b'X' => {
                 let a = self.blank_style();
                 let end = col.saturating_add(n);
@@ -3996,10 +3654,8 @@ impl Screen {
                     self.with_grid(|g, _, v| g.erase(row, col, end, a, v));
                 }
             }
-            // ED and EL, DECSED and DECSEL carry out each parameter in
-            // turn, as that many sequences of one would (DEC STD 070, their
-            // algorithms, chapter 5's revision note 12); unhandled if none
-            // is known.
+            // ED, EL, DECSED and DECSEL carry out each parameter in turn
+            // (DEC STD 070, chapter 5's revision note 12).
             b'J' | b'K' => {
                 // ED is screen-wide: it may be left for the next call.
                 if byte == b'J' && self.holds_back() {
@@ -4008,8 +3664,7 @@ impl Screen {
                 let mut known = false;
                 for group in p.groups() {
                     let mode = group.first().copied().unwrap_or(0);
-                    // ED 3 (`CSI 3 J`, xterm's): the scrollback goes, as
-                    // `clear` asks; the screen stays.
+                    // ED 3 (xterm's): the scrollback goes; the screen stays.
                     if byte == b'J' && mode == 3 && !private {
                         self.clear_history();
                         known = true;
@@ -4039,12 +3694,9 @@ impl Screen {
                     return Ok(Dispatch::Unhandled);
                 }
             }
-            // IL and DL, ignored outside the margins, leave the cursor in
-            // the first column (DEC STD 070, IL and DL, note 2).
-            // With left and right margins, only between them, and the
-            // cursor goes to the left margin (xterm's `InsertLine`).
+            // IL and DL, ignored outside the margins, leave the cursor at
+            // the left margin (DEC STD 070, IL and DL, note 2).
             b'L' | b'M' => {
-                // IL and DL are screen-wide: may be left for the next call.
                 if self.holds_back() {
                     return Ok(Dispatch::Held);
                 }
@@ -4062,11 +3714,9 @@ impl Screen {
                     self.scroll(region, n, direction);
                 }
             }
-            // `CSI` with five parameters and `T` is xterm's mouse highlight
-            // tracking (ctlseqs, XTHIMOUSE), which fux-vt ignores, not SD.
+            // Five parameters: XTHIMOUSE (ctlseqs), ignored, not SD.
             b'T' if p.groups().nth(4).is_some() => {}
             b'S' | b'T' => {
-                // SU and SD are screen-wide: may be left for the next call.
                 if self.holds_back() {
                     return Ok(Dispatch::Held);
                 }
@@ -4077,15 +3727,11 @@ impl Screen {
                 };
                 spend_scroll(lines, n, self.size());
                 self.scroll(lines, n, direction);
-                // A double-width line moved under the cursor holds it to its
-                // end. IL and DL leave it at the left margin, and the line a
-                // feed brings under it is new.
+                // A double-width line moved under the cursor holds it.
                 self.grid_mut().fit_cursor();
             }
             // DECSTBM (DEC STD 070, 5-25): margins with the top above the
-            // bottom are set, and the cursor goes home, obeying DECOM;
-            // others are ignored (note 2). A bottom past the screen is its
-            // last line, as xterm takes it.
+            // bottom are set and the cursor goes home; others are ignored.
             b'r' => {
                 let lines = self.grid().size().lines();
                 let bottom = p.first(1, lines.end()).saturating_sub(1);
@@ -4102,13 +3748,10 @@ impl Screen {
             b'b' => self.repeat(n)?,
             // CHT (ECMA-48 8.3.10): HT n times.
             b'I' => self.forward_tab(n)?,
-            // CBT (ECMA-48 8.3.7): back n tab stops, or to the first
-            // column.
+            // CBT (ECMA-48 8.3.7): back n tab stops.
             b'Z' => self.tab(n, false),
-            // TBC (ECMA-48 8.3.154; DEC STD 070, TBC, p. 5-66): each
-            // parameter in turn, 0 clearing the stop at the cursor and 3
-            // every stop, the two DEC STD 070 defines; the others, for
-            // stops kept line by line, do nothing.
+            // TBC (ECMA-48 8.3.154; DEC STD 070, p. 5-66): each parameter
+            // in turn, 0 clearing the stop at the cursor and 3 every stop.
             b'g' => {
                 for group in p.groups() {
                     match group.first() {
@@ -4116,10 +3759,8 @@ impl Screen {
                             let col = self.grid().cursor.col();
                             self.terminal.tabs.set(col, false);
                         }
-                        // 2, every stop in the active line, under TSM's
-                        // MULTIPLE every line's, and 5, every stop
-                        // (ECMA-48 8.3.154), clear them all, as 3 does; 1
-                        // and 4, line tabulation stops, find none.
+                        // 2 and 5 clear them all too, stops being every
+                        // line's (ECMA-48 8.3.154).
                         Some(2 | 3 | 5) => self.terminal.tabs.clear(),
                         _ => {}
                     }
@@ -4144,10 +3785,9 @@ impl Screen {
 
     /// The CSI sequences `csi` leaves unhandled, the parser asks here then
     /// (`Parser::csi_dispatch`): DECSCA, DECIC, DECDC, SL and SR and the
-    /// rectangular area operations, carried out, and the
-    /// queries' replies, some enabled by [`Feature::ExtendedReplies`] and
-    /// [`Options::identity`]; `None` for the rest, unhandled. Apart from
-    /// `csi`, which every CSI takes.
+    /// rectangular area operations, carried out, and the queries' replies,
+    /// some enabled by [`Feature::ExtendedReplies`] and
+    /// [`Options::identity`]; `None` for the rest, unhandled.
     #[inline(never)]
     pub(crate) fn other_csi(
         &mut self,
@@ -4161,10 +3801,8 @@ impl Screen {
         let modes = extended || options.has(Feature::ModeReports);
         let identity = options.identity();
         let reply = match (intermediates, byte) {
-            // HPB (ECMA-48 8.3.58, `CSI Pn j`) and VPB (8.3.159, `CSI Pn
-            // k`): back n columns, or up n lines, as CUB and CUU go, each
-            // ending a pending wrap (DEC STD 070, Appendix D.6.1). Here,
-            // off the CSI path, as no program in the corpus sends them.
+            // HPB (ECMA-48 8.3.58) and VPB (8.3.159): back n columns, or up
+            // n lines.
             (b"", b'j' | b'k') => {
                 self.break_cluster();
                 let n = p.first(0, 1).max(1);
@@ -4177,11 +3815,8 @@ impl Screen {
                 }
                 return Some(Dispatch::Done);
             }
-            // CTC (ECMA-48 8.3.17, `CSI Ps W`): 0 a character tabulation
-            // stop at the cursor's column, 2 that one cleared, 4 the active
-            // line's cleared, which under TSM's MULTIPLE (kept for good) is
-            // every line's, and 5 every one; 1, 3 and 6 are the line
-            // tabulation stops, of which there are none. Each in turn.
+            // CTC (ECMA-48 8.3.17, `CSI Ps W`), each in turn: 0 sets a stop
+            // at the cursor's column, 2 clears it, 4 and 5 clear them all.
             (b"", b'W') => {
                 let col = self.grid().cursor.col();
                 for group in p.groups() {
@@ -4199,17 +3834,15 @@ impl Screen {
                 self.terminal.tabs = TabStops::default();
                 return Some(Dispatch::Done);
             }
-            // TSR (ECMA-48 8.3.156, `CSI Pn SP d`): the stop at column n
-            // cleared; with no parameter, which has no default, nothing.
+            // TSR (ECMA-48 8.3.156): the stop at column n cleared, if given.
             (b" ", b'd') => {
                 if let Some(col) = n.checked_sub(1) {
                     self.terminal.tabs.set(col, false);
                 }
                 return Some(Dispatch::Done);
             }
-            // DECSCA (`CSI Ps " q`; DEC STD 070, 5.11.1.2): 1 protects the
-            // glyphs printed next from DECSED and DECSEL, 0 and 2 end it,
-            // as xterm reads it.
+            // DECSCA (DEC STD 070, 5.11.1.2): 1 protects the glyphs printed
+            // next from DECSED and DECSEL, 0 and 2 end it, as xterm reads it.
             (b"\"", b'q') => {
                 match n {
                     0 | 2 => self.protect = 0,
@@ -4221,18 +3854,13 @@ impl Screen {
                 }
                 return Some(Dispatch::Done);
             }
-            // DECIC and DECDC (`CSI Pn ' }`, `CSI Pn ' ~`; DEC STD 070,
-            // 5.4.3): columns inserted or deleted at the cursor's in every
-            // line of the scrolling region.
             (b"'", b'}' | b'~') => {
                 self.break_cluster();
                 self.edit_columns(p.first(0, 1), byte == b'}');
                 return Some(Dispatch::Done);
             }
-            // SL and SR (`CSI Pn SP @`, `CSI Pn SP A`; ECMA-48 8.3.121,
-            // 8.3.135): the data moved Pn columns left or right, within the
-            // margins, and with the cursor between them, as xterm bounds
-            // them.
+            // SL and SR (ECMA-48 8.3.121, 8.3.135): the data moved Pn
+            // columns, within the margins, as xterm bounds them.
             (b" ", b'@' | b'A') => {
                 self.break_cluster();
                 let g = self.grid();
@@ -4247,13 +3875,10 @@ impl Screen {
                     Some(reply!("\x1b[?{row};{col}R"))
                 }
                 // The DSRs of DEC's other devices, which fux-vt has none
-                // of (DEC STD 070, DSR, and its extensions'): no printer
-                // (-7), no UDK extension (-11), a keyboard of unknown
-                // language (as a VT220 reports it, which DA2 says fux-vt
-                // is: the VT520 manual sends its status and type at level
-                // 4 only), no locator (-13), of unknown type, no macro
-                // space and so DECCKSR's checksum of no macros, labelled as
-                // asked.
+                // of (DEC STD 070, DSR): no printer, no UDK extension, a
+                // keyboard of unknown language (as a VT220, which DA2 says
+                // fux-vt is, reports it), no locator, no macro space and
+                // so DECCKSR's checksum of no macros, labelled as asked.
                 15 => Some(reply!("\x1b[?13n")),
                 25 => Some(reply!("\x1b[?23n")),
                 26 => Some(reply!("\x1b[?27;0n")),
@@ -4264,9 +3889,7 @@ impl Screen {
                     let label = p.first(1, 0);
                     Some(reply!("\x1bP{label}!~0000\x1b\\"))
                 }
-                // The data integrity flag: power-up (73), until reported,
-                // then no errors since the last report (70); RIS is a
-                // power-up again.
+                // The data integrity flag (`Integrity`).
                 75 => {
                     let integrity = &mut self.terminal.integrity;
                     let status = mem::replace(integrity, Integrity::Reported).report();
@@ -4297,8 +3920,7 @@ impl Screen {
                 let (rows, cols) = self.size().into();
                 Some(reply!("\x1b[8;{rows};{cols}t"))
             }
-            // The cell's and the text area's size in pixels, from the host's
-            // terminal: how a program sizes the pictures it draws.
+            // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
                 let (width, height) = self.graphics.cell?;
                 Some(reply!("\x1b[6;{height};{width}t"))
@@ -4308,13 +3930,11 @@ impl Screen {
                 Some(reply!("\x1b[4;{height};{width}t"))
             }
             // XTSMGRAPHICS (ctlseqs, `CSI ? Pi ; Pa ; Pv S`), answered as
-            // xterm 411 answers it, to a request of three parameters (or of
-            // two, Pv left out, which xterm leaves unanswered): `CSI ?
-            // Pi ; Ps [; Pv] S`, Ps 0 for success with the values, 1 for an
-            // item it does not know, 2 for an action, 3 for a failure. Read,
-            // read the maximum or reset: 256 colour registers, and pictures
-            // as large as the screen, while the host shows sixel; setting
-            // either fails, as fux-vt keeps them fixed, and so does every
+            // xterm 411 answers it: Ps 0 for success with the values, 1 for
+            // an unknown item, 2 for an unknown action, 3 for a failure.
+            // Read, read the maximum or reset: 256 colour registers, and
+            // pictures as large as the screen, while the host shows sixel;
+            // setting either fails, as they are fixed, and so does every
             // request without sixel shown, and ReGIS's (3).
             (b"?", b'S') if matches!(p.groups().count(), 2 | 3) => {
                 let action = p.first(1, 0);
@@ -4342,17 +3962,13 @@ impl Screen {
                 self.change_attributes(p, byte == b't');
                 return Some(Dispatch::Done);
             }
-            // DECREQTPARM (`CSI Ps x`; the VT100 User Guide, chapter 3,
-            // DECREQTPARM and DECREPTPARM), which the VT100 that DA claims
-            // without an identity answers: a request, 0 or 1, is answered
-            // with a report, 2 or 3, of fixed parameters, xterm's (ctlseqs:
-            // no parity, 8 bits, the fastest speed, clock multiplier 1, no
-            // flags). With an identity, a VT220, unanswered, as in xterm.
+            // DECREQTPARM (`CSI Ps x`; VT100 User Guide, chapter 3), which
+            // the VT100 DA claims without an identity answers, with xterm's
+            // fixed parameters. With an identity, a VT220, unanswered.
             (b"", b'x') if identity.is_none() && n <= 1 => {
                 Some(reply!("\x1b[{};1;1;128;128;1;0x", n.saturating_add(2)))
             }
-            // DECSACE (`CSI Ps * x`; DEC STD 070, DECSACE): 0 and 1 a
-            // stream, 2 a rectangle; another Ps is none of them, ignored.
+            // DECSACE: 0 and 1 a stream, 2 a rectangle; others ignored.
             (b"*", b'x') => {
                 if n <= 2 {
                     self.terminal.extent = u8::try_from(n).unwrap_or(0);
@@ -4365,7 +3981,6 @@ impl Screen {
                 };
                 Some(reply)
             }
-            // DECRQM.
             (b"?$" | b"$", b'p') if modes => {
                 let private = intermediates == b"?$";
                 let mode = Mode::of(n, private, options);
@@ -4391,9 +4006,8 @@ impl Screen {
         while let Some(group) = groups.next() {
             match group {
                 [0] => self.attributes = Attributes::default(),
-                // The flags' rows (`Attributes::FLAGS`), as literal arms the
-                // hot path jumps to; a test holds them to the rows. Bold and
-                // dim are kept apart, and both can be on, as in xterm; 22
+                // The flags' rows (`Attributes::FLAGS`); a test holds these
+                // arms to them. Bold and dim can both be on, as in xterm; 22
                 // ends both (ECMA-48 8.3.117).
                 [1] => self.attributes.flags |= Attributes::BOLD,
                 [2] => self.attributes.flags |= Attributes::DIM,
@@ -4417,24 +4031,20 @@ impl Screen {
                 [39] => self.attributes = self.attributes.with_foreground(Color::Default),
                 [49] => self.attributes = self.attributes.with_background(Color::Default),
                 [59] => self.attributes = self.attributes.with_underline_color(Color::Default),
-                // 30–37 and 40–47 are colours 0–7 of the foreground (38)
-                // and the background (48), and 90–97 and 100–107 their
-                // bright forms 8–15.
+                // Colours 0–7, and 8–15 as 90–97 and 100–107.
                 [n @ 30..=37] => self.set_colour(38, indexed(*n, 30)),
                 [n @ 40..=47] => self.set_colour(48, indexed(*n, 40)),
                 [n @ 90..=97] => self.set_colour(38, indexed(*n, 90 - 8)),
                 [n @ 100..=107] => self.set_colour(48, indexed(*n, 100 - 8)),
-                // Underline styles (`references/modern/kitty_underlines.html`):
-                // `4:0` ends the underline, and 1 to 5 are single, double,
-                // curly, dotted and dashed. Another number changes nothing.
+                // Kitty's underline styles: `4:0` ends the underline, 1 to 5
+                // are single, double, curly, dotted and dashed.
                 [4, n, ..] => {
                     if let Some(style) = UnderlineStyle::from_number(*n) {
                         self.underline(style);
                     }
                 }
-                // Foreground, background and underline colour share their
-                // forms (ITU-T T.416, 13.1.8, and xterm's ctlseqs). An
-                // invalid colour is skipped, and the rest of the SGR goes on.
+                // ITU-T T.416, 13.1.8, and ctlseqs. An invalid colour is
+                // skipped, and the rest of the SGR goes on.
                 [selector @ (38 | 48 | 58)] => {
                     if let Some(colour) = Self::colour_after(&mut groups) {
                         self.set_colour(*selector, colour);
@@ -4465,9 +4075,7 @@ impl Screen {
 
     /// The colour of 38, 48 or 58 in their semicolon form, taken from the
     /// parameters after it, as xterm reads it: `5;index` or `2;r;g;b`, a
-    /// value the list ends before being 0. Another kind takes only itself.
-    /// `None`, with what it named taken all the same, if the colour is out
-    /// of range.
+    /// missing value 0. `None` if the colour is out of range.
     fn colour_after<'a>(
         groups: &mut std::iter::Peekable<impl Iterator<Item = &'a [u16]>>,
     ) -> Option<Color> {
@@ -4495,10 +4103,9 @@ impl Screen {
 }
 
 /// What IL, DL, SU or SD of `count` lines of `region` spends (`budget`):
-/// each row it brings in, its cells blanked and coloured, and the slots it
-/// turns: the region's once, whatever the count (`Order::rotate`), and the
-/// screen's once more if the region crosses the ring's end. A line feed
-/// spends nothing: a byte each, it does at most a row's work.
+/// each row it brings in, and the slots it turns, once whatever the count
+/// (`Order::rotate`). A line feed spends nothing: it does at most a row's
+/// work.
 fn spend_scroll(region: Span, count: u16, size: Size) {
     let rows = usize::from(count.min(region.len()));
     let cells = rows

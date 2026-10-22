@@ -26,7 +26,6 @@ impl Size {
     pub fn nonzero(self) -> (NonZeroU16, NonZeroU16) {
         (self.rows, self.cols)
     }
-    /// How many cells: two u16s multiply within a usize.
     pub(crate) fn cells(self) -> usize {
         usize::from(self.rows()).saturating_mul(usize::from(self.cols()))
     }
@@ -81,7 +80,6 @@ impl Span {
     pub fn part(self, first: u16, last: u16) -> Option<Self> {
         (first <= last && last <= self.last).then_some(Self { first, last })
     }
-    /// Its rows or columns, in order.
     pub fn each(self) -> std::ops::RangeInclusive<u16> {
         self.first..=self.last
     }

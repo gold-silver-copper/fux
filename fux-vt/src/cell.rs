@@ -1,14 +1,10 @@
-//! What a cell is to a reader: its text, halves and [`Attributes`], read
-//! through a [`CellRef`], which borrows the text from wherever it is kept.
-//! Cells are stored one way only (`compact.rs`), in a screen's rows and in
-//! a host's [`Cells`] alike, so a reader never sees half a cluster.
+//! A cell's text, halves and [`Attributes`], read through a [`CellRef`].
+//! Cells are stored one way only (`compact.rs`), in rows and [`Cells`] alike.
 
 use crate::Error;
 use crate::compact::{Compact, Line, Text};
 
-/// A colour: red, green and blue, 8 bits each, as xterm keeps every
-/// colour (what its 24-bit visual holds): a cell's direct colour, a palette
-/// entry, and what a terminal says its own colours are.
+/// A colour: red, green and blue, 8 bits each, as xterm keeps every colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rgb {
     /// Red.
@@ -79,8 +75,7 @@ pub enum UnderlineStyle {
 }
 
 impl UnderlineStyle {
-    /// The style kitty's `4:n` names, `n` from 0 to 5; `None` for another
-    /// number.
+    /// The style kitty's `4:n` names; `None` past 5.
     pub const fn from_number(n: u16) -> Option<Self> {
         Some(match n {
             0 => Self::None,
@@ -98,34 +93,24 @@ impl UnderlineStyle {
     }
 }
 
-/// How [`Attributes::write_sgr`] writes the SGR that sets attributes from a
-/// reset: the forms differ where their readers do.
+/// How [`Attributes::write_sgr`] writes attributes, for different readers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SgrForm {
-    /// As xterm reports the pen to DECRQSS (`xtermFormatSGR`): bold, the
-    /// underline and the blink, then inverse, hidden, faint, italic and
-    /// strikeout, then a double underline as 21; the foreground and the
-    /// background, 16 colours in their short forms and the rest as `38:5:n`
-    /// or `38:2::r:g:b`. What xterm does not have follows its forms: rapid
-    /// blink is 6 in blink's place, an underline style `4:n` in the
-    /// underline's, and the underline colour `58:5:n` or `58:2::r:g:b`
-    /// last. So a curly underline alone is `0;4:3`, which is what neovim
+    /// As xterm reports the pen to DECRQSS (`xtermFormatSGR`), in its order
+    /// and colour forms, with what xterm lacks (rapid blink, `4:n`, SGR 58)
+    /// in the same places. A curly underline alone is `0;4:3`, which neovim
     /// looks for to learn the terminal draws styles.
     Report,
-    /// To paint on a terminal: the flags, then the underline and the blink,
-    /// the underline colour, then the colours in their semicolon forms.
+    /// To paint on a terminal: colours in their semicolon forms.
     Paint {
-        /// Whether the terminal draws underline styles. An underline style
-        /// (kitty's `4:n`) goes as it is if it does, else as a plain
-        /// underline: a terminal that does not know `4:3` draws no
-        /// underline at all (xterm, avt) or reads the colon as a
-        /// semicolon, underline and italic, and one that does not know 21
-        /// may read it as bold off (alacritty, avt).
+        /// Whether the terminal draws underline styles (kitty's `4:n`).
+        /// If not, they go as a plain underline: a terminal that does not
+        /// know `4:3` draws none or reads it as underline and italic, and
+        /// 21 may read as bold off.
         styles: bool,
     },
 }
 
-/// Writes `;n` for each number.
 fn write_numbers(out: &mut Vec<u8>, numbers: impl IntoIterator<Item = (u16, &'static str)>) {
     use std::io::Write;
     for (number, _) in numbers {
@@ -133,11 +118,8 @@ fn write_numbers(out: &mut Vec<u8>, numbers: impl IntoIterator<Item = (u16, &'st
     }
 }
 
-/// Writes colour `c` for [`Attributes::write_sgr`]: `base` is 30 for the
-/// foreground, 40 for the background, 50 for the underline colour, so no
-/// code comes near 255: every sum is exact. The first two have short
-/// forms for 16 colours, the bright ones 90 to 97 and 100 to 107. A colon
-/// form has the empty colour-space slot of ITU-T T.416.
+/// Writes colour `c`: `base` is 30, 40 or 50 (underline), so every sum
+/// stays under 255. A colon form has ITU-T T.416's empty colour-space slot.
 fn write_colour(out: &mut Vec<u8>, c: Color, base: u8, colon: bool) {
     use std::io::Write;
     let short = base < 50;
@@ -159,8 +141,7 @@ fn write_colour(out: &mut Vec<u8>, c: Color, base: u8, colon: bool) {
 pub(crate) const ASCII: &str = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2a\x2b\x2c\x2d\x2e\x2f\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3a\x3b\x3c\x3d\x3e\x3f\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4a\x4b\x4c\x4d\x4e\x4f\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5a\x5b\x5c\x5d\x5e\x5f\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6a\x6b\x6c\x6d\x6e\x6f\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7a\x7b\x7c\x7d\x7e\x7f";
 
 /// A colour as stored: a tag (0 default, 1 indexed, 2 RGB) and its bytes,
-/// all of them always set, so attributes compare, copy and clear as plain
-/// bytes.
+/// all always set, so attributes compare, copy and clear as plain bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 struct Packed([u8; 4]);
 
@@ -191,10 +172,9 @@ pub struct Attributes {
     pub(crate) flags: u16,
 }
 
-/// Hashed as `bits`, both words whole, so that attributes that differ
-/// write different words: a keyed hasher then gives a program no way to
-/// choose attributes that collide (a style table's, `style.rs`;
-/// `THREATS.md` B12).
+/// Hashed as `bits`, so different attributes write different words and a
+/// keyed hasher gives a program no way to choose colliding styles
+/// (`style.rs`; `THREATS.md` B12).
 impl std::hash::Hash for Attributes {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let (a, b) = self.bits();
@@ -213,16 +193,12 @@ impl std::fmt::Debug for Attributes {
     }
 }
 
-/// Expands each `get with BIT on off;` to the getter `get(self) -> bool`
-/// and the builder `with(self, on: bool) -> Self` of that one flag bit,
-/// which SGR `on` sets and SGR `off` clears, and `Attributes::FLAGS`, the
-/// rows in their order: `bold with_bold BOLD 1 22;` gives `bold`,
-/// `with_bold` and the row `(BOLD, 1, 22, "bold")`.
+/// Expands each `get with BIT on off;` to a getter and builder of that flag
+/// bit, and `Attributes::FLAGS`, the rows in their order.
 macro_rules! flags {
     ($($get:ident $with:ident $bit:ident $on:literal $off:literal;)*) => {
-        /// Each flag SGR sets and clears with a number of its own, in
-        /// the order xterm reports them: its bit, the numbers that set
-        /// and clear it, and its name, its getter's.
+        /// Each flag's bit, SGR set and clear numbers, and name, in the
+        /// order xterm reports them.
         pub(crate) const FLAGS: [(u16, u16, u16, &'static str); [$($on),*].len()] =
             [$((Self::$bit, $on, $off, stringify!($get)),)*];
         $(
@@ -259,8 +235,7 @@ impl Attributes {
     const UNDERLINE_SHIFT: u32 = 9;
     pub(crate) const UNDERLINE: u16 = 0b111 << Self::UNDERLINE_SHIFT;
 
-    /// Plain attributes with the given colours; add styles with the `with_*`
-    /// builders. For consumers that store or transport cells.
+    /// Plain attributes with the given colours; add styles with `with_*`.
     pub const fn new(foreground: Color, background: Color) -> Self {
         Self {
             foreground: Packed::new(foreground),
@@ -286,16 +261,12 @@ impl Attributes {
     /// The renditions a direct style's own number holds: bold and italic,
     /// as syntax highlighting draws keywords and comments.
     const DIRECT: u16 = Self::BOLD | Self::ITALIC;
-    /// These attributes as a style that is its own number (`style.rs`), of
-    /// 27 bits, if they are one of two kinds programs mostly print in.
-    /// Indexed: no colour but the default and indexed ones and no
-    /// underline colour, any rendition but rapid blink, and an underline
-    /// that is single or none; the foreground and the background, 9 bits
-    /// each, 0 for the default and one more than its index for an indexed
-    /// colour, then the rendition, 8 bits. Direct: a direct foreground, the
-    /// default background and underline colour, and bold or italic or
-    /// both; bit 26 set, the foreground's red, green and blue below it, then
-    /// bold and italic. `None` for any other attributes.
+    /// These attributes as a 27-bit style that is its own number
+    /// (`style.rs`), if they are one of the two kinds programs mostly print
+    /// in. Indexed (`INDEXED` renditions, default or indexed colours): fg
+    /// and bg 9 bits each (0 default, index + 1), then the rendition, 8
+    /// bits. Direct (`DIRECT` renditions, direct fg, default bg): bit 26
+    /// set, the fg's RGB below it, then bold and italic.
     #[inline]
     pub(crate) fn inline_style(self) -> Option<u32> {
         // A colour is [0, 0, 0, 0] (the default), [1, index, 0, 0] or
@@ -310,8 +281,6 @@ impl Attributes {
         }
         let flags = u32::from(self.flags);
         if (fg | bg) & 0xffff_00fe == 0 && self.flags & !Self::INDEXED == 0 {
-            // One more than the index for an indexed colour, 0 for the
-            // default.
             let colour = |w: u32| ((w >> 8).wrapping_add(1)) & (w & 1).wrapping_neg();
             let rendition =
                 (flags & 0b111) | ((flags >> 1) & 0b1_1000) | ((flags >> 2) & 0b1110_0000);
@@ -324,9 +293,8 @@ impl Attributes {
         }
         None
     }
-    /// The attributes of the style `inline_style` numbers `code`: out
-    /// of line, as readers that walk cells find a style once for a run of
-    /// them, and keep their loop small.
+    /// The inverse of `inline_style`; out of line, as readers look a style
+    /// up once per run and keep their loop small.
     #[inline(never)]
     pub(crate) fn from_inline_style(code: u32) -> Self {
         fn colour(c: u32) -> Packed {
@@ -364,7 +332,6 @@ impl Attributes {
             word(self.underline_color) | u64::from(self.flags) << 32,
         )
     }
-    /// These attributes guarded (`GUARDED`) or not.
     pub(crate) const fn with_guard(self, on: bool) -> Self {
         self.with_flag(Self::GUARDED, on)
     }
@@ -415,9 +382,7 @@ impl Attributes {
         italic with_italic ITALIC 3 23;
         strikeout with_strikeout STRIKEOUT 9 29;
     }
-    /// The flags SGR sets with a number of their own that are on, each
-    /// one's number and name (its getter's), in the order xterm reports
-    /// them: bold, inverse, hidden, dim, italic, strikeout.
+    /// The SGR number and name of each flag that is on, in xterm's order.
     pub fn sgr_flags(self) -> impl Iterator<Item = (u16, &'static str)> {
         Self::FLAGS
             .into_iter()
@@ -425,11 +390,9 @@ impl Attributes {
             .map(|(_, on, _, name)| (on, name))
     }
     /// Writes the SGR parameters that set these attributes after a reset
-    /// (`0`, which the caller writes), each after its `;`, as `form`
-    /// writes them: `;1;4:3;58:5:5` (`SgrForm::Report`), `;1;4;58:5:5`
-    /// (`SgrForm::Paint` without styles).
+    /// (`0`, which the caller writes), each after its `;`: `;1;4:3;58:5:5`
+    /// (`SgrForm::Report`), `;1;4;58:5:5` (`SgrForm::Paint` without styles).
     pub fn write_sgr(self, out: &mut Vec<u8>, form: SgrForm) {
-        // The flags that are on, bold first if it is (`Attributes::FLAGS`).
         let mut flags = self.sgr_flags();
         let colon = match form {
             SgrForm::Report => {
@@ -444,15 +407,11 @@ impl Attributes {
             SgrForm::Paint { .. } => {
                 write_numbers(out, flags);
                 self.write_underline_and_blink(out, form);
-                // The underline colour in ITU-T T.416's colon form
-                // (§13.1.8) in either form: a terminal that does not know
-                // SGR 58 skips the whole parameter, where in the semicolon
-                // form it would take the colour's numbers for attributes of
-                // their own (`58;2;…` would be dim). Each engine in
-                // `fux-vt/compare` reads `58:5:9` and `58:2::1:2:3` beside 4
-                // and 1 as 4 and 1 alone, xterm, which has no SGR 58,
-                // included (xterm 411 skips an SGR parameter with
-                // subparameters other than 38's and 48's).
+                // The underline colour always in ITU-T T.416's colon form
+                // (§13.1.8): a terminal without SGR 58 skips the whole
+                // parameter, where the semicolon form's numbers would read
+                // as attributes (`58;2;…` would be dim). xterm skips SGR
+                // parameters with subparameters other than 38's and 48's.
                 write_colour(out, self.underline_color(), 50, true);
                 false
             }
@@ -464,7 +423,6 @@ impl Attributes {
             SgrForm::Paint { .. } => {}
         }
     }
-    /// `write_sgr`'s underline and blink.
     fn write_underline_and_blink(self, out: &mut Vec<u8>, form: SgrForm) {
         let style = self.underline_style();
         match style {
@@ -488,8 +446,7 @@ impl Attributes {
             Blink::None => {}
         }
     }
-    /// These attributes with a single underline (SGR 4), or none of any
-    /// style.
+    /// These attributes with a single underline (SGR 4), or none.
     #[must_use]
     pub const fn with_underline(self, on: bool) -> Self {
         self.with_underline_style(if on {
@@ -557,10 +514,8 @@ pub(crate) fn floor(text: &str, max: usize) -> &str {
     text.get(..end).unwrap_or("")
 }
 
-/// A cell as it is on the screen: its halves, attributes and whole text,
-/// read from wherever the cell keeps them, or made by a host to store
-/// ([`CellRef::new`]). It borrows its text, so it cannot outlive where the
-/// text is kept.
+/// A cell as it is on the screen: its halves, attributes and text, which it
+/// borrows from wherever the cell keeps it.
 #[derive(Clone, Copy, Default)]
 pub struct CellRef<'a> {
     text: &'a str,
@@ -569,8 +524,7 @@ pub struct CellRef<'a> {
     halves: u8,
 }
 
-/// Expands each `name of Type, "doc";` to the method `name(&self) -> Type`
-/// that returns the cell's attributes' `of()`.
+/// Expands each `name of Type, "doc";` to `name(&self)`, returning `of()`.
 macro_rules! forward {
     ($($name:ident $of:ident $ty:ty, $doc:literal;)*) => {$(
         #[doc = $doc]
@@ -586,9 +540,8 @@ impl<'a> CellRef<'a> {
     pub(crate) const WIDE: u8 = 0b1000_0000;
     pub(crate) const HALVES: u8 = Self::WIDE | Self::CONTINUATION;
 
-    /// A cell holding `text`, two columns wide if `wide`, in `attributes`:
-    /// for a host to store in [`Cells`]. Text holds no NUL, as a screen's
-    /// never does.
+    /// A cell holding `text`, two columns wide if `wide`, for a host to
+    /// store in [`Cells`]. Text holds no NUL, as a screen's never does.
     pub fn new(text: &'a str, wide: bool, attributes: Attributes) -> Self {
         let halves = if wide { Self::WIDE } else { 0 };
         Self::of(text, attributes, halves)
@@ -597,8 +550,6 @@ impl<'a> CellRef<'a> {
     pub fn wide_continuation() -> Self {
         Self::of("", Attributes::default(), Self::CONTINUATION)
     }
-    /// A cell with `text` and `attributes`, the halves of a wide glyph
-    /// `halves` says (`WIDE`, `CONTINUATION`).
     #[inline]
     pub(crate) fn of(text: &'a str, attributes: Attributes, halves: u8) -> Self {
         Self {
@@ -607,7 +558,6 @@ impl<'a> CellRef<'a> {
             halves: halves & Self::HALVES,
         }
     }
-    /// The halves, as `WIDE` and `CONTINUATION`.
     pub(crate) fn halves(&self) -> u8 {
         self.halves
     }
@@ -624,13 +574,11 @@ impl<'a> CellRef<'a> {
             text => text,
         }
     }
-    /// Whether the cell holds text: neither blank nor the second half of a
-    /// wide glyph.
+    /// Whether the cell holds text.
     pub fn has_contents(&self) -> bool {
         !self.text.is_empty()
     }
-    /// Whether the cell holds a glyph two columns wide, the next cell being
-    /// its second half.
+    /// Whether the cell holds a glyph two columns wide.
     pub fn is_wide(&self) -> bool {
         self.halves & Self::WIDE != 0
     }
@@ -658,8 +606,7 @@ impl<'a> CellRef<'a> {
     }
 }
 
-/// Equal if they look the same: text, halves and attributes, wherever each
-/// keeps its text.
+/// Equal if they look the same, wherever each keeps its text.
 impl PartialEq for CellRef<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.halves == other.halves
@@ -680,19 +627,16 @@ impl std::fmt::Debug for CellRef<'_> {
     }
 }
 
-/// An owned run of cells, for a host that stores screen contents: a
-/// composed frame, a copy. It keeps its cells as a screen's rows keep
-/// theirs (`compact.rs`), each with its attributes beside it in place of a
-/// style, and so keeps and cuts text as a row does: 32 bytes a cell of long
-/// clusters, and one cluster more.
+/// An owned run of cells, for a host that stores screen contents. It keeps
+/// cells as a row does (`compact.rs`), attributes in place of a style, with
+/// the same text budget: 32 bytes a cell of long clusters, and one more.
 #[derive(Clone, Debug, Default)]
 pub struct Cells {
     cells: Vec<Stored>,
     text: Text,
 }
 
-/// A cell of [`Cells`]: its text and halves, its style number unused
-/// (always 0), and its attributes.
+/// A cell of [`Cells`]: its style number unused (always 0).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Stored {
     cell: Compact,
@@ -715,8 +659,7 @@ impl Stored {
     fn read<'a>(&'a self, text: &'a Text) -> CellRef<'a> {
         self.cell.read_as(text, self.attributes)
     }
-    /// Whether `a`, whose text is in `text`, looks as `b`, whose text is in
-    /// `b_text`: for cells either of which keeps its text in its row's.
+    /// For cells either of which keeps its text in its row's.
     #[cold]
     fn read_eq(a: &Stored, text: &Text, b: &Stored, b_text: &Text) -> bool {
         a.read(text) == b.read(b_text)
@@ -729,8 +672,7 @@ impl Cells {
     pub fn text_limit(len: usize) -> usize {
         Text::long_limit(len)
     }
-    /// Bytes of text kept for long clusters, overwritten ones included
-    /// until compacted. For memory diagnostics.
+    /// Bytes of text kept for long clusters, overwritten ones included.
     pub fn text_len(&self) -> usize {
         self.text.long_len()
     }
@@ -743,7 +685,6 @@ impl Cells {
         cells.cells.resize(len, Stored::default());
         Ok(cells)
     }
-    /// Room for `len` cells in all, if it is at most `MAX_CELLS`.
     fn room_for(&mut self, len: usize) -> Result<(), Error> {
         if len > crate::grid::MAX_CELLS {
             return Err(Error::Capacity);
@@ -780,11 +721,8 @@ impl Cells {
         let cells = self.cells.get(start..end).unwrap_or_default();
         cells.iter().map(move |cell| cell.read(text))
     }
-    /// Whether the cells in `range` of `self` and of `other` look the same,
-    /// cell by cell, as their [`CellRef`]s compare: the same as
-    /// `self.range(range).eq(other.range(range))`, faster. The cells are
-    /// held one way only, so two that keep their text inline are the same
-    /// if their bytes are.
+    /// `self.range(range).eq(other.range(range))`, faster: cells are held
+    /// one way only, so two with inline text are equal if their bytes are.
     pub fn range_eq(&self, other: &Cells, range: std::ops::Range<usize>) -> bool {
         let (Some(mine), Some(theirs)) = (
             self.cells.get(range.clone()),
@@ -842,11 +780,10 @@ impl Cells {
             }
         }
     }
-    /// Makes the run `len` cells long, new ones `cell`. A shorter run keeps
-    /// a shorter run's budget: its cells' text is stored again, left to
-    /// right, and what no longer fits is cut to its first 17 bytes.
-    /// `Error::Capacity`, with nothing changed, past `MAX_CELLS` or if there
-    /// is no memory for them.
+    /// Makes the run `len` cells long, new ones `cell`. Shrinking stores
+    /// text again within the smaller budget, cutting what no longer fits to
+    /// 17 bytes. `Error::Capacity`, nothing changed, past `MAX_CELLS` or
+    /// with no memory.
     pub fn resize(&mut self, len: usize, cell: CellRef<'_>) -> Result<(), Error> {
         self.room_for(len)?;
         let was = self.cells.len();

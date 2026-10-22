@@ -1,7 +1,6 @@
-//! History's ring of rows' records, oldest first, in chunks of a fixed
-//! number of rows: one is made as the last fills and let go as the first
-//! empties, so the room the records take is what they keep and at most two
-//! chunks more, and no record moves as the ring grows or shrinks
+//! History's ring of row records, oldest first, in fixed-size chunks made
+//! as the last fills and freed as the first empties: the room taken is
+//! what is kept plus at most two chunks, and no record ever moves
 //! (`THREATS.md` B17).
 
 use super::Kept;
@@ -19,7 +18,6 @@ pub(crate) struct Ring {
     /// Where the first record is in the first chunk.
     head: usize,
     len: usize,
-    /// The records a chunk holds: `1 << shift`.
     shift: u32,
 }
 
@@ -48,7 +46,6 @@ impl Ring {
             ..Self::default()
         }
     }
-    /// The records a chunk holds.
     pub(crate) fn chunk(&self) -> usize {
         1usize.checked_shl(self.shift).unwrap_or(1)
     }
@@ -58,22 +55,18 @@ impl Ring {
     pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
-    /// The full chunks kept.
     fn full(&self) -> &[Vec<Kept>] {
         self.full.get(self.start..).unwrap_or_default()
     }
-    /// The records the chunks have room for.
     pub(crate) fn capacity(&self) -> usize {
         (self.full().len().saturating_mul(self.chunk())).saturating_add(self.last.capacity())
     }
-    /// Whether a record more fits in the last chunk.
     #[inline(always)]
     pub(crate) fn has_room(&self) -> bool {
         self.last.len() < self.last.capacity()
     }
-    /// A chunk more, for the records to come, the last going before it if
-    /// it holds any; fails, with nothing changed, only if there is no
-    /// memory for it.
+    /// Starts a new last chunk; fails, with nothing changed, only when
+    /// out of memory.
     pub(crate) fn grow(&mut self) -> Result<(), Error> {
         if !self.last.is_empty() {
             self.full.try_reserve(1).map_err(|_| Error::Capacity)?;
@@ -88,8 +81,7 @@ impl Ring {
         }
         Ok(())
     }
-    /// Puts `kept` after the last record, in the room `has_room` says the
-    /// last chunk has.
+    /// Appends `kept`; the caller checks `has_room` first.
     #[inline(always)]
     pub(crate) fn push_back(&mut self, kept: Kept) {
         self.last.push(kept);
@@ -119,7 +111,6 @@ impl Ring {
             self.let_first_go();
             self.head = 0;
         } else if self.len == 0 {
-            // The last chunk: it starts again.
             self.last.clear();
             self.head = 0;
         }
@@ -153,7 +144,6 @@ impl Ring {
         }
         Some((kept, freed))
     }
-    /// Record `index`, oldest first.
     #[inline(always)]
     pub(crate) fn get(&self, index: usize) -> Option<&Kept> {
         if index >= self.len {
@@ -183,7 +173,6 @@ impl Ring {
     pub(crate) fn back_mut(&mut self) -> Option<&mut Kept> {
         self.get_mut(self.len.checked_sub(1)?)
     }
-    /// The records, oldest first.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Kept> {
         let head = self.head;
         (self.full().iter().chain([&self.last]).enumerate()).flat_map(move |(n, chunk)| {
@@ -192,7 +181,6 @@ impl Ring {
                 .unwrap_or_default()
         })
     }
-    /// The records, oldest first, to change.
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Kept> {
         let head = self.head;
         let full = self.full.get_mut(self.start..).unwrap_or_default();

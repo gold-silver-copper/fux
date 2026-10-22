@@ -1,9 +1,7 @@
-//! History's rows by identity (`THREATS.md` B40): its rows' identities
-//! in spans of consecutive ones, as rows scrolled off a screen mostly
-//! come, each span kept by its first identity. Identities are never
-//! reused, so the spans' identities never overlap, whatever their order:
-//! a row is found by the span its identity falls in and its place there,
-//! one row read to make sure, with no assumption on how spans follow.
+//! History's rows by identity (`THREATS.md` B40), kept as spans of
+//! consecutive identities, each keyed by its first. Identities are never
+//! reused, so spans never overlap whatever their order; a lookup reads
+//! one row to make sure.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -11,10 +9,8 @@ use std::collections::{BTreeMap, VecDeque};
 /// its share of a B-tree node, counted at a node half full, and of the
 /// nodes above), and its place in `order` (with room for as many more).
 pub(crate) const SPAN_BYTES: usize = 80;
-/// The spans a history holds at no cost to its budget: 20 KiB of them,
-/// more than a history that is not made to begin a span a row ever
-/// holds, so that what it keeps does not depend on how its identities
-/// run; past them, each costs `SPAN_BYTES` of the budget (`charged`).
+/// The spans a history holds free of its budget (20 KiB), more than an
+/// ordinary history ever needs; past them each costs `SPAN_BYTES`.
 pub(crate) const FREE_SPANS: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -25,8 +21,7 @@ pub(crate) struct Spans {
     /// Each span's first identity, and the number its first row came in
     /// history with.
     by_id: BTreeMap<u64, u64>,
-    /// The spans' first rows' numbers and identities, oldest first, to
-    /// let go those whose rows all went.
+    /// The spans' first numbers and identities, oldest first.
     order: VecDeque<(u64, u64)>,
 }
 
@@ -71,7 +66,6 @@ impl Spans {
         }
         self.next = u64::MAX;
     }
-    /// How many spans it holds.
     pub(crate) fn len(&self) -> usize {
         self.by_id.len()
     }

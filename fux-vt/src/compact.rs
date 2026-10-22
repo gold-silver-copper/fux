@@ -1,25 +1,19 @@
-//! The one way cells are stored, eight bytes each: a cell's text and
-//! halves, with its style's number (`style.rs`) beside them. A screen's
-//! rows and a host's [`Cells`](crate::Cells) store cells so, and readers
-//! never see one: a [`CellRef`] reads it with its row's text, and the
-//! grid's styles or the `Cells`' attributes.
+//! How cells are stored, eight bytes each: text, halves and style number
+//! (`style.rs`). Readers see a [`CellRef`] instead.
 //!
-//! A cell holds up to four bytes of text, one character, inline. A longer
-//! cluster goes in its row's text ([`Text`]): those of 5 to 17 bytes, the
-//! short ones, in a part of their own that always has room, and the long
-//! ones in a part bounded at 32 bytes a cell and one cluster more.
+//! Up to four bytes of text are inline. A longer cluster goes in its
+//! row's [`Text`]: short ones (5 to 17 bytes) in a part that always has
+//! room, long ones in a part bounded at 32 bytes a cell plus one cluster.
 
 use crate::CellRef;
 use crate::cell::{ASCII, CLUSTER_CAPACITY, floor};
 use crate::style::Styles;
 
-/// A stored cell. Inline, `text` is the cell's text, zeros after it (a
-/// cell's text has no NUL, which is never printed). Spilled, it is where
-/// the text is in its row's [`Text`]: an offset of 24 bits, little-endian,
-/// then a length, of 5 to 17 bytes in the short clusters and more in the
-/// long ones. `word` is the style's number (`style.rs`, 28 bits) and the
-/// flags; in a `Cells`, whose attributes are beside its cells, the style
-/// is 0. All zeros is a blank cell in the default attributes.
+/// A stored cell. Inline, `text` is the text then zeros (text never holds
+/// NUL). Spilled, it locates the text in its row's [`Text`]: a 24-bit
+/// little-endian offset, then a length (over 17 means long). `word` is the
+/// 28-bit style number and the flags; in a `Cells` the style is 0. All
+/// zeros is a blank cell in the default attributes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Compact {
     text: [u8; 4],
@@ -28,8 +22,7 @@ pub(crate) struct Compact {
 
 const _: () = assert!(size_of::<Compact>() == 8);
 
-/// A blank cell in the default attributes: what a row is past the cells it
-/// keeps.
+/// What a row is past the cells it keeps.
 pub(crate) const BLANK: Compact = Compact {
     text: [0; 4],
     word: 0,
@@ -41,28 +34,23 @@ pub(crate) static NO_TEXT: Text = Text {
     short: Vec::new(),
 };
 
-/// The style's number, in `word`.
 const STYLE: u32 = (1 << 28) - 1;
-/// The second half of a wide glyph; and its first. Their bits, shifted
-/// down 22, are [`CellRef`]'s.
+/// Wide-glyph halves; shifted down 22, they are [`CellRef`]'s bits.
 const CONTINUATION: u32 = 1 << 28;
 const WIDE: u32 = 1 << 29;
 const HALVES: u32 = WIDE | CONTINUATION;
 /// The text is in the row's text.
 const SPILLED: u32 = 1 << 30;
-/// The glyph is protected from selective erase (DECSCA 1, or SPA): the
-/// word's last bit, so a protected cell costs nothing more. Only a glyph
-/// printed while the pen protects has it; a blank, and a wide glyph's
-/// second half, never do (its first half's says).
+/// The glyph is protected from selective erase (DECSCA 1, or SPA). A
+/// blank, and a wide glyph's second half, never have it (its first half
+/// says).
 pub(crate) const PROTECTED: u32 = 1 << 31;
-/// What a cell keeps of its word when its text changes: all but where
-/// the text is.
+/// What a cell keeps of its word when its text changes.
 const KEPT: u32 = STYLE | HALVES | PROTECTED;
 const _: () = assert!(HALVES >> 22 == CellRef::HALVES as u32);
 const _: () = assert!(SHORT == 17 && SPILLED == 1 << 30);
 
-/// The longest cluster a short one is. A long cluster the row has no room
-/// for is cut to this.
+/// The longest short cluster; a long one without room is cut to this.
 const SHORT: usize = 17;
 /// The bytes a row's short text first takes room for.
 const FIRST_SHORT: usize = 256;
@@ -70,7 +58,6 @@ const FIRST_SHORT: usize = 256;
 const LOCATED: usize = 1 << 24;
 
 impl Compact {
-    /// A blank cell in style `style`.
     #[inline]
     pub(crate) fn blank(style: u32) -> Self {
         Self {
@@ -78,8 +65,7 @@ impl Compact {
             word: style & STYLE,
         }
     }
-    /// The glyph `c`, `width` columns wide, in style `style`, protected
-    /// if `style` has [`PROTECTED`] too.
+    /// The glyph `c`, `width` columns wide; `style` may carry [`PROTECTED`].
     #[inline]
     pub(crate) fn glyph(c: char, width: usize, style: u32) -> Self {
         // A char is at most four UTF-8 bytes; the rest stay zeros.
@@ -90,8 +76,6 @@ impl Compact {
             word: (style & (STYLE | PROTECTED)) | if width == 2 { WIDE } else { 0 },
         }
     }
-    /// The ASCII character `byte` in style `style`, protected if `style`
-    /// has [`PROTECTED`] too.
     #[inline]
     pub(crate) fn ascii(byte: u8, style: u32) -> Self {
         Self {
@@ -99,10 +83,8 @@ impl Compact {
             word: style & (STYLE | PROTECTED),
         }
     }
-    /// Cells `cells` set to the glyphs of `run`, ASCII, in style `style`, as
-    /// [`Compact::ascii`] makes each: each cell one 64-bit value, the glyph's
-    /// byte low and the style high, which a run of them stores as fast as
-    /// the machine moves words.
+    /// Sets `cells` to the ASCII glyphs of `run`, as [`Compact::ascii`]
+    /// makes each, each written as one 64-bit value.
     pub(crate) fn fill_ascii(cells: &mut [Self], run: &[u8], style: u32) {
         let high = u64::from(style & (STYLE | PROTECTED)) << 32;
         for (cell, &byte) in cells.iter_mut().zip(run) {
@@ -114,12 +96,10 @@ impl Compact {
             };
         }
     }
-    /// Whether any of `cells` is either half of a wide glyph: their words
-    /// or'd together, which a run of them does without a branch a cell.
+    /// Whether any of `cells` is either half of a wide glyph.
     pub(crate) fn any_halves(cells: &[Self]) -> bool {
         Self::any_of(cells, HALVES)
     }
-    /// Whether any of `cells` has a flag of `flags` in its word.
     fn any_of(cells: &[Self], flags: u32) -> bool {
         cells.iter().fold(0, |any, cell| any | cell.word) & flags != 0
     }
@@ -138,12 +118,10 @@ impl Compact {
             word: CONTINUATION,
         }
     }
-    /// The cell's style.
     #[inline]
     pub(crate) fn style(&self) -> u32 {
         self.word & STYLE
     }
-    /// Gives the cell style `style`, keeping the rest.
     #[inline]
     pub(crate) fn set_style(&mut self, style: u32) {
         self.word = (self.word & !STYLE) | (style & STYLE);
@@ -153,14 +131,12 @@ impl Compact {
     pub(crate) fn blanked(&self) -> Self {
         Self::blank(self.style())
     }
-    /// Whether the cell holds text: neither blank nor the second half of a
-    /// wide glyph.
+    /// Neither blank nor the second half of a wide glyph.
     #[inline]
     pub(crate) fn has_contents(&self) -> bool {
         let [first, ..] = self.text;
         first != 0 || self.is_spilled()
     }
-    /// Whether the cell holds a glyph two columns wide.
     #[inline]
     pub(crate) fn is_wide(&self) -> bool {
         self.word & WIDE != 0
@@ -170,7 +146,6 @@ impl Compact {
     pub(crate) fn is_wide_continuation(&self) -> bool {
         self.word & CONTINUATION != 0
     }
-    /// Marks the cell as the leading half of a wide glyph.
     pub(crate) fn widen(&mut self) {
         self.word |= WIDE;
     }
@@ -184,22 +159,17 @@ impl Compact {
     pub(crate) fn is_protected(&self) -> bool {
         self.word & PROTECTED != 0
     }
-    /// Whether the cell, of a row whose text is `text`, holds what `other`
-    /// holds, its text being `held`: the same text, halves, style and
-    /// protection.
+    /// Whether the cell (row text `text`) equals `other` (text `held`).
     pub(crate) fn holds(&self, text: &Text, other: &Self, held: &str) -> bool {
         if !self.is_spilled() && !other.is_spilled() {
             return self == other;
         }
         self.word == other.word && text.of(self) == held
     }
-    /// Whether the cell is `blank(style)`: no text, neither half of a wide
-    /// glyph, and that style.
     #[inline]
     pub(crate) fn is_blank(&self, style: u32) -> bool {
         *self == Self::blank(style)
     }
-    /// Whether the cell is exactly what `ascii(byte, style)` makes.
     #[inline]
     pub(crate) fn is_ascii(&self, byte: u8, style: u32) -> bool {
         *self == Self::ascii(byte, style)
@@ -217,9 +187,8 @@ impl Compact {
             return "";
         }
         let word = u32::from_le_bytes(self.text);
-        // One ASCII byte, as most cells hold, or none: its text without
-        // validating it, which readers that walk every cell (copy, search)
-        // would pay on each.
+        // One ASCII byte or none: skip UTF-8 validation, which readers
+        // that walk every cell (copy, search) would pay on each.
         if word < 0x80 {
             let [at, ..] = self.text;
             let at = usize::from(at);
@@ -242,9 +211,8 @@ impl Compact {
             .and_then(|len| self.text.get(..len))
             .unwrap_or_default()
     }
-    /// The cell with `c` after its inline text, if both fit inline: its
-    /// text's bytes and `c`'s as one little-endian word. A cell with no
-    /// text has none to follow (`Line::append` gives it a space first).
+    /// The cell with `c` after its inline text, if both fit inline. A cell
+    /// with no text has none to follow (`Line::append` gives it a space).
     #[inline]
     fn inline_with(self, c: char) -> Option<Self> {
         // Full already, as a character of four bytes leaves it.
@@ -270,8 +238,7 @@ impl Compact {
     pub(crate) fn first(&self) -> Option<char> {
         self.inline().chars().next()
     }
-    /// Where a spilled cell's text is in its row's text, and how long it
-    /// is.
+    /// Where a spilled cell's text is in its row's text, and its length.
     #[inline]
     fn locator(&self) -> Option<(usize, usize)> {
         if !self.is_spilled() {
@@ -281,19 +248,17 @@ impl Compact {
         let start = usize::try_from(u32::from_le_bytes([a, b, c, 0])).ok()?;
         Some((start, usize::from(len)))
     }
-    /// Where a long cluster's text is in its row's long text (`long`), or
-    /// a short one's in its short text.
+    /// The range of a long (`long`) or short cluster's text in its part.
     fn spilled(&self, long: bool) -> Option<std::ops::Range<usize>> {
         let (start, len) = self.locator().filter(|(_, len)| (*len > SHORT) == long)?;
         Some(start..start.checked_add(len)?)
     }
     /// The cell, keeping its halves and style, holding `text` inline, if
-    /// it fits: what `Line::set` stores, without the row's text.
+    /// it fits.
     #[inline]
     pub(crate) fn holding(self, text: &[u8]) -> Option<Self> {
         let mut bytes = [0; 4];
         match (text, &mut bytes) {
-            // One byte, as most text is: stored without a copy's call.
             ([byte], [first, ..]) => *first = *byte,
             (text, bytes) => crate::copy_from(bytes.get_mut(..text.len())?, text)?,
         }
@@ -313,8 +278,7 @@ impl Compact {
             _ => self.blanked(),
         }
     }
-    /// The cell as a reader sees it, its text in `text` if it is not
-    /// inline, its attributes in `styles`.
+    /// The cell as a reader sees it, with its row's text and `styles`.
     #[inline]
     pub(crate) fn read<'a>(&'a self, text: &'a Text, styles: &Styles) -> CellRef<'a> {
         self.read_as(text, styles.get(self.style()))
@@ -330,10 +294,9 @@ impl Compact {
     }
 }
 
-/// The text of a row's cells that is not inline: the long clusters, and
-/// the short ones, of 5 to 17 bytes, each kind one after another in its own
-/// part. Overwritten clusters leave their text behind until the row runs
-/// out of room for more and is compacted.
+/// A row's spilled text, long and short clusters each in their own part.
+/// Overwritten clusters leave their text behind until the row runs out of
+/// room and is compacted.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Text {
     long: Vec<u8>,
@@ -366,8 +329,7 @@ impl Text {
             .and_then(|end| held.get(start..end))
             .unwrap_or_default()
     }
-    /// The bytes an append to `cell` follows: its text, or a space for an
-    /// empty cell.
+    /// What an append to `cell` follows: its text, or a space if empty.
     #[inline]
     fn followed<'a>(&'a self, cell: &'a Compact) -> &'a [u8] {
         if cell.has_contents() {
@@ -376,10 +338,8 @@ impl Text {
             b" "
         }
     }
-    /// Bytes of long clusters kept, live or left behind: the row's
-    /// `text_len`, at most `long_limit` of its cells. The short clusters are
-    /// not counted, so a `Text` with none of these may still hold text
-    /// (`is_empty`).
+    /// Bytes of long clusters kept, live or left behind: at most
+    /// `long_limit` of the row's cells. Short clusters are not counted.
     pub(crate) fn long_len(&self) -> usize {
         self.long.len()
     }
@@ -387,7 +347,6 @@ impl Text {
     pub(crate) fn bytes(&self) -> usize {
         self.long.len().saturating_add(self.short.len())
     }
-    /// Whether the row keeps no text at all.
     pub(crate) fn is_empty(&self) -> bool {
         self.long.len() == 0 && self.short.is_empty()
     }
@@ -399,8 +358,7 @@ impl Text {
             }
         }
     }
-    /// Forgets all the text, keeping its memory for the row's next: a slot
-    /// of the screen, which rows pass through.
+    /// Forgets all the text, keeping its memory for the slot's next row.
     pub(crate) fn empty(&mut self) {
         self.long.clear();
         self.short.clear();
@@ -413,10 +371,9 @@ impl Text {
             short: self.short.as_slice().to_vec(),
         }
     }
-    /// The most bytes of long clusters `cells` cells keep: 32 a cell, about
-    /// as much as the cells themselves, and one whole cluster more, so that
-    /// even a one-column row holds its longest; and no more than a
-    /// locator's 24 bits reach.
+    /// The most bytes of long clusters `cells` cells keep: 32 a cell, plus
+    /// one whole cluster so even a one-column row holds its longest, and
+    /// no more than a locator's 24 bits reach.
     pub(crate) fn long_limit(cells: usize) -> usize {
         cells
             .saturating_mul(32)
@@ -424,13 +381,11 @@ impl Text {
             .min(LOCATED)
     }
     /// The most bytes of short clusters `cells` cells keep: one each, and
-    /// no more than a locator reaches. A cluster grown in place
-    /// (`Line::append`) may pass it by its growth, until the next store
-    /// compacts.
+    /// no more than a locator reaches. A cluster grown in place may pass
+    /// it until the next store compacts.
     fn short_limit(cells: usize) -> usize {
         cells.saturating_mul(SHORT).min(LOCATED)
     }
-    /// The long clusters' part (`long`), or the short ones'.
     fn part(&self, long: bool) -> &Vec<u8> {
         if long { &self.long } else { &self.short }
     }
@@ -439,9 +394,8 @@ impl Text {
 /// The text's part of the invariant checker (THREATS.md section 6, 13).
 #[cfg(feature = "checks")]
 impl Text {
-    /// Whether the text of a row of `width` cells, `cells` those kept, is
-    /// within its limits, and each cell's text is whole where its locator
-    /// says, of at most [`CLUSTER_CAPACITY`] bytes.
+    /// Whether the text is within its limits for `width` cells, and each
+    /// of `cells` locates whole text of at most [`CLUSTER_CAPACITY`] bytes.
     pub(crate) fn check(&self, cells: &[Compact], width: usize) -> Result<(), String> {
         let (long, short) = (Self::long_limit(width), Self::short_limit(width));
         crate::check::ensure(
@@ -483,17 +437,15 @@ impl AsMut<Compact> for Compact {
     }
 }
 
-/// A row's cells with their text, to write into: a grid's cells, or a
-/// host's with their attributes beside each (`Cells`).
+/// A row's cells with their text, to write into.
 pub(crate) struct Line<'a, C = Compact> {
     pub(crate) cells: &'a mut [C],
     pub(crate) text: &'a mut Text,
 }
 
 impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
-    /// Adds `c` to the cluster in cell `i`; an empty cell first takes a
-    /// space for `c` to follow. Whether it was kept: a cluster at
-    /// [`CLUSTER_CAPACITY`], or a row out of room, drops it.
+    /// Adds `c` to the cluster in cell `i` (after a space if empty).
+    /// Dropped, returning false, at [`CLUSTER_CAPACITY`] or out of room.
     pub(crate) fn append(&mut self, i: usize, c: char) -> bool {
         let Some(&cell) = self.cells.get(i).map(AsRef::as_ref) else {
             return false;
@@ -507,8 +459,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         };
         // The cluster is read and joined again whole.
         work!(text, end);
-        // Still inline: the cell holds it all, its text and `c` as one
-        // word, with no copy's call.
         if let Some(joined) = cell.inline_with(c)
             && let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut)
         {
@@ -519,8 +469,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         let encoded = c.encode_utf8(&mut encoded).as_bytes();
         let long = end > SHORT;
         let limit = Text::long_limit(self.cells.len());
-        // In place, when the cluster is the last text of its length the
-        // row keeps. A short cluster is never out of room.
+        // In place, when the cluster is last in its part. A short cluster
+        // is never out of room.
         let (store, room) = if long {
             (&mut self.text.long, limit)
         } else {
@@ -537,8 +487,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             }
             return true;
         }
-        // Else joined in a buffer as long as a cluster of its kind is:
-        // whole UTF-8 then a character's encoding is whole UTF-8.
+        // Else joined in a buffer: whole UTF-8 then a character is whole.
         let current = self.text.followed(&cell);
         if !long {
             let mut buffer = [0u8; SHORT];
@@ -556,11 +505,10 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         self.store_long(i, cell, joined, false)
     }
 
-    /// Sets cell `i` to `cell`'s halves and style holding `text`: inline
-    /// if it fits, else in the row's text. A cluster longer than
-    /// [`CLUSTER_CAPACITY`] is cut there; a long one the row has no
-    /// room for, even compacted, is cut to a short one.
-    /// Whether the text was kept whole.
+    /// Sets cell `i` to `cell`'s halves and style holding `text`. A cluster
+    /// longer than [`CLUSTER_CAPACITY`] is cut there; a long one the row
+    /// has no room for, even compacted, is cut to a short one. Whether the
+    /// text was kept whole.
     pub(crate) fn set(&mut self, i: usize, cell: Compact, text: &str) -> bool {
         let kept = floor(text, CLUSTER_CAPACITY);
         self.store(i, cell, kept) && kept.len() == text.len()
@@ -580,10 +528,9 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         false
     }
 
-    /// Sets cell `i` to `cell`'s halves and style holding `text`, a long
-    /// cluster, in the row's long text, compacting it first if it is out
-    /// of room. If `replace`, the text the cell had goes before that: it
-    /// is being replaced. Whether the row had room.
+    /// Stores long cluster `text` in cell `i`, compacting first if out of
+    /// room. If `replace`, the cell's old text goes first. Whether the row
+    /// had room.
     fn store_long(&mut self, i: usize, cell: Compact, text: &[u8], replace: bool) -> bool {
         let limit = Text::long_limit(self.cells.len());
         if self.text.long.len().saturating_add(text.len()) > limit {
@@ -606,8 +553,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             Some(slot) if room => {
                 work!(text, text.len());
                 long.extend_from_slice(text);
-                // Compaction may have moved the text the cell had; its
-                // halves and style are `cell`'s.
                 *slot = cell.with_spilled(start, len);
                 true
             }
@@ -615,11 +560,10 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
     }
 
-    /// Sets cell `i` to `cell`'s halves and style holding `text`, whole
-    /// UTF-8 of at most [`SHORT`] bytes: inline, or with the row's short
-    /// text, compacted first if it is out of room. Whether it had room: a
-    /// row of more cells than a locator's reach holds short clusters for
-    /// may not, and the cell keeps what of `text` fits inline.
+    /// Stores `text`, whole UTF-8 of at most [`SHORT`] bytes, in cell `i`:
+    /// inline, or in the short text, compacted first if out of room.
+    /// Whether it had room: a row wider than a locator reaches may not,
+    /// and the cell keeps what of `text` fits inline.
     fn store_short(&mut self, i: usize, cell: Compact, text: &[u8]) -> bool {
         if let Some(inline) = cell.holding(text) {
             if let Some(slot) = self.cells.get_mut(i).map(AsMut::as_mut) {
@@ -644,12 +588,13 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         };
         if short.len().saturating_add(text.len()) > limit {
             let head = floor(str::from_utf8(text).unwrap_or_default(), 4);
-            *slot = cell.holding(head.as_bytes()).unwrap_or_else(|| cell.blanked());
+            *slot = cell
+                .holding(head.as_bytes())
+                .unwrap_or_else(|| cell.blanked());
             return false;
         }
         if short.capacity() == 0 {
-            // A row with one short cluster usually has more: room for
-            // a few at once, rather than growing a few bytes at a time.
+            // A row with one short cluster usually has more.
             short.reserve(FIRST_SHORT.min(limit));
         }
         work!(text, text.len());
@@ -667,17 +612,15 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             .fold(0, usize::saturating_add)
     }
 
-    /// Whether cell `i` holds text of `len` bytes in the row's text, which
-    /// a cluster as long can take over where it lies (`replace`).
+    /// Whether cell `i` spills exactly `len` bytes, so `replace` can reuse
+    /// them.
     pub(crate) fn replaces(&self, i: usize, len: usize) -> bool {
         (self.cells.get(i))
             .and_then(|c| c.as_ref().locator())
             .is_some_and(|(_, held)| held == len)
     }
-    /// Sets cell `i` to `cell`'s halves and style holding `text`, written
-    /// over the text the cell holds, as long (`replaces`): no room taken,
-    /// so no compaction, as a copy of clusters over clusters of their size
-    /// would otherwise need (B35).
+    /// Writes `text` over cell `i`'s spilled text of the same length
+    /// (`replaces`): no room taken, so no compaction (B35).
     pub(crate) fn replace(&mut self, i: usize, cell: Compact, text: &str) {
         let Some((start, len)) = (self.cells.get(i)).and_then(|c| c.as_ref().locator()) else {
             return;
@@ -699,10 +642,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             *slot = cell.with_spilled(at, n);
         }
     }
-    /// Blanks cells `span` and keeps only the text the others hold, for
-    /// the span to be written cell by cell: what is written then is all the
-    /// row's text holds that is dead, and no write compacts the row again
-    /// (DECCRA, B35).
+    /// Blanks cells `span` and keeps only the others' text, so writing the
+    /// span cell by cell never compacts the row again (DECCRA, B35).
     pub(crate) fn clear_for(&mut self, span: std::ops::Range<usize>) {
         let cells = self.cells.get_mut(span.clone()).unwrap_or_default();
         for cell in cells.iter_mut().map(AsMut::as_mut) {
@@ -732,7 +673,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
             let Some(range) = cell.spilled(long) else {
                 continue;
             };
-            // The range's length is the cell's locator byte.
             let [.., len] = cell.text;
             let (Some(text), Ok(start)) = (old.get(range), u32::try_from(store.len())) else {
                 *cell = cell.blanked();
@@ -745,8 +685,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         spend!(text, store.len());
     }
 
-    /// The text of `cells`, whose text is in `old`, stored again within
-    /// their budget, left to right; `cells` are relocated into it.
+    /// `cells`' text from `old`, stored again within budget; `cells` are
+    /// relocated into it.
     pub(crate) fn rebuilt(cells: &mut [C], old: &Text) -> Text {
         let mut text = Text::default();
         if old.is_empty() {
@@ -763,9 +703,8 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         text
     }
 
-    /// Stores the text of the cells `spilled` names again, left to right,
-    /// each by its place in the line and as it was, its text in `old`.
-    /// Every one is blanked first: until stored again, none may locate
+    /// Stores the `spilled` cells again, left to right, their text in
+    /// `old`. All are blanked first: until stored again, none may locate
     /// text in this store, which a compaction would misread.
     pub(crate) fn store_again(
         &mut self,
@@ -782,7 +721,6 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         }
     }
 
-    /// Cell `i`'s text.
     pub(crate) fn text(&self, i: usize) -> &str {
         self.cells
             .get(i)
@@ -790,8 +728,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     }
 }
 
-/// `bytes`, a character's UTF-8, pushed onto `store` as copies of one to
-/// four bytes known in length, with no copy's call.
+/// Pushes `bytes`, a character's UTF-8, as a copy of known length.
 #[inline]
 fn push_utf8(store: &mut Vec<u8>, bytes: &[u8]) {
     match *bytes {

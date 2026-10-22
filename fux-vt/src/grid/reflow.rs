@@ -9,19 +9,17 @@ impl Grid {
     /// re-wrapped at `cols`, without splitting wide glyphs. The cursor stays
     /// on its character. When there are more rows than fit, blank lines
     /// below the cursor go first, then lines scroll into history, oldest
-    /// dropped first past its budget; rows below the screen once
-    /// the cursor's row is at its top are dropped. The scroll region is
-    /// reset, as xterm does on resize. Like `resized`, it builds replacement
-    /// storage first, so allocation failure leaves this grid unchanged.
+    /// dropped first past its budget; rows below the screen once the
+    /// cursor's row is at its top are dropped. The scroll region is reset,
+    /// as xterm does on resize. Replacement storage is built first, so
+    /// allocation failure leaves this grid unchanged.
     ///
-    /// Two walks over the rows, one to lay them out and one to copy them,
-    /// so no line is ever gathered in memory of its own. The k-th row of a
-    /// reflowed line keeps the identity of the line's k-th row before, if it
-    /// had one; every row takes `version`.
+    /// Two walks over the rows, one to lay out and one to copy, so no line
+    /// is gathered in memory of its own. The k-th row of a reflowed line
+    /// keeps the identity of the line's k-th row before, if it had one.
     ///
-    /// The lines wholly in history whose rows it lays out as they were (at
-    /// the same width) stay as they are, as `resized` keeps history: it
-    /// says how many of them the new grid takes (`adopt_history`).
+    /// Also returns how many history rows, laid out as they were, the new
+    /// grid takes unchanged (`adopt_history`).
     pub fn reflowed(
         &self,
         size: Size,
@@ -39,16 +37,14 @@ impl Grid {
         };
         let marks = [at(self.cursor), at(self.saved.cursor)];
         let layout = self.reflow(usize::from(cols), marks, &mut Layout)?;
-        // Blank lines below the cursor are dropped before any line scrolls
-        // into history: a mostly empty screen keeps its text on screen.
         let screen = usize::from(size.rows());
         // A mark no line held goes to the start of the last row.
         let last = Mark::Blank(layout.rows.saturating_sub(1), 0);
         let [cursor, saved] = layout.marks.map(|mark| mark.unwrap_or(last));
         let (Mark::Text(cursor_row, _) | Mark::Blank(cursor_row, _)) = cursor;
-        // Only as many as the screen's own lines are past the new height:
-        // rows in history stay there, and a resize never brings one back
-        // above the cursor to fill the place of dropped blank lines.
+        // Blank lines below the cursor go before any line scrolls into
+        // history, but only those of the screen's own lines past the new
+        // height: a resize never brings a history row back.
         let drop = layout
             .trailing_blank
             .min(
@@ -62,9 +58,8 @@ impl Grid {
         let live_top = total.saturating_sub(screen).min(cursor_row);
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
         let kept = layout.same.min(live_top);
-        // A row on the screen, the first if above it, the last if below;
-        // one past the last column of the text is the last column, waiting
-        // to wrap, and any column past the text's end at most the last.
+        // Clamped to the screen; one past the text's last column is the
+        // last column, waiting to wrap.
         let placed = |cursor: Cursor, mark: Mark| {
             let (row, col, pending_wrap) = match mark {
                 Mark::Text(row, col) => (row, col, col >= usize::from(cols)),
@@ -82,11 +77,9 @@ impl Grid {
             }
         };
         let mut replacement = Self {
-            // The cursor's row is on screen: `live_top` is at most its row,
-            // and the screen reaches past it.
+            // The cursor's row is on screen: `live_top` is at most its row.
             cursor: placed(self.cursor, cursor),
-            // The saved cursor moves with its character as the cursor
-            // does, so DECRC (as 1049 leaves the alternate screen) finds it.
+            // So DECRC (as 1049 leaves the alternate screen) finds it.
             saved: Saved {
                 cursor: placed(self.saved.cursor, saved),
                 ..self.saved
@@ -106,7 +99,6 @@ impl Grid {
             links: None,
         };
         self.reflow(usize::from(cols), marks, &mut copy)?;
-        // Blank rows under the last line, if the lines do not fill the screen.
         while replacement.order.len() < screen {
             let meta = Meta::new(next_id(next), version, false, 0);
             replacement.push_screen_row(meta, &[], None, None);
@@ -115,10 +107,9 @@ impl Grid {
         Ok((replacement, kept))
     }
 
-    /// Lays every retained row out again at `width` columns, one logical
-    /// line after another, giving each run of cells and each finished row
-    /// to `target`. `marks` are retained rows and columns, the cursor's and
-    /// the saved cursor's, each laid out as the cursor is.
+    /// Lays every retained row out again at `width` columns, giving each run
+    /// of cells and each finished row to `target`. `marks` are the cursor's
+    /// and the saved cursor's retained row and column.
     fn reflow(
         &self,
         width: usize,
@@ -138,17 +129,14 @@ impl Grid {
             },
             target,
         };
-        // Whether any row may be half as long, which only then is asked.
+        // Renditions are looked up only if any row may be double width.
         let halved = self.doubled() || self.history.has_renditions();
         let double = |index: usize| halved && self.rendition_at(index).is_double();
         let mut start = 0;
         while start < retained {
-            // A line runs through its wrapped rows to the row that ends it.
-            // Its length leaves out its blank tail, which can run back over
-            // several rows: the rows' widths up to the last with text, and
-            // that row's text. A row half as long is a line of its own, as
-            // wide as it was, never joined to the rows around it nor split:
-            // the row it is laid out in takes its rendition.
+            // A line's length leaves out its blank tail, which can run back
+            // over several rows. A double-width row is a line of its own,
+            // never joined to the rows around it nor split.
             let (mut end, mut before, mut length) = (start, 0usize, 0);
             loop {
                 let (wrapped, width, text) = self.facts_at(end);
@@ -172,8 +160,8 @@ impl Grid {
             };
             let first = pass.out.rows;
             self.lay_out_runs((start, end), (length, rendition), &mut pass)?;
-            // A line wholly in history laid out in as many rows as it had,
-            // each as wide, after lines that all were: as it was.
+            // A history line laid out exactly as it was, after lines that
+            // all were, is kept unchanged.
             let next = end.saturating_add(1);
             let rows = pass.out.rows.saturating_sub(first);
             if pass.out.same == start
@@ -189,22 +177,18 @@ impl Grid {
         Ok(pass.out)
     }
 
-    /// The rendition of retained row `index`.
     fn rendition_at(&self, index: usize) -> LineRendition {
         self.row_at(index)
             .map_or(LineRendition::Single, |row| row.rendition())
     }
 
-    /// Lays out the line of rows `start` through `end`, a run of cells at a
-    /// time: as many of a row's as fit in the row being laid out, short of a
-    /// wide glyph that would end in its last column, or a spacer, which no
-    /// cell is laid out from. At a width under two, wide glyphs are left out,
-    /// as one column cannot show them. So a line costs its rows and the rows it is laid
-    /// out in, not its cells; one whose rows stay as they are (every line
-    /// but a few, when only the rows change) costs a run a row. The line's
-    /// text is `length` cells long. A line of `rendition` other than single
-    /// width, one row, keeps as much as fits in half the width, and loses
-    /// the rest, as DECDWL loses it (DEC STD 070, DECDWL, notes 1 and 2).
+    /// Lays out the line of rows `start` through `end`, `length` cells of
+    /// text, a run of cells at a time, so a line costs its rows, not its
+    /// cells. A wide glyph that would end in the last column moves to the
+    /// next row; spacers are skipped; at a width under two, wide glyphs are
+    /// left out. A double-width line keeps as much as fits in half the
+    /// width and loses the rest, as DECDWL does (DEC STD 070, DECDWL, notes
+    /// 1 and 2).
     fn lay_out_runs(
         &self,
         (start, end): (usize, usize),
@@ -252,8 +236,7 @@ impl Grid {
                 }
                 taken = taken.min(len.saturating_sub(1));
             }
-            // At one column, the runs between wide glyphs, which it cannot
-            // show.
+            // At one column, only the runs between wide glyphs.
             let mut from = 0;
             loop {
                 let to = if pass.width < 2 {
@@ -300,7 +283,7 @@ impl Grid {
     }
 
     /// Lays out cells `cells` of `row`, which starts `base` cells into its
-    /// line, after the line's cells laid out so far.
+    /// line.
     fn lay_out_run(
         &self,
         row: Row<'_>,
@@ -334,7 +317,6 @@ impl Grid {
         Ok(())
     }
 
-    /// Ends the row being laid out, its line going on in the next.
     fn end_row(&self, line: &mut Run, pass: &mut Pass<'_, impl Reflow>) -> Result<(), Error> {
         let id = self.id_at(line.next, line.end);
         line.next = line.next.saturating_add(1);
@@ -368,11 +350,9 @@ impl Grid {
         }
     }
 
-    /// Retained row `index`'s facts a line's layout reads: whether it is
-    /// soft-wrapped, its width, and how many of its cells come before its
-    /// blank tail. A history row keeps none of its blank tail; a screen
-    /// row's is looked for back from its `used` mark, past which every
-    /// cell is blank.
+    /// Retained row `index`'s soft wrap, width, and how many of its cells
+    /// come before its blank tail. A history row keeps no blank tail; a
+    /// screen row's is blank past its `used` mark.
     fn facts_at(&self, index: usize) -> (bool, usize, usize) {
         let Some(row) = index.checked_sub(self.history.len()) else {
             let kept = self.history.kept(index);
@@ -405,15 +385,12 @@ type RunLinks<'a> = Option<(Runs<'a>, Range<usize>)>;
 /// Where a reflow's rows go: `Layout` only counts them; `Fill` writes the
 /// ones kept into the replacement grid.
 trait Reflow {
-    /// `cells`, of a row whose text is in `text`, with links `links`, are
-    /// at `col` on of reflowed row
-    /// `row`, where they fit; the row's cells past them that the run
-    /// covers, which it does not keep, are blank.
+    /// `cells`, whose clusters are in `text`, go at `col` of reflowed row
+    /// `row`, where they fit; cells of the run the row does not keep are
+    /// blank.
     fn run(&mut self, row: usize, col: usize, cells: &[Compact], text: &Text, links: RunLinks<'_>);
-    /// Reflowed row `row` is finished, its cells from `used` on blank;
-    /// `wrapped` if its line goes on, and its rendition; the identity of its
-    /// line's row in the same place before, if any, and whether a prompt
-    /// starts on it.
+    /// Reflowed row `row` is finished, its cells from `used` on blank; `id`
+    /// is that of its line's row in the same place before, if any.
     fn row(
         &mut self,
         row: usize,
@@ -424,8 +401,6 @@ trait Reflow {
     ) -> Result<(), Error>;
 }
 
-/// A reflow under way: the width it lays out at, the marks it places, what
-/// it has laid out, and where the rows go.
 struct Pass<'a, T> {
     width: usize,
     marks: [Option<(usize, usize)>; 2],
@@ -452,7 +427,7 @@ struct Run {
 
 impl Run {
     /// Lays out cells `cells` of `row`, which starts `base` cells into the
-    /// line, in the row being laid out, after its cells so far: they fit.
+    /// line, in the row being laid out: they fit.
     fn place(
         &mut self,
         row: Row<'_>,
@@ -501,18 +476,16 @@ enum Mark {
     Blank(usize, usize),
 }
 
-/// The shape of a reflow: how many rows, where the cursor and the saved
-/// cursor are, and how many rows at the end hold blank lines.
+/// The shape of a reflow.
 struct Reflowed {
     rows: usize,
     /// `None` for a mark no line held.
     marks: [Option<Mark>; 2],
     trailing_blank: usize,
-    /// The laid-out row the screen's line begins on: the line holding the
-    /// screen's first row before.
+    /// The laid-out row that the line holding the screen's first row
+    /// begins on.
     screen_line: usize,
-    /// How many rows of history, from its oldest, are laid out as they
-    /// were.
+    /// How many rows of history, from its oldest, are laid out as they were.
     same: usize,
 }
 
@@ -531,10 +504,8 @@ impl Reflow for Layout {
     }
 }
 
-/// Writes reflowed rows `rows` into `grid`, which has none yet: each row is
-/// laid out in `cells`, `text` and `links`, then goes into the grid's
-/// history if it is above `screen`, else onto its screen. A cluster held in
-/// its old row's text is stored again in its new row's.
+/// Writes reflowed rows `rows` into `grid`, which has none yet: into its
+/// history above `screen`, else onto its screen.
 struct Fill<'a> {
     grid: &'a mut Grid,
     rows: Range<usize>,
@@ -542,7 +513,7 @@ struct Fill<'a> {
     next: &'a mut u64,
     version: u64,
     cells: Vec<Compact>,
-    /// How far into `cells` the row being laid out was written: past it,
+    /// How far into `cells` the row being laid out was written; past it,
     /// they are blank.
     written: usize,
     text: Text,
@@ -562,8 +533,7 @@ impl Reflow for Fill<'_> {
         self.written = self.written.max(col.saturating_add(cells.len()));
         work!(cells, cells.len());
         crate::copy_from(dst, cells);
-        // The clusters held in the row's text are stored again, as placing
-        // the cells one at a time stores them.
+        // Clusters held in the old row's text are stored again in the new.
         if !text.is_empty() {
             let spilled = (cells.iter().enumerate())
                 .filter(|(_, cell)| cell.is_spilled())
@@ -577,7 +547,6 @@ impl Reflow for Fill<'_> {
         if let Some((links, from)) = links {
             for (at, link) in links.within(from) {
                 let at = col.saturating_add(at.start)..col.saturating_add(at.end);
-                // The row's links, none until its first.
                 self.links.get_or_insert_default().set(at, Some(link));
             }
         }
@@ -595,8 +564,8 @@ impl Reflow for Fill<'_> {
         }
         let id = id.unwrap_or_else(|| next_id(self.next));
         let cols = self.grid.size.cols();
-        // The row's `used` mark is where its cells laid out end, so the
-        // next reflow finds its text, and recycling clears it, from there.
+        // The next reflow finds the row's text, and recycling clears it,
+        // from its `used` mark.
         let used = u16::try_from(used).map_or(cols, |used| used.min(cols));
         // Past the mark, every cell is blank: no half of a wide glyph.
         if let Some(cells) = self.cells.get_mut(..usize::from(used)) {
