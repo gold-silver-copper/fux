@@ -132,14 +132,13 @@ fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
     Ok(())
 }
 
-/// B35, the work budget (budget.rs, `CEILING`'s `50_000_000 * 20` with
-/// `+`): a call stops once it has spent half the ceiling, and not before.
-/// What fux-vt's counters charge a DECALN of the whole 50x200 screen
-/// (`Work::cost`) is at least what the budget spends on it, so the stop
-/// comes after ceil(`CEILING` / 2 / that) of them, or later.
-/// The frozen ceiling U (THREATS.md 4.4), in twentieths of a unit.
+/// B35, the work budget (budget.rs): a call stops once it has spent half
+/// the ceiling, and not before. What fux-vt's counters charge a DECALN of
+/// the whole 50x200 screen (`Work::cost`) is at least what the budget
+/// spends on it, so the stop comes after ceil(`CEILING` / 2 / that) of
+/// them, or later. The ceiling U (THREATS.md 4.4), in cells.
 #[cfg(feature = "checks")]
-const CEILING: u64 = 50_000_000 * 20;
+const CEILING: u64 = 32_000_000;
 
 #[cfg(feature = "checks")]
 #[test]
@@ -150,7 +149,6 @@ fn a_call_stops_at_half_the_ceiling_and_not_before() -> Result {
     let before = fux_vt::Work::now();
     p.process(align)?;
     let cost = fux_vt::Work::now().since(before).cost().max(1);
-    // U, the frozen ceiling (THREATS.md 4.4): 50 M units, in twentieths.
     let least = (CEILING / 2).div_ceil(cost);
     let input = times_bytes(align, usize::try_from(least.saturating_mul(4))?);
     let mut p = Parser::new(size, 0)?;
@@ -347,8 +345,8 @@ fn history_keeps_the_most_cells_a_grid_holds() -> Result {
 fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     // 512 bytes: the ring's chunks are a row each (24 bytes). A row of 8
     // clusters of 101 bytes each: its 8 cells make a block of 8 (64 bytes),
-    // its 808 bytes of text go in the texts map (3 buckets of 66 bytes,
-    // 198); far over, so the row goes, and with its text gone the 286
+    // its 808 bytes of text go in the texts map (room for 4 of 56 bytes,
+    // 224); far over, so the row goes, and with its text gone the 288
     // bytes left fit.
     let mut p = Parser::new(Size::new(1, 40)?, 512)?;
     let cluster = format!("e{}", times("\u{301}", 50));
@@ -356,9 +354,9 @@ fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     p.process(b"\r\n")?;
     assert_eq!(p.screen().history_len(), 0);
     // Empty rows then: 24 bytes each beside the block's 64 and the map's
-    // 198, so 10 fit in 512, not the 21 that 512 holds with nothing else.
+    // 224, so 9 fit in 512, not the 21 that 512 holds with nothing else.
     p.process(times("\n", 100).as_bytes())?;
-    assert_eq!(p.screen().history_len(), 10);
+    assert_eq!(p.screen().history_len(), 9);
     Ok(())
 }
 
@@ -889,8 +887,8 @@ fn a_late_start_follows_its_prompt_s_line() -> Result {
 /// B33 and B34, `Screen::repeat`'s `per_row` filter (screen.rs, `>` to `>=`): REP of a glyph wider than the screen makes no copy and spends none of the call's budget.
 #[test]
 fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
-    // 2,000 REPs of 65,535 copies would spend 655 M twentieths, past the
-    // 500 M a call may.
+    // 2,000 REPs of 65,535 copies would spend 262 M cells, past the 16 M a
+    // call may.
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
     assert_eq!(p.process_until_stop(input.as_bytes(), &mut Deaf)?, None);

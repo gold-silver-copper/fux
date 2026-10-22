@@ -671,10 +671,9 @@ fn rep_writes_what_printing_again_writes() -> Result {
 /// DECSTBM (DEC STD 070, 5-25): margins with the top above the bottom
 /// are set and the cursor goes home, obeying DECOM: the first line with
 /// DECOM reset, the top margin with it set (note 1); other margins are
-/// ignored (note 2), and so is one with a bottom past the screen (note
-/// 3), which xterm takes as the last line. Expected values are xterm's
-/// (`fux-vt-compare replay --engines all --size 5x5`) but for note 3,
-/// where they are the standard's.
+/// ignored (note 2). A bottom past the screen is its last line, as xterm
+/// takes it (note 3 ignores it). Expected values are xterm's
+/// (`fux-vt-compare replay --engines all --size 5x5`).
 #[test]
 fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
     let p = run(5, 5, b"abc\x1b[3;5rX")?;
@@ -689,14 +688,35 @@ fn decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set() -> Result {
     }
     for past in [&b"\x1b[2;99r"[..], b"\x1b[2;6r"] {
         let p = run(5, 5, &[&b"\x1b[2;4r\x1b[3;3H"[..], past, b"X"].concat())?;
-        assert_eq!(p.screen().scroll_region(), (1, 3), "{past:?}");
-        assert_eq!(lines(&p), ["", "", "  X", "", ""], "{past:?}");
+        assert_eq!(p.screen().scroll_region(), (1, 4), "{past:?}");
+        assert_eq!(lines(&p), ["X", "", "", "", ""], "{past:?}");
     }
     let p = run(5, 5, b"\x1b[2;4r\x1b[2;5rX")?;
     assert_eq!(p.screen().scroll_region(), (1, 4));
     // An ignored DECSTBM leaves a pending wrap waiting.
     let p = run(2, 5, b"abcde\x1b[2;2rX")?;
     assert_eq!(lines(&p), ["abcde", "X"]);
+    Ok(())
+}
+
+/// A scroll up of a region at the top of the screen takes the rows it
+/// scrolls off into history, as xterm keeps them, and leaves the lines
+/// below the region: a status line under a chat's lines (irssi, weechat).
+/// A region below the top keeps none, nor does SD.
+#[test]
+fn a_region_at_the_top_scrolls_its_rows_into_history() -> Result {
+    let mut p = Parser::new(Size::new(4, 5)?, 1 << 16)?;
+    p.process(b"\x1b[4;1Hstat\x1b[1;3r\x1b[1;1Ha\r\nb\r\nc\r\nd\r\ne")?;
+    assert_eq!(lines(&p), ["c", "d", "e", "stat"]);
+    let history: Vec<String> = (p.screen().rows())
+        .take(p.screen().history_len())
+        .map(|r| r.cells_text().trim_end().to_owned())
+        .collect();
+    assert_eq!(history, ["a", "b"]);
+    let mut p = Parser::new(Size::new(4, 5)?, 1 << 16)?;
+    p.process(b"\x1b[2;3r\x1b[2;1Ha\r\nb\r\nc\x1b[1;3r\x1b[T")?;
+    assert_eq!(lines(&p), ["", "", "b", ""]);
+    assert_eq!(p.screen().history_len(), 0);
     Ok(())
 }
 

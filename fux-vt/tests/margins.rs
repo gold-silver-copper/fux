@@ -43,9 +43,8 @@ fn framed(then: &str) -> Result<Parser> {
 /// DECSLRM is recognized only while DECLRMM is set (DEC STD 070, DECSLRM,
 /// note 4): reset, `CSI s` is SCOSC, saving the cursor, as it always was.
 /// Set, margins with the left one left of the right are set and the cursor
-/// goes home, obeying DECOM; others are ignored (note 2), and so is one
-/// with a right margin past the screen (note 3), which xterm takes as the
-/// last column. Resetting
+/// goes home, obeying DECOM; others are ignored (note 2). A right margin
+/// past the screen is the last column, as xterm takes it. Resetting
 /// DECLRMM puts the margins back at the screen's edges, and DECRQM reports
 /// the mode (esctest's DECSET_DECLRMM, DECRQM_DEC_DECLRMM).
 #[test]
@@ -69,10 +68,10 @@ fn declrmm_lets_decslrm_set_the_margins() -> Result {
     // Left not left of right: ignored, the cursor staying.
     let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[4;4sX\x1b[5;2sY")?;
     assert_eq!(lines(&p), ["", "  XY", ""]);
-    // A right margin past the screen: ignored, the cursor staying.
-    let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[3;99sX\x1b[3;9sY")?;
-    assert_eq!(lines(&p), ["", "  XY", ""]);
-    assert_eq!(p.screen().left_right_margins(), (0, 7));
+    // A right margin past the screen: the last column.
+    let p = run(3, 8, b"\x1b[?69h\x1b[2;3H\x1b[3;99sX")?;
+    assert_eq!(lines(&p), ["X", "", ""]);
+    assert_eq!(p.screen().left_right_margins(), (2, 7));
     // DECRQM.
     let report = b"\x1b[?69$p\x1b[?69h\x1b[?69$p";
     assert_eq!(replies(3, 8, report)?, ["\x1b[?69;2$y", "\x1b[?69;1$y"]);

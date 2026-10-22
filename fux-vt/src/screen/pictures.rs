@@ -506,7 +506,7 @@ impl Screen {
     ) {
         let g = self.grid();
         let kept = direction == (crate::grid::Scroll::Up { history: true })
-            && region == g.size().lines()
+            && region.first() == 0
             && g.history_bytes() > 0;
         if kept || direction == crate::grid::Scroll::Down {
             return;

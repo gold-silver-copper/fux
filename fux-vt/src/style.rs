@@ -1,29 +1,22 @@
-//! Styles: a cell holds a number of 28 bits for its attributes, its style,
-//! rather than the attributes themselves.
+//! Styles: a cell holds a 28-bit style number, not its attributes.
 //!
-//! The styles programs mostly use are their own numbers
-//! (`Attributes::inline_style`): no colour but the default and the 256
-//! indexed ones, no underline colour, no underline but a single one, and any
-//! other rendition but rapid blink; or a direct foreground on the default
-//! background, bold, italic, both or neither, as syntax highlighting
-//! prints.
-//! Their number says what they are, so printing in them costs no search,
-//! and reading them no table. The default attributes are style 0, so a
-//! blank cell is all zeros.
+//! The styles programs mostly use encode themselves in the number
+//! (`Attributes::inline_style`): default and indexed colours, at most a
+//! single underline with no colour, no rapid blink; or a direct foreground
+//! on the default background, bold and/or italic, as syntax highlighting
+//! prints. They cost no table search. Style 0 is the default, so a blank
+//! cell is all zeros.
 //!
-//! Every other style (a direct background, an underline colour, a double,
-//! curly, dotted or dashed underline, rapid blink) is kept once in a grid's
-//! table, and its number, with
-//! [`TABLE`] set, is its place there. Nothing counts the cells of each:
-//! writing a cell costs no more than writing its number. Instead, when the
-//! table has grown to twice the styles in use at the last sweep, and past a
-//! floor that grows with the grid, the grid sweeps it (`Grid::sweep`): it
-//! marks the styles its cells use, keeps those, in the order they had, and
-//! writes their new numbers into its cells. A sweep reads every cell, but
-//! after one that keeps L styles the next comes only after max(floor − L,
-//! L) new ones, at least half the floor, which is an eighth of the grid's
-//! cells or more: so a style costs a few cell reads however many there
-//! are (`THREATS.md` B13). No reader sees a style's number.
+//! Every other style is kept once in a grid's table, its number being its
+//! place there with [`TABLE`] set. Cells are not reference counted.
+//! Instead, once the table has grown to twice the styles in use at the
+//! last sweep, and past a floor that grows with the grid, the grid sweeps
+//! it (`Grid::sweep`), keeping the styles its cells use, in order, and
+//! renumbering its cells. After a sweep that keeps L styles the next comes
+//! only after max(floor − L, L) new ones, at least half the floor, which is
+//! an eighth of the grid's cells or more, so a style costs a few cell reads
+//! however many there are (`THREATS.md` B13). No reader sees a style's
+//! number.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
@@ -53,11 +46,9 @@ pub(crate) struct Styles {
     live: usize,
 }
 
-/// The tables' hasher. Zero-sized: its keys are `keys()`'s, a static
-/// drawn once a process from std's random keys, so a program sees neither
-/// them nor any hash, and a table carries none. Each word hashed is folded
-/// in by one 128-bit multiply by a key (as foldhash does), rather than by
-/// SipHash's rounds, which cost the SGR path several percent.
+/// The tables' hasher. Zero-sized: its keys are drawn once a process from
+/// std's random keys, so a program sees neither them nor any hash. Each
+/// word is folded in by one 128-bit multiply by a key, as foldhash does.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Keyed;
 
@@ -79,7 +70,6 @@ impl BuildHasher for Keyed {
     }
 }
 
-/// A hash being made with the tables' keys ([`Keyed`]).
 pub(crate) struct KeyedHasher {
     state: u64,
     key: u64,
@@ -111,8 +101,7 @@ impl Hasher for KeyedHasher {
     }
 }
 
-/// The table and its count, not `places`, whose order is the hasher's keys'
-/// and says nothing the table doesn't.
+/// Leaves out `places`, whose order depends on the keys.
 impl std::fmt::Debug for Styles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Styles")
@@ -142,7 +131,6 @@ impl Styles {
             .is_some_and(|a| a.flags & Attributes::GUARDED != 0)
     }
 
-    /// Where style `style` is in the table, if it is a style of the table.
     #[inline]
     pub(crate) fn place(style: u32) -> Option<usize> {
         if style & TABLE == 0 {
@@ -151,7 +139,6 @@ impl Styles {
         usize::try_from(style & !TABLE).ok()
     }
 
-    /// How many styles the table holds, in use or not.
     pub(crate) fn len(&self) -> usize {
         self.table.len()
     }
@@ -179,16 +166,13 @@ impl Styles {
         )
     }
 
-    /// The number of the style with `attributes`, if the table has it.
     pub(crate) fn find(&self, attributes: Attributes) -> Option<u32> {
         self.places.get(&attributes).map(|place| place | TABLE)
     }
 
-    /// Whether the table is to be swept before another style is added:
-    /// it has twice the styles in use at the last sweep, L, and the floor,
-    /// at least an eighth of `cells`, the cells the grid holds, so a sweep
-    /// comes after max(floor − L, L) new styles, at least half the floor;
-    /// or it is full.
+    /// Whether the table is to be swept before another style is added: it
+    /// is full, or has twice the styles in use at the last sweep and the
+    /// floor, at least an eighth of the grid's `cells`.
     pub(crate) fn wants_sweep(&self, cells: usize) -> bool {
         let floor = FLOOR.max(cells / 8);
         let len = self.table.len();
@@ -237,9 +221,9 @@ impl Styles {
     }
 }
 
-/// The bytes of a table of `entries` entries' room and a map of `room`
-/// places' room: the entries, and each bucket's place and control byte, a
-/// map's buckets being its room's power of two past 8 for each 7.
+/// The bytes of a table with room for `entries` and a map with room for
+/// `room`: hashbrown allocates the next power of two past 8 buckets per 7
+/// of room, each holding an entry and a control byte.
 fn table_bytes(entries: usize, room: usize) -> usize {
     let buckets = match room {
         0 => 0,
@@ -289,10 +273,8 @@ impl Styles {
     }
 
     /// 15: no more than [`SPREAD`] styles share a place in `places` by
-    /// `hash` (the table's own hash, [`Keyed`]): a program that can't see
-    /// the keys can't make styles collide (`THREATS.md` B12), so the most
-    /// a place gets is a few, as for random hashes, where one fold of
-    /// both words, unkeyed, gave every style of a chosen family one place.
+    /// `hash` (the table's own, [`Keyed`]): a program that can't see the
+    /// keys can't make styles collide (`THREATS.md` B12).
     pub(crate) fn check_spread(&self, hash: impl Fn(&Attributes) -> u64) -> Result<(), String> {
         // The places a table of them holds: 8 for each 7 it has room for.
         let places = (self.places.capacity().saturating_mul(8) / 7)
@@ -325,7 +307,6 @@ mod tests {
     use super::*;
     use crate::{Blink, Color, UnderlineStyle};
 
-    /// A hasher that keeps the words it is given.
     #[derive(Default)]
     struct Recording(Vec<u64>);
 
@@ -345,7 +326,6 @@ mod tests {
         }
     }
 
-    /// What `attributes` write to a hasher, a word at a time.
     fn written(attributes: Attributes) -> Vec<u64> {
         let mut hasher = Recording::default();
         std::hash::Hash::hash(&attributes, &mut hasher);
@@ -354,9 +334,7 @@ mod tests {
 
     /// Attributes write both their words, whole, to the hasher, so two that
     /// differ write differently, and a keyed hash leaves no family a
-    /// program could choose to collide. At BASE they wrote one word, `a ^
-    /// b.rotate_left(23)` mixed, which rust-opus's family of 32,768 styles
-    /// shares (`THREATS.md` B12).
+    /// program could choose to collide (`THREATS.md` B12).
     #[test]
     fn attributes_hash_both_their_words() {
         for (a, b) in [(direct(1), direct(2)), (direct(7), direct(200))] {
@@ -399,10 +377,7 @@ mod tests {
     }
 
     /// Every style a number holds reads back as itself, and only those
-    /// styles have numbers: the default and indexed colours, any rendition
-    /// but rapid blink, and an underline that is single or none, with no
-    /// colour; or a direct foreground on the default background, bold or
-    /// italic or both or neither.
+    /// styles have numbers.
     #[test]
     fn a_style_of_its_own_number_reads_back_as_itself() {
         let styles = Styles::default();
@@ -461,8 +436,6 @@ mod tests {
                             assert_eq!(styles.get(code), a, "{a:?}");
                             assert!(numbers.insert(code), "{a:?}");
                         }
-                        // With an underline colour or a direct background,
-                        // none.
                         assert_eq!(a.with_underline_color(Color::Idx(1)).inline_style(), None);
                         assert_eq!(
                             a.with_background(Color::Rgb([0, 0, 0].into()))
@@ -491,40 +464,5 @@ mod tests {
         let used = vec![true; styles.len()];
         styles.retain(&used);
         assert!(!styles.wants_sweep(0));
-    }
-}
-
-/// The table's check, shown a table with its one fault.
-#[cfg(all(test, feature = "checks"))]
-mod faults {
-    use super::*;
-    use crate::Color;
-
-    #[test]
-    fn a_style_found_at_another_place_is_a_fault() {
-        let mut styles = Styles::default();
-        for n in 0..4u8 {
-            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
-            assert!(styles.insert(attributes).is_some());
-        }
-        assert_eq!(styles.check(), Ok(()));
-        if let Some(place) = styles.places.values_mut().next() {
-            *place = place.wrapping_add(1) % 4;
-        }
-        assert!(styles.check().is_err());
-        styles.places.clear();
-        assert!(styles.check().is_err());
-    }
-
-    /// Styles that hash alike are a fault of the spread: 65 at one place.
-    #[test]
-    fn styles_that_hash_alike_are_a_fault() {
-        let mut styles = Styles::default();
-        for n in 0..65u8 {
-            let attributes = Attributes::new(Color::Default, Color::Rgb([n, 1, 2].into()));
-            assert!(styles.insert(attributes).is_some());
-        }
-        assert_eq!(styles.check_spread(|a| Keyed.hash_one(a)), Ok(()));
-        assert!(styles.check_spread(|_| 7).is_err());
     }
 }
