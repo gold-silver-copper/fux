@@ -567,8 +567,9 @@ fn modified_other_key(key: Key, mods: Modifiers, ours: &[u8]) -> bool {
 /// again until none is left. Written apart from fux-vt's encoder, so the
 /// verdicts check what fux-vt sends.
 fn pasted(text: &str, bracketed: bool) -> Vec<u8> {
-    // Each LF a CR, as xterm 411 sends a paste.
-    let text = text.replace('\n', "\r");
+    // Each line break one CR: a CRLF as one, as kitty, ghostty and alacritty
+    // send it, and each other LF as xterm 411 does.
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if !bracketed {
         return text.into_bytes();
     }
@@ -859,9 +860,10 @@ fn compare_pastes(
             out
         };
         // A verdict says what fux-vt sends: it must send it.
-        let theirs_cr: Vec<u8> = (theirs.iter())
-            .map(|&b| if b == b'\n' { b'\r' } else { b })
-            .collect();
+        let theirs_cr: Vec<u8> = String::from_utf8_lossy(&theirs)
+            .replace("\r\n", "\r")
+            .replace('\n', "\r")
+            .into_bytes();
         let verdict = if ours != pasted(&text, asked) {
             None
         } else if newline && modelled == theirs_cr {
@@ -958,6 +960,7 @@ mod tests {
         assert_eq!(tab(shift, b"\x1b[1;2Z"), None);
         assert_eq!(tab(ctrl_alt_shift, b"\x1b[Z"), None);
         assert_eq!(pasted("a\nb", false), b"a\rb");
+        assert_eq!(pasted("a\r\nb", false), b"a\rb");
         assert_eq!(pasted("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
         assert_eq!(pasted("\x1b[20\x1b[201~1~x", true), b"\x1b[200~x\x1b[201~");
         assert_eq!(pasted("a\u{9b}201~b", true), b"\x1b[200~ab\x1b[201~");
