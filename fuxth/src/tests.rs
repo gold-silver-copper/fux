@@ -819,7 +819,6 @@ fn lists_change_and_host_values_show() -> Result<(), Error> {
 
 /// A definition that, some ways through, replaces a value below what it
 /// surely uses: its callers forget what they knew of that value's kind.
-/// (Found by a Codex test run; it was refused before.)
 #[test]
 fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
     let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
@@ -854,9 +853,9 @@ fn long_chains_and_long_strings_are_bounded() -> Result<(), Error> {
     Ok(())
 }
 
-/// What the Codex QA runs found, each a test that failed before its fix.
+/// Mistakes the checker once made, each a test that failed before its fix.
 #[test]
-fn what_qa_found() -> Result<(), Error> {
+fn what_the_checker_once_got_wrong() -> Result<(), Error> {
     let refused = |text: &str| -> Option<String> {
         let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
