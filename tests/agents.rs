@@ -749,17 +749,10 @@ fn keys_into_a_marked_command_settle_once_quiet() -> Outcome {
         server.ok(&typed(pane, "hang", &hanging))?;
         let began = std::time::Instant::now();
         let typed = server.ok(&["str", pane, "pane", "str", "x", "type"])?;
-        // On the main screen (ssh's), blocked off its terminal (on the
-        // FIFO): it may be at work, or wait for input fux cannot see.
-        let state = match pane == full {
-            true => " waiting · command running".to_owned(),
-            false => format!(
-                " waiting · command running · not reading its terminal, so fux cannot tell \
-                 when it waits for input: `{} wait-done wait` waits for its end",
-                id(&typed)
-            ),
-        };
-        assert!(head(&typed).ends_with(&state), "{typed}");
+        assert!(
+            head(&typed).ends_with(" waiting · command running"),
+            "{typed}"
+        );
         assert!(began.elapsed() < PATIENCE, "{typed}");
         std::fs::write(&fifo, "back\n").map_err(e)?;
         let ended = server.ok(&["str", pane, "pane", "wait"])?;
@@ -2087,11 +2080,6 @@ fn captures_and_answers_agree_on_the_screen() -> Outcome {
     ))?);
     let json = server.ok(&["str", &wraps, "pane", "capture", "json"])?;
     assert!(json.contains(r#""cursor":[1,5],"#), "{json}");
-    let typed = server.ok(&["str", &wraps, "pane", "str", "xy", "text", "send-keys"])?;
-    assert!(
-        head(&typed).ends_with(r#" · cursor 1,7 on rows 0-1 "abcdefghij" "klmnoxy""#),
-        "{typed}"
-    );
     let ends = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo BYE"]))?);
     let keys = server.ok(&["str", &ends, "pane", "str", "Enter", "key", "send-keys"])?;
     assert!(
@@ -2235,19 +2223,7 @@ fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
     let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;
     let pane = id(&started);
     if PROBED {
-        let said = format!(
-            "{pane} waiting · ssh is remote, its state unseen: \
-             `{pane} wait-exit wait` waits for its end"
-        );
-        assert_eq!(head(&started), said);
-        // Said on every answer, as it is still so.
-        let again = server.ok(&["str", &pane, "pane", "wait"])?;
-        assert_eq!(head(&again), said, "{again}");
-        let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
-        assert!(
-            json.contains(r#""remote":"ssh","wait_with":"wait-exit""#),
-            "{json}"
-        );
+        assert_eq!(head(&started), format!("{pane} waiting"));
     }
     let built = server.fux(&[
         "str",
@@ -2602,7 +2578,8 @@ fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
         each.stdout
     );
     let json = server.fux(&[&settle[..], &["json"]].concat())?.stdout;
-    assert_eq!(json.lines().count(), 2, "{json}");
+    assert_eq!(json.matches("\"pane\":").count(), 2, "{json}");
+    assert!(json.starts_with('['), "{json}");
     // Keys to both: one reads them and the text cannot come; the other,
     // asleep, runs out of time, its reason on stderr (no hint: no line
     // reads as it did with the text in it).
@@ -3142,17 +3119,9 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("nowhere"), "{ls}");
     assert_eq!(ls.matches('%').count(), 2, "{ls}");
-    // A capture's refusal of a wait says what it does: settles, then reads.
-    let refused = server.fux(&[&on[..], &["str", "x", "wait-text", "capture"]].concat())?;
-    assert!(refused.stderr.contains("settles"), "{}", refused.stderr);
-    // A command for a new workspace says what it takes, and where a
-    // program goes: run, or typed into its shell.
+    // A refusal says what the word takes, and what takes the option.
     let refused = server.fux(&["opts", "str", "make", "command", "new-workspace"])?;
-    for said in [
-        "takes name, size, cwd, env, typed and id",
-        "command run",
-        "typed",
-    ] {
+    for said in ["takes name, size, cwd, env, typed and id", "goes on run"] {
         assert!(refused.stderr.contains(said), "{said}: {}", refused.stderr);
     }
     Ok(())
@@ -4675,17 +4644,14 @@ fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
     Ok(())
 }
 
-/// What plain text hides is said on an action's state line: a selection
-/// its keys highlighted anew (reverse video), where, and the cursor when
-/// text goes on right of it, or after a line edited. A highlight that
-/// stays, or a cursor at the end of a line printed, is not said again. A
-/// capture says the cursor too, as JSON does.
+/// A selection an action's keys highlighted anew (reverse video) is said
+/// on its state line, where it is; one that stays is not said again.
 #[test]
-fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome {
+fn an_answer_says_what_its_keys_highlighted() -> Outcome {
     let server = Server::start("")?;
     let code = "import sys\nfor l in sys.stdin:\n\
                 \x20   if l.startswith('h'): print('\\x1b[7mSEL\\x1b[m rest', flush=True)\n\
-                \x20   else: sys.stdout.write('abcdef\\x1b[3D'); sys.stdout.flush()\n";
+                \x20   else: print('plain', flush=True)\n";
     let pane = id(&server.ok(&run(&[], &["python3", "-c", code]))?);
     let lit = server.ok(&typed(&pane, "h", &[]))?;
     assert_eq!(
@@ -4693,53 +4659,8 @@ fn an_answer_says_what_its_keys_highlighted_and_where_the_cursor_is() -> Outcome
         format!("{pane} {READING} · highlight 1,0-2 \"SEL\""),
         "{lit}"
     );
-    let moved = server.ok(&typed(&pane, "c", &[]))?;
-    assert_eq!(
-        head(&moved),
-        format!("{pane} {READING} · cursor 3,3"),
-        "{moved}"
-    );
-    let again = server.ok(&typed(&pane, "x", &[]))?;
-    assert_eq!(
-        head(&again),
-        format!("{pane} {READING} · cursor 4,3"),
-        "{again}"
-    );
-    let echo = "import os, tty\ntty.setraw(0); os.write(1, b'> ')\n\
-                while True: os.write(1, os.read(0, 1))\n";
-    let line = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", echo]))?);
-    let edited = server.ok(&["str", &line, "pane", "str", "ab", "type"])?;
-    let at = format!("{line} {READING} · cursor 0,4");
-    assert_eq!(head(&edited), at, "{edited}");
-    for form in [&["capture"][..], &["wrapped", "capture"]] {
-        let read = server.ok(&[&["str", line.as_str(), "pane"][..], form].concat())?;
-        assert_eq!(read, format!("{at}\n> ab\n"));
-    }
-    Ok(())
-}
-
-/// Keys that move the cursor alone say where it went, at the end of the
-/// line too; one on the line's last glyph is within the line.
-#[test]
-fn keys_that_move_only_the_cursor_say_where_it_went() -> Outcome {
-    let server = Server::start("")?;
-    let code = "import os, tty\ntty.setraw(0); os.write(1, b'abc')\n\
-                while True:\n\
-                \x20   k = os.read(0, 1)\n\
-                \x20   os.write(1, b'\\x1b[D' if k == b'h' else b'\\x1b[C')\n";
-    let pane = id(&server.ok(&run(&["str", "abc", "wait-text"], &["python3", "-c", code]))?);
-    let left = server.ok(&["str", &pane, "pane", "str", "h", "type"])?;
-    assert_eq!(
-        head(&left),
-        format!("{pane} {READING} · cursor 0,2"),
-        "{left}"
-    );
-    let back = server.ok(&["str", &pane, "pane", "str", "l", "type"])?;
-    assert_eq!(
-        head(&back),
-        format!("{pane} {READING} · cursor 0,3"),
-        "{back}"
-    );
+    let again = server.ok(&typed(&pane, "c", &[]))?;
+    assert_eq!(head(&again), format!("{pane} {READING}"), "{again}");
     Ok(())
 }
 

@@ -191,23 +191,10 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
-/// A wait's words, which every word that waits takes, and `marks` for the
-/// screen it prints.
-pub(crate) const WAITING: &str = "wait-text wait-gone wait-exit wait-bell wait-done timeout marks";
-
-/// The words of a wait alone: a pane given only them, left last, waits.
-pub(crate) const WAITS: [&str; 6] = [
-    "wait-text",
-    "wait-gone",
-    "wait-exit",
-    "wait-bell",
-    "wait-done",
-    "timeout",
-];
-
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;
-/// and whether it waits, taking a wait's words too (`WAITING`).
+/// and whether it waits, taking a wait's words too: the `Waiting` words
+/// that go on the pane, and `marks` for the screen it prints.
 pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "run",
@@ -241,8 +228,11 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
 /// The options `name` takes, if it takes any: its own, then a wait's.
 pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> {
     let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
-    let waiting = if *waits { WAITING } else { "" };
-    Some(takes.split_whitespace().chain(waiting.split_whitespace()))
+    let waiting = (WORDS.iter())
+        .filter(|w| *waits && w.group == "Waiting" && w.effect.starts_with("x "))
+        .map(|w| w.name)
+        .chain(waits.then_some("marks"));
+    Some(takes.split_whitespace().chain(waiting))
 }
 
 /// An example of a word in use, as a command line.

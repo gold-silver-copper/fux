@@ -311,22 +311,10 @@ impl<A: AppValue> Machine<A> {
                 self.leave();
                 continue;
             };
-            // Past its last step, a definition returns; the program ends:
-            // a value on top that a word ends is given to it, and none left
-            // must be used.
+            // Past its last step, a definition returns; the program ends,
+            // and none of what is left must be used.
             let Some(op) = code.ops.get(frame.step) else {
                 if depth == 1 {
-                    let words = &program.vocabulary;
-                    let ends = self
-                        .stack
-                        .last()
-                        .and_then(|v| words.ender(words.kind_of(v)));
-                    if let Some(id) = ends {
-                        if let Some(request) = self.app(id, host)? {
-                            return Ok(Outcome::Suspended(request));
-                        }
-                        continue;
-                    }
                     self.used()?;
                 }
                 self.leave();
@@ -767,15 +755,20 @@ impl<A: AppValue> Machine<A> {
                 let others = list.items().len().saturating_sub(1);
                 self.build(copied(&list, others).saturating_add(1))?;
                 match Rc::make_mut(&mut list).put(i, x) {
-                    Some(()) => Ok(Value::List(list)),
+                    Some(looked) => {
+                        self.cost(looked);
+                        Ok(Value::List(list))
+                    }
                     None => Err(self.nested()),
                 }
             }
             (Sequence::Str(mut s), Value::Str(x)) => {
-                // One character replaced by x's.
+                // One character replaced by x's: the string is made anew,
+                // in place or not.
                 let others = s.chars_len().saturating_sub(1);
                 self.fits(others.saturating_add(x.chars_len()))?;
                 self.build(copied(&s, others).saturating_add(x.chars_len()))?;
+                self.cost(others);
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
@@ -1126,6 +1119,10 @@ builtins! { m host;
         let n = b.saturating_sub(a);
         let part = match &s {
             Sequence::Str(s) => {
+                // Characters not all ASCII are walked to `b`.
+                if !s.is_ascii() {
+                    m.cost(a);
+                }
                 m.build(n)?;
                 Value::str(s.part(a, b))
             }

@@ -7,8 +7,6 @@ use std::num::NonZeroU8;
 /// The exit statuses, a meaning each, besides 0: what was asked came.
 /// Any failure but these.
 const FAILED: NonZeroU8 = NonZeroU8::MIN;
-/// A command used wrongly.
-const USAGE: NonZeroU8 = NonZeroU8::MIN.saturating_add(1);
 /// The program exited, or was started again, before the wait was met.
 const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
 /// The pane waited on closed, or everything an event stream watched.
@@ -108,7 +106,7 @@ codes! {
     /// A value out of what a word takes.
     BadValue "bad_value",
     /// A command used wrongly.
-    Usage "usage" USAGE,
+    Usage "usage",
     // What a command meets.
     /// A program that exited, which takes no input.
     NotRunning "not_running",

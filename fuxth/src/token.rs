@@ -124,8 +124,6 @@ fn open_quote(place: Place, quote: char) -> Error {
         message: format!("a {quote} opened here is never closed"),
         place: Some(place),
         word: None,
-        cause: None,
-        made_by: None,
     }
 }
 

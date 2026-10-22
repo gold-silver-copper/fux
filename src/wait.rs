@@ -126,6 +126,9 @@ struct Watch {
     /// The `wait-gone` texts seen since the wait began, for a fresh
     /// program, and the last piece that printed each, if one did.
     appeared: HashMap<String, Option<Seq>>,
+    /// The revision whose screen it last read (for texts gone, or past
+    /// what the journal records): read again only once it changed.
+    read_at: Option<u64>,
     /// How far it read the journal, for texts, texts gone and bells: each
     /// look reads only what is new.
     looked: Seq,
@@ -246,20 +249,7 @@ impl Waiting {
             // Its JSON, read at the same moment, for `json` to give.
             outcome.json = form.unwrap_or_default();
             let line = outcome.text.lines().next().unwrap_or_default();
-            // Where the cursor is, as the JSON's `cursor` says it of the
-            // lines read, said of the screen, as a mouse event counts.
-            let live = match view.source {
-                Source::Shown | Source::LastOutput => true,
-                Source::Main => !pane.screen().mode(fux_vt::Mode::AlternateScreen),
-                Source::Alternate => pane.screen().mode(fux_vt::Mode::AlternateScreen),
-            };
-            let on_text = after_text(pane.screen()) || {
-                let (row, col) = pane.screen().cursor_position();
-                within_line(pane.screen(), row, col)
-            };
-            let cursor =
-                (cursor(pane).filter(|_| live && on_text)).map(|(note, _)| format!(" · {note}"));
-            outcome.text = format!("{line}{}\n{read}", cursor.unwrap_or_default());
+            outcome.text = format!("{line}\n{read}");
         }
         Some(outcome)
     }
@@ -580,77 +570,11 @@ impl Wait {
             let field = ("redraws", Json::Bool(true));
             notes.push(("redraws on its own".into(), vec![field]));
         }
-        // Not a full-screen program, nor a line editor reading (bracketed
-        // paste on, as Python's REPL has it): it may well be at work
-        // still, to end on its own, which it is waited for so. One blocked
-        // off its terminal (on the network: `koh exec`, a download) may as
-        // well wait for input there, which fux cannot see. One that redraws
-        // on its own read every key and drew after them: not at work on them.
-        let waiting = state == State::Waiting;
-        let screen = pane.screen();
-        let keys = [fux_vt::Mode::AlternateScreen, fux_vt::Mode::BracketedPaste];
-        // A remote client that reports nothing of what it runs: fux sees
-        // the client, not that, and says so, with the wait that is right.
-        let remote = (!matches!(state, State::Exited(_) | State::Absent))
-            .then(|| pane.remote())
-            .flatten();
-        if let Some(remote) = &remote {
-            let (id, name) = (pane.id, &remote.name);
-            // Said on every answer, so kept short: what waits right there.
-            let (wait, word) = match remote.terminal {
-                true => (
-                    format!("`{id} str TEXT wait-text wait` waits for a text"),
-                    "wait-text",
-                ),
-                // Ended with its command: the client's end, or the shell
-                // command's that runs it.
-                false => {
-                    let word = if running { "wait-done" } else { "wait-exit" };
-                    (format!("`{id} {word} wait` waits for its end"), word)
-                }
-            };
-            let fields = vec![
-                ("remote", Json::str(name.clone())),
-                ("wait_with", Json::str(word)),
-            ];
-            notes.push((
-                format!("{name} is remote, its state unseen: {wait}"),
-                fields,
-            ));
-        } else if waiting && !keys.into_iter().any(|m| screen.mode(m)) {
-            let word = if running { "wait-done" } else { "wait-exit" };
-            let id = pane.id;
-            let why = if crate::ready::owed(pane) {
-                "its relay said nothing of its program since your input, as when that ended"
-            } else if crate::ready::elsewhere(pane, Instant::now()) {
-                "not reading its terminal, so fux cannot tell when it waits for input"
-            } else {
-                "may be at work"
-            };
-            notes.push((
-                format!("{why}: `{id} {word} wait` waits for its end"),
-                vec![("wait_with", Json::str(word))],
-            ));
-        }
-        // What an action's keys moved, which plain text does not show: the
-        // cursor, where text goes on under or right of it (a line editor's
-        // after Left or Home, an editor's), not at the end of what was
-        // typed, unless the keys moved it alone (End); and a selection
-        // drawn in reverse video or a background of its own, newly
-        // highlighted. A few runs at most: more is a screen drawn anew,
-        // shown whole.
+        // What an action's keys highlighted anew, which plain text does not
+        // show: a selection drawn in reverse video or a background of its
+        // own. A few runs at most: more is a screen drawn anew, shown whole.
         if action && pane.process.child().is_some() {
             let screen = pane.screen();
-            let (row, col) = screen.cursor_position();
-            // A line edited where a program reads it (a line editor, a
-            // REPL), changed: where the cursor is, at the end of it too.
-            let edit = pane.edited
-                && matches!(state, State::Reading | State::Settled)
-                && !screen.mode(fux_vt::Mode::AlternateScreen)
-                && pane.revision != watch.revision
-                && after_text(screen);
-            let said = edit || within_line(screen, row, col) || moved_alone(screen, watch);
-            notes.extend(cursor(pane).filter(|_| said));
             let lit: Vec<_> = (crate::capture::highlights(screen).into_iter())
                 .filter(|l| {
                     !watch
@@ -743,83 +667,6 @@ impl Wait {
     }
 }
 
-/// Where the cursor of `pane`'s program is, as a note: its row and column
-/// on the screen, from 0, while its program runs and shows it.
-fn cursor(pane: &Pane) -> Option<Note> {
-    let screen = pane.screen();
-    let shows = pane.process.child().is_some() && screen.mode(fux_vt::Mode::ShowCursor);
-    let (row, col) = screen.cursor_position();
-    let at = Json::Array(vec![Json::int(row), Json::int(col)]);
-    let mut note = (format!("cursor {row},{col}"), vec![("cursor", at)]);
-    // On a line wrapped at the pane's width, which answers print joined:
-    // the screen rows it takes, as the cursor counts them.
-    if let Some((from, rows)) = wrapped_rows(screen, row) {
-        let to = from.saturating_add(u16::try_from(rows.len().saturating_sub(1)).unwrap_or(0));
-        let said: Vec<String> = rows.iter().map(|r| format!("{r:?}")).collect();
-        note.0
-            .push_str(&format!(" on rows {from}-{to} {}", said.join(" ")));
-        let texts = Json::Array(rows.into_iter().map(Json::str).collect());
-        let fields = vec![("from", Json::int(from)), ("text", texts)];
-        note.1.push(("cursor_rows", Json::Object(fields)));
-    }
-    shows.then_some(note)
-}
-
-/// The rows of the screen that the line holding `row` takes, if it is
-/// wrapped at the pane's width (four at most, around `row`): the first,
-/// and each row's text.
-fn wrapped_rows(screen: &fux_vt::Screen, row: u16) -> Option<(u16, Vec<String>)> {
-    let window = screen.window();
-    let wraps = |y: u16| window.row(y).is_some_and(|r| r.continues());
-    let mut from = row;
-    while from > 0 && row.saturating_sub(from) < 3 && wraps(from.saturating_sub(1)) {
-        from = from.saturating_sub(1);
-    }
-    let mut to = row;
-    while wraps(to) && to.saturating_sub(from) < 3 && to.saturating_add(1) < window.rows() {
-        to = to.saturating_add(1);
-    }
-    let text = |y: u16| {
-        let row = window.row(y)?;
-        let cells: String = (row.cells().filter(|c| !c.is_wide_continuation()))
-            .map(|c| c.shown())
-            .collect();
-        Some(cells.trim_end().to_owned())
-    };
-    (from < to).then(|| (from, (from..=to).filter_map(text).collect()))
-}
-
-/// Whether the screen shows text left of the cursor on its row: at the
-/// end of a line typed or printed, not on a blank row.
-fn after_text(screen: &fux_vt::Screen) -> bool {
-    let (row, col) = screen.cursor_position();
-    let upto = usize::from(col).saturating_add(usize::from(screen.pending_wrap()));
-    (screen.window().row(row))
-        .is_some_and(|r| r.cells().take(upto).any(|c| !c.shown().trim().is_empty()))
-}
-
-/// Whether the screen shows text under the cursor at `row`, `col`, or
-/// right of it on its row: the cursor is within a line, not at its end.
-/// A glyph in the last column with a wrap pending is behind the cursor.
-fn within_line(screen: &fux_vt::Screen, row: u16, col: u16) -> bool {
-    let from = usize::from(col).saturating_add(usize::from(screen.pending_wrap()));
-    (screen.window().row(row))
-        .is_some_and(|r| r.cells().skip(from).any(|c| !c.shown().trim().is_empty()))
-}
-
-/// Whether the cursor moved since `watch` began, every row showing as it
-/// did then: the input moved the cursor alone.
-fn moved_alone(screen: &fux_vt::Screen, watch: &Watch) -> bool {
-    let window = screen.window();
-    screen.cursor_position() != watch.start.cursor
-        && (0..window.rows()).all(|y| {
-            window.row(y).is_some_and(|r| {
-                let was = watch.before.get(&r.id()).map(|(_, was)| *was);
-                was == Some((y, crate::pane::shows(&r)))
-            })
-        })
-}
-
 impl Until {
     /// Whether it waits on what the screen shows: a text, or a text gone.
     fn shows(&self) -> bool {
@@ -868,6 +715,7 @@ impl Watch {
             found: None,
             stream: HashMap::new(),
             appeared: HashMap::new(),
+            read_at: None,
             looked: start.from,
 
             bell: None,
@@ -972,6 +820,8 @@ impl Watch {
         (began, now): (Instant, Instant),
         (fresh, more, action): (bool, bool, bool),
     ) -> Option<Found> {
+        // The screen as at the last look shows what it did then.
+        let reread = self.read_at.replace(pane.revision) != Some(pane.revision);
         // Any wait's answer reads the journal: past its budget, it says so.
         self.missed |= pane.record.lost_after(self.looked);
         self.lost |= pane.record.prints_lost_after(self.looked);
@@ -980,7 +830,7 @@ impl Watch {
         }
         // What a piece printed past what it records may be on a row of the
         // screen that changed since the wait began.
-        if self.lost && self.found.is_none() {
+        if self.lost && self.found.is_none() && reread {
             let window = pane.screen().window();
             let changed: String = (0..pane.screen().size().rows())
                 .filter_map(|y| window.row(y))
@@ -1012,6 +862,7 @@ impl Watch {
         for until in &wait.until {
             match until {
                 Until::Text(_) => {}
+                Until::Gone(_) if !reread => {}
                 Until::Gone(text) => {
                     let present = on_screen(pane, text);
                     if present {

@@ -388,12 +388,10 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
     let began = std::time::Instant::now();
     let capture = server.fux(&["str", &pane, "pane", "5", "timeout", "capture"])?;
     assert_eq!(capture.status, 0, "{}{}", capture.stdout, capture.stderr);
-    // Not a full-screen program: it may be at work, to end alone, which
-    // `wait-exit` waits for.
-    let note =
-        format!("{pane} waiting · may be at work: `{pane} wait-exit wait` waits for its end\n");
     assert!(
-        capture.stdout.starts_with(&format!("{note}POLLING")),
+        capture
+            .stdout
+            .starts_with(&format!("{pane} waiting\nPOLLING")),
         "{}",
         capture.stdout
     );
