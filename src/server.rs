@@ -21,7 +21,7 @@ use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
@@ -69,17 +69,6 @@ const ACCEPT_REST: Duration = Duration::from_millis(100);
 /// How often a restore that has started is looked at, to see its thread
 /// end: it ends after its connection, which no descriptor then tells.
 const RESTORE_LOOK: Duration = Duration::from_millis(10);
-/// What a connection refused for want of descriptors is told.
-const NO_DESCRIPTORS: &str =
-    "the fux server is out of file descriptors; it refuses new connections until some close";
-
-/// Running out of descriptors, while it lasts: connections are refused,
-/// each told why.
-struct Shortage {
-    /// When it was last reported, and how many were refused by then.
-    reported: (Instant, u64),
-    refused: u64,
-}
 
 /// The socket the server is found by: held only while it serves, so the
 /// moment it stops, its listener closes and the socket is gone, and a
@@ -565,12 +554,7 @@ pub struct Server {
     /// every tick.
     slots: Vec<Slot>,
     ready: Vec<(Slot, PollFlags)>,
-    /// A descriptor held in reserve, so that a connection that arrives when
-    /// all others are taken can still be accepted and told why it is
-    /// refused (bevy-final findings 006 and 012).
-    spare: Option<File>,
-    shortage: Option<Shortage>,
-    /// When an `accept` failure other than a shortage was last logged.
+    /// When an `accept` failure was last logged.
     accept_logged: Option<Instant>,
 }
 
@@ -849,8 +833,6 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         ready: Vec::new(),
-        spare: File::open("/dev/null").ok(),
-        shortage: None,
         accept_logged: None,
     };
     server.run();
@@ -1337,9 +1319,6 @@ impl Server {
     fn accept(&mut self, grant: usize) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
-            // The spare makes room for this accept, and is taken back after
-            // it: if it cannot be, the connection took the last descriptor.
-            self.spare = None;
             let Some((
                 Listening {
                     listener: Some(listener),
@@ -1350,50 +1329,8 @@ impl Server {
             else {
                 return;
             };
-            let accepted = listener.accept();
-            let room = match File::open("/dev/null") {
-                Ok(spare) => {
-                    self.spare = Some(spare);
-                    true
-                }
-                // Not a shortage of descriptors, the process's or the
-                // system's: there is room.
-                Err(e) => !matches!(Errno::from_io_error(&e), Some(Errno::MFILE | Errno::NFILE)),
-            };
-            match accepted {
-                Ok((stream, _)) if !room => {
-                    self.refuse(stream);
-                    // Closing it freed a descriptor for the spare.
-                    self.spare = File::open("/dev/null").ok();
-                }
-                Ok((stream, _)) => {
-                    if let Some(shortage) = self.shortage.take() {
-                        log!(
-                            "file descriptors available again; {} connections were refused while they were short",
-                            shortage.refused
-                        );
-                    }
-                    let euid = fuxix::process::geteuid();
-                    match fuxix::socket::peer_uid(&stream) {
-                        Ok(uid) if uid == euid => {}
-                        Ok(uid) => {
-                            log!(
-                                "refused a connection from uid {uid}; only uid {euid} may use this server"
-                            );
-                            continue;
-                        }
-                        Err(error) => {
-                            log!(
-                                "refused a connection whose peer could not be identified: {error}"
-                            );
-                            continue;
-                        }
-                    }
-                    if stream.set_nonblocking(true).is_err() {
-                        continue;
-                    }
-                    self.conns.push(Conn::new(Wire::Socket(stream), through));
-                }
+            let stream = match listener.accept() {
+                Ok((stream, _)) => stream,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
                 // be fine.
@@ -1406,9 +1343,9 @@ impl Server {
                     continue;
                 }
                 Err(e) => {
-                    // Even the spare's room was not enough, or something
-                    // else persists. The listener stays readable, so it
-                    // rests rather than being polled again at once.
+                    // Out of descriptors, or something else that persists.
+                    // The listener stays readable, so it rests rather than
+                    // being polled again at once.
                     let now = Instant::now();
                     if let Phase::Serving { resting, .. } = &mut self.phase {
                         *resting = Some(after(now, ACCEPT_REST));
@@ -1425,7 +1362,25 @@ impl Server {
                     }
                     return;
                 }
+            };
+            let euid = fuxix::process::geteuid();
+            match fuxix::socket::peer_uid(&stream) {
+                Ok(uid) if uid == euid => {}
+                Ok(uid) => {
+                    log!(
+                        "refused a connection from uid {uid}; only uid {euid} may use this server"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    log!("refused a connection whose peer could not be identified: {error}");
+                    continue;
+                }
             }
+            if stream.set_nonblocking(true).is_err() {
+                continue;
+            }
+            self.conns.push(Conn::new(Wire::Socket(stream), through));
         }
     }
 
@@ -1445,39 +1400,6 @@ impl Server {
         for fifos in door.knocks() {
             self.conns
                 .push(Conn::new(Wire::Door(fifos), through.clone()));
-        }
-    }
-
-    /// Tells a connection that there is no room for it, and closes it. The
-    /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
-    fn refuse(&mut self, stream: UnixStream) {
-        let euid = fuxix::process::geteuid();
-        if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
-            && stream.set_nonblocking(true).is_ok()
-            && let Ok(bytes) = Greeting::Exit(NO_DESCRIPTORS).encode()
-        {
-            // A fresh socket's buffer holds the frame; if not, the peer
-            // sees the connection close.
-            let _ = (&stream).write_all(&bytes);
-        }
-        drop(stream);
-        let now = Instant::now();
-        let shortage = self.shortage.get_or_insert_with(|| {
-            log!("out of file descriptors: new connections are refused, each told why, until some close");
-            Shortage {
-                reported: (now, 0),
-                refused: 0,
-            }
-        });
-        shortage.refused = shortage.refused.saturating_add(1);
-        let (at, then) = shortage.reported;
-        if now.duration_since(at) >= REPORT_EVERY {
-            log!(
-                "still out of file descriptors: {} connections refused in the last {} s",
-                shortage.refused.saturating_sub(then),
-                now.duration_since(at).as_secs()
-            );
-            shortage.reported = (now, shortage.refused);
         }
     }
 

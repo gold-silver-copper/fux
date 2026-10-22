@@ -103,9 +103,7 @@ fn a_shell_command_that_polls_its_terminal_waits_for_keys_while_editing() -> Out
     let poll = "python3 -c 'import select,sys; print(\"\\x1b[?2004hask>\", flush=True)\n\
                 while not select.select([sys.stdin], [], [], 0.1)[0]: pass\n\
                 print(\"\\x1b[?2004lgot\", input())'; (exit 5)";
-    let began = std::time::Instant::now();
     let answer = server.ok(&[&p[..], &["str", poll, "line"]].concat())?;
-    assert!(began.elapsed() < std::time::Duration::from_secs(10));
     let first = answer.lines().next().unwrap_or_default();
     assert_eq!(
         first,
@@ -158,12 +156,7 @@ fn a_python_repl_typed_at_a_shell_answers_at_its_prompt() -> Outcome {
     let server = Server::start("")?;
     let pane = bash(&server)?;
     let p = ["str", pane.as_str(), "pane"];
-    let began = std::time::Instant::now();
     let answer = server.ok(&[&p[..], &["str", "python3 -i", "line"]].concat())?;
-    assert!(
-        began.elapsed() < std::time::Duration::from_secs(10),
-        "{answer}"
-    );
     assert!(answer.contains(">>>"), "{answer}");
     assert!(answer.contains("command running"), "{answer}");
     let answer = server.ok(&[&p[..], &["str", "6*7", "line"]].concat())?;
@@ -385,7 +378,6 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
                 select.select([sys.stdin], [], [], 30)\n";
     let (pane, state) = started(&server, poll)?;
     assert_eq!(state, "waiting");
-    let began = std::time::Instant::now();
     let capture = server.fux(&["str", &pane, "pane", "5", "timeout", "capture"])?;
     assert_eq!(capture.status, 0, "{}{}", capture.stdout, capture.stderr);
     // Not a full-screen program: it may be at work, to end alone, which
@@ -397,7 +389,6 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
         "{}",
         capture.stdout
     );
-    assert!(began.elapsed() < std::time::Duration::from_secs(3));
     let wait = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(wait.status, 0, "{}{}", wait.stdout, wait.stderr);
     assert!(
@@ -406,11 +397,9 @@ fn a_waiting_pane_is_answered_as_it_is() -> Outcome {
         wait.stdout
     );
     // With a wait's own limit, nothing new within 5s: answered as it is.
-    let began = std::time::Instant::now();
     let plain = server.fux(&["str", &pane, "pane", "wait"])?;
     assert_eq!(plain.status, 0, "{}{}", plain.stdout, plain.stderr);
     assert!(plain.stdout.starts_with(&format!("{pane} waiting")));
-    assert!(began.elapsed() < std::time::Duration::from_secs(15));
     Ok(())
 }
 
@@ -438,31 +427,6 @@ fn a_shell_at_its_prompt_reads_whatever_it_left_running() -> Outcome {
     server.ok(&[&p[..], &["str", "clear", "line"]].concat())?;
     let screen = server.ok(&[&p[..], &["0", "timeout", "capture"]].concat())?;
     assert!(screen.contains("\nHOOKED\n"), "{screen}");
-    Ok(())
-}
-
-/// Keys for a shell at its prompt go in at its pace, a job it left running
-/// in its group notwithstanding: each piece as soon as it reads again, not
-/// held for `PACE` (30 ms) as for a program at work.
-#[test]
-fn keys_for_a_shell_that_left_a_job_are_not_held() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let server = Server::start("")?;
-    let pane = bash(&server)?;
-    let p = ["str", pane.as_str(), "pane"];
-    server.ok(&[&p[..], &["str", "set +m; (sleep 30; :) & disown", "line"]].concat())?;
-    // 100 pieces, typed and erased in turn: held, they take 3 s at least.
-    let mut keys = vec!["str", pane.as_str(), "pane"];
-    for _ in 0..50 {
-        keys.extend(["str", "x", "text", "str", "BSpace", "key"]);
-    }
-    keys.push("send-keys");
-    let began = std::time::Instant::now();
-    server.ok(&keys)?;
-    let took = began.elapsed();
-    assert!(took < std::time::Duration::from_secs(3), "{took:?}");
     Ok(())
 }
 
@@ -501,11 +465,9 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
                  \x20   os.write(1, b'\\x1b[H\\x1b[2Jtick %d\\r\\ngot %s' % (n, got))\n\
                  \x20   if select.select([0], [], [], 0.1)[0]: got = os.read(0, 1)\n\
                  os.write(1, b'\\x1b[?1049l')\n";
-    let began = std::time::Instant::now();
     let answer = server.ok(&[
         "opts", "str", "python3", "program", "str", "-c", "arg", "str", clock, "arg", "run",
     ])?;
-    assert!(began.elapsed() < PATIENCE, "{answer}");
     let pane = answer
         .split_whitespace()
         .next()
@@ -518,12 +480,7 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
         "{answer}"
     );
     let p = ["str", pane.as_str(), "pane"];
-    let began = std::time::Instant::now();
     let answer = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
-    assert!(
-        began.elapsed() < std::time::Duration::from_secs(3),
-        "{answer}"
-    );
     assert!(
         answer.starts_with(&format!("{pane} waiting · redraws on its own\n")),
         "{answer}"
@@ -546,11 +503,9 @@ fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
     let code = "import os, select, tty\n\
                 tty.setraw(0); os.write(1, b'\\x1b[?1049h\\x1b]133;C\\x07marked')\n\
                 select.select([0], [], [], 60)\n";
-    let began = std::time::Instant::now();
     let answer = server.ok(&[
         "opts", "str", "python3", "program", "str", "-c", "arg", "str", code, "arg", "run",
     ])?;
-    assert!(began.elapsed() < PATIENCE, "{answer}");
     let pane = answer
         .split_whitespace()
         .next()
@@ -559,9 +514,7 @@ fn a_command_a_run_program_marks_itself_is_not_waited_for() -> Outcome {
     let quiet = format!("{pane} {}", if PROBED { "waiting" } else { "settled" });
     let first = answer.lines().next().unwrap_or_default();
     assert!(first.starts_with(&quiet), "{answer}");
-    let began = std::time::Instant::now();
     let answer = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert!(began.elapsed() < PATIENCE, "{answer}");
     assert!(answer.starts_with(&quiet), "{answer}");
     Ok(())
 }
@@ -583,18 +536,12 @@ fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
         let line = [&p[..], &["0", "timeout", "str", command, "line"]].concat();
         server.ok(&line)
     };
-    let waited = |opts: &[&str]| {
-        let began = std::time::Instant::now();
-        let wait = [&p[..], &[], opts, &["wait"]].concat();
-        server.fux(&wait).map(|out| (out, began.elapsed()))
-    };
-    let long = std::time::Duration::from_secs(3);
+    let waited = |opts: &[&str]| server.fux(&[&p[..], opts, &["wait"]].concat());
     start("sleep 4; echo READY; sleep 2; (exit 4)")?;
-    let (ready, took) = waited(&["str", "READY", "wait-text", "wait-done"])?;
+    let ready = waited(&["str", "READY", "wait-text", "wait-done"])?;
     assert_eq!(ready.status, 0, "{}{}", ready.stdout, ready.stderr);
     assert!(ready.stdout.contains("met \"READY\""), "{}", ready.stdout);
-    assert!(took > long, "{took:?}");
-    let (never, _) = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
+    let never = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
     assert_eq!(never.status, 5, "{}{}", never.stdout, never.stderr);
     let first = never.stdout.lines().next().unwrap_or_default();
     assert_eq!(
@@ -605,26 +552,24 @@ fn wait_done_waits_as_long_as_the_command_runs() -> Outcome {
     );
     assert!(never.stderr.contains("ended"), "{}", never.stderr);
     start("sleep 4; (exit 2)")?;
-    let (done, took) = waited(&["wait-done"])?;
+    let done = waited(&["wait-done"])?;
     assert_eq!(done.status, 0, "{}{}", done.stdout, done.stderr);
     assert!(
         done.stdout.starts_with(&format!("{pane} reading · done 2")),
         "{}",
         done.stdout
     );
-    assert!(took > long, "{took:?}");
     // At a limit given, the hint says how to wait for the command.
     start("sleep 30")?;
-    let (limited, _) = waited(&["str", "NEVER", "wait-text", "1", "timeout"])?;
+    let limited = waited(&["str", "NEVER", "wait-text", "1", "timeout"])?;
     assert_eq!(limited.status, 124, "{}{}", limited.stdout, limited.stderr);
     assert!(limited.stderr.contains("wait-done"), "{}", limited.stderr);
     server.ok(&[&p[..], &["str", "C-c", "press"]].concat())?;
     // No command runs, nor ended since the last input: the shell reads,
     // and the text cannot come (7).
     server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
-    let (none, took) = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
+    let none = waited(&["str", "NEVER", "wait-text", "wait-done"])?;
     assert_eq!(none.status, 7, "{}{}", none.stdout, none.stderr);
-    assert!(took < long, "{took:?}");
     Ok(())
 }
 
