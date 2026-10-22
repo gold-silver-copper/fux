@@ -1,6 +1,6 @@
 # Oracle side-log format (frozen)
 
-Frozen before any change to fux. The oracle (design 9 of the provenance prompt) reads this format as written; fixture programs write it. Changing it means a new version of this file, recorded in the ledger as a deviation.
+The oracle (`tests/oracle.rs`) reads this format as written; fixture programs write it.
 
 ## Where
 

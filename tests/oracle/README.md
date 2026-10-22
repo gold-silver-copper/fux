@@ -15,7 +15,9 @@ and decides what each answer should have been:
   wrote the input but before the program read it may or may not count, and
   is not judged;
 - it is never met by text only in `role: echo` writes, or in the kernel's
-  echo (line mode: bytes no write covers);
+  echo (line mode: bytes no write covers), except on the alternate screen:
+  a full-screen program's screen is all output (`docs/agents.md`), so its
+  echo there may count;
 - of a text and a bell, the one written first is met;
 - `reading` (and status 7) only while the side log shows the program in
   `block on read` with every key it can read read (in line mode: up to the
@@ -40,9 +42,7 @@ never `marks`):
 | `wrong-state` | `reading`/7 | not blocked reading every key (or the reverse, for a plain `wait`) |
 | `fixture-exited` | the program exited | (a fixture crash) |
 
-Disagreements known to be fux's are listed in one place, `KNOWN` in
-`tests/oracle.rs`, each with why; the deterministic tests report them and
-pass. Remove an entry once fixed.
+Every disagreement fails the test that found it.
 
 ## Running
 
@@ -58,8 +58,7 @@ testing), a random sequence of actions (type-ahead, resizes in the middle
 of a burst, screen switches), a random size and chunking. A failing case is
 shrunk (delta debugging over its actions, then its keys) and saved to
 `corpus/<class>-<n>.json`, which the deterministic part replays.
-`ORACLE_SAVE_KNOWN=1` saves known disagreements too; `ORACLE_KEEP=DIR` keeps
-every side log with fux's answers.
+`ORACLE_KEEP=DIR` keeps every side log with fux's answers.
 
 ## The fixture
 
