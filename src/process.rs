@@ -59,6 +59,10 @@ pub fn spawn(
 
 pub use fuxix::process::Status as Ended;
 
+/// The end of a program whose status could not be read: no exit code is
+/// negative, so it is never taken for a success.
+pub const UNKNOWN: Ended = Ended::Exited(-1);
+
 /// The status a shell reports for a process: its exit code, or 128 plus the
 /// signal that killed it, whose numbers are small.
 pub fn shell_status(status: Status) -> i32 {
@@ -80,17 +84,16 @@ impl Leader {
     }
 
     /// Whether it has exited, without reaping it: its exit status, or
-    /// `None` while it lives, stopped or not (bevy-final finding 020). The
-    /// check does not wait, so no signal interrupts it, and it fails only
-    /// for a pid that is not an unreaped child, which this always is.
+    /// `None` while it lives, stopped or not. The check does not wait, so
+    /// no signal interrupts it; it fails only for a pid that is no unreaped
+    /// child, one gone, whose status is lost.
     pub fn exited(&self) -> Option<Status> {
-        fuxix::process::ended(self.0).unwrap_or(Some(Status::Exited(0)))
+        fuxix::process::ended(self.0).unwrap_or(Some(UNKNOWN))
     }
 
     /// Signals its process group and every other process in its session.
     /// A background job started by dash sits in its own group, out of reach
-    /// of the group signal, but stays in the session (bevy-final finding
-    /// 013). The session is looked for in the server's own tree, which
+    /// of the group signal, but stays in the session. The session is looked for in the server's own tree, which
     /// keeps the orphans its panes leave (`fuxix::process::tree`).
     pub fn hang_up(&self) {
         // Found before any signal: once the group's leader dies, its
@@ -134,6 +137,7 @@ impl Leader {
 /// How an end is told: `exited 3`, or `killed by SIGSEGV`.
 pub fn told(ended: Status) -> String {
     match ended {
+        UNKNOWN => "ended, its status unknown".to_owned(),
         Status::Exited(code) => format!("exited {code}"),
         Status::Signalled(raw) => match Signal::from_raw(raw) {
             Some(signal) => format!("killed by SIG{}", signal.name()),

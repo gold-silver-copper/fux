@@ -375,8 +375,8 @@ pub struct Session {
     /// command from a pane tells whether the pane is this server's.
     pub server_id: String,
     pub outbox: Vec<Outgoing>,
-    /// Closed panes' programs, by the pane they were in.
-    pub dying: BTreeMap<PaneId, Dying>,
+    /// Closed panes' programs: a pane respawned twice in its grace has two.
+    pub dying: Vec<Dying>,
     /// The colours a client's terminal last said, for panes no attached
     /// client answers for (`outer`).
     pub last_colours: crate::outer::Colours,
@@ -663,7 +663,7 @@ impl Session {
             launch: launch.then_some(socket),
             server_id,
             outbox: Vec::new(),
-            dying: BTreeMap::new(),
+            dying: Vec::new(),
             last_colours: crate::outer::Colours::default(),
             last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
@@ -893,7 +893,7 @@ impl Session {
             history,
         )?;
         pane.mark_with(nonce.flatten());
-        self.end(id, old, true);
+        self.end(old, true);
         self.touch();
         Ok(())
     }
@@ -1692,14 +1692,14 @@ impl Session {
     /// Hangs up a pane's process; it is killed and reaped after `GRACE`.
     /// `closed`: fux closed it (`kill`, `kill-server`), not its program's
     /// end: the rest of its session goes too.
-    fn end(&mut self, id: PaneId, process: Process, closed: bool) {
+    fn end(&mut self, process: Process, closed: bool) {
         if let Process::Reading(mut child) | Process::HungUp(mut child) = process {
             if closed {
                 child.leader.closed();
             }
             child.leader.hang_up();
             let deadline = crate::after(Instant::now(), GRACE);
-            self.dying.insert(id, Dying { child, deadline });
+            self.dying.push(Dying { child, deadline });
         }
     }
 
@@ -1725,7 +1725,7 @@ impl Session {
                     self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
                 }
             }
-            self.end(id, pane.process, closed);
+            self.end(pane.process, closed);
         }
         self.after_close();
     }
@@ -1749,7 +1749,7 @@ impl Session {
         if let Some(root) = root {
             root.for_each_pane(&mut |pane| {
                 if let Some(gone) = self.panes.remove(&pane) {
-                    self.end(pane, gone.process, true);
+                    self.end(gone.process, true);
                 }
             });
         }
@@ -1825,7 +1825,7 @@ impl Session {
                 let gone = std::mem::replace(&mut pane.process, Process::Exited(ended));
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
                     let deadline = Instant::now();
-                    self.dying.insert(id, Dying { child, deadline });
+                    self.dying.push(Dying { child, deadline });
                 }
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
                     self.notify_to(client, format!("{id} {}", process::told(ended)), false);
@@ -1939,7 +1939,7 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self) {
         for pane in std::mem::take(&mut self.panes).into_values() {
-            self.end(pane.id, pane.process, true);
+            self.end(pane.process, true);
         }
     }
 
@@ -4065,7 +4065,7 @@ mod tests {
             turns = turns.saturating_add(1);
         }
         let told = exited(&s);
-        for (_, dying) in std::mem::take(&mut s.dying) {
+        for dying in std::mem::take(&mut s.dying) {
             if let Some(leader) = dying.kill() {
                 let _ = leader.finish();
             }

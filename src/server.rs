@@ -148,7 +148,7 @@ enum Phase {
 enum Wake {
     Session(Timer),
     /// A closed pane's program's grace is over: it is killed.
-    Grace(PaneId),
+    Grace,
     /// The listener's rest is over.
     Listen,
     /// A stopping server waits no more.
@@ -197,7 +197,9 @@ enum Stage {
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
-    /// answered before the next is read.
+    /// answered, and the answer written, before the next is read
+    /// (`Conn::reads`): a client that never reads its answers is read no
+    /// more, and holds no more memory than one answer.
     Command,
     /// Its request waits for the restore that runs to end, so that it takes
     /// no id the restore asks for (`Server::request`). It is read only to
@@ -402,6 +404,12 @@ impl Conn {
             stage: Stage::Hello(None),
             grant,
         }
+    }
+
+    /// Whether what the client sends is read: by its stage, and for a
+    /// command client only once its last answer is all written.
+    fn reads(&self) -> bool {
+        self.stage.reads() && (self.out.is_empty() || !matches!(self.stage, Stage::Command))
     }
 
     /// When the client attached here may be painted: if its view changed,
@@ -934,7 +942,8 @@ impl Server {
     /// last, after what may change what they show.
     fn wakes(&self) -> impl Iterator<Item = (Instant, Wake)> + '_ {
         let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
-        let grace = (self.session.dying.iter()).map(|(pane, d)| (d.deadline, Wake::Grace(*pane)));
+        let grace =
+            (self.session.dying.iter().map(|d| d.deadline).min()).map(|at| (at, Wake::Grace));
         let phase = match self.phase {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
@@ -964,9 +973,12 @@ impl Server {
     fn wake(&mut self, wake: Wake, now: Instant) -> ControlFlow<()> {
         match wake {
             Wake::Session(timer) => self.session.fire(timer),
-            Wake::Grace(pane) => {
-                let dying = self.session.dying.remove(&pane);
-                self.killed.extend(dying.and_then(Dying::kill));
+            Wake::Grace => {
+                let (due, dying) = mem::take(&mut self.session.dying)
+                    .into_iter()
+                    .partition(|d| d.deadline <= now);
+                self.session.dying = dying;
+                self.killed.extend(due.into_iter().filter_map(Dying::kill));
             }
             Wake::Listen => {
                 if let Phase::Serving { resting, .. } = &mut self.phase {
@@ -1098,7 +1110,7 @@ impl Server {
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
-            let mut flags = if conn.stage.reads() {
+            let mut flags = if conn.reads() {
                 PollFlags::IN
             } else {
                 PollFlags::OUT
@@ -1491,18 +1503,22 @@ impl Server {
             return;
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
+        let reads = conn.reads();
         // One that is not read learns that its peer is gone by writing.
-        if flags.intersects(PollFlags::OUT) || (gone && !conn.stage.reads()) {
+        if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
         }
-        if flags.intersects(PollFlags::IN) || gone {
+        // A command client whose answer is now written: its next request
+        // may already wait, read before.
+        if flags.intersects(PollFlags::IN) || gone || (!reads && conn.reads()) {
             self.read_conn(index);
         }
     }
 
-    /// Reads what a client sent until it has sent no more, or `CONN_READ`
-    /// bytes, or more than 256 whole frames, or a bad one; each whole frame
-    /// is handled as it arrives, in order, and nothing after a bad one.
+    /// Handles the whole frames a client sent, then reads more, until it
+    /// has sent no more, or `CONN_READ` bytes, or more than 256 whole
+    /// frames, or a bad one, or it is to be read no more (`Conn::reads`);
+    /// each whole frame is handled in order, and nothing after a bad one.
     fn read_conn(&mut self, index: usize) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
@@ -1511,10 +1527,23 @@ impl Server {
         let mut decoder = mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
-            // A frame it sent may have ended it: it is read no more.
-            let Some(conn) = self.conns.get_mut(index).filter(|c| c.stage.reads()) else {
+            loop {
+                match self.take_frame(index, &mut decoder) {
+                    Ok(true) => frames = frames.saturating_add(1),
+                    Ok(false) => break,
+                    Err(error) => {
+                        log!("a client sent a bad frame: {error}");
+                        break 'read true;
+                    }
+                }
+            }
+            // A frame it sent may have ended it, or be answered yet unread.
+            let Some(conn) = self.conns.get_mut(index).filter(|c| c.reads()) else {
                 break false;
             };
+            if frames > 256 || read >= CONN_READ {
+                break false;
+            }
             // A client may send its terminal with its `Attach`.
             let got = match &conn.wire {
                 Wire::Socket(stream) => fuxix::socket::recv_with_fd(stream, &mut self.read_buffer),
@@ -1534,19 +1563,6 @@ impl Server {
                     }
                     read = read.saturating_add(n);
                     decoder.push(self.read_buffer.get(..n).unwrap_or_default());
-                    loop {
-                        match self.take_frame(index, &mut decoder) {
-                            Ok(true) => frames = frames.saturating_add(1),
-                            Ok(false) => break,
-                            Err(error) => {
-                                log!("a client sent a bad frame: {error}");
-                                break 'read true;
-                            }
-                        }
-                    }
-                    if frames > 256 || read >= CONN_READ {
-                        break false;
-                    }
                 }
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => {}
@@ -1659,6 +1675,8 @@ impl Server {
                 Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),
             },
+            // The last answer is still being written: the next request waits.
+            Stage::Command if !conn.out.is_empty() => return Ok(false),
             Stage::Command => {
                 let Some(Asked { request, context }) = decoder.frame()? else {
                     return Ok(false);
@@ -1840,7 +1858,7 @@ impl Server {
         self.reap_killed();
         let session = &self.session;
         let panes = session.panes.values().filter_map(|p| p.process.child());
-        let leaders: Vec<Pid> = (panes.chain(session.dying.values().map(|d| &d.child)))
+        let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
             .map(|child| child.leader.pid())
             .chain(self.killed.iter().map(Leader::pid))
             .collect();
@@ -1867,7 +1885,7 @@ impl Server {
     fn finish(&mut self) {
         let dying = mem::take(&mut self.session.dying);
         self.killed
-            .extend(dying.into_values().filter_map(Dying::kill));
+            .extend(dying.into_iter().filter_map(Dying::kill));
         for _ in 0..500 {
             self.reap_killed();
             if self.killed.is_empty() {
