@@ -13,8 +13,7 @@ meant to leave behaviour as it was (a refactor, a speed-up, a rewrite):
 
 It forbids the same lints as fux, and its release profile checks arithmetic
 for overflow. CI checks that the oracle passes clippy against the commit
-under test, and that `fux-diff` passes fmt and clippy, which it allows to
-fail (see [The baseline](#the-baseline)).
+under test, and that `fux-diff` passes fmt and clippy.
 
 ## fux-diff
 
@@ -67,11 +66,8 @@ differs too:
   current side what it needs there and compare both in the same form. CI's
   "fux-diff builds" step may fail until then.
 - **After each release,** bump the three `baseline` versions in
-  `Cargo.toml` and `cargo update -p` them. They are fux 0.31.0, fux-vt
-  0.10.0 and fuxix 0.6.1: on a branch that changes fux-vt on purpose
-  (vt-best), `terminal` and `input` differ from them where it does (a
-  character cut short is one U+FFFD; a sequence cut by a control gives
-  the control), and the other areas agree.
+  `Cargo.toml` and `cargo update -p` them. They are fux 0.33.1, fux-vt
+  0.12.1 and fuxix 0.6.2.
 
 ## The oracle: fux-vt beside a commit
 

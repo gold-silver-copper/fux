@@ -583,6 +583,73 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     Ok(())
 }
 
+/// A client detached by a signal writes what its server paints until it
+/// lets the client go before it puts its terminal back, so that none of it
+/// lands on the shell after (a mouse mode turned on again, say).
+#[test]
+fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
+    use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
+    use std::io::{Read, Write};
+    let (dir, listener) = fake_server("last-paint")?;
+    let server = std::thread::spawn(move || -> Outcome {
+        // The connection that says hello, as above.
+        let (mut stream, mut got) = loop {
+            let (mut stream, _) = listener.accept().map_err(e)?;
+            let mut buffer = [0u8; 4096];
+            let n = stream.read(&mut buffer).map_err(e)?;
+            if n > 0 {
+                break (stream, buffer.get(..n).unwrap_or_default().to_vec());
+            }
+        };
+        let hello = Greeting::Hello(Hello {
+            protocol: PROTOCOL,
+            version: "0".into(),
+            role: Role::Attach,
+        });
+        let welcome = ToAttached::Welcome("c1".parse().map_err(e)?, Some(false));
+        let ready = ToAttached::Paint(b"READY"[..].into());
+        for frame in [hello.encode(), welcome.encode(), ready.encode()] {
+            stream.write_all(&frame.map_err(e)?).map_err(e)?;
+        }
+        // Its Detach, the last frame it sends.
+        let detach = [0, 0, 0, 1, 5];
+        let mut buffer = [0u8; 4096];
+        while !got.ends_with(&detach) {
+            let n = stream.read(&mut buffer).map_err(e)?;
+            if n == 0 {
+                return Err("the client went without detaching".into());
+            }
+            got.extend_from_slice(buffer.get(..n).unwrap_or_default());
+        }
+        let last = ToAttached::Paint(b"LAST"[..].into());
+        for frame in [last.encode(), ToAttached::Exit("detached").encode()] {
+            stream.write_all(&frame.map_err(e)?).map_err(e)?;
+        }
+        Ok(())
+    });
+    let socket = dir.join("fux.sock");
+    let mut terminal = Terminal::start(10, 40, &[FUX, "attach"], |command| {
+        command.env("FUX_SOCKET", &socket);
+    })?;
+    terminal.wait_for("READY")?;
+    signal(
+        i32::try_from(terminal.child.id()).map_err(e)?,
+        fuxix::process::Signal::Term,
+    );
+    let status = terminal.wait_exit()?;
+    server.join().map_err(|_| "the fake server panicked")??;
+    let _ = std::fs::remove_dir_all(&dir);
+    let output = String::from_utf8_lossy(&terminal.output);
+    assert!(status.success(), "{status}: {output:?}");
+    let (last, leave) = (output.find("LAST"), output.rfind("\x1b[?1049l"));
+    assert!(
+        last.zip(leave).is_some_and(|(last, leave)| last < leave),
+        "{output:?}"
+    );
+    assert!(output.contains("[detached by a signal]"), "{output:?}");
+    Ok(())
+}
+
 /// A pane's program ignores no signal fux ignores: the Rust runtime ignores
 /// SIGPIPE and signal-hook catches others, and neither reaches the program.
 /// Dispositions fux itself inherited ignored (a container's, say) pass on,
@@ -791,8 +858,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
 
 /// Resizing a terminal signals its client, and a signal can interrupt a
 /// read or write in flight. Typing while the window is resized, hundreds of
-/// times, keeps the client attached and loses no byte (bevy-final finding
-/// 010, where Linux ended the attachment with "Interrupted system call").
+/// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").
 #[test]
 fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let server = Server::start("")?;

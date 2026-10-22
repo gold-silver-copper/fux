@@ -214,32 +214,53 @@ fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
     Ok(())
 }
 
-/// The maps are counted at the room their tables were made with: their
-/// entries removed leave the buckets allocated, which `capacity` counts
-/// out, so what history counts for them stays until the table
-/// is made smaller.
+/// The spans of rows let go while history is made anew (a new budget, as a
+/// resize makes it) go with them: what the spans cost stays what the rows
+/// kept need, however often history is made anew (`THREATS.md` B40).
 #[test]
-fn the_maps_are_counted_as_allocated_after_removals() -> Result<(), Error> {
-    use crate::link::{Hyperlink, KeptLinks, RowLinks};
-    let link = Hyperlink::new(1, "http://a", None);
-    let cells = row(3, b'a', 0);
-    let mut history = History::new(1 << 26);
-    let rows = 3584u64;
-    for id in 0..rows {
-        let mut links = RowLinks::default();
-        links.set(0..1, Some(&link));
-        history.push(arriving(id, &cells, 4))?;
-        history.attach(None, KeptLinks::take(&mut links));
+fn spans_of_rows_let_go_while_history_is_made_anew_go_too() -> Result<(), Error> {
+    let budget = 64 << 10;
+    let cells = row(8, b'a', 0);
+    let mut history = History::new(budget);
+    // Identities two apart: each row begins a span of its own.
+    let mut id = 0u64;
+    let mut push = |history: &mut History| {
+        id = id.wrapping_add(2);
+        let pushed = history.push(arriving(id, &cells, 8));
+        history.trim();
+        pushed
+    };
+    for round in 0..8 {
+        history.set_budget(budget);
+        for _ in 0..2000 {
+            push(&mut history)?;
+        }
+        // Made anew in half the room: half the rows go as they come in.
+        history.set_budget(budget / 2);
+        // A span begun lets go of those whose rows all went.
+        push(&mut history)?;
+        assert!(
+            history.spans.len() <= history.len().saturating_add(1),
+            "round {round}: {} spans for {} rows",
+            history.spans.len(),
+            history.len()
+        );
     }
-    let (full, room) = (history.maps_bytes(), history.linked.capacity());
-    for index in 0..1000 {
-        history.unlink(index, 1);
-    }
-    assert_eq!(history.linked.len(), 2584);
-    assert!(
-        history.maps_bytes() >= full,
-        "{} bytes counted for a table made with room for {room}, after {full}",
-        history.maps_bytes()
-    );
     Ok(())
+}
+
+/// The room history's deques keep: up to four times their entries and 64,
+/// and no more, so one that grew by doubling and lost entries gives room
+/// back only past that (`shrink`, `THREATS.md` B17).
+#[test]
+fn a_deque_keeps_room_for_four_times_its_entries_and_64() {
+    let mut deque = VecDeque::<u64>::with_capacity(128);
+    let room = deque.capacity();
+    assert!(room >= 64 && room.is_multiple_of(4), "{room}");
+    deque.extend(0..u64::try_from(room.saturating_sub(64) / 4).unwrap_or(0));
+    shrink(&mut deque);
+    assert_eq!(deque.capacity(), room, "at the most it keeps");
+    deque.pop_back();
+    shrink(&mut deque);
+    assert!(deque.capacity() < room, "past it");
 }

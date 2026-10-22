@@ -571,7 +571,7 @@ impl ClientAction {
     }
 }
 
-/// A request the server cannot make sense of: exit status 2.
+/// A request the server cannot make sense of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Usage {
     /// A word that is not the pane, tab or workspace it must be.

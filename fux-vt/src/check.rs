@@ -1,28 +1,20 @@
 //! The invariant checker (THREATS.md section 6), with the `checks` feature:
-//! [`crate::Parser::check`] asserts every invariant of the parser, both
-//! screens, their history, styles, links, pictures and `Prints` that can be
-//! read from the state alone, and says which checks ran. The invariants
-//! that compare two states (an operation's change marks, whole against
-//! chunked feeding, a rejected resize) are the tests' (`tests/corpus/
-//! invariants.rs`), as they need the state before.
-//!
-//! Each check is a function of its own, returning what it found wrong, so
-//! that a check that stops checking (its body `Ok(())`) is a mutant its
-//! fault test kills. The checker does no work the work counters see: it
-//! puts them back as they were.
+//! [`crate::Parser::check`] asserts every invariant that can be read from
+//! the state alone. Invariants that compare two states live in the tests
+//! (`tests/corpus/invariants.rs`). The checker's own reads are not counted
+//! as work. Each check is shown a state with its one fault by a test
+//! beside it (`mod faults`), so a check that stops checking fails there.
 
 use std::{cell::Cell, fmt};
 
 thread_local! {
     /// How many more of `crate::reserve`'s allocations on this thread are
-    /// refused (`refuse_next`).
+    /// refused.
     static REFUSE: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Refuses the next `n` allocations fux-vt makes room for on this thread
-/// (history's blocks, a grid's cells), as if memory had run out: for the
-/// tests of what a refusal leaves (THREATS.md B44). With the `checks`
-/// feature only.
+/// Refuses the next `n` allocations fux-vt makes on this thread, as if
+/// memory had run out, to test what a refusal leaves (THREATS.md B44).
 pub fn refuse_next(n: u32) {
     REFUSE.set(n);
 }
@@ -43,9 +35,8 @@ pub struct Fault {
     pub detail: String,
 }
 
-/// What the checker did: each check that ran, once, by name, in order; each
-/// fault it found; and each invariant it cannot check yet, with what that
-/// waits on.
+/// What the checker did: the checks that ran, the faults found, and the
+/// invariants it cannot check yet.
 #[derive(Clone, Debug, Default)]
 pub struct Checked {
     ran: Vec<&'static str>,
@@ -69,11 +60,9 @@ impl Checked {
             self.faults.push(Fault { check, detail });
         }
     }
-    /// Records an invariant not checked yet, and what it waits on.
     pub(crate) fn wait(&mut self, check: &'static str, on: &'static str) {
         self.waiting.push((check, on));
     }
-    /// Adds what `other` found.
     pub(crate) fn merge(&mut self, other: Self) {
         for check in other.ran {
             if !self.ran.contains(&check) {
@@ -120,8 +109,7 @@ pub(crate) fn ensure(holds: bool, detail: impl FnOnce() -> String) -> Result<(),
     if holds { Ok(()) } else { Err(detail()) }
 }
 
-/// Runs `check` with the work counters put back as they were after it: the
-/// checker's own reads are no work of the terminal's.
+/// Runs `check` without counting its work.
 pub(crate) fn unseen<T>(check: impl FnOnce() -> T) -> T {
     let before = crate::Work::now();
     let result = check();

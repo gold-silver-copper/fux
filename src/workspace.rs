@@ -88,16 +88,8 @@ impl Seat {
 }
 
 impl Workspace {
-    /// A workspace whose one tab, `tab` with its name, holds `root` and is
-    /// shown to every attached client, `clients`.
-    pub(crate) fn new(
-        id: WsId,
-        name: String,
-        (tab, tab_name): (TabId, String),
-        (root, fit): (Option<Tree>, Fit),
-        clients: impl Iterator<Item = ClientId>,
-    ) -> Self {
-        let tab = Tab::new(tab, tab_name, (root, fit), clients);
+    /// A workspace whose one tab is `tab`, shown to every client it seats.
+    pub(crate) fn new(id: WsId, name: String, tab: Tab) -> Self {
         let shown = tab.seats.keys().map(|c| (*c, tab.id)).collect();
         Self {
             id,
@@ -130,18 +122,26 @@ impl Workspace {
 
     /// Adds a tab, named after its place if no name is given, with a seat
     /// for every client that has one in the others.
-    pub(crate) fn add_tab(&mut self, id: TabId, name: Option<String>, layout: (Option<Tree>, Fit)) {
+    pub(crate) fn add_tab(
+        &mut self,
+        id: TabId,
+        name: Option<String>,
+        root: Option<Tree>,
+        fit: Fit,
+    ) {
         let number = self.tabs.len().saturating_add(1);
         let name = name.unwrap_or_else(|| numbered(number));
         let clients = self.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name, layout, clients.into_iter().flatten());
+        let tab = Tab::new(id, name, root, fit, clients.into_iter().flatten());
         self.tabs.push(tab);
     }
 
     /// Shows `client` the tab `at` says here, if given and one of this
     /// workspace's, and in it focuses the pane it says, if given and there.
     pub(crate) fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
-        let Some((tab, pane)) = at.filter(|(id, _)| self.tabs.iter().any(|t| t.id == *id)) else {
+        let Some(crate::session::Spot { tab, pane }) =
+            at.filter(|at| self.tabs.iter().any(|t| t.id == at.tab))
+        else {
             return;
         };
         let Some(shown) = self.shown.get_mut(&client) else {
@@ -228,10 +228,13 @@ impl Workspace {
 }
 
 impl Tab {
-    fn new(
+    /// A tab holding `root`, laid out on `fit`, with a seat for each of
+    /// `clients`.
+    pub(crate) fn new(
         id: TabId,
         name: String,
-        (root, fit): (Option<Tree>, Fit),
+        root: Option<Tree>,
+        fit: Fit,
         clients: impl Iterator<Item = ClientId>,
     ) -> Tab {
         let mut tab = Tab {

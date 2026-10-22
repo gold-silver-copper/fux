@@ -132,14 +132,13 @@ fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
     Ok(())
 }
 
-/// B35, the work budget (budget.rs, `CEILING`'s `50_000_000 * 20` with
-/// `+`): a call stops once it has spent half the ceiling, and not before.
-/// What fux-vt's counters charge a DECALN of the whole 50x200 screen
-/// (`Work::cost`) is at least what the budget spends on it, so the stop
-/// comes after ceil(`CEILING` / 2 / that) of them, or later.
-/// The frozen ceiling U (THREATS.md 4.4), in twentieths of a unit.
+/// B35, the work budget (budget.rs): a call stops once it has spent half
+/// the ceiling, and not before. What fux-vt's counters charge a DECALN of
+/// the whole 50x200 screen (`Work::cost`) is at least what the budget
+/// spends on it, so the stop comes after ceil(`CEILING` / 2 / that) of
+/// them, or later. The ceiling U (THREATS.md 4.4), in cells.
 #[cfg(feature = "checks")]
-const CEILING: u64 = 50_000_000 * 20;
+const CEILING: u64 = 32_000_000;
 
 #[cfg(feature = "checks")]
 #[test]
@@ -150,7 +149,6 @@ fn a_call_stops_at_half_the_ceiling_and_not_before() -> Result {
     let before = fux_vt::Work::now();
     p.process(align)?;
     let cost = fux_vt::Work::now().since(before).cost().max(1);
-    // U, the frozen ceiling (THREATS.md 4.4): 50 M units, in twentieths.
     let least = (CEILING / 2).div_ceil(cost);
     let input = times_bytes(align, usize::try_from(least.saturating_mul(4))?);
     let mut p = Parser::new(size, 0)?;
@@ -347,8 +345,8 @@ fn history_keeps_the_most_cells_a_grid_holds() -> Result {
 fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     // 512 bytes: the ring's chunks are a row each (24 bytes). A row of 8
     // clusters of 101 bytes each: its 8 cells make a block of 8 (64 bytes),
-    // its 808 bytes of text go in the texts map (3 buckets of 66 bytes,
-    // 198); far over, so the row goes, and with its text gone the 286
+    // its 808 bytes of text go in the texts map (room for 4 of 56 bytes,
+    // 224); far over, so the row goes, and with its text gone the 288
     // bytes left fit.
     let mut p = Parser::new(Size::new(1, 40)?, 512)?;
     let cluster = format!("e{}", times("\u{301}", 50));
@@ -356,9 +354,9 @@ fn history_over_its_budget_by_a_row_s_text_keeps_its_storage() -> Result {
     p.process(b"\r\n")?;
     assert_eq!(p.screen().history_len(), 0);
     // Empty rows then: 24 bytes each beside the block's 64 and the map's
-    // 198, so 10 fit in 512, not the 21 that 512 holds with nothing else.
+    // 224, so 9 fit in 512, not the 21 that 512 holds with nothing else.
     p.process(times("\n", 100).as_bytes())?;
-    assert_eq!(p.screen().history_len(), 10);
+    assert_eq!(p.screen().history_len(), 9);
     Ok(())
 }
 
@@ -645,7 +643,7 @@ fn a_paste_of_64_kib_is_kept_and_one_byte_more_is_not() {
     assert_eq!(pasted((64 << 10) + 1), [Input::PasteTooLong]);
 }
 
-/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs, `-` and `*`), `held_first`'s `bytes.len() > HELD` (decode.rs, `>=`) and its `&&` (decode.rs, `||`): a long read gives what is held the 259 bytes that decide it, reads the rest where it lies, and returns.
+/// B24, `HELD`'s `DCS_LIMIT + 2` (decode.rs, `-` and `*`) and `feed`'s room (decode.rs): a long read gives what is held the bytes that make it 259, which decide it, reads the rest where it lies, and returns.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
@@ -667,14 +665,69 @@ fn a_long_read_gives_what_is_held_259_bytes_and_returns() -> Result {
         let idle = fux_vt::Work::now().since(before).keys;
         Ok((held, idle))
     })?;
-    // Each byte decoded once, after the 259 copied once behind the Escape.
-    assert_eq!(held, 1001 + 259);
+    // Each byte decoded once, after the 258 copied once behind the Escape.
+    assert_eq!(held, 1001 + 258);
     // Each byte decoded once, and the Escape left held copied once.
     assert_eq!(idle, 517 + 1);
     Ok(())
 }
 
-/// B24, `Decoder::may_hold` (decode.rs, `true`): a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
+/// B24, `feed`'s re-read (decode.rs, the guard with `false`, and `<=` with `>`): a sequence begun in the bytes given what is held, and left held by them, is read again where it lies in the read, with the rest after it, not copied with them: each byte is decoded as a short read would, once, after the 258 copied once behind the Escape, and the sequence's 8 read and copied as held once before.
+#[cfg(feature = "checks")]
+#[test]
+fn a_sequence_begun_in_the_bytes_given_the_held_is_read_where_it_lies() -> Result {
+    // An Escape held, then 250 `a`s and 8 bytes of a CSI that end the 258
+    // given it, the CSI's end and 1,000 `b`s.
+    let mut read = vec![b'a'; 250];
+    read.extend_from_slice(b"\x1b[1;2;3;4A");
+    read.extend([b'b'; 1000]);
+    let (keys, out) = in_time(move || {
+        let mut out = Vec::new();
+        let mut d = Decoder::default();
+        d.bytes(b"\x1b", &mut out);
+        let before = fux_vt::Work::now();
+        d.bytes(&read, &mut out);
+        Ok((fux_vt::Work::now().since(before).keys, out))
+    })?;
+    assert_eq!(keys, 1 + 1260 + 258 + 2 * 8);
+    let mut short = Vec::new();
+    let mut d = Decoder::default();
+    d.bytes(b"\x1b", &mut short);
+    for byte in [vec![b'a'; 250], b"\x1b[1;2;3;4A".to_vec(), vec![b'b'; 1000]].concat() {
+        d.bytes(&[byte], &mut short);
+    }
+    assert_eq!(out, short);
+    Ok(())
+}
+
+/// B24, `feed`'s re-read (decode.rs, the guard with `true`): a sequence begun in what was held, and left held by the bytes given it, is held on, not read again from the read: `ESC ESC` held while an answer is expected, then a read that its second Escape begins a DCS answer of 256 bytes with gives an Escape and the answer, as short reads do, and types none of the answer.
+#[test]
+fn a_sequence_begun_in_what_was_held_is_held_on() -> Result {
+    let mut payload = b"1+r536d756c78=".to_vec();
+    payload.resize(256, b'0');
+    let read = [b"P".as_slice(), &payload, b"\x1b\\x"].concat();
+    let decoded = |reads: &[&[u8]]| {
+        let mut d = Decoder::default();
+        d.expect(Instant::now());
+        let mut out = Vec::new();
+        d.bytes(b"\x1b\x1b", &mut out);
+        for read in reads {
+            d.bytes(read, &mut out);
+        }
+        out
+    };
+    let long = decoded(&[read.as_slice()]);
+    let short: Vec<&[u8]> = read.iter().map(std::slice::from_ref).collect();
+    assert_eq!(long, decoded(&short));
+    assert_eq!(
+        long.iter().filter(|i| matches!(i, Input::Key(_))).count(),
+        2,
+        "{long:?}"
+    );
+    Ok(())
+}
+
+/// B24: a string being dropped, with no ESC that may end it, holds nothing, so a long read is not cut up for it: the drop looks at it once, and what follows the string's end is decoded.
 #[cfg(feature = "checks")]
 #[test]
 fn a_long_read_while_a_string_is_dropped_is_read_whole() {
@@ -889,8 +942,8 @@ fn a_late_start_follows_its_prompt_s_line() -> Result {
 /// B33 and B34, `Screen::repeat`'s `per_row` filter (screen.rs, `>` to `>=`): REP of a glyph wider than the screen makes no copy and spends none of the call's budget.
 #[test]
 fn a_repeat_with_no_copy_to_a_row_spends_nothing() -> Result {
-    // 2,000 REPs of 65,535 copies would spend 655 M twentieths, past the
-    // 500 M a call may.
+    // 2,000 REPs of 65,535 copies would spend 262 M cells, past the 16 M a
+    // call may.
     let mut p = Parser::new(Size::new(2, 1)?, 0)?;
     let input = times("\u{4e00}\x1b[65535b", 2000);
     assert_eq!(p.process_until_stop(input.as_bytes(), &mut Deaf)?, None);
@@ -955,7 +1008,7 @@ fn a_repeat_on_a_one_column_screen_makes_every_copy() -> Result {
     Ok(())
 }
 
-/// B24, `Decoder::held_first`'s `fed < bytes.len()` (decode.rs, `<` to `<=`): a held read of exactly 259 bytes that ends on the ESC of an answer dropped past its limit returns, and the `\` after it ends the drop.
+/// B24: a held read of exactly 259 bytes that ends on the ESC of an answer dropped past its limit returns, and the `\` after it ends the drop.
 #[test]
 fn a_read_of_259_bytes_that_ends_on_a_dropped_answer_s_escape_returns() -> Result {
     let (dropped, after, typed) = in_time(|| {

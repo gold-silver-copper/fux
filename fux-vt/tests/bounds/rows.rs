@@ -1,5 +1,4 @@
-//! The bound rows of `THREATS.md` section 2, B01 to B45 and B34a (B46's
-//! is in `colours.rs`): each a probe of
+//! The bound rows of `THREATS.md` section 2, B01 to B45 and B34a: each a probe of
 //! its reproducer at a scale and a chunking, held to the row's bound
 //! (section 2), work constants (4.2) and memory terms (3.1, 3.2), with a
 //! lower bound on each counter it names (4.3). A row whose code or API is
@@ -2143,7 +2142,7 @@ fn refusing(n: u32) -> Result<Parser, String> {
 // modifier bit, in every key mode; every mouse event at the edges of each
 // encoding's positions, in every mode and encoding.
 pub fn b45(_: Scale, _: usize) -> Found {
-    use fux_vt::keys::encode::{KeyMode, OtherKeys, OtherKeysLevel, Report, key_bytes};
+    use fux_vt::keys::encode::{KeyMode, OtherKeysLevel, Report, key_bytes};
     use fux_vt::keys::mouse::{MouseAction, MouseButton, MouseEvent, mouse_bytes};
     use fux_vt::keys::{Direction, Function, Key, KeyPress, Keystroke, Kitty, Modifiers};
     use fux_vt::{MouseProtocolEncoding, MouseProtocolMode};
@@ -2176,9 +2175,9 @@ pub fn b45(_: Scale, _: usize) -> Found {
     for (application, backarrow) in [(false, false), (false, true), (true, false), (true, true)] {
         for other_keys in [
             None,
-            Some(OtherKeys::from(OtherKeysLevel::Usual)),
-            Some(OtherKeys::from(OtherKeysLevel::All)),
-            Some(OtherKeys::from(OtherKeysLevel::Unmodified)),
+            Some(OtherKeysLevel::Usual),
+            Some(OtherKeysLevel::All),
+            Some(OtherKeysLevel::Unmodified),
         ] {
             modes.push(KeyMode::Legacy {
                 application,
@@ -2314,7 +2313,6 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B43", b43),
     ("B44", b44),
     ("B45", b45),
-    ("B46", super::colours::b46),
 ];
 
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
@@ -2336,7 +2334,7 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `THREATS.md` 2 has: B01 to B46 and B34a.
-pub const COUNT: usize = 47;
+/// How many rows `THREATS.md` 2 has: B01 to B45 and B34a.
+pub const COUNT: usize = 46;
 
 const _: () = assert!(ROWS.len() == COUNT);

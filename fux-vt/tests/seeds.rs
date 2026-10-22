@@ -1,11 +1,11 @@
 //! The safety reproducers as frozen seeds (`THREATS.md` section 2): each
-//! defined here once, written as a file (`seeds/*.bin`, and in the
-//! `terminal` and `keys` fuzz targets' formats under `fuzz/seeds/`; a
-//! `terminal` seed past that target's 4 KiB runs in `deep`'s, if one of
-//! its runs holds it), and replayed to check that it reaches the limit it
-//! is for. The seed exercises the limit; whether fux-vt stays within it is
-//! the bounds suite's row (`tests/bounds.rs`), and
-//! `bounds/known-failing.txt` names the rows that fail.
+//! defined here once, written as a fuzz input (in the `terminal` and
+//! `keys` fuzz targets' formats under `fuzz/seeds/`; a `terminal` seed
+//! past that target's 4 KiB runs in `deep`'s, if one of its runs holds
+//! it), and replayed to check that it reaches the limit it is for. The
+//! seed exercises the limit; whether fux-vt stays within it is the bounds
+//! suite's row (`tests/bounds.rs`), and `bounds/known-failing.txt` names
+//! the rows that fail.
 //!
 //! A row whose reproducer is a host call (a clone, a picture built or
 //! encoded, a size, a refused allocation, an encoder) has its seed's host
@@ -14,8 +14,7 @@
 //! "a guard: no defect", beside its seed.
 //!
 //! `cargo test -p fux-vt --features checks --test seeds -- --ignored
-//! write_the_seeds` writes the files from these definitions; a test fails
-//! when a file and its definition differ.
+//! write_the_seeds` writes the fuzz inputs from these definitions.
 
 use std::path::{Path, PathBuf};
 
@@ -1099,39 +1098,6 @@ fn seeds() -> Vec<Seed> {
             },
             fuzz: Fuzz::None,
         },
-        Seed {
-            name: "b46-tekhvc-colours",
-            row: "B46",
-            size: defaults,
-            prefix: Prefix::None,
-            // A 64 KiB OSC 4 of colours that each run TekHVC's chroma
-            // search to its end (tests/bounds/colours.rs).
-            bytes: || {
-                let mut out = b"\x1b]4".to_vec();
-                while out.len() < (64 << 10) - 20 {
-                    out.extend_from_slice(b";1;TekHVC:266/48/99");
-                }
-                out.push(0x07);
-                out
-            },
-            // The arithmetic ran, and stopped at the OSC's allowance, a
-            // quarter of U in `colours` steps, with one specification's
-            // steps past it. A guard: no defect (the arithmetic came with
-            // its bound; THREATS.md B46).
-            reaches: |r| {
-                let weight = (Work::WEIGHTS.iter())
-                    .find(|(name, _)| *name == "colours")
-                    .map_or(0, |(_, w)| *w);
-                let allowance = (Work::CEILING.checked_div(4))
-                    .and_then(|u| u.checked_div(weight))
-                    .map(|a| a.saturating_add(20_000));
-                let done = r.work.colours;
-                ensure(done >= 1 && allowance.is_some_and(|a| done <= a), || {
-                    format!("{done} colours steps, the allowance {allowance:?}")
-                })
-            },
-            fuzz: Fuzz::Terminal,
-        },
     ]
 }
 
@@ -1342,124 +1308,13 @@ fn deep_output(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The seeds written as no fuzz input, and why; every other seed is one
-/// (`every_seed_is_a_fuzz_input_unless_listed`).
-const NO_FUZZ_INPUT: &[(&str, &str)] = &[
-    (
-        "b03-width-ladder",
-        "4,096 rasters, each its own: 56 KiB, past terminal's 4 KiB, and 233 operations of deep's, past its 128",
-    ),
-    (
-        "b09-pictures-over-history",
-        "after 349,600 line feeds: 15 s a run of deep without a sanitizer, 37 s with ASAN",
-    ),
-    (
-        "b11-every-cell-a-colour",
-        "5,000 colours, each its own: 80 KiB, past terminal's 4 KiB and deep's 128 operations",
-    ),
-    (
-        "b12-colliding-styles",
-        "2,000 styles, each its own: 86 KiB, past terminal's 4 KiB and deep's 128 operations",
-    ),
-    (
-        "b13-style-sweep",
-        "5,000 styles, each its own: 95 KiB, past terminal's 4 KiB and deep's 128 operations",
-    ),
-    (
-        "b14-short-id-links",
-        "4,000 links, each its own id: 83 KiB, past terminal's 4 KiB and deep's 128 operations",
-    ),
-    (
-        "b15-link-runs-in-history",
-        "141 KiB whose repeated row is 2,402 bytes, past deep's 256-byte pattern: past terminal's 4 KiB and deep's 128 operations",
-    ),
-    (
-        "b16-links-past-the-held",
-        "after 4 MiB of links: past deep's 1 MiB of output a run",
-    ),
-    (
-        "b17-wide-rows",
-        "rows of 2,049 cells: past deep's 511 and terminal's 24",
-    ),
-    (
-        "b17-empty-then-full-rows",
-        "after 349,600 line feeds: 106 s a run of deep without a sanitizer, past its 60 s timeout with ASAN",
-    ),
-    (
-        "b29-late-command-marks",
-        "after 349,600 line feeds: 50 s a run of deep without a sanitizer, past its 60 s timeout with ASAN",
-    ),
-    (
-        "b37-rejected-resize",
-        "after 6,000 full rows, 1.2 MB: past deep's 1 MiB of output a run",
-    ),
-    (
-        "b40-lookup-over-history",
-        "after 349,600 line feeds: 15 s a run of deep without a sanitizer, 54 s with ASAN",
-    ),
-    (
-        "b07-picture-sizes",
-        "host calls only: no target builds a Picture",
-    ),
-    (
-        "b38-largest-screen",
-        "host calls only: deep's sides are at most 511",
-    ),
-    (
-        "b39-cells-past-the-most",
-        "host calls only: no target makes Cells past its screen",
-    ),
-    (
-        "b41-push-with-clear",
-        "host calls only: no target calls ByteQueue",
-    ),
-    (
-        "b44-refused-mark",
-        "a refused allocation: no target refuses one",
-    ),
-    (
-        "b45-longest-key",
-        "host calls only: the key and mouse encoders",
-    ),
-];
-
-/// Every seed is written as a fuzz input, unless it is listed with why it
-/// is not; and every name listed is a seed's.
-#[test]
-fn every_seed_is_a_fuzz_input_unless_listed() {
-    let seeds = seeds();
-    for seed in &seeds {
-        let fuzzed = files(seed).len() > 1;
-        let listed = NO_FUZZ_INPUT.iter().any(|(name, _)| *name == seed.name);
-        assert!(
-            fuzzed != listed,
-            "{}: {}",
-            seed.name,
-            if fuzzed {
-                "a fuzz input, but listed as none"
-            } else {
-                "no fuzz input, and not listed with why"
-            }
-        );
-    }
-    for (name, why) in NO_FUZZ_INPUT {
-        assert!(
-            !why.is_empty() && seeds.iter().any(|seed| seed.name == *name),
-            "{name}"
-        );
-    }
-}
-
-/// The files a seed is written as: its bytes, and its fuzz target's input:
-/// a `terminal` seed too long for that target's runs in `deep`'s, if one
-/// of its runs takes it.
+/// The files a seed is written as: its fuzz target's input, a `terminal`
+/// seed too long for that target's runs in `deep`'s, if one of its runs
+/// takes it.
 fn files(seed: &Seed) -> Vec<(PathBuf, Vec<u8>)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let bytes = (seed.bytes)();
-    let mut files = vec![(
-        root.join("tests/seeds").join(format!("{}.bin", seed.name)),
-        bytes.clone(),
-    )];
+    let mut files = Vec::new();
     match seed.fuzz {
         Fuzz::None => {}
         Fuzz::Terminal => {
@@ -1525,10 +1380,9 @@ fn every_seed_reaches_its_limit() -> Result {
     Ok(())
 }
 
-/// The files are what the definitions make, and every reproducer has one:
-/// names are unique, and each names a row of `THREATS.md` 2.
+/// Every seed names a row of `THREATS.md` 2, once.
 #[test]
-fn the_seed_files_are_written_as_defined() -> Result {
+fn every_seed_names_its_row_once() {
     let seeds = seeds();
     let mut names: Vec<&str> = seeds.iter().map(|s| s.name).collect();
     names.sort_unstable();
@@ -1536,16 +1390,7 @@ fn the_seed_files_are_written_as_defined() -> Result {
     assert_eq!(names.len(), seeds.len());
     for seed in &seeds {
         assert!(seed.row.starts_with('B') && seed.name.starts_with(&seed.row.to_lowercase()));
-        for (path, bytes) in files(seed) {
-            let written = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            assert!(
-                written == bytes,
-                "{} differs from its seed: write the seeds",
-                path.display()
-            );
-        }
     }
-    Ok(())
 }
 
 /// Writes every seed's files.

@@ -18,8 +18,9 @@ use crate::error::{Code, Error, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use crate::vocabulary::{Vocabulary, through};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem::take;
+use std::rc::Rc;
 
 /// Past any real stack: an unbounded depth.
 const BIG: i64 = 1 << 40;
@@ -159,24 +160,6 @@ impl End {
     }
 }
 
-/// How many of a definition's inputs a call's known kinds are given to it
-/// with, to check it again for that call.
-const GIVEN: usize = 8;
-
-/// A definition checked again with the kinds a call gives it.
-#[derive(Clone, Debug)]
-enum Special {
-    /// How it ends given them.
-    Does(End),
-    /// Every way through it fails given them: the first step that does.
-    Fails(Box<Error>),
-    /// Nothing more is known than its summary says.
-    Unknown,
-}
-
-/// The definitions checked again, by definition and the kinds given.
-type Specials = std::cell::RefCell<HashMap<(usize, Vec<Kinds>), Special>>;
-
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
     fn anything() -> Self {
@@ -199,12 +182,6 @@ enum Failing {
     },
     /// Its values can't be the kinds it takes.
     Type(String),
-    /// So, of a value that came through other words first: the step that
-    /// made it.
-    Made(String, usize),
-    /// A call, which every way through what it calls fails: how it is
-    /// given, and the first step there that fails.
-    Fails(String, Box<Error>),
 }
 
 /// How the ways through a code that don't come back ended: the least any
@@ -399,19 +376,9 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
     let exit = main
         .ends(false)
         .and_then(|(mut states, _)| states.remove(&ops.len()));
-    let Some((mut exit, _)) = exit else {
+    let Some((exit, _)) = exit else {
         return Ok(());
     };
-    // What a word ends is given to it, as the machine gives it.
-    for _ in 0..KEPT {
-        let Some(id) = exit.top.last().and_then(|k| words.ender(*k)) else {
-            break;
-        };
-        let op = Op::App(id);
-        if let Err(failing) = main.step(ops.len(), &op, &mut exit) {
-            return Err(main.error(ops.len().saturating_sub(1), &op, failing));
-        }
-    }
     let unused = exit.top.iter().find_map(|k| words.unused(*k));
     let Some(why) = unused else {
         return Ok(());
@@ -437,9 +404,8 @@ pub(crate) fn check<A>(program: &Program<A>, mut known: Known) -> Result<(), Err
 /// serves every program compiled after it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
-    summaries: Vec<Option<Summary>>,
+    summaries: Vec<Option<Rc<Summary>>>,
     first: Option<Error>,
-    specials: Specials,
 }
 
 /// Works out what each of `program`'s definitions does, from the first
@@ -464,11 +430,10 @@ pub(crate) fn definitions<A>(program: &Program<A>, known: &mut Known) {
                 && pass == passes
                 && let Some(slot) = known.summaries.get_mut(id)
             {
-                *slot = Some(Summary::anything());
+                *slot = Some(Rc::new(Summary::anything()));
             }
             changed |= known.summaries.get(id).cloned().flatten() != before;
         }
-        known.specials.get_mut().clear();
         if !changed {
             break;
         }
@@ -489,9 +454,9 @@ fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps
         let current = known.summaries.get(id).cloned().flatten();
         let next = match (&current, new) {
             (_, None) => current.clone(),
-            (None, Some(new)) => Some(new),
-            (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Summary::anything()),
-            (Some(old), Some(new)) => Some(Summary {
+            (None, Some(new)) => Some(Rc::new(new)),
+            (Some(_), Some(_)) if round >= RECURSION_ROUNDS => Some(Rc::new(Summary::anything())),
+            (Some(old), Some(new)) => Some(Rc::new(Summary {
                 need: old.need.min(new.need),
                 end: match (&old.end, new.end) {
                     (End::Returns(old), End::Returns(new)) => {
@@ -504,7 +469,7 @@ fn summarise<A>(program: &Program<A>, known: &mut Known, id: usize, code: &Steps
                         End::Diverges
                     }
                 },
-            }),
+            })),
         };
         if next == current {
             break;
@@ -666,55 +631,6 @@ impl<'a, A> Unit<'a, A> {
         })
     }
 
-    /// Definition `id` checked again, given `kinds` for its inputs (the
-    /// deepest first): whether every way through it fails, and what it
-    /// leaves.
-    fn special(&self, id: usize, kinds: Vec<Kinds>) -> Special {
-        let key = (id, kinds);
-        if let Ok(specials) = self.known.specials.try_borrow()
-            && let Some(known) = specials.get(&key)
-        {
-            return known.clone();
-        }
-        let Some(code) = self.program.words.get(id) else {
-            return Special::Unknown;
-        };
-        // A call back into one being checked so (words calling each
-        // other): nothing more is known of it there.
-        if let Ok(mut specials) = self.known.specials.try_borrow_mut() {
-            specials.insert(key.clone(), Special::Unknown);
-        }
-        let mut start = State::start(false);
-        let given = len(&key.1);
-        start.lo = given.saturating_neg();
-        start.hi = start.lo;
-        start.reached = start.lo;
-        start.top = key.1.clone();
-        let unit = Self::new(self.program, code, start, self.known, Some(id));
-        let special = match unit.ends(false) {
-            None => Special::Unknown,
-            Some((mut states, ends)) => {
-                let end = code.ops.len();
-                let exit = states.remove(&end).map(|(state, _)| state);
-                // Every way fails: by a mistake the checker is sure of, or
-                // at a `fail` (with one mistake at least: a word that only
-                // ever calls `fail` is called to fail).
-                match (exit, ends.diverged) {
-                    (None, None) => match unit.first_error() {
-                        Some(e) => Special::Fails(Box::new(e)),
-                        None => Special::Unknown,
-                    },
-                    (Some(exit), _) => Special::Does(End::Returns(exit)),
-                    (None, Some(_)) => Special::Does(End::Diverges),
-                }
-            }
-        };
-        if let Ok(mut specials) = self.known.specials.try_borrow_mut() {
-            specials.insert(key, special.clone());
-        }
-        special
-    }
-
     fn first_error(&self) -> Option<Error> {
         let mut first: Option<(usize, Error)> = None;
         let (states, _) = self.ends(false)?;
@@ -754,7 +670,7 @@ impl<'a, A> Unit<'a, A> {
                 state.iters.pop();
                 return vec![(next, body), (*out, state)];
             }
-            match self.step(at, op, &mut state) {
+            match self.step(op, &mut state) {
                 Err(failing) => {
                     failed(at, self.error(at, op, failing));
                     return Vec::new();
@@ -797,7 +713,7 @@ impl<'a, A> Unit<'a, A> {
     }
 
     /// One step: whether a run can go on past it.
-    fn step(&self, step: usize, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
+    fn step(&self, op: &Op<A>, state: &mut State) -> Result<Flow, Failing> {
         match op {
             Op::Push(value) => state.push(Kinds::one(Kind::of(value))),
             Op::Builtin(builtin) => return builtin_step(self.words(), *builtin, state),
@@ -854,11 +770,7 @@ impl<'a, A> Unit<'a, A> {
                             "takes {said}, not {}",
                             placed(self.words().describe(got), i, n)
                         );
-                        let depth = n.saturating_sub(i).saturating_sub(1);
-                        return Err(match self.made(step, depth, *wants) {
-                            Some(made) => Failing::Made(message, made),
-                            None => Failing::Type(message),
-                        });
+                        return Err(Failing::Type(message));
                     }
                 }
                 for (from, map) in &word.gives {
@@ -871,70 +783,12 @@ impl<'a, A> Unit<'a, A> {
                     // time through.
                     return Ok(Flow::Diverge);
                 };
-                // Too few values fail it before any kind could.
-                state
-                    .clone()
-                    .pop(usize::try_from(summary.need).unwrap_or(0))?;
-                // Checked again with the kinds this call gives it, where
-                // any are known (not for a call to itself).
-                // As deep as any way through it reaches, not only as deep as
-                // every way does.
-                let deepest = (summary.end.exit()).map_or(0, |exit| exit.reached.saturating_neg());
-                let reach = deepest.max(summary.need);
-                let slots = usize::try_from(reach).unwrap_or(0).min(GIVEN);
-                let skip = state.top.len().saturating_sub(slots);
-                let known = state.top.len().saturating_sub(skip);
-                let mut given = vec![ANY; slots.saturating_sub(known)];
-                given.extend(state.top.iter().skip(skip).copied());
-                let mut special = None;
-                if self.own != Some(*id) && given.iter().any(|k| *k != ANY) {
-                    match self.special(*id, given.clone()) {
-                        Special::Fails(why) => {
-                            let said: Vec<String> = (given.iter().rev().enumerate())
-                                .filter(|(_, k)| **k != ANY)
-                                .map(|(i, k)| {
-                                    let k = self.words().describe(*k);
-                                    match i {
-                                        0 => format!("{k} on top"),
-                                        1 => format!("{k} next under it"),
-                                        i => format!("{k} {i} places under the top"),
-                                    }
-                                })
-                                .collect();
-                            let given = said.join(" and ");
-                            let message = format!("every way through it fails given {given}");
-                            return Err(Failing::Fails(message, why));
-                        }
-                        Special::Does(does) => special = Some(does),
-                        Special::Unknown => {}
-                    }
-                }
                 let (before, _) = state.depth();
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
-                // Depths as every call has them; kinds, where the kinds
-                // this call gives tell more, as this call has them (a way
-                // may leave what was given below where the stack surely
-                // reaches, which this call may not have).
                 let exit = match summary.end.exit() {
                     Ok(exit) => exit,
                     Err(flow) => return Ok(flow),
                 };
-                let refined = match special.as_ref().map(End::exit) {
-                    None => None,
-                    Some(Ok(known)) => {
-                        let mut exit = exit.clone();
-                        for (kinds, better) in exit.top.iter_mut().rev().zip(known.top.iter().rev())
-                        {
-                            let both = kinds.and(*better);
-                            if both != Kinds(0) {
-                                *kinds = both;
-                            }
-                        }
-                        Some(exit)
-                    }
-                    Some(Err(flow)) => return Ok(flow),
-                };
-                let exit = refined.as_ref().unwrap_or(exit);
                 // A way that went deeper than every way surely does may
                 // have replaced the caller's values down to there: what was
                 // known of their kinds is not, and the caller has reached
@@ -994,58 +848,6 @@ impl<'a, A> Unit<'a, A> {
         Ok(Flow::Go)
     }
 
-    /// The step that made the value `depth` below the top as step `at`
-    /// begins, if it came through words that pass it on (`x secs -- x`)
-    /// since, each of which would have passed on a value of `wants`: the
-    /// word out of place, not one that passed it on. Followed back along
-    /// the steps before, none a jump's target, each a word or a value
-    /// written.
-    fn made(&self, at: usize, depth: usize, wants: Kinds) -> Option<usize> {
-        let (mut at, mut depth, mut passed) = (at, depth, false);
-        loop {
-            if at == 0 || self.starts.contains(&at) {
-                return None;
-            }
-            at = at.saturating_sub(1);
-            let word = match self.code.ops.get(at)? {
-                // A value written: it was not made by a word.
-                Op::Push(_) => {
-                    depth = depth.checked_sub(1)?;
-                    continue;
-                }
-                Op::App(id) => self.words().word(*id)?,
-                Op::Builtin(_)
-                | Op::PickN(_)
-                | Op::RollN(_)
-                | Op::Call(_)
-                | Op::Jump(_)
-                | Op::JumpUnless(_)
-                | Op::SetLocal(_)
-                | Op::GetLocal(_)
-                | Op::SetGlobal(_)
-                | Op::GetGlobal(_)
-                | Op::Mark
-                | Op::Gather
-                | Op::EachStart
-                | Op::EachNext(_) => return None,
-            };
-            let (takes, gives) = (word.takes.len(), word.gives.len());
-            // A value below what the word gives is from before it.
-            let Some(out) = gives.checked_sub(1).and_then(|l| l.checked_sub(depth)) else {
-                depth = depth.saturating_sub(gives).saturating_add(takes);
-                continue;
-            };
-            match word.gives.get(out)? {
-                (Some(_), map) if !through(map, wants).may_be(wants) => return None,
-                (Some(from), _) => {
-                    depth = takes.checked_sub(1)?.checked_sub(*from)?;
-                    passed = true;
-                }
-                (None, _) => return passed.then_some(at),
-            }
-        }
-    }
-
     fn error(&self, at: usize, op: &Op<A>, failing: Failing) -> Error {
         let (code, message) = match failing {
             Failing::Underflow {
@@ -1067,16 +869,6 @@ impl<'a, A> Unit<'a, A> {
                 (Code::StackUnderflow, underflow(verb, takes, &has, inside))
             }
             Failing::Type(message) => (Code::Type, message),
-            Failing::Made(message, made) => {
-                let mut error = Error::new(Code::Type, message, self.code.tokens.get(at));
-                error.made_by = self.code.tokens.get(made).cloned().map(Box::new);
-                return error;
-            }
-            Failing::Fails(message, cause) => {
-                let mut error = Error::new(Code::Type, message, self.code.tokens.get(at));
-                error.cause = Some(cause);
-                return error;
-            }
         };
         Error::new(code, message, self.code.tokens.get(at))
     }

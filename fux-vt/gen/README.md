@@ -31,9 +31,8 @@ generator picks the `SHIFT` that makes them smallest). Bits 0–3 are
 Grapheme_Cluster_Break, bit 4 Extended_Pictographic, bits 5–6
 Indic_Conjunct_Break, bits 7–8 the width alone (3: a control), bit 9
 emoji presentation, bits 10–11 the start of an emoji and a text
-presentation sequence, bit 12 Emoji_Modifier_Base, bit 13 a
-Default_Ignorable combining mark, bit 14 a character the cluster width
-rule looks at.
+presentation sequence, bit 12 Emoji_Modifier_Base, bit 14 a character
+the cluster width rule looks at, bit 15 a spacing mark.
 
 ## The conformance table's catalogue
 

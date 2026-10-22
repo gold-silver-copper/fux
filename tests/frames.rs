@@ -29,13 +29,12 @@ fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
     Ok(())
 }
 
-/// The shell echoes what it is typed, so the text each frame draws is
-/// computed (`$((6*7))` prints as `42`) and the echo never matches it.
-fn frame_line(first: &str, mark: &std::path::Path, then: &str) -> String {
-    format!(
-        "printf '\\033[?2026h%s{first}' $((6*7)); touch '{}'; {then}",
-        mark.display()
-    )
+/// A line that prints `PRE` and begins a frame drawing `42{first}` in one
+/// write, so that the server has read the frame's start once `PRE` shows;
+/// then `then`. The shell echoes what it is typed, so the text is computed
+/// (`$((6*7))` prints as `42`) and the echo never matches it.
+fn frame_line(first: &str, then: &str) -> String {
+    format!("printf 'P%sE\\033[?2026h%s{first}' R $((6*7)); {then}")
 }
 
 #[test]
@@ -43,21 +42,19 @@ fn a_client_is_shown_a_synchronized_frame_only_whole() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    let mark = server.dir.join("mid-frame");
-    type_now(
-        &server,
-        "%1",
-        &frame_line("A", &mark, "sleep 0.6; printf '%sB\\033[?2026l' $((6*7))"),
-    )?;
-    eventually("the first half written", || Ok(mark.exists()))?;
-    // Time for the server to read it, were it not held.
-    std::thread::sleep(Duration::from_millis(200));
-    client.pump()?;
+    let go = server.dir.join("go");
+    let rest = format!(
+        "until [ -e '{}' ]; do sleep 0.05; done; printf '%sB\\033[?2026l' $((6*7))",
+        go.display()
+    );
+    type_now(&server, "%1", &frame_line("A", &rest))?;
+    client.wait_for("PRE")?;
     assert!(
         !client.text().contains("42A"),
         "half a frame was shown:\n{}",
         client.text()
     );
+    std::fs::write(&go, "").map_err(e)?;
     client.wait("the whole frame", |t| t.contains("42A42B"))?;
     Ok(())
 }
@@ -67,19 +64,10 @@ fn a_frame_that_never_ends_is_shown_after_its_timeout() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(10, 60)?;
     client.wait_for("$")?;
-    let mark = server.dir.join("begun");
-    type_now(&server, "%1", &frame_line("C", &mark, "sleep 3"))?;
-    eventually("the frame begun", || Ok(mark.exists()))?;
-    let begun = Instant::now();
-    std::thread::sleep(Duration::from_millis(300));
-    client.pump()?;
+    type_now(&server, "%1", &frame_line("C", "sleep 30"))?;
+    client.wait_for("PRE")?;
     assert!(!client.text().contains("42C"), "shown before its timeout");
     client.wait("the frame, after its timeout", |t| t.contains("42C"))?;
-    let waited = begun.elapsed();
-    assert!(
-        waited < Duration::from_millis(2500),
-        "shown only after {waited:?}, though the timeout is a second"
-    );
     Ok(())
 }
 

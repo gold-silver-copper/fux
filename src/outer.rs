@@ -1,41 +1,23 @@
-//! What fux knows of each client's own terminal, learned by asking it: its
-//! colours (OSC 10 and 11), its palette entries 0 to 15 (OSC 4), and colour scheme (dark or light, `CSI ? 996 n`),
-//! whether it reports changes to the scheme (mode 2031), whether it
-//! speaks the kitty keyboard protocol (`CSI ? u`), and whether it draws
-//! underline styles (`styles!`). Programs in panes ask the same of their
-//! terminal, which is fux, and are answered from what the client terminal
-//! said; the styles are what fux paints the client.
+//! What fux knows of each client's own terminal, learned by asking it in
+//! the client's paint stream: its colours (OSC 10, 11), palette entries 0
+//! to 15 (OSC 4) and colour scheme (`CSI ? 996 n`, reports with mode 2031),
+//! the kitty keyboard protocol (`CSI ? u`), underline styles (`styles!`),
+//! sixel and its cell size. The answers come back with the keys, which the
+//! decoder tells apart ([`crate::decode::Reply`]); a terminal that answers
+//! nothing costs nothing. Programs in panes asking their terminal, fux,
+//! the same are answered from it.
 //!
-//! A terminal that speaks the kitty protocol gets disambiguate (1) and
-//! alternate keys (4) pushed (`CSI > 5 u`), so that fux reads keys as
-//! exactly as the terminal can tell them (`decode`): disambiguate tells
-//! apart what legacy bytes do not (Shift-Enter, Ctrl-I and Tab, Escape and
-//! Alt-[), and alternate keys give the shifted key, so that Alt-Shift-1 is
-//! `M-!` as from a legacy terminal, and the base-layout key, so that Ctrl
-//! on a Cyrillic layout is Ctrl and a Latin letter. Not report all keys as
-//! escapes (8), and with it associated text (16): then every key, plain
-//! text and Enter included, would come as an escape, and if fux died
-//! without popping them the shell would be left unusable, which is why the
-//! spec keeps Enter, Tab and Backspace legacy under disambiguate; and fux
-//! would have to rebuild text from key codes and layouts the terminal
-//! already knows. Not event types (2): fux uses no repeats or releases.
-//! The client pops the flags as it leaves (`client::LEAVE`).
+//! A kitty terminal gets disambiguate (1) and alternate keys (4) pushed
+//! (`CSI > 5 u`), so that Shift-Enter, Ctrl-I and Alt-[ are told apart, and
+//! Alt-Shift-1 is `M-!` and Ctrl on a Cyrillic layout is Ctrl and a Latin
+//! letter. Not "report all keys as escapes" (8): if fux died without
+//! popping it, the shell would be left unusable. The client pops the flags
+//! as it leaves (`client::LEAVE`).
 //!
-//! The server asks in the client's paint stream, as tmux asks its own
-//! terminal: written to the terminal itself once the client has handed it
-//! over, else relayed by the client. The answers come back with the keys,
-//! read from the terminal or relayed, where the decoder tells them apart
-//! ([`crate::decode::Reply`]). A terminal that answers nothing costs
-//! nothing: what is not known is not answered, as before.
-//!
-//! Which client's terminal answers for a pane: the client that last typed
-//! into the pane's tab, while it is attached; else any client showing the
-//! tab; else the last colours any client's terminal gave. A pane in a tab no
-//! one shows, or with no client attached, is answered with those: a program
-//! started there (delta in a background tab, a build in a detached session)
-//! then picks the theme it would pick in the foreground, rather than its
-//! default, and it is the best guess at the terminal the user will come back
-//! to. Before any terminal has answered, nothing is answered.
+//! The terminal that answers for a pane is the client's that last typed
+//! into its tab, while attached; else any client's showing the tab; else
+//! the last colours any terminal gave, so that a program started in a
+//! background tab picks the theme it would in the foreground.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -62,42 +44,23 @@ macro_rules! colours {
     };
 }
 /// How fux learns whether a terminal draws underline styles (kitty's
-/// `4:n`, `references/modern/kitty_underlines.html`): it asks two ways,
-/// and either answer is enough (`decode::Reply::UnderlineStyles`).
-///
-/// - XTGETTCAP for `Smulx` (`DCS + q 536d756c78 ST`, the name in hex),
-///   the terminfo capability that sets a style. A terminal that answers
-///   XTGETTCAP answers from its own terminfo: Ghostty, kitty, WezTerm,
-///   foot and iTerm2 have `Smulx` in theirs; xterm answers that it has
-///   none (`DCS 0 + r`). Ghostty draws styles but reports a curly
-///   underline as plain 4 to DECRQSS, so this is how it is known.
-/// - The pen, as neovim asks it (`tui_query_extended_underline`, neovim
-///   0.12.5): a curly underline set, then DECRQSS (`DCS $ q m ST`); a
-///   terminal that kept the style answers with `4:3` in it, as VTE does,
-///   which answers no XTGETTCAP. xterm drops `4:3`; then the pen is reset.
-///
-/// A terminal that answers neither (Apple's Terminal; alacritty, which
-/// draws styles but answers neither question) is painted plain
-/// underlines, as before: the safe way, as a terminal that does not know
-/// `4:3` draws no underline at all (xterm, avt) or reads the colon as a
-/// semicolon, underline and italic. Neither question changes what a
-/// terminal shows, and both come before DA1, whose answer ends the
-/// waiting for them.
+/// `4:n`): either answer is enough (`decode::Reply::UnderlineStyles`).
+/// XTGETTCAP for `Smulx`, which Ghostty, kitty, WezTerm, foot and iTerm2
+/// answer from their terminfo; and the pen, as neovim asks it: a curly
+/// underline set, then DECRQSS, which VTE answers with `4:3` in it. A
+/// terminal that answers neither is painted plain underlines, the safe way,
+/// as one that does not know `4:3` may draw none or italics.
 macro_rules! styles {
     () => {
         "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m"
     };
 }
-/// What the server asks a client's terminal when the client attaches:
-/// whether it knows mode 2031 (DECRQM), its foreground and background, its
-/// palette entries 0 to 15 (each its own OSC 4, as not every terminal reads
-/// several in one),
-/// whether it draws underline styles (`styles!`), the size of its cells in
-/// pixels (`CSI 16 t`), its kitty keyboard flags, and last the primary
-/// device attributes, which say whether it draws sixel and which every
-/// terminal answers: once that answer is in, any other the terminal will give is in too
-/// (terminals answer in order), so the decoder stops waiting for them. The
-/// kitty spec detects the protocol so: an answer to `CSI ? u` before DA1's.
+/// What the server asks a client's terminal as it attaches: mode 2031
+/// (DECRQM), its colours (each palette entry its own OSC 4, as not every
+/// terminal reads several in one), underline styles, its cell size in
+/// pixels (`CSI 16 t`), its kitty flags, and last DA1, which every terminal
+/// answers, after the others (terminals answer in order): it says whether
+/// the terminal draws sixel, and ends the decoder's waiting.
 pub const QUERIES: &[u8] = concat!(
     "\x1b[?2031$p",
     colours!(),
@@ -545,6 +508,11 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// As if `BELL_GAP` had passed since every terminal was rung.
+    fn past_the_gap(s: &mut Session) {
+        s.views.values_mut().for_each(|v| v.last_bell = None);
+    }
+
     #[test]
     fn a_bell_rings_the_clients_showing_its_workspace_and_marks_its_tab() -> Outcome {
         let (mut s, c) = session()?;
@@ -554,7 +522,7 @@ mod tests {
         // Again at once: not rung twice within the gap.
         s.output(PaneId::of(1), b"\x07\x07");
         assert!(sent(&mut s, c).is_empty());
-        std::thread::sleep(BELL_GAP);
+        past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // In a tab the client does not show: its tab is marked until shown.
@@ -562,7 +530,7 @@ mod tests {
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.settle();
         let _ = s.before_paint(c);
-        std::thread::sleep(BELL_GAP);
+        past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(tab_label(&s, c).contains(" main! "), "{}", tab_label(&s, c));
@@ -581,13 +549,13 @@ mod tests {
             "str c2 client str elsewhere workspace show-workspace",
         )?;
         let _ = sent(&mut s, d);
-        std::thread::sleep(BELL_GAP);
+        past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         assert!(sent(&mut s, d).is_empty());
         // Off: no bell and no mark.
         run(&mut s, "str bell str off set")?;
-        std::thread::sleep(BELL_GAP);
+        past_the_gap(&mut s);
         s.output(PaneId::of(1), b"\x07");
         assert!(sent(&mut s, c).is_empty());
         assert!(!tab_label(&s, c).contains('!'));

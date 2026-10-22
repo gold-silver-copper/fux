@@ -97,9 +97,10 @@ pub const VERDICTS: &[(&str, &str)] = &[
     ),
     (
         "paste-newline",
-        "a bracketed paste holding LF: fux-vt sends it as CR, as xterm 411 sends every paste \
-         (`button.c`: each `\\n` a `\\r` unless `pasteLiteralNL`); ghostty keeps the LF inside \
-         the brackets (as it sends CR unbracketed)",
+        "a paste's line breaks: fux-vt sends each as one CR, a CRLF as one (as kitty and \
+         alacritty) and an LF as xterm 411 does (`button.c`: each `\\n` a `\\r` unless \
+         `pasteLiteralNL`); ghostty sends each LF as CR unbracketed, so a CRLF as two, and keeps \
+         a bracketed paste's LF",
     ),
     (
         "paste-c1-end",

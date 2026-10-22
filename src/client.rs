@@ -4,9 +4,10 @@
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
 use crate::code::Code;
+use crate::command::{Command, Request};
 use crate::decode::Input;
 use crate::door::{self, Link};
-use crate::keymap::{Held, Keymap};
+use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
@@ -26,24 +27,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Modes the attach client sets on the outer terminal: the alternate
-/// screen, normal cursor and keypad keys, bracketed paste, focus events, no
-/// autowrap; and it saves the terminal's title (xterm's title stack,
-/// `outer::TITLE_PUSH`), which fux may set. The pane's modes are the server's
-/// to set (`render::Modes`). Public for fux-vt-compare's `transparency`.
+/// What the attach client sets on its terminal: its title saved
+/// (`outer::TITLE_PUSH`), the alternate screen, normal cursor and keypad
+/// keys, bracketed paste, focus events, no autowrap. The pane's modes are
+/// the server's to set (`render::Modes`). Public for fux-vt-compare.
 pub const ENTER: &str =
     "\x1b[22;0t\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
-/// And turns them off again, the title saved restored
-/// (`outer::TITLE_POP`), with what the server may have turned on in
-/// its paints: the pane's modes (`render::Modes`; the cursor's shape the
-/// server gives back itself, as DECSCUSR has no "the terminal's own" to
-/// set blindly), colour-scheme
-/// reports (mode 2031, `outer`), and the kitty
-/// keyboard flags it pushed, popped on the alternate screen they were
-/// pushed on, as the kitty spec says to leave. The client sends this
-/// however the attachment ends, the server gone or not; a terminal that
-/// never had them ignores both, and a pop of a stack the server pushed
-/// nothing on, the alternate screen's own, empties it.
+/// And puts it back, however the attachment ends, with what the server may
+/// have turned on: the pane's modes (`render::Modes`; the server gives the
+/// cursor's shape back itself, as DECSCUSR has no "the terminal's own"),
+/// scheme reports (mode 2031), and the kitty flags, popped on the alternate
+/// screen they were pushed on.
 const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
@@ -187,18 +181,17 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), E
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
-    // A server that refuses a connection says why and closes it, maybe
-    // before the Hello is written: its reason is still there to read.
+    // A refusal may close the connection before the Hello is written: its
+    // reason is still there to read.
     let answer = read_frame(&mut stream, &mut decoder, Some(door::ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
 
-/// Whether the server's answer to our Hello, `ours`, and sending it, let
-/// the client go on, and the server's version if so: a refusal, which a
-/// server may make before reading the Hello, wins, and a server of another
-/// protocol is refused here, before anything it would not understand is
-/// sent.
+/// The server's version, if its answer to our Hello, `ours`, and sending
+/// it let the client go on: a refusal, which may come before the Hello is
+/// read, wins; a server of another protocol is refused before anything it
+/// would not understand is sent.
 fn greeted(
     ours: &Hello,
     answer: Result<Option<Greeting>, Error>,
@@ -206,8 +199,6 @@ fn greeted(
 ) -> Result<String, Error> {
     match (answer, sent) {
         (Ok(Some(Greeting::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
-        // A server of another protocol says so, though it hung up before
-        // reading the Hello.
         (Ok(Some(Greeting::Hello(theirs))), sent) => {
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
             sent.map(|()| theirs.version.to_owned())
@@ -278,10 +269,17 @@ impl Requests {
 
     /// Sends `asked`, and waits for its reply, which may come in pieces:
     /// what the server streams before it (`events`) goes to `out` as it
-    /// comes.
+    /// comes. A request that may start programs carries this process's
+    /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
         self.stream.set_read_timeout(None);
-        send(&mut self.stream, asked)?;
+        if starts_programs(&asked.request) && asked.context.env.is_empty() {
+            let mut asked = asked.clone();
+            asked.context.env = environment();
+            send(&mut self.stream, &asked)?;
+        } else {
+            send(&mut self.stream, asked)?;
+        }
         let mut parts = Vec::new();
         loop {
             while let Some(frame) = self.decoder.frame()? {
@@ -312,17 +310,34 @@ impl Requests {
 }
 
 /// Where requests from this process come from: its directory, its pane
-/// and that pane's server, its environment.
+/// and that pane's server. Its environment goes only with the requests
+/// that may start programs (`Requests::ask`).
 pub fn context() -> Context {
     let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
     Context {
         cwd: std::env::current_dir().unwrap_or_default(),
         pane: var("FUX_PANE").and_then(|p| p.parse().ok()),
         server: var("FUX_SERVER"),
-        env: environment(),
+        env: Vec::new(),
         client: None,
         restoring: false,
     }
+}
+
+/// Whether `request` may start programs: the only requests whose caller's
+/// environment the server reads.
+fn starts_programs(request: &Request) -> bool {
+    let (Request::Do(command) | Request::Then(command, _)) = request else {
+        return false;
+    };
+    matches!(
+        command,
+        Command::NewWorkspace { .. }
+            | Command::NewTab { .. }
+            | Command::Run { .. }
+            | Command::Respawn { .. }
+            | Command::Split { .. }
+    )
 }
 
 /// This process's environment, its values as the bytes they are, its
@@ -407,16 +422,14 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(output);
-    // A daemon (daemon(7)): in a session of its own, which outlives the
-    // terminal this client runs in, holding none of the client's
-    // descriptors but stdio, and no directory of its busy.
+    // A daemon (daemon(7)): a session of its own, no descriptors of the
+    // client's but stdio, no directory kept busy.
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
         if answers(socket) {
-            // The child is left to run; it is not ours to wait for, and
-            // dropping a `Child` neither waits for nor kills it.
+            // Dropping a `Child` neither waits for nor kills it.
             drop(child);
             return Ok(());
         }
@@ -456,21 +469,6 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// Whether a key's program may open a screen: a word that opens one, other
-/// than a token a word reads (`str menu`, `let menu`). The keys typed after its key wait for it; any
-/// other program runs while the keys go on.
-fn may_open(code: &str) -> bool {
-    let Ok(tokens) = fuxth::token::source("key", code) else {
-        return false;
-    };
-    let mut quoted = false;
-    tokens.iter().any(|token| {
-        let opens = !quoted && script::opens(&token.text);
-        quoted = !quoted && script::reads_token(&token.text);
-        opens
-    })
-}
-
 /// A program a client's key or prompt runs, on its worker, in order.
 struct Job {
     code: String,
@@ -493,7 +491,7 @@ struct Ran {
 ///
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
-/// while one runs wait for it, and go to the screen it opened, if any.
+/// while any runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
     keymap: Keymap,
     screen: Screen,
@@ -502,9 +500,8 @@ pub struct Keyboard {
     jobs: std::sync::mpsc::Sender<Job>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
-    /// Programs sent to the worker and not yet done, in order, each with
-    /// whether it may open a screen.
-    running: VecDeque<bool>,
+    /// Programs sent to the worker and not yet done.
+    running: usize,
     /// What stops the program the worker runs (the prefix, then Esc).
     stop: script::Stop,
     /// What was typed while a program ran, in order.
@@ -533,7 +530,6 @@ impl Keyboard {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
-                    stops.reset();
                     let ran = run_job(&mut server, me, job, &stops);
                     if tell.send(ran).is_err() {
                         break;
@@ -553,7 +549,7 @@ impl Keyboard {
             jobs,
             told,
             wake,
-            running: VecDeque::new(),
+            running: 0,
             stop,
             waiting: VecDeque::new(),
         })
@@ -561,7 +557,7 @@ impl Keyboard {
 
     /// Whether nothing waits: no program running, no keys held for one.
     pub fn idle(&self) -> bool {
-        self.running.is_empty() && self.waiting.is_empty()
+        self.running == 0 && self.waiting.is_empty()
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
@@ -573,22 +569,6 @@ impl Keyboard {
     /// Escape, or an answer cut short (`Keyboard::timeout`).
     pub fn deadline(&self) -> Option<Instant> {
         self.decoder.deadline()
-    }
-
-    /// Whether the keys typed wait: a program that may open a screen they
-    /// go to runs, until it opens one or ends.
-    fn holding(&self) -> bool {
-        self.running.iter().any(|opens| *opens)
-    }
-
-    /// Stops the program that runs, if one does, saying so.
-    fn stop(&mut self, acts: &mut Vec<Act>) {
-        if self.running.is_empty() {
-            return;
-        }
-        self.stop.stop();
-        let text = "stopping…".to_owned();
-        acts.push(Act::Notice { text, error: false });
     }
 
     /// Bytes from its terminal, read at `now`.
@@ -610,12 +590,13 @@ impl Keyboard {
     fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
         self.waiting.extend(inputs);
         let mut acts = Vec::new();
-        // The prefix, then Esc, typed while keys wait for a program, stops
-        // it, the two keys taken for that.
-        if self.holding() && self.held_stop() {
+        // The prefix, then Esc, typed while a program runs, stops it.
+        if self.running > 0 && self.held_stop() {
             self.waiting.pop_back();
             self.waiting.pop_back();
-            self.stop(&mut acts);
+            self.stop.stop();
+            let text = "stopping…".to_owned();
+            acts.push(Act::Notice { text, error: false });
         }
         acts.extend(self.release());
         acts
@@ -629,10 +610,10 @@ impl Keyboard {
         is(last.next(), escape) && is(last.next(), self.keymap.prefix)
     }
 
-    /// What waits, taken unless a program holds it.
+    /// What waits, taken unless a program runs.
     fn release(&mut self) -> Vec<Act> {
         let mut acts = Vec::new();
-        while !self.holding() {
+        while self.running == 0 {
             let Some(input) = self.waiting.pop_front() else {
                 break;
             };
@@ -661,7 +642,7 @@ impl Keyboard {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
-            self.running.pop_front();
+            self.running = self.running.saturating_sub(1);
             if let Some(keymap) = ran.keymap {
                 self.keymap = keymap;
             }
@@ -691,15 +672,8 @@ impl Keyboard {
         self.screen = screen;
     }
 
-    /// A key typed: to the screen open, else through the bindings. Esc
-    /// right after the prefix also stops a program its key ran, if one runs.
+    /// A key typed: to the screen open, else through the bindings.
     fn press(&mut self, stroke: Keystroke, acts: &mut Vec<Act>) {
-        let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        let column =
-            matches!(&self.screen, Screen::Keys(Held::Column { path, .. }) if path.is_empty());
-        if column && stroke.press == escape {
-            self.stop(acts);
-        }
         let effects = self.screen.key(&self.keymap, stroke, self.read_only);
         self.apply(effects, acts);
     }
@@ -716,9 +690,12 @@ impl Keyboard {
 
     fn run(&mut self, code: String) {
         let keymap = self.keymap.clone();
-        let opens = may_open(&code);
+        // A stop stops the programs queued with the one it was typed for.
+        if self.running == 0 {
+            self.stop.reset();
+        }
         if self.jobs.send(Job { code, keymap }).is_ok() {
-            self.running.push_back(opens);
+            self.running = self.running.saturating_add(1);
         }
     }
 
@@ -834,10 +811,8 @@ pub fn attach(
 ) -> Result<(), Error> {
     let stdin = io::stdin();
     let terminal = size.is_none();
-    // A client with no terminal answers signals from the start. A
-    // terminal's are caught once connected, so that ^C while connecting
-    // still ends fux, and before it goes raw, so that no wait there misses
-    // one.
+    // A terminal's signals are caught once connected, so that ^C while
+    // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
     let role = if terminal {
         Role::Attach
@@ -854,9 +829,8 @@ pub fn attach(
         read_only: attaching.read_only,
         env: environment(),
     };
-    // The terminal goes with the `Attach`, now that it is set up: if the
-    // server takes it, it writes the paints there itself. The keys are
-    // this client's to read either way.
+    // The terminal goes with the `Attach`: if the server takes it, it
+    // writes the paints there itself. The keys are the client's either way.
     let sent = match terminal {
         true => send_with_terminal(&mut stream, &attach, &stdin),
         false => send(&mut stream, &attach),
@@ -1016,7 +990,7 @@ fn attached(
         let _ = stdout.flush();
         for act in std::mem::take(&mut acts) {
             let act = AttachedFrame::Act(Box::new(act));
-            if let Err(ended) = tell(stream, decoder, keyboard.is_some(), &act) {
+            if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &act) {
                 return ended;
             }
         }
@@ -1043,14 +1017,18 @@ fn attached(
         drop(fds);
         let is = |i: usize| ready.get(i).copied().unwrap_or(false);
         if is(STOPS) {
-            let _ = send(stream, &AttachedFrame::Detach);
+            // What the server paints until it lets go is written before the
+            // terminal is put back, not after, on the shell.
+            if send(stream, &AttachedFrame::Detach).is_ok() && keyboard.is_some() {
+                let _ = last_frames(stream, decoder, true, terminal);
+            }
             return Ok(STOPPED.into());
         }
         if is(WINCH) {
             crate::drain(winch.pipe());
             if terminal {
                 let resize = AttachedFrame::Resize(window_size());
-                if let Err(ended) = tell(stream, decoder, keyboard.is_some(), &resize) {
+                if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &resize) {
                     return ended;
                 }
             }
@@ -1090,30 +1068,44 @@ fn tell(
     stream: &mut Link,
     decoder: &mut Decoder,
     welcomed: bool,
+    terminal: bool,
     frame: &AttachedFrame,
 ) -> Result<(), Result<String, Error>> {
     let Err(error) = send(stream, frame) else {
         return Ok(());
     };
-    // It has closed, so what it sent ends soon; the wait is for a server
-    // that took no more for another reason.
-    stream.set_read_timeout(Some(crate::door::ANSWER));
+    Err(last_frames(stream, decoder, welcomed, terminal).unwrap_or(Err(error)))
+}
+
+/// Reads the server's frames up to its `Exit`, waiting `door::ANSWER` at
+/// most for each read, and writes their paints if the client has a
+/// `terminal`: how the attachment ended, the `Exit`'s reason (a refusal,
+/// before its `Welcome`), or `None` if the server said nothing more.
+fn last_frames(
+    stream: &mut Link,
+    decoder: &mut Decoder,
+    welcomed: bool,
+    terminal: bool,
+) -> Option<Result<String, Error>> {
+    stream.set_read_timeout(Some(door::ANSWER));
+    let mut stdout = io::stdout();
     loop {
-        loop {
-            match decoder.frame() {
-                Ok(Some(ToAttached::Exit(reason))) if welcomed => {
-                    return Err(Ok(reason.to_owned()));
+        while let Some(frame) = decoder.frame().ok()? {
+            match frame {
+                ToAttached::Paint(bytes) if terminal => {
+                    let _ = stdout.write_all(&bytes).and_then(|()| stdout.flush());
                 }
-                Ok(Some(ToAttached::Exit(reason))) => {
-                    return Err(Err(Error::Refused(reason.to_owned())));
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_) => return Err(Err(error)),
+                ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
+                ToAttached::Exit(reason) => return Some(Err(Error::Refused(reason.to_owned()))),
+                ToAttached::Paint(_)
+                | ToAttached::Welcome(..)
+                | ToAttached::Ended(_)
+                | ToAttached::Run(_)
+                | ToAttached::Keys(_) => {}
             }
         }
         if !matches!(read_more(stream, decoder), Ok(true)) {
-            return Err(Err(error));
+            return None;
         }
     }
 }
@@ -1122,16 +1114,29 @@ fn tell(
 mod tests {
     use super::*;
 
-    /// Keys wait only for a program that may open a screen: one with a
-    /// word that opens one, not as `str`'s text.
+    /// Keys typed while any program the client ran is running wait for it,
+    /// whatever its words (a config's word may open a menu); the prefix,
+    /// then Esc, stops it, and the keys go on once it is done.
     #[test]
-    fn keys_wait_only_for_a_program_that_may_open_a_screen() {
-        assert!(may_open("me me focused menu"));
-        assert!(may_open("me command-prompt"));
-        assert!(!may_open("me focused horizontal split drop"));
-        assert!(!may_open("str menu rename"));
-        assert!(!may_open("1 let menu"));
-        assert!(!may_open("define menu 1 end"));
+    fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::default(), false)?;
+        let now = Instant::now();
+        let run = ToAttached::Run("begin false until".into());
+        assert!(keyboard.frame(run).is_empty());
+        assert!(keyboard.bytes(b"x", now).is_empty(), "a key went past it");
+        let mut stopping = keyboard.bytes(b"\x02\x1b", now);
+        stopping.extend(keyboard.timeout());
+        assert!(
+            matches!(stopping.as_slice(), [Act::Notice { error: false, .. }]),
+            "{stopping:?}"
+        );
+        let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+        fuxix::poll::poll(&mut done, Some(door::ANSWER))?;
+        let acts = keyboard.ran();
+        assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
+        assert!(keyboard.idle());
+        Ok(())
     }
 
     /// Leaving sets no cursor shape: DECSCUSR 0 is a blinking block (ctlseqs),

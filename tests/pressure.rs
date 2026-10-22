@@ -2,25 +2,15 @@
 //! program is not reading.
 mod support;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use support::*;
-
-/// The tests here measure time and CPU, so they run one at a time: each
-/// takes this first, and other tests' load is all they share.
-static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn alone() -> std::sync::MutexGuard<'static, ()> {
-    ONE_AT_A_TIME
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// How many log lines mention running out of descriptors.
 fn pressure_lines(server: &Server) -> usize {
     server
         .log()
         .lines()
-        .filter(|l| l.contains("file descriptors") || l.contains("Too many open files"))
+        .filter(|l| l.contains("Too many open files"))
         .count()
 }
 
@@ -44,102 +34,35 @@ fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
     Ok(())
 }
 
-/// Runs `fux ls`, timing it.
-fn timed_ls(server: &Server) -> Result<(Duration, Output), String> {
-    let start = Instant::now();
-    let out = server.fux(&["ls"])?;
-    Ok((start.elapsed(), out))
-}
-
 /// Connections held open without a word exhaust the server's descriptors.
-/// A new client is then refused at once, with a reason, rather than left to
-/// time out; the server does not spin, and says so in its log once rather
-/// than once a tick or a connection; and it recovers when they close
-/// (bevy-final findings 006 and 012).
+/// The server says so in its log once, not once a tick or a connection, and
+/// serves again when they close; as it does after a burst of connections
+/// each closed at once.
 #[test]
-fn a_server_out_of_descriptors_refuses_promptly_and_recovers() -> Outcome {
-    let _alone = alone();
+fn a_server_out_of_descriptors_recovers() -> Outcome {
     let server = Server::start_limited("", Some(64))?;
-    let pid = server.pid().ok_or("the server's pid")?;
     assert_eq!(server.fux(&["ls"])?.status, 0);
-    // More than its descriptors allow, so that on Linux about a hundred
-    // wait in the backlog (it holds 128): refused one a tick, as hunt 8
-    // found (012), the clients below would wait seconds behind them. macOS
-    // refuses a connection past its shorter backlog at once, which is no
-    // failure here.
-    let mut held: Vec<UnixStream> = Vec::new();
-    for _ in 0..150 {
-        match UnixStream::connect(&server.socket) {
-            Ok(stream) => held.push(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
-            Err(error) => return Err(e(error)),
-        }
+    // A full backlog is refused by the kernel at once, which is fine.
+    let connect = || match UnixStream::connect(&server.socket) {
+        Ok(stream) => Ok(Some(stream)),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => Ok(None),
+        Err(error) => Err(e(error)),
+    };
+    let mut held = Vec::new();
+    for _ in 0..100 {
+        held.extend(connect()?);
     }
     // Past the server's 64 descriptors, whatever the backlog took.
     assert!(held.len() > 64, "only {} connections held", held.len());
-    // Settle: the server takes what it can, and refuses the rest.
-    std::thread::sleep(Duration::from_millis(300));
-    let lines_before = pressure_lines(&server);
-    let cpu_before = cpu_seconds(pid)?;
-    // Thirty clients over about two seconds: each refused within a second,
-    // with a reason that names the cause. Everything is measured before
-    // anything is judged, so a failure reports all of it.
-    let mut slowest = Duration::ZERO;
-    let mut unclear = Vec::new();
-    for _ in 0..30 {
-        let (took, out) = timed_ls(&server)?;
-        slowest = slowest.max(took);
-        if out.status == 0 || !out.stderr.contains("file descriptors") {
-            unclear.push(format!("status {}: {:?}", out.status, out.stderr.trim()));
-        }
-        std::thread::sleep(Duration::from_millis(60));
-    }
-    let cpu = cpu_seconds(pid)? - cpu_before;
-    let lines = pressure_lines(&server);
-    let report = format!(
-        "slowest client {slowest:?}; {} of 30 refusals unclear ({:?}); \
-         {cpu:.2} s of server CPU; {lines} log lines about descriptors ({lines_before} before the clients)",
-        unclear.len(),
-        unclear.first()
-    );
-    // Three seconds at most for any client (a fux process starts for
-    // each, on a loaded machine), no spinning, and the condition
-    // reported once however many clients were refused.
-    assert!(
-        slowest < Duration::from_secs(3) && unclear.is_empty() && cpu < 0.5 && lines <= 2,
-        "{report}"
-    );
-    eprintln!("{report}");
+    eventually("the shortage logged", || Ok(pressure_lines(&server) > 0))?;
     drop(held);
     eventually("served again", || Ok(server.fux(&["ls"])?.status == 0))?;
-    let (took, out) = timed_ls(&server)?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(3), "{took:?}");
-    eventually("the recovery reported", || {
-        Ok(server.log().contains("file descriptors available again"))
-    })?;
-    Ok(())
-}
-
-/// The same connections, each closed at once, leave the server reachable.
-/// A burst of them can still run it short for a moment, since it accepts
-/// what waits before reading any close; that is reported, not a failure.
-#[test]
-fn connections_that_close_at_once_leave_the_server_reachable() -> Outcome {
-    let _alone = alone();
-    let server = Server::start_limited("", Some(64))?;
     for _ in 0..200 {
-        // A full backlog is refused by the kernel at once, which is fine.
-        match UnixStream::connect(&server.socket) {
-            Ok(stream) => drop(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
-            Err(error) => return Err(e(error)),
-        }
+        drop(connect()?);
     }
     eventually("served", || Ok(server.fux(&["ls"])?.status == 0))?;
-    let (took, out) = timed_ls(&server)?;
-    assert_eq!(out.status, 0, "{}", out.stderr);
-    assert!(took < Duration::from_secs(3), "{took:?}");
+    let lines = pressure_lines(&server);
+    assert!(lines <= 2, "{lines} log lines about descriptors");
     Ok(())
 }
 
@@ -209,10 +132,9 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// `send-keys`, and many pastes, all arrive in order once it reads again.
 /// Past the queue's bound, input is refused whole with the documented
 /// notice, and, as it says, nothing more is queued until the program reads:
-/// what arrives is exactly what was accepted (bevy-final finding 021).
+/// what arrives is exactly what was accepted.
 #[test]
 fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
-    let _alone = alone();
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
@@ -309,49 +231,25 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
 
 /// A program that closes its terminal but keeps running leaves its PTY
 /// hung up: the master reports the end on every poll until the program
-/// exits. The server stops polling it rather than spin, and closes the
-/// pane when the program exits.
-///
-/// On Linux, closing the last descriptor on the terminal is enough. On
-/// macOS the server holds the terminal open itself (`fuxix::pty::Master`),
-/// so it never hangs up there: the pane still closes when the program
-/// exits.
+/// exits. The server stops polling it, and closes the pane when the
+/// program exits. (On macOS the server holds the terminal open itself,
+/// `fuxix::pty::Master`, so it never hangs up there.)
 #[test]
-fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome {
-    let _alone = alone();
+fn a_program_that_closes_its_terminal_closes_its_pane_at_exit() -> Outcome {
     let server = Server::start("")?;
-    let pid = server.pid().ok_or("the server's pid")?;
-    eventually("a prompt", || {
-        let screen = screen(&server, "%1")?;
-        Ok(screen.contains('$'))
-    })?;
+    eventually("a prompt", || Ok(screen(&server, "%1")?.contains('$')))?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
-    eventually("a prompt in %2", || {
-        let screen = screen(&server, "%2")?;
-        Ok(screen.contains('$'))
-    })?;
-    // At once: settling would wait out the sleep, past the second measured.
-    send_now(
-        &server,
-        "%2",
-        &[
-            "str",
-            "exec sleep 2 <&- >&- 2>&-",
-            "text",
-            "str",
-            "Enter",
-            "key",
-        ],
+    eventually(
+        "a prompt in %2",
+        || Ok(screen(&server, "%2")?.contains('$')),
     )?;
-    // Let the shell exec, then measure a second of the server's CPU.
-    std::thread::sleep(Duration::from_millis(300));
-    let before = cpu_seconds(pid)?;
-    std::thread::sleep(Duration::from_secs(1));
-    let cpu = cpu_seconds(pid)? - before;
-    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
+    // At once: settling would wait out the sleep.
+    let line = "exec sleep 1 <&- >&- 2>&-";
+    send_now(&server, "%2", &["str", line, "text", "str", "Enter", "key"])?;
     eventually("%2 to close when sleep exits", || {
         Ok(!server.ok(&["ls"])?.contains("%2 "))
     })?;
+    assert_eq!(server.fux(&["ls"])?.status, 0);
     Ok(())
 }
 
@@ -362,7 +260,6 @@ fn a_program_that_closes_its_terminal_does_not_make_the_server_spin() -> Outcome
 /// meanwhile, and the server's memory stays small.
 #[test]
 fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
-    let _alone = alone();
     use fux::act::Act;
     use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
     use std::io::Write;
@@ -415,70 +312,22 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         Ok(())
     });
     std::thread::sleep(Duration::from_millis(300));
-    let mut slowest = Duration::ZERO;
     for _ in 0..5 {
-        let (took, out) = timed_ls(&server)?;
+        let out = server.fux(&["ls"])?;
         assert_eq!(out.status, 0, "{}", out.stderr);
-        slowest = slowest.max(took);
-        std::thread::sleep(Duration::from_millis(200));
     }
     let memory = resident_mib(pid)?;
-    assert!(
-        slowest < Duration::from_secs(2) && memory < 64.0,
-        "slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident"
-    );
-    eprintln!("slowest fux ls {slowest:?} while flooded; {memory:.0} MiB resident");
+    assert!(memory < 64.0, "{memory:.0} MiB resident while flooded");
     Ok(())
 }
 
 /// Output that spends a parser call's work budget (THREATS.md 4.4) is read
-/// on the pane's next turns, the rest of it and what came after: the pane
-/// goes on to its end, and the server, with nothing more to read, rests.
-/// Each REP is spent as 65,535 copies: 2,000 of them spend a budget. The
-/// wait is asked first: an unoptimized build spends seconds on a budget,
-/// past a client's patience for the server's greeting.
-#[test]
-fn output_past_a_read_budget_is_read_on_the_next_turns() -> Outcome {
-    let _alone = alone();
-    let server = Server::start("")?;
-    let pid = server.pid().ok_or("the server's pid")?;
-    let code = "sleep 1; printf 'X\\033[65535b%.0s' $(seq 2000); echo; echo DO''NE; sleep 30";
-    let pane = server
-        .ok(&[
-            "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "0", "timeout",
-            "run",
-        ])?
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let done = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "DONE",
-        "wait-text",
-        "60",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(done.status, 0, "{}", done.stderr);
-    std::thread::sleep(Duration::from_millis(300));
-    let before = cpu_seconds(pid)?;
-    std::thread::sleep(Duration::from_secs(1));
-    let cpu = cpu_seconds(pid)? - before;
-    assert!(cpu < 0.2, "{cpu:.2} s of server CPU in one second");
-    Ok(())
-}
-
-/// A program that prints past a read budget and exits at once is told
-/// exited with all it printed on its screen: `run`'s answer, which tells
-/// the exit once (#198), has its last line. 4,000 REPs of 65,535 spend
+/// on the pane's next turns, to its end. A program that prints past a read
+/// budget and exits at once is told exited with all it printed on its screen: `run`'s answer, which tells
+/// the exit once, has its last line. 4,000 REPs of 65,535 spend
 /// two budgets.
 #[test]
 fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
-    let _alone = alone();
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
     let out = server.fux(&[

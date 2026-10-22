@@ -6,10 +6,6 @@
 //!
 //! Every run is fresh: its own stack and dictionary, the bundled library's
 //! words first (`library.fux`).
-#[cfg(test)]
-mod failures;
-#[cfg(test)]
-mod stacks;
 mod words;
 
 use crate::client;
@@ -26,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub use words::{WORDS, Word, opens, usage};
+pub use words::{WORDS, Word, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
 /// prompt see.
@@ -68,14 +64,8 @@ impl AppValue for Fux {
             Fux::Tab(_) => "tab",
             Fux::Workspace(_) => "workspace",
             Fux::Client(_) => "client",
-            // A pane given only a wait, which waits if nothing acts on it.
             Fux::Opts(opts) => match opts.on {
                 None => "opts",
-                Some(On::Target(_))
-                    if opts.given.iter().all(|w| crate::help::WAITS.contains(w)) =>
-                {
-                    "waiting"
-                }
                 Some(_) => "request",
             },
             Fux::Extent(_) => "size",
@@ -374,33 +364,10 @@ impl From<fuxth::Error> for Failed {
 
 /// `error` as fux tells it, with how its word is used if `usage`.
 fn told(mut error: fuxth::Error, usage: bool) -> Failed {
-    // A bundled word that fails whatever way it takes is told by its own
-    // name and use, not by the word inside it that would fail.
-    let bundled = |w: &str| crate::help::library().iter().any(|(name, ..)| *name == w);
-    if error.word.as_deref().is_some_and(bundled) {
-        error.cause = None;
-    }
-    // A value of the wrong kind that other words passed on: the word
-    // that made it is the one out of place, and what was likely meant.
-    if let Some(made) = error.made_by.take() {
-        let meant = words::misplaced(&made.text).map_or_else(String::new, |m| format!(": {m}"));
-        error.message.push_str(&format!(
-            "; `{}` ({}) made it{meant}",
-            made.text, made.place
-        ));
-    }
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
-    if error.code == Lang::Unused
-        && let Some(how) = error.word.as_deref().and_then(words::unacted)
-    {
-        error.message = how;
-    }
     if error.code == Lang::UnknownWord {
-        if let Some(hint) = error.word.as_deref().and_then(words::hint) {
-            error.message = format!("no such word; {hint}");
-        }
         error.message.push_str(" (`fux help` lists every word)");
     }
     let code = Code::from(error.code);
@@ -433,8 +400,6 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
-    // A wait left last on the line waits: `%2 str ready wait-text`.
-    vocabulary.ends("waiting", "wait")?;
     Ok(vocabulary)
 }
 
@@ -446,7 +411,7 @@ pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
 /// Compiles `tokens` after the library and, for a key's or the prompt's
 /// program, its client's config's definitions (`config`).
 pub fn compile_in(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compiled(config, tokens).map_err(|error| listing(tokens, error))
+    compiled(config, tokens).map_err(Failed::from)
 }
 
 /// `compile_in`, its mistake as fuxth says it.
@@ -456,115 +421,41 @@ pub(crate) fn compiled(
 ) -> Result<Machine<Fux>, fuxth::Error> {
     let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.message, None);
     let mut compiler = READY.with(Clone::clone).map_err(broken)?;
-    if let Some((name, text)) = config.map(|config| &**config) {
-        compiler.add(&handles(&token::source(name, text)?)?)?;
-        compiler = compiler.definitions();
+    if let Some(config) = config {
+        compiler = configured_compiler(config, compiler)?;
     }
     compiler.add(&handles(tokens)?)?;
     Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
-/// A `list` never closed, with no `end` after it at all, is most likely
-/// meant as a listing: told so.
-fn listing(tokens: &[Token], mut error: fuxth::Error) -> Failed {
-    let at = |t: &Token| Some(&t.place) == error.place.as_ref() && &*t.text == "list";
-    let list = tokens.iter().position(at);
-    if error.code == Lang::Unclosed
-        && list.is_some_and(|i| tokens.iter().skip(i).all(|t| &*t.text != "end"))
-    {
-        error
-            .message
-            .push_str("; to list panes, tabs and workspaces: `fux ls`");
+/// The libraries and `config`'s definitions, compiled and checked once a
+/// thread for each config: a config's bindings, each checked as it binds,
+/// and every key's program after.
+fn configured_compiler(
+    config: &Config,
+    mut compiler: Compiler<Fux>,
+) -> Result<Compiler<Fux>, fuxth::Error> {
+    if let Some(ready) = CONFIGURED.with_borrow(|c| {
+        (c.as_ref())
+            .filter(|(of, _)| of == config)
+            .map(|(_, ready)| ready.clone())
+    }) {
+        return Ok(ready);
     }
-    let order = reordered(tokens, &error);
-    let mut failed = Failed::from(error);
-    if let Some(line) = order {
-        failed
-            .message
-            .push_str(&format!("; in this order: `{line}`"));
-    }
-    failed
-}
-
-/// A command line's words in the order that works, for one refused as
-/// written out of order: a word that acts written before what it takes
-/// (`run opts …`, `%2 json capture`, `%2 send-keys str y text`), or
-/// before options of its own (`%2 capture wrapped`). The failing word, or
-/// one that acts before it, is moved last, else `opts` first; said only
-/// if the line then compiles.
-fn reordered(tokens: &[Token], error: &fuxth::Error) -> Option<String> {
-    let order = matches!(error.code, Lang::StackUnderflow | Lang::Type | Lang::Unused);
-    let arguments = (tokens.iter()).all(|t| matches!(t.place, token::Place::Argument(_)));
-    let failing = (tokens.iter()).position(|t| Some(&t.place) == error.place.as_ref())?;
-    // Each word, unless it is `str`'s text; a line of the language's own
-    // shapes (`if`, `define`) is left as written.
-    let words: Vec<Option<&str>> = (0..tokens.len())
-        .map(|i| {
-            let text = i.checked_sub(1).and_then(|p| tokens.get(p));
-            let literal = text.is_some_and(|t| &*t.text == "str");
-            (!literal)
-                .then(|| tokens.get(i).map(|t| &*t.text))
-                .flatten()
-        })
-        .collect();
-    let shaped =
-        (words.iter().flatten()).any(|w| *w != "str" && fuxth::Parsing::named(w).is_some());
-    if !order || !arguments || shaped {
-        return None;
-    }
-    let word = |i: usize| words.get(i).copied().flatten();
-    // A word that acts, or turns a value: not one that adds to a request.
-    let acts = |i: usize| {
-        (WORDS.iter()).any(|w| Some(w.name) == word(i) && !w.effect.starts_with(['x', 'w']))
-    };
-    // The line with the word at `from` moved last, or first.
-    let moved = |from: usize, last: bool| {
-        let word = tokens.get(from)?;
-        let rest = (tokens.iter().enumerate())
-            .filter(|(i, _)| *i != from)
-            .map(|(_, t)| t);
-        let moved: Vec<Token> = match last {
-            true => rest.chain([word]).cloned().collect(),
-            false => [word].into_iter().chain(rest).cloned().collect(),
-        };
-        Some(moved)
-    };
-    // Moved last, it must take every option word after it: the line
-    // compiles though a word refuses options it would not use (`unused`).
-    let request = |i: usize| {
-        (WORDS.iter()).any(|w| Some(w.name) == word(i) && w.effect.starts_with(['x', 'w']))
-    };
-    let takes_after = |i: usize| {
-        let Some(taken) = word(i).and_then(crate::help::options) else {
-            return true;
-        };
-        let taken: Vec<&str> = taken.collect();
-        (i..tokens.len())
-            .filter(|&j| request(j))
-            .all(|j| word(j).is_some_and(|w| taken.contains(&w)))
-    };
-    let last = tokens.len().saturating_sub(1);
-    let failing_last = (acts(failing) && failing < last).then_some(failing);
-    let before = (0..failing).rev().filter(|&i| acts(i));
-    let (failing_last, before) = (
-        failing_last.filter(|&i| takes_after(i)),
-        before.filter(|&i| takes_after(i)),
-    );
-    let opts = (0..tokens.len())
-        .find(|&i| word(i) == Some("opts"))
-        .filter(|&i| i > 0);
-    let tries = (failing_last.into_iter().chain(before))
-        .filter_map(|i| moved(i, true))
-        .chain(opts.and_then(|i| moved(i, false)));
-    let works = tries.into_iter().find(|t| compiled(None, t).is_ok())?;
-    let said: Vec<String> = works.iter().map(|t| crate::words::quote(&t.text)).collect();
-    Some(format!("fux {}", said.join(" ")))
+    let (name, text) = &**config;
+    compiler.add(&handles(&token::source(name, text)?)?)?;
+    let ready = compiler.definitions();
+    CONFIGURED.set(Some((Arc::clone(config), ready.clone())));
+    Ok(ready)
 }
 
 thread_local! {
     /// The standard library and fux's, compiled and checked once a thread,
     /// for every program after.
     static READY: Result<Compiler<Fux>, Failed> = libraries();
+    /// The last config's, as `configured_compiler` made it.
+    static CONFIGURED: std::cell::RefCell<Option<(Config, Compiler<Fux>)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn libraries() -> Result<Compiler<Fux>, Failed> {
@@ -868,8 +759,6 @@ fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
         message: failed.message,
         place: Some(at.place),
         word: Some(at.text),
-        cause: None,
-        made_by: None,
     };
     Failed {
         message: ours(machine, error).message,
@@ -1196,39 +1085,16 @@ impl Asks for Layout<'_> {
 /// or runs the words given. What is left on the stack is printed, a value a
 /// line. Its status, or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
-    let tokens = match args {
-        [] => token::arguments(&["attach"]),
-        // A program read whole, at most `SOURCE_MAX` of it.
-        [dash] if dash == "-" => {
-            token::source("stdin", &read_text("stdin", io::stdin(), SOURCE_MAX)?)?
-        }
-        [file] if file.contains('/') || file.ends_with(".fux") => {
-            token::source(file, &read_file(file.as_ref(), SOURCE_MAX)?)?
-        }
-        // A whole program in one word, as a shell passes `fux 'ls json'`.
-        [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
-        // Help as other programs give it, and older notes say: `help agents`,
-        // `help json`, `help WORD`.
-        [help, agents, topic] if help == "help" && agents == "agents" => {
-            token::arguments(&["str", topic, "help-agents-on"])
-        }
-        [agents, topic] if agents == "help-agents" => {
-            token::arguments(&["str", topic, "help-agents-on"])
-        }
-        [help, topic] if help == "help" => match topic.as_str() {
-            "agents" => token::arguments(&["help-agents"]),
-            "json" => token::arguments(&["help-json"]),
-            word => token::arguments(&["str", word, "explain"]),
-        },
-        // What other programs take for help and their version.
-        [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
-        [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
-        words => token::arguments(words),
-    };
-    let mut machine = compile(&tokens)?;
+    let mut machine = compile(&program(args)?)?;
     let mut out = Checked { out, failed: None };
     let mut host = Host::new(client::context(), None, &mut out, true);
-    let ran = run(&mut machine, &mut host, &mut Cli::default());
+    let ran = run_capped(
+        &mut machine,
+        &mut host,
+        &mut Cli::default(),
+        Some(LINE_STEPS),
+        None,
+    );
     // What the words before a failure left is printed too: their answers.
     let stack = match &ran {
         Ok(stack) => stack.as_slice(),
@@ -1254,6 +1120,40 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         None => Ok(status),
     }
 }
+
+/// The program `args` give: none attaches; `-` is stdin; one argument
+/// holding a blank is a whole program, as a shell passes `fux 'ls json'`;
+/// else one with a `/` or ending `.fux` names a file; else each is a word.
+fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
+    Ok(match args {
+        [] => token::arguments(&["attach"]),
+        // A program read whole, at most `SOURCE_MAX` of it.
+        [dash] if dash == "-" => {
+            token::source("stdin", &read_text("stdin", io::stdin(), SOURCE_MAX)?)?
+        }
+        [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
+        [file] if file.contains('/') || file.ends_with(".fux") => {
+            token::source(file, &read_file(file.as_ref(), SOURCE_MAX)?)?
+        }
+        // Help as other programs give it: `help agents TOPIC`, `help json`,
+        // `help WORD`, `--help`, `--version`.
+        [help, agents, topic] if help == "help" && agents == "agents" => {
+            token::arguments(&["str", topic, "help-agents-on"])
+        }
+        [help, topic] if help == "help" => match topic.as_str() {
+            "agents" => token::arguments(&["help-agents"]),
+            "json" => token::arguments(&["help-json"]),
+            word => token::arguments(&["str", word, "explain"]),
+        },
+        [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
+        [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
+        words => token::arguments(words),
+    })
+}
+
+/// The most steps a command line's program takes: one that loops without
+/// end fails rather than spinning.
+const LINE_STEPS: u64 = 1_000_000_000;
 
 /// The code naming the status of the first value, in order, that is an
 /// answer with a status of its own, or a list holding one (an answer
@@ -1330,5 +1230,18 @@ impl Checked<'_> {
             self.failed = Some(io::Error::new(error.kind(), error.to_string()));
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A whole program in one argument is a program, though a word in it
+    /// holds a `/`: never a file to read.
+    #[test]
+    fn one_argument_with_a_blank_is_a_program() -> Result<(), super::Failed> {
+        let tokens = super::program(&["%2 str \"ls /tmp\" line".to_owned()])?;
+        let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
+        assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
+        Ok(())
     }
 }

@@ -50,9 +50,6 @@ const PRESENTATION: u16 = 1 << 9;
 const EMOJI_STYLE: u16 = 1 << 10;
 const TEXT_STYLE: u16 = 1 << 11;
 const MODIFIER_BASE: u16 = 1 << 12;
-/// Its bit for a Default_Ignorable combining mark, which interrupts no
-/// ligature.
-const TRANSPARENT: u16 = 1 << 13;
 /// Its bit for a character the cluster rule's arms look at, before or
 /// after it: a variation selector, ZWJ, the keycap, a regional indicator,
 /// an emoji modifier, a tag, Kirat Rai's vowel signs, or a line feed after
@@ -158,62 +155,19 @@ impl Next {
     const VARIATION_SELECTOR_15: Self = Self(0b0100_0000_0000_0000);
     const VARIATION_SELECTOR_16: Self = Self(0b1000_0000_0000_0000);
 
-    /// The bit of a ligature's states, which a variation selector keeps.
-    const LIGATURE: u16 = 0b0010_0000_0000_0000;
-
-    fn is_ligature_transparent(self) -> bool {
-        self.0 & 0b0000_1000_0000_0000 != 0
-    }
-    fn set_zwj_bit(self) -> Self {
-        Self(self.0 | 0b0000_0100_0000_0000)
-    }
     fn is_emoji_presentation(self) -> bool {
         self.0 & Self::VARIATION_SELECTOR_16.0 != 0
     }
     fn is_zwj_emoji_presentation(self) -> bool {
         self.0 & 0b1011_0000_0000_0000 == 0b1001_0000_0000_0000
     }
-    /// U+FE0F before what follows: a ligature or a ZWJ sequence keeps its
-    /// state.
+    /// U+FE0F before what follows: a ZWJ sequence keeps its state.
     fn set_emoji_presentation(self) -> Self {
-        if self.0 & Self::LIGATURE != 0 || self.0 & 0b1001_0000_0000_0000 == 0b0001_0000_0000_0000 {
+        if self.0 & 0b1001_0000_0000_0000 == 0b0001_0000_0000_0000 {
             Self(self.0 | Self::VARIATION_SELECTOR_16.0)
         } else {
             Self::VARIATION_SELECTOR_16
         }
-    }
-    fn unset_emoji_presentation(self) -> Self {
-        if self.0 & Self::LIGATURE != 0 {
-            Self(self.0 & !Self::VARIATION_SELECTOR_16.0)
-        } else {
-            Self::DEFAULT
-        }
-    }
-    fn is_text_presentation(self) -> bool {
-        self.0 & Self::VARIATION_SELECTOR_15.0 != 0
-    }
-    fn set_text_presentation(self) -> Self {
-        if self.0 & Self::LIGATURE != 0 {
-            Self(self.0 | Self::VARIATION_SELECTOR_15.0)
-        } else {
-            Self::VARIATION_SELECTOR_15
-        }
-    }
-    fn unset_text_presentation(self) -> Self {
-        Self(self.0 & !Self::VARIATION_SELECTOR_15.0)
-    }
-    fn is_vs1_2_3(self) -> bool {
-        self.0 & Self::VARIATION_SELECTOR_1_2_OR_3.0 != 0
-    }
-    fn set_vs1_2_3(self) -> Self {
-        if self.0 & Self::LIGATURE != 0 {
-            Self(self.0 | Self::VARIATION_SELECTOR_1_2_OR_3.0)
-        } else {
-            Self::VARIATION_SELECTOR_1_2_OR_3
-        }
-    }
-    fn unset_vs1_2_3(self) -> Self {
-        Self(self.0 & !Self::VARIATION_SELECTOR_1_2_OR_3.0)
     }
 }
 
@@ -319,7 +273,7 @@ fn in_cluster(c: char, bits: u16, mut next: Next) -> (i8, Next) {
             };
             return (width, Next::EMOJI_PRESENTATION);
         }
-        next = next.unset_emoji_presentation();
+        next = Next::DEFAULT;
     }
     if c <= '\u{a0}' {
         return match c {
@@ -331,28 +285,20 @@ fn in_cluster(c: char, bits: u16, mut next: Next) -> (i8, Next) {
     if next != Next::DEFAULT {
         match c {
             '\u{fe0f}' => return (0, next.set_emoji_presentation()),
-            '\u{fe01}' => return (0, next.set_vs1_2_3()),
-            '\u{fe0e}' => return (0, next.set_text_presentation()),
+            '\u{fe01}' => return (0, Next::VARIATION_SELECTOR_1_2_OR_3),
+            '\u{fe0e}' => return (0, Next::VARIATION_SELECTOR_15),
             _ => {}
         }
-        if next.is_text_presentation() {
+        if next == Next::VARIATION_SELECTOR_15 {
             if bits & TEXT_STYLE != 0 {
                 return (1, Next::DEFAULT);
             }
-            next = next.unset_text_presentation();
-        } else if next.is_vs1_2_3() {
+            next = Next::DEFAULT;
+        } else if next == Next::VARIATION_SELECTOR_1_2_OR_3 {
             if matches!(c, '\u{2018}' | '\u{2019}' | '\u{201c}' | '\u{201d}') {
                 return (2, Next::DEFAULT);
             }
-            next = next.unset_vs1_2_3();
-        }
-        if next.is_ligature_transparent() {
-            if c == '\u{200d}' {
-                return (0, next.set_zwj_bit());
-            }
-            if bits & TRANSPARENT != 0 {
-                return (0, next);
-            }
+            next = Next::DEFAULT;
         }
         if let Some(found) = emoji_sequence(c, bits, next) {
             return found;

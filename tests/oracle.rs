@@ -36,31 +36,6 @@ const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/oracle/corpus")
 /// rows of its lines.
 const CONFIG: &str = "str history-bytes 12000 set";
 
-/// Disagreements known to be fux's, each a defect in src/ to fix, listed
-/// here so the deterministic part reports them without failing: its
-/// class, the classify source, the fixture's mode, and why. Remove an
-/// entry once fixed; the tests then hold it.
-const KNOWN: &[Known] = &[Known {
-    class: "echo-taken-as-output",
-    sources: &["screen"],
-    modes: &["full"],
-    chunked: false,
-    why: "a kept rule (docs/agents.md, notes kept-rules.md): a full-screen program's \
-          screen is all output, so a form's field showing the text typed meets a wait \
-          for it, which agents use to know the keys went in (agentbench's form tasks)",
-}];
-
-struct Known {
-    class: &'static str,
-    /// The classify sources and fixture modes it is seen with (none
-    /// listed: any).
-    sources: &'static [&'static str],
-    modes: &'static [&'static str],
-    /// Seen only with the output written a few bytes at a time.
-    chunked: bool,
-    why: &'static str,
-}
-
 // ---------------------------------------------------------------------
 // Cases
 
@@ -162,7 +137,7 @@ impl Step {
         }
     }
 
-    /// The behaviour it exercises, as `KNOWN` names it.
+    /// The behaviour it exercises, as a report names it.
     fn behaviour(&self) -> String {
         match self {
             Step::Wait { .. } => "wait".into(),
@@ -471,13 +446,23 @@ impl Builder {
     }
 
     /// The line typed with no Enter: a wait for it is never met by its
-    /// echo; then Enter, and its reply.
+    /// echo, then or by a later wait; then Enter alone, and its reply,
+    /// which a later wait meets again (it came since the last input).
     fn typed(&mut self, edits: bool) {
         let id = self.fresh();
         let keys = self.typing(id, edits);
         self.keys(keys, waits(Some(token("IN", id)), 2));
+        self.later(Some(token("IN", id)));
         let wanted = if self.rng.chance(30) { "IN" } else { "OUT" };
         self.keys(vec![Key::name("Enter")], waits(Some(token(wanted, id)), 3));
+        self.later(Some(token(wanted, id)));
+    }
+
+    /// A wait of its own, after the last input.
+    fn later(&mut self, text: Option<String>) {
+        self.steps.push(Step::Wait {
+            probe: waits(text, 1),
+        });
     }
 
     /// A command, and a wait for its reply.
@@ -1023,8 +1008,6 @@ fn reading_at(log: &[Rec], seq: usize, (sent, lines): (usize, usize)) -> bool {
 struct Disagreement {
     class: &'static str,
     source: &'static str,
-    mode: &'static str,
-    chunked: bool,
     step: usize,
     behaviour: String,
     detail: String,
@@ -1094,8 +1077,6 @@ fn judge(case: &Case, run: &Run) -> (Vec<Disagreement>, Vec<Verdict>) {
             found.push(Disagreement {
                 class,
                 source,
-                mode: case.mode.name(),
-                chunked: case.chunk > 0,
                 step: n,
                 behaviour: step.behaviour(),
                 detail,
@@ -1109,11 +1090,15 @@ fn judge(case: &Case, run: &Run) -> (Vec<Disagreement>, Vec<Verdict>) {
         if let Some(token) = probe.text.as_deref().filter(|_| probe.secs > 0 && !exited) {
             let met_text = answer.met == "text" && answer.text.eq_ignore_ascii_case(token);
             let truth = printed(log, first_read, hi, token);
-            let maybe = !truth && printed(log, issued, first_read, token);
-            verdict.met = Some(met_text);
-            verdict.truth = (!maybe).then_some(truth);
             let kernel_echo = typed.iter().any(|t| t == token) && modes_at(log, hi).1;
             let echo = echoed(log, issued, hi, token) || kernel_echo;
+            // Printed before the program read the input, or (docs/agents.md:
+            // a full-screen program's screen is all output) drawn on the
+            // full screen as echo: it may count or not.
+            let maybe =
+                !truth && (printed(log, issued, first_read, token) || source == "screen" && echo);
+            verdict.met = Some(met_text);
+            verdict.truth = (!maybe).then_some(truth);
             match (met_text, truth, maybe) {
                 (true, false, false) => {
                     let class = if echo {
@@ -1190,21 +1175,6 @@ fn judge(case: &Case, run: &Run) -> (Vec<Disagreement>, Vec<Verdict>) {
         verdicts.push(verdict);
     }
     (found, verdicts)
-}
-
-/// The entry of `KNOWN` that lists a disagreement.
-fn listed(d: &Disagreement) -> Option<&'static Known> {
-    let any = |list: &[&str], item: &str| list.is_empty() || list.contains(&item);
-    KNOWN.iter().find(|k| {
-        k.class == d.class
-            && any(k.sources, d.source)
-            && any(k.modes, d.mode)
-            && (!k.chunked || d.chunked)
-    })
-}
-
-fn known(d: &Disagreement) -> bool {
-    listed(d).is_some()
 }
 
 fn describe(case: &Case, found: &[Disagreement]) -> String {
@@ -1298,25 +1268,12 @@ fn pop(queue: &std::sync::Mutex<Vec<Case>>) -> Option<Case> {
     queue.lock().ok()?.pop()
 }
 
-/// Fails listing every disagreement not known, by class; known ones are
-/// printed.
-#[expect(
-    clippy::print_stderr,
-    reason = "the harness shows what a test prints when it fails, or with --nocapture"
-)]
+/// Fails listing every disagreement, by class.
 fn report(results: &[Checked]) -> Outcome {
     let mut failed = String::new();
     for (case, found, _) in results {
-        let (old, new): (Vec<_>, Vec<_>) = found.iter().cloned().partition(known);
-        if !old.is_empty() {
-            let why: Vec<&str> = old.iter().filter_map(listed).map(|k| k.why).collect();
-            eprintln!(
-                "known disagreements (KNOWN):\n{}  why: {why:?}",
-                describe(case, &old)
-            );
-        }
-        if !new.is_empty() {
-            failed.push_str(&describe(case, &new));
+        if !found.is_empty() {
+            failed.push_str(&describe(case, found));
         }
     }
     if failed.is_empty() {
@@ -1385,21 +1342,17 @@ fn the_corpus_agrees_with_the_side_log() -> Outcome {
     report(&check_all(&cases, 2)?)
 }
 
-/// Where a step's text was met in one run and not in the other, though
-/// the side log says the same of both (or cannot tell).
 /// Steps whose waits were met in one run and not in the other, though the
-/// side log says the same of both (or cannot tell); steps with a known
-/// disagreement in either aside.
+/// side log says the same of both (or cannot tell).
 fn compare(class: &str, a: &Checked, b: &Checked) -> Vec<String> {
-    let listed = |run: &Checked, n: usize| run.1.iter().any(|d| d.step == n && known(d));
     (a.2.iter().zip(&b.2).enumerate())
-        .filter(|(n, (x, y))| {
+        .filter(|(_, (x, y))| {
             let same_truth = match (x.truth, y.truth) {
                 (Some(p), Some(q)) => p == q,
                 _ => true,
             };
             let both = x.met.is_some() && y.met.is_some();
-            both && same_truth && x.met != y.met && !listed(a, *n) && !listed(b, *n)
+            both && same_truth && x.met != y.met
         })
         .map(|(n, (x, y))| {
             format!(
@@ -1474,20 +1427,9 @@ fn answers_hold_across_sizes_and_chunks() -> Outcome {
 // ---------------------------------------------------------------------
 // Fuzzing
 
-/// A disagreement's class, and the entry of `KNOWN` that lists it.
-fn kind(d: &Disagreement) -> String {
-    match KNOWN
-        .iter()
-        .position(|k| listed(d).is_some_and(|l| std::ptr::eq(k, l)))
-    {
-        Some(n) => format!("{} (KNOWN {n})", d.class),
-        None => d.class.to_owned(),
-    }
-}
-
-/// Whether `case` still shows a disagreement of this `kind`.
-fn still_fails(server: &Server, case: &Case, kind_of: &str) -> bool {
-    check(server, case).is_ok_and(|(found, _)| found.iter().any(|d| kind(d) == kind_of))
+/// Whether `case` still shows a disagreement of this class.
+fn still_fails(server: &Server, case: &Case, class: &str) -> bool {
+    check(server, case).is_ok_and(|(found, _)| found.iter().any(|d| d.class == class))
 }
 
 /// Delta debugging: drops chunks of steps, then single keys, while the
@@ -1572,8 +1514,7 @@ fn env_number(name: &str, default: u64) -> u64 {
 /// the corpus. `ORACLE_SEED`, `ORACLE_RUNS` (cases at most),
 /// `ORACLE_SECS` (wall-clock limit, 240 by default: two thirds running
 /// cases, the rest shrinking), `ORACLE_JOBS` (at most 4), `ORACLE_SHRINK`
-/// (runs per shrink). Known disagreements (`KNOWN`) are counted, not
-/// shrunk.
+/// (runs per shrink).
 #[test]
 #[ignore = "fuzzing, on demand: cargo test --test oracle -- --ignored"]
 fn fuzz() -> Outcome {
@@ -1596,13 +1537,13 @@ fn fuzz() -> Outcome {
     let cases: Vec<Case> = (0..runs).map(|_| random_case(rng.next())).collect();
     let (results, errors) = run_all(&cases, jobs, Some(running));
     let steps: usize = results.iter().map(|r| r.2.len()).sum();
-    let mut classes: BTreeMap<(&str, bool), usize> = BTreeMap::new();
+    let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
     for d in results.iter().flat_map(|r| &r.1) {
-        let count = classes.entry((d.class, known(d))).or_default();
+        let count = classes.entry(d.class).or_default();
         *count = count.saturating_add(1);
     }
     eprintln!(
-        "oracle fuzz: seed {seed}, {} cases, {steps} steps in {:.1}s; disagreements (class, known): {classes:?}; unanswered: {}\n{}",
+        "oracle fuzz: seed {seed}, {} cases, {steps} steps in {:.1}s; disagreements by class: {classes:?}; unanswered: {}\n{}",
         results.len(),
         started.elapsed().as_secs_f64(),
         errors.len(),
@@ -1617,7 +1558,6 @@ fn fuzz() -> Outcome {
                     ("step", number(d.step)),
                     ("class", Value::Str(d.class.into())),
                     ("source", Value::Str(d.source.into())),
-                    ("known", Value::Bool(known(d))),
                 ])
             });
             object([
@@ -1636,27 +1576,23 @@ fn fuzz() -> Outcome {
         std::fs::write(&path, format!("{}\n", out.render())).map_err(e)?;
         return Ok(());
     }
-    // One shrunk case per class not known (and, with ORACLE_SAVE_KNOWN,
-    // per entry of KNOWN).
-    let save_known = std::env::var_os("ORACLE_SAVE_KNOWN").is_some();
+    // One shrunk case per class.
     let server = Server::start(CONFIG)?;
     let mut saved: BTreeMap<String, String> = BTreeMap::new();
     let mut failed = String::new();
     for (case, found, _) in &results {
-        let new: Vec<Disagreement> = found.iter().filter(|d| !known(d)).cloned().collect();
-        if !new.is_empty() {
-            failed.push_str(&describe(case, &new));
+        if !found.is_empty() {
+            failed.push_str(&describe(case, found));
         }
-        for d in found.iter().filter(|d| save_known || !known(d)) {
-            let kind = kind(d);
-            if saved.contains_key(&kind) || Instant::now() >= until {
+        for d in found {
+            if saved.contains_key(d.class) || Instant::now() >= until {
                 continue;
             }
-            if !still_fails(&server, case, &kind) {
-                saved.insert(kind, "did not happen again: not saved".into());
+            if !still_fails(&server, case, d.class) {
+                saved.insert(d.class.to_owned(), "did not happen again: not saved".into());
                 continue;
             }
-            let small = shrink(&server, case, &kind, budget, until);
+            let small = shrink(&server, case, d.class, budget, until);
             std::fs::create_dir_all(CORPUS).map_err(e)?;
             let mut n = 1usize;
             let path = loop {
@@ -1668,7 +1604,7 @@ fn fuzz() -> Outcome {
             };
             std::fs::write(&path, format!("{}\n", small.to_json(d.class).render())).map_err(e)?;
             saved.insert(
-                kind,
+                d.class.to_owned(),
                 format!("{} ({} steps)", path.display(), small.steps.len()),
             );
         }

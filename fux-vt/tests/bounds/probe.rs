@@ -6,7 +6,7 @@
 //! With `FUX_VT_WORST_FEED=FILE`, each probe also appends to FILE its
 //! costliest call and its longest, as a line `NAME CHUNK UNITS NANOSECONDS`
 //! (NAME the test, the thread's name, and the probe's number in the run;
-//! units weighted as `Work::cost`, in twentieths). With
+//! units weighted as `Work::cost`, in cells). With
 //! `FUX_VT_WORST_FEED_INPUTS=DIR` too, a probe fed 4 KiB a call whose
 //! longest call took more than [`KEPT`] leaves what it fed in DIR
 //! (`NAME.bin`, each `feed` a record of its length, 8 bytes little-endian,
@@ -314,7 +314,7 @@ impl Probe {
                 if taken == 0 && (!working || idle > idle_most(size)) {
                     return Err(format!(
                         "a call stopped before any byte, {idle} in a row, doing {}: {stop:?}",
-                        done.cost() / 20
+                        done.cost()
                     ));
                 }
                 self.parsed = self
@@ -369,8 +369,8 @@ impl Probe {
             return Err(format!(
                 "a call of {} bytes did {} weighted units, past {pieces} U = {} ({:?})",
                 bytes,
-                cost / 20,
-                ceiling / 20,
+                cost,
+                ceiling,
                 nonzero(done)
             ));
         }
@@ -512,7 +512,6 @@ fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
         "links" => &mut work.links,
         "prints" => &mut work.prints,
         "keys" => &mut work.keys,
-        "colours" => &mut work.colours,
         "sums" => &mut work.sums,
         "spans" => &mut work.spans,
         "edits" => &mut work.edits,

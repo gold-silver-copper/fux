@@ -455,42 +455,6 @@ fn a_screen_wide_sequence_past_the_ceiling_waits_for_the_next_call() -> Result<(
     Ok(())
 }
 
-/// A DECRQCRA whose rows cost more than a call's budget is summed over
-/// calls of `process_until_stop`: at 2000x1000 its cells cost past the
-/// budget (`budget::LIMIT`), so the first call stops after it, at the
-/// budget, unanswered; the next sums the rows left first and replies
-/// before anything after it is read. The reply is the one `process_with`
-/// gives, which sums every row in one call.
-#[test]
-fn a_checksum_past_the_budget_is_summed_over_calls() -> Result<(), Error> {
-    let size = Size::of(2000, 1000);
-    let options = Options::new().with(Feature::RectangleChecksums);
-    let cells = crate::budget::units(2_000_000u32);
-    let cost = cells.saturating_mul(crate::budget::weight::cells + crate::budget::weight::sums);
-    assert!(cost > crate::budget::LIMIT);
-    let input: &[u8] = b"\x1b[1;1*y\x1b[5n";
-    let mut whole = Parser::with_options(size, 0, options)?;
-    whole.process(b"\x1b#8\x1b[1mab")?;
-    let mut parser = whole.clone();
-    let mut want = Log::default();
-    whole.process_with(input, &mut want)?;
-    let mut got = Log::default();
-    let first = parser.process_until_stop(input, &mut got)?;
-    assert_eq!(first, Some((7, Stop::Budget)));
-    assert!(got.0.is_empty(), "{:?}", got.0);
-    let mut rest = input.get(7..).unwrap_or_default();
-    let mut calls = 1;
-    while let Some((taken, stop)) = parser.process_until_stop(rest, &mut got)? {
-        assert_eq!(stop, Stop::Budget);
-        rest = rest.get(taken..).unwrap_or_default();
-        calls += 1;
-        assert!(calls < 10, "{calls} calls");
-    }
-    assert_eq!(got.0, want.0);
-    assert_eq!(want.0.len(), 2, "{:?}", want.0);
-    Ok(())
-}
-
 /// Random options, each on or off.
 fn options(r: &mut Rng) -> Options {
     let features = Feature::ALL.into_iter().filter(|_| r.chance(50));
@@ -918,35 +882,21 @@ fn a_region_scroll_spends_its_slots_once() -> Result<(), Error> {
 }
 
 /// A call of no bytes does what the call before left, as one of bytes
-/// does first: a DECRQCRA checksum stopped after its first row as the
-/// output's last sequence goes on in calls of nothing, each a row while
-/// the budget is spent, till the reply comes, the one `process_with`
-/// gives; then `has_work_left` is false and a call of no bytes does
-/// nothing.
+/// does first: a screen-wide sequence held back for the next call
+/// (`Screen::holds_back`) is carried out in a call of nothing; then
+/// `has_work_left` is false and a call of no bytes does nothing.
 #[test]
 fn a_call_of_no_bytes_does_what_the_last_left() -> Result<(), Error> {
-    let options = Options::new().with(Feature::RectangleChecksums);
-    let sequence = b"\x1b[3;1;1;6;9*y";
-    let mut whole = Parser::with_options(Size::of(6, 9), 0, options)?;
-    whole.process(b"\x1b#8\x1b[1;3Hab\x1b[4mcd")?;
-    let mut split = whole.clone();
-    let mut want = Log::default();
-    whole.process_with(sequence, &mut want)?;
-    let mut got = Log::default();
-    split.spent = crate::budget::LIMIT;
-    let first = split.process_until_stop(sequence, &mut got)?;
-    assert_eq!(first, Some((sequence.len(), Stop::Budget)));
-    assert!(split.has_work_left() && got.0.is_empty(), "{:?}", got.0);
-    let mut calls = 0;
-    while split.has_work_left() {
-        split.spent = crate::budget::LIMIT;
-        let _ = split.process_until_stop(&[], &mut got)?;
-        calls += 1;
-        assert!(calls < 6, "{calls} calls");
-    }
-    assert!(calls > 1, "{calls} calls");
-    assert_eq!(got.0, want.0);
-    assert_eq!(want.0.len(), 1, "{:?}", want.0);
-    assert_eq!(split.process_until_stop(&[], &mut got)?, None);
+    let size = Size::of(1000, 1000);
+    let input = b"a\x1b[2Jb\x1b[2J";
+    let mut parser = Parser::new(size, 0)?;
+    let stop = parser.process_until_stop(input, &mut Log::default())?;
+    assert_eq!(stop, Some((input.len(), Stop::Budget)));
+    assert!(parser.has_work_left());
+    assert_eq!(parser.process_until_stop(&[], &mut Log::default())?, None);
+    assert!(!parser.has_work_left());
+    let shown = |p: &Parser| p.screen().cell(0, 1).map(|c| c.contents().to_owned());
+    assert_eq!(shown(&parser).as_deref(), Some(""));
+    assert_eq!(parser.process_until_stop(&[], &mut Log::default())?, None);
     Ok(())
 }

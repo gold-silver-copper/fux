@@ -46,13 +46,12 @@ const fn word(
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 12] = [
+pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
     ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("options nothing takes: end them with run, new-tab or new-workspace (`opts str ./app program run`)")),
-    ("waiting", "a pane given a wait", Some("a wait not last, which nothing acts on: end the line with it, or put the word that acts after it (`%2 str T wait-text wait`)")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request: end it with the word that does (`%2 str ready wait-text wait`, `%2 str y text send-keys`, `%2 all-history capture`)")),
 ];
 
@@ -62,13 +61,11 @@ pub const KINDS: [(&str, &str, Option<&str>); 12] = [
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
-    ("x", "opts request waiting>request pane>request tab>request workspace>request client>request answer>request",
+    ("x", "opts request pane>request tab>request workspace>request client>request answer>request",
         "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("w", "opts request waiting pane>waiting tab>waiting workspace>waiting client>request answer>waiting",
-        "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("target", "pane tab workspace client answer request waiting", "a pane, tab, workspace or client, or a request on one"),
-    ("subject", "pane answer request waiting", "a pane, or a request on one"),
-    ("place", "pane tab workspace answer request waiting", "a pane, tab or workspace, or a request on one"),
+    ("target", "pane tab workspace client answer request", "a pane, tab, workspace or client, or a request on one"),
+    ("subject", "pane answer request", "a pane, or a request on one"),
+    ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
     ("pane", "pane answer", "a pane (from pane, run or split)"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
@@ -119,12 +116,12 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", "w text -- w", "wait until text shows anew, not on the line typed"),
-    word("Waiting", "wait-gone", "w text -- w", "wait until text is no longer shown; after run or respawn, once it has been"),
-    word("Waiting", "wait-exit", "w -- w", "wait until the program exits"),
-    word("Waiting", "wait-bell", "w -- w", "wait until the program rings or notifies"),
-    word("Waiting", "wait-done", "w -- w", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
-    word("Waiting", "timeout", "w secs -- w", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
+    word("Waiting", "wait-text", "x text -- x", "wait until text shows anew, not on the line typed"),
+    word("Waiting", "wait-gone", "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
+    word("Waiting", "wait-exit", "x -- x", "wait until the program exits"),
+    word("Waiting", "wait-bell", "x -- x", "wait until the program rings or notifies"),
+    word("Waiting", "wait-done", "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
+    word("Waiting", "timeout", "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
     word("Waiting", "wait", "place -- answer", "wait for the pane to settle, or as the wait words on it say, in a pane, or each pane of a tab or workspace"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
@@ -237,7 +234,7 @@ pub const WORDS: &[Word] = &[
     // Help
     word("Help", "help", "--", "the words, under their headings"),
     word("Help", "help-agents", "--", "how to drive programs from a script or an agent: the first screen, enough for most work"),
-    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers start keys waits read echo status programs shells sizes servers more), or all of it"),
+    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers keys waits read shells programs servers), or all of it"),
     word("Help", "help-json", "--", "what json gives"),
     word("Help", "explain", "word --", "one word at length"),
     word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
@@ -273,14 +270,14 @@ pub fn usage(word: &str) -> Option<String> {
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
     // What a request's word goes on: the pane, or opts.
     let takes = takes.trim().to_uppercase();
-    let request = takes.strip_prefix('X').or(takes.strip_prefix('W'));
+    let request = takes.strip_prefix('X');
     let takes = match request.filter(|r| r.is_empty() || r.starts_with(' ')) {
         Some(rest) => format!("PANE-OR-OPTS{rest}"),
         None => takes,
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" | "w" => ", which leaves a request (or opts) for the word that acts".to_owned(),
+        "x" => ", which leaves a request (or opts) for the word that acts".to_owned(),
         leaves => format!(", which leaves {leaves}"),
     };
     let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
@@ -445,24 +442,11 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
     let Some(option) = built.given.iter().find(|o| !takes(o)) else {
         return Ok(());
     };
-    let instead = match *option {
-        option if word == "capture" && help::WAITING.split_whitespace().any(|w| w == option) => {
-            "it reads once the pane settles (within timeout, wait-seconds if not said); \
-             to wait for something first: PANE … wait, then PANE capture"
-                .to_owned()
-        }
-        // A command for a new tab's or workspace's shell: typed into it.
-        "command" | "program" | "arg" if matches!(word, "new-tab" | "new-workspace") => format!(
-            "{word} starts a shell, and takes {}; a program starts with run \
-             (`opts str 'CMD' command run`), or `str 'CMD' typed` types it into the shell",
-            own(word)
-        ),
-        _ => format!(
-            "{option} goes on {}; {word} takes {}",
-            takers(option),
-            own(word)
-        ),
-    };
+    let instead = format!(
+        "{option} goes on {}; {word} takes {}",
+        takers(option),
+        own(word)
+    );
     Err(fail(Lang::Unused, format!("takes no {option}: {instead}")))
 }
 
@@ -645,7 +629,8 @@ fn modify(
                 super::read_file(path.as_ref(), most).map_err(|f| fail(Code::Paste, f.message))?;
             built.inputs.push(Input::Paste(text));
         }
-        // The input just before it, n times in all.
+        // The input just before it, n times in all: refused before it is
+        // copied if that is more than send-keys sends.
         "times" => {
             let n: usize = within(&next()?, 1..=1000)?;
             let Some(last) = built.inputs.last().cloned() else {
@@ -654,6 +639,8 @@ fn modify(
                     "repeats the input before it: str Down key 3 times",
                 ));
             };
+            let more = sent(std::slice::from_ref(&last)).saturating_add(5);
+            fits(sent(&built.inputs).saturating_add(more.saturating_mul(n.saturating_sub(1))))?;
             built
                 .inputs
                 .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
@@ -746,51 +733,6 @@ fn closest_key(word: &str) -> Option<String> {
     (far <= lower.chars().count().div_ceil(2)).then(|| format!("{}{name}", mods.to_uppercase()))
 }
 
-/// What a finding word was likely meant as, given among a start's
-/// options (`opts str web workspace … run`), where it is no option.
-pub fn misplaced(word: &str) -> Option<&'static str> {
-    match word {
-        "workspace" | "tab" | "pane" => Some(
-            "among options, the tab's name is `str NAME name`, the workspace it opens in `str NAME in`",
-        ),
-        _ => None,
-    }
-}
-
-/// What an unknown word likely meant, if it is a value fux's words take
-/// written without `str`: a key's name, or text one of fux's words takes
-/// (a way, a mouse action, a signal, a setting, a pane's field).
-pub fn hint(word: &str) -> Option<String> {
-    if word == "keys" {
-        return Some(
-            "`keys` is gone: the keys go right after the pane (`%2 str y text send-keys`)".into(),
-        );
-    }
-    let named = word.chars().next().is_some_and(char::is_uppercase) || word.contains('-');
-    if named && word.chars().count() > 1 && word.parse::<crate::keys::KeyPress>().is_ok() {
-        return Some(format!(
-            "a key is `str {word} key` (`%2 str {word} key send-keys`)"
-        ));
-    }
-    let ways = Direction::ALL.map(Direction::name);
-    let signals = fuxix::process::Signal::ALL.map(fuxix::process::Signal::name);
-    let fields = [
-        "state", "exited", "pid", "cwd", "title", "program", "revision", "signal",
-    ];
-    let taken: [(&[&str], &str); 5] = [
-        (&ways, "`me str {} focus`"),
-        (
-            &MICE.map(|(name, _)| name),
-            "`%2 str {} 3 10 mouse send-mouse`",
-        ),
-        (&signals, "`%2 str {} signal`"),
-        (crate::config::NAMES, "`str {} str VALUE set`"),
-        (&fields, "`%2 str {} get`"),
-    ];
-    let (_, used) = taken.iter().find(|(words, _)| words.contains(&word))?;
-    Some(format!("it is text: {}", used.replace("{}", word)))
-}
-
 /// The options `word` takes of its own, said as a list: a wait's words
 /// for one that waits, `nothing else` for one that takes none.
 fn own(word: &str) -> String {
@@ -816,26 +758,6 @@ fn takers(option: &str) -> String {
         .filter(takes)
         .collect();
     crate::words::listed(&on, "or")
-}
-
-/// What a request's word left at a program's end is told: how to end it.
-pub fn unacted(word: &str) -> Option<String> {
-    let spec = WORDS
-        .iter()
-        .find(|w| w.name == word && (w.effect.starts_with("x ") || w.effect.starts_with("w ")))?;
-    let end = match spec.group {
-        "Waiting" => {
-            "last on the line, where it waits (`%2 str T wait-text`), or before the word \
-             it waits after (`%2 str T wait-text str y text send-keys`)"
-        }
-        "Input" => "`%2 str y text str Enter key send-keys`",
-        "Reading" => "`%2 all-history capture`",
-        _ => "on opts for run, new-tab and new-workspace: `opts str DIR cwd new-tab`",
-    };
-    let takers = takers(word);
-    Some(format!(
-        "nothing acts on it: {word} goes before {takers}, which do: {end}"
-    ))
 }
 
 /// Where a pause goes, for one that is not between two inputs.
@@ -870,6 +792,36 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
+
+/// The bytes `inputs` take as the request carries them, which must fit in
+/// one frame: text and pastes their bytes, keys their names' (`C-M-F12`
+/// 7), and each input after the first 5 bytes more.
+fn sent(inputs: &[Input]) -> usize {
+    (inputs.iter())
+        .map(|input| match input {
+            Input::Text(text) | Input::Paste(text) => text.len(),
+            Input::Key(key) => key.to_string().len(),
+            Input::Bytes(bytes) => bytes.len(),
+            Input::Pause(_) => 0,
+        })
+        .fold(0usize, usize::saturating_add)
+        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5))
+}
+
+/// `typed` bytes of input, refused past what one send-keys sends.
+fn fits(typed: usize) -> Result<(), Failure> {
+    match typed > INPUT_MAX {
+        true => Err(fail(
+            Lang::TooLong,
+            format!(
+                "{typed} bytes, more than 900 KiB, the most it sends at once \
+                 (text and pastes count their bytes, keys their names', each input \
+                 after the first 5 more)"
+            ),
+        )),
+        false => Ok(()),
+    }
+}
 
 /// The wait an action makes: what it names; or, from a command line
 /// (`settle`) or given any wait word (`timeout` alone), for each pane to
@@ -962,12 +914,6 @@ const SCREENS: &[(&str, Opens)] = &[
     ("confirm-close", Opens::Target(Open::Confirm)),
 ];
 
-/// Whether `word` opens one of a client's own screens: a key's program
-/// that may open one holds the keys typed after it for the screen.
-pub fn opens(word: &str) -> bool {
-    SCREENS.iter().any(|(name, _)| *name == word)
-}
-
 impl fuxth::Host for Host<'_> {
     type Value = Fux;
     type Request = Ask;
@@ -1005,7 +951,7 @@ impl fuxth::Host for Host<'_> {
         };
         // A word of a request's, as its effect says: on options, or on what
         // the word that acts after acts on.
-        if spec.effect.starts_with("x ") || spec.effect.starts_with("w ") {
+        if spec.effect.starts_with("x ") {
             let mut built = modifying(name, next()?)?;
             modify(name, &mut built, &mut next)?;
             return now(out, Value::App(Fux::Opts(built)));
@@ -1191,28 +1137,7 @@ impl fuxth::Host for Host<'_> {
                 if matches!(built.inputs.last(), Some(Input::Pause(_))) {
                     return Err(fail(Code::NoKeys, PAUSE));
                 }
-                // As the request carries them, which must fit in one frame:
-                // text and pastes their bytes, keys their names' (`C-M-F12`
-                // 7), and each input after the first 5 bytes more.
-                let typed: usize = (built.inputs.iter())
-                    .map(|input| match input {
-                        Input::Text(text) | Input::Paste(text) => text.len(),
-                        Input::Key(key) => key.to_string().len(),
-                        Input::Bytes(bytes) => bytes.len(),
-                        Input::Pause(_) => 0,
-                    })
-                    .fold(0usize, |sum, n| sum.saturating_add(n))
-                    .saturating_add(built.inputs.len().saturating_sub(1).saturating_mul(5));
-                if typed > INPUT_MAX {
-                    return Err(fail(
-                        Lang::TooLong,
-                        format!(
-                            "{typed} bytes, more than 900 KiB, the most it sends at once \
-                             (text and pastes count their bytes, keys their names', each input \
-                             after the first 5 more)"
-                        ),
-                    ));
-                }
+                fits(sent(&built.inputs))?;
                 let target = match on {
                     On::Target(target) => target,
                     On::Client(c) => {
@@ -1312,14 +1237,8 @@ impl fuxth::Host for Host<'_> {
                     Lang::Unused,
                     "converts a value: it goes after what acts on the pane (%2 capture json)",
                 )),
-                // An answer's JSON as given (of several panes, a line each),
-                // still the answer, its status with it.
-                Value::App(Fux::Answer(mut answer)) if answer.json.is_some() => {
-                    answer.text = answer.json.clone().unwrap_or_default();
-                    answer.said = Said::Json;
-                    now(out, Value::App(Fux::Answer(answer)))
-                }
-                // Holding an answer with a status, still an answer: of JSON.
+                // An answer, or a list holding one with a status: still an
+                // answer, of JSON, its status with it.
                 other @ (Value::Int(_)
                 | Value::Bool(_)
                 | Value::Str(_)
@@ -1617,10 +1536,8 @@ impl fuxth::Host for Host<'_> {
             "help-json" => self.show(help::JSON),
             "explain" => {
                 let word = string(&next()?)?;
-                let text = help::explain(&word).ok_or_else(|| {
-                    let hint = hint(&word).map_or_else(String::new, |hint| format!("; {hint}"));
-                    fail(Lang::UnknownWord, format!("no word {word:?}{hint}"))
-                })?;
+                let text = help::explain(&word)
+                    .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
             "check" => {
@@ -1784,57 +1701,6 @@ mod tests {
                 !name.chars().any(|c| ";|&<>()$`*?[{!~#'\"\\".contains(c)),
                 "{name}: a character a shell treats specially"
             );
-        }
-    }
-
-    /// A command line refused for its order says the order that works,
-    /// the words to type: an acting word moved after what it takes, or
-    /// `opts` first; never a line that still fails as it runs.
-    #[test]
-    fn a_line_out_of_order_says_the_order_that_works() {
-        let refused = |words: &[&str]| match crate::script::compile(&fuxth::token::arguments(words))
-        {
-            Ok(_) => "compiled".to_owned(),
-            Err(failed) => failed.message,
-        };
-        for (words, order) in [
-            (&["%2", "json", "capture"][..], "fux %2 capture json"),
-            (
-                &["json", "%2", "wrapped", "capture"],
-                "fux %2 wrapped capture json",
-            ),
-            (
-                &["run", "opts", "str", "./app -x", "command"],
-                "fux opts str './app -x' command run",
-            ),
-            (
-                &["opts", "run", "str", "app", "command"],
-                "fux opts str app command run",
-            ),
-            (
-                &["str", "app", "command", "opts", "run"],
-                "fux opts str app command run",
-            ),
-            (&["%2", "capture", "wrapped"], "fux %2 wrapped capture"),
-            (
-                &["%2", "send-keys", "str", "y", "text"],
-                "fux %2 str y text send-keys",
-            ),
-        ] {
-            let said = refused(words);
-            assert!(
-                said.ends_with(&format!("; in this order: `{order}`")),
-                "{said}"
-            );
-        }
-        // Moved, `capture` would refuse the text it is given: no order is
-        // said, nor where nothing acts at all.
-        for words in [
-            &["%2", "capture", "str", "y", "text"][..],
-            &["%2", "str", "y", "paste"],
-        ] {
-            let said = refused(words);
-            assert!(!said.contains("in this order"), "{said}");
         }
     }
 

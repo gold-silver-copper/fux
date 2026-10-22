@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the per-call ceiling (4), guard mutants (5) and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B46, and B34a) and by section number.
+B45, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.
@@ -130,13 +130,13 @@ Conventions for every row:
 - Features: every `Feature` on and `record_prints(true)`, unless the
   row says otherwise. Screen: the defaults, unless the row says.
 - Seeds: every row's reproducer is a frozen seed in `tests/seeds.rs`
-  (`seeds/*.bin`, and `fuzz/seeds/`), replayed by
+  (written to `fuzz/seeds/`), replayed by
   `every_seed_reaches_its_limit` to check it reaches its limit.
 - `tests/bounds/known-failing.txt` lists rows known to fail, with their
   error; a listed row that passes fails the suite. It is empty now.
 
 In the test column, `bNN` is the probe of that name in
-`tests/bounds/rows.rs` (B46's in `tests/bounds/colours.rs`), run by
+`tests/bounds/rows.rs`, run by
 `bNN_1x`, `bNN_10x` and `bNN_100x` in `tests/bounds.rs`. B06, B08, B09,
 B26 and B41 bound host-side objects or host calls.
 
@@ -188,7 +188,6 @@ B26 and B41 bound host-side objects or host calls.
 | B43 | Events | Delivered synchronously; fux-vt keeps none | — | 400 × OSC 9 | `b43` |
 | B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
 | B45 | Key and mouse encoders (host calls) | ≤ 64 B a call | A mouse position past its encoding is clamped | Every key, modifier and mode; mouse at each encoding's edges | `b45` |
-| B46 | XParseColor's colour arithmetic | Each Newton, mean or TekHVC chroma-search step is a `colours` unit; one OSC spends ≤ U ÷ 4 (`palette::ALLOWANCE` = 1,190,476 steps) | A specification needing more is unreadable, which ends OSC 4 and 5 (xterm reads them all) | A 64 KiB OSC 4 of `;1;TekHVC:266/48/99` | `b46`; `one_osc_of_colours_is_at_most_half_the_ceiling` |
 
 ## 3 Memory
 
@@ -262,8 +261,8 @@ beside the old: + 12.10 MiB.
 With the `checks` cargo feature (off by default; the bounds tests, the
 fuzz targets and mutation runs turn it on, never a release), fux-vt
 counts its work in a per-thread `Work`, read by `Work::now()` and
-differenced with `Work::since`. Each counter adds in its own method,
-with saturating arithmetic. Without the feature nothing is counted.
+differenced with `Work::since`. The counters come from one table
+(`work.rs`), each added to with saturating arithmetic. Without the feature nothing is counted.
 
 | Counter | Counts |
 |---|---|
@@ -280,7 +279,6 @@ with saturating arithmetic. Without the feature nothing is counted.
 | `links` | Runs, rows, id entries and sort steps of the link sweep |
 | `prints` | Bytes recorded into `Prints` |
 | `keys` | Bytes the key decoder scans or copies |
-| `colours` | Steps of XParseColor's colour arithmetic |
 | `sums` | Cells DECRQCRA's checksum reads |
 | `spans` | Rows a scroll inside left and right margins copies a span of |
 | `edits` | Cells a rectangle edit rewrites one at a time (DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA) |
@@ -311,7 +309,6 @@ stated). Per call holds for each call; amortized over any run of calls.
 | Screen-wide functions | `cells`, `text` | N ÷ 2, R × (49C + 128) ÷ 4 | per call | B35 |
 | Scrolls inside left and right margins | `cells`, `text` | 3N, R × (49 × span + 128) | per call | B35 |
 | Region scrolls | `cells`, `slots` | N ÷ 4, 2R ÷ 3 | per call | B36 |
-| Colour arithmetic | `colours` | ≤ U ÷ 4 a sequence | per call | B46 |
 | Host calls: `resize`, lookups, `pictures()`, `encode` | `rows`, `cells`, `pixels` | per call, as B37, B40, B09, B08 say | per call | |
 
 ### 4.3 The lower bound each probe asserts
@@ -326,22 +323,22 @@ bytes joined; `pixels` ≥ the painted area; `styles` ≥ the cells a forced
 sweep read; `inserts` and `lookups` ≥ the distinct styles fed; `links`
 ≥ the links at a sweep; `prints` ≥ the text printed below the cap;
 `scanned` ≥ the bytes held; `keys` ≥ the bytes fed to the decoder;
-`colours` ≥ 1; reply bytes ≥ what was asked.
+reply bytes ≥ what was asked.
 
 ### 4.4 The per-call ceiling and the work budget
 
-Every call does at most U = 50,000,000 weighted units, W = Σ counter ×
-weight. The weights (`budget::weight`, kept in twentieths so each is a
-whole number) are upper bounds of a unit's nanoseconds, measured on an
-i5-9600K, so that U units are about 50 ms there:
+Every call does at most U = 32,000,000 cells of work, W = Σ counter ×
+weight, counted in cells: each kind's weight (`budget::weight`) is how
+many cells one of its units costs, rounded up, so the budget stops no
+later than it did when weights were nanoseconds:
 
 | `bytes` | `scanned` | `cells` | `slots` | `rows` | `text` | `pixels` | `styles` | `inserts` |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 0.5 | 1.5 | 3.65 | 5 | 1.3 | 1.2 | 0.5 | 30 |
+| 1 | 1 | 1 | 3 | 4 | 1 | 1 | 1 | 20 |
 
-| `lookups` | `links` | `prints` | `keys` | `colours` | `sums` | `spans` | `edits` |
-|---|---|---|---|---|---|---|---|
-| 15 | 5 | 0.1 | 1 | 10.5 | 12.9 | 120.4 | 10.6 |
+| `lookups` | `links` | `prints` | `keys` | `sums` | `spans` | `edits` |
+|---|---|---|---|---|---|---|
+| 10 | 4 | 1 | 1 | 9 | 81 | 8 |
 
 The work budget. A few bytes can ask for work in proportion to the
 screen or to history, and fux reads every pane on one thread, so that
@@ -398,9 +395,8 @@ and cargo-mutants skips any function named `new`. So:
 3. Limit constants are expressions where natural (`1 << 12`,
    `4096 * 2160`), which gives them mutants; a bare literal has none, and
    its one-under, at and one-over test guards it.
-4. Each counter adds in its own method (`Work::cells`), and each probe
-   asserts each counter's lower bound (4.3), which kills that method's
-   `()` mutant.
+4. Each probe asserts each counter's lower bound (4.3), so a count
+   that stops being made is caught.
 5. Runs are `mutants.sh`'s: with `--features checks`, and fux's tests
    beside fux-vt's, which kill some mutants fux-vt's tests can't reach.
 6. Where the strict form moves a threshold by one, that is a change of

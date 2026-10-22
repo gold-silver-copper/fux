@@ -26,28 +26,18 @@ line, the deepest first; `print` prints a value at once.
   nested at most 64 deep), and the application's own.
 - **Checked before it runs.** The whole program is compiled first. An unknown
   word or an unclosed block is an error before anything happens (told with
-  what was likely meant: a word in scope spelt nearly so, or `str WORD` for
-  text); so is a step
+  a word in scope spelt nearly so, or `str WORD` for text); so is a step
   that every run reaching it would fail: a word given fewer values than the
-  stack surely holds, or a value of a kind it never takes (`str a 1 add`,
-  `str a not`, or a kind the application's word doesn't take, as its
-  vocabulary says: for a word of the library or your own, kinds on which every
-  way through it fails, checked again at each call with the kinds it is
-  given; a way ending at `fail`, or at a call to a word that only fails, counts as
-  failing, unless every way does).
-  A number written just before `pick` or `roll` is part of the step, and
-  checked as a depth. It follows depths and kinds, not values (`1 0 div`
-  fails as it runs), nor list elements' kinds, nor top-level names read
-  inside a definition, nor whether a word's call to itself fails (taken
-  as one that may succeed, leaving what its other ways leave), nor kinds
-  under a call leaving a varying number of values, or deeper than the top
-  32. A value of a kind the application says must be used, left at the
-  program's end, is an error too (`unused`), before it runs and as it ends. It follows
-  depths as ranges and kinds as sets through branches, loops, `list` and
-  `each`, and definitions (each summed up by what it uses and leaves, and
-  checked again at each call with the kinds of its top 8 values); what it
-  can't know is never an error. Steps no run reaches (after `fail`, or a
-  call that never returns) aren't checked.
+  stack surely holds, or a value of a kind it never takes (`str a 1 add`, or
+  a kind the application's word doesn't take, as its vocabulary says), and
+  a value the application says must be used left at the end (`unused`). A
+  number written just before `pick` or `roll` is part of the step. The
+  checker follows depths as ranges and kinds as sets through branches,
+  loops, `list`, `each` and definitions (each summed up once by what it
+  uses and leaves, whatever kinds it is given); not values (`1 0 div` fails
+  as it runs), list elements' kinds, top-level names read inside a
+  definition, or kinds deeper than the top 32. What it can't know is never
+  an error, and steps no run reaches aren't checked.
 - **Recursion in last place loops**: a call that is a definition's last step
   replaces its caller's frame.
 - **Pauses for its host.** An application word can suspend the run while the
@@ -152,8 +142,7 @@ at the call. A failed `add` leaves the compiler as it was.
 `Compiler::definitions` is a compiler for a program of its own that sees
 those definitions, not their source's top level or `let` names (a key
 binding of a config's, say); a definition reading one may not be called
-there (`unset`). An error of a call every way through which fails holds
-the step inside that does (`Error::cause`).
+there (`unset`).
 
 For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
 words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`

@@ -230,8 +230,9 @@ impl<A> List<A> {
         Some(())
     }
 
-    /// Item `at` replaced by `value`; `None` past the limits or the end.
-    pub fn put(&mut self, at: usize, value: Value<A>) -> Option<()> {
+    /// Item `at` replaced by `value`: how many items it looked through
+    /// for how deep it nests now; `None` past the limits or the end.
+    pub fn put(&mut self, at: usize, value: Value<A>) -> Option<usize> {
         let depth = value.depth().checked_add(1).filter(|d| *d <= NESTING)?;
         let old = self.items.get(at)?;
         let (old_depth, old_weight) = (old.depth(), old.weight());
@@ -242,13 +243,13 @@ impl<A> List<A> {
         *slot = value;
         self.weight = weight;
         // The deepest item may be the one replaced: then look again.
-        self.depth = if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
+        if old_depth.saturating_add(1) >= self.depth && depth < self.depth {
             let inner = self.items.iter().map(Value::depth).max().unwrap_or(0);
-            inner.saturating_add(1)
-        } else {
-            self.depth.max(depth)
-        };
-        Some(())
+            self.depth = inner.saturating_add(1);
+            return Some(self.items.len());
+        }
+        self.depth = self.depth.max(depth);
+        Some(0)
     }
 }
 

@@ -112,11 +112,7 @@ in `tests/seeds.rs`: a `terminal` one past that target's 4,096 bytes in
 also replays each at its row's screen size and checks that it reaches
 the limit it is for. A reproducer of host calls is in `deep`'s format with
 the host's operations after its output (`b06-clone-mid-picture`,
-`b08-encode-colours`) where `deep` makes those calls. A seed that is no
-fuzz input (one no run of either holds, one fed after a prefix a run
-can't hold or takes too long on, one of host calls no target makes) is on
-`tests/seeds.rs`'s `NO_FUZZ_INPUT` with why, which a test holds to; it is
-kept as `tests/seeds/*.bin`. They are kept apart from `corpus/`, which is cut to
+`b08-encode-colours`) where `deep` makes those calls. They are kept apart from `corpus/`, which is cut to
 the targets' lengths: give `seeds/TARGET` to a run as a second corpus
 directory, as `fux-vt/compare/harness.sh` does. `seeds/graphemes` holds
 the inputs that target found, which

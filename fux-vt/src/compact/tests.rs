@@ -165,3 +165,33 @@ fn a_row_out_of_room_compacts_then_cuts_to_a_short_cluster() {
         assert_eq!(line.text(n % 2), short);
     }
 }
+
+/// A row's short text compacts only when a cluster would take it past its
+/// limit (`store_short`): one that brings it to the limit exactly is kept
+/// beside the text no cell holds any more, and the next, past it, has the
+/// row compacted first, to what its cells hold.
+#[test]
+fn short_text_compacts_only_past_its_limit() {
+    let marks = |n| -> String {
+        std::iter::once('e')
+            .chain(std::iter::repeat_n('\u{301}', n))
+            .collect()
+    };
+    let limit = Text::short_limit(2);
+    assert_eq!(limit, 34);
+    let mut cells = [Compact::default(); 2];
+    let mut text = Text::default();
+    let mut line = Line {
+        cells: &mut cells,
+        text: &mut text,
+    };
+    // 5 and 5 bytes written over, 7 kept in cell 0, then 17 in cell 1.
+    for (at, cluster) in [(0, marks(2)), (0, marks(2)), (0, marks(3)), (1, marks(8))] {
+        assert!(line.set(at, Compact::default(), &cluster));
+    }
+    assert_eq!(line.text.short.len(), limit, "at the limit, not compacted");
+    assert!(line.set(1, Compact::default(), &marks(2)));
+    assert_eq!(line.text.short.len(), 7 + 5, "past it, compacted first");
+    assert_eq!(line.text(0), marks(3));
+    assert_eq!(line.text(1), marks(2));
+}

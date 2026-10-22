@@ -210,20 +210,17 @@ fn rows_of(
     history: Option<usize>,
     view: CaptureView,
 ) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
-    let all = 0..usize::MAX;
-    let rows: Vec<Row<'_>> = match view.source {
-        Source::Shown => screen.rows().collect(),
-        Source::Main => screen.main_rows().collect(),
-        Source::Alternate => screen.alternate_rows().collect(),
+    let rows = match view.source {
+        Source::Shown => screen.rows(),
+        Source::Main => screen.main_rows(),
+        Source::Alternate => screen.alternate_rows(),
         Source::LastOutput => return last_output(screen),
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
+    // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    rows.into_iter()
-        .skip(skip)
-        .map(|row| (row, all.clone()))
-        .collect()
+    rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect()
 }
 
 /// The last command's output between its marks, a range of each row's

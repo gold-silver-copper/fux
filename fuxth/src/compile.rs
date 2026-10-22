@@ -184,7 +184,7 @@ impl<A> Steps<A> {
 #[derive(Clone, Debug)]
 pub struct Program<A> {
     pub(crate) main: Steps<A>,
-    pub(crate) words: Vec<Steps<A>>,
+    pub(crate) words: Vec<Rc<Steps<A>>>,
     pub(crate) globals: usize,
     pub(crate) vocabulary: Rc<Vocabulary>,
 }
@@ -194,7 +194,7 @@ impl<A> Program<A> {
     pub(crate) fn code(&self, code: Option<usize>) -> Option<&Steps<A>> {
         match code {
             None => Some(&self.main),
-            Some(i) => self.words.get(i),
+            Some(i) => self.words.get(i).map(|w| &**w),
         }
     }
 
@@ -236,13 +236,14 @@ struct Current<A> {
 /// Compiles programs: sources added in order, all into one, then finished.
 /// A library's definitions first, then a script, say. A compiler with a
 /// library in, [`prepare`](Compiler::prepare)d, can be cloned for each
-/// program: the library is compiled and checked once.
+/// program: the library is compiled and checked once, and its definitions
+/// and what the checker knows of them are shared, not copied.
 #[derive(Clone)]
 pub struct Compiler<A> {
     vocabulary: Rc<Vocabulary>,
     names: HashMap<Rc<str>, Entry>,
     main: Steps<A>,
-    words: Vec<Steps<A>>,
+    words: Vec<Rc<Steps<A>>>,
     globals: usize,
     open: Vec<Open>,
     current: Option<Current<A>>,
@@ -358,7 +359,7 @@ impl<A: Clone> Compiler<A> {
                     // the definitions before it that called it.
                     let at = self.words.len();
                     for (_, word, step) in self.forward.iter().filter(|f| f.0.text == name.text) {
-                        let code = word.and_then(|w| self.words.get_mut(w));
+                        let code = word.and_then(|w| self.words.get_mut(w)).map(Rc::make_mut);
                         if let Some(op) = code.and_then(|w| w.ops.get_mut(*step)) {
                             *op = Op::Call(at);
                         }
@@ -378,7 +379,8 @@ impl<A: Clone> Compiler<A> {
                         for (_, word, _) in self.forward.iter_mut().filter(|f| f.1.is_none()) {
                             *word = Some(at);
                         }
-                        self.words.extend(self.current.take().map(|c| c.code))
+                        self.words
+                            .extend(self.current.take().map(|c| Rc::new(c.code)))
                     }
                     Some(Open::List { .. }) => self.code().push(Op::Gather, token),
                     Some(Open::Each { head, .. }) => {
@@ -535,7 +537,7 @@ impl<A: Clone> Compiler<A> {
                     // Short and straight: copied in, each step named by the
                     // word the program wrote.
                     Some(body) => {
-                        for op in body.ops {
+                        for op in body.ops.iter().cloned() {
                             self.code().push(op, token);
                         }
                     }
@@ -573,17 +575,10 @@ impl<A: Clone> Compiler<A> {
                 .map(|name| &**name)
                 .chain(parsing)
                 .filter_map(|name| {
-                    // Spelt nearly so, begun so, or of a family (`wait-…`).
+                    // Spelt nearly so, or begun so.
                     let d = distance(text, name);
                     let near = d <= 2 && d.saturating_mul(3) <= text.chars().count();
-                    let stem = |w: &str| {
-                        w.split_once('-')
-                            .map(|(s, _)| s.to_owned())
-                            .filter(|s| s.len() >= 3)
-                    };
-                    let kin = stem(text).is_some_and(|s| stem(name) == Some(s));
-                    (near || kin || (text.len() >= 3 && name.starts_with(text)))
-                        .then_some((d, name))
+                    (near || (text.len() >= 3 && name.starts_with(text))).then_some((d, name))
                 })
                 .collect();
             near.sort_unstable();
