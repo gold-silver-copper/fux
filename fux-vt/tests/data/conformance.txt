@@ -186,8 +186,8 @@ DEC STD 070 4-29 DECSR/DECSRC	DECSR, DECSRC	SECURE RESET, SECURE RESET CONFIRMAT
 DEC STD 070 4-31 DECSTR	DECSTR	SOFT TERMINAL RESET	Levels: 2, 3, 4	implemented	\e[4h >> \e[!p => effect	conformance::a_soft_reset_restores_the_modes_and_keeps_the_screen	
 DEC STD 070 4-35 DSR	DSR	DEVICE STATUS REPORT	Levels: 1, 2, 3, 4	implemented	\e[5n => reply	opt_in::extended_replies_answer_the_device_status_reports, conformance::cursor_reports_count_lines_from_the_top_margin_in_origin_mode	5 and 6; the DEC forms with `Feature::ExtendedReplies`
 DEC STD 070 5-21 DECTCEM	DECTCEM	SET/RESET TEXT CURSOR ENABLE MODE	Levels: 2-4	implemented	\e[?25l => effect	modes::decrqm_reports_the_modes_xterm_keeps	state only: the host shows the cursor or not
-DEC STD 070 5-25 DECSTBM	DECSTBM	SET TOP AND BOTTOM MARGINS	Levels: 1-4	implemented	\e[2;4r => effect	conformance::decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set	
-DEC STD 070 5-27 DECSLRM	DECSLRM	SET LEFT AND RIGHT MARGINS	Levels: 4x (Horizontal Scrolling)	implemented	\e[?69h >> \e[2;6s => effect	margins::declrmm_lets_decslrm_set_the_margins	
+DEC STD 070 5-25 DECSTBM	DECSTBM	SET TOP AND BOTTOM MARGINS	Levels: 1-4	implemented	\e[2;4r => effect	conformance::decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set	a bottom past the screen is the last line, as xterm takes it (note 3 refuses it)
+DEC STD 070 5-27 DECSLRM	DECSLRM	SET LEFT AND RIGHT MARGINS	Levels: 4x (Horizontal Scrolling)	implemented	\e[?69h >> \e[2;6s => effect	margins::declrmm_lets_decslrm_set_the_margins	a right margin past the screen is the last column, as xterm takes it (note 3 refuses it)
 DEC STD 070 5-29 DECLRMM	DECLRMM	SET/RESET LEFT RIGHT MARGIN MODE	Levels: 4x (Horizontal Scrolling)	implemented	\e[?69h => effect	margins::declrmm_lets_decslrm_set_the_margins	
 DEC STD 070 5-31 DECOM	DECOM	SET/RESET ORIGIN MODE	Levels: 1-4	implemented	\e[?6h => effect	conformance::line_and_column_addressing_obeys_origin_mode	
 DEC STD 070 5-32 DECSCLM	DECSCLM	SET/RESET SCROLLING MODE	Levels: 1-4	partial	\e[?4h => effect	modes::decrqm_reports_the_modes_xterm_keeps	kept for DECRQM and XTSAVE; scrolling is never smooth

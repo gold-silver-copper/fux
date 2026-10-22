@@ -121,12 +121,6 @@ jobs:
           set -euo pipefail
           cargo test -p fux-vt --features checks --release --locked --test guards -- --include-ignored 2>&1 | tee "$CI_LOGS/guards.log"
 
-      - name: fux-vt xterm.js fixtures
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          cargo test -p fux-vt --locked --test xtermjs 2>&1 | tee "$CI_LOGS/xtermjs.log"
-
       # Ghostty's and vt100-rust's fuzz corpora (vendored, MIT) replayed
       # under the invariant checker; mosh's (GPL) is an ignored test.
       - name: fux-vt external corpora

@@ -130,7 +130,7 @@ Conventions for every row:
 - Features: every `Feature` on and `record_prints(true)`, unless the
   row says otherwise. Screen: the defaults, unless the row says.
 - Seeds: every row's reproducer is a frozen seed in `tests/seeds.rs`
-  (`seeds/*.bin`, and `fuzz/seeds/`), replayed by
+  (written to `fuzz/seeds/`), replayed by
   `every_seed_reaches_its_limit` to check it reaches its limit.
 - `tests/bounds/known-failing.txt` lists rows known to fail, with their
   error; a listed row that passes fails the suite. It is empty now.
@@ -261,8 +261,8 @@ beside the old: + 12.10 MiB.
 With the `checks` cargo feature (off by default; the bounds tests, the
 fuzz targets and mutation runs turn it on, never a release), fux-vt
 counts its work in a per-thread `Work`, read by `Work::now()` and
-differenced with `Work::since`. Each counter adds in its own method,
-with saturating arithmetic. Without the feature nothing is counted.
+differenced with `Work::since`. The counters come from one table
+(`work.rs`), each added to with saturating arithmetic. Without the feature nothing is counted.
 
 | Counter | Counts |
 |---|---|
@@ -327,18 +327,18 @@ reply bytes ≥ what was asked.
 
 ### 4.4 The per-call ceiling and the work budget
 
-Every call does at most U = 50,000,000 weighted units, W = Σ counter ×
-weight. The weights (`budget::weight`, kept in twentieths so each is a
-whole number) are upper bounds of a unit's nanoseconds, measured on an
-i5-9600K, so that U units are about 50 ms there:
+Every call does at most U = 32,000,000 cells of work, W = Σ counter ×
+weight, counted in cells: each kind's weight (`budget::weight`) is how
+many cells one of its units costs, rounded up, so the budget stops no
+later than it did when weights were nanoseconds:
 
 | `bytes` | `scanned` | `cells` | `slots` | `rows` | `text` | `pixels` | `styles` | `inserts` |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 0.5 | 1.5 | 3.65 | 5 | 1.3 | 1.2 | 0.5 | 30 |
+| 1 | 1 | 1 | 3 | 4 | 1 | 1 | 1 | 20 |
 
 | `lookups` | `links` | `prints` | `keys` | `sums` | `spans` | `edits` |
 |---|---|---|---|---|---|---|
-| 15 | 5 | 0.1 | 1 | 12.9 | 120.4 | 10.6 |
+| 10 | 4 | 1 | 1 | 9 | 81 | 8 |
 
 The work budget. A few bytes can ask for work in proportion to the
 screen or to history, and fux reads every pane on one thread, so that
@@ -395,9 +395,8 @@ and cargo-mutants skips any function named `new`. So:
 3. Limit constants are expressions where natural (`1 << 12`,
    `4096 * 2160`), which gives them mutants; a bare literal has none, and
    its one-under, at and one-over test guards it.
-4. Each counter adds in its own method (`Work::cells`), and each probe
-   asserts each counter's lower bound (4.3), which kills that method's
-   `()` mutant.
+4. Each probe asserts each counter's lower bound (4.3), so a count
+   that stops being made is caught.
 5. Runs are `mutants.sh`'s: with `--features checks`, and fux's tests
    beside fux-vt's, which kill some mutants fux-vt's tests can't reach.
 6. Where the strict form moves a threshold by one, that is a change of
