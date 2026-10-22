@@ -530,7 +530,6 @@ impl Keyboard {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for job in todo {
-                    stops.reset();
                     let ran = run_job(&mut server, me, job, &stops);
                     if tell.send(ran).is_err() {
                         break;
@@ -691,6 +690,10 @@ impl Keyboard {
 
     fn run(&mut self, code: String) {
         let keymap = self.keymap.clone();
+        // A stop stops the programs queued with the one it was typed for.
+        if self.running == 0 {
+            self.stop.reset();
+        }
         if self.jobs.send(Job { code, keymap }).is_ok() {
             self.running = self.running.saturating_add(1);
         }
