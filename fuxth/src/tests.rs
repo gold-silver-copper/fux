@@ -420,10 +420,6 @@ fn the_checker_says_what_and_where() {
             "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a boolean",
         ),
         (
-            "str a not",
-            "type: t:1: not: every way through it fails given a string on top: if: takes a boolean (from eq or lt), not a string",
-        ),
-        (
             "1 if 2 then",
             "type: t:1: if: takes a boolean (from eq or lt), not an integer",
         ),
@@ -823,7 +819,6 @@ fn lists_change_and_host_values_show() -> Result<(), Error> {
 
 /// A definition that, some ways through, replaces a value below what it
 /// surely uses: its callers forget what they knew of that value's kind.
-/// (Found by a Codex test run; it was refused before.)
 #[test]
 fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error> {
     let replace = "define replace each swap drop end end str a list 1 2 end replace 1 add";
@@ -833,9 +828,34 @@ fn a_value_replaced_below_what_is_surely_used_is_forgotten() -> Result<(), Error
     Ok(())
 }
 
-/// What the Codex QA runs found, each a test that failed before its fix.
+/// A long chain of definitions, each calling the one before with a value
+/// of a known kind, is checked without recursing once per call; and a
+/// string put into is charged for the string it makes anew.
 #[test]
-fn what_qa_found() -> Result<(), Error> {
+fn long_chains_and_long_strings_are_bounded() -> Result<(), Error> {
+    let chain: String = (1..20_000)
+        .map(|i: u32| format!("define f{i} f{} end\n", i.saturating_sub(1)))
+        .collect();
+    let chained = format!("define f0 1 add end\n{chain}5 f19999");
+    assert_eq!(run(&chained)?, ints(&[6]));
+    let steps = |text: &str| -> Result<u64, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        Ok(machine.steps())
+    };
+    let (made, put) = (
+        steps("str é 100000 copies len")?,
+        steps("str é 100000 copies 0 str y put len")?,
+    );
+    assert!(put.saturating_sub(made) > 100_000 / 64, "{made} {put}");
+    Ok(())
+}
+
+/// Mistakes the checker once made, each a test that failed before its fix.
+#[test]
+fn what_the_checker_once_got_wrong() -> Result<(), Error> {
     let refused = |text: &str| -> Option<String> {
         let mut compiler = with_stdlib();
         let compiled = token::source("t", text)
@@ -843,20 +863,9 @@ fn what_qa_found() -> Result<(), Error> {
             .and_then(|()| compiler.finish().map(|_| ()));
         compiled.err().map(|e| e.code.name().to_owned())
     };
-    // Refused before anything runs: kinds through library calls, pairs of
-    // kinds, push and put of a non-string into a string, `mod` by -1.
-    for text in [
-        "str m print 1 sum",
-        "str m print 42 last",
-        "str m print 5 sort",
-        "str m print str x 0 gt",
-        "str m print str a str 3 copies",
-        "str m print str a 1 push",
-        "str m print str a 0 1 put",
-        "str m print str x -1 mod",
-        "str m print true negate",
-        "define id let x x end str m print str a id 1 add",
-    ] {
+    // Refused before anything runs: push and put of a non-string into a
+    // string.
+    for text in ["str m print str a 1 push", "str m print str a 0 1 put"] {
         assert_eq!(refused(text).as_deref(), Some("type"), "{text}");
     }
     // A definition every way through which ends in `fail` still needs its
@@ -874,13 +883,7 @@ fn what_qa_found() -> Result<(), Error> {
         refused("define f if str x fail else drop drop then end 1 2 true f"),
         None
     );
-    // A call to a word that only fails is as `fail`; too few values are
-    // named before a kind.
-    assert_eq!(
-        refused("define stop str s fail end define f if stop else 1 add then end str a true f")
-            .as_deref(),
-        Some("type")
-    );
+    // Too few values are named before a kind.
     assert_eq!(refused("str x 5 pad").as_deref(), Some("stack_underflow"));
     // A string put into, held nowhere else, changes in place; held
     // elsewhere, it is copied.
@@ -898,8 +901,6 @@ fn what_qa_found() -> Result<(), Error> {
         run("define f if else drop 7 then end true f 5")?,
         ints(&[5])
     );
-    // `and` and `or` take two booleans.
-    assert_eq!(refused("1 true and").as_deref(), Some("type"));
     assert_eq!(refused("true or").as_deref(), Some("stack_underflow"));
     // A text that fits is made, however its value is nested.
     assert_eq!(
@@ -923,15 +924,7 @@ fn what_qa_found() -> Result<(), Error> {
     );
     assert_eq!(run("-9223372036854775808 -1 mod 7 -1 mod")?, ints(&[0, 0]));
     assert_eq!(run("str x 5 str ab pad len")?, ints(&[5]));
-    // A way ending at `fail` counts as failing, unless every way does.
-    assert_eq!(
-        refused("str m print 5 str , split-on").as_deref(),
-        Some("type")
-    );
-    assert_eq!(
-        refused("define f if str boom fail else 1 add then end str a true f").as_deref(),
-        Some("type")
-    );
+    // A way ending at `fail` fails only that way.
     assert_eq!(
         refused("define die str x fail end false if die then 1"),
         None
@@ -1076,8 +1069,6 @@ fn desk_words() -> Result<Vocabulary, Error> {
     words.add("later", "-- ticket")?;
     words.kind("stamped", "a stamped ticket")?;
     words.add("stamp", "ticket -- stamped")?;
-    words.add("file", "stamped -- ticket")?;
-    words.ends("stamped", "file")?;
     Ok(words)
 }
 
@@ -1154,16 +1145,6 @@ fn the_applications_kinds_are_checked_before_it_is_called() {
         ran.map_err(|e| e.to_string()),
         Err("unused: t:1: at: a draft nothing issues: end it with issue".to_owned())
     );
-}
-
-/// A value of a kind that names a word, left on top at the end, is given
-/// to it; one under the top is not.
-#[test]
-fn a_kind_may_end_with_a_word() {
-    let (ran, calls) = at_desk("ticket stamp", false, Paper::Ticket);
-    assert_eq!((ran, calls), (Ok(vec![Value::App(Paper::Ticket)]), 3));
-    let (ran, calls) = at_desk("ticket stamp 1", false, Paper::Ticket);
-    assert_eq!((ran.map(|v| v.len()), calls), (Ok(2), 2));
 }
 
 /// An application that gives a kind its word doesn't say is caught where

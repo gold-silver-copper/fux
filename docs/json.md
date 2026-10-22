@@ -4,9 +4,7 @@
 what a word left, as below; a string as a JSON string; a number or boolean
 as itself; a list as an array of these, each answer in it as `json` gives
 it alone (a capture's, a listing's or an action's object; one of several
-panes an array of their objects). Every shape below is part of fux's interface: a field is added,
-never renamed or dropped without a release saying so. Rows and
-columns count from 0; times are milliseconds; ids are strings (`"%3"`,
+panes an array of their objects). Rows and columns count from 0; times are milliseconds; ids are strings (`"%3"`,
 `"@2"`, `"+1"`, `"c1"`).
 
 ## A pane
@@ -65,8 +63,8 @@ prints `null` (`string` makes it the text).
 (each screen row a line). Blanks at a line's end are trimmed, but with
 `styles` those painted (a background, reverse video, underline or
 strikeout) stay, in `lines` and `styles` alike: a painted surface shows
-whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event, a
-state line's `· cursor ROW,COL` and `wrapped` count them, whatever
+whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
+`wrapped` count them, whatever
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
 screen not captured (`main-screen` under a full-screen program). `wrap_pending` (after `lines`):
 a glyph went into the last column, autowrap on, and the next goes on the
@@ -90,8 +88,8 @@ word that wants a pane takes it as one.
 ## Answers and waits
 
 `json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
-a bare `wait` …): one object, or a line each for several panes (a tab or
-workspace waited on, or sent keys). A
+a bare `wait` …): one object, or an array of them for several panes (a
+tab or workspace waited on, or sent keys). A
 pane that settled, still busy at the limit (124), blocked reading its
 terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
 0, its own status in `state`):
@@ -112,29 +110,12 @@ screen of a full-screen program (one the keys made leave it: what it
 printed after, in whole rows, so old text on the row it starts on too, else that full screen if they changed it, else
 the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
 line's notes are fields, each only when said: `done` (a shell command
-ended: its status, `null` if not known), `marked` (`false`: a line typed
-that a shell in front reads again after, where nothing marked a
-command, so no `done` or status comes; a relay's program counts as a
-shell only if the relay's words name one, `-- bash -i`), `no_change` (`true`: the keys
+ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
 screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that redraws by
 itself read the keys and drew after them; what it draws later may
-differ), `wait_with` (`"wait-exit"` or `"wait-done"`: a pane `waiting`
-that is no full-screen program, maybe at work, blocked off its
-terminal, or a relay that said nothing since the input, and the wait word
-that waits for its end; with `remote`, `"wait-exit"` or `"wait-text"`),
-`remote` (the name of a remote client in front, `"ssh"`, that reports
-nothing of what it runs, in every answer, as its text says: its state is the client's, not that program's;
-`wait_with` says how to wait for it: `"wait-exit"` for a command run on
-a pipe there, which the client ends with, `"wait-text"` for a terminal
-there), `cursor_rows` (with `cursor`, on a line wrapped at the pane's width,
-which the answer prints joined: `{"from":ROW,"text":["…","…"]}`, the
-screen rows the line takes, four at most), `cursor` (`[ROW,COL]` of the screen
-after keys or a mouse event: after a line edited where a program reads
-it, when text shows under or right of the cursor on its row, or when the
-input moved the cursor alone; never while it is hidden or its program
-exited), `highlight` (after keys
+differ), `highlight` (after keys
 or a mouse event: up to three runs they highlighted anew, each
 `{"row","col","len","text"}`, row and column from 0 as a mouse event counts
 them), `unread` (bytes of input fux holds, not yet
@@ -192,8 +173,8 @@ its journal recorded them, one line each.
 ## Errors
 
 A failure is one line on stderr, `fux: CODE: MESSAGE`, the message naming
-the file, line and word it came from. Its exit status is its code's: 1,
-`usage`'s 2, a wait's its own (below). CODE stays; every one fux gives
+the file, line and word it came from. Its exit status is 1, or a
+wait's own (above). CODE stays; every one fux gives
 (`src/code.rs` says what each means):
 
 - reaching a server: `no_server`, `mismatch`, `client`, `not_granted`,

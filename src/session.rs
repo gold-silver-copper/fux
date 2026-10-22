@@ -3581,7 +3581,7 @@ pub(crate) mod testing {
         client: Option<ClientId>,
         code: &str,
     ) -> Result<String, String> {
-        let (out, ended) = run_as(session, client, false, code);
+        let (out, ended) = run_as(session, client, code);
         let ended = ended.map_err(|e| e.to_string())?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
@@ -3591,34 +3591,9 @@ pub(crate) mod testing {
         Ok(text)
     }
 
-    /// Runs fuxth `code` as [`output_as`] does, settling as a command line
-    /// does if `settle`: each value it left, its kind's name then its text's
-    /// first line (`pane %1`), or the failure's code and status.
-    pub(crate) fn stack_as(
-        session: &mut Session,
-        client: Option<ClientId>,
-        settle: bool,
-        code: &str,
-    ) -> Vec<String> {
-        match run_as(session, client, settle, code).1 {
-            Ok(stack) => (stack.iter())
-                .map(|value| {
-                    let text = value.text();
-                    format!(
-                        "{} {}",
-                        value.kind_name(),
-                        text.lines().next().unwrap_or("")
-                    )
-                })
-                .collect(),
-            Err(failed) => vec![format!("fails {} {}", failed.code, failed.code.status())],
-        }
-    }
-
     fn run_as(
         session: &mut Session,
         client: Option<ClientId>,
-        settle: bool,
         code: &str,
     ) -> (
         Vec<u8>,
@@ -3639,7 +3614,7 @@ pub(crate) mod testing {
             ..crate::protocol::Context::default()
         };
         let mut host =
-            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, settle);
+            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, false);
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
@@ -4816,23 +4791,22 @@ mod tests {
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
         let times = failed(&mut s, "%1 str a text str 2 times");
         assert!(times.starts_with("type: "), "{times}");
+        // Refused before it is repeated, past what send-keys sends.
+        let many = failed(&mut s, "%1 str x 100000 copies text 1000 times send-keys");
+        assert!(many.starts_with("too_long: "), "{many}");
         let none = failed(&mut s, "%1 str a text 0 times send-keys");
         assert!(
             none.contains("0 is out of range: 1 to 1000 (use: "),
             "{none}"
         );
-        // The core's words say how they are used too; a library word is
-        // told by its own name, not the word inside it that fails.
+        // The core's words say how they are used too; a library word by
+        // its own name.
         for code in ["slice", "str a 1 add"] {
             let core = failed(&mut s, code);
             assert!(core.contains(" (use: "), "{core}");
         }
         let upper = failed(&mut s, "3 upper");
-        assert!(upper.contains("upper: every way"), "{upper}");
-        assert!(
-            upper.contains("(use: S upper") && !upper.contains("each"),
-            "{upper}"
-        );
+        assert!(upper.contains("(use: S upper"), "{upper}");
         // A capture's option given what is no pane says where it goes.
         for (code, shown) in [
             ("%1 capture last-output", "fux %3 last-output capture"),

@@ -257,8 +257,7 @@ fn a_remote_program_with_no_marks_through_koh() -> Outcome {
 }
 
 /// A line editor of its own (a calculator's) `koh connect -- PROG` runs,
-/// no shell: a line it reads again after says nothing of marks, a line
-/// edited says where the cursor is, as a capture does, and a key sent on
+/// no shell: a line it reads again after says nothing of marks, and a key sent on
 /// after the one that ended it is said to have gone nowhere: each key goes
 /// once koh said its program took the one before, and koh says it ended
 /// having read the first.
@@ -281,10 +280,7 @@ fn a_remote_line_editor_through_koh() -> Outcome {
     let read = server.ok(&[&p[..], &["str", "1+2", "line"]].concat())?;
     assert_eq!(head(&read), format!("{pane} reading"), "{read}");
     let edited = server.ok(&[&p[..], &["str", "ab", "type"]].concat())?;
-    let at = format!("{pane} reading · cursor 2,8");
-    assert_eq!(head(&edited), at, "{edited}");
-    let read = server.ok(&[&p[..], &["wrapped", "capture"]].concat())?;
-    assert_eq!(head(&read), at, "{read}");
+    assert_eq!(head(&edited), format!("{pane} reading"), "{edited}");
     let quit = ["str", "C-q", "key", "2", "times", "send-keys"];
     let out = server.ok(&[&p[..], &quit[..]].concat())?;
     let lost = "it exited before reading C-q, which went nowhere";

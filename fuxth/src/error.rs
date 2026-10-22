@@ -88,12 +88,6 @@ pub struct Error {
     pub message: String,
     pub place: Option<Place>,
     pub word: Option<Rc<str>>,
-    /// The step that fails inside the word, for a call every way through
-    /// which fails.
-    pub cause: Option<Box<Error>>,
-    /// For a value of the wrong kind that came through other words first,
-    /// the word that made it: the one out of place.
-    pub made_by: Option<Box<Token>>,
 }
 
 impl Error {
@@ -104,8 +98,6 @@ impl Error {
             message: message.into(),
             place: at.map(|t| t.place.clone()),
             word: at.map(|t| Rc::clone(&t.text)),
-            cause: None,
-            made_by: None,
         }
     }
 
@@ -118,20 +110,13 @@ impl Error {
         }
     }
 
-    /// `WORD: MESSAGE`, and its cause's after: what it says but where.
+    /// `WORD: MESSAGE`: what it says but where.
     fn said(&self) -> String {
         // An empty word (`define ''`) is said in its message, not here.
-        let mut said = match self.word.as_deref().filter(|w| !w.is_empty()) {
+        match self.word.as_deref().filter(|w| !w.is_empty()) {
             Some(word) => format!("{word}: {}", self.message),
             None => self.message.clone(),
-        };
-        if let Some(made) = &self.made_by {
-            said = format!("{said}, made by `{}` ({})", made.text, made.place);
         }
-        if let Some(cause) = &self.cause {
-            said = format!("{said}: {}", cause.said());
-        }
-        said
     }
 }
 

@@ -42,8 +42,6 @@ pub struct Vocabulary {
     words: Vec<Word>,
     kinds: Vec<(String, String, Option<String>)>,
     names: Vec<(String, Map, String)>,
-    /// Kinds whose value left on top at a program's end is given to a word.
-    ends: Vec<(Kinds, usize)>,
 }
 
 /// `said`, the last two joined by "or": "a, b or c".
@@ -77,31 +75,6 @@ impl Vocabulary {
         kind.ok_or_else(|| refused(format!("{name}: no such kind")))?
             .2 = Some(why.to_owned());
         Ok(())
-    }
-
-    /// A value of kind `name` left on top at a program's end is given to
-    /// `word`, as if the program ended with it (a wait left on a pane,
-    /// waited for).
-    pub fn ends(&mut self, name: &str, word: &str) -> Result<(), Error> {
-        let kind = self.kinds.iter().position(|(n, ..)| n == name);
-        let word = self.words.iter().position(|w| w.name == word);
-        let (Some(kind), Some(word)) = (kind, word) else {
-            return Err(refused(format!(
-                "{name} ends with {word:?}: no such kind or word"
-            )));
-        };
-        self.ends.push((Kinds::host(kind), word));
-        Ok(())
-    }
-
-    /// The word a value of `kinds` left on top at the end is given to, if
-    /// it surely is one of a kind that has one.
-    pub(crate) fn ender(&self, kinds: Kinds) -> Option<usize> {
-        let ends = self
-            .ends
-            .iter()
-            .find(|(k, _)| kinds != Kinds::NONE && kinds.and(k.not()) == Kinds::NONE);
-        ends.map(|(_, word)| *word)
     }
 
     /// A name effects may use for several kinds, `kinds` their names (a

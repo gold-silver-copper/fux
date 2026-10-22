@@ -66,8 +66,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    // A usage error, as its code says: status 2.
-    assert_eq!(refused.status, 2);
+    assert_eq!(refused.status, 1);
     assert!(
         refused.stderr.contains("control character"),
         "{}",
@@ -405,22 +404,6 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
-    // A finding word among the options is named, and what was meant.
-    let misplaced = said(&[
-        "opts",
-        "str",
-        "web",
-        "workspace",
-        "str",
-        "sh",
-        "command",
-        "run",
-    ])?;
-    assert!(
-        misplaced.contains("`workspace` (argument 4) made it")
-            && misplaced.contains("`str NAME name`"),
-        "{misplaced}"
-    );
     // The language's own words say how they are written.
     for (words, usage) in [
         (
@@ -687,7 +670,7 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
         .output()
         .map_err(e)?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
     Ok(())
 }
