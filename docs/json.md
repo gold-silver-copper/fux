@@ -198,9 +198,9 @@ wait's own (above). CODE stays; every one fux gives
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.33.1","protocol":14,
- "server_version":"0.33.1","server_protocol":14,"compatible":true}
-[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.33.1","compatible":true}]
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.34.0","protocol":14,
+ "server_version":"0.34.0","server_protocol":14,"compatible":true}
+[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.34.0","compatible":true}]
 ```
 
 With no server, `status` gives `running`, `socket`, `version` and `protocol`
