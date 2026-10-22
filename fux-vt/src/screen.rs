@@ -1220,6 +1220,13 @@ impl Screen {
     pub fn cursor_position(&self) -> (u16, u16) {
         self.grid().cursor.at()
     }
+    /// Where DECSC, or `CSI ? 1049 h`, last saved the cursor on the
+    /// primary screen, whichever screen is shown: where DECRC there, or
+    /// `CSI ? 1049 l`, puts it back. A host that repaints the screen on
+    /// another terminal saves it there again.
+    pub fn main_saved_cursor(&self) -> (u16, u16) {
+        self.primary.saved.cursor.at()
+    }
     /// DEC STD 070's Last Column Flag: a glyph went into the last column,
     /// or the right margin's (DECSLRM, with DECLRMM set), with autowrap
     /// on, and the next one first moves to the start of the next line,
