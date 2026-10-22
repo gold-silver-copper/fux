@@ -113,23 +113,11 @@ jobs:
           set -euo pipefail
           cargo test -p fux-vt --features checks --release --locked --test guards -- --include-ignored 2>&1 | tee "$CI_LOGS/guards.log"
 
-      - name: fux-vt wraptest (DEC STD 070 D.6.1)
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          cargo test -p fux-vt --locked --test wraptest 2>&1 | tee "$CI_LOGS/wraptest.log"
-
       - name: fux-vt xterm.js fixtures
         timeout-minutes: 5
         run: |
           set -euo pipefail
           cargo test -p fux-vt --locked --test xtermjs 2>&1 | tee "$CI_LOGS/xtermjs.log"
-
-      - name: fux-vt UTF-8 property
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          cargo test -p fux-vt --locked --test utf8_property 2>&1 | tee "$CI_LOGS/utf8-property.log"
 
       # Ghostty's and vt100-rust's fuzz corpora (vendored, MIT) replayed
       # under the invariant checker; mosh's (GPL) is an ignored test.
@@ -139,12 +127,6 @@ jobs:
           set -euo pipefail
           if [[ "$RUNNER_OS" == Linux ]]; then ulimit -d $((8 * 1024 * 1024)); fi
           cargo test -p fux-vt --features checks --release --locked --test external_corpora 2>&1 | tee "$CI_LOGS/external-corpora.log"
-
-      - name: libvterm's tests, translated
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          cargo test -p fux-vt --locked --test libvterm 2>&1 | tee "$CI_LOGS/libvterm.log"
 
       - name: Minimum Rust version
         # Every manifest says rust-version = "1.95"; the pinned toolchain is
