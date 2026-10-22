@@ -5,7 +5,7 @@ resolver = "3"
 
 [package]
 name = "fux"
-version = "0.33.1"
+version = "0.34.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -20,7 +20,7 @@ include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.
 fux-vt = { path = "fux-vt", version = "0.13.0" }
 signal-hook = "0.4"
 fuxix = { path = "fuxix", version = "0.6.3" }
-fuxth = { path = "fuxth", version = "0.5.0" }
+fuxth = { path = "fuxth", version = "0.6.0" }
 
 # The tests' sandbox (tests/support/sandbox.rs): a seccomp filter such as
 # Codex's, installed with a safe call, since the tests forbid unsafe code.
