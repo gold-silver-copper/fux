@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 /// The largest single piece of input: a whole paste and its envelope.
 pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 /// Input may wait for the program up to this many bytes, however many
-/// pieces it came in (bevy-final finding 021).
+/// pieces it came in.
 pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
@@ -1160,9 +1160,8 @@ impl Pane {
         begun
     }
 
-    /// Gives `bytes` to the screen, as `feed` does. Never inlined: inlined
-    /// into `record`, the parser's loop compiled there ran 0.9% more
-    /// instructions on dense, colourful output (`pane/dense-cells`).
+    /// Gives `bytes` to the screen, as `feed` does. Never inlined: the
+    /// parser's loop compiles tighter on its own than inside `record`.
     #[inline(never)]
     fn parse(
         &mut self,
@@ -1574,6 +1573,14 @@ impl Pane {
     /// it is typed ahead), and sets the pace for the next. Whether what
     /// follows it is told exactly, needing no pace.
     fn write_unit(&mut self, bytes: Vec<u8>, unit: log::Unit, now: Instant) -> bool {
+        // Replies or a resize report took the room `send` found: the piece
+        // waits for the program to read.
+        if bytes.len() > self.input.room() {
+            let piece = Piece::new(bytes, unit);
+            self.pace.waiting.push_front(piece);
+            self.pace.until = Some(after(now, POLL));
+            return false;
+        }
         let escape = bytes == b"\x1b";
         let child = self.process.child();
         let taking = child.and_then(|child| crate::ready::taking(self, child, now));
@@ -1614,7 +1621,7 @@ impl Pane {
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
         self.escape_open = escape_open(&bytes);
         self.written.0 = self.written.0.saturating_add(bytes.len());
-        let _ = self.input.push(&bytes);
+        let _ = self.input.push(&bytes); // room checked above
         let gap = if reading { TAKE } else { PACE };
         self.pace.written = Some((now, after(now, gap), escape, exact));
         self.pace.until = Some(after(now, if reading { POLL } else { PACE }));

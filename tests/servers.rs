@@ -360,6 +360,107 @@ fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
     Ok(())
 }
 
+/// A command client that sends request after request without reading the
+/// answers is read no more once they back up, the requests it already sent
+/// included, so it holds no more of the server's memory than its socket
+/// does; once it reads, every request is answered.
+#[test]
+fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
+    use fux::command::{Command as Cmd, Request};
+    use fux::protocol::{
+        Asked, Context, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToCommand,
+    };
+    use fuxix::poll::{Events, PollFd, poll};
+    use std::io::{ErrorKind, Read, Write};
+    /// Requests sent at most: a server that reads on takes them all.
+    const MOST: usize = 100_000;
+    let server = Server::start("")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "0".into(),
+        role: Role::Command,
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    let ls = Asked {
+        request: Request::Do(Cmd::Ls {
+            target: None,
+            get: None,
+        }),
+        context: Context::default(),
+    };
+    let ls = ls.encode().map_err(e)?;
+    stream.set_nonblocking(true).map_err(e)?;
+    let (mut sent, mut at) = (0, 0);
+    while sent < MOST {
+        match stream.write(ls.get(at..).unwrap_or_default()) {
+            Ok(n) => {
+                at += n;
+                if at == ls.len() {
+                    (sent, at) = (sent + 1, 0);
+                }
+            }
+            // Full: stalled for good if no room comes in a second.
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                let mut fds = [PollFd::new(&stream, Events::OUT)];
+                let ready = poll(&mut fds, Some(std::time::Duration::from_secs(1))).map_err(e)?;
+                if ready == 0 {
+                    break;
+                }
+            }
+            Err(error) => return Err(e(error)),
+        }
+    }
+    assert!(
+        sent < MOST,
+        "the server read every request though no answer was read"
+    );
+    // Its answers read, the rest of what it sent is taken, and answered.
+    stream.set_nonblocking(false).map_err(e)?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .map_err(e)?;
+    let mut reader = stream.try_clone().map_err(e)?;
+    let answers = std::thread::spawn(move || -> Result<usize, String> {
+        let (mut decoder, mut greeted, mut answered) = (Decoder::default(), false, 0);
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            let n = reader.read(&mut buffer).map_err(e)?;
+            if n == 0 {
+                return Ok(answered);
+            }
+            decoder.push(buffer.get(..n).unwrap_or_default());
+            if !greeted {
+                match decoder.frame::<Greeting>().map_err(e)? {
+                    Some(Greeting::Hello(_)) => greeted = true,
+                    Some(_) => return Err("not greeted".into()),
+                    None => continue,
+                }
+            }
+            while let Some(frame) = decoder.frame::<ToCommand>().map_err(e)? {
+                if let ToCommand::PartsEnd = frame {
+                    answered += 1;
+                }
+            }
+            if answered == sent + usize::from(at > 0) {
+                return Ok(answered);
+            }
+        }
+    });
+    if at > 0 {
+        stream
+            .write_all(ls.get(at..).unwrap_or_default())
+            .map_err(e)?;
+    }
+    let answered = answers.join().map_err(|_| "the reader panicked")??;
+    assert_eq!(
+        answered,
+        sent + usize::from(at > 0),
+        "every request answered"
+    );
+    Ok(())
+}
+
 /// A server killed outright comes back on its socket with the panes it
 /// had, their ids, splits and sizes: a program waits for `respawn`, which
 /// starts it again; a `run` taking its tab's name is told where that came

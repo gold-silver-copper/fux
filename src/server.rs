@@ -8,7 +8,7 @@ use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
-use crate::process::{Leader, Pid};
+use crate::process::Pid;
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
     ToAttached, ToCommand, split_into,
@@ -21,7 +21,7 @@ use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
@@ -66,20 +66,6 @@ const REPORT_EVERY: Duration = Duration::from_secs(10);
 /// How long the listener rests after an `accept` failure that retrying at
 /// once would only repeat.
 const ACCEPT_REST: Duration = Duration::from_millis(100);
-/// How often a restore that has started is looked at, to see its thread
-/// end: it ends after its connection, which no descriptor then tells.
-const RESTORE_LOOK: Duration = Duration::from_millis(10);
-/// What a connection refused for want of descriptors is told.
-const NO_DESCRIPTORS: &str =
-    "the fux server is out of file descriptors; it refuses new connections until some close";
-
-/// Running out of descriptors, while it lasts: connections are refused,
-/// each told why.
-struct Shortage {
-    /// When it was last reported, and how many were refused by then.
-    reported: (Instant, u64),
-    refused: u64,
-}
 
 /// The socket the server is found by: held only while it serves, so the
 /// moment it stops, its listener closes and the socket is gone, and a
@@ -148,7 +134,7 @@ enum Phase {
 enum Wake {
     Session(Timer),
     /// A closed pane's program's grace is over: it is killed.
-    Grace(PaneId),
+    Grace,
     /// The listener's rest is over.
     Listen,
     /// A stopping server waits no more.
@@ -156,8 +142,7 @@ enum Wake {
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
     /// The loop runs again, which after every wake asks the waits for
-    /// their answers (`Waiting::due`), saves the layout if it changed, and
-    /// looks at a restore's thread again (`Server::after_restore`).
+    /// their answers (`Waiting::due`) and saves the layout if it changed.
     Look,
 }
 
@@ -197,7 +182,9 @@ enum Stage {
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
-    /// answered before the next is read.
+    /// answered, and the answer written, before the next is read
+    /// (`Conn::reads`): a client that never reads its answers is read no
+    /// more, and holds no more memory than one answer.
     Command,
     /// Its request waits for the restore that runs to end, so that it takes
     /// no id the restore asks for (`Server::request`). It is read only to
@@ -404,6 +391,12 @@ impl Conn {
         }
     }
 
+    /// Whether what the client sends is read: by its stage, and for a
+    /// command client only once its last answer is all written.
+    fn reads(&self) -> bool {
+        self.stage.reads() && (self.out.is_empty() || !matches!(self.stage, Stage::Command))
+    }
+
     /// When the client attached here may be painted: if its view changed,
     /// and once what was sent it before is all written. One frame is in
     /// flight at most, so a client that reads slowly gets fewer, newer
@@ -546,7 +539,7 @@ pub struct Server {
     children: crate::SignalPipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
-    killed: Vec<Leader>,
+    killed: Vec<Pid>,
     stops: crate::SignalPipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
@@ -557,12 +550,7 @@ pub struct Server {
     /// every tick.
     slots: Vec<Slot>,
     ready: Vec<(Slot, PollFlags)>,
-    /// A descriptor held in reserve, so that a connection that arrives when
-    /// all others are taken can still be accepted and told why it is
-    /// refused (bevy-final findings 006 and 012).
-    spare: Option<File>,
-    shortage: Option<Shortage>,
-    /// When an `accept` failure other than a shortage was last logged.
+    /// When an `accept` failure was last logged.
     accept_logged: Option<Instant>,
 }
 
@@ -579,14 +567,14 @@ struct Saved {
     written: String,
     /// When it may be saved next.
     at: Instant,
-    /// Something happened since it was last saved.
+    /// Something changed since it was last saved.
     pending: bool,
     /// The workspaces, tabs and panes it was last saved with.
     shape: Shape,
-    /// A restore was started, and its end is yet to be seen to
-    /// (`Server::after_restore`); while its thread runs, what there is is
-    /// not saved over the file.
-    restore: Option<std::thread::JoinHandle<()>>,
+    /// The restore under way, if one is: the other end of a socket its
+    /// thread closes as it ends (`Server::restored`). Meanwhile what there
+    /// is is not saved over the file.
+    restore: Option<UnixStream>,
 }
 
 /// Which workspaces, tabs and panes there are.
@@ -640,9 +628,9 @@ impl Saved {
 
     /// Brings back the session saved, if there is one, by running it, a
     /// fuxth program, as a client of the server on `socket` does: on a
-    /// thread of its own, as the server serves it; that thread, if there is
-    /// one: it is not saved over while it comes back.
-    fn restore(&self, socket: &SocketPath) -> Option<std::thread::JoinHandle<()>> {
+    /// thread of its own, as the server serves it. The socket that thread
+    /// closes as it ends, if it started.
+    fn restore(&self, socket: &SocketPath) -> Option<UnixStream> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return None,
@@ -652,9 +640,13 @@ impl Saved {
             }
         };
         let (path, socket) = (self.path.clone(), socket.clone());
+        let (ends, end) = UnixStream::pair()
+            .inspect_err(|error| log!("could not bring back {}: {error}", self.path.display()))
+            .ok()?;
         let spawned = std::thread::Builder::new()
             .name("restore".into())
             .spawn(move || {
+                let _ends = ends;
                 match crate::script::restore(&socket, &path, &text) {
                     Ok(()) => log!("brought back the session in {}", path.display()),
                     Err(error) => {
@@ -669,18 +661,25 @@ impl Saved {
                     }
                 }
             });
-        spawned
-            .inspect_err(|error| log!("could not bring back {}: {error}", self.path.display()))
-            .ok()
+        match spawned {
+            Ok(_) => Some(end),
+            Err(error) => {
+                log!("could not bring back {}: {error}", self.path.display());
+                None
+            }
+        }
     }
 
-    /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
-    /// was last saved; else it is saved then. A workspace, tab or pane made
-    /// or closed is saved at once: a crash must not lose a pane.
-    fn save_by(&mut self, session: &Session, now: Instant) {
+    /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
+    /// since it was last saved; else it is saved then. A workspace, tab or
+    /// pane made or closed is saved at once: a crash must not lose a pane.
+    fn save_by(&mut self, session: &mut Session, now: Instant) {
+        self.pending |= mem::take(&mut session.edited);
+        if !self.pending {
+            return;
+        }
         let shape = Shape::of(session);
         if now < self.at && shape == self.shape {
-            self.pending = true;
             return;
         }
         self.save(session);
@@ -728,10 +727,9 @@ impl Saved {
         fs::rename(&temporary, &self.path)
     }
 
-    /// Whether a restore is under way: its thread has not ended, however
-    /// it ended.
+    /// Whether a restore is under way.
     fn restoring(&self) -> bool {
-        (self.restore.as_ref()).is_some_and(|thread| !thread.is_finished())
+        self.restore.is_some()
     }
 }
 
@@ -841,8 +839,6 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         paint_buffer: Vec::new(),
         slots: Vec::new(),
         ready: Vec::new(),
-        spare: File::open("/dev/null").ok(),
-        shortage: None,
         accept_logged: None,
     };
     server.run();
@@ -861,6 +857,8 @@ enum Slot {
     Door(usize),
     Children,
     Stops,
+    /// The restore under way has ended.
+    Restore,
     Conn(usize),
     /// The terminal a client sent, which the server reads and writes.
     Tty(usize),
@@ -881,11 +879,10 @@ impl Server {
             }
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
-            self.after_restore();
             self.answer_waits(now);
             self.tell_events();
             if let Some(saved) = &mut self.saved {
-                saved.save_by(&self.session, now);
+                saved.save_by(&mut self.session, now);
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
@@ -915,6 +912,7 @@ impl Server {
                         crate::drain(self.children.pipe());
                         self.reap();
                     }
+                    Slot::Restore => self.restored(),
                     Slot::Stops => {
                         crate::drain(self.stops.pipe());
                         // A signal (a shutdown, a logout) keeps the layout
@@ -934,14 +932,13 @@ impl Server {
     /// last, after what may change what they show.
     fn wakes(&self) -> impl Iterator<Item = (Instant, Wake)> + '_ {
         let session = (self.session.timers()).map(|(at, timer)| (at, Wake::Session(timer)));
-        let grace = (self.session.dying.iter()).map(|(pane, d)| (d.deadline, Wake::Grace(*pane)));
+        let grace =
+            (self.session.dying.iter().map(|d| d.deadline).min()).map(|at| (at, Wake::Grace));
         let phase = match self.phase {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
-        let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
-        let restore = restore.map(|_| (after(Instant::now(), RESTORE_LOOK), Wake::Look));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
@@ -954,7 +951,6 @@ impl Server {
             .chain(grace)
             .chain(phase)
             .chain(save)
-            .chain(restore)
             .chain(answers)
             .chain(paints)
     }
@@ -964,9 +960,12 @@ impl Server {
     fn wake(&mut self, wake: Wake, now: Instant) -> ControlFlow<()> {
         match wake {
             Wake::Session(timer) => self.session.fire(timer),
-            Wake::Grace(pane) => {
-                let dying = self.session.dying.remove(&pane);
-                self.killed.extend(dying.and_then(Dying::kill));
+            Wake::Grace => {
+                let (due, dying) = mem::take(&mut self.session.dying)
+                    .into_iter()
+                    .partition(|d| d.deadline <= now);
+                self.session.dying = dying;
+                self.killed.extend(due.into_iter().filter_map(Dying::kill));
             }
             Wake::Listen => {
                 if let Phase::Serving { resting, .. } = &mut self.phase {
@@ -989,14 +988,12 @@ impl Server {
         ControlFlow::Continue(())
     }
 
-    /// Once a restore is over: the requests held for it, answered; and if
-    /// it brought nothing back, a first workspace, as a fresh server has.
-    fn after_restore(&mut self) {
-        let Some(saved) = &mut self.saved else {
-            return;
-        };
-        if saved.restoring() || saved.restore.take().is_none() {
-            return;
+    /// A restore is over: the requests held for it are answered; and if it
+    /// brought nothing back, there is a first workspace, as a fresh server
+    /// has.
+    fn restored(&mut self) {
+        if let Some(saved) = &mut self.saved {
+            saved.restore = None;
         }
         if self.session.workspaces.is_empty()
             && let Err(error) = self.session.start()
@@ -1095,10 +1092,13 @@ impl Server {
             Slot::Children,
         );
         add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
+        if let Some(end) = self.saved.as_ref().and_then(|s| s.restore.as_ref()) {
+            add(PollFd::new(end, PollFlags::IN), Slot::Restore);
+        }
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
-            let mut flags = if conn.stage.reads() {
+            let mut flags = if conn.reads() {
                 PollFlags::IN
             } else {
                 PollFlags::OUT
@@ -1324,9 +1324,6 @@ impl Server {
     fn accept(&mut self, grant: usize) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
-            // The spare makes room for this accept, and is taken back after
-            // it: if it cannot be, the connection took the last descriptor.
-            self.spare = None;
             let Some((
                 Listening {
                     listener: Some(listener),
@@ -1337,50 +1334,8 @@ impl Server {
             else {
                 return;
             };
-            let accepted = listener.accept();
-            let room = match File::open("/dev/null") {
-                Ok(spare) => {
-                    self.spare = Some(spare);
-                    true
-                }
-                // Not a shortage of descriptors, the process's or the
-                // system's: there is room.
-                Err(e) => !matches!(Errno::from_io_error(&e), Some(Errno::MFILE | Errno::NFILE)),
-            };
-            match accepted {
-                Ok((stream, _)) if !room => {
-                    self.refuse(stream);
-                    // Closing it freed a descriptor for the spare.
-                    self.spare = File::open("/dev/null").ok();
-                }
-                Ok((stream, _)) => {
-                    if let Some(shortage) = self.shortage.take() {
-                        log!(
-                            "file descriptors available again; {} connections were refused while they were short",
-                            shortage.refused
-                        );
-                    }
-                    let euid = fuxix::process::geteuid();
-                    match fuxix::socket::peer_uid(&stream) {
-                        Ok(uid) if uid == euid => {}
-                        Ok(uid) => {
-                            log!(
-                                "refused a connection from uid {uid}; only uid {euid} may use this server"
-                            );
-                            continue;
-                        }
-                        Err(error) => {
-                            log!(
-                                "refused a connection whose peer could not be identified: {error}"
-                            );
-                            continue;
-                        }
-                    }
-                    if stream.set_nonblocking(true).is_err() {
-                        continue;
-                    }
-                    self.conns.push(Conn::new(Wire::Socket(stream), through));
-                }
+            let stream = match listener.accept() {
+                Ok((stream, _)) => stream,
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return,
                 // A peer that gave up before it was accepted: the next may
                 // be fine.
@@ -1393,9 +1348,9 @@ impl Server {
                     continue;
                 }
                 Err(e) => {
-                    // Even the spare's room was not enough, or something
-                    // else persists. The listener stays readable, so it
-                    // rests rather than being polled again at once.
+                    // Out of descriptors, or something else that persists.
+                    // The listener stays readable, so it rests rather than
+                    // being polled again at once.
                     let now = Instant::now();
                     if let Phase::Serving { resting, .. } = &mut self.phase {
                         *resting = Some(after(now, ACCEPT_REST));
@@ -1412,7 +1367,25 @@ impl Server {
                     }
                     return;
                 }
+            };
+            let euid = fuxix::process::geteuid();
+            match fuxix::socket::peer_uid(&stream) {
+                Ok(uid) if uid == euid => {}
+                Ok(uid) => {
+                    log!(
+                        "refused a connection from uid {uid}; only uid {euid} may use this server"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    log!("refused a connection whose peer could not be identified: {error}");
+                    continue;
+                }
             }
+            if stream.set_nonblocking(true).is_err() {
+                continue;
+            }
+            self.conns.push(Conn::new(Wire::Socket(stream), through));
         }
     }
 
@@ -1432,39 +1405,6 @@ impl Server {
         for fifos in door.knocks() {
             self.conns
                 .push(Conn::new(Wire::Door(fifos), through.clone()));
-        }
-    }
-
-    /// Tells a connection that there is no room for it, and closes it. The
-    /// shortage is logged when it starts, then at most every `REPORT_EVERY`.
-    fn refuse(&mut self, stream: UnixStream) {
-        let euid = fuxix::process::geteuid();
-        if fuxix::socket::peer_uid(&stream).is_ok_and(|uid| uid == euid)
-            && stream.set_nonblocking(true).is_ok()
-            && let Ok(bytes) = Greeting::Exit(NO_DESCRIPTORS).encode()
-        {
-            // A fresh socket's buffer holds the frame; if not, the peer
-            // sees the connection close.
-            let _ = (&stream).write_all(&bytes);
-        }
-        drop(stream);
-        let now = Instant::now();
-        let shortage = self.shortage.get_or_insert_with(|| {
-            log!("out of file descriptors: new connections are refused, each told why, until some close");
-            Shortage {
-                reported: (now, 0),
-                refused: 0,
-            }
-        });
-        shortage.refused = shortage.refused.saturating_add(1);
-        let (at, then) = shortage.reported;
-        if now.duration_since(at) >= REPORT_EVERY {
-            log!(
-                "still out of file descriptors: {} connections refused in the last {} s",
-                shortage.refused.saturating_sub(then),
-                now.duration_since(at).as_secs()
-            );
-            shortage.reported = (now, shortage.refused);
         }
     }
 
@@ -1490,18 +1430,22 @@ impl Server {
             return;
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
+        let reads = conn.reads();
         // One that is not read learns that its peer is gone by writing.
-        if flags.intersects(PollFlags::OUT) || (gone && !conn.stage.reads()) {
+        if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
         }
-        if flags.intersects(PollFlags::IN) || gone {
+        // A command client whose answer is now written: its next request
+        // may already wait, read before.
+        if flags.intersects(PollFlags::IN) || gone || (!reads && conn.reads()) {
             self.read_conn(index);
         }
     }
 
-    /// Reads what a client sent until it has sent no more, or `CONN_READ`
-    /// bytes, or more than 256 whole frames, or a bad one; each whole frame
-    /// is handled as it arrives, in order, and nothing after a bad one.
+    /// Handles the whole frames a client sent, then reads more, until it
+    /// has sent no more, or `CONN_READ` bytes, or more than 256 whole
+    /// frames, or a bad one, or it is to be read no more (`Conn::reads`);
+    /// each whole frame is handled in order, and nothing after a bad one.
     fn read_conn(&mut self, index: usize) {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
@@ -1510,10 +1454,23 @@ impl Server {
         let mut decoder = mem::take(&mut conn.decoder);
         let (mut frames, mut read) = (0usize, 0usize);
         let closed = 'read: loop {
-            // A frame it sent may have ended it: it is read no more.
-            let Some(conn) = self.conns.get_mut(index).filter(|c| c.stage.reads()) else {
+            loop {
+                match self.take_frame(index, &mut decoder) {
+                    Ok(true) => frames = frames.saturating_add(1),
+                    Ok(false) => break,
+                    Err(error) => {
+                        log!("a client sent a bad frame: {error}");
+                        break 'read true;
+                    }
+                }
+            }
+            // A frame it sent may have ended it, or be answered yet unread.
+            let Some(conn) = self.conns.get_mut(index).filter(|c| c.reads()) else {
                 break false;
             };
+            if frames > 256 || read >= CONN_READ {
+                break false;
+            }
             // A client may send its terminal with its `Attach`.
             let got = match &conn.wire {
                 Wire::Socket(stream) => fuxix::socket::recv_with_fd(stream, &mut self.read_buffer),
@@ -1533,19 +1490,6 @@ impl Server {
                     }
                     read = read.saturating_add(n);
                     decoder.push(self.read_buffer.get(..n).unwrap_or_default());
-                    loop {
-                        match self.take_frame(index, &mut decoder) {
-                            Ok(true) => frames = frames.saturating_add(1),
-                            Ok(false) => break,
-                            Err(error) => {
-                                log!("a client sent a bad frame: {error}");
-                                break 'read true;
-                            }
-                        }
-                    }
-                    if frames > 256 || read >= CONN_READ {
-                        break false;
-                    }
                 }
                 Err(Errno::AGAIN) => break false,
                 Err(Errno::INTR) => {}
@@ -1658,6 +1602,8 @@ impl Server {
                 Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),
             },
+            // The last answer is still being written: the next request waits.
+            Stage::Command if !conn.out.is_empty() => return Ok(false),
             Stage::Command => {
                 let Some(Asked { request, context }) = decoder.frame()? else {
                     return Ok(false);
@@ -1839,9 +1785,9 @@ impl Server {
         self.reap_killed();
         let session = &self.session;
         let panes = session.panes.values().filter_map(|p| p.process.child());
-        let leaders: Vec<Pid> = (panes.chain(session.dying.values().map(|d| &d.child)))
+        let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
             .map(|child| child.leader.pid())
-            .chain(self.killed.iter().map(Leader::pid))
+            .chain(self.killed.iter().copied())
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
         let exited: Vec<(PaneId, crate::process::Ended)> = self
@@ -1856,8 +1802,7 @@ impl Server {
     }
 
     fn reap_killed(&mut self) {
-        let killed = mem::take(&mut self.killed).into_iter();
-        self.killed = killed.filter_map(|l| l.finish().err()).collect();
+        self.killed.retain(|pid| !crate::process::reaped(*pid));
     }
 
     /// Kills every closed pane's program, and waits for them, at most a
@@ -1866,7 +1811,7 @@ impl Server {
     fn finish(&mut self) {
         let dying = mem::take(&mut self.session.dying);
         self.killed
-            .extend(dying.into_values().filter_map(Dying::kill));
+            .extend(dying.into_iter().filter_map(Dying::kill));
         for _ in 0..500 {
             self.reap_killed();
             if self.killed.is_empty() {

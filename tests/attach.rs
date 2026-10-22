@@ -858,8 +858,7 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
 
 /// Resizing a terminal signals its client, and a signal can interrupt a
 /// read or write in flight. Typing while the window is resized, hundreds of
-/// times, keeps the client attached and loses no byte (bevy-final finding
-/// 010, where Linux ended the attachment with "Interrupted system call").
+/// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").
 #[test]
 fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     let server = Server::start("")?;

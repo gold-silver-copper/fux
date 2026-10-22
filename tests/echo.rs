@@ -11,11 +11,8 @@ use std::time::{Duration, Instant};
 
 const CASES: u64 = 300;
 
-/// At most this many cases may type something the model leaves out. On
-/// macOS it leaves out an erase of what an earlier write typed (macOS
-/// erases it only if nothing was written since, which fux cannot see in
-/// time), and line editing is mostly that: more than half the cases there.
-const SKIPPED_PERCENT: u64 = if cfg!(target_os = "macos") { 65 } else { 20 };
+/// At most this many cases may type something the model leaves out.
+const SKIPPED_PERCENT: u64 = 15;
 
 /// A small xorshift: the same cases on every run.
 struct Rng(u64);
@@ -94,9 +91,9 @@ fn modes(rng: &mut Rng) -> Modes {
         expand_tabs: flag(4),
         ..Modes::default()
     };
-    modes.erase = char(rng, Some(0x7f));
-    modes.kill = char(rng, Some(0x15));
-    modes.werase = char(rng, Some(0x17));
+    modes.erase = rare_char(rng, 0x7f);
+    modes.kill = rare_char(rng, 0x15);
+    modes.werase = rare_char(rng, 0x17);
     modes.intr = char(rng, Some(0x03));
     modes.quit = char(rng, Some(0x1c));
     modes.susp = char(rng, Some(0x1a));
@@ -116,28 +113,21 @@ fn modes(rng: &mut Rng) -> Modes {
 fn key(rng: &mut Rng) -> Vec<u8> {
     const PRINTABLE: &[u8] = b"abcxyzQW019_ -.#@";
     const UTF8: &[&str] = &["é", "€", "中", "😀", "ß"];
-    // macOS's kill, echoed, the model leaves out (`Discipline::kill_erases`):
-    // typed there among the rare keys.
-    const EDITING: &[u8] = if cfg!(target_os = "macos") {
-        b"\x7f\x08\x17"
-    } else {
-        b"\x7f\x08\x15\x17"
-    };
     const LINE_ENDS: &[u8] = b"\r\n";
     const SIGNALS: &[u8] = b"\x03\x1c\x1a";
     const CONTROLS: &[&[u8]] = &[
-        b"\t", b"\x1b", b"\x1b[A", b"\x04", b"\x01", b"\x05", b"\x18", b"\x80", b"\xc3", b"\xff",
+        b"\t", b"\x08", b"\x1b", b"\x1b[A", b"\x04", b"\x01", b"\x05", b"\x18", b"\x80", b"\xc3",
+        b"\xff",
     ];
-    // Reprint, status, discard, literal next, start and stop.
-    const RARE: &[u8] = b"\x12\x14\x0f\x16\x11\x13\x15";
+    // Line editing, reprint, status, discard, literal next, start and stop.
+    const RARE: &[u8] = b"\x7f\x15\x17\x12\x14\x0f\x16\x11\x13";
     let one = |byte: Option<&u8>| byte.map(|&b| vec![b]).unwrap_or_default();
     match rng.below(1000) {
-        0..550 => one(rng.pick(PRINTABLE)),
-        550..650 => rng
+        0..700 => one(rng.pick(PRINTABLE)),
+        700..800 => rng
             .pick(UTF8)
             .map(|s| s.as_bytes().to_vec())
             .unwrap_or_default(),
-        650..800 => one(rng.pick(EDITING)),
         800..860 => one(rng.pick(LINE_ENDS)),
         860..890 => one(rng.pick(SIGNALS)),
         890..999 => rng.pick(CONTROLS).map(|k| k.to_vec()).unwrap_or_default(),

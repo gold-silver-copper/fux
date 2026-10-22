@@ -29,10 +29,10 @@ impl Session {
                 if !self.takes_in(only, ws.id, tab.id) {
                     continue;
                 }
-                let Some(root) = tab.root() else {
+                if tab.root().is_none() {
                     continue;
-                };
-                self.dump_tab(ws, tab, root, (whole, opens, ids), &mut out);
+                }
+                self.dump_tab(ws, tab, whole, opens, ids, &mut out);
                 opens = false;
             }
         }
@@ -46,11 +46,12 @@ impl Session {
         &self,
         ws: &Workspace,
         tab: &Tab,
-        root: &Tree,
-        (whole, opens, ids): (bool, bool, bool),
+        whole: bool,
+        opens: bool,
+        ids: bool,
         out: &mut String,
     ) {
-        let Some(first) = root.first_pane() else {
+        let Some((root, first)) = tab.root().and_then(|r| Some((r, r.first_pane()?))) else {
             return;
         };
         let program = self.program(first);

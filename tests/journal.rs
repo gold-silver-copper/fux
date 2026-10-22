@@ -41,18 +41,19 @@ fn end(process: Process) {
     leader.closed();
     leader.hang_up();
     drop(master);
+    let Err(pid) = leader.finish() else {
+        return;
+    };
     for _ in 0..200 {
-        match leader.finish() {
-            Ok(()) => return,
-            Err(again) => leader = again,
+        if fux::process::reaped(pid) {
+            return;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-/// B10: within REDRAWS a line drawn again the same changed nothing, and no
-/// piece lost prints (src/pane.rs delete !; src/log.rs
-/// replace Log::prints_lost_after -> bool with true).
+/// Within REDRAWS a line drawn again the same changed nothing, and no
+/// piece lost prints.
 #[test]
 fn a_line_drawn_again_the_same_changes_nothing() -> Result {
     let mut pane = pane()?;
@@ -66,9 +67,8 @@ fn a_line_drawn_again_the_same_changes_nothing() -> Result {
     Ok(())
 }
 
-/// B10: past REDRAWS (1 MiB printed since the last input) every run is
-/// whole, a line drawn again the same included (src/pane.rs
-/// replace && with ||).
+/// Past REDRAWS (1 MiB printed since the last input) every run is whole,
+/// a line drawn again the same included.
 #[test]
 fn past_a_flood_every_run_is_whole() -> Result {
     let mut pane = pane()?;
@@ -90,10 +90,9 @@ fn past_a_flood_every_run_is_whole() -> Result {
     Ok(())
 }
 
-/// B29: a command typed, begun on the main screen, whose program is blocked
+/// A command typed, begun on the main screen, whose program is blocked
 /// elsewhere (a relay's report: waiting) is at work, busy; not typed, it
-/// waits (src/ready.rs replace || with &&; src/ready.rs
-/// delete !).
+/// waits.
 #[test]
 fn a_command_typed_blocked_elsewhere_is_busy() -> Result {
     let mut pane = pane()?;

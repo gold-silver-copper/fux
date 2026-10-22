@@ -1,65 +1,35 @@
 //! What the kernel echoes as fux types into a pane. In line mode the
-//! kernel, not the program, echoes the keys and edits the line as they
-//! come; [`Echo`] works out those bytes exactly, as the kernel writes them
-//! back to the pty's master, so that the echo of typed keys can be told
-//! apart from the program's own output.
+//! kernel, not the program, echoes the keys as they come; [`Echo`] works
+//! out those bytes, as the kernel writes them back to the pty's master, so
+//! that the echo of typed keys can be told apart from the program's own
+//! output.
 //!
 //! Linux's `n_tty` (`drivers/tty/n_tty.c`) and the BSD rules macOS keeps
 //! (xnu's `bsd/kern/tty.c`) agree on what is modelled here, but for the few
-//! rules that follow from [`MACOS`], the kernel this build runs on.
+//! rules that follow from [`MACOS`].
 //!
-//! The model covers text (a UTF-8 character erased whole under `IUTF8`),
-//! carriage returns and newlines (`ICRNL`, `INLCR`, `IGNCR`, `ONLCR`,
-//! `OCRNL`), `ECHO`, `ECHONL`, `ECHOCTL`, erase under `ECHOE`, kill, word
-//! erase, end of line and file, and the signal characters. For the rest it
-//! answers `None`, rather than guess: the caller then tells echo by order.
-//! That is literal next, reprint, discard, status, flow control, erasing
-//! with `ECHOPRT` or without `ECHOE`, erasing a tab, tabs written as
-//! spaces, `ONOCR`, modes that rewrite input or output (`EXTPROC`, `IUCLC`,
-//! `OLCUC`, `PARMRK`, `ALTWERASE`), and on macOS a kill and an erase of
-//! what an earlier write typed. Two assumptions hold for both: a program
-//! that turns line mode off and on again has read what was typed in
-//! between, and fux reads the master's echo as it comes, so an interrupt's
-//! flush finds none of it left over from earlier writes.
+//! The model covers text, carriage returns and newlines (`ICRNL`, `INLCR`,
+//! `IGNCR`, `ONLCR`, `OCRNL`), `ECHO`, `ECHONL`, `ECHOCTL`, end of line and
+//! file, and the signal characters. For the rest it answers `None`, rather
+//! than guess: the caller then tells echo by order. That is line editing
+//! (erase, word erase, kill), literal next, reprint, discard, status, flow
+//! control, tabs written as spaces, `ONOCR`, and modes that rewrite input or
+//! output (`EXTPROC`, `IUCLC`, `OLCUC`, `ALTWERASE`) and `PARMRK`'s 0xff. fux reads
+//! the master's echo as it comes, so an interrupt's flush finds none of it
+//! left over from earlier writes.
 use fuxix::terminal::Modes;
 
 /// Whether this build runs on macOS's BSD line discipline rather than
-/// Linux's `n_tty`: the few rules they differ in follow from it.
+/// Linux's `n_tty`.
 const MACOS: bool = cfg!(target_os = "macos");
 
-/// Whether a kill, echoed, erases the line character by character rather
-/// than echoing the kill character; `None` when the model leaves it out.
-/// Linux's `eraser` does under `ECHOK` and `ECHOKE` (and `ECHOE`); macOS's
-/// only when every character in the line was echoed since the program last
-/// wrote, which fux cannot see in time.
-fn kill_erases(m: &Modes) -> Option<bool> {
-    (!MACOS).then_some(m.echok && m.echoke)
-}
-
-/// Whether a word erase takes `c`, a character's first byte, as part of a
-/// word. On macOS a word ends at a blank; on Linux it is the kernel's
-/// `isalnum`, or an underscore: ASCII's, and Latin-1's letters, which
-/// every UTF-8 lead byte from 0xc0 reads as but two.
-fn word(c: u8) -> bool {
-    if MACOS {
-        c != b' ' && c != b'\t'
-    } else {
-        c.is_ascii_alphanumeric() || c == b'_' || (c >= 0xc0 && c != 0xd7 && c != 0xf7)
-    }
-}
-
-/// The echo of what is typed into one terminal: the line the kernel holds,
-/// so that an erase or a kill erases what the kernel would.
+/// The echo of what is typed into one terminal.
 #[derive(Default, Debug)]
 pub struct Echo {
-    /// What was typed since the last line end, in line mode.
-    line: Vec<u8>,
-    /// How much of `line` was typed before this write.
-    start: usize,
+    /// How many bytes were typed since the last line end, in line mode.
+    line: usize,
     /// Whether line editing was on at the last write.
     canonical: Option<bool>,
-    /// Once the kernel's state is unknown, it stays so.
-    lost: bool,
 }
 
 /// Echo past this many bytes of one write: macOS's output queue holds 1024
@@ -72,54 +42,44 @@ const LONGEST_LINE: usize = 1000;
 /// buffer (`ECHO_COMMIT_WATERMARK`), which holds at most 3 per byte echoed.
 const FLUSHED_WHOLE: usize = 80;
 
-/// An editing character of line mode.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Edit {
-    Char,
-    Word,
-    Line,
-}
-
 impl Echo {
     /// What the kernel echoes as `input` is written under `modes`, after
     /// output processing (`OPOST`, `ONLCR`...). `None` when some byte or
-    /// mode is outside the model: the caller then falls back. Once the
-    /// kernel's line is unknown, every later write is `None` too; a new
-    /// `Echo` starts again from an empty line.
+    /// mode is outside the model: the caller then falls back.
     pub fn echo(&mut self, modes: &Modes, input: &[u8]) -> Option<Vec<u8>> {
         // Turning line mode on or off commits what was typed.
         if self.canonical.replace(modes.canonical) != Some(modes.canonical) {
-            self.line.clear();
+            self.line = 0;
         }
         let m = modes;
-        self.lost |= m.extproc || m.iuclc || m.altwerase;
-        if self.lost {
+        if m.extproc || m.iuclc || m.altwerase {
             return None;
         }
-        self.start = self.line.len();
         let mut write = Write {
             modes,
             out: Vec::new(),
             known: !(m.opost && m.olcuc),
         };
         for &c in input {
-            if self.byte(&mut write, c).is_none() {
-                self.lost = true;
-                return None;
-            }
+            self.byte(&mut write, c)?;
         }
         (write.known && write.out.len() <= OUTPUT_QUEUE).then_some(write.out)
     }
 
     /// Takes one typed byte (`n_tty_receive_buf_standard`, `ttyinput`):
-    /// `None` when the kernel's state is lost.
+    /// `None` when it is outside the model.
     fn byte(&mut self, w: &mut Write, typed: u8) -> Option<()> {
         let m = w.modes;
         let typed = if m.istrip { typed & 0x7f } else { typed };
+        // Linux edits the line and takes literal next and reprint only in
+        // line mode; macOS takes literal next, discard and status in any.
         let left_out = |c| {
+            let is = |chars: &[Option<u8>]| chars.contains(&Some(c));
             (m.parmrk && c == 0xff)
-                || (m.ixon && (m.start == Some(c) || m.stop == Some(c)))
-                || (m.iexten && [m.lnext, m.reprint, m.discard, m.status].contains(&Some(c)))
+                || (m.ixon && is(&[m.start, m.stop]))
+                || (m.canonical && is(&[m.erase, m.kill]))
+                || (m.iexten && m.canonical && is(&[m.werase, m.reprint]))
+                || (m.iexten && (m.canonical || MACOS) && is(&[m.lnext, m.discard, m.status]))
         };
         if left_out(typed) {
             return None;
@@ -128,7 +88,7 @@ impl Echo {
             // Unless `NOFLSH`, the line is thrown away, and with it the
             // echo not yet read.
             if !m.noflsh {
-                self.line.clear();
+                self.line = 0;
                 // On macOS a suspend keeps the echo not yet read.
                 if !MACOS || m.intr == Some(typed) || m.quit == Some(typed) {
                     w.known &= w.out.len() < FLUSHED_WHOLE;
@@ -157,23 +117,10 @@ impl Echo {
             }
             return Some(());
         }
-        if m.erase == Some(c) {
-            return self.edit(w, Edit::Char, c);
-        }
-        if m.kill == Some(c) {
-            // Linux takes it as a word erase when it is that too.
-            if m.werase == Some(c) {
-                return None;
-            }
-            return self.edit(w, Edit::Line, c);
-        }
-        if m.iexten && m.werase == Some(c) {
-            return self.edit(w, Edit::Word, c);
-        }
         if c == b'\n' || m.eof == Some(c) || m.eol == Some(c) || (m.iexten && m.eol2 == Some(c)) {
-            self.line.clear();
-        } else if self.line.len() < LONGEST_LINE {
-            self.line.push(c);
+            self.line = 0;
+        } else if self.line < LONGEST_LINE {
+            self.line = self.line.saturating_add(1);
         } else {
             return None;
         }
@@ -186,60 +133,6 @@ impl Echo {
         } else if MACOS {
             // Only macOS echoes the end-of-file character.
             w.eof(c);
-        }
-        Some(())
-    }
-
-    /// An erase, word erase or kill (`eraser`, `ttyrub`), typed as `c`.
-    fn edit(&mut self, w: &mut Write, kind: Edit, c: u8) -> Option<()> {
-        let m = w.modes;
-        if m.echo && m.echoprt {
-            return None;
-        }
-        // Without `ECHOE` the erase character is echoed, on macOS once a
-        // byte; macOS echoes a kill's newline under `ECHONL` alone.
-        w.known &= !(m.echo && !m.echoe) && !(kind == Edit::Line && !m.echo && m.echonl);
-        if kind == Edit::Line && m.echo {
-            match kill_erases(m) {
-                None => w.known = false,
-                Some(true) => {}
-                Some(false) => {
-                    if !self.line.is_empty() {
-                        w.echo(c);
-                        if m.echok {
-                            w.output(b'\n');
-                        }
-                    }
-                    self.line.clear();
-                    return Some(());
-                }
-            }
-        }
-        let mut seen_word = false;
-        // A character's continuation bytes go with it; only continuation
-        // bytes left are never erased.
-        while let Some(at) = (self.line.iter()).rposition(|&b| !(m.iutf8 && continuation(b))) {
-            let first = *self.line.get(at)?;
-            if kind == Edit::Word {
-                if word(first) {
-                    seen_word = true;
-                } else if seen_word {
-                    break;
-                }
-            }
-            // macOS may retype the line instead, once the program wrote since
-            // (`t_rocount`), which fux cannot see in time.
-            if MACOS && m.echo && at < self.start {
-                w.known = false;
-            }
-            self.line.truncate(at);
-            self.start = self.start.min(at);
-            if m.echo {
-                w.rub(first);
-            }
-            if kind == Edit::Char {
-                break;
-            }
         }
         Some(())
     }
@@ -305,31 +198,6 @@ impl Write<'_> {
             self.output(b'\x08');
         }
     }
-
-    /// Erases `c`, a character's first byte, from the screen: a control
-    /// character echoed as `^X` takes two columns, one echoed as itself
-    /// none.
-    fn rub(&mut self, c: u8) {
-        let columns = match c {
-            b'\t' => {
-                self.known = false;
-                0
-            }
-            _ if !u8::is_ascii_control(&c) => 1,
-            _ if self.modes.echoctl => 2,
-            _ => 0,
-        };
-        for _ in 0..columns {
-            for c in *b"\x08 \x08" {
-                self.output(c);
-            }
-        }
-    }
-}
-
-/// Whether `c` continues a UTF-8 character.
-fn continuation(c: u8) -> bool {
-    c & 0xc0 == 0x80
 }
 
 /// Whether `ECHOCTL` echoes `c` as `^X`.
