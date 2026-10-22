@@ -140,10 +140,8 @@ pub trait Frame<'a>: Sized {
     }
 }
 
-/// Appends `frame` to `out`, whatever its length: room for the header,
-/// then the payload, written in place, and the header filled in once its
-/// length is known, exact for a payload up to `MAX_PAYLOAD`. The payload's
-/// length.
+/// Appends `frame` to `out`, whatever its length, the payload written in
+/// place and the header filled in after: the payload's length.
 fn put<'a>(frame: &impl Frame<'a>, out: &mut Vec<u8>) -> usize {
     let start = out.len();
     out.extend_from_slice(&[0; 5]);
@@ -196,9 +194,8 @@ impl<'a> Payload<'a> for &'a str {
     }
 }
 
-/// A frame's one field, as the field is: what `frames!` reads a frame of
-/// one field as, beside `()`, a frame of none, whose payload is empty, and
-/// `(A, B)`, a frame of two wire values, one after the other.
+/// A frame of one field is the field's payload (`frames!`); one of none is
+/// `()`, and one of two `(A, B)`, wire values one after the other.
 impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
     fn put(&self, out: &mut Vec<u8>) {
         self.0.put(out);
@@ -209,15 +206,11 @@ impl<'a, T: Payload<'a>> Payload<'a> for (T,) {
 }
 
 /// `frames! { pub enum Ty<'a> { One(x: X) = 3, Two(y: Y, z: Z) = 4, Bare = BARE } }`
-/// expands to the enum (`One(X)`, `Two(Y, Z)`, `Bare`; docs and attributes
-/// as written) and its `Frame<'a>`: `One` is kind 3, its payload `x`'s
-/// (`Payload`); `Two` kind 4, `y`'s then `z`'s, each a wire value; and
-/// `Bare` kind `BARE`, a const (a kind several enums have is named once),
-/// its payload empty. Each is read back alike, and any other kind is
-/// `Error::UnexpectedKind`. So a frame's kind byte is written once, in its
-/// row or its const, and two rows of one kind do not compile (an
-/// unreachable pattern, denied). `x`, `y` and `z` only name the fields,
-/// as a macro can't make up names. An enum that lends its payload is
+/// expands to the enum (`One(X)`, `Two(Y, Z)`, `Bare`) and its `Frame<'a>`:
+/// `One` is kind 3, its payload `x`'s (`Payload`); `Two` kind 4, `y`'s then
+/// `z`'s; `Bare` kind `BARE`, a const, its payload empty. Any other kind is
+/// `Error::UnexpectedKind`, and two rows of one kind do not compile. `x`,
+/// `y` and `z` only name the fields. An enum that lends its payload is
 /// declared `<'a>`, the lifetime of the bytes it is decoded from.
 macro_rules! frames {
     (
@@ -324,9 +317,9 @@ frames! {
 wire! {
     /// Where a request comes from: the caller's directory, its pane
     /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
-    /// environment, which panes it starts take what `update-environment` names
-    /// from, the client whose binding or prompt runs it, and whether it brings
-    /// back a saved session.
+    /// environment if the request may start programs (they take what
+    /// `update-environment` names of it), the client whose binding or prompt
+    /// runs it, and whether it brings back a saved session.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Context {
         pub cwd: std::path::PathBuf,

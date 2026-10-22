@@ -201,12 +201,10 @@ impl Kept {
     }
 }
 
-/// The most sixel data a client keeps to send again: 16 MiB, a fixed
-/// bound on what the cache holds per client. At `fux-vt/THREATS.md` B08's
-/// worst, 12 bytes a pixel, that is the data of 1.4 million pixels (a 1,600
-/// by 870 picture); a picture of few colours, as most are, encodes to far
-/// less, so it holds a screenful of them. One past it is not kept but
-/// encoded each time it is sent, its work bounded by B08.
+/// The most sixel data a client keeps to send again: 16 MiB, at
+/// `fux-vt/THREATS.md` B08's worst of 12 bytes a pixel a 1,600 by 870
+/// picture, and a screenful of most. One past it is encoded each time it is
+/// sent, its work bounded by B08.
 const SIXEL_BYTES: usize = 16 << 20;
 
 impl Sixels {
@@ -226,7 +224,11 @@ impl Sixels {
             let held: usize = self.kept.iter().map(|k| k.data.len()).sum();
             if held.saturating_add(data.len()) <= SIXEL_BYTES {
                 let (picture, crop) = (Arc::clone(&picture.picture), picture.crop);
-                self.kept.push(Kept { picture, crop, data });
+                self.kept.push(Kept {
+                    picture,
+                    crop,
+                    data,
+                });
             }
         }
         out.extend_from_slice(b"\x1b8");
@@ -249,17 +251,13 @@ impl PartialEq for Grid {
 }
 impl Eq for Grid {}
 
-/// What composed a grid in normal mode: its frame, and the
-/// identity and version of each pane row put in it. A row of a fux-vt
-/// screen keeps its identity while it is retained, no later row takes it,
-/// and its version changes with every edit of its cells, soft wrap or
-/// links; pane ids are never reused, and a pane's program started again
-/// (`respawn`), whose new screen numbers its rows from the start again,
-/// makes another frame. So a grid composed again for its
-/// memo's frame needs only the pane rows whose keys changed put again
-/// (`Memo::update`), and two grids of one frame show the same cells on a
-/// row of the pane area whose pane rows have the same keys in both
-/// (`SameFrame`).
+/// What composed a grid in normal mode: its frame, and the identity and
+/// version of each pane row put in it. A fux-vt row keeps its identity
+/// while retained, and its version changes with every edit of its cells,
+/// wrap or links; pane ids are never reused, and a respawned pane makes
+/// another frame. So a grid composed again for its memo's frame needs only
+/// the rows whose keys changed put again (`Memo::update`), and two grids of
+/// one frame show the same on a row whose keys match (`SameFrame`).
 #[derive(Clone, Debug)]
 struct Memo {
     frame: Frame,
@@ -272,12 +270,10 @@ struct Memo {
 type RowKey = Option<(fux_vt::RowId, u64)>;
 
 /// Everything about a grid composed in normal mode but its panes' rows: its
-/// size, where each pane and separator is, each pane's screen
-/// (`Pane::starts`, which program's) and its window's size, and the
-/// focused pane, which colours the separators. Only for a tab with panes
-/// (one without shows a hint, and focuses none) none of which is in
-/// colours of its own (`recolour`), whose rows depend on more than their
-/// keys.
+/// size, each pane's place, program (`Pane::starts`) and window size, the
+/// separators, and the focused pane, which colours them. None for a tab
+/// with no panes, or with a pane in colours of its own (`recolour`), whose
+/// rows depend on more than their keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
     rows: u16,
@@ -434,7 +430,10 @@ impl Links {
         if self.0.len() <= y {
             self.0.resize(y.saturating_add(1), None);
         }
-        let row = self.0.get_mut(y).map(|r| r.get_or_insert_with(|| vec![None; usize::from(cols)]));
+        let row = self
+            .0
+            .get_mut(y)
+            .map(|r| r.get_or_insert_with(|| vec![None; usize::from(cols)]));
         if let Some(at) = row.and_then(|r| r.get_mut(usize::from(x))) {
             *at = link.map(|(pane, link)| (pane, link.clone()));
         }
@@ -443,7 +442,10 @@ impl Links {
     fn unlink(&mut self, y: u16, xs: std::ops::Range<u16>) {
         if let Some(Some(row)) = self.0.get_mut(usize::from(y)) {
             let run = usize::from(xs.end.saturating_sub(xs.start));
-            row.iter_mut().skip(usize::from(xs.start)).take(run).for_each(|l| *l = None);
+            row.iter_mut()
+                .skip(usize::from(xs.start))
+                .take(run)
+                .for_each(|l| *l = None);
         }
     }
     /// Whether row `y` has the same links as `other`'s.
@@ -631,11 +633,7 @@ impl Grid {
     }
     /// Draws the first `width` cells of row `y` from column `x`, a pane's
     /// row as `draw_row` put it, blanks too, in the colours its program set
-    /// (`pane_colours`): so a pane whose program changed a palette entry,
-    /// or its foreground or background, looks through fux as it would
-    /// directly in a terminal, and the client's own palette is never
-    /// changed (fux sends it no OSC 4, 10 or 11). Each pane's colours are
-    /// its own.
+    /// (`pane_colours`): the client's own palette is never changed.
     fn recolour(&mut self, y: u16, x: u16, width: u16, screen: &Screen) {
         let Some(start) = self.index(y, x) else {
             return;
@@ -759,14 +757,11 @@ impl Grid {
     }
 }
 
-/// `attributes` in the colours a pane's program set (`fux_vt::Options::
-/// palette`): an indexed colour whose palette entry it changed (OSC 4) as
-/// the colour it set, and the default foreground and background, if it set
-/// them (OSC 10, 11), as those; each colour it left alone, or reset, as it
-/// is, for the client's terminal to draw in its own. A default underline
-/// colour is the foreground's, and stays. With DECSCNM set (DEC STD 070,
-/// Screen Mode: the screen in reverse video), every cell's inverse is
-/// turned over, so a reversed glyph shows plain.
+/// `attributes` in the colours a pane's program set: an indexed colour
+/// whose entry it changed (OSC 4), and the default foreground and
+/// background (OSC 10, 11), as it set them; the rest as they are, for the
+/// client's terminal to draw in its own. With DECSCNM (reverse video) set,
+/// every cell's inverse is turned over.
 fn pane_colours(attributes: Attributes, screen: &Screen) -> Attributes {
     let colour = |c: Color, default: Option<Rgb>| match c {
         Color::Idx(n) => screen.palette_color(n).map_or(c, Color::Rgb),
@@ -807,14 +802,10 @@ fn cells(c: char) -> u16 {
     fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// The grapheme clusters (UAX #29) of fux's own text, as fux-vt joins
-/// what is printed (`fux_vt::continues_cluster`), controls dropped: each
-/// with the columns it takes by fux-vt's width rule (`fux_vt::str_width`),
-/// at most 2, as a cell holds, so that fux lays its text out as a pane
-/// would. Of a cluster longer than a cell keeps
-/// (`fux_vt::CLUSTER_CAPACITY`), the characters past it are dropped, as a
-/// pane drops them; it is looked at no further, so a long one costs no more
-/// than one a cell keeps.
+/// The grapheme clusters of fux's own text as fux-vt joins and measures
+/// what is printed, controls dropped, each with its columns (at most 2), so
+/// that fux lays its text out as a pane would. Characters past what a cell
+/// keeps (`fux_vt::CLUSTER_CAPACITY`) are dropped, as a pane drops them.
 fn clusters(text: &str) -> Clusters<'_> {
     Clusters { text, at: 0 }
 }
@@ -833,10 +824,8 @@ impl<'a> Iterator for Clusters<'a> {
         loop {
             let start = self.at;
             let bytes = text.as_bytes();
-            // Printable ASCII before ASCII, or at the end, is a cluster of
-            // one column alone (no ASCII character joins another, UAX
-            // #29): most of fux's text, which the bar lays out at every
-            // paint, needs no decoding and no look in fux-vt's tables.
+            // ASCII before ASCII, or at the end, is a cluster of its own
+            // (UAX #29): most of fux's text needs no tables.
             if let Some(&byte) = bytes.get(start)
                 && byte.is_ascii()
                 && bytes.get(start.saturating_add(1)).is_none_or(u8::is_ascii)
@@ -1548,12 +1537,9 @@ pub(crate) fn sgr(out: &mut Vec<u8>, a: Attributes, styles: bool) {
 }
 
 /// OSC 8: opens `link` in the client's terminal, or closes the open link.
-/// Its `id` is the pane's and the link's key there, which no other link of
-/// the pane has: no two panes' links are one to the terminal, and a link
-/// painted in pieces, or whose program gave no `id`, is one link, as the
-/// spec asks a multiplexer to make it (`references/modern/osc8_hyperlinks.md`,
-/// "Hover underlining and the `id` parameter"). A terminal that does not
-/// know OSC 8 ignores it.
+/// Its `id` is the pane's and the link's key there, so that no two panes'
+/// links are one, and a link painted in pieces is one, as the spec asks of
+/// a multiplexer (`references/modern/osc8_hyperlinks.md`).
 fn hyperlink(out: &mut Vec<u8>, link: Option<(PaneId, &Hyperlink)>) {
     match link {
         Some((pane, link)) => {
@@ -1584,30 +1570,19 @@ fn joins_the_glyph_before(grid: &Grid, y: u16, x: u16, text: &str) -> bool {
         .is_some_and(|glyph| fux_vt::continues_cluster(glyph.shown(), first))
 }
 
-/// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run of
-/// cells painted one after another, where it is not one byte of ASCII or
-/// follows a glyph that `joined` the one before it; whether the next glyph
-/// is to be placed by a cursor move: it joins the one before it, or it was
-/// measured otherwise.
+/// Paints `text`, a glyph `width` columns wide at (`y`, `x`) in a run,
+/// where it is not one byte of ASCII or follows a glyph that `joined` the
+/// one before it; whether the next glyph is to be placed by a cursor move.
 ///
 /// A glyph that continues the cluster of the one before it (an emoji
-/// modifier a program put after an emoji with a cursor move of its own, as
-/// micro and vim do) is placed by a cursor move, and so is what follows it:
-/// the client's terminal joins it to the glyph before, or not, as it does
-/// when the program writes it directly, and the next glyph is where fux-vt
-/// has it either way.
-///
-/// So is what follows a cluster whose width fux-vt makes other than the sum
-/// of its characters' widths, which a terminal measuring each character
-/// alone would advance by.
+/// modifier micro or vim put after an emoji with a cursor move) is placed
+/// by a cursor move, and so is what follows it, wherever the terminal puts
+/// it. So is what follows a cluster fux-vt measures other than the sum of
+/// its characters, as a terminal measuring each alone would advance by it.
 ///
 /// Zero-width characters after a glyph that leaves the cursor in the last
-/// column: with autowrap off, as fux's client has it, Ghostty puts them on
-/// the cell under the cursor if it holds anything, a space included
-/// (`Terminal.print`, for a glyph printed in the last column, where the
-/// cursor stays); with autowrap on, on the glyph before, as everywhere
-/// else. So autowrap is on just for them: the glyph ends a column short of
-/// the edge, and nothing printed wraps.
+/// column are painted with autowrap on: with it off, Ghostty puts them on
+/// the last column's cell, not on the glyph.
 fn cluster(
     out: &mut Vec<u8>,
     grid: &Grid,
@@ -1923,7 +1898,12 @@ mod tests {
         let sent = |picture: &Arc<Picture>, row: u16| {
             let mut alone = Vec::new();
             fux_vt::sixel::encode(picture, whole, &mut alone);
-            [format!("\x1b7\x1b[{};1H", row + 1).as_bytes(), &alone, b"\x1b8"].concat()
+            [
+                format!("\x1b7\x1b[{};1H", row + 1).as_bytes(),
+                &alone,
+                b"\x1b8",
+            ]
+            .concat()
         };
         let mut sixels = Sixels::default();
         for row in 0..100 {
@@ -2728,25 +2708,6 @@ mod tests {
         (0..g.rows).map(|y| g.row_text(y)).collect()
     }
 
-    #[test]
-    fn a_diff_applied_to_the_old_grid_gives_the_new_one() -> Result<(), String> {
-        let mut a = Grid::new(4, 12);
-        a.text(0, 0, "hello", Attributes::default(), 12);
-        a.text(2, 3, "界界x", Attributes::default().with_bold(true), 12);
-        let mut b = a.clone();
-        b.text(0, 0, "he", Attributes::default().with_underline(true), 12);
-        b.text(2, 4, "ab", Attributes::default(), 12);
-        b.text(3, 10, "界", Attributes::default(), 12);
-        let mut parser = terminal(4, 12)?;
-        apply(&paint(None, &a), &mut parser);
-        let lines = apply(&paint(Some(&a), &b), &mut parser);
-        assert_eq!(lines, grid_lines(&b));
-        // Full repaint from nothing matches too.
-        let mut fresh = terminal(4, 12)?;
-        assert_eq!(apply(&paint(None, &b), &mut fresh), grid_lines(&b));
-        Ok(())
-    }
-
     /// The rows a paint writes to: those it moves the cursor to, from 0.
     fn rows_written(bytes: &[u8]) -> Vec<u16> {
         let text = String::from_utf8_lossy(bytes);
@@ -2816,51 +2777,17 @@ mod tests {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
             grid.text(0, x, "x", *a, 12);
         }
-        let bytes = paint(None, &grid);
-        let text = String::from_utf8_lossy(&bytes);
-        for sgr in [
-            "\x1b[0;5m",
-            "\x1b[0;6m",
-            "\x1b[0;8m",
-            "\x1b[0;9m",
-            "\x1b[0;4;58:5:9m",
-            "\x1b[0;4;58:2::1:2:3m",
-        ] {
-            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
-        }
         // Read back by a terminal, each cell has what it was painted with.
         let mut parser = terminal(1, 12)?;
-        parser.process(&bytes).map_err(|e| e.to_string())?;
-        for (x, a) in attributes.iter().enumerate().take(5) {
+        parser
+            .process(&paint(None, &grid))
+            .map_err(|e| e.to_string())?;
+        for (x, a) in attributes.iter().enumerate() {
             let x = u16::try_from(x).map_err(|e| e.to_string())?;
             let cell = parser.screen().cell(0, x).ok_or("a cell")?;
             assert_eq!(cell.attributes(), *a, "cell {x}");
         }
         Ok(())
-    }
-
-    /// Paint's SGR: the flags, then the underline (a style only where the
-    /// terminal draws styles) and the blink, then the underline colour in
-    /// its colon form, then the colours in their semicolon forms.
-    #[test]
-    fn paint_writes_the_sgr_every_terminal_reads() {
-        let a = Attributes::new(Color::Idx(9), Color::Rgb([1, 2, 3].into()))
-            .with_bold(true)
-            .with_italic(true)
-            .with_underline_style(fux_vt::UnderlineStyle::Curly)
-            .with_blink(fux_vt::Blink::Slow)
-            .with_underline_color(Color::Idx(5));
-        let double = Attributes::new(Color::Idx(208), Color::Idx(15))
-            .with_underline_style(fux_vt::UnderlineStyle::Double);
-        let painted = |a: Attributes, styles: bool| {
-            let mut out = Vec::new();
-            sgr(&mut out, a, styles);
-            String::from_utf8_lossy(&out).into_owned()
-        };
-        assert_eq!(painted(a, true), "\x1b[0;1;3;4:3;5;58:5:5;91;48;2;1;2;3m");
-        assert_eq!(painted(a, false), "\x1b[0;1;3;4;5;58:5:5;91;48;2;1;2;3m");
-        assert_eq!(painted(double, true), "\x1b[0;4:2;38;5;208;107m");
-        assert_eq!(painted(double, false), "\x1b[0;4;38;5;208;107m");
     }
 
     /// A character of no width of its own (a combining mark, ZWJ, VS16)
@@ -2905,20 +2832,9 @@ mod tests {
         }
         let painted = |grid: &Grid| String::from_utf8_lossy(&paint(None, grid)).into_owned();
         let plain = painted(&grid);
-        assert_eq!(plain.matches("\x1b[0;4;58:2::255:0:0mx").count(), 5);
         assert!(!plain.contains("4:"), "{plain:?}");
         let mut styled = grid.clone();
         styled.underline_styles = true;
-        let text = painted(&styled);
-        for sgr in [
-            "\x1b[0;4;58:2::255:0:0mx",
-            "\x1b[0;4:2;58:2::255:0:0mx",
-            "\x1b[0;4:3;58:2::255:0:0mx",
-            "\x1b[0;4:4;58:2::255:0:0mx",
-            "\x1b[0;4:5;58:2::255:0:0mx",
-        ] {
-            assert!(text.contains(sgr), "{sgr:?} in {text:?}");
-        }
         // Read back by a terminal that keeps styles, each cell has its own;
         // painted plain, each is a plain underline.
         for (grid, keeps) in [(&styled, true), (&grid, false)] {

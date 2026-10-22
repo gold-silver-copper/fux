@@ -27,24 +27,17 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Modes the attach client sets on the outer terminal: the alternate
-/// screen, normal cursor and keypad keys, bracketed paste, focus events, no
-/// autowrap; and it saves the terminal's title (xterm's title stack,
-/// `outer::TITLE_PUSH`), which fux may set. The pane's modes are the server's
-/// to set (`render::Modes`). Public for fux-vt-compare's `transparency`.
+/// What the attach client sets on its terminal: its title saved
+/// (`outer::TITLE_PUSH`), the alternate screen, normal cursor and keypad
+/// keys, bracketed paste, focus events, no autowrap. The pane's modes are
+/// the server's to set (`render::Modes`). Public for fux-vt-compare.
 pub const ENTER: &str =
     "\x1b[22;0t\x1b[?1049h\x1b[?1l\x1b>\x1b[?2004h\x1b[?1004h\x1b[?7l\x1b[H\x1b[2J";
-/// And turns them off again, the title saved restored
-/// (`outer::TITLE_POP`), with what the server may have turned on in
-/// its paints: the pane's modes (`render::Modes`; the cursor's shape the
-/// server gives back itself, as DECSCUSR has no "the terminal's own" to
-/// set blindly), colour-scheme
-/// reports (mode 2031, `outer`), and the kitty
-/// keyboard flags it pushed, popped on the alternate screen they were
-/// pushed on, as the kitty spec says to leave. The client sends this
-/// however the attachment ends, the server gone or not; a terminal that
-/// never had them ignores both, and a pop of a stack the server pushed
-/// nothing on, the alternate screen's own, empties it.
+/// And puts it back, however the attachment ends, with what the server may
+/// have turned on: the pane's modes (`render::Modes`; the server gives the
+/// cursor's shape back itself, as DECSCUSR has no "the terminal's own"),
+/// scheme reports (mode 2031), and the kitty flags, popped on the alternate
+/// screen they were pushed on.
 const LEAVE: &str = "\x1b[23;0t\x1b[?2026l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// Why a client could not reach the server, start one, or go on.
@@ -188,18 +181,17 @@ fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), E
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
-    // A server that refuses a connection says why and closes it, maybe
-    // before the Hello is written: its reason is still there to read.
+    // A refusal may close the connection before the Hello is written: its
+    // reason is still there to read.
     let answer = read_frame(&mut stream, &mut decoder, Some(door::ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
 
-/// Whether the server's answer to our Hello, `ours`, and sending it, let
-/// the client go on, and the server's version if so: a refusal, which a
-/// server may make before reading the Hello, wins, and a server of another
-/// protocol is refused here, before anything it would not understand is
-/// sent.
+/// The server's version, if its answer to our Hello, `ours`, and sending
+/// it let the client go on: a refusal, which may come before the Hello is
+/// read, wins; a server of another protocol is refused before anything it
+/// would not understand is sent.
 fn greeted(
     ours: &Hello,
     answer: Result<Option<Greeting>, Error>,
@@ -207,8 +199,6 @@ fn greeted(
 ) -> Result<String, Error> {
     match (answer, sent) {
         (Ok(Some(Greeting::Exit(reason))), _) => Err(Error::Refused(reason.to_owned())),
-        // A server of another protocol says so, though it hung up before
-        // reading the Hello.
         (Ok(Some(Greeting::Hello(theirs))), sent) => {
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
             sent.map(|()| theirs.version.to_owned())
@@ -432,16 +422,14 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(output);
-    // A daemon (daemon(7)): in a session of its own, which outlives the
-    // terminal this client runs in, holding none of the client's
-    // descriptors but stdio, and no directory of its busy.
+    // A daemon (daemon(7)): a session of its own, no descriptors of the
+    // client's but stdio, no directory kept busy.
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
     loop {
         if answers(socket) {
-            // The child is left to run; it is not ours to wait for, and
-            // dropping a `Child` neither waits for nor kills it.
+            // Dropping a `Child` neither waits for nor kills it.
             drop(child);
             return Ok(());
         }
@@ -583,7 +571,6 @@ impl Keyboard {
     pub fn deadline(&self) -> Option<Instant> {
         self.decoder.deadline()
     }
-
 
     /// Bytes from its terminal, read at `now`.
     pub fn bytes(&mut self, bytes: &[u8], now: Instant) -> Vec<Act> {
@@ -821,10 +808,8 @@ pub fn attach(
 ) -> Result<(), Error> {
     let stdin = io::stdin();
     let terminal = size.is_none();
-    // A client with no terminal answers signals from the start. A
-    // terminal's are caught once connected, so that ^C while connecting
-    // still ends fux, and before it goes raw, so that no wait there misses
-    // one.
+    // A terminal's signals are caught once connected, so that ^C while
+    // connecting still ends fux, and before it goes raw.
     let early = (!terminal).then(Signals::new).transpose()?;
     let role = if terminal {
         Role::Attach
@@ -841,9 +826,8 @@ pub fn attach(
         read_only: attaching.read_only,
         env: environment(),
     };
-    // The terminal goes with the `Attach`, now that it is set up: if the
-    // server takes it, it writes the paints there itself. The keys are
-    // this client's to read either way.
+    // The terminal goes with the `Attach`: if the server takes it, it
+    // writes the paints there itself. The keys are the client's either way.
     let sent = match terminal {
         true => send_with_terminal(&mut stream, &attach, &stdin),
         false => send(&mut stream, &attach),
