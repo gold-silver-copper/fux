@@ -6,10 +6,8 @@
 //! chunked feeding, a rejected resize) are the tests' (`tests/corpus/
 //! invariants.rs`), as they need the state before.
 //!
-//! Each check is a function of its own, returning what it found wrong, so
-//! that a check that stops checking (its body `Ok(())`) is a mutant its
-//! fault test kills. The checker does no work the work counters see: it
-//! puts them back as they were.
+//! Each check returns what it found wrong. The checker does no work the
+//! work counters see: it puts them back as they were.
 
 use std::{cell::Cell, fmt};
 

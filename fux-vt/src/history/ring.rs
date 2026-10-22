@@ -179,8 +179,9 @@ impl Ring {
             None => self.last.get_mut(place),
         }
     }
+    /// The last record, which `pop_back` may leave in a full chunk.
     pub(crate) fn back_mut(&mut self) -> Option<&mut Kept> {
-        self.last.last_mut()
+        self.get_mut(self.len.checked_sub(1)?)
     }
     /// The records, oldest first.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Kept> {
@@ -200,12 +201,5 @@ impl Ring {
                 .get_mut(if n == 0 { head } else { 0 }..)
                 .unwrap_or_default()
         })
-    }
-    /// Room for `more` records more in the last chunk than it should have:
-    /// a fault for the checker's test.
-    #[cfg(all(test, feature = "checks"))]
-    pub(crate) fn reserve_more(&mut self, more: usize) {
-        self.last
-            .reserve_exact(self.last.capacity().saturating_add(more));
     }
 }

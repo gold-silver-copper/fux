@@ -748,4 +748,3 @@ fn the_checker_finds_a_command_set_aside_without_its_nonces() -> Result<(), Erro
     assert!(p.check().faults_of("screen.nest").next().is_some());
     Ok(())
 }
-

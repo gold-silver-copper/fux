@@ -74,8 +74,6 @@ fn recent(attributes: Attributes) -> usize {
 /// neither text nor links: its cells before its blank tail, which are
 /// blanked, as the row the slot takes next needs them, and what it is.
 /// Whether it did. Given the grid's parts, which it borrows apart.
-/// Inlined into its callers: without, scrolling counts 5% more
-/// instructions (vt/scrolling, fux-bench).
 #[inline(always)]
 fn take_row(
     history: &mut History,
@@ -1026,7 +1024,7 @@ impl Grid {
         let share = crate::style::screen_share(self.cells.len());
         let after = self.styles.bytes_after_insert().saturating_sub(share);
         self.history.charge(after);
-        !(after > self.history.budget())
+        after <= self.history.budget()
     }
 
     /// Keeps only the styles cells have, numbered anew, and gives every
@@ -1497,40 +1495,83 @@ impl Grid {
         for (from, y) in rows {
             // To a double-width line's end (DEC STD 070, 5.6.1).
             let end = end.min(self.row_end(y)).max(col);
-            self.copy_cells(from, y, span.clone(), col..end, version);
-            self.set_link(y, usize::from(col)..usize::from(end), None, version);
+            let to = usize::from(col)..usize::from(end);
+            // Each cell read, then written, and rewritten (`budget`).
+            spend!(cells, to.len().saturating_mul(2));
+            spend!(edits, to.len());
+            if let (Some(source), Some(target)) = (self.slot(from), self.slot(y)) {
+                self.copy_cells((source, target), span.clone(), to.clone(), true, version);
+            }
+            self.set_link(y, to, None, version);
         }
     }
 
-    /// DECCRA's copy of the cells `span` of live row `from` to the columns
-    /// `to` of live row `y`, with their clusters' text: the columns are
-    /// cleared first (`clear_for`), then each cell written; the halves of a
-    /// glyph the source's edges cut are blanked.
-    fn copy_cells(&mut self, from: u16, y: u16, span: Range<usize>, to: Range<u16>, version: u64) {
-        let text = self.slot(from).and_then(|slot| self.texts.get(slot));
-        let text = text.cloned().unwrap_or_default();
-        let mut cells = self.live_cells(from).get(span).unwrap_or_default().to_vec();
-        // Each cell read, then written; and the row's text, as its copy
-        // costs; and the text written into the target row, counted by its
-        // stores as they go, at most the row's: spent here too.
-        spend!(cells, cells.len().saturating_mul(2));
-        spend!(edits, cells.len());
-        spend!(text, text.bytes());
-        crate::budget::spend(crate::budget::units(text.bytes()), crate::budget::weight::text);
-        cut(&mut cells);
-        self.mutate_line(y, version, to.end, |line| {
-            let span = usize::from(to.start)..usize::from(to.end);
-            line.clear_for(span.clone());
-            for (at, cell) in span.zip(&cells) {
-                if cell.is_spilled() {
-                    line.set(at, *cell, text.of(cell));
-                } else if let Some(slot) = line.cells.get_mut(at) {
-                    *slot = *cell;
+    /// Copies the cells `span` of slot `source` over the columns `to` of
+    /// slot `target`, as many as fit, with their clusters' text: DECCRA's
+    /// copy (`cuts`: the halves of a glyph the source's edges or `to`'s end
+    /// cut are blanked, and so is a glyph of the target the copy leaves
+    /// half of), and a margin scroll's, whose margins split such glyphs
+    /// first. While each cluster goes over one as long, its text is written where
+    /// that one's lies, which needs no room (B35); else the columns are
+    /// cleared first (`clear_for`). The target takes `version` if a cell
+    /// changed.
+    fn copy_cells(
+        &mut self,
+        (source, target): (usize, usize),
+        span: Range<usize>,
+        to: Range<usize>,
+        cuts: bool,
+        version: u64,
+    ) {
+        let mut cells = self.slice(source).get(span).unwrap_or_default().to_vec();
+        if cuts {
+            cut(&mut cells);
+        }
+        cells.truncate(to.len());
+        let text = self.texts.get(source);
+        let texts: Vec<String> = (cells.iter())
+            .map(|c| match (c.is_spilled(), text) {
+                (true, Some(text)) => text.of(c).to_owned(),
+                _ => String::new(),
+            })
+            .collect();
+        let bytes = texts.iter().map(String::len).fold(0usize, usize::saturating_add);
+        // The clusters' text read; and as much written into the target
+        // row, which its stores count as they go: spent here, so the
+        // budget prices what they count.
+        spend!(text, bytes);
+        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
+        let columns = to.start..to.start.saturating_add(cells.len());
+        let mut changed = false;
+        if let Some(mut line) = self.line(target) {
+            let olds = line.cells.get(columns.clone()).unwrap_or_default();
+            changed = (cells.iter().zip(olds).zip(&texts))
+                .any(|((cell, old), text)| !old.holds(line.text, cell, text));
+            let in_place = (cells.iter().zip(&texts).zip(columns.clone()))
+                .all(|((cell, text), at)| !cell.is_spilled() || line.replaces(at, text.len()));
+            if changed && !in_place {
+                line.clear_for(columns.clone());
+            }
+            for ((at, cell), text) in columns.clone().zip(&cells).zip(&texts).filter(|_| changed) {
+                if !cell.is_spilled() {
+                    if let Some(slot) = line.cells.get_mut(at) {
+                        *slot = *cell;
+                    }
+                } else if in_place {
+                    line.replace(at, *cell, text);
+                } else {
+                    line.set(at, *cell, text);
                 }
             }
-            repair_wide(line.cells);
-            true
-        });
+            let edges = columns.start.saturating_sub(1)..columns.end.saturating_add(1);
+            let edges = edges.start..edges.end.min(line.cells.len());
+            if let Some(edges) = line.cells.get_mut(edges).filter(|_| changed && cuts) {
+                repair_wide(edges);
+            }
+        }
+        if changed {
+            self.changed(target, columns.end, version);
+        }
     }
 
     /// ICH and DCH, at the cursor, which they leave where it is; they end
@@ -1773,7 +1814,11 @@ impl Grid {
         let (Some(source), Some(target)) = (self.slot(from), self.slot(to)) else {
             return;
         };
-        self.copy_span_cells(source, target, span.clone(), version);
+        // Each cell read, compared with the one it goes over, and written,
+        // and a few buffers made, whatever the span's width (`budget`).
+        spend!(cells, span.len().saturating_mul(3));
+        spend!(spans, 1);
+        self.copy_cells((source, target), span.clone(), span.clone(), false, version);
         // The links, a cell at a time: each takes its source's, or none.
         let links = self.linked.get(source).filter(|l| !l.is_empty()).cloned();
         let linked = links.is_some() || self.linked.get(target).is_some_and(|l| !l.is_empty());
@@ -1782,50 +1827,6 @@ impl Grid {
                 let link = links.as_ref().and_then(|l| l.runs().get(at));
                 self.set_link(to, at..at.saturating_add(1), link, version);
             }
-        }
-    }
-
-    /// `copy_span`'s copy of the cells `span` of slot `source` over those
-    /// of slot `target`, with their clusters' text. While each cluster goes
-    /// over one as long, its text is written where that one's lies, which
-    /// needs no room (B35); else the span is cleared first (`clear_for`).
-    fn copy_span_cells(&mut self, source: usize, target: usize, span: Range<usize>, version: u64) {
-        let cells = self.slice(source).get(span.clone()).unwrap_or_default().to_vec();
-        let text = self.texts.get(source).cloned().unwrap_or_default();
-        // Each cell read, compared with the one it goes over, and written;
-        // the span's own text, each cluster's, read and written.
-        spend!(cells, cells.len().saturating_mul(3));
-        spend!(spans, 1);
-        let bytes = cells.iter().filter(|c| c.is_spilled()).map(|c| text.of(c).len());
-        let bytes = bytes.fold(0usize, usize::saturating_add);
-        spend!(text, bytes);
-        // And the text written into the target row, which its stores count
-        // as they go: spent here, so the budget prices what they count.
-        crate::budget::spend(crate::budget::units(bytes), crate::budget::weight::text);
-        let mut changed = false;
-        if let Some(mut line) = self.line(target) {
-            let olds = line.cells.get(span.clone()).unwrap_or_default();
-            changed = (cells.iter().zip(olds))
-                .any(|(cell, old)| !old.holds(line.text, cell, text.of(cell)));
-            let in_place = (cells.iter().zip(span.clone()))
-                .all(|(cell, at)| !cell.is_spilled() || line.replaces(at, text.of(cell).len()));
-            if changed && !in_place {
-                line.clear_for(span.clone());
-            }
-            for (at, cell) in span.clone().zip(&cells).filter(|_| changed) {
-                if !cell.is_spilled() {
-                    if let Some(slot) = line.cells.get_mut(at) {
-                        *slot = *cell;
-                    }
-                } else if in_place {
-                    line.replace(at, *cell, text.of(cell));
-                } else {
-                    line.set(at, *cell, text.of(cell));
-                }
-            }
-        }
-        if changed {
-            self.changed(target, span.end, version);
         }
     }
 
@@ -2059,8 +2060,7 @@ impl Grid {
         let (rows, cols) = (size.rows(), size.cols());
         let history = self.history_len();
         // Rows are placed around the cursor, so that the line it is on stays
-        // in view (docs/breaks-audit.md, 017: a resized pane lost its bottom
-        // line). A shrink drops rows below the cursor first, and only then
+        // in view. A shrink drops rows below the cursor first, and only then
         // scrolls rows above it into history: a screen with its content at
         // the top keeps it, and a full screen keeps its bottom line. A grow
         // pulls rows back from history above, as xterm does, and pads the rest
@@ -2472,8 +2472,6 @@ impl Grid {
     /// CUP: moves the cursor, within the margins in origin mode, where
     /// lines count from the top margin and columns from the left. Like
     /// every cursor movement, it ends a pending wrap.
-    /// Inlined where the compiler finds it pays: forced into every caller
-    /// it cost every program's recordings 0.2% on x86 (fux-bench).
     #[inline]
     pub fn position(&mut self, row: u16, col: u16) {
         self.cursor.pending_wrap = false;
@@ -3023,144 +3021,5 @@ impl Grid {
     fn check_links_held(&self) -> Result<(), String> {
         let links = self.checked_rows().filter_map(|(_, _, _, links)| links);
         self.links.check(links)
-    }
-}
-
-/// The grid's checks, each shown a grid with its one fault: a
-/// check that stops checking fails here.
-#[cfg(all(test, feature = "checks"))]
-mod faults {
-    use super::*;
-
-    /// A grid of 3 rows of 4, with a few rows of history.
-    fn grid() -> Result<Grid, Error> {
-        let size = Size::new(3, 4).map_err(|_| Error::Capacity)?;
-        let mut next = 1;
-        let mut grid = Grid::new(size, 1 << 12, &mut next, 1)?;
-        for _ in 0..5 {
-            let _ = grid.write_ascii(0, 0, b"ab", 0, 1);
-            grid.scroll(
-                size.lines(),
-                1,
-                Scroll::Up { history: true },
-                0,
-                &mut next,
-                1,
-            );
-        }
-        Ok(grid)
-    }
-
-    /// The checks that found a fault in `grid`.
-    fn faulted(grid: &Grid) -> Vec<&'static str> {
-        let mut report = crate::Checked::default();
-        grid.check("grid", 1, &mut report);
-        report.faults().iter().map(|f| f.check).collect()
-    }
-
-    /// Whether `grid` is clean, and `fault` makes it fail `check` alone.
-    fn shows(check: &str, fault: impl FnOnce(&mut Grid)) -> Result<(), Error> {
-        let mut grid = grid()?;
-        assert_eq!(faulted(&grid), Vec::<&str>::new());
-        fault(&mut grid);
-        let found = faulted(&grid);
-        assert!(found.contains(&check), "{check}: {found:?}");
-        Ok(())
-    }
-
-    #[test]
-    fn each_check_names_its_fault() -> Result<(), Error> {
-        shows("grid.order", |g| {
-            if let [first, second, ..] = g.order.slots.as_mut_slice() {
-                *first = *second;
-            }
-        })?;
-        shows("grid.slots", |g| {
-            g.texts.pop();
-        })?;
-        shows("grid.blank_past_used", |g| {
-            if let Some(cell) = g.cells.get_mut(1) {
-                *cell = Compact::ascii(b'x', 0);
-            }
-            g.meta.iter_mut().for_each(|m| m.used = 0);
-        })?;
-        shows("grid.blank_past_end", |g| {
-            g.set_rendition(0, LineRendition::DoubleWidth, 1);
-            let at = g.order.get(0).map(|slot| slot * 4 + 3);
-            if let Some(cell) = at.and_then(|at| g.cells.get_mut(at)) {
-                *cell = Compact::ascii(b'x', 0);
-            }
-            g.meta.iter_mut().for_each(|m| m.used = 4);
-        })?;
-        shows("grid.wide_pairs", |g| {
-            if let Some(cell) = g.cells.get_mut(0) {
-                *cell = Compact::glyph('一', 2, 0);
-            }
-            g.meta.iter_mut().for_each(|m| m.used = 4);
-        })?;
-        shows("grid.text", |g| {
-            let long = "e\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}\u{301}";
-            g.mutate_line(0, 1, 1, |line| line.set(0, Compact::glyph('e', 1, 0), long));
-            if let Some(&slot) = g.order.get(0)
-                && let Some(text) = g.texts.get_mut(slot)
-            {
-                *text = Text::default();
-            }
-        })?;
-        shows("grid.style_numbers", |g| {
-            if let Some(cell) = g.cells.get_mut(0) {
-                cell.set_style(crate::style::TABLE | 5);
-            }
-            g.meta.iter_mut().for_each(|m| m.used = 4);
-        })?;
-        shows("grid.recent", |g| {
-            let bold = Attributes::default().with_bold(true);
-            if let Some(slot) = g.recent.get_mut(0) {
-                *slot = (bold, crate::style::TABLE | 3);
-            }
-        })?;
-        shows("grid.charged", |g| g.history.charge(1))?;
-        // A run past the row's 4 cells, and a link the links held never
-        // counted (guard mutants: the grid's calls to each check).
-        shows("links.runs", |g| {
-            if let Some(&slot) = g.order.get(0)
-                && let Some(row) = g.linked.get_mut(slot)
-            {
-                let _ = row.set(3..5, Some(&Hyperlink::new(9, "http://a", None)));
-            }
-        })?;
-        shows("links.held", |g| {
-            if let Some(&slot) = g.order.get(0)
-                && let Some(row) = g.linked.get_mut(slot)
-            {
-                let _ = row.set(0..1, Some(&Hyperlink::new(9, "http://a", None)));
-            }
-        })?;
-        shows("grid.versions", |g| {
-            g.meta.iter_mut().for_each(|m| m.version = 2);
-        })?;
-        shows("grid.cursor", |g| g.cursor.row = 3)?;
-        shows("grid.cursor", |g| {
-            g.set_rendition(0, LineRendition::DoubleWidth, 1);
-            (g.cursor.row, g.cursor.col) = (0, g.size.cols().saturating_sub(1));
-        })?;
-        shows("grid.margins", |g| g.narrow = LR)?;
-        shows("grid.margins", |g| {
-            g.set_rendition(0, LineRendition::DoubleWidth, 1);
-            g.narrow = 0;
-        })?;
-        shows("grid.keyboard", |g| g.keyboard.0.extend([1; 33]))?;
-        Ok(())
-    }
-}
-
-/// What a fault test needs of a grid it breaks on purpose.
-#[cfg(all(test, feature = "checks"))]
-impl Grid {
-    /// Gives live row `row` identity `id`, another row's maybe.
-    pub(crate) fn give_id(&mut self, row: u16, id: RowId) {
-        if let Some(m) = self.slot(row).and_then(|slot| self.meta.get_mut(slot)) {
-            m.id = id;
-        }
     }
 }

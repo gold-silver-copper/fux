@@ -185,9 +185,7 @@ impl Printed {
 /// are not kept: another set is ASCII, as xterm reads one in UTF-8. At
 /// level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
 /// STD 070, 3.6.4.2), G0 and G1 ASCII. Four bytes, aligned as a `u32`,
-/// which `ascii` reads once a run: three bytes among the screen's other
-/// bytes made the printing paths count up to 0.3% more instructions as
-/// those changed (bench-commit).
+/// which `ascii` reads once a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
 pub(crate) struct Charsets {
@@ -546,10 +544,7 @@ enum Left {
 
 /// What DSR 75 reports of the data integrity flag (DEC STD 070, DSR, 775):
 /// power-up (73) until it has been reported once after the screen is made
-/// or RIS, then no error since the last report (70). Four bytes, as a
-/// `u32`: a byte among the screen's flags made the printing paths count
-/// up to 0.3% more instructions (bench-commit), by the loads of its
-/// neighbours the compiler joins.
+/// or RIS, then no error since the last report (70).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum Integrity {
@@ -2692,11 +2687,7 @@ impl Screen {
         g.cursor.pending_wrap = false;
     }
     /// HT and CHT: `tab` forward, after the wrap mode 41 carries out
-    /// (`more_fix`). The wrap's test is apart from `tab`, which stays
-    /// infallible: as one fallible function, an HT cost 11 instructions
-    /// more (vt/kitty:ascii +0.55% on desk). Out of line: inlined into
-    /// `control`, it moved what the compiler inlines around the line feed,
-    /// and scrolling a region cost 0.3% more (vt/vtebench:*_region).
+    /// (`more_fix`). Apart from `tab`, which stays infallible.
     #[inline(never)]
     fn forward_tab(&mut self, count: u16) -> Result<(), Error> {
         if self.mode(Mode::MoreFix) && self.grid().cursor.pending_wrap {
@@ -2966,9 +2957,7 @@ impl Screen {
     /// the left and right margins, as ICH and DCH insert and delete cells
     /// in one (DEC STD 070, 5.4.3; xterm's `xtermColScroll`). Nothing
     /// outside the margins. The cursor stays, and so does a pending wrap,
-    /// as in xterm; DECDC ends each line's soft wrap, as DCH does. Out of
-    /// line: inlined, the claude recordings count 0.01% more instructions
-    /// (fux-bench).
+    /// as in xterm; DECDC ends each line's soft wrap, as DCH does.
     #[inline(never)]
     fn edit_columns(&mut self, count: u16, insert: bool) {
         let g = self.grid();
@@ -3059,8 +3048,7 @@ impl Screen {
     /// guarded glyphs (ECMA-48, SPA with ERM reset), the rest erased as
     /// for ED and EL. An erase that finds no protected glyph leaves the
     /// protection as it is (DEC STD 070, 5.11.1.2; ECMA-48 8.3.140), where
-    /// xterm ends it after an ED of the whole screen. Out of line: inlined,
-    /// the tmux recordings count up to 0.35% more instructions (fux-bench).
+    /// xterm ends it after an ED of the whole screen.
     #[inline(never)]
     fn erase_protected(&mut self, private: bool, display: bool, part: Erase) {
         let (blank, version, cols) = (self.blank_style(), self.version, self.size().cols());
@@ -4158,9 +4146,8 @@ impl Screen {
     /// (`Parser::csi_dispatch`): DECSCA, DECIC, DECDC, SL and SR and the
     /// rectangular area operations, carried out, and the
     /// queries' replies, some enabled by [`Feature::ExtendedReplies`] and
-    /// [`Options::identity`]; `None` for the rest, unhandled. Carried out
-    /// in `csi`, even out of line, they cost every CSI a percent or two of
-    /// its instructions.
+    /// [`Options::identity`]; `None` for the rest, unhandled. Apart from
+    /// `csi`, which every CSI takes.
     #[inline(never)]
     pub(crate) fn other_csi(
         &mut self,
@@ -4504,59 +4491,6 @@ impl Screen {
             groups.next();
         }
         colour_of(&values)
-    }
-}
-
-/// The screen's checks, each shown a screen with its one fault.
-#[cfg(all(test, feature = "checks"))]
-mod faults {
-    use super::*;
-
-    fn screen() -> Result<Screen, Error> {
-        let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
-        let mut screen = Screen::new(size, 1 << 12)?;
-        screen.record_prints(true);
-        let _ = screen.ascii(b"hello")?;
-        Ok(screen)
-    }
-
-    fn shows(check: &str, fault: impl FnOnce(&mut Screen)) -> Result<(), Error> {
-        let mut screen = screen()?;
-        assert!(screen.check().is_clean(), "{}", screen.check());
-        fault(&mut screen);
-        let report = screen.check();
-        assert!(
-            report.faults_of(check).next().is_some(),
-            "{check}: {report}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn each_check_names_its_fault() -> Result<(), Error> {
-        shows("screen.ids", |s| {
-            let id = s.primary.live_row(0).map(|r| r.id());
-            if let Some(id) = id {
-                s.alternate.give_id(0, id);
-            }
-        })?;
-        shows("screen.structural", |s| {
-            s.structural = s.version.saturating_add(1)
-        })?;
-        shows("screen.tabs", |s| {
-            s.terminal.tabs.stops = vec![false; 70_000]
-        })?;
-        shows("prints.runs", |s| {
-            if let Some(prints) = &mut s.prints {
-                prints.text.push('x');
-            }
-        })?;
-        shows("prints.cap", |s| {
-            if let Some(prints) = &mut s.prints {
-                prints.text.reserve(prints.cap().saturating_add(1));
-            }
-        })?;
-        Ok(())
     }
 }
 

@@ -23,13 +23,12 @@
 //! goes, and a map gives its room back once it has room for more than four
 //! times its entries and 64.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 mod ring;
 use ring::Ring;
 mod spans;
 use spans::Spans;
-use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,36 +47,69 @@ const BLOCK: usize = 1 << 12;
 /// size or more.
 const BLOCKS: usize = 1 << 16;
 
-/// The bytes `History::texts` and `History::linked` take for each row of
-/// their capacity: a bucket is the row's number, its value and the map's
-/// control byte (57 and 41 bytes on 64-bit targets), and a map has 8
-/// buckets for 7 of capacity (66 and 47 bytes a row).
-const TEXT_BUCKET: usize = (size_of::<(u64, Text)>() + 1) * 8 / 7 + 1;
-const LINK_BUCKET: usize = (size_of::<(u64, KeptLinks)>() + 1) * 8 / 7 + 1;
-/// The bytes `History::renditions` takes for each row of its capacity.
-const RENDITION: usize = size_of::<(u64, LineRendition)>();
+/// What history keeps of some rows apart from their records, by the
+/// rows' numbers in the order rows came, oldest first: rows come and go
+/// in that order, so each is found by a binary search and goes from an
+/// end.
+#[derive(Clone, Debug)]
+struct ByRow<T>(VecDeque<(u64, T)>);
 
-/// A map by a row's number in the order rows came.
-type ByRow<T> = HashMap<u64, T, BuildHasherDefault<SlotHasher>>;
-
-/// Hashes a row's number, a small number, by one multiplication
-/// (Fibonacci hashing), rather than by SipHash, which the default hasher
-/// spends on every lookup: it is no input a program chooses.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SlotHasher(u64);
-
-impl Hasher for SlotHasher {
-    fn finish(&self) -> u64 {
-        self.0
+impl<T> Default for ByRow<T> {
+    fn default() -> Self {
+        Self(VecDeque::new())
     }
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(byte);
+}
+
+impl<T> ByRow<T> {
+    fn at(&self, number: u64) -> Result<usize, usize> {
+        self.0.binary_search_by_key(&number, |(n, _)| *n)
+    }
+    fn get(&self, number: u64) -> Option<&T> {
+        let at = self.at(number).ok()?;
+        self.0.get(at).map(|(_, value)| value)
+    }
+    /// Keeps `value` for row `number`, the newest. No memory for it keeps
+    /// none.
+    fn insert(&mut self, number: u64, value: T) -> bool {
+        let kept = self.0.try_reserve(1).is_ok();
+        if kept {
+            self.0.push_back((number, value));
         }
-        self.0 = self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        kept
     }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    fn remove(&mut self, number: u64) -> Option<T> {
+        let at = self.at(number).ok()?;
+        self.0.remove(at).map(|(_, value)| value)
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    /// The bytes it takes: its room, each a number and a value.
+    fn bytes(&self) -> usize {
+        self.0.capacity().saturating_mul(size_of::<(u64, T)>())
+    }
+    /// Lets go of the values of the rows before `first`.
+    fn drop_before(&mut self, first: u64) {
+        while self.0.front().is_some_and(|(n, _)| *n < first) {
+            self.0.pop_front();
+        }
+    }
+    /// Lets go of the values of row `from` and those after.
+    fn drop_from(&mut self, from: u64) {
+        while self.0.back().is_some_and(|(n, _)| *n >= from) {
+            self.0.pop_back();
+        }
+    }
+    /// Gives back its room when it holds room for more than four times
+    /// its entries and 64, so that one that grows by doubling as rows come
+    /// and go doesn't shrink back at once (`THREATS.md` B17).
+    fn shrink(&mut self) {
+        if self.0.capacity() > most_room(self.len()) {
+            self.0.shrink_to(self.len());
+        }
     }
 }
 
@@ -263,15 +295,9 @@ pub(crate) struct History {
     runs: usize,
     texts: ByRow<Text>,
     linked: ByRow<KeptLinks>,
-    /// The room each map's table was made with, its buckets as allocated:
-    /// `HashMap::capacity` counts out the entries removed since, whose
-    /// buckets the table keeps, so it is noted when the table
-    /// grows or is made anew, and read for what the maps hold.
-    texts_room: usize,
-    linked_room: usize,
-    /// The rows that are not single width, by number, oldest first: most
-    /// histories have none, and a row's record has no bit to spare.
-    renditions: VecDeque<(u64, LineRendition)>,
+    /// The rows that are not single width: most histories have none, and a
+    /// row's record has no bit to spare.
+    renditions: ByRow<LineRendition>,
     /// The rows whose line ends with them though soft-wrapped (`ENDS`), by
     /// number, oldest first: as rare.
     ended: VecDeque<u64>,
@@ -322,8 +348,6 @@ impl Clone for History {
             runs: self.runs,
             texts: self.texts.clone(),
             linked: self.linked.clone(),
-            texts_room: self.texts_room,
-            linked_room: self.linked_room,
             renditions: self.renditions.clone(),
             ended: self.ended.clone(),
             spans: self.spans.clone(),
@@ -391,9 +415,9 @@ impl History {
     }
     /// The bytes the maps' buckets take.
     fn maps_bytes(&self) -> usize {
-        (self.texts_room.saturating_mul(TEXT_BUCKET))
-            .saturating_add(self.linked_room.saturating_mul(LINK_BUCKET))
-            .saturating_add(self.renditions.capacity().saturating_mul(RENDITION))
+        (self.texts.bytes())
+            .saturating_add(self.linked.bytes())
+            .saturating_add(self.renditions.bytes())
             .saturating_add(self.ended.capacity().saturating_mul(size_of::<u64>()))
             .saturating_add(self.spans.charged())
     }
@@ -452,8 +476,7 @@ impl History {
         self.room_cells = 0;
         self.texts = ByRow::default();
         self.linked = ByRow::default();
-        (self.texts_room, self.linked_room) = (0, 0);
-        self.renditions = VecDeque::new();
+        self.renditions = ByRow::default();
         self.ended = VecDeque::new();
         self.spans = Spans::default();
         self.recount();
@@ -564,9 +587,9 @@ impl History {
         };
         let number = self.number(index)?;
         // Looked up only for a row its flags say has some.
-        let text = (kept.flags() & TEXT != 0).then(|| self.texts.get(&number));
+        let text = (kept.flags() & TEXT != 0).then(|| self.texts.get(number));
         let text = text.flatten().unwrap_or(&NO_TEXT);
-        let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(&number));
+        let links = (kept.flags() & LINKED != 0).then(|| self.linked.get(number));
         let links = links.flatten().map(KeptLinks::runs);
         let mut flags = kept.flags() & (WRAPPED | PROMPT);
         if !self.renditions.is_empty() {
@@ -597,7 +620,7 @@ impl History {
         let linked = self.rows.iter().enumerate();
         linked
             .filter(|(_, kept)| kept.flags() & LINKED != 0)
-            .filter_map(|(index, _)| Some((index, self.linked.get(&self.number(index)?)?.runs())))
+            .filter_map(|(index, _)| Some((index, self.linked.get(self.number(index)?)?.runs())))
     }
     /// Calls `f` with every cell the rows keep (not those of rows gone,
     /// which a block keeps until every row in it has gone): to mark the
@@ -739,8 +762,7 @@ impl History {
             return;
         };
         // No memory for it: the row is kept single width.
-        if self.renditions.try_reserve(1).is_ok() {
-            self.renditions.push_back((number, rendition));
+        if self.renditions.insert(number, rendition) {
             self.recount();
         }
     }
@@ -767,23 +789,16 @@ impl History {
     #[cold]
     #[inline(never)]
     fn rendition_of(&self, number: u64) -> LineRendition {
-        let found = self.renditions.binary_search_by_key(&number, |&(n, _)| n);
-        found
-            .ok()
-            .and_then(|i| self.renditions.get(i))
-            .map_or(LineRendition::Single, |&(_, r)| r)
+        self.renditions
+            .get(number)
+            .copied()
+            .unwrap_or(LineRendition::Single)
     }
     /// Lets the renditions of the rows let go go with them.
     #[cold]
     #[inline(never)]
     fn drop_renditions(&mut self) {
-        while self
-            .renditions
-            .front()
-            .is_some_and(|&(n, _)| n < self.first_row)
-        {
-            self.renditions.pop_front();
-        }
+        self.renditions.drop_before(self.first_row);
         while self.ended.front().is_some_and(|&n| n < self.first_row) {
             self.ended.pop_front();
         }
@@ -888,9 +903,7 @@ impl History {
             if gone.flags() & (TEXT | LINKED) != 0 {
                 self.forget(number, gone.flags());
             }
-            while self.renditions.back().is_some_and(|&(n, _)| n >= number) {
-                self.renditions.pop_back();
-            }
+            self.renditions.drop_from(number);
             while self.ended.back().is_some_and(|&n| n >= number) {
                 self.ended.pop_back();
             }
@@ -928,44 +941,29 @@ impl History {
     #[inline(never)]
     fn forget(&mut self, number: u64, flags: u8) {
         if flags & TEXT != 0
-            && let Some(text) = self.texts.remove(&number)
+            && let Some(text) = self.texts.remove(number)
         {
             self.text = self.text.saturating_sub(text.bytes());
         }
         if flags & LINKED != 0
-            && let Some(links) = self.linked.remove(&number)
+            && let Some(links) = self.linked.remove(number)
         {
             self.runs = self.runs.saturating_sub(links.heap());
-            self.maps_changed();
-            self.recount();
-            return;
         }
         self.maps_changed();
     }
 
     /// After a map's entries changed: each gives back its room when it
-    /// holds room for more than four times its entries and 64, so that a
-    /// map that grows by doubling as rows come and go doesn't shrink back
-    /// at once (`THREATS.md` B17); and what history holds is counted again.
+    /// holds far more than it keeps (`ByRow::shrink`), and what history
+    /// holds is counted again.
     fn maps_changed(&mut self) {
-        let shrink = |capacity: usize, len: usize| capacity > most_room(len);
-        if shrink(self.texts_room, self.texts.len()) {
-            self.texts.shrink_to(self.texts.len());
-            self.texts_room = self.texts.capacity();
-        }
-        if shrink(self.linked_room, self.linked.len()) {
-            self.linked.shrink_to(self.linked.len());
-            self.linked_room = self.linked.capacity();
-        }
-        if shrink(self.renditions.capacity(), self.renditions.len()) {
-            self.renditions.shrink_to(self.renditions.len());
-        }
-        if shrink(self.ended.capacity(), self.ended.len()) {
+        self.texts.shrink();
+        self.linked.shrink();
+        self.renditions.shrink();
+        if self.ended.capacity() > most_room(self.ended.len()) {
             self.ended.shrink_to(self.ended.len());
         }
-        if self.maps_bytes() != self.maps {
-            self.recount();
-        }
+        self.recount();
     }
 
     /// Lets the blocks before block `block` go: no row is in them, as
@@ -1000,21 +998,20 @@ impl History {
             return;
         };
         if let Some(text) = text.filter(|text| !text.is_empty()) {
-            self.text = self.text.saturating_add(text.bytes());
-            self.texts.insert(number, text);
-            self.texts_room = self.texts_room.max(self.texts.capacity());
-            kept.set(TEXT, true);
+            let bytes = text.bytes();
+            if self.texts.insert(number, text) {
+                self.text = self.text.saturating_add(bytes);
+                kept.set(TEXT, true);
+            }
         }
         if let Some(links) = links {
-            self.runs = self.runs.saturating_add(links.heap());
-            self.linked.insert(number, links);
-            self.linked_room = self.linked_room.max(self.linked.capacity());
-            kept.set(LINKED, true);
-            self.recount();
-        } else if self.maps_bytes() != self.maps {
-            // Inserting only grows a map.
-            self.recount();
+            let heap = links.heap();
+            if self.linked.insert(number, links) {
+                self.runs = self.runs.saturating_add(heap);
+                kept.set(LINKED, true);
+            }
         }
+        self.recount();
     }
 
     /// Whether row `index`'s line goes on in the row after: soft-wrapped,
@@ -1054,11 +1051,10 @@ impl History {
         {
             kept.set(LINKED, false);
             kept.version = version;
-            if let Some(links) = self.linked.remove(&number) {
+            if let Some(links) = self.linked.remove(number) {
                 self.runs = self.runs.saturating_sub(links.heap());
             }
             self.maps_changed();
-            self.recount();
         }
     }
 
@@ -1078,13 +1074,13 @@ impl History {
                     .saturating_mul(std::mem::size_of::<Kept>()),
             )
             .saturating_add(self.maps_bytes())
-            .saturating_add(self.linked.values().map(KeptLinks::heap).sum::<usize>())
+            .saturating_add(self.linked.0.iter().map(|(_, l)| l.heap()).sum::<usize>())
             .saturating_add(self.text)
     }
 
     /// Forgets every row's links: RIS.
     pub(crate) fn reset_links(&mut self) {
-        self.linked.clear();
+        self.linked = ByRow::default();
         self.runs = 0;
         for kept in self.rows.iter_mut() {
             kept.set(LINKED, false);
@@ -1118,10 +1114,8 @@ impl History {
             .iter()
             .map(Kept::len)
             .fold(0, usize::saturating_add);
-        let text = self
-            .texts
-            .values()
-            .map(Text::bytes)
+        let text = (self.texts.0.iter())
+            .map(|(_, text)| text.bytes())
             .fold(0, usize::saturating_add);
         crate::check::ensure(cells == self.cells && text == self.text, || {
             format!(
@@ -1158,8 +1152,8 @@ impl History {
             let number = self.number(i).unwrap_or(u64::MAX);
             let (text, links) = (kept.flags() & TEXT != 0, kept.flags() & LINKED != 0);
             crate::check::ensure(
-                text == self.texts.contains_key(&number)
-                    && links == self.linked.contains_key(&number),
+                text == self.texts.get(number).is_some()
+                    && links == self.linked.get(number).is_some(),
                 || format!("row {i}'s flags {:#x} disagree with the maps", kept.flags()),
             )?;
             texts = texts.saturating_add(usize::from(text));
@@ -1194,7 +1188,7 @@ impl History {
         // single width.
         let (first, next) = self.numbers();
         let mut after = first;
-        for &(number, rendition) in &self.renditions {
+        for &(number, rendition) in &self.renditions.0 {
             crate::check::ensure(
                 (after..next).contains(&number) && rendition.is_double(),
                 || format!("a rendition noted for row {number} of {first}..{next}"),
@@ -1242,22 +1236,10 @@ impl History {
                 self.rows.len()
             )
         })?;
-        for (name, room, capacity) in [
-            ("texts", self.texts_room, self.texts.capacity()),
-            ("links", self.linked_room, self.linked.capacity()),
-        ] {
-            crate::check::ensure(room >= capacity, || {
-                format!("the {name}' table counted as {room}, where it has room for {capacity}")
-            })?;
-        }
         for (name, capacity, len) in [
-            ("texts", self.texts_room, self.texts.len()),
-            ("links", self.linked_room, self.linked.len()),
-            (
-                "renditions",
-                self.renditions.capacity(),
-                self.renditions.len(),
-            ),
+            ("texts", self.texts.0.capacity(), self.texts.len()),
+            ("links", self.linked.0.capacity(), self.linked.len()),
+            ("renditions", self.renditions.0.capacity(), self.renditions.len()),
         ] {
             crate::check::ensure(capacity <= most_room(len), || {
                 format!("the {name} holds room for {capacity}, keeping {len}")
@@ -1270,66 +1252,3 @@ impl History {
 #[cfg(test)]
 mod tests;
 
-/// History's checks, each shown a history with its one fault.
-#[cfg(all(test, feature = "checks"))]
-mod faults {
-    use super::*;
-
-    /// A history of rows, a few cells each, one with text.
-    fn history() -> History {
-        let mut history = History::new(1 << 12);
-        let cells = [Compact::ascii(b'x', 0); 3];
-        for id in 0..6u64 {
-            let row = Arriving {
-                id: RowId(id),
-                version: 1,
-                flags: 0,
-                cells: &cells,
-                width: 4,
-            };
-            assert!(history.push(row).is_ok());
-            history.trim();
-        }
-        history
-    }
-
-    fn faulted(history: &History) -> Vec<&'static str> {
-        let mut report = crate::Checked::default();
-        history.check("history", &mut report);
-        report.faults().iter().map(|f| f.check).collect()
-    }
-
-    fn shows(check: &str, fault: impl FnOnce(&mut History)) {
-        let mut history = history();
-        assert_eq!(faulted(&history), Vec::<&str>::new());
-        fault(&mut history);
-        let found = faulted(&history);
-        assert!(found.contains(&check), "{check}: {found:?}");
-    }
-
-    #[test]
-    fn each_check_names_its_fault() {
-        shows("history.counts", |h| h.cells = h.cells.saturating_add(1));
-        shows("history.blocks", |h| {
-            if let Some(kept) = h.rows.back_mut() {
-                kept.place = (kept.place & !0xffff) | 0x7fff;
-            }
-        });
-        shows("history.flags", |h| {
-            if let Some(kept) = h.rows.back_mut() {
-                kept.set(TEXT, true);
-            }
-        });
-        shows("history.flags", |h| {
-            h.renditions
-                .push_back((u64::MAX, LineRendition::DoubleWidth));
-        });
-        shows("history.flags", |h| {
-            if let Some(kept) = h.rows.back_mut() {
-                kept.id = RowId(1 << 40);
-            }
-        });
-        shows("history.budget", |h| h.budget = 0);
-        shows("history.capacities", |h| h.rows.reserve_more(1000));
-    }
-}

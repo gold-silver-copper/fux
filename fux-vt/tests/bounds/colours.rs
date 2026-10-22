@@ -76,7 +76,7 @@ fn one_osc_of_colours_is_at_most_half_the_ceiling() -> Result<(), String> {
     assert!(
         done.cost() <= Work::CEILING / 2,
         "{} past U / 2",
-        done.cost() / 20
+        done.cost()
     );
     Ok(())
 }

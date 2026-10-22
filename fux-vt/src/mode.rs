@@ -36,24 +36,12 @@ macro_rules! modes {
 
             /// The mode SM and RM (`private` false: IRM and LNM alone) or
             /// DECSET and DECRST name by `n`, with `options`: without
-            /// theirs, 2031 and 2048 are not recognized. Out of line, and
-            /// read from tables of the numbers, so that its code is the
-            /// same whatever numbers there are: a `match` of them, inlined
-            /// into `Screen::csi`, slowed every sequence as modes were
-            /// added. A DEC private mode is found by its number
-            /// (`PRIVATE`), an ANSI mode by a search of the few.
-            #[inline(never)]
+            /// theirs, 2031 and 2048 are not recognized.
             pub(crate) fn of(n: u16, private: bool, options: &Options) -> Option<Self> {
-                // Each mode's number, 1 << 16 more for a private mode.
-                const NUMBERS: [u32; Mode::ALL.len()] = [$(($private as u32) << 16 | $n,)*];
+                const NUMBERS: [(bool, u16); Mode::ALL.len()] = [$(($private, $n),)*];
                 const FEATURES: [Option<Feature>; Mode::ALL.len()] =
                     [$(modes!(@feature $($feature)?),)*];
-                const PRIVATE: [u8; PRIVATE_MODES] = private_modes(&NUMBERS);
-                let at = if private {
-                    usize::from(*PRIVATE.get(usize::from(n))?).checked_sub(1)?
-                } else {
-                    NUMBERS.iter().position(|&number| number == u32::from(n))?
-                };
+                let at = NUMBERS.iter().position(|&number| number == (private, n))?;
                 let feature = FEATURES.get(at).copied().flatten();
                 let mode = Self::ALL.get(at).copied()?;
                 feature.is_none_or(|f| options.has(f)).then_some(mode)
@@ -78,8 +66,7 @@ macro_rules! modes {
                 Self(0 $($($(| modes!(@soft $mark Mode::$variant))*)?)*);
         }
 
-        // Each mode is a bit of a `Modes`: at most a `u64`'s 64 (and so
-        // has a place `Mode::of`'s table of `u8`s can hold).
+        // Each mode is a bit of a `Modes`: at most a `u64`'s 64.
         const _: () = assert!([$(Mode::$variant),*].len() <= 64);
     };
     (@feature $feature:ident) => { Some(Feature::$feature) };
@@ -88,46 +75,6 @@ macro_rules! modes {
     (@default soft $mode:path) => { 0 };
     (@soft soft $mode:path) => { $mode.bit() };
     (@soft default $mode:path) => { 0 };
-}
-
-/// The DEC private modes `Mode::of` reads by number: 0 to 2048.
-const PRIVATE_MODES: usize = 2049;
-
-/// For each DEC private mode number below `PRIVATE_MODES`, one more than
-/// its place in `numbers` (each mode's, `1 << 16` more if private), 0 for
-/// none.
-const fn private_modes(numbers: &[u32]) -> [u8; PRIVATE_MODES] {
-    let mut table = [0u8; PRIVATE_MODES];
-    let mut slots: &mut [u8] = &mut table;
-    let mut n: u32 = 0;
-    while let [slot, rest @ ..] = slots {
-        *slot = place(numbers, n);
-        slots = rest;
-        n = match n.checked_add(1) {
-            Some(next) => next,
-            None => break,
-        };
-    }
-    table
-}
-
-/// One more than the place of DEC private mode `n` in `numbers`, 0 for
-/// none.
-const fn place(numbers: &[u32], n: u32) -> u8 {
-    let key = n | 1 << 16;
-    let mut rest = numbers;
-    let mut at: u8 = 0;
-    while let [number, tail @ ..] = rest {
-        at = match at.checked_add(1) {
-            Some(next) => next,
-            None => return 0,
-        };
-        if *number == key {
-            return at;
-        }
-        rest = tail;
-    }
-    0
 }
 
 modes! {

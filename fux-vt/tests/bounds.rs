@@ -379,7 +379,7 @@ mod budget {
             assert!(
                 done.cost() <= Work::ceiling(size),
                 "{each:?}: a call did {} units, past its ceiling: {done:?}",
-                done.cost() / 20
+                done.cost()
             );
             match stop {
                 None => break,
@@ -397,7 +397,7 @@ mod budget {
                     assert!(
                         idle <= crate::probe::idle_most(size) && (taken > 0 || done.cost() > 0),
                         "{each:?}: {idle} calls in a row took no byte, the last doing {}",
-                        done.cost() / 20
+                        done.cost()
                     );
                 }
                 Some(other) => return Err(format!("{each:?}: stopped as {other:?}").into()),
@@ -438,7 +438,7 @@ mod budget {
             assert!(
                 done.cost() <= Work::ceiling(size),
                 "a call did {} units, past its ceiling",
-                done.cost() / 20
+                done.cost()
             );
             match stop {
                 None => break,

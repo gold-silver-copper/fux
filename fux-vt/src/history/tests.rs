@@ -214,36 +214,6 @@ fn a_row_with_one_link_holds_no_memory_for_it() -> Result<(), Error> {
     Ok(())
 }
 
-/// The maps are counted at the room their tables were made with: their
-/// entries removed leave the buckets allocated, which `capacity` counts
-/// out, so what history counts for them stays until the table
-/// is made smaller.
-#[test]
-fn the_maps_are_counted_as_allocated_after_removals() -> Result<(), Error> {
-    use crate::link::{Hyperlink, KeptLinks, RowLinks};
-    let link = Hyperlink::new(1, "http://a", None);
-    let cells = row(3, b'a', 0);
-    let mut history = History::new(1 << 26);
-    let rows = 3584u64;
-    for id in 0..rows {
-        let mut links = RowLinks::default();
-        links.set(0..1, Some(&link));
-        history.push(arriving(id, &cells, 4))?;
-        history.attach(None, KeptLinks::take(&mut links));
-    }
-    let (full, room) = (history.maps_bytes(), history.linked.capacity());
-    for index in 0..1000 {
-        history.unlink(index, 1);
-    }
-    assert_eq!(history.linked.len(), 2584);
-    assert!(
-        history.maps_bytes() >= full,
-        "{} bytes counted for a table made with room for {room}, after {full}",
-        history.maps_bytes()
-    );
-    Ok(())
-}
-
 /// The spans of rows let go while history is made anew (a new budget, as a
 /// resize makes it) go with them: what the spans cost stays what the rows
 /// kept need, however often history is made anew (`THREATS.md` B40).

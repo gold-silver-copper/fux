@@ -60,29 +60,25 @@ macro_rules! reply {
 }
 
 /// Counts `n` units of work of the kind `counter` names (THREATS.md 4.1),
-/// with the `checks` feature; without it, nothing at all, so a build without
-/// it carries no trace of the count: `work!(cells, n)` expands to
-/// `#[cfg(feature = "checks")] crate::work::add(|w| w.cells(crate::budget::units(n)));`.
+/// with the `checks` feature; without it, nothing at all.
 macro_rules! work {
     ($counter:ident, $n:expr) => {
         #[cfg(feature = "checks")]
-        $crate::work::add(|w| w.$counter($crate::budget::units($n)));
+        $crate::work::add(|w| {
+            w.$counter = w.$counter.saturating_add($crate::budget::units($n));
+        });
     };
 }
 
 /// Counts `n` units of work of the kind `counter` names, as `work!` does,
 /// and spends them from the call's budget too (`budget`, THREATS.md 4.4),
 /// with or without the `checks` feature: for the work one sequence can
-/// multiply. `spend!(cells, n)` expands to
-/// `{ let n = crate::budget::units(n); crate::budget::spend(n,
-/// crate::budget::weight::cells); #[cfg(feature = "checks")]
-/// crate::work::add(|w| w.cells(n)); }`.
+/// multiply.
 macro_rules! spend {
     ($counter:ident, $n:expr) => {{
         let n = $crate::budget::units($n);
         $crate::budget::spend(n, $crate::budget::weight::$counter);
-        #[cfg(feature = "checks")]
-        $crate::work::add(|w| w.$counter(n));
+        work!($counter, n);
     }};
 }
 
@@ -711,12 +707,7 @@ impl Prints {
 /// The most bytes of text [`Prints`] keeps for a screen of `cells` cells:
 /// 4 a cell, and [`PRINT_TEXT_FLOOR`] at least.
 fn text_cap(cells: usize) -> usize {
-    let four = cells.saturating_mul(4);
-    if four > PRINT_TEXT_FLOOR {
-        four
-    } else {
-        PRINT_TEXT_FLOOR
-    }
+    cells.saturating_mul(4).max(PRINT_TEXT_FLOOR)
 }
 
 /// `Prints`' part of the invariant checker (THREATS.md section 6).
