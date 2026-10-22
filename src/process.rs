@@ -117,21 +117,27 @@ impl Leader {
     }
 
     /// Ends its group and the rest of its session and reaps it, without
-    /// waiting, so uninterrupted:
-    /// itself back if it has not exited yet, to try again once it has.
-    /// Called after `hang_up` and a grace period, with the master closed.
-    pub fn finish(self) -> Result<(), Leader> {
+    /// waiting, so uninterrupted: its pid back if it has not exited yet,
+    /// for `reaped` to reap once it has. Called after `hang_up` and a grace
+    /// period, with the master closed.
+    pub fn finish(self) -> Result<(), Pid> {
         // Its pane closed by fux: as the hangup, every process left in its
         // session, a job in a group of its own that ignored the hangup
         // (`nohup cmd &`) too, found first. A program that ended by itself
         // leaves those it meant to (`nohup job & exit`).
         let session = if self.1 { self.session() } else { Vec::new() };
         self.signal(session, Signal::Kill);
-        match fuxix::process::reap(self.0) {
-            Ok(None) => Err(self),
-            Ok(Some(_)) | Err(_) => Ok(()),
+        match reaped(self.0) {
+            true => Ok(()),
+            false => Err(self.0),
         }
     }
+}
+
+/// Reaps `pid`, a leader killed and not yet reaped, if it has exited:
+/// whether it is gone.
+pub fn reaped(pid: Pid) -> bool {
+    !matches!(fuxix::process::reap(pid), Ok(None))
 }
 
 /// How an end is told: `exited 3`, or `killed by SIGSEGV`.

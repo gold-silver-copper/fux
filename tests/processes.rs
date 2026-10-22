@@ -46,8 +46,7 @@ fn gone(pid: i32, what: &str) -> Outcome {
 
 /// dash starts a background job in a process group of its own, out of reach
 /// of a signal to the shell's group, and does not hang it up when it exits
-/// itself. However its pane closes, the job ends with it (bevy-final finding
-/// 013). A `nohup` job outlives its shell's own `exit`, as it would a closed
+/// itself. However its pane closes, the job ends with it. A `nohup` job outlives its shell's own `exit`, as it would a closed
 /// terminal; a pane fux closes takes its whole session, the `nohup` job too,
 /// once the hang-up's grace is over.
 #[test]
@@ -152,7 +151,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
 
 /// A pane whose program is stopped is not one whose program exited: it
 /// stays, and runs again on SIGCONT. Only an exit or a kill closes it, and
-/// its viewers are told the status (bevy-final finding 020, where macOS
+/// its viewers are told the status (macOS
 /// reported the stop as an exit, status 145).
 #[test]
 fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {

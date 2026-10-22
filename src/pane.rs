@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 /// The largest single piece of input: a whole paste and its envelope.
 pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 /// Input may wait for the program up to this many bytes, however many
-/// pieces it came in (bevy-final finding 021).
+/// pieces it came in.
 pub const INPUT_BYTES: usize = 16 * MAX_INPUT;
 /// How long a frame drawn in synchronized output is held before it is
 /// shown anyway: Ghostty's choice. Long enough for a frame sent in pieces
@@ -1160,9 +1160,8 @@ impl Pane {
         begun
     }
 
-    /// Gives `bytes` to the screen, as `feed` does. Never inlined: inlined
-    /// into `record`, the parser's loop compiled there ran 0.9% more
-    /// instructions on dense, colourful output (`pane/dense-cells`).
+    /// Gives `bytes` to the screen, as `feed` does. Never inlined: the
+    /// parser's loop compiles tighter on its own than inside `record`.
     #[inline(never)]
     fn parse(
         &mut self,

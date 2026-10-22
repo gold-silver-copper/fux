@@ -8,7 +8,7 @@ use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
-use crate::process::{Leader, Pid};
+use crate::process::Pid;
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, Reply, Role,
     ToAttached, ToCommand, split_into,
@@ -66,9 +66,6 @@ const REPORT_EVERY: Duration = Duration::from_secs(10);
 /// How long the listener rests after an `accept` failure that retrying at
 /// once would only repeat.
 const ACCEPT_REST: Duration = Duration::from_millis(100);
-/// How often a restore that has started is looked at, to see its thread
-/// end: it ends after its connection, which no descriptor then tells.
-const RESTORE_LOOK: Duration = Duration::from_millis(10);
 
 /// The socket the server is found by: held only while it serves, so the
 /// moment it stops, its listener closes and the socket is gone, and a
@@ -145,8 +142,7 @@ enum Wake {
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
     /// The loop runs again, which after every wake asks the waits for
-    /// their answers (`Waiting::due`), saves the layout if it changed, and
-    /// looks at a restore's thread again (`Server::after_restore`).
+    /// their answers (`Waiting::due`) and saves the layout if it changed.
     Look,
 }
 
@@ -543,7 +539,7 @@ pub struct Server {
     children: crate::SignalPipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
-    killed: Vec<Leader>,
+    killed: Vec<Pid>,
     stops: crate::SignalPipe,
     /// Where bytes read from a client's connection or terminal land before
     /// they are taken; one for the server, reused by every read.
@@ -571,14 +567,14 @@ struct Saved {
     written: String,
     /// When it may be saved next.
     at: Instant,
-    /// Something happened since it was last saved.
+    /// Something changed since it was last saved.
     pending: bool,
     /// The workspaces, tabs and panes it was last saved with.
     shape: Shape,
-    /// A restore was started, and its end is yet to be seen to
-    /// (`Server::after_restore`); while its thread runs, what there is is
-    /// not saved over the file.
-    restore: Option<std::thread::JoinHandle<()>>,
+    /// The restore under way, if one is: the other end of a socket its
+    /// thread closes as it ends (`Server::restored`). Meanwhile what there
+    /// is is not saved over the file.
+    restore: Option<UnixStream>,
 }
 
 /// Which workspaces, tabs and panes there are.
@@ -632,9 +628,9 @@ impl Saved {
 
     /// Brings back the session saved, if there is one, by running it, a
     /// fuxth program, as a client of the server on `socket` does: on a
-    /// thread of its own, as the server serves it; that thread, if there is
-    /// one: it is not saved over while it comes back.
-    fn restore(&self, socket: &SocketPath) -> Option<std::thread::JoinHandle<()>> {
+    /// thread of its own, as the server serves it. The socket that thread
+    /// closes as it ends, if it started.
+    fn restore(&self, socket: &SocketPath) -> Option<UnixStream> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == ErrorKind::NotFound => return None,
@@ -644,9 +640,13 @@ impl Saved {
             }
         };
         let (path, socket) = (self.path.clone(), socket.clone());
+        let (ends, end) = UnixStream::pair()
+            .inspect_err(|error| log!("could not bring back {}: {error}", self.path.display()))
+            .ok()?;
         let spawned = std::thread::Builder::new()
             .name("restore".into())
             .spawn(move || {
+                let _ends = ends;
                 match crate::script::restore(&socket, &path, &text) {
                     Ok(()) => log!("brought back the session in {}", path.display()),
                     Err(error) => {
@@ -661,18 +661,25 @@ impl Saved {
                     }
                 }
             });
-        spawned
-            .inspect_err(|error| log!("could not bring back {}: {error}", self.path.display()))
-            .ok()
+        match spawned {
+            Ok(_) => Some(end),
+            Err(error) => {
+                log!("could not bring back {}: {error}", self.path.display());
+                None
+            }
+        }
     }
 
-    /// Saves the layout if it changed and `SAVE_EVERY` has passed since it
-    /// was last saved; else it is saved then. A workspace, tab or pane made
-    /// or closed is saved at once: a crash must not lose a pane.
-    fn save_by(&mut self, session: &Session, now: Instant) {
+    /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
+    /// since it was last saved; else it is saved then. A workspace, tab or
+    /// pane made or closed is saved at once: a crash must not lose a pane.
+    fn save_by(&mut self, session: &mut Session, now: Instant) {
+        self.pending |= mem::take(&mut session.edited);
+        if !self.pending {
+            return;
+        }
         let shape = Shape::of(session);
         if now < self.at && shape == self.shape {
-            self.pending = true;
             return;
         }
         self.save(session);
@@ -720,10 +727,9 @@ impl Saved {
         fs::rename(&temporary, &self.path)
     }
 
-    /// Whether a restore is under way: its thread has not ended, however
-    /// it ended.
+    /// Whether a restore is under way.
     fn restoring(&self) -> bool {
-        (self.restore.as_ref()).is_some_and(|thread| !thread.is_finished())
+        self.restore.is_some()
     }
 }
 
@@ -851,6 +857,8 @@ enum Slot {
     Door(usize),
     Children,
     Stops,
+    /// The restore under way has ended.
+    Restore,
     Conn(usize),
     /// The terminal a client sent, which the server reads and writes.
     Tty(usize),
@@ -871,11 +879,10 @@ impl Server {
             }
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
-            self.after_restore();
             self.answer_waits(now);
             self.tell_events();
             if let Some(saved) = &mut self.saved {
-                saved.save_by(&self.session, now);
+                saved.save_by(&mut self.session, now);
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
@@ -905,6 +912,7 @@ impl Server {
                         crate::drain(self.children.pipe());
                         self.reap();
                     }
+                    Slot::Restore => self.restored(),
                     Slot::Stops => {
                         crate::drain(self.stops.pipe());
                         // A signal (a shutdown, a logout) keeps the layout
@@ -931,8 +939,6 @@ impl Server {
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
         let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
-        let restore = (self.saved.as_ref()).filter(|s| s.restore.is_some());
-        let restore = restore.map(|_| (after(Instant::now(), RESTORE_LOOK), Wake::Look));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
@@ -945,7 +951,6 @@ impl Server {
             .chain(grace)
             .chain(phase)
             .chain(save)
-            .chain(restore)
             .chain(answers)
             .chain(paints)
     }
@@ -983,14 +988,12 @@ impl Server {
         ControlFlow::Continue(())
     }
 
-    /// Once a restore is over: the requests held for it, answered; and if
-    /// it brought nothing back, a first workspace, as a fresh server has.
-    fn after_restore(&mut self) {
-        let Some(saved) = &mut self.saved else {
-            return;
-        };
-        if saved.restoring() || saved.restore.take().is_none() {
-            return;
+    /// A restore is over: the requests held for it are answered; and if it
+    /// brought nothing back, there is a first workspace, as a fresh server
+    /// has.
+    fn restored(&mut self) {
+        if let Some(saved) = &mut self.saved {
+            saved.restore = None;
         }
         if self.session.workspaces.is_empty()
             && let Err(error) = self.session.start()
@@ -1089,6 +1092,9 @@ impl Server {
             Slot::Children,
         );
         add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
+        if let Some(end) = self.saved.as_ref().and_then(|s| s.restore.as_ref()) {
+            add(PollFd::new(end, PollFlags::IN), Slot::Restore);
+        }
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is open only while it has
             // something to write.
@@ -1782,7 +1788,7 @@ impl Server {
         let panes = session.panes.values().filter_map(|p| p.process.child());
         let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
             .map(|child| child.leader.pid())
-            .chain(self.killed.iter().map(Leader::pid))
+            .chain(self.killed.iter().copied())
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
         let exited: Vec<(PaneId, crate::process::Ended)> = self
@@ -1797,8 +1803,7 @@ impl Server {
     }
 
     fn reap_killed(&mut self) {
-        let killed = mem::take(&mut self.killed).into_iter();
-        self.killed = killed.filter_map(|l| l.finish().err()).collect();
+        self.killed.retain(|pid| !crate::process::reaped(*pid));
     }
 
     /// Kills every closed pane's program, and waits for them, at most a

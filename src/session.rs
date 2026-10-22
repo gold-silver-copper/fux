@@ -49,7 +49,7 @@ pub struct Dying {
 impl Dying {
     /// Kills the program, its terminal closed first (a dying writer can hold
     /// on to it); its leader, if it has yet to exit.
-    pub fn kill(self) -> Option<process::Leader> {
+    pub fn kill(self) -> Option<process::Pid> {
         drop(self.child.master);
         self.child.leader.finish().err()
     }
@@ -430,6 +430,15 @@ pub struct Session {
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
     placed: Placement,
+    /// Each pane's tab, as of the last settle: every change to the layout
+    /// settles before the server reads output again.
+    pane_tabs: BTreeMap<PaneId, TabId>,
+    /// What all panes' journals hold together, at most: unknown after a
+    /// settle or new settings, else kept up as output is read.
+    journal_held: Option<usize>,
+    /// Something changed that the saved layout may show: a settle, or
+    /// output (a shell's directory). The server takes it.
+    pub(crate) edited: bool,
     ids: Ids,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
@@ -711,6 +720,9 @@ impl Session {
             last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
+            pane_tabs: BTreeMap::new(),
+            journal_held: None,
+            edited: false,
             ids: Ids::default(),
             changes: 0,
             grants: Vec::new(),
@@ -1631,6 +1643,18 @@ impl Session {
         }
         self.size_panes();
         self.hold_copies();
+        self.pane_tabs.clear();
+        for ws in &self.workspaces {
+            for tab in ws.tabs() {
+                if let Some(root) = tab.root() {
+                    root.for_each_pane(&mut |pane| {
+                        self.pane_tabs.insert(pane, tab.id);
+                    });
+                }
+            }
+        }
+        self.journal_held = None;
+        self.edited = true;
     }
 
     /// Output and sizing a pane can drop rows of its history: a copy mode
@@ -1701,6 +1725,7 @@ impl Session {
 
     /// The settings changed: every pane keeps the history they say.
     fn configured(&mut self) {
+        self.journal_held = None;
         for pane in self.panes.values_mut() {
             pane.parser.set_history_bytes(self.config.history_bytes);
             pane.record.set_budget(self.config.journal_bytes);
@@ -1712,6 +1737,9 @@ impl Session {
     /// the largest lets its oldest entries go first.
     fn keep_journals(&mut self) {
         let total = self.config.journal_total;
+        if self.journal_held.is_some_and(|held| held <= total) {
+            return;
+        }
         let mut held: usize = self.panes.values().map(|p| p.record.held()).sum();
         while held > total {
             let Some(largest) = self.panes.values_mut().max_by_key(|p| p.record.held()) else {
@@ -1726,6 +1754,7 @@ impl Session {
                 break;
             }
         }
+        self.journal_held = Some(held);
     }
 
     /// A PTY is the smallest rectangle any client shows it in. A tab no
@@ -1974,7 +2003,7 @@ impl Session {
     /// bell rung, and the views showing it repainted and told if a reply
     /// was dropped.
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
-        let tab = self.locate(id).map(|(_, t)| t);
+        let tab = self.pane_tabs.get(&id).copied();
         let (colours, palette, graphics) = self.host_for(tab);
         let Some(pane) = self.panes.get_mut(&id) else {
             return;
@@ -1982,7 +2011,12 @@ impl Session {
         pane.colours = colours;
         pane.parser.set_host_palette(palette);
         pane.parser.set_host_graphics(graphics);
+        let before = pane.record.held();
         read(pane);
+        let after = pane.record.held();
+        self.journal_held =
+            (self.journal_held).map(|h| h.saturating_sub(before).saturating_add(after));
+        self.edited = true;
         pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
         let bell = std::mem::take(&mut pane.bell);
@@ -2194,6 +2228,7 @@ impl Session {
             self.touch();
         }
         // Input and resizes grow journals too.
+        self.journal_held = None;
         self.keep_journals();
         self.settle();
         outcome
@@ -4161,8 +4196,8 @@ mod tests {
         }
         let told = exited(&s);
         for dying in std::mem::take(&mut s.dying) {
-            if let Some(leader) = dying.kill() {
-                let _ = leader.finish();
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
             }
         }
         if let Some(child) = s.panes.get_mut(&id).and_then(|p| {
