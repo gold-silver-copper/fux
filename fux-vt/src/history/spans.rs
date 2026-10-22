@@ -9,8 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 /// What a span holds, at most: its entry in `by_id` (a key, a value and
 /// its share of a B-tree node, counted at a node half full, and of the
-/// nodes above), its place in `order` (with room for as many more), and
-/// while history is made anew its place in `staged`.
+/// nodes above), and its place in `order` (with room for as many more).
 pub(crate) const SPAN_BYTES: usize = 80;
 /// The spans a history holds at no cost to its budget: 20 KiB of them,
 /// more than a history that is not made to begin a span a row ever
@@ -29,11 +28,6 @@ pub(crate) struct Spans {
     /// The spans' first rows' numbers and identities, oldest first, to
     /// let go those whose rows all went.
     order: VecDeque<(u64, u64)>,
-    /// While history is made anew (`stage`), the spans begun, put in
-    /// `by_id` at once when it is made (`finish`): a resize's rows come
-    /// in many spans, as a line laid out again takes new identities for
-    /// the rows it gains, and a sorted list builds a B-tree whole.
-    staged: Option<Vec<(u64, u64)>>,
 }
 
 impl Default for Spans {
@@ -42,7 +36,6 @@ impl Default for Spans {
             next: u64::MAX,
             by_id: BTreeMap::new(),
             order: VecDeque::new(),
-            staged: None,
         }
     }
 }
@@ -64,37 +57,12 @@ impl Spans {
                 self.by_id.remove(&gone);
             }
         }
-        match &mut self.staged {
-            Some(staged) => staged.push((id, number)),
-            None => {
-                self.by_id.insert(id, number);
-            }
-        }
+        self.by_id.insert(id, number);
         self.order.push_back((number, id));
-    }
-    /// History is made anew: the spans to come are kept apart until it is
-    /// (`finish`), and found then.
-    pub(crate) fn stage(&mut self) {
-        self.staged = Some(Vec::new());
-    }
-    /// History is made: the spans kept apart go in `by_id`, built whole
-    /// from them sorted if it holds none yet.
-    pub(crate) fn finish(&mut self) {
-        let Some(mut staged) = self.staged.take() else {
-            return;
-        };
-        staged.sort_unstable();
-        if self.by_id.is_empty() {
-            self.by_id = staged.into_iter().collect();
-        } else {
-            self.by_id.extend(staged);
-        }
     }
     /// How many spans it holds.
     pub(crate) fn len(&self) -> usize {
-        self.by_id
-            .len()
-            .saturating_add(self.staged.as_ref().map_or(0, Vec::len))
+        self.by_id.len()
     }
     /// What it costs history's budget: its spans past `FREE_SPANS`.
     pub(crate) fn charged(&self) -> usize {

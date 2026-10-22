@@ -102,7 +102,6 @@ impl Grid {
             replacement.push_screen_row(meta, &[], None, None);
         }
         replacement.fit_cursor();
-        replacement.rows_given();
         Ok(replacement)
     }
 

@@ -546,14 +546,7 @@ impl Grid {
         // (B11), before it is given a row.
         let cells = if self.unmade { 0 } else { size.cells() };
         next.charge_styles(cells);
-        // The rows it is given come in many spans (`History::stage_spans`),
-        // found once it has them all (`rows_given`).
-        next.history.stage_spans();
         next
-    }
-    /// A successor given all its rows: its history finds them now.
-    pub(crate) fn rows_given(&mut self) {
-        self.history.finish_spans();
     }
 
     /// Room for the screen's rows, exactly; their cells' only once made.
@@ -2366,7 +2359,6 @@ impl Grid {
             replacement.keep_row(meta, (&row, row.len()), (text, links), is_history)?;
         }
         replacement.fit_cursor();
-        replacement.rows_given();
         Ok(replacement)
     }
 

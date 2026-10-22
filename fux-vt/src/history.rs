@@ -466,10 +466,7 @@ impl History {
         (fresh.first_row, fresh.let_go) = (self.first_row, self.let_go);
         fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
-        fresh.spans.stage();
-        let took = fresh.take(self);
-        fresh.spans.finish();
-        if took.is_ok() {
+        if fresh.take(self).is_ok() {
             *self = fresh;
         } else {
             // No memory for it: the rows go from where they are.
@@ -704,16 +701,6 @@ impl History {
             let _ = self.keep_ended();
         }
         Ok(())
-    }
-
-    /// Rows are about to be pushed in from another history (a resize):
-    /// the spans they begin are found once it is done (`finish_spans`).
-    pub(crate) fn stage_spans(&mut self) {
-        self.spans.stage();
-    }
-    /// The rows a resize pushed are all in: their spans are found now.
-    pub(crate) fn finish_spans(&mut self) {
-        self.spans.finish();
     }
 
     /// Notes that the row coming next, `id`, begins a span of identities.

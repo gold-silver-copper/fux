@@ -243,3 +243,38 @@ fn the_maps_are_counted_as_allocated_after_removals() -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// The spans of rows let go while history is made anew (a new budget, as a
+/// resize makes it) go with them: what the spans cost stays what the rows
+/// kept need, however often history is made anew (`THREATS.md` B40).
+#[test]
+fn spans_of_rows_let_go_while_history_is_made_anew_go_too() -> Result<(), Error> {
+    let budget = 64 << 10;
+    let cells = row(8, b'a', 0);
+    let mut history = History::new(budget);
+    // Identities two apart: each row begins a span of its own.
+    let mut id = 0u64;
+    let mut push = |history: &mut History| {
+        id = id.wrapping_add(2);
+        let pushed = history.push(arriving(id, &cells, 8));
+        history.trim();
+        pushed
+    };
+    for round in 0..8 {
+        history.set_budget(budget);
+        for _ in 0..2000 {
+            push(&mut history)?;
+        }
+        // Made anew in half the room: half the rows go as they come in.
+        history.set_budget(budget / 2);
+        // A span begun lets go of those whose rows all went.
+        push(&mut history)?;
+        assert!(
+            history.spans.len() <= history.len().saturating_add(1),
+            "round {round}: {} spans for {} rows",
+            history.spans.len(),
+            history.len()
+        );
+    }
+    Ok(())
+}
