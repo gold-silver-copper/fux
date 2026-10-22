@@ -63,8 +63,8 @@ prints `null` (`string` makes it the text).
 (each screen row a line). Blanks at a line's end are trimmed, but with
 `styles` those painted (a background, reverse video, underline or
 strikeout) stay, in `lines` and `styles` alike: a painted surface shows
-whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event, a
-state line's `· cursor ROW,COL` and `wrapped` count them, whatever
+whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
+`wrapped` count them, whatever
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
 screen not captured (`main-screen` under a full-screen program). `wrap_pending` (after `lines`):
 a glyph went into the last column, autowrap on, and the next goes on the

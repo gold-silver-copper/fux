@@ -234,7 +234,7 @@ pub const WORDS: &[Word] = &[
     // Help
     word("Help", "help", "--", "the words, under their headings"),
     word("Help", "help-agents", "--", "how to drive programs from a script or an agent: the first screen, enough for most work"),
-    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers start keys waits read echo status programs shells sizes servers more), or all of it"),
+    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers keys waits read shells programs servers), or all of it"),
     word("Help", "help-json", "--", "what json gives"),
     word("Help", "explain", "word --", "one word at length"),
     word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),

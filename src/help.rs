@@ -42,61 +42,31 @@ pub fn overview() -> String {
     let mut out = String::from(
         "\
 usage: fux                 attach, starting a server if none runs
-       fux WORD...         run the words, a fuxth program
+       fux WORD...         run the words, a fuxth program (or all in one argument)
        fux FILE            run a file of fuxth (a word with a / or ending .fux)
        fux -               run fuxth read from stdin
 
-fuxth is a small Forth: words run left to right, each taking what the words
-before it left. A number is a value; `%2`, `@2`, `+1` alone are a pane, a tab,
-a workspace; `str WORD` pushes WORD as text, however it looks; any other bare
-word runs. What is left at the end is printed, a value a line. An action
-answers once its pane settles (30s at most, as a wait waits: the server's
-`wait-seconds`; `SECS timeout` changes it, `0 timeout` answers at once). A
-failure prints `fux: CODE: MESSAGE` on stderr, with how the word is used
-(one of fux's own); the exit statuses: `fux help agents status`.
-Each `fux` is a fresh program.
+Words run left to right, each taking what the words before it left: a
+number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
+WORD` pushes WORD as text. What is left is printed. What a word that acts
+takes (options, keys, a wait, what to read) goes on the pane before it
+(`%2 str y text send-keys`, `%2 str ready wait-text wait`, `%2 all-history
+capture`); only run, new-tab and new-workspace start from opts (`opts str
+'make test' command run`). An action answers once its pane settles (30s at
+most: SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
+Driving programs from a script or an agent: `fux help-agents`; one word:
+`fux help WORD`.
 
-Most steps have one of these shapes (UPPER = what you fill in, [] if you
-want it): what a word that acts takes (options, a wait, keys, a mouse event)
-goes on the pane before it; only run, new-tab and new-workspace, which have
-no pane yet, start from opts. Only run takes a program (command): new-tab and
-new-workspace start a shell, and str 'CMD' typed types a line into it.
+The language: str WORD, define NAME … end, X let NAME, if … else … then,
+begin … until, list … end, SEQ each … end; the core's words drop pick roll
+add sub mul div lt eq len at slice concat push put code char kind string
+print fail; and the libraries below, written in fuxth. Mistakes every run
+would make are refused before anything runs.
 
-  fux opts OPTIONS run                  start a program; answers once it settles: %2 reading, then its output
-  fux %2 INPUT send-keys                type: str T text, str Enter key, str 1b bytes, 50 pause, …; answers as run does
-  fux %3 str 'make test' line           a shell command: answers `%3 reading · done 0` and its output
-  fux %2 [WAIT] wait                    settle, or wait for str T wait-text, wait-exit, …
-  fux %2 [READ] capture                 read once settled: 100 history, marks, …; then json
-  fux %2 str FIELD get                  one value: state, exited, pid, …
-
-  fux opts str 'htop -d 5' command run  start htop: %2 waiting · redraws on its own
-  fux %2 str Load wait-text wait        wait until it shows Load
-  fux ls                                what there is
-
-The language's core: str WORD   define NAME … end   let NAME (names the
-  top value)   if … else … then   begin … until   list … end (a list of
-  what its body leaves)   each … end (the body once per element)
-  drop pick roll   add sub mul div   lt eq   len at slice concat push put
-  code char   kind string print fail   # a comment to the end of the line
-  Everything else (dup swap over rot, not, mod, sort, upper, join, …) is
-  the standard library, written in fuxth: listed below.
-  Mistakes a run would surely make (too few values, a string given to add
-  or if, a capture given to text, a request left that nothing acts on) are
-  found before anything runs.
-
-In what a word takes and leaves below: x is a pane, tab, workspace or
-client (or an action's answer, which is its pane), a request on one (what
-the words between it and the word that acts make of it), or options; w is
-the same, but a pane given only a wait, left last, waits (`%2 str ready
-wait-text`); a
-target is what send-keys acts on, a place what wait waits on (not a
-client), a subject a pane or a request on one; ref a name or a pane, tab
-or workspace; handle a pane, tab or workspace; text a string, a number or
-a boolean.
-
-At a terminal, the prefix then Esc stops a program a key or the prompt runs.
-Driving programs from a script or an agent: `fux help-agents`.
-One word at length: `fux str WORD explain`.
+Below, x is a pane, tab, workspace or client (an action's answer is its
+pane), a request on one, or opts; target, subject and place a pane (or a
+tab, workspace or client) or a request on one; handle a pane, tab or
+workspace; ref a name or a handle; text a string, number or boolean.
 ",
     );
     let mut group = "";
@@ -110,14 +80,20 @@ One word at length: `fux str WORD explain`.
             word.name, word.effect, word.about
         ));
     }
-    out.push_str("\nThe standard library and fux's library (both written in fuxth):\n");
-    for (name, effect, about, _) in library() {
-        out.push_str(&format!("  {name:<20} {effect:<28} {about}\n"));
+    out.push_str("\nThe libraries (`fux help WORD` says each):\n ");
+    let mut width = 1usize;
+    for (name, ..) in library() {
+        width = width.saturating_add(name.len()).saturating_add(1);
+        if width > 78 {
+            out.push_str("\n ");
+            width = name.len().saturating_add(2);
+        }
+        out.push(' ');
+        out.push_str(name);
     }
     out.push_str(
-        "\nThe server: `str NAME server` or `str PATH socket` before the rest;\n\
-         else FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux. Inside a\n\
-         pane, `here` is that pane (FUX_PANE).\n",
+        "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
+         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux.\n",
     );
     out
 }
