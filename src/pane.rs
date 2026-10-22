@@ -1999,6 +1999,25 @@ mod tests {
         Ok(())
     }
 
+    /// A paced piece whose room replies took while it waited waits on for
+    /// the program to read, and is written then: it is never dropped.
+    #[test]
+    fn a_paced_piece_that_no_longer_fits_waits_for_room() -> Result<(), Error> {
+        let mut pane = pane(5, 20)?;
+        let now = Instant::now();
+        let pieces = [b"a", b"b"].map(|b| Piece::new(b.to_vec(), log::Unit::Edit));
+        pane.send(pieces.into(), now)?;
+        assert_eq!(pane.input.drain_all(), b"a");
+        // Replies fill the queue while the second piece waits its pace.
+        pane.input.push(vec![b'r'; pane.input.room()])?;
+        let later = now + Duration::from_secs(1);
+        pane.release_paced(later);
+        assert!(pane.input.drain_all().iter().all(|b| *b == b'r'));
+        pane.release_paced(later + Duration::from_secs(1));
+        assert_eq!(pane.input.drain_all(), b"b");
+        Ok(())
+    }
+
     #[test]
     fn output_answers_queries_and_takes_titles() -> Result<(), Error> {
         let mut pane = pane(5, 20)?;

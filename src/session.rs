@@ -4087,6 +4087,45 @@ mod tests {
         Ok(())
     }
 
+    /// A pane respawned twice within its program's grace has both programs
+    /// before dying: the second end never drops the first one's kill.
+    #[test]
+    fn a_pane_respawned_twice_in_its_grace_kills_both() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        // A test's session starts no program: each is put in the pane.
+        let argv = ["/bin/cat".to_owned()];
+        for _ in 0..2 {
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+            let pane = s.panes.get_mut(&PaneId::of(2)).ok_or("the pane")?;
+            pane.process = Process::Reading(child);
+            run(&mut s, "%2 kill-first respawn")?;
+        }
+        let dying = std::mem::take(&mut s.dying);
+        let ended = dying.len();
+        for dying in dying {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+        assert_eq!(ended, 2);
+        Ok(())
+    }
+
+    /// `json` of an answer of several panes is one array, as it is in a
+    /// list: one shape for one answer.
+    #[test]
+    fn json_of_several_panes_is_one_array() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 split")?;
+        let alone = output(&mut s, "@1 wait json")?;
+        assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
+        assert_eq!(alone.lines().count(), 1, "{alone}");
+        let listed = output(&mut s, "list @1 wait end json")?;
+        assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
+        Ok(())
+    }
+
     /// A program that exits with output past a read budget still unread
     /// (`Pane::has_unread`) is at work until it is read, and exited only
     /// then, its last screen whole: a wait is never told it exited on a
@@ -4791,9 +4830,10 @@ mod tests {
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
         let times = failed(&mut s, "%1 str a text str 2 times");
         assert!(times.starts_with("type: "), "{times}");
-        // Refused before it is repeated, past what send-keys sends.
+        // Refused by `times`, before it is repeated, past what send-keys
+        // sends.
         let many = failed(&mut s, "%1 str x 100000 copies text 1000 times send-keys");
-        assert!(many.starts_with("too_long: "), "{many}");
+        assert!(many.starts_with("too_long: test:1: times: "), "{many}");
         let none = failed(&mut s, "%1 str a text 0 times send-keys");
         assert!(
             none.contains("0 is out of range: 1 to 1000 (use: "),

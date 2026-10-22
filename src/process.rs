@@ -151,3 +151,19 @@ pub fn told(ended: Status) -> String {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A leader whose status can't be read (no child of this process, its
+    /// status lost) is told ended, its status unknown: never a success.
+    #[test]
+    fn a_status_not_read_is_no_success() -> Result<(), String> {
+        let me = i32::try_from(std::process::id()).map_err(|e| e.to_string())?;
+        let leader = Leader(Pid::from_raw(me).ok_or("no pid")?, false);
+        let ended = leader.exited();
+        assert!(ended.is_some_and(|s| s != Status::Exited(0)), "{ended:?}");
+        Ok(())
+    }
+}

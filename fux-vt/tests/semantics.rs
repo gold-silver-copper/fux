@@ -117,6 +117,17 @@ fn erase_insert_delete_and_wide_halves_are_repaired() -> Result {
     Ok(())
 }
 
+/// A narrow glyph over a wide one's first half blanks its second, as every
+/// other orphaned half is: no space is printed there.
+#[test]
+fn a_narrow_glyph_over_a_wide_ones_first_half_blanks_the_second() -> Result {
+    let mut p = Parser::new(Size::new(1, 4)?, 0)?;
+    p.process("界\rx".as_bytes())?;
+    assert_eq!(cell(&p, 0, 0)?.contents(), "x");
+    assert_eq!(cell(&p, 0, 1)?.contents(), "");
+    Ok(())
+}
+
 #[test]
 fn sgr_defaults_resets_and_colour_parameter_forms() -> Result {
     let mut p = Parser::new(Size::new(2, 10)?, 0)?;
