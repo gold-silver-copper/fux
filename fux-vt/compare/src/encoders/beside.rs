@@ -567,9 +567,14 @@ fn modified_other_key(key: Key, mods: Modifiers, ours: &[u8]) -> bool {
 /// again until none is left. Written apart from fux-vt's encoder, so the
 /// verdicts check what fux-vt sends.
 fn pasted(text: &str, bracketed: bool) -> Vec<u8> {
-    // Each line break one CR: a CRLF as one, as kitty, ghostty and alacritty
-    // send it, and each other LF as xterm 411 does.
-    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    // Each line break one CR: a CRLF as one, as kitty and alacritty send it,
+    // and each other LF as xterm 411 does.
+    wrapped(text.replace("\r\n", "\r").replace('\n', "\r"), bracketed)
+}
+
+/// `text` as a paste sends it once its line breaks are made: as it is, or,
+/// bracketed, between the markers with every end marker removed.
+fn wrapped(text: String, bracketed: bool) -> Vec<u8> {
     if !bracketed {
         return text.into_bytes();
     }
@@ -852,21 +857,26 @@ fn compare_pastes(
             .map(|b| if STRIPPED.contains(&b) { b' ' } else { b })
             .collect();
         let controls = seen.as_slice() != text.as_bytes();
-        // ghostty keeps a bracketed paste's LF, which fux-vt sends as CR.
-        let newline = bracketed && seen.contains(&b'\n');
+        let seen_text = String::from_utf8_lossy(&seen);
+        // ghostty's line breaks: each LF a CR, so a CRLF two, or, bracketed,
+        // each LF kept; fux-vt sends each line break as one CR.
+        let ghostty_breaks = if bracketed {
+            seen_text.to_string()
+        } else {
+            seen_text.replace('\n', "\r")
+        };
+        let newline = seen.contains(&b'\n')
+            && theirs == wrapped(ghostty_breaks, bracketed)
+            && pasted(&seen_text, bracketed) != wrapped(seen_text.to_string(), bracketed);
         let modelled = {
             let mut out = Vec::new();
             fux_vt::keys::encode::paste(&String::from_utf8_lossy(&seen), bracketed, &mut out);
             out
         };
         // A verdict says what fux-vt sends: it must send it.
-        let theirs_cr: Vec<u8> = String::from_utf8_lossy(&theirs)
-            .replace("\r\n", "\r")
-            .replace('\n', "\r")
-            .into_bytes();
         let verdict = if ours != pasted(&text, asked) {
             None
-        } else if newline && modelled == theirs_cr {
+        } else if newline && modelled == pasted(&seen_text, bracketed) {
             Some("paste-newline")
         } else if modelled == theirs {
             controls.then_some("paste-controls")

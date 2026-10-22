@@ -714,7 +714,7 @@ each with the source that decides it, printed with every run:
 | `ctrl-alt-question`, `shift-tab`, `ctrl-backspace-bs` | real xterm 411's key bytes (`tests/data/keys/xterm-keys.txt`): Ctrl-Alt-? is ESC ?, where ghostty sends ESC DEL; Shift-Tab at modifyOtherKeys 2 is CSI Z, where ghostty sends CSI 27 ; 2 ; 9 ~; Backspace with Ctrl and another modifier is BS (ESC BS, or CSI 27 ; m ; 8 ~ at modifyOtherKeys 2), where ghostty sends DEL |
 | `kitty-flags-without-disambiguate`, `kitty-press-type` | the kitty spec: it gives no other encoding without flag 1 or 8, and lets a press leave out its event type, as kitty does |
 | `paste-controls` | a choice: ghostty, as xterm, makes NUL, BS, ENQ, EOT, ESC, DEL and the tty's special characters spaces; fux-vt passes them as pasted, removing only what would end its bracket |
-| `paste-newline` | each line break of a paste is sent as one CR, bracketed too, as fux-vt sends it: a CRLF as one CR (kitty, alacritty), each other LF as CR (xterm 411, `button.c`); ghostty keeps a bracketed paste's LF |
+| `paste-newline` | each line break of a paste is sent as one CR, bracketed too, as fux-vt sends it: a CRLF as one CR (kitty, alacritty), each other LF as CR (xterm 411, `button.c`); ghostty sends each LF as CR, so a CRLF as two, and keeps a bracketed paste's LF |
 | `paste-c1-end` | fux-vt: U+009B 201 ~ ends a bracket for a terminal that reads C1, so fux-vt removes it as it removes ESC [ 201 ~ |
 
 It needs no engine but ghostty, takes a few seconds, and is part of
