@@ -720,7 +720,8 @@ pub fn encode(picture: &Picture, (x, y, width, height): (u32, u32, u32, u32), ou
     // the size, square pixels.
     let _ = write!(out, "\x1bP0;1;0q\"1;1;{width};{height}");
     for (i, [r, g, b]) in palette.iter().enumerate() {
-        let share = |c: u8| u32::from(c).saturating_mul(100) / 255;
+        // The nearest percent: rounded down, a colour read back is darker.
+        let share = |c: u8| (u32::from(c).saturating_mul(100).saturating_add(127)) / 255;
         let _ = write!(out, "#{i};2;{};{};{}", share(*r), share(*g), share(*b));
     }
     // Each colour's sixels of a band, in one walk over its pixels: for each
@@ -909,8 +910,8 @@ mod tests {
         assert_eq!(pixel(0), Some([0, 0, 0, 255]));
         assert_eq!(pixel(1), Some([255, 255, 255, 255]));
         // 128: red and blue 3 of 5 steps, 153, 60%; green 3 of 6, 127,
-        // 49%, read back as 124.
-        assert_eq!(pixel(2), Some([153, 124, 153, 255]));
+        // 50% (not 49%, rounded down, read back as 124).
+        assert_eq!(pixel(2), Some([153, 127, 153, 255]));
         // 200 is red's step 4 (204, 80%); 100 green's 2 (85, 33%: 84); 50
         // blue's 1 (51, 20%).
         assert_eq!(pixel(3), Some([204, 84, 51, 255]));
