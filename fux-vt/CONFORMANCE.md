@@ -201,8 +201,8 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 4-31 DECSTR | DECSTR (SOFT TERMINAL RESET) | implemented | `conformance::a_soft_reset_restores_the_modes_and_keeps_the_screen` |  |
 | 4-35 DSR | DSR (DEVICE STATUS REPORT) | implemented | `opt_in::extended_replies_answer_the_device_status_reports`, `conformance::cursor_reports_count_lines_from_the_top_margin_in_origin_mode` | 5 and 6; the DEC forms with `Feature::ExtendedReplies` |
 | 5-21 DECTCEM | DECTCEM (SET/RESET TEXT CURSOR ENABLE MODE) | implemented | `modes::decrqm_reports_the_modes_xterm_keeps` | state only: the host shows the cursor or not |
-| 5-25 DECSTBM | DECSTBM (SET TOP AND BOTTOM MARGINS) | implemented | `conformance::decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set` |  |
-| 5-27 DECSLRM | DECSLRM (SET LEFT AND RIGHT MARGINS) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` |  |
+| 5-25 DECSTBM | DECSTBM (SET TOP AND BOTTOM MARGINS) | implemented | `conformance::decstbm_homes_the_cursor_and_ignores_a_region_it_cannot_set` | a bottom past the screen is the last line, as xterm takes it (note 3 refuses it) |
+| 5-27 DECSLRM | DECSLRM (SET LEFT AND RIGHT MARGINS) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` | a right margin past the screen is the last column, as xterm takes it (note 3 refuses it) |
 | 5-29 DECLRMM | DECLRMM (SET/RESET LEFT RIGHT MARGIN MODE) | implemented | `margins::declrmm_lets_decslrm_set_the_margins` |  |
 | 5-31 DECOM | DECOM (SET/RESET ORIGIN MODE) | implemented | `conformance::line_and_column_addressing_obeys_origin_mode` |  |
 | 5-32 DECSCLM | DECSCLM (SET/RESET SCROLLING MODE) | partial | `modes::decrqm_reports_the_modes_xterm_keeps` | kept for DECRQM and XTSAVE; scrolling is never smooth |
