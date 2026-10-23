@@ -315,42 +315,24 @@ fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
     };
     check("b")?;
     // A shell the tests may have: its marks as the README has them.
-    let shells: [(&str, &[&str], &str, &str); 2] = [
-        ("zsh", &["-f", "-i"], ZSH_MARKS, "ZDOTDIR"),
-        (
-            "fish",
-            &["--no-config", "-i"],
-            FISH_MARKS,
-            "XDG_CONFIG_HOME",
-        ),
+    // Each read from its own startup file, where the README puts them.
+    let shells = [
+        ("zsh", ZSH_MARKS, "ZDOTDIR", ".zshrc"),
+        ("fish", FISH_MARKS, "XDG_CONFIG_HOME", "fish/config.fish"),
     ];
-    for (shell, args, marks, home) in shells {
+    for (shell, marks, home, rc) in shells {
         if std::env::var_os("FUX_TEST_SHELLS").is_none() {
             break;
         }
         let dir = server.dir.join(shell);
-        std::fs::create_dir_all(dir.join("fish")).map_err(e)?;
-        let rc = match shell {
-            "zsh" => dir.join(".zshrc"),
-            _ => dir.join("fish/config.fish"),
-        };
+        let rc = dir.join(rc);
+        std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
         std::fs::write(&rc, format!("{marks}\n")).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
-        // zsh -f reads no startup file: the marks are sourced once it runs.
-        let args: Vec<&str> = match shell {
-            "zsh" => vec!["-f", "-i"],
-            _ => args.to_vec(),
-        };
-        let mut words = vec![
+        let words = [
             "opts", "str", shell, "name", "str", home, "str", &dir, "env",
         ];
-        words.extend(program(&[&[shell][..], &args].concat()));
-        words.push("run");
-        server.ok(&words)?;
-        if shell == "zsh" {
-            let source = format!(". {}", rc.to_string_lossy());
-            server.ok(&["str", shell, "pane", "str", &source, "line"])?;
-        }
+        server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
         check(shell)?;
     }
     let plain = id(&server.ok(&run(&[], &["sh"]))?);
