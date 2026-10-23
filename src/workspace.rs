@@ -165,18 +165,11 @@ impl Workspace {
         }
     }
 
-    /// The layouts of its tabs that changed since their panes were sized,
-    /// each with the area its fit lays it out in given `client`, a
-    /// client's screen, for sizing them, and whether a client shows it.
-    /// Those are then taken as sized, as is a shown one, by its clients.
-    pub(crate) fn changed(&mut self, client: Rect) -> impl Iterator<Item = (&Layout, Rect, bool)> {
-        let (viewers, shown_to) = (&self.viewers, &self.shown);
-        self.tabs.iter_mut().filter_map(move |tab| {
-            let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
-            let changed = std::mem::take(&mut tab.changed);
-            let tab = &*tab;
-            changed.then(|| (&tab.layout, tab.fit.area(client), shown))
-        })
+    /// Its tabs whose layouts changed since their panes were sized, for
+    /// sizing them: they are then taken as sized.
+    pub(crate) fn changed(&mut self) -> impl Iterator<Item = TabId> {
+        let tabs = self.tabs.iter_mut();
+        tabs.filter_map(|tab| std::mem::take(&mut tab.changed).then_some(tab.id))
     }
 
     /// Removes tab `tab`, giving back its layout: the clients it was shown

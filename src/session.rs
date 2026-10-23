@@ -1777,15 +1777,21 @@ impl Session {
             self.placement_into(view, &mut placed);
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
-        // With no client, a tab that fits clients is laid out as a typical
-        // terminal would show it (`tab_area`). Of a changed tab clients
-        // show, its floating panes none shows are sized so too.
-        let client = self.views.values().next().map_or(TYPICAL, Self::pane_area);
-        let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed(client));
-        for (layout, area, shown) in changed {
+        // As a command lays it out (`reference_area`): on a client's
+        // screen that shows it; with none, on its fit, a tab that fits
+        // clients as a typical terminal would show it. Of a tab clients
+        // show, only its floating panes none of them shows.
+        let changed: Vec<TabId> = (self.workspaces.iter_mut())
+            .flat_map(|w| w.changed())
+            .collect();
+        for tab in changed {
+            let Some(layout) = self.tab(tab).map(Tab::layout) else {
+                continue;
+            };
+            let area = self.reference_area(tab, Here::NOWHERE);
             layout.place_into(area, true, None, &mut placed);
-            let unshown = |(p, _): &&(PaneId, Rect)| !shown || !sizes.iter().any(|(s, _)| s == p);
-            let more: Vec<_> = placed.panes.iter().filter(unshown).copied().collect();
+            let unplaced = |(p, _): &&(PaneId, Rect)| !sizes.iter().any(|(s, _)| s == p);
+            let more: Vec<_> = placed.panes.iter().filter(unplaced).copied().collect();
             sizes.extend(more.into_iter().map(|(p, r)| (p, (r.h(), r.w()))));
         }
         self.placed = placed;
@@ -3173,6 +3179,10 @@ impl Session {
 
     fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
         let moved = match target {
+            // A floating pane moves a place in their stack: next is up.
+            AnyRef::Pane(p) if self.floats(p) => tab_of(&mut self.workspaces, p)?
+                .edit(|l| swap_sibling(&mut l.floating, |f| f.pane == p, toward))
+                .ok_or(Error::NoPane(p))?,
             AnyRef::Pane(p) => {
                 let tab = self.locate(p).and_then(|(_, t)| self.tab(t));
                 let panes = tab.map_or_else(Vec::new, |t| t.layout().layer(p));

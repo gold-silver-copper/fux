@@ -1205,7 +1205,9 @@ fn put_pane(
 }
 
 /// A floating pane's frame: a border, green round the focused pane, with
-/// the pane's id and label on its top edge; inside it, blank.
+/// the pane's id and label on its top edge. Its cells are set as a glyph
+/// is, so a wide glyph it cuts in half is blanked whole; the pane drawn
+/// inside it covers the rest.
 fn put_frame(grid: &mut Grid, session: &Session, id: PaneId, frame: Rect, focused: bool) {
     let colour = if focused {
         Color::Idx(2)
@@ -1213,10 +1215,9 @@ fn put_frame(grid: &mut Grid, session: &Session, id: PaneId, frame: Rect, focuse
         Color::Idx(240)
     };
     let style = Attributes::new(colour, Color::Default);
-    grid.blank(frame);
     let (top, bottom) = (frame.y(), frame.bottom().saturating_sub(1));
     let (left, right) = (frame.x(), frame.right().saturating_sub(1));
-    let mut put = |y: u16, x: u16, glyph: &str| grid.put(y, x, CellRef::new(glyph, false, style));
+    let mut put = |y: u16, x: u16, glyph: &str| grid.set(y, x, CellRef::new(glyph, false, style));
     for x in frame.cols() {
         put(top, x, "─");
         put(bottom, x, "─");
