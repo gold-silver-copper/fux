@@ -385,7 +385,8 @@ impl Keymap {
         ))
     }
 
-    /// Every binding, as `list-keys` shows them: a config that makes them.
+    /// Every binding, as `list-keys` shows them: config lines that make
+    /// them beside the definitions of the config they came from.
     pub fn describe(&self) -> String {
         let prefix = words::quote(&self.prefix.to_string());
         let mut out = format!("unbind-all\nstr {prefix} prefix\n");
