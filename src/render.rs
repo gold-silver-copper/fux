@@ -933,12 +933,15 @@ pub struct Painted<'a> {
 }
 
 impl Painted<'_> {
-    /// Whether pane `id` was painted at `rect` on a grid of this size,
-    /// under the same floating panes' frames as `now` puts over it: those
-    /// are in what was painted there.
-    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16, now: &Placement) -> bool {
-        let at = |placed: &Placement| placed.panes.iter().position(|p| *p == (id, rect));
-        let (Some(was), Some(is)) = (at(self.placement), at(now)) else {
+    /// Whether pane `id` was painted where `now` places it, on a grid of
+    /// this size, under the same floating panes' frames as `now` puts over
+    /// it: those are in what was painted there.
+    pub fn kept(&self, id: PaneId, rows: u16, cols: u16, now: &Placement) -> bool {
+        let Some((is, &(_, rect))) = now.panes.iter().enumerate().find(|(_, (p, _))| *p == id)
+        else {
+            return false;
+        };
+        let Some(was) = self.placement.panes.iter().position(|p| *p == (id, rect)) else {
             return false;
         };
         (self.grid.rows, self.grid.cols) == (rows, cols)
@@ -976,12 +979,10 @@ pub fn compose_held(
     };
     put_panes(grid, session, view, placement, focus, copy);
     let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
-    let kept = |id: PaneId, rect: Rect| {
-        painted.filter(|p| p.kept(id, rect, view.rows, view.cols, placement))
-    };
+    let kept = |id: PaneId| painted.filter(|p| p.kept(id, view.rows, view.cols, placement));
     let hold = |grid: &mut Grid, id: PaneId, rect: Rect| {
         if held(&id) {
-            match kept(id, rect) {
+            match kept(id) {
                 Some(painted) => grid.keep_area(painted.grid, rect),
                 None => grid.blank(rect),
             }
@@ -1050,7 +1051,7 @@ pub fn compose_held(
         // Only where a pane's own cursor shows: in normal mode (none under
         // an overlay, copy mode's its own).
         if held(&focus) && view.mode.is_normal() {
-            let painted = kept(focus, rect);
+            let painted = kept(focus);
             let at = (painted.and_then(|p| p.grid.cursor)).filter(|&(y, x)| rect.contains(y, x));
             grid.cursor = at;
             if let Some(painted) = painted.filter(|_| at.is_some()) {

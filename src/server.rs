@@ -1255,7 +1255,7 @@ impl Server {
         // new, is sent after the text.
         let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
-        for &(id, rect) in &attached.placement.panes {
+        for &(id, _) in &attached.placement.panes {
             if session.panes.get(&id).is_some_and(Pane::mid_frame) {
                 pictures.retain(|p| p.pane != id);
                 let (rows, cols) = (attached.spare.rows, attached.spare.cols);
@@ -1263,7 +1263,7 @@ impl Server {
                     grid: &attached.shown,
                     placement: &placed,
                 };
-                if known && painted.kept(id, rect, rows, cols, &attached.placement) {
+                if known && painted.kept(id, rows, cols, &attached.placement) {
                     pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());
                 }
             }

@@ -109,10 +109,7 @@ impl Session {
         for float in &layout.floating {
             let name = pane_name(float.pane);
             if float.pane != first {
-                let mut line = vec![pane_name(first), "floating".into()];
-                self.pane_words(float.pane, ids, &mut line);
-                line.extend(["split".to_owned(), "let".to_owned(), name.clone()]);
-                push(out, &line);
+                push(out, &self.split_line(first, "floating", float.pane, ids));
             }
             let frame = float.frame;
             let mut line = vec![name];
@@ -159,16 +156,21 @@ impl Session {
             Axis::Vertical => "vertical",
         };
         for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
-            let mut line = vec![pane_name(*before), way.into()];
-            self.pane_words(*pane, ids, &mut line);
-            line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
-            push(out, &line);
+            push(out, &self.split_line(*before, way, *pane, ids));
         }
         for child in split.children() {
             if let Tree::Split((), inner) = child {
                 self.dump_split(axis.cross(), inner, ids, out);
             }
         }
+    }
+
+    /// The line that makes `pane` by splitting `before` the `way` given.
+    fn split_line(&self, before: PaneId, way: &str, pane: PaneId, ids: bool) -> Vec<String> {
+        let mut line = vec![pane_name(before), way.to_owned()];
+        self.pane_words(pane, ids, &mut line);
+        line.extend(["split".to_owned(), "let".to_owned(), pane_name(pane)]);
+        line
     }
 
     /// The program `run` started in pane `id`, if it runs one: its words,

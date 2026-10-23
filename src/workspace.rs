@@ -245,7 +245,7 @@ impl Tab {
             given: false,
             layout: Layout {
                 tiled: root,
-                ..Layout::default()
+                floating: Vec::new(),
             },
             changed: true,
             fit,

@@ -3065,8 +3065,8 @@ impl Session {
                     Extent::Cells(n) => n,
                     Extent::Percent(p) => inner(p.of(area.len(axis))),
                 };
-                let len = asked.checked_add(2);
-                let Some(len) = len.filter(|len| (least..=area.len(axis)).contains(len)) else {
+                let fits = |len: &u16| (least..=area.len(axis)).contains(len);
+                let Some(len) = asked.checked_add(2).filter(fits) else {
                     let (cols, rows) = match axis {
                         Axis::Horizontal => (asked, inner(h)),
                         Axis::Vertical => (inner(w), asked),
@@ -3632,9 +3632,11 @@ fn neighbor_in(layout: &Layout, area: Rect, from: PaneId, direction: Direction) 
     let floating = layout.floats(from);
     let mut placed = Placement::default();
     layout.place_into(area, floating, None, &mut placed);
-    // Its layer alone, as placed: the floating panes and their frames, or
-    // the tiled panes, placed with none.
-    placed.panes.retain(|(p, _)| layout.floats(*p) == floating);
+    // Placed with none, the tiled panes are their layer alone; a floating
+    // one's is the floating panes, their frames with them.
+    if floating {
+        placed.panes.retain(|(p, _)| layout.floats(*p));
+    }
     layout::neighbor(&placed, from, direction)
 }
 
