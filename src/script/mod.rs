@@ -362,8 +362,16 @@ impl From<fuxth::Error> for Failed {
     }
 }
 
-/// `error` as fux tells it, with how its word is used if `usage`.
+/// `error` as fux tells it, with how its word is used if `usage`, and
+/// for options or a request left over, the words that would take them.
 fn told(mut error: fuxth::Error, usage: bool) -> Failed {
+    let left = words::KINDS
+        .iter()
+        .any(|(.., why)| *why == Some(&*error.message));
+    if error.code == Lang::Unused && left {
+        let word = error.word.as_deref().unwrap_or_default();
+        error.message += &format!(": end with {}", words::takers(word));
+    }
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
         error.message.push_str(&format!(" ({usage})"));
     }
@@ -1243,5 +1251,21 @@ mod tests {
         let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
         assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
         Ok(())
+    }
+
+    /// Options or a request nothing acts on name the words that would.
+    #[test]
+    fn what_is_left_names_its_word() {
+        for (code, end) in [
+            ("%2 str hi paste", "send-keys"),
+            ("opts str x in", "run or new-tab"),
+        ] {
+            let compiled = super::compile(&super::program(&[code.to_owned()]).unwrap_or_default());
+            let error = compiled.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(
+                error.ends_with(&format!("end with {end}")),
+                "{code}: {error}"
+            );
+        }
     }
 }
