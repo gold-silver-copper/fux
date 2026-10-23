@@ -19,7 +19,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 14;
+pub const PROTOCOL: u32 = 15;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -377,9 +377,6 @@ wire! {
     pub enum End {
         #[default]
         Done,
-        /// Answered with a status of its own, no failure: a pane said as it
-        /// stands (closed, reading short of the text, still busy).
-        Answered(code: Code),
         /// Failed, with its code and why.
         Failed {
             code: Code,
@@ -393,7 +390,7 @@ impl End {
     pub fn code(&self) -> Option<Code> {
         match self {
             End::Done => None,
-            End::Answered(code) | End::Failed { code, .. } => Some(*code),
+            End::Failed { code, .. } => Some(*code),
         }
     }
 

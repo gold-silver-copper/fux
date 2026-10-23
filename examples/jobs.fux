@@ -4,9 +4,9 @@
 # pane (`str exited get`).
 # expect: 6
 
-# n -- pane: a program that exits with status n, started without waiting
-# for it to settle (`0 timeout`), so the next starts at once
-define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg 0 timeout run end
+# n -- pane: a program that exits with status n; run answers at once, so
+# the next starts at once
+define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg run end
 # pane -- status: once its program has exited
 define exit-status dup wait-exit wait drop str exited get end
 

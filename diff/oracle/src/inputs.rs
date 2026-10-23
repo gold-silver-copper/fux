@@ -214,16 +214,11 @@ fn call(r: &mut Rng) -> Call {
     let n = r.below(256);
     let byte = u8::try_from(n).unwrap_or(0);
     let side = |n: usize| u16::try_from(n % 20).unwrap_or(0).saturating_add(1);
-    match r.below(9) {
+    match r.below(4) {
         0 => Call::HistoryBytes(*r.pick(&[0usize, 1 << 10, 64 << 10]).unwrap_or(&0)),
         1 => Call::ClearHistory,
-        2 => Call::Tick,
-        3 => Call::Palette(byte),
-        4 => Call::Graphics(side(n), side(n / 20)),
-        5 => Call::Nonce(n.is_multiple_of(2)),
-        6 => Call::Submit,
-        7 => Call::Record(!n.is_multiple_of(4)),
-        _ => Call::Prints,
+        2 => Call::Palette(byte),
+        _ => Call::Graphics(side(n), side(n / 20)),
     }
 }
 

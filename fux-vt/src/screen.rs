@@ -7,7 +7,7 @@ use crate::parser::Chars;
 use crate::unicode::{Cluster, Properties};
 use crate::{
     Attributes, Blink, CellRef, Color, Error, Feature, Hyperlink, Identity, LineRendition, Mark,
-    Options, Prints, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
+    Options, Reply, Rgb, Row, RowId, Rows, SgrForm, UnderlineStyle, Window,
     geometry::{Size, Span},
     grid::{Cursor, Erase, Grid, Scroll, put},
     palette::Colours,
@@ -641,36 +641,6 @@ pub struct Screen {
     /// The colours the program set, with `Feature::Palette`: made when
     /// the first is set, so a screen whose program sets none keeps none.
     colours: Option<Box<Colours>>,
-    /// What was printed since the host last took it, while it records
-    /// (`record_prints`).
-    prints: Option<Prints>,
-    /// The nonce a shell mark must carry to count (`require_mark_nonce`):
-    /// one without it is a program's output, not its shell's.
-    mark_nonce: Option<Box<[u8]>>,
-    /// The nonce a mark of a program the shell runs carries to count, while
-    /// the command that started it runs (`require_mark_nonce`).
-    nested_nonce: Option<Box<[u8]>>,
-    /// The shell's running command, set aside while a nested program's
-    /// marks count: its output's start, and whether on the alternate screen.
-    outer: Option<(CommandMark, bool)>,
-    /// Where the cursor was as the host last said a line was submitted
-    /// (`note_submit`): a late `C` starts the output after that line.
-    submitted: Option<CommandMark>,
-}
-
-/// What a mark joined to a cell prints: the mark, after the space a blank
-/// cell takes for it; in `buf`.
-fn joined_text(blank: bool, c: char, buf: &mut [u8; 8]) -> &str {
-    let (space, rest) = buf
-        .split_at_mut_checked(usize::from(blank))
-        .unwrap_or_default();
-    if let Some(space) = space.first_mut() {
-        *space = b' ';
-    }
-    let len = c.encode_utf8(rest).len().saturating_add(usize::from(blank));
-    buf.get(..len)
-        .and_then(|b| str::from_utf8(b).ok())
-        .unwrap_or_default()
 }
 
 /// The screen's part of the invariant checker (THREATS.md section 6).
@@ -687,26 +657,11 @@ impl Screen {
             report.record("screen.ids", "", self.check_ids());
             report.record("screen.structural", "", self.check_structural());
             report.record("screen.tabs", "", self.check_tabs());
-            report.record("screen.nest", "", self.check_nest());
             report.record("pictures.count", "", self.check_picture_count());
             report.record("pictures.bytes", "", self.check_picture_bytes(0));
             report.record("pictures.shown", "", self.check_pictures_shown());
-            if let Some(prints) = &self.prints {
-                report.record("prints.runs", "", prints.check());
-                report.record("prints.cap", "", prints.check_cap());
-            }
             report
         })
-    }
-
-    /// 6a: a shell command is set aside for a nested program's marks only
-    /// while both nonces are required: the shell's, and the nested one its
-    /// programs mark with (THREATS.md 1.2).
-    fn check_nest(&self) -> Result<(), String> {
-        crate::check::ensure(
-            self.outer.is_none() || (self.mark_nonce.is_some() && self.nested_nonce.is_some()),
-            || "a command set aside without both nonces".into(),
-        )
     }
 
     /// 20a: no row identity is two rows', and the shown rows and history's
@@ -766,7 +721,7 @@ mod pictures;
 mod shell;
 pub(crate) use pictures::CELL;
 pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
-pub use shell::{Commands, Mark as CommandMark, Report, Reported};
+pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
 
@@ -897,11 +852,6 @@ impl Screen {
             links_seen: false,
             next_link: 1,
             colours: None,
-            prints: None,
-            mark_nonce: None,
-            nested_nonce: None,
-            outer: None,
-            submitted: None,
         })
     }
     /// The primary screen's grid, as a test starts from it.
@@ -1173,32 +1123,10 @@ impl Screen {
     /// column, as the semantic prompt proposal and Ghostty have it. `N` is
     /// `A` that first ends the command running, as a `D` with no status.
     /// `C` and `D` mark a command (`command_mark`), `P` a prompt where it
-    /// is; the rest change nothing. `S` reports a state (`report`).
+    /// is; the rest change nothing. Every mark counts, whoever sent it.
     pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
         let mut parts = payload.split(|b| *b == b';');
-        let carries = |nonce: &[u8]| {
-            (payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
-        };
-        let shell = self.mark_nonce.as_deref().is_none_or(carries);
-        let nested = !shell && self.nested_nonce.as_deref().is_some_and(carries);
-        // A state report counts as the marks around it do, and changes
-        // none of what they say: the shell's, or the nested nonce's while
-        // a command the shell started runs.
-        if let Some(options) = payload.strip_prefix(b"S") {
-            let within = self.outer.is_some() || self.commands.running();
-            if (options.is_empty() || options.starts_with(b";")) && (shell || (nested && within)) {
-                self.report(options);
-            }
-            return Ok(());
-        }
-        if shell {
-            self.unnest();
-        } else if !(nested && self.nest()) {
-            // Printed by a program, not its shell: no mark.
-            return Ok(());
-        }
         let command = parts.next().unwrap_or_default();
-        self.commands.marks = self.commands.marks.wrapping_add(1);
         if matches!(command, b"C" | b"D") {
             self.command_mark(command, parts.next());
             return Ok(());
@@ -1281,117 +1209,10 @@ impl Screen {
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
-    /// The number of the last processing (or `Parser::tick`): each row
+    /// The number of the last processing: each row
     /// keeps the number of the one that last changed it (`Row::version`).
     pub fn version(&self) -> u64 {
         self.version
-    }
-    /// Records what is printed from now on, or stops and forgets it.
-    pub(crate) fn record_prints(&mut self, on: bool) {
-        let cells = self.size().cells();
-        self.prints = on.then(|| Prints::new(cells));
-    }
-    /// What was printed since the last call, while recording.
-    pub(crate) fn take_prints(&mut self) -> Prints {
-        let cells = self.size().cells();
-        (self.prints.as_mut())
-            .map(|prints| prints.take(cells))
-            .unwrap_or_default()
-    }
-    /// The number of the last change to a row of the primary screen's
-    /// history that has since been let go past its budget: 0 if none was.
-    pub fn let_go(&self) -> u64 {
-        self.primary.let_go()
-    }
-    /// Notes that `text` was printed at live row `row`, column `col`, if
-    /// recording.
-    fn printed(&mut self, row: u16, cols: Range<u16>, text: &str) {
-        let Some(id) = self.grid().live_id(row) else {
-            return;
-        };
-        if let Some(prints) = &mut self.prints {
-            prints.push(id, cols, text);
-        }
-    }
-    /// Notes that `text` was printed at live row `row`, columns `cols`, if
-    /// recording, so that a run printed over what it partly was is
-    /// recorded whole however the output was split, and a redraw of what
-    /// was there alone is not (`Prints::unchanged`).
-    #[inline]
-    fn printed_as(&mut self, changed: bool, row: u16, cols: Range<u16>, text: &str) {
-        if !changed {
-            self.printed_over_itself(row, cols, text.as_bytes());
-            return;
-        }
-        if self.prints.as_ref().is_some_and(Prints::holds) {
-            self.take_held(row, cols.start);
-        }
-        self.printed(row, cols, text);
-    }
-    /// `printed_as` of a glyph that changed no cell, its text as bytes:
-    /// read as text only if it is recorded.
-    #[inline(never)]
-    fn printed_over_itself(&mut self, row: u16, cols: Range<u16>, text: &[u8]) {
-        let Some(id) = self.grid().live_id(row) else {
-            return;
-        };
-        if let Some(prints) = &mut self.prints
-            && prints.unchanged(id, cols.clone())
-        {
-            prints.push(id, cols, str::from_utf8(text).unwrap_or_default());
-        }
-    }
-    /// Records the glyphs held that end at `col` of live row `row`, as
-    /// their cells hold them, and lets any others go.
-    #[cold]
-    #[inline(never)]
-    fn take_held(&mut self, row: u16, col: u16) {
-        let Some(id) = self.grid().live_id(row) else {
-            return;
-        };
-        let Some(cols) = self.prints.as_mut().and_then(|p| p.take_held(id, col)) else {
-            return;
-        };
-        let Some(line) = self.grid().live_row(row) else {
-            return;
-        };
-        let mut text = String::new();
-        let cells = (usize::from(cols.start)..usize::from(cols.end)).filter_map(|x| line.cell(x));
-        for cell in cells.filter(|cell| !cell.is_wide_continuation()) {
-            text.push_str(cell.contents());
-        }
-        if let Some(prints) = &mut self.prints {
-            prints.push(id, cols, &text);
-        }
-    }
-    /// Notes that `c` joined the cell at live row `row`, column `col`,
-    /// after a space if it was `blank`, over the columns the cell takes now.
-    #[cold]
-    #[inline(never)]
-    fn mark_joined(&mut self, row: u16, col: u16, blank: bool, c: char) {
-        let g = self.grid();
-        let Some(id) = g.live_id(row) else {
-            return;
-        };
-        let wide = g.stored(row, col).is_some_and(Compact::is_wide);
-        let cols = col..col.saturating_add(if wide { 2 } else { 1 });
-        let mut text = [0; 8];
-        let text = joined_text(blank, c, &mut text);
-        if let Some(prints) = &mut self.prints {
-            prints.join(id, cols, text);
-        }
-    }
-    /// Makes shell marks count only with `nonce=NONCE` among their
-    /// options, or with none (`None`) every one; and a nested program's
-    /// with `nonce=NESTED`, while a command the shell started runs.
-    pub(crate) fn require_mark_nonce(&mut self, nonce: Option<&[u8]>, nested: Option<&[u8]>) {
-        self.mark_nonce = nonce.map(Box::from);
-        self.nested_nonce = nested.map(Box::from);
-        self.outer = None;
-    }
-    /// Notes that a line was submitted with the cursor where it is.
-    pub(crate) fn note_submit(&mut self) {
-        self.submitted = self.cursor_mark();
     }
     /// Whether the screen may have changed since `mark`: true after any
     /// processing at all, as the README says; false, nothing changed.
@@ -1408,16 +1229,6 @@ impl Screen {
     pub fn dirty_rows_since(&self, mark: Mark) -> impl Iterator<Item = Row<'_>> {
         let full = self.full_refresh_since(mark);
         self.rows().filter(move |r| full || r.version > mark.0)
-    }
-    /// The live rows changed since `mark`, each with its place on the screen
-    /// (0 at the top), top to bottom; every live row after a full refresh.
-    /// History is not walked.
-    pub fn dirty_live_rows_since(&self, mark: Mark) -> impl Iterator<Item = (u16, Row<'_>)> {
-        let full = self.full_refresh_since(mark);
-        let grid = self.grid();
-        (0..grid.size().rows())
-            .filter_map(move |y| grid.live_row(y).map(|row| (y, row)))
-            .filter(move |(_, row)| full || row.version > mark.0)
     }
     /// Retained allocation in cells, for capacity/plateau diagnostics.
     pub fn storage_cells(&self) -> usize {
@@ -1457,14 +1268,6 @@ impl Screen {
         self.structural = version;
         // History is made anew: the pictures are found in it again.
         self.retrack_pictures();
-        // What was printed before it is on rows and columns that changed;
-        // with nothing yet, what is printed next may hold the new size's.
-        if let Some(prints) = self.prints.as_mut() {
-            match prints.is_empty() {
-                true => *prints = Prints::new(size.cells()),
-                false => prints.lose(),
-            }
-        }
         Ok(())
     }
 
@@ -1498,18 +1301,6 @@ impl Screen {
         // pictures whose top rows they were (DEC STD 070-9, 11.2.4).
         if !self.pictures.is_empty() {
             self.crop_pictures(region, direction);
-        }
-        // Rows moved within the screen are recorded; a whole screen
-        // scrolled into history moves none of its lines.
-        if self.prints.is_some()
-            && !(direction == Scroll::Up { history: true } && region == self.grid().size().lines())
-            && region.len() > count
-        {
-            let first = match direction {
-                Scroll::Up { .. } => region.first(),
-                Scroll::Down => region.first().saturating_add(count),
-            };
-            self.printed(first, 0..0, "");
         }
     }
     /// A scroll inside left and right margins (`Grid::scroll_columns`),
@@ -1711,12 +1502,6 @@ impl Screen {
             return Ok(());
         }
         if self.extend_cluster(c, properties) {
-            if self.prints.is_some()
-                && let Some(Printed { at, kept, .. }) = self.last_print
-                && kept != Kept::Full
-            {
-                self.mark_joined(at.0, at.1, false, c);
-            }
             // A Prepend character of no width joins nothing after it
             // (README): what follows is segmented afresh.
             if width == 0
@@ -1746,9 +1531,6 @@ impl Screen {
                 if blank && self.links_seen {
                     let at = usize::from(col);
                     self.link_cells(row, at..at.saturating_add(1), true);
-                }
-                if joined && self.prints.is_some() {
-                    self.mark_joined(row, col, blank, c);
                 }
                 // What follows is segmented after the mark, as UAX #29
                 // segments the cell's text; after a Prepend of no width,
@@ -1780,11 +1562,9 @@ impl Screen {
         }
         let (row, col) = self.grid().cursor.at();
         let glyph = Compact::glyph(c, usize::from(width), self.pen_style() | self.protect);
-        let mut changed = false;
         self.with_grid(|g, _, version| {
             g.mutate_row(row, version, col.saturating_add(width), |cells| {
-                changed = put(cells, usize::from(col), glyph, width);
-                changed
+                put(cells, usize::from(col), glyph, width)
             });
             // Past the glyph; in the last column it waits there to wrap.
             g.advance_within(col.saturating_add(width), end);
@@ -1794,11 +1574,6 @@ impl Screen {
             self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
         }
         self.last_print = Some(Printed::of((row, col), properties));
-        if self.prints.is_some() {
-            let mut text = [0; 4];
-            let text = c.encode_utf8(&mut text);
-            self.printed_as(changed, row, col..col.saturating_add(width), text);
-        }
         Ok(())
     }
 
@@ -1811,7 +1586,6 @@ impl Screen {
     pub(crate) fn text(&mut self, chars: &mut Chars<'_>) -> u64 {
         let mut refused = 0u64;
         let general = self.mode(Mode::Insert);
-        let recording = self.prints.is_some();
         let Some(first) = chars.next() else {
             return refused;
         };
@@ -1824,12 +1598,7 @@ impl Screen {
             // A glyph begins a run; a mark takes the general path.
             let (mut c, mut properties) = (next, Properties::of(next));
             if !general && matches!(properties.width(), Some(1 | 2)) {
-                let stopped = if recording {
-                    self.run::<true>(c, properties, chars)
-                } else {
-                    self.run::<false>(c, properties, chars)
-                };
-                match stopped {
+                match self.run(c, properties, chars) {
                     Some(stopped) => (c, properties) = stopped,
                     None => continue,
                 }
@@ -1843,16 +1612,13 @@ impl Screen {
 
     /// `text`'s run: writes `first` and the glyphs `chars` yields after it,
     /// while each fits and joins nothing, and says which it stopped at,
-    /// unwritten, if any. `RECORDING` while the host records prints.
-    fn run<const RECORDING: bool>(
+    /// unwritten, if any.
+    fn run(
         &mut self,
         first: char,
         properties: Properties,
         chars: &mut Chars<'_>,
     ) -> Option<(char, Properties)> {
-        // The run's text, from `first` to the last glyph written.
-        let from = chars.taken().saturating_sub(first.len_utf8());
-        let mut to = chars.taken();
         let g = self.grid();
         let (row, start) = g.cursor.at();
         let end = g.line_end();
@@ -1867,7 +1633,6 @@ impl Screen {
         let mut last = None;
         let mut stopped = None;
         let mut col = start;
-        let mut any = false;
         self.with_grid(|g, _, version| {
             g.mutate_row_to(row, version, |cells| {
                 let mut changed = None;
@@ -1879,7 +1644,6 @@ impl Screen {
                     }
                     last = Some((col, c, properties));
                     col = col.saturating_add(width);
-                    to = chars.taken();
                     glyph = chars.next().and_then(|c| {
                         let properties = Properties::of(c);
                         match run_width(properties, col, end, Cluster::default()) {
@@ -1891,7 +1655,6 @@ impl Screen {
                         }
                     });
                 }
-                any = changed.is_some();
                 changed
             });
             g.advance_within(col, end);
@@ -1904,17 +1667,13 @@ impl Screen {
             self.repeat = Some(c);
             self.last_print = Some(Printed::of((row, at), properties));
         }
-        if RECORDING && col > start {
-            self.printed_as(any, row, start..col, chars.text(from..to));
-        }
         stopped
     }
 
     /// REP's copies of `c`, as `run` writes text: up to `copies` along the
     /// cursor's row while each fits and joins nothing; says how many, none
-    /// where `print` must write the next. `text` is a row's worth of the
-    /// copies' text while the host records prints.
-    fn fill(&mut self, c: char, properties: Properties, copies: usize, text: &str) -> usize {
+    /// where `print` must write the next.
+    fn fill(&mut self, c: char, properties: Properties, copies: usize) -> usize {
         let g = self.grid();
         let (row, start) = g.cursor.at();
         let end = g.line_end();
@@ -1937,7 +1696,6 @@ impl Screen {
                 .and_then(|k| k.checked_mul(width))
                 .map_or(end, |cols| start.saturating_add(cols))
         };
-        let mut any = false;
         self.with_grid(|g, _, version| {
             g.mutate_row_to(row, version, |cells| {
                 let mut changed = None;
@@ -1946,7 +1704,6 @@ impl Screen {
                         changed = Some(at(k.saturating_add(1)));
                     }
                 }
-                any = changed.is_some();
                 changed
             });
             g.advance_within(at(made), end);
@@ -1957,10 +1714,6 @@ impl Screen {
         }
         self.repeat = Some(c);
         self.last_print = Some(Printed::of((row, at(last)), properties));
-        if self.prints.is_some() {
-            let bytes = text.get(..made.saturating_mul(c.len_utf8()));
-            self.printed_as(any, row, start..at(made), bytes.unwrap_or_default());
-        }
         made
     }
 
@@ -2296,11 +2049,6 @@ impl Screen {
         }
         let properties = Properties::of(c);
         let insert = self.mode(Mode::Insert);
-        let per_row = usize::from(self.grid().size().cols());
-        let text: String = match self.prints {
-            Some(_) if !insert => std::iter::repeat_n(c, per_row).collect(),
-            _ => String::new(),
-        };
         while count > 0 {
             if self.stopped {
                 stop(self, count);
@@ -2309,7 +2057,7 @@ impl Screen {
             // In insert mode each copy moves what is there, as `print` does.
             let filled = match insert {
                 true => 0,
-                false => self.fill(c, properties, count, &text),
+                false => self.fill(c, properties, count),
             };
             count = match filled.checked_sub(1) {
                 Some(_) => count.saturating_sub(filled),
@@ -2370,16 +2118,8 @@ impl Screen {
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
             let style = self.pen_style() | self.protect;
             let run = bytes.get(..usize::from(count)).unwrap_or_default();
-            let changed = self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v));
+            self.with_grid(|g, _, v| g.write_ascii(row, col, run, style, v));
             let end = col.saturating_add(count);
-            if self.prints.is_some() {
-                if changed {
-                    let text = str::from_utf8(run).unwrap_or_default();
-                    self.printed_as(true, row, col..end, text);
-                } else {
-                    self.printed_over_itself(row, col..end, run);
-                }
-            }
             self.grid_mut().advance_within(end, line);
             if self.links_seen {
                 self.link_cells(row, usize::from(col)..usize::from(end), true);
@@ -4119,7 +3859,6 @@ mod faults {
     fn screen() -> Result<Screen, Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
         let mut screen = Screen::new(size, 1 << 12)?;
-        screen.record_prints(true);
         let _ = screen.ascii(b"hello")?;
         Ok(screen)
     }
@@ -4149,16 +3888,6 @@ mod faults {
         })?;
         shows("screen.tabs", |s| {
             s.terminal.tabs.stops = vec![false; 70_000]
-        })?;
-        shows("prints.runs", |s| {
-            if let Some(prints) = &mut s.prints {
-                prints.text.push('x');
-            }
-        })?;
-        shows("prints.cap", |s| {
-            if let Some(prints) = &mut s.prints {
-                prints.text.reserve(prints.cap().saturating_add(1));
-            }
         })?;
         Ok(())
     }

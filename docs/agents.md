@@ -13,19 +13,22 @@ before it, and `json` after it. Only `run`, `new-tab` and `new-workspace`
 start from `opts`, and only `run` takes a program: the other two start a
 shell (`str 'CMD' typed` types a line into it).
 
-**Act, then read the answer.** Every action waits until the pane settles
-(30s at most), then answers with its state and what came since your input:
-you never sleep or poll.
+**Actions answer at once; waiting is a word you say.** `run`, `send-keys`,
+`signal` and the rest act and answer with their pane. fux reports what
+happened and never judges whether a program is done: you say what to wait
+for. Wait words on the pane before an action wait from the moment it acts;
+`wait` waits from when it runs.
 
 ```sh
-fux opts str web name 100 30 size str ./app program str --fast arg run  # start: answers %2 reading, then its output
-fux opts str 'cargo test' command run wait-exit wait   # start, and wait for its end
-fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pastes): answers as run does
-fux %3 str 'make test' line                    # a shell command: %3 reading · done 0, its output
-fux %2 wait                                    # settle again; `%2 600 timeout wait` waits longer
-fux %2 str 'listening on' wait-text wait       # wait for a text; also wait-gone, wait-bell, wait-exit
+fux opts str web name 100 30 size str ./app program str --fast arg run  # start: answers %2 at once
+fux opts str ./app program str 'listening on' wait-text run  # start, then wait for a text it writes
+fux opts str 'cargo test' command wait-exit run   # start, then wait for its end
+fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pastes): answers at once
+fux %2 str 'Saved' wait-text str C-s key send-keys   # keys, then wait for a text the reply holds
+fux %3 600 timeout wait-done str 'make test' line   # a shell command, until it ends (shell marks)
+fux %2 5 wait-quiet wait                       # until it writes nothing for 5s
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
-fux %2 capture json                            # as JSON; `%2 str state get` is one field
+fux %2 capture json                            # as JSON; `%2 str exited get` is one field
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
@@ -35,67 +38,93 @@ fux ls                                         # what there is: workspaces, tabs
 fux str agent workspace kill                   # at the end: everything run started
 ```
 
+What to wait for, any of them, whichever comes first (each after the wait
+began), and how long at most:
+
 ```
-%2 reading                 it waits for you: blocked reading its terminal, every key read
-%2 reading · done 0        a shell command ended with status 0, and the shell reads again
-%2 reading · no change     it read your keys and drew nothing: do not send them again
-%2 waiting                 quiet 1s, but it may go on alone (the network, a timer)
-%2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
-%2 exited 3                the program ended; what it printed since your input follows
+str T wait-text   it writes T: exactly, escape sequences aside, your keys' echo too
+wait-change       it writes anything
+N wait-quiet      it writes nothing for N seconds
+wait-exit         it exits (or has)
+wait-bell         it rings the bell or sends a notification
+wait-done         a shell command ends, as its shell's OSC 133 marks say
+N timeout         how long at most; else 30s (the server's wait-seconds)
 ```
 
-**A program at work** (an agent's TUI behind a spinner) answers your keys
-once it drew them, `waiting · redraws on its own`. A bare `wait` after keys
-that found it still waits until its screen is still 2s, the work done or a
-question asked: never guess a text it shows when done (`reading` answers at
-once: it waits for you).
-Drawing still at the limit, it is `busy` (124): a bare `wait` again waits
-until it is still 2s, or `capture` what your keys started that never stops
-(a game, a follow mode). A clock drawn before your keys,
-or a program they started (`top` typed at a shell), is no work: a `wait`
-answers it at once. `state get` cannot tell work from a clock; `%2 0
-timeout wait` answers `busy` at once while it works.
+A wait answers `%2 text "T"` and the line it was written on, `%2 changed`,
+`%2 quiet`, `%2 exited 3`, `%2 bell`, `%2 notification "…"` or `%2 done
+0`. Status: 0 met; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
+program exited, or was started again, first; 4 the pane closed; 124 the
+time limit came first. Clean up with `fux str agent workspace kill`; stop
+what you start by its pid, never `pkill -f`.
 
-- **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
-  program exited before the wait; 4 the pane closed; 5 the shell command
-  `wait-done` waited on ended first; 7 it reads its terminal and the text
-  has not come; 124 still at work at the limit, not failed.
-- **Clean up:** `fux str agent workspace kill`; stop what you start by its
-  pid, never `pkill -f`.
+Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
+`waits`, `keys`, `read`, `shells`, `programs`, `servers`.
 
-Topics (`fux help agents TOPIC`; `all` for the whole guide): `answers`,
-`keys`, `waits`, `read`, `shells`, `programs`, `servers`.
+## recipes: Waiting for what you need
 
-## answers: What an answer holds
+fux gives the facts; which one means "done" is yours to choose. Some ways:
 
-The first line is the pane and its state, then notes, each `· NOTE`; then
-what came since your input: from the line typed on if it changed (its
-prompt and your echo too), else from the first line that changed; on a
-full-screen program, its whole screen; a program that left its full
-screen, what it printed after; one that ended on it (an editor quit), its
-last screen, then what came after.
+- **A shell command, with marks** (`shells` says how to turn them on):
+  `fux %3 600 timeout wait-done str 'make test' line` answers `%3 done 0`
+  as it ends; `fux %3 last-output capture` reads its output alone.
+- **A shell command, without marks:** print a text only its end can show,
+  quoted so the line you type does not hold it: `fux %3 str END-OF-RUN
+  wait-text str "make test; echo END-OF''-RUN \$?" line`. The echo of
+  your line shows `END-OF''-RUN`; the output, `END-OF-RUN 0`.
+- **A full-screen agent's turn** (Claude Code, Codex): its spinner redraws
+  while it works, so wait until it writes nothing for a few seconds:
+  `fux %2 600 timeout 5 wait-quiet str 'fix the test' paste str Enter key
+  send-keys`. A question it asks you is quiet too: read the screen.
+- **An agent's whole answer:** on the alternate screen a TUI redraws its
+  whole screen each frame and nothing scrolls off, so fux keeps no
+  history of it. Run it inline (`codex --no-alt-screen`, `claude
+  --settings '{"tui":"default"}'`) and `fux %2 all-history capture` reads
+  all of it.
+- **A prompt a program draws** (`>>> `, `(gdb) `): wait for the prompt's
+  text after sending a line; the line you typed does not hold it.
+- **A server that starts:** `fux opts str ./serve program str 'listening
+  on' wait-text run`.
+- **A text your keys also show:** your keys' echo is written too, and a
+  full-screen program draws what you type as its own output (an agent's
+  TUI shows your prompt). Wait for a text only the reply can hold.
+- **A pane's history in your editor:** `f=$(mktemp) && fux %N all-history
+  capture > "$f" && $EDITOR "$f"`. On a key, in `config.fux` (`env` gives
+  the program the pane's id):
 
-The notes: `done N` (a shell command ended), `no change` (keys read,
-nothing drawn), `command running` (a marked shell command runs on),
-`redraws on its own` (a clock, `top`, a spinner: it drew on its own in
-the last 2s; what it draws later may differ),
-`highlight ROW,COL-END "TEXT"` (up to three runs the input highlighted
-anew: a selection, a menu's choice), `no status: nothing here marks its
-commands` (a shell fux did not start read a line: no `done` comes), `it
-exited before reading C-q, which went nowhere` (keys sent after the one
-that quit it), `N bytes unread` (input fux still holds), and, after a wait
-for a text or a bell, `met "TEXT"` with the line that held it. JSON
-(`json`) has each as a field: `fux help json`.
+  ```sh
+  define edit-history
+    me focused vertical
+    str FUX_TARGET me focused env
+    str sh program str -c arg
+    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"' arg
+    split drop
+  end
+  str y str edit-history bind  str 'edit history' label  str Panes group
+  ```
 
-Every answer stands alone, so a chain's last word answers in full (`fux
-opts str 'cargo test' command run wait-exit wait`). Keys sent to a program
-that exited are refused (`not_running`).
+## waits: Time, and waiting for a text
 
-Echo is no output. fux records which input each piece of output followed
-and tells echo from output by the shell's marks, the terminal's echo rules
-and what was typed: a text made only of characters you typed on the line,
-before Enter, is taken as their echo; after Enter, a line printed again
-exactly as typed is output. A full-screen program's screen is all output.
+- A wait waits 30s at most (the server's `wait-seconds`); `SECS timeout`
+  on the pane changes it for one. A `wait` on a tab or workspace waits in
+  each pane, a line each, the first failing status naming the whole.
+- Wait words on the pane before an action (`send-keys`, `send-mouse`,
+  `signal`, `run`, `split`, `respawn`) wait from the moment it acts, so
+  nothing its input brings is missed. `wait` alone waits from when it runs:
+  what came before is not looked at.
+- `wait-text` reads the bytes the program wrote, escape sequences and
+  control characters left out, a carriage return or a line feed ending a
+  line, and finds the text exactly as written: case, blanks and all. Drawn
+  in pieces (a word in two colours) it is still found; drawn with cursor
+  moves between its letters, it is not. Met, the answer's second line is
+  the line it was written on, as written so far.
+- `wait-quiet` counts from the wait's start or the last byte written,
+  whichever is later: a clock or a spinner is never quiet, and its wait
+  times out (124).
+- A wait that fails (3, 4, 124) says why on stderr; its first line still
+  names the pane and what happened (`%2 exited 1`, `%2 timeout`). A met
+  `wait-exit` is status 0; the program's own status is in the answer
+  (`exited 3`) and in `str exited get`.
 
 ## keys: Keys, the mouse and stopping
 
@@ -103,78 +132,65 @@ exactly as typed is output. A full-screen program's screen is all output.
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused, naming the closest), `str T paste` (bracketed if the program
-  asked), `str FILE paste-file`, `str HEX bytes` (`1b5b41`), `MS pause`
-  between two inputs (1 to 10000 ms: input that arrives split), `N times`
+  asked), `str FILE paste-file`, `str HEX bytes` (`1b5b41`), `N times`
   (repeats the input just before it). 900 KiB at most in all.
-- Each input goes in once the program took the one before, so what it draws
-  follows the key it answers; a full-screen program, or one reading lines,
-  gets them at once. The answer comes once the last went in and the pane
-  settled.
+- They are written together, in order, as the program's terminal takes
+  them. A program that tells a lone Escape from a key's sequence by time
+  may read `Escape` and the key after it as one key: send them in two
+  `send-keys`. Keys sent to a program that exited are refused
+  (`not_running`).
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (also `right`,
   `middle`, `press`, `release`, `wheel-up`, `wheel-down`, `move`), cells
   from 0 as `wrapped capture` counts them; on a double-width row, click at
   2×COL. A program's own "row 22" is usually counted from 1.
-- **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) answers once the
-  program exits or settles; `%2 kill` closes the pane; `%2 respawn` starts
+- **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) signals what runs in
+  its terminal's foreground; `%2 kill` closes the pane; `%2 respawn` starts
   its program again (`kill-first` ends it first).
-
-## waits: Time, and waiting for a text
-
-- An action, a `capture` and a `wait` wait 30s at most (the server's
-  `wait-seconds`); `SECS timeout` on the pane changes it for one. `0
-  timeout` answers at once. A `wait` on a tab or workspace waits for each
-  pane, a line each, the first failing status naming the whole.
-- Busy at the limit is status 124, not a failure: `%2 wait` waits on. A
-  shell command of unknown length: `%2 wait-done wait` waits as long as it
-  runs; with a text, `%2 str 'build ok' wait-text wait-done wait` fails
-  with status 5 if the command ends first.
-- Wait words go on the pane before `wait`, or before the action they
-  follow: `str T wait-text`, `str T wait-gone` (after `run`, the text must
-  show first), `wait-exit`, `wait-bell`; several, whichever comes first.
-- A text matches case ignored, blanks as one, from a word's start (`READY`
-  is not in `NOT_READY`); `^T` is a line's first word, `T$` its last. It
-  matches what the program printed since your input, lines scrolled away and
-  text drawn over too, never the echo of what you typed. Met, the answer is
-  the state line, `· met "T"`, then the line that held it.
-- A full-screen program draws what you send it back as its own output
-  (an agent's TUI shows your prompt): a wait for a text your prompt holds
-  meets that copy at once. Wait for a text only the reply can hold.
-- **Status 7:** the program is blocked reading its terminal and the text
-  has not come (or gone): send it what it waits for. A program that may go
-  on alone (`waiting`) gets no 7: the wait runs to its limit.
-- A wait that fails (3, 4, 5, 124) answers first, with the pane's last
-  lines, then says why on stderr. A met `wait-exit` is status 0; the program's own status
-  is in its state (`exited 3`) and in `str exited get`.
 
 ## read: Reading the screen
 
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `main-screen` (what was printed before a program took the screen),
 `alt-screen` (the full screen a program drew last), `last-output` (the
-last shell command's output, or the running one's so far), `wrapped` (each
-screen row a line; else a line wrapped at the pane's width is joined
-whole), `0 4 rows`, `0 39 cols`, `full`, `marks` (highlights as
-`⟦this⟧`), `styles`; then `json` for the screen and the pane's state
-(`cursor` is `[ROW,COL]`). Rows and columns count from 0.
+last shell command's output, or the running one's so far, between its
+marks), `wrapped` (each screen row a line; else a line wrapped at the
+pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
+(reverse video and background colours as `⟦this⟧`), `styles`; then `json`
+for the screen and what is known of the pane: `cursor` is `[ROW,COL]`,
+`alt_screen` whether a program holds the alternate screen, `history_lines`
+the history kept, `above` the rows kept above what was read, `idle_ms`
+since its program last wrote. Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
-`fux opts str agent in new-tab` gives a shell. A bash, zsh or fish fux
-starts marks its commands (OSC 133, with a nonce output cannot fake):
-`line` answers `· done STATUS` once the command ends, and `last-output`
-reads its output alone; a command that waits for keys (`read`, `sudo`, a
-pager) answers `reading`, its prompt shown. `str shell-marks str off set`
-turns marks off for shells started after. A shell fux did not start (`str
-sh program`) gives no status: `CMD; echo "status $?"` prints it.
+`fux opts str agent in new-tab` gives a shell. fux starts shells as they
+are; a shell that sends OSC 133 marks (`C` as a command's output begins,
+`D;STATUS` as it ends, `A` at a prompt) lets `wait-done` wait for a
+command, `last-output` read its output alone and copy mode's `[` and `]`
+jump between prompts. fux reads marks from any program that sends them.
+Without marks, `wait-done` waits to its limit and says no marks came,
+and `last-output` says there are none. To send them (in your own startup
+files):
 
-A program that marks commands of its own (a relay like `koh connect`, a
-nested multiplexer) marks with `;nonce=$FUX_MARK_NONCE` among its OSC 133
-options; a relay may report its remote program's state with `ESC ] 133 ;
-S ; activity=STATE ; nonce=N BEL` (`reading`, `polling`, `waiting`,
-`busy`, `idle`, `unknown`, or `ended`). Plain `ssh` reports nothing: fux
-sees the client, `waiting` once quiet. Wait for the text you expect, or run
-a remote command in a pane of its own (`fux opts str 'ssh -n HOST make'
-command run`, then `%2 wait-exit wait`).
+```sh
+# bash 4.4 or later, ~/.bashrc
+PS0='\e]133;C\a'
+PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}
+# zsh, ~/.zshrc
+autoload -Uz add-zsh-hook
+mark_start() { print -n '\e]133;C\a' }
+mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
+add-zsh-hook preexec mark_start
+add-zsh-hook precmd mark_end
+# fish, ~/.config/fish/config.fish
+function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
+function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
+function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
+```
+
+A remote shell (`ssh`) marks commands if its startup does. Or run a remote
+command in a pane of its own: `fux opts str 'ssh -n HOST make' command
+wait-exit run`.
 
 ## programs: A program
 
@@ -184,7 +200,7 @@ names between steps:
 ```sh
 # test.fux
 opts str tests name str bash program run let T
-T str 'cargo test' line drop
+T 600 timeout wait-done str 'cargo test' line drop
 T all-history last-output capture
 ```
 
@@ -197,7 +213,7 @@ contains`). The standard library, written in fuxth, does the rest (`fux
 help` lists it). A mistake every run would make (too few values, a string
 given to `add` or `if`, a request nothing acts on: its error names the word
 to end it with) fails before any word acts; words before a failing one have already acted otherwise. A run exits
-with the status of the first answer it leaves that has one.
+0, or with the status of the failure that stopped it.
 
 ## servers: Servers, sizes and more
 

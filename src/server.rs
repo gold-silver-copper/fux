@@ -1012,7 +1012,8 @@ impl Server {
         }
     }
 
-    /// Answers each wait that has its answer.
+    /// Answers each wait that has its answer, having read what each pane's
+    /// program wrote since the last round, which no wait reads again.
     fn answer_waits(&mut self, now: Instant) {
         for conn in &mut self.conns {
             let Stage::Waiting(waiting) = &mut conn.stage else {
@@ -1021,6 +1022,9 @@ impl Server {
             if let Some(outcome) = waiting.answer(&self.session, now) {
                 conn.answer(&mut self.session, outcome);
             }
+        }
+        for pane in self.session.panes.values_mut() {
+            pane.fresh.clear();
         }
     }
 

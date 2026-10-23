@@ -7,11 +7,11 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// A probe's kept setup, as `probe.rs` writes it: rows, columns, history,
-/// prints and the features' places in `Feature::ALL`.
+/// A probe's kept setup, as `probe.rs` writes it: rows, columns, history
+/// and the features' places in `Feature::ALL`.
 fn parser(setup: &str) -> Result<fux_vt::Parser, String> {
     let words: Vec<&str> = setup.split_whitespace().collect();
-    let [rows, cols, history, prints, rest @ ..] = words.as_slice() else {
+    let [rows, cols, history, rest @ ..] = words.as_slice() else {
         return Err(format!("not a probe's setup: {setup:?}"));
     };
     let number = |w: &str| w.parse::<usize>().map_err(|e| format!("{w:?}: {e}"));
@@ -28,10 +28,7 @@ fn parser(setup: &str) -> Result<fux_vt::Parser, String> {
     }
     let options: fux_vt::Options = features.into_iter().collect();
     let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
-    let mut parser =
-        fux_vt::Parser::with_options(size, number(history)?, options).map_err(|e| e.to_string())?;
-    parser.record_prints(*prints == "true");
-    Ok(parser)
+    fux_vt::Parser::with_options(size, number(history)?, options).map_err(|e| e.to_string())
 }
 
 /// The longest call over `input`, fed to a parser of `setup`: each of its

@@ -661,7 +661,7 @@ impl Keyboard {
     /// watches opens none: it says why.
     fn open(&mut self, screen: Screen, acts: &mut Vec<Act>) {
         if self.read_only {
-            let text = "watching only: no menus, prompts or copy mode here".to_owned();
+            let text = "watching only: no choosers, prompts or copy mode here".to_owned();
             acts.push(Act::Notice { text, error: true });
             return;
         }
@@ -742,7 +742,7 @@ impl Keyboard {
                 }
                 crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
                 // A pane's alone: `send-keys` refuses them for a client.
-                crate::command::Input::Bytes(_) | crate::command::Input::Pause(_) => {}
+                crate::command::Input::Bytes(_) => {}
             }
         }
     }
@@ -768,7 +768,7 @@ fn run_job(
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
         let mut machine = script::compile_in(keymap.config.as_ref(), &tokens)?;
-        let mut host = script::Host::new(context, Some(&mut changed), &mut out, false);
+        let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,
             &mut host,
@@ -1115,7 +1115,7 @@ mod tests {
     use super::*;
 
     /// Keys typed while any program the client ran is running wait for it,
-    /// whatever its words (a config's word may open a menu); the prefix,
+    /// whatever its words (a config's word may open a chooser); the prefix,
     /// then Esc, stops it, and the keys go on once it is done.
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {

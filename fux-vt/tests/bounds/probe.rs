@@ -10,7 +10,7 @@
 //! `FUX_VT_WORST_FEED_INPUTS=DIR` too, a probe fed 4 KiB a call whose
 //! longest call took more than [`KEPT`] leaves what it fed in DIR
 //! (`NAME.bin`, each `feed` a record of its length, 8 bytes little-endian,
-//! and its bytes; and `NAME.setup`: rows, columns, history, prints and the
+//! and its bytes; and `NAME.setup`: rows, columns, history and the
 //! features' places in `Feature::ALL`), for fux-bench to time again
 //! without the counters (`fux-bench calls`). A probe that made a call of
 //! another kind (`host`, `set_host_graphics`) leaves nothing to time
@@ -87,15 +87,14 @@ pub fn pieces(mut rest: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
 }
 
 /// The parser a probe feeds: its size, its history's budget and its
-/// features. fux's defaults are 50×200 and 8 MiB, with every feature on and
-/// prints recorded (`THREATS.md` section 2).
+/// features. fux's defaults are 50×200 and 8 MiB, with every feature on
+/// (`THREATS.md` section 2).
 #[derive(Clone, Copy, Debug)]
 pub struct Setup {
     pub rows: u16,
     pub cols: u16,
     pub history: usize,
     pub options: Options,
-    pub prints: bool,
 }
 
 /// fux's history budget.
@@ -109,7 +108,6 @@ impl Setup {
             cols: 200,
             history: HISTORY,
             options: Feature::ALL.into_iter().collect(),
-            prints: true,
         }
     }
     /// These, at `rows` by `cols`.
@@ -126,10 +124,7 @@ impl Setup {
     }
     fn parser(&self) -> Result<Parser, String> {
         let size = Size::new(self.rows, self.cols).map_err(|e| e.to_string())?;
-        let mut parser =
-            Parser::with_options(size, self.history, self.options).map_err(|e| e.to_string())?;
-        parser.record_prints(self.prints);
-        Ok(parser)
+        Parser::with_options(size, self.history, self.options).map_err(|e| e.to_string())
     }
 }
 
@@ -155,7 +150,6 @@ pub fn steady(setup: &Setup) -> usize {
         .history
         .saturating_add(setup.history / 10)
         .saturating_add(2 * 4096 * 8);
-    let prints = prints(setup);
     let terms = [
         n.saturating_mul(16),
         r.saturating_mul(2 * 104),
@@ -165,21 +159,11 @@ pub fn steady(setup: &Setup) -> usize {
         styles.saturating_mul(2),
         history,
         67_000,
-        prints,
         6_000,
     ];
     let steady = terms.into_iter().fold(0, usize::saturating_add);
     let transient = history / 2;
     steady.saturating_add(transient)
-}
-
-/// What `Prints` may hold for a parser of `setup` (`THREATS.md` B10): 4
-/// bytes of text a cell, 16 KiB at least, and 4,096 runs of 32 bytes;
-/// 171,072 bytes at the defaults.
-pub fn prints(setup: &Setup) -> usize {
-    (setup.cells().saturating_mul(4))
-        .max(16 << 10)
-        .saturating_add(4096 * 32)
 }
 
 /// The picture budget P (`THREATS.md` B01): 96 MiB.
@@ -463,11 +447,10 @@ impl Drop for Probe {
                 .map(|(i, _)| i.to_string())
                 .collect();
             let text = format!(
-                "{} {} {} {} {}\n",
+                "{} {} {} {}\n",
                 setup.rows,
                 setup.cols,
                 setup.history,
-                setup.prints,
                 features.join(",")
             );
             let _ = match self.worst.1 > KEPT && !self.hosted {
@@ -510,7 +493,6 @@ fn with(mut work: Work, name: &str, n: u64) -> Result<Work, String> {
         "inserts" => &mut work.inserts,
         "lookups" => &mut work.lookups,
         "links" => &mut work.links,
-        "prints" => &mut work.prints,
         "keys" => &mut work.keys,
         "sums" => &mut work.sums,
         "spans" => &mut work.spans,

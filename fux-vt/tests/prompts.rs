@@ -2,7 +2,7 @@
 //! iTerm2's "Shell Integration/FinalTerm"): `A` marks the row a prompt
 //! starts on, after a fresh line; the mark goes with its row.
 
-use fux_vt::{Feature, Options, Parser, Size};
+use fux_vt::{Event, Feature, Options, Parser, Sink, Size};
 #[path = "corpus/pieces.rs"]
 mod pieces;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -190,94 +190,34 @@ fn n_ends_the_command_running() -> Result {
     Ok(())
 }
 
-/// With a nonce required, a mark counts only if it carries it: one a
-/// program prints (`cat` of a file with marks in it) is no mark.
+/// Each `D` that ends a running command, and an `N` that ends one, is an
+/// event with the status the shell gave, with `Feature::Events`: two
+/// commands ended in one piece of output are two events, in order.
 #[test]
-fn marks_without_the_nonce_are_ignored() -> Result {
-    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
-    p.require_mark_nonce(Some(b"k3y"), None);
-    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07fake\r\n\x1b]133;D;9\x07")?;
-    assert_eq!(marks(&p), Vec::<usize>::new());
-    assert_eq!(p.screen().commands().finished, 0);
-    p.process(b"\r\n\x1b]133;A;nonce=k3y\x07$ ")?;
-    assert!(p.screen().commands().prompt);
-    p.process(b"ls\r\n\x1b]133;C;nonce=k3y\x07a\r\n\x1b]133;D;0;nonce=k3y\x07")?;
-    let commands = p.screen().commands();
-    assert_eq!((commands.finished, commands.last_status), (1, Some(0)));
-    assert!(!commands.prompt);
+fn each_command_ended_is_an_event() -> Result {
+    #[derive(Default)]
+    struct Ended(Vec<Option<i32>>);
+    impl Sink for Ended {
+        fn event(&mut self, event: Event<'_>) {
+            if let Event::CommandEnded(status) = event {
+                self.0.push(status);
+            }
+        }
+    }
+    let options = MARKS.with(Feature::Events);
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, options)?;
+    let mut ended = Ended::default();
+    let two = b"\x1b]133;C\x07a\r\n\x1b]133;D;1\x07\x1b]133;C\x07b\r\n\x1b]133;D;0\x07";
+    p.process_with(two, &mut ended)?;
+    assert_eq!(ended.0, [Some(1), Some(0)]);
+    // A `D` with none running ends nothing; an `N` ends one, with no status.
+    p.process_with(b"\x1b]133;D;3\x07\x1b]133;C\x07\x1b]133;N\x07", &mut ended)?;
+    assert_eq!(ended.0, [Some(1), Some(0), None]);
     Ok(())
 }
 
-/// A program the shell runs, given the nested nonce (a remote shell's
-/// marks, relayed), marks commands within the shell's: they count while
-/// the shell's command runs, on the alternate screen too, and the shell's
-/// own end ends it, whatever the program left running. Its marks before
-/// that command, and forged ones, are none.
-#[test]
-fn a_nested_programs_marks_count_within_the_shells_command() -> Result {
-    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
-    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
-    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;C;nonce=n3st\x07\x1b]133;D;9;nonce=n3st\x07")?;
-    assert_eq!(p.screen().commands().finished, 0, "no shell command runs");
-    p.process(b"koh\r\n\x1b]133;C;nonce=k3y\x07\x1b[?1049h")?;
-    p.process(b"\x1b]133;A;nonce=n3st\x07r$ \x1b]133;C;nonce=n3st\x07")?;
-    let commands = p.screen().commands();
-    assert!(commands.running() && commands.full_screen);
-    p.process(b"\x1b]133;D;1\x07\x1b]133;D;1;nonce=k3y2\x07")?;
-    assert_eq!(p.screen().commands().finished, 0, "forged");
-    p.process(b"hi\r\n\x1b]133;D;1;nonce=n3st\x07\x1b]133;A;nonce=n3st\x07r$ ")?;
-    let commands = p.screen().commands();
-    assert_eq!((commands.finished, commands.last_status), (1, Some(1)));
-    assert!(commands.prompt && !commands.running());
-    // The program exits mid-command; the shell's end is the one that counts.
-    p.process(b"\x1b]133;C;nonce=n3st\x07\x1b[?1049l\x1b]133;D;0;nonce=k3y\x07")?;
-    let commands = p.screen().commands();
-    assert_eq!((commands.finished, commands.last_status), (2, Some(0)));
-    assert!(!commands.running() && !commands.full_screen);
-    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;C;nonce=n3st\x07")?;
-    assert!(!p.screen().commands().running(), "no shell command runs");
-    Ok(())
-}
-
-/// A state report (`133;S;activity=STATE`) counts under the marks' nonce
-/// rule, the nested nonce's only within the shell's command, and holds
-/// until the next mark; one naming no state it knows is none, and a
-/// report changes no command.
-#[test]
-fn a_state_report_holds_until_the_next_mark() -> Result {
-    use fux_vt::Reported;
-    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
-    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
-    p.process(b"\x1b]133;A;nonce=k3y\x07$ \x1b]133;S;activity=reading;nonce=n3st\x07")?;
-    assert_eq!(
-        p.screen().commands().reported(),
-        None,
-        "no shell command runs"
-    );
-    p.process(b"koh\r\n\x1b]133;C;nonce=k3y\x07\x1b[?1049h\x1b]133;C;nonce=n3st\x07")?;
-    let before = p.screen().commands();
-    p.process(b"\x1b]133;S;activity=reading\x07\x1b]133;S;activity=dozing;nonce=n3st\x07")?;
-    assert_eq!(p.screen().commands().reported(), None, "unsigned, unknown");
-    p.process(b"\x1b]133;S;nonce=n3st;activity=reading\x1b\\")?;
-    let commands = p.screen().commands();
-    assert_eq!(commands.reported(), Some(Reported::Reading));
-    assert_eq!(
-        (commands.started, commands.running()),
-        (before.started, true)
-    );
-    p.process(b"\x1b]133;D;0;nonce=n3st\x07")?;
-    assert_eq!(
-        p.screen().commands().reported(),
-        None,
-        "a mark came after it"
-    );
-    p.process(b"\x1b]133;S;activity=busy;nonce=n3st\x07")?;
-    assert_eq!(p.screen().commands().reported(), Some(Reported::Busy));
-    Ok(())
-}
-
-/// A `C` while a command runs (a relay placing that command's start anew)
-/// moves its start but begins no command: `started` counts those begun.
+/// A `C` while a command runs moves its start but begins no command:
+/// `started` counts those begun.
 #[test]
 fn a_start_while_a_command_runs_begins_none() -> Result {
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
@@ -286,138 +226,6 @@ fn a_start_while_a_command_runs_begins_none() -> Result {
     assert_eq!((commands.started, commands.finished), (1, 0));
     p.process(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;C\x07")?;
     assert_eq!(p.screen().commands().started, 2);
-    Ok(())
-}
-
-/// A late `C` (a line the shell could not run) starts the output after
-/// the line last submitted, not after the prompt's first line: the
-/// continuation prompts and the lines typed at them are not its output.
-#[test]
-fn a_late_start_follows_the_line_submitted_last() -> Result {
-    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
-    p.process(b"\x1b]133;A\x07$ for i in 1 2\r\n")?;
-    p.process(b"> do echo $i\r\n> done)")?;
-    p.note_submit();
-    p.process(b"\r\nsyntax error\r\n\x1b]133;C;late\x07\x1b]133;D;2\x07")?;
-    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
-    let row = p.screen().row_index(start.row).ok_or("row gone")?;
-    assert_eq!((row, start.col), (3, 0));
-    assert_eq!(text(&p, 3), "syntax error");
-    Ok(())
-}
-
-/// A late `C` looks for its prompt, and for the line submitted, on the
-/// screen alone (THREATS.md B29): one whose prompt and line scrolled into
-/// history starts its output at the cursor, where a `C` would, rather than
-/// after a prompt it would read all history to find.
-#[test]
-fn a_late_start_past_the_screen_starts_at_the_cursor() -> Result {
-    let mut p = Parser::with_options(Size::new(3, 20)?, 1 << 16, MARKS)?;
-    p.process(b"\x1b]133;A\x07$ cat\r\n")?;
-    p.note_submit();
-    p.process(b"one\r\ntwo\r\nthree\r\nfour")?;
-    p.process(b"\x1b]133;C;late\x07\x1b]133;D;0\x07")?;
-    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
-    let cursor = p.screen().window().row(2).map(|r| r.id());
-    assert_eq!((Some(start.row), start.col), (cursor, 4));
-    Ok(())
-}
-
-/// While recording, every run printed that changed cells is kept, with
-/// its row and columns, though drawn over in the same output; a redraw
-/// of the same text is none.
-#[test]
-fn prints_are_recorded_though_drawn_over() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 20)?, 10, Options::new())?;
-    p.process(b"same")?;
-    p.record_prints(true);
-    p.process(b"\rsame\r\nREADY\rxxxxx\x1b[1mbo\x1b[0mld")?;
-    let prints = p.take_prints();
-    let row = |i: usize| p.screen().rows().nth(i).map(|r| r.id());
-    let texts: Vec<(Option<fux_vt::RowId>, (u16, u16), &str)> = prints
-        .iter()
-        .map(|t| (Some(t.row), t.cols, t.text))
-        .collect();
-    assert_eq!(
-        texts,
-        [(row(1), (0, 5), "READY"), (row(1), (0, 9), "xxxxxbold")]
-    );
-    assert!(p.take_prints().is_empty());
-    Ok(())
-}
-
-/// What is recorded is what was printed, however the output is split
-/// across calls: `OUT0016` printed over `OUT0011`, whole or a byte a
-/// call, or split inside, is recorded as `OUT0016`, as fux's text waits
-/// need; a glyph left as it was
-/// goes with the text printed beside it, before or after, and a redraw of
-/// it all is none, however split; text that is not ASCII and REP's copies
-/// the same.
-#[test]
-fn what_is_recorded_does_not_depend_on_how_the_output_is_split() -> Result {
-    for (before, then, printed) in [
-        ("OUT0011", "OUT0016", "OUT0016"),
-        ("OUT0016", "OUT0016", ""),
-        ("OUT0011X", "OUT0016X", "OUT0016X"),
-        ("\u{e9}t\u{e9}1", "\u{e9}t\u{e9}2", "\u{e9}t\u{e9}2"),
-        ("aaab", "a\x1b[3b", "aaaa"),
-        ("aaaa", "a\x1b[3b", ""),
-        ("\u{e9}\u{e9}x", "\u{e9}\x1b[2b", "\u{e9}\u{e9}\u{e9}"),
-    ] {
-        let recorded = |pieces: &[&[u8]]| -> Result<String> {
-            let mut p = Parser::with_options(Size::new(2, 12)?, 0, Options::new())?;
-            p.process(format!("{before}\r").as_bytes())?;
-            p.record_prints(true);
-            for piece in pieces {
-                p.process(piece)?;
-            }
-            let prints = p.take_prints();
-            Ok(prints.iter().map(|t| t.text).collect())
-        };
-        let whole = recorded(&[then.as_bytes()])?;
-        let bytes: Vec<&[u8]> = then.as_bytes().iter().map(std::slice::from_ref).collect();
-        let (head, tail) = then.as_bytes().split_at_checked(3).ok_or("short")?;
-        assert_eq!(recorded(&bytes)?, whole, "{then:?} a byte a call");
-        assert_eq!(recorded(&[head, tail])?, whole, "{then:?} split");
-        assert_eq!(whole, printed, "{before:?} then {then:?}");
-    }
-    Ok(())
-}
-
-/// What is recorded may hold 4 bytes a cell of the screen it is printed
-/// on: a resize with nothing recorded yet makes room for the new size, as
-/// taking the prints does, and loses nothing.
-#[test]
-fn a_resize_with_nothing_recorded_keeps_room_for_the_new_size() -> Result {
-    let mut p = Parser::with_options(Size::new(10, 10)?, 10, Options::new())?;
-    p.record_prints(true);
-    p.resize(Size::new(200, 100)?)?;
-    let prints = p.take_prints();
-    assert_eq!((prints.cap(), prints.lost()), (4 * 200 * 100, false));
-    Ok(())
-}
-
-/// `tick` numbers something between pieces of output: after every row's
-/// number so far, before the next piece's.
-#[test]
-fn a_tick_falls_between_pieces() -> Result {
-    let mut p = Parser::with_options(Size::new(4, 20)?, 10, Options::new())?;
-    p.process(b"one")?;
-    let first = p
-        .screen()
-        .rows()
-        .next()
-        .map(|r| r.version())
-        .ok_or("no row")?;
-    let tick = p.tick();
-    p.process(b"\r\ntwo")?;
-    let second = p
-        .screen()
-        .rows()
-        .nth(1)
-        .map(|r| r.version())
-        .ok_or("no row")?;
-    assert!(first < tick && tick < second);
     Ok(())
 }
 

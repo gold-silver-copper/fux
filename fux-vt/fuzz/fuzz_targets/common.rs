@@ -75,6 +75,12 @@ impl Sink for Record {
                 entry.push(b'N');
                 entry.extend_from_slice(text);
             }
+            Event::CommandEnded(status) => {
+                entry.push(b'E');
+                if let Some(status) = status {
+                    entry.extend_from_slice(&status.to_le_bytes());
+                }
+            }
         }
         assert!(entry.len() <= OSC_PAYLOAD_LIMIT.saturating_add(2));
         self.0.push(entry);
@@ -230,8 +236,8 @@ pub fn versions_follow(before: &Rows, after: &Rows) {
 /// The change marks are sound by place (`THREATS.md` section 6, 28): read
 /// from `mark`, taken when the screen's rows were `before`, a reader of
 /// `after`, whose rows are `now`, is told to redraw everything, or
-/// `dirty_live_rows_since` names every place whose row, cells, wrap or
-/// prompt mark changed, as fux redraws.
+/// `dirty_rows_since` names the row at every place whose row, cells, wrap
+/// or prompt mark changed, as fux redraws.
 pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows) {
     let screen = after.screen();
     reached("call full_refresh_since");
@@ -244,40 +250,19 @@ pub fn marks_sound(before: &Rows, mark: fux_vt::Mark, after: &Parser, now: &Rows
         before.len(),
         "the screen's height changed with no full refresh"
     );
-    let dirty: Vec<u16> = screen.dirty_live_rows_since(mark).map(|(y, _)| y).collect();
+    let dirty: std::collections::HashSet<RowId> =
+        screen.dirty_rows_since(mark).map(|row| row.id()).collect();
     for ((y, now), was) in (0u16..).zip(now).zip(before) {
         let (id, _, wrapped, prompt, cells) = now;
         let (was_id, _, was_wrapped, was_prompt, was_cells) = was;
         if (id, wrapped, prompt, cells) != (was_id, was_wrapped, was_prompt, was_cells) {
             assert!(screen.changed_since(mark), "place {y} changed, unmarked");
             assert!(
-                dirty.contains(&y),
+                dirty.contains(id),
                 "place {y} changed, and no reader is told"
             );
         }
     }
-}
-
-/// What `Prints` kept since the last take is within its caps: its text cap,
-/// 4 bytes a cell of the screen it was made for (16 KiB at least), which a
-/// resize since, losing what follows, does not make smaller, and 4,096
-/// runs (THREATS.md B10).
-pub fn prints_bounded(p: &mut Parser) {
-    let (rows, cols) = p.screen().size().into();
-    let cells = usize::from(rows).saturating_mul(usize::from(cols));
-    reached("call take_prints");
-    let prints = p.take_prints();
-    let text = prints.iter().map(|print| print.text.len()).sum::<usize>();
-    assert!(
-        text <= prints.cap(),
-        "{text} bytes of prints, past {}",
-        prints.cap()
-    );
-    assert!(
-        prints.lost() || text <= cells.saturating_mul(4).max(16 << 10),
-        "{text} bytes of prints at {cells} cells"
-    );
-    assert!(prints.iter().count() <= 4096);
 }
 
 /// Feeds `piece` to `p` by `process_until_stop`, given again from each

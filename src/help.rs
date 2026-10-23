@@ -52,8 +52,9 @@ WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, a wait, what to read) goes on the pane before it
 (`%2 str y text send-keys`, `%2 str ready wait-text wait`, `%2 all-history
 capture`); only run, new-tab and new-workspace start from opts (`opts str
-'make test' command run`). An action answers once its pane settles (30s at
-most: SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
+'make test' command run`). An action answers at once; wait words on its
+pane wait after it (`%2 str ready wait-text str y text send-keys`), 30s at
+most (SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help-agents`; one word:
 `fux help WORD`.
 
@@ -169,8 +170,8 @@ pub fn explain(name: &str) -> Option<String> {
 
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;
-/// and whether it waits, taking a wait's words too: the `Waiting` words
-/// that go on the pane, and `marks` for the screen it prints.
+/// and whether it takes a wait's words too: the `Waiting` words that go on
+/// the pane.
 pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "run",
@@ -188,15 +189,11 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
-         rows cols timeout",
+         rows cols",
         false,
     ),
     ("wait", "", true),
-    (
-        "send-keys",
-        "text key paste paste-file bytes pause times",
-        true,
-    ),
+    ("send-keys", "text key paste paste-file bytes times", true),
     ("send-mouse", "mouse", true),
     ("signal", "", true),
 ];
@@ -206,8 +203,7 @@ pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> 
     let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
     let waiting = (WORDS.iter())
         .filter(|w| *waits && w.group == "Waiting" && w.effect.starts_with("x "))
-        .map(|w| w.name)
-        .chain(waits.then_some("marks"));
+        .map(|w| w.name);
     Some(takes.split_whitespace().chain(waiting))
 }
 
@@ -224,13 +220,17 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",
-        "wait" => "fux %3 wait",
+        "wait" => "fux %3 3 wait-quiet wait",
         "help-agents-on" => "fux str waits help-agents-on",
-        "wait-text" => "fux %3 str ready wait-text 30 timeout wait",
-        "wait-done" => "fux %3 str 'build ok' wait-text wait-done wait",
-        "timeout" => "fux %3 0 timeout str 'make' line",
+        "wait-text" => "fux %3 str 'listening on' wait-text str ./serve line",
+        "wait-done" => "fux %3 600 timeout wait-done str 'make test' line",
+        "wait-quiet" => "fux %3 5 wait-quiet str 'summarize this' line",
+        "wait-change" => "fux %3 wait-change str y text send-keys",
+        "wait-exit" => "fux opts str 'cargo test' command wait-exit run",
+        "wait-bell" => "fux %3 600 timeout wait-bell wait",
+        "timeout" => "fux %3 300 timeout str ready wait-text wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
-        "bytes" | "pause" => "fux %3 str c3 bytes 50 pause str a9 bytes send-keys",
+        "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",

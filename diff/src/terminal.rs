@@ -307,11 +307,10 @@ macro_rules! stack {
                     }
                     let _ = writeln!(
                         out,
-                        "changed {} refresh {} dirty {:?} live {:?}",
+                        "changed {} refresh {} dirty {:?}",
                         s.changed_since(self.mark),
                         s.full_refresh_since(self.mark),
-                        s.dirty_rows_since(self.mark).map(|row| identity(row).0).collect::<Vec<_>>(),
-                        s.dirty_live_rows_since(self.mark).map(|(y, row)| (y, identity(row).0)).collect::<Vec<_>>()
+                        s.dirty_rows_since(self.mark).map(|row| identity(row).0).collect::<Vec<_>>()
                     );
                     self.mark = s.mark();
                     out

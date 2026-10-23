@@ -11,12 +11,11 @@ use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::log::Unit;
-use crate::pane::{self, InputQueue, Pane, Piece, Process, Runs, Sent, Typed, basename};
+use crate::pane::{self, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{ClientKind, Mode, View};
-use crate::wait::{Follows, Waiting};
+use crate::wait::Waiting;
 use crate::workspace::{Fit, Seat, Tab, Workspace};
 use fux_vt::Size;
 use fuxth::Code as Lang;
@@ -58,14 +57,9 @@ impl Dying {
 /// Something the session waits for until a moment (`Session::timers`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Timer {
-    /// A pane's command line, held until its shell is ready, is typed
-    /// (`InputQueue::due_at`).
-    Type(PaneId),
     /// A pane's frame of synchronized output is read, ended or not
     /// (`Pane::frame_deadline`).
     Frame(PaneId),
-    /// A pane's paced input goes on (`Pane::pace_due`).
-    Pace(PaneId),
     /// A pane's output, waiting since the parser did all the work one call
     /// may, is read on (`Pane::read_unread`): due at once, after the
     /// server's other work of this turn.
@@ -76,7 +70,7 @@ pub enum Timer {
 /// pane, tab or workspace.
 #[derive(Clone, Debug)]
 pub enum Origin {
-    /// A client's key, prompt or menu: where the client is.
+    /// A client's key or prompt: where the client is.
     Client(ClientId),
     /// The CLI: who runs the command, and from where.
     Cli(Caller),
@@ -377,7 +371,7 @@ fn ended(pane: PaneId, status: Ended) -> Error {
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
-/// for one (`wait`, or an action that settles).
+/// for one (`wait`, or an action given wait words).
 pub enum Begun {
     Done(Reply),
     Waiting(Box<Waiting>),
@@ -390,9 +384,6 @@ pub enum Begun {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
-/// The longest a typed command waits for the new shell to write and then
-/// go quiet (`pane::QUIET`): a shell that writes nothing still gets it.
-pub const TYPE_WAIT: Duration = Duration::from_secs(1);
 /// The size a pane starts at, until it is laid out on a client's screen.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 /// A typical terminal's screen, which a tab no client shows is laid out on.
@@ -433,9 +424,6 @@ pub struct Session {
     /// Each pane's tab, as of the last settle: every change to the layout
     /// settles before the server reads output again.
     pane_tabs: BTreeMap<PaneId, TabId>,
-    /// What all panes' journals hold together, at most: unknown after a
-    /// settle or new settings, else kept up as output is read.
-    journal_held: Option<usize>,
     /// Something changed that the saved layout may show: a settle, or
     /// output (a shell's directory). The server takes it.
     pub(crate) edited: bool,
@@ -571,7 +559,6 @@ impl Reach<'_> {
         match request {
             Request::Do(command) | Request::Then(command, _) => self.command(command),
             Request::Wait(target, _) => self.any(target),
-            Request::Capture(target, ..) => self.pane(*target),
             Request::Events(target, _) => target.as_ref().map_or(Ok(()), |t| self.any(t)),
             Request::Grant(..) | Request::Revoke(_) => self.refuse("another grant"),
         }
@@ -674,6 +661,24 @@ fn bad_value(usage: command::Usage) -> Error {
     fail(Code::BadValue, usage.to_string())
 }
 
+/// The answer of an action on `panes` (keys, a mouse event, a signal):
+/// each pane it went to, a line each, and as JSON.
+fn acted(panes: impl IntoIterator<Item = PaneId>) -> Reply {
+    let mut reply = Reply::default();
+    for pane in panes {
+        let fields = vec![
+            ("pane", Json::str(pane.to_string())),
+            ("status", Json::int(0)),
+        ];
+        reply.text.push_str(&format!("{pane}\n"));
+        reply
+            .json
+            .push_str(&format!("{}\n", Json::Object(fields).render()));
+        reply.ids.push(AnyRef::Pane(pane));
+    }
+    reply
+}
+
 /// A command that failed, told with its code: a usage error's
 /// status is 2.
 fn failure(error: Error, origin: &Origin) -> Reply {
@@ -721,7 +726,6 @@ impl Session {
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             pane_tabs: BTreeMap::new(),
-            journal_held: None,
             edited: false,
             ids: Ids::default(),
             changes: 0,
@@ -856,39 +860,18 @@ impl Session {
     /// if panes start real processes: told of its server (`FUX_PANE`,
     /// `FUX_SOCKET`, a grant's socket if its starter came by one, and
     /// `FUX_SERVER`), given its starter's variables, and not those its
-    /// starter had not, unless `env` sets them. A shell fux knows is started
-    /// so that it marks its commands, unless `set shell-marks off`; its
-    /// startup files go beside the server's socket, and the programs it
-    /// runs are given the nonce of marks of their own (`FUX_MARK_NONCE`).
+    /// starter had not, unless `env` sets them.
     fn spawn(
         &self,
         id: PaneId,
         launch: &pane::Launch,
         fresh: &Starting,
         size: Size,
-    ) -> Result<Option<(Child, Option<crate::marks::Nonces>)>, Error> {
+    ) -> Result<Option<Child>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
         };
         let (argv, env) = (launch.argv.as_slice(), launch.env.as_slice());
-        let mut dir = socket.as_os_str().to_owned();
-        dir.push(".shell");
-        let marked = (self.config.shell_marks)
-            .then(|| crate::marks::marked(argv, env, Path::new(&dir)))
-            .flatten();
-        // A shell fux marks is given a nonce its marks carry, which it keeps
-        // from the programs it runs: one printed by them carries none
-        // (`fux_vt::Parser::require_mark_nonce`). They are given another,
-        // for marks of their own that count within their command.
-        let nonce = marked.as_ref().and_then(|_| crate::marks::Nonces::new());
-        let mut marks = marked.unwrap_or_else(|| crate::marks::Marked {
-            argv: argv.to_vec(),
-            ..crate::marks::Marked::default()
-        });
-        if let Some(nonce) = &nonce {
-            marks.env.push(("__fux_k".to_owned(), nonce.shell.clone()));
-            (marks.env).push((crate::marks::NESTED.to_owned(), nonce.nested.clone()));
-        }
         let socket = fresh.socket.as_deref().unwrap_or(socket);
         let mut vars = vec![
             ("FUX_PANE", id.to_string().into()),
@@ -896,17 +879,14 @@ impl Session {
             ("FUX_SERVER", self.server_id.clone().into()),
         ];
         vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
-        let given = env.iter().chain(&marks.env);
-        vars.extend(given.map(|(k, v)| (k.as_str(), v.into())));
-        vars.retain(|(k, _)| !marks.unset.iter().any(|u| u == k));
-        let mut unset: Vec<String> = (fresh.unset.iter())
+        vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
+        let unset: Vec<String> = (fresh.unset.iter())
             .filter(|name| !env.iter().any(|(k, _)| k == *name))
             .cloned()
             .collect();
-        unset.extend(marks.unset.iter().cloned());
-        let child = process::spawn(&marks.argv, &launch.cwd, (&vars, &unset), size)
+        let child = process::spawn(argv, &launch.cwd, (&vars, &unset), size)
             .map_err(|m| fail(Code::Start, m))?;
-        Ok(Some((child, nonce)))
+        Ok(Some(child))
     }
 
     /// Starts the program pane `id` ran again in it: its words, or `argv`
@@ -938,8 +918,7 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = pane.size();
-        let spawned = self.spawn(id, &launch, starting, size)?;
-        let (child, nonce) = spawned.unzip();
+        let child = self.spawn(id, &launch, starting, size)?;
         let history = self.config.history_bytes;
         let pane = self.pane_mut(id)?;
         let old = pane.respawned(
@@ -947,23 +926,21 @@ impl Session {
             child.map_or(Process::Absent, Process::Reading),
             history,
         )?;
-        pane.mark_with(nonce.flatten());
         self.end(old, true);
         self.touch();
         Ok(())
     }
 
-    /// The process group `fux signal` signals in a pane: the job its shell
-    /// runs in the foreground, or the program `run` started; never a shell.
+    /// The process group `fux signal` signals in a pane: the terminal's
+    /// foreground group (a job its shell runs), or the program `run`
+    /// started; never the shell of a pane that runs one.
     fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
         if let Some(status) = pane.process.exit_status() {
             return Err(ended(pane.id, status));
         }
-        // The program `run` started, unless that is a shell (`run -- bash`):
-        // its foreground job, if any, is what a signal is for.
         let program = match (&pane.runs, pane.process.child()) {
-            (Runs::Program(_), Some(child)) => (!pane.runs_shell()).then(|| child.leader.pid()),
+            (Runs::Program(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
         };
         pane.process.job().or(program).ok_or_else(|| {
@@ -1197,25 +1174,24 @@ impl Session {
         })
     }
 
-    /// Sends `inputs` to the programs of `target`'s panes, a piece at a time
-    /// (`units`).
+    /// Sends `inputs` to the programs of `target`'s panes, each encoded as
+    /// its program asked for keys (`bytes`).
     fn send_keys(&mut self, target: AnyRef, inputs: &[Input]) -> Result<Reply, Error> {
-        // Every pane must take them, or none is sent them: each one's, as
-        // its program takes keys, are made and fit first.
+        // Every pane must take them, or none is sent them: each one's are
+        // made and fit first.
         let mut each = Vec::new();
         for id in self.panes_of(target)? {
             let pane = self.live_pane_mut(id)?;
-            let (units, sent) = units(pane, inputs);
-            pane.room_for(&units)?;
-            each.push((id, units, sent));
+            let bytes = bytes(pane, inputs);
+            if bytes.len() > pane.input.room() {
+                return Err(pane::Error::NotReading.into());
+            }
+            each.push((id, bytes));
         }
-        for (id, units, sent) in each {
-            let pane = self.pane_mut(id)?;
-            pane.note_input();
-            pane.sent = sent;
-            pane.send(units, Instant::now())?;
+        for (id, bytes) in &each {
+            self.pane_mut(*id)?.input.push(bytes)?;
         }
-        Ok(Reply::default())
+        Ok(acted(each.into_iter().map(|(id, _)| id)))
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
@@ -1438,36 +1414,21 @@ impl Session {
             Start::Shell(cmd, _) => (cmd, Runs::Shell),
             Start::Program(argv, _) => (argv, Runs::Program(launch.clone())),
         };
-        // The line to type is made before anything else: a line too long to
-        // type must not leave a process behind.
-        let typed = match start {
-            Start::Shell([], _) | Start::Program(..) => None,
-            Start::Shell(cmd, _) => {
-                let fish = basename(config.shell.program()) == "fish";
-                let mut line = crate::words::shell_line(cmd, fish)
-                    .map_err(|m| fail(Code::Usage, m))?
-                    .into_bytes();
-                line.push(b'\r');
-                let deadline = crate::after(Instant::now(), TYPE_WAIT);
-                let too_long = || fail(Lang::TooLong, "the command line is too long to type");
-                Some(Typed::new(line, deadline).ok_or_else(too_long)?)
-            }
-        };
         let id = ids.pane()?;
         let name = basename(cmd.first().map_or(config.shell.program(), String::as_str));
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
-        pane.record.set_budget(config.journal_bytes);
+        // A command line typed into the new shell goes in at once, before
+        // the shell starts, which reads it when it reads its terminal: one
+        // too long to type leaves no process behind.
+        if let Start::Shell(words @ [_, ..], _) = start {
+            let line = format!("{}\r", words.join(" "));
+            let too_long = |_| fail(Lang::TooLong, "the command line is too long to type");
+            pane.input.push(line).map_err(too_long)?;
+        }
         // A program brought back by a restore waits for `respawn`.
         let paused = new.starting.restoring && matches!(start, Start::Program(..));
-        if !paused && let Some((child, nonce)) = self.spawn(id, &launch, new.starting, new.size)? {
+        if !paused && let Some(child) = self.spawn(id, &launch, new.starting, new.size)? {
             pane.process = Process::Reading(child);
-            pane.mark_with(nonce);
-        }
-        if let Some(typed) = typed {
-            pane.input = InputQueue::from(typed);
-            if let Process::Absent = pane.process {
-                pane.input.type_now();
-            }
         }
         Ok(pane)
     }
@@ -1653,7 +1614,6 @@ impl Session {
                 }
             }
         }
-        self.journal_held = None;
         self.edited = true;
     }
 
@@ -1725,36 +1685,9 @@ impl Session {
 
     /// The settings changed: every pane keeps the history they say.
     fn configured(&mut self) {
-        self.journal_held = None;
         for pane in self.panes.values_mut() {
             pane.parser.set_history_bytes(self.config.history_bytes);
-            pane.record.set_budget(self.config.journal_bytes);
         }
-        self.keep_journals();
-    }
-
-    /// All panes' journals together keep at most `journal-total` bytes:
-    /// the largest lets its oldest entries go first.
-    fn keep_journals(&mut self) {
-        let total = self.config.journal_total;
-        if self.journal_held.is_some_and(|held| held <= total) {
-            return;
-        }
-        let mut held: usize = self.panes.values().map(|p| p.record.held()).sum();
-        while held > total {
-            let Some(largest) = self.panes.values_mut().max_by_key(|p| p.record.held()) else {
-                break;
-            };
-            let had = largest.record.held();
-            largest
-                .record
-                .keep(had.saturating_sub(held.saturating_sub(total)));
-            held = held.saturating_sub(had.saturating_sub(largest.record.held()));
-            if largest.record.held() == had {
-                break;
-            }
-        }
-        self.journal_held = Some(held);
     }
 
     /// A PTY is the smallest rectangle any client shows it in. A tab no
@@ -1943,7 +1876,6 @@ impl Session {
         match pane.runs {
             Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
             Runs::Program(_) => {
-                pane.lose_unread();
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let gone = std::mem::replace(&mut pane.process, Process::Exited(ended));
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
@@ -1968,20 +1900,15 @@ impl Session {
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
         self.panes.values().flat_map(|pane| {
-            let typed = pane.input.due_at().map(|at| (at, Timer::Type(pane.id)));
             let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
-            let paced = pane.pace_due().map(|at| (at, Timer::Pace(pane.id)));
             let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id)));
-            typed.into_iter().chain(frame).chain(paced).chain(unread)
+            frame.into_iter().chain(unread)
         })
     }
 
     /// What `timer` waited for is done, now that it is due.
     pub fn fire(&mut self, timer: Timer) {
         match timer {
-            Timer::Type(id) => (self.panes.get_mut(&id))
-                .into_iter()
-                .for_each(|p| p.input.type_now()),
             Timer::Frame(id) => self.read_with(id, Pane::release_frame),
             Timer::Unread(id) => {
                 self.read_with(id, Pane::read_unread);
@@ -1992,9 +1919,6 @@ impl Session {
                     self.exited(id, ended);
                 }
             }
-            Timer::Pace(id) => (self.panes.get_mut(&id))
-                .into_iter()
-                .for_each(|p| p.release_paced(Instant::now())),
         }
     }
 
@@ -2011,17 +1935,11 @@ impl Session {
         pane.colours = colours;
         pane.parser.set_host_palette(palette);
         pane.parser.set_host_graphics(graphics);
-        let before = pane.record.held();
         read(pane);
-        let after = pane.record.held();
-        self.journal_held =
-            (self.journal_held).map(|h| h.saturating_sub(before).saturating_add(after));
         self.edited = true;
-        pane.note_change(Instant::now());
         let dropped = pane.input.lost_reply();
         let bell = std::mem::take(&mut pane.bell);
         let copied = pane.copied.take();
-        self.keep_journals();
         if bell {
             self.ring(id, Instant::now());
         }
@@ -2086,7 +2004,7 @@ impl Session {
             let outcome = self.run_command(command, origin);
             return Begun::Done(match outcome.end {
                 End::Failed { .. } => Reply::default(),
-                End::Done | End::Answered(_) => outcome,
+                End::Done => outcome,
             });
         }
         self.begin_request(request, origin)
@@ -2109,19 +2027,6 @@ impl Session {
                 None => return Err(fail(fuxth::Code::Unused, "this command takes no wait")),
             },
             Request::Wait(target, wait) => (target, wait, None),
-            // Read once the pane settles, said with its state.
-            Request::Capture(target, history, view, timeout) => {
-                let wait = command::Wait {
-                    until: vec![command::Until::Settled],
-                    timeout,
-                    print: false,
-                    marks: false,
-                };
-                let pane = self.pane(target)?;
-                let follows = Follows::Capture(history, view);
-                let waiting = Waiting::new(&[pane], wait, follows, now, self.config.wait);
-                return Ok(self.wait_on(waiting, now));
-            }
             Request::Events(target, json) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
                 return Ok(Begun::Events(Box::new(crate::events::Subscription {
@@ -2133,19 +2038,19 @@ impl Session {
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
             Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
-        // What the action brings counts from its input (`Pane::since`).
-        let follows = action.as_ref().map_or(Follows::Wait, |_| Follows::Action);
+        // Made as the action acts, in the same turn: the program's answer
+        // to it is read only after.
         if let Some(command) = action {
             let outcome = self.run_command(&command, origin);
             match outcome.end {
                 End::Failed { .. } => return Ok(Begun::Done(outcome)),
-                End::Done | End::Answered(_) => {}
+                End::Done => {}
             }
         }
         let panes = (self.panes_of(target)?.into_iter())
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
-        let waiting = Waiting::new(&panes, wait, follows, now, self.config.wait);
+        let waiting = Waiting::new(&panes, wait, now, self.config.wait);
         Ok(self.wait_on(waiting, now))
     }
 
@@ -2213,11 +2118,11 @@ impl Session {
             return Begun::Done(outcome);
         };
         let now = Instant::now();
-        let waiting = Waiting::new(&[pane], wait, Follows::Started, now, self.config.wait);
+        let waiting = Waiting::new(&[pane], wait, now, self.config.wait);
         self.wait_on(waiting, now)
     }
 
-    /// Runs a command, parsed already: from a line, a binding or a menu.
+    /// Runs a command, parsed already: from a line, a binding or a chooser.
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
         let outcome = self
             .execute(command, origin)
@@ -2227,9 +2132,6 @@ impl Session {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }
-        // Input and resizes grow journals too.
-        self.journal_held = None;
-        self.keep_journals();
         self.settle();
         outcome
     }
@@ -2416,9 +2318,7 @@ impl Session {
                 let group = self.signalled(target)?;
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
-                // An action: what it brings counts from here.
-                self.pane_mut(target)?.note_input();
-                Ok(Reply::default())
+                Ok(acted([target]))
             }
             &Command::Kill { target } => self.kill(target, origin),
             Command::Rename { target, name } => {
@@ -2456,6 +2356,9 @@ impl Session {
                 view,
             } => {
                 let pane = self.pane(target)?;
+                if view.source == command::Source::LastOutput && !pane.marked() {
+                    return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
+                }
                 let copying = self.copying(pane.id);
                 let (text, form) = crate::capture::pane(pane, history, view, true, copying);
                 Ok(Reply {
@@ -2711,11 +2614,9 @@ impl Session {
             };
             return Err(fail(Code::Mouse, message));
         }
-        p.note_input();
-        p.sent = vec![Sent::Named(report.len(), "a mouse event".into())];
-        p.send(vec![Piece::new(report, Unit::Submit)], Instant::now())?;
+        p.input.push(report)?;
         p.mouse_held = held;
-        Ok(Reply::default())
+        Ok(acted([target]))
     }
 
     /// `split`: a new pane beside `target`, along `axis`, running `start`
@@ -3615,8 +3516,7 @@ pub(crate) mod testing {
             client,
             ..crate::protocol::Context::default()
         };
-        let mut host =
-            crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out, false);
+        let mut host = crate::script::Host::new(context.clone(), Some(&mut keymap), &mut out);
         let mut process = InProcess(session);
         let mut asks = crate::script::AsClient {
             asks: &mut process,
@@ -3656,9 +3556,7 @@ pub(crate) mod testing {
                             .map(|c| Input::Key(crate::keys::KeyPress::char(c).into()))
                             .collect(),
                         crate::command::Input::Paste(text) => vec![Input::Paste(text)],
-                        crate::command::Input::Bytes(_) | crate::command::Input::Pause(_) => {
-                            Vec::new()
-                        }
+                        crate::command::Input::Bytes(_) => Vec::new(),
                     });
                     session.inputs(client, typed.collect());
                 }
@@ -3705,7 +3603,6 @@ pub(crate) mod testing {
                     Request::Do(Command::Client { action, .. }) => action.clone().here(),
                     Request::Do(Command::Resolve { .. })
                     | Request::Wait(..)
-                    | Request::Capture(..)
                     | Request::Events(..)
                     | Request::Grant(..)
                     | Request::Revoke(_) => return self.0.ask(asked, out),
@@ -3722,7 +3619,7 @@ pub(crate) mod testing {
             client: Some(client),
             ..crate::protocol::Context::default()
         };
-        let mut host = crate::script::Host::new(context, None, &mut out, false);
+        let mut host = crate::script::Host::new(context, None, &mut out);
         let mut recorder = Recorder(InProcess(s), Vec::new());
         crate::script::run(&mut machine, &mut host, &mut recorder).map_err(|e| e.to_string())?;
         Ok(recorder.1)
@@ -3843,154 +3740,25 @@ pub(crate) mod testing {
     }
 }
 
-/// `inputs` as pane `p`'s program takes them, a piece at a time
-/// (`Unit`): text typed in a row is one piece, keys that
-/// edit the line in a row another, and each other key, a lone Escape,
-/// a paste and bytes given as they are each their own. So in `%2 str msg
-/// text str Enter key` the Enter is read alone, as a submit, not as a
-/// newline pasted with the text, and what follows each piece is told
-/// apart (`crate::classify`). A pause times the piece after it. With
-/// them, each input as an answer names it, should its program not read it.
-fn units(p: &Pane, inputs: &[Input]) -> (Vec<Piece>, Vec<Sent>) {
-    let (mode, bracketed) = (
-        p.screen().key_mode(),
-        p.screen().mode(fux_vt::Mode::BracketedPaste),
-    );
-    let mut units: Vec<Piece> = Vec::new();
-    let mut sent = Vec::new();
-    // Whether the last piece takes more, an edit: text, or keys.
-    let mut last: Option<bool> = None;
-    // The pause the next piece is written after.
-    let mut gap = None;
+/// `inputs` as pane `p`'s program takes them: keys and pastes encoded as
+/// it asked for them, text and bytes as they are.
+fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
+    let screen = p.screen();
+    let mut bytes = Vec::new();
     for input in inputs {
-        let mut bytes = Vec::new();
-        let unit = match input {
+        match input {
             Input::Key(key) => {
-                crate::encode::key_bytes((*key).into(), mode, &mut bytes);
-                sent.push(Sent::Named(bytes.len(), key.to_string()));
-                crate::command::unit(*key)
+                crate::encode::key_bytes((*key).into(), screen.key_mode(), &mut bytes)
             }
-            Input::Text(text) => {
-                sent.push(Sent::Text(text.clone()));
-                // A line end in text submits the line, read alone.
-                let mut rest = text.as_str();
-                while let Some(at) = rest.find(['\r', '\n']) {
-                    let (part, end) = rest.split_at_checked(at).unwrap_or((rest, ""));
-                    if !part.is_empty() {
-                        push_piece(&mut units, &mut last, part.as_bytes(), true, gap.take());
-                    }
-                    let (end, after) = end.split_at_checked(1).unwrap_or((end, ""));
-                    let mut piece = Piece::new(end.as_bytes().to_vec(), Unit::Submit);
-                    piece.gap = gap.take();
-                    units.push(piece);
-                    last = None;
-                    rest = after;
-                }
-                if !rest.is_empty() {
-                    push_piece(&mut units, &mut last, rest.as_bytes(), true, gap.take());
-                }
-                continue;
-            }
+            Input::Text(text) => bytes.extend_from_slice(text.as_bytes()),
             Input::Paste(text) => {
+                let bracketed = screen.mode(fux_vt::Mode::BracketedPaste);
                 crate::encode::paste(text, bracketed, &mut bytes);
-                sent.push(Sent::Named(bytes.len(), "a paste".into()));
-                // An edit, bracketed or one line; unbracketed with a line
-                // end, it submits lines.
-                let unit = match bracketed || !text.contains(['\r', '\n']) {
-                    true => Unit::Edit,
-                    false => Unit::Submit,
-                };
-                let mut piece = Piece::new(bytes, unit);
-                piece.gap = gap.take();
-                units.push(piece);
-                last = None;
-                continue;
             }
-            // A piece of its own, never joined to another: what is around
-            // a pause stays apart. Printable bytes (a character's, or part
-            // of one) edit a line; others are the keys they are
-            // (`bytes_unit`).
-            Input::Bytes(given) => {
-                sent.push(Sent::Named(given.len(), format!("bytes {}", hex(given))));
-                let unit = bytes_unit(given);
-                let mut piece = Piece::new(given.clone(), unit);
-                piece.gap = gap.take();
-                units.push(piece);
-                last = None;
-                continue;
-            }
-            // Pauses in a row add up, to the longest one may be.
-            Input::Pause(pause) => {
-                let total = gap.map_or(*pause, |gap: Duration| gap.saturating_add(*pause));
-                gap = Some(total.min(PAUSE_MOST));
-                last = None;
-                continue;
-            }
-        };
-        if unit == Unit::Edit && bytes != b"\x1b" {
-            push_piece(&mut units, &mut last, &bytes, false, gap.take());
-        } else {
-            let mut piece = Piece::new(bytes, unit);
-            piece.gap = gap.take();
-            units.push(piece);
-            last = None;
+            Input::Bytes(given) => bytes.extend_from_slice(given),
         }
     }
-    (units, sent)
-}
-
-/// The longest pause before a piece: one `pause`'s most.
-const PAUSE_MOST: Duration = Duration::from_millis(crate::command::PAUSE_MOST_MS.unsigned_abs());
-
-/// What bytes given as they are are to a program reading them: an edit if
-/// printable (a character's, or part of one), or if each key they are
-/// (decoded as a terminal's input) is one that edits the line, as its
-/// named key is (`command::unit`: DEL is Backspace, `ESC [ D` Left); else
-/// a key that does something.
-fn bytes_unit(given: &[u8]) -> Unit {
-    if given.iter().all(|b| *b >= 0x20 && *b != 0x7f) {
-        return Unit::Edit;
-    }
-    let mut decoder = fux_vt::keys::decode::Decoder::default();
-    let mut inputs = Vec::new();
-    decoder.bytes(given, &mut inputs);
-    decoder.timeout(&mut inputs);
-    let edits = |input: &fux_vt::keys::decode::Input| {
-        matches!(input, fux_vt::keys::decode::Input::Key(stroke)
-            if crate::command::unit(stroke.press) == Unit::Edit)
-    };
-    match !inputs.is_empty() && inputs.iter().all(edits) {
-        true => Unit::Edit,
-        false => Unit::Submit,
-    }
-}
-
-/// `bytes` in hex, as `bytes` takes them.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Adds `bytes`, an edit that is `text` typed or else keys, to the last
-/// piece if that is an edit of the same kind and no pause comes between,
-/// else as a piece of its own, after `gap`.
-fn push_piece(
-    units: &mut Vec<Piece>,
-    last: &mut Option<bool>,
-    bytes: &[u8],
-    text: bool,
-    gap: Option<Duration>,
-) {
-    match units.last_mut() {
-        Some(piece) if piece.unit == Unit::Edit && *last == Some(text) && gap.is_none() => {
-            piece.bytes.extend_from_slice(bytes);
-        }
-        _ => {
-            let mut piece = Piece::new(bytes.to_vec(), Unit::Edit);
-            piece.gap = gap;
-            units.push(piece);
-        }
-    }
-    *last = Some(text);
+    bytes
 }
 
 #[cfg(test)]
@@ -4120,10 +3888,10 @@ mod tests {
     fn json_of_several_panes_is_one_array() -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started(Config::default())?;
         run(&mut s, "%1 split")?;
-        let alone = output(&mut s, "@1 wait json")?;
+        let alone = output(&mut s, "@1 str x text send-keys json")?;
         assert!(alone.starts_with(r#"[{"pane":"%1","#), "{alone}");
         assert_eq!(alone.lines().count(), 1, "{alone}");
-        let listed = output(&mut s, "list @1 wait end json")?;
+        let listed = output(&mut s, "list @1 str x text send-keys end json")?;
         assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
         Ok(())
     }
@@ -4160,18 +3928,17 @@ mod tests {
         s.exited(id, Ended::Exited(0));
         let pane = s.panes.get(&id).ok_or("the pane")?;
         assert!(pane.has_unread(), "the budget stopped no call");
-        let state = crate::ready::state(pane, Instant::now(), None);
-        assert_eq!(state, crate::ready::State::Busy);
+        assert!(
+            pane.process.exit_status().is_none(),
+            "exited with output unread"
+        );
         let mut turns = 0u32;
         while s.panes.get(&id).is_some_and(Pane::has_unread) && turns < 100 {
             s.fire(crate::session::Timer::Unread(id));
             turns = turns.saturating_add(1);
         }
         let pane = s.panes.get(&id).ok_or("the pane")?;
-        assert_eq!(
-            crate::ready::state(pane, Instant::now(), None),
-            crate::ready::State::Exited(Ended::Exited(0))
-        );
+        assert_eq!(pane.process.exit_status(), Some(Ended::Exited(0)));
         let text = pane
             .screen()
             .rows()
@@ -4284,46 +4051,6 @@ mod tests {
             text.contains("HELD"),
             "no HELD in {} characters",
             text.len()
-        );
-        Ok(())
-    }
-
-    /// Pauses in a row add up (to 10 s at most): the input after them is
-    /// written after all of them. Bytes are read as the keys they are:
-    /// DEL (Backspace) and `ESC [ D` (Left) edit the line, as their named
-    /// keys do, and a CR submits it.
-    #[test]
-    fn pauses_add_up_and_bytes_are_the_keys_they_are() -> Result<(), String> {
-        use crate::command::Input as In;
-        let pane = Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::Shell,
-            pane::size(2, 10),
-            1024,
-        )
-        .map_err(|e| e.to_string())?;
-        let ms = Duration::from_millis;
-        let inputs = [
-            In::Pause(ms(300)),
-            In::Pause(ms(200)),
-            In::Bytes(vec![0x7f]),
-            In::Bytes(b"\x1b[D".to_vec()),
-            In::Bytes(b"\r".to_vec()),
-            In::Pause(ms(9000)),
-            In::Pause(ms(9000)),
-            In::Text("x".into()),
-        ];
-        let (pieces, _) = super::units(&pane, &inputs);
-        let units: Vec<(Unit, Option<Duration>)> = pieces.iter().map(|p| (p.unit, p.gap)).collect();
-        assert_eq!(
-            units,
-            [
-                (Unit::Edit, Some(ms(500))),
-                (Unit::Edit, None),
-                (Unit::Submit, None),
-                (Unit::Edit, Some(ms(10_000))),
-            ]
         );
         Ok(())
     }
@@ -4688,7 +4415,6 @@ mod tests {
             "str %1 pane str up 1 move-border",
             "str c1 client str last focus",
             "str @1 tab str next reorder",
-            "str %1 pane horizontal str 'a\nb' typed split",
             "opts str main name new-workspace",
         ] {
             assert!(run(&mut s, code).is_err(), "{code}");
@@ -4711,10 +4437,10 @@ mod tests {
             notice.as_deref(),
             Some("nothing_there: test:1: choose-pane: only one pane")
         );
-        run(&mut s, "str c1 client str %1 pane menu")?;
+        run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(
             s.views.get(&c).map(|v| &v.mode),
-            Some(Mode::Panel(crate::act::Panel::List(list))) if list.title == "pane %1 sh"
+            Some(Mode::Panel(crate::act::Panel::List(_)))
         ));
         Ok(())
     }
@@ -4800,14 +4526,15 @@ mod tests {
     #[test]
     fn an_actions_answer_is_its_pane() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
-        assert_eq!(output(&mut s, "%1 wait str name get")?, "sh\n");
+        let act = "%1 str x text send-keys";
+        assert_eq!(output(&mut s, &format!("{act} str name get"))?, "sh\n");
         assert_eq!(
-            output(&mut s, "%1 wait dup tab swap workspace")?,
+            output(&mut s, &format!("{act} dup tab swap workspace"))?,
             "@1\n+1\n"
         );
-        let alone = output(&mut s, "%1 wait json")?;
-        assert!(alone.starts_with(r#"{"pane":"%1","state":"#), "{alone}");
-        let listed = output(&mut s, "list %1 wait end json")?;
+        let alone = output(&mut s, &format!("{act} json"))?;
+        assert_eq!(alone, "{\"pane\":\"%1\",\"status\":0}\n");
+        let listed = output(&mut s, &format!("list {act} end json"))?;
         assert_eq!(listed, format!("[{}]\n", alone.trim_end()));
         Ok(())
     }

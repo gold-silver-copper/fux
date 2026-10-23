@@ -1461,8 +1461,7 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     }
 }
 
-/// A list to choose from or run: the entries that fit, the selected one
-/// highlighted and, but in a chooser, those that cannot run now dimmed.
+/// A chooser: the entries that fit, the selected one highlighted.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
     // Its items' rows: it has a title and a help line.
@@ -1473,11 +1472,7 @@ fn list_panel(grid: &mut Grid, view: &View, list: &List) {
         (format!("{marker} {item}").into(), attrs)
     });
     windowed(&mut lines, entries, list.selected, capacity);
-    let help = if list.chooser {
-        "Enter selects · r renames · x closes · Esc"
-    } else {
-        "Enter runs · Esc cancels"
-    };
+    let help = "Enter selects · r renames · x closes · Esc";
     lines.push((help.into(), PANEL.with_dim(true)));
     surface(grid, view, &lines);
 }

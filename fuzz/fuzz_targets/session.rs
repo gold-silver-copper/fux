@@ -300,7 +300,6 @@ impl Run {
             keymap: Some(&mut keymap),
             last_bound: None,
             out: &mut out,
-            settle: false,
         };
         let ended = loop {
             let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
@@ -457,7 +456,7 @@ impl Run {
                             self.inputs(client, vec![Input::Paste(text)]);
                         }
                         // A pane's alone: send-keys refuses them for a client.
-                        fux::command::Input::Bytes(_) | fux::command::Input::Pause(_) => {}
+                        fux::command::Input::Bytes(_) => {}
                     }
                 }
             }

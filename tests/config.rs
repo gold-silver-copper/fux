@@ -215,7 +215,9 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
             "str",
             "x",
             "env",
+            "wait-exit",
             "run",
+            "capture",
         ])
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))

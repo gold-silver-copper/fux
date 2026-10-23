@@ -2,7 +2,6 @@
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
 use crate::code::Code;
-use crate::log::JOURNAL_BYTES;
 use crate::words;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -57,12 +56,8 @@ settings! {
     shell "shell": Shell = default_shell(), Shell::parse;
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
-    /// How long an action or a wait waits at most, unless it says.
+    /// How long a wait waits at most, unless it says.
     wait "wait-seconds": Duration = WAIT, |v| number(0, MAX_WAIT)(v).map(Duration::from_secs);
-    /// The bytes each pane's journal keeps (`crate::log`).
-    journal_bytes "journal-bytes": usize = JOURNAL_BYTES, number(MIN_JOURNAL, MAX_JOURNAL);
-    /// The bytes all panes' journals keep together.
-    journal_total "journal-total": usize = 16 * JOURNAL_BYTES, number(MIN_JOURNAL, MAX_JOURNAL);
     /// Copies are also sent to the client's terminal as OSC 52.
     clipboard "clipboard": bool = true, on;
     /// How many paste buffers are kept.
@@ -71,8 +66,6 @@ settings! {
     bell "bell": bool = true, on;
     /// Each client's terminal title is its focused pane's.
     titles "titles": bool = false, on;
-    /// The shells fux starts mark their commands (OSC 133): `crate::marks`.
-    shell_marks "shell-marks": bool = true, on;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter has not is unset.
@@ -103,20 +96,15 @@ const KEPT: [&str; 8] = [
 ];
 
 pub const MAX_BUFFERS: usize = 1000;
-/// How long an action or a wait waits at most by default: a build or a
-/// program's startup is waited through, while a wait that cannot be met
-/// still answers well inside what a tool running a command waits for it.
+/// How long a wait waits at most by default: a build or a program's
+/// startup is waited through, while a wait that cannot be met still
+/// answers well inside what a tool running a command waits for it.
 pub const WAIT: Duration = Duration::from_secs(30);
 /// The longest `wait-seconds`: a day.
 pub const MAX_WAIT: usize = 86_400;
-/// The most bytes journals may be given: each, or all together.
-pub const MAX_JOURNAL: usize = 1 << 31;
-/// The fewest bytes a journal may be given: waits and events read it.
-pub const MIN_JOURNAL: usize = 1 << 20;
 
 /// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
-/// (a service, a sandbox, a cleared environment): bash or zsh there marks
-/// its commands, where `/bin/sh` would not.
+/// (a service, a sandbox, a cleared environment).
 fn login_shell() -> Option<String> {
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
     shell_of(&passwd, fuxix::process::geteuid())

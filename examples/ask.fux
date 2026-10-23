@@ -1,13 +1,12 @@
-# A program that asks a question: `run` answers once it reads its terminal,
-# and `line` types the answer, presses Enter, and answers once the program
-# reads again, with its state (`%2` is the pane on a fresh server) and
-# everything from the line typed on.
-# expect: %2 reading
-# expect: name? fuxth
+# A program that asks a question: `run` waits until it writes its prompt,
+# and `line` types the answer and waits for a text only the reply holds,
+# answering the pane (`%2` on a fresh server), the text, and the line it
+# was written on.
+# expect: %2 text "letters"
 # expect: got 5 letters
 
 opts str ask name 60 10 size
 str 'sh -c "printf \"name? \"; read n; echo got \${#n} letters; read n"' command
-run let ASK
-ASK str fuxth line
+str 'name? ' wait-text run let ASK
+ASK str letters wait-text str fuxth line
 ASK kill

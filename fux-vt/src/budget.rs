@@ -63,9 +63,6 @@ pub(crate) mod weight {
     pub(crate) const lookups: u64 = 10;
     /// A step of the link sweep.
     pub(crate) const links: u64 = 4;
-    /// A byte recorded into `Prints`.
-    #[cfg(feature = "checks")]
-    pub(crate) const prints: u64 = 1;
     /// A byte the key decoder scanned or copied.
     #[cfg(feature = "checks")]
     pub(crate) const keys: u64 = 1;

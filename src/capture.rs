@@ -32,7 +32,7 @@ pub fn pane(
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
-    let read = rows_of(screen, history, view);
+    let (read, above) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
     let alt = screen.mode(Mode::AlternateScreen);
@@ -110,7 +110,12 @@ pub fn pane(
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let state = json.then(|| state(pane, Instant::now(), copy_mode));
+    let state = json.then(|| {
+        let mut state = state(pane, Instant::now(), copy_mode);
+        // The rows kept above what it read: history it was not asked for.
+        state.push(("above", above.map_or(Json::Null, Json::int)));
+        state
+    });
     // A glyph went into the last column: the next one goes on the next
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
@@ -118,109 +123,32 @@ pub fn pane(
         ("pane", pane.id.to_string()),
         (rows, cols),
         (cursor, Some(pending)),
-        (lines, view, screen_background(screen)),
+        (lines, view),
         state,
     )
 }
 
-/// A run of highlighted cells on the screen shown, as a selection is
-/// drawn (reverse video, or a background other than the screen's own):
-/// its row and first column, from 0 as a mouse event counts them, its
-/// width in cells, and its text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Lit {
-    pub row: u16,
-    pub col: u16,
-    pub len: u16,
-    pub text: String,
-}
-
-/// The highlighted runs of the screen shown, row by row.
-pub fn highlights(screen: &Screen) -> Vec<Lit> {
-    let base = screen_background(screen);
-    let window = screen.window();
-    let mut lit = Vec::new();
-    for y in 0..window.rows() {
-        let Some(row) = window.row(y) else {
-            continue;
-        };
-        let mut run: Option<Lit> = None;
-        for (x, cell) in row.cells().enumerate() {
-            let a = cell.attributes();
-            let on = a.inverse() || a.background() != base;
-            let glyph = if cell.is_wide_continuation() {
-                ""
-            } else {
-                cell.shown()
-            };
-            match (&mut run, on) {
-                (Some(r), true) => {
-                    r.len = r.len.saturating_add(1);
-                    r.text.push_str(glyph);
-                }
-                (None, true) => {
-                    run = Some(Lit {
-                        row: y,
-                        col: u16::try_from(x).unwrap_or(u16::MAX),
-                        len: 1,
-                        text: glyph.to_owned(),
-                    });
-                }
-                (_, false) => lit.extend(run.take()),
-            }
-        }
-        lit.extend(run);
-    }
-    lit
-}
-
-/// The screen's own background, against which a highlight shows: the
-/// terminal's default if a quarter of the screen has it, else the colour
-/// most of the screen's cells have (a program that paints its whole
-/// screen). Read over the whole screen, whatever part is captured.
-fn screen_background(screen: &Screen) -> Color {
-    let mut counts: Vec<(Color, usize)> = Vec::new();
-    let mut total = 0usize;
-    let rows = screen.rows().skip(screen.history_len());
-    for cell in rows.flat_map(|row| row.cells()) {
-        let colour = cell.attributes().background();
-        total = total.saturating_add(1);
-        match counts.iter_mut().find(|(c, _)| *c == colour) {
-            Some((_, n)) => *n = n.saturating_add(1),
-            None => counts.push((colour, 1)),
-        }
-    }
-    let default = Color::default();
-    let plain = (counts.iter())
-        .find(|(c, _)| *c == default)
-        .map_or(0, |(_, n)| *n);
-    if plain.saturating_mul(4) >= total {
-        return default;
-    }
-    (counts.into_iter())
-        .max_by_key(|(_, n)| *n)
-        .map_or(default, |(c, _)| c)
-}
-
 /// The rows a capture reads, each with the columns of it it reads: the
-/// screen and `history` rows above it (of the main screen with `main-screen`), or
-/// the last command's output.
+/// screen and `history` rows above it (of the main screen with
+/// `main-screen`), and how many rows are kept above them; or the last
+/// command's output.
 fn rows_of(
     screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
+) -> (Vec<(Row<'_>, std::ops::Range<usize>)>, Option<usize>) {
     let rows = match view.source {
         Source::Shown => screen.rows(),
         Source::Main => screen.main_rows(),
         Source::Alternate => screen.alternate_rows(),
-        Source::LastOutput => return last_output(screen),
+        Source::LastOutput => return (last_output(screen), None),
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect()
+    let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
+    (read, Some(skip))
 }
 
 /// The last command's output between its marks, a range of each row's
@@ -286,14 +214,13 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
         ("client", client.to_string()),
         (grid.rows, grid.cols),
         (grid.cursor, None),
-        (lines, view, Color::default()),
+        (lines, view),
         Some(Vec::new()),
     )
 }
 
-/// What a pane's program is doing, for `json`: its foreground program,
-/// the status it exited with, how long its screen has shown no change, and
-/// the modes
+/// What is known of a pane's program, for `json`: its foreground program,
+/// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input.
 pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
@@ -302,9 +229,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let foreground =
         (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
     let program = foreground.and_then(fuxix::process::name);
-    let idle = now.saturating_duration_since(pane.changed_at).as_millis();
-    // As an action that typed nothing sees it: no command waited for.
-    let state = crate::ready::state(pane, now, None);
+    let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let commands = screen.commands();
     let argv = match (&pane.runs, pane.process.job()) {
         (_, Some(job)) => fuxix::process::argv(job),
@@ -319,8 +244,6 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let paused = pane.paused();
     vec![
         ("program", program.map_or(Json::Null, Json::str)),
-        // reading, waiting, busy, exited 0, …: whether to look now.
-        ("state", Json::str(state.word())),
         ("paused", Json::Bool(paused)),
         ("exited", exited),
         ("signal", signal),
@@ -353,7 +276,6 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
-        ("revision", Json::int(pane.revision)),
         ("command_running", Json::Bool(pane.command_running())),
         (
             "last_status",
@@ -404,17 +326,15 @@ fn print(
     (key, id): (&'static str, String),
     (rows, cols): (u16, u16),
     (cursor, pending): (Option<(u16, u16)>, Option<bool>),
-    (mut lines, view, base): (Vec<Cells<'_>>, CaptureView, Color),
+    (mut lines, view): (Vec<Cells<'_>>, CaptureView),
     state: Option<Vec<(&'static str, Json<'static>)>>,
 ) -> Read {
-    // What a selection is drawn with: reverse video, or a background
-    // other than the screen's own.
-    let highlighted = |a: &Attributes| a.inverse() || a.background() != base;
-    // A blank's style shows on the screen: a background other than the
-    // screen's own, reverse video, a line under or through it. One bold or
-    // coloured in front shows none.
-    let painted =
-        |a: &Attributes| a.background() != base || a.inverse() || a.underline() || a.strikeout();
+    // Highlighted: reverse video, or a background colour.
+    let highlighted = |a: &Attributes| a.inverse() || a.background() != Color::Default;
+    // A blank's style shows on the screen: a background colour, reverse
+    // video, a line under or through it. One bold or coloured in front
+    // shows none.
+    let painted = |a: &Attributes| highlighted(a) || a.underline() || a.strikeout();
     // Blanks at a line's end are trimmed, unless they show: highlighted
     // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
     // and runs, a painted surface kept whole); plain text trims them all
@@ -470,9 +390,9 @@ fn print(
 }
 
 /// A line, in SGR with `styles`: each change of attributes set from
-/// nothing, and reset at its end. With `marks`, what is highlighted, how
-/// programs draw a selection, is between `⟦` and `⟧` (drawn outside the
-/// SGR): marks no program's output is likely to hold.
+/// nothing, and reset at its end. With `marks`, what is highlighted
+/// (reverse video, or a background colour) is between `⟦` and `⟧`, drawn
+/// outside the SGR.
 fn sgr_line(
     line: &Cells<'_>,
     marks: Option<&impl Fn(&Attributes) -> bool>,
@@ -592,38 +512,6 @@ mod tests {
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(&pane, None, view, false, false).0;
         assert_eq!(text.lines().next(), Some("abc世"));
-        Ok(())
-    }
-
-    /// With `styles`, a blank at a line's end is kept when it shows: on a
-    /// screen painted in one background (a full-screen program's), blanks
-    /// in that background are the screen's own, and trimmed, as a
-    /// selection's highlight is told from it.
-    #[test]
-    fn blanks_in_the_screen_s_own_background_are_trimmed() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let view = CaptureView {
-            styles: true,
-            ..CaptureView::default()
-        };
-        let size = fux_vt::Size::new(3, 8)?;
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
-        pane.output(b"\x1b[44m\x1b[2J\x1b[Hab\x1b[2;1Hcd\x1b[41m  ");
-        let text = super::pane(&pane, None, view, false, false).0;
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(
-            lines
-                .first()
-                .map(|l| l.trim_end_matches("\x1b[0m").ends_with("ab")),
-            Some(true),
-            "{lines:?}"
-        );
-        // The red blanks are painted, kept; the blue past them, trimmed.
-        assert_eq!(
-            lines.get(1).copied(),
-            Some("\x1b[0;44mcd\x1b[0;41m  \x1b[0m"),
-            "{lines:?}"
-        );
         Ok(())
     }
 }

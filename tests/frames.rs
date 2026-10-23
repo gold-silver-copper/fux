@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use support::*;
 
 /// Types a line into a pane once its shell shows a prompt, answering at
-/// once (`0 timeout`): what it starts keeps running, so it never settles.
+/// once.
 fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
         Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
@@ -22,8 +22,6 @@ fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
         "str",
         "Enter",
         "key",
-        "0",
-        "timeout",
         "send-keys",
     ])?;
     Ok(())

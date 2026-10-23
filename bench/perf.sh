@@ -58,7 +58,7 @@ pin=()
 [[ -n $cpus ]] && pin=(taskset -c "$cpus")
 # Without address randomization: the addresses a child sees (and so the
 # work of formatting and parsing them, as /proc's files hold them) differ
-# in every process with it, by 0.3% of `fux-bench run ready/probe`.
+# in every process with it, by up to 0.3% of a workload's count.
 aslr=on
 if setarch "$(uname -m)" -R true 2>/dev/null; then
   pin+=(setarch "$(uname -m)" -R)

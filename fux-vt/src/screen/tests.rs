@@ -561,8 +561,7 @@ fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
 /// A picture's cells take the placeholder as a fill, not as text (DEC STD
 /// 070-9, 11.1: "No other information is carried from the ANSI text
 /// state"): insert mode shifts nothing, the pen and protection don't reach
-/// them, a cluster before doesn't take the first, and no print records
-/// them.
+/// them, and a cluster before doesn't take the first.
 #[test]
 fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
@@ -577,7 +576,6 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     };
     let ph = PLACEHOLDER;
     let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
-    p.record_prints(true);
     p.process(b"abcdef\r\x1b[4h\x1b[1;7m\x1b[1\"q")?;
     p.process(&two)?;
     // A picture's cells read as blanks.
@@ -586,11 +584,6 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     assert_eq!(first.map(|c| c.contents() == ph), Some(true));
     let attributes = first.map(|c| c.attributes());
     assert_eq!(attributes, Some(crate::Attributes::default()), "no pen");
-    let prints = p.take_prints();
-    assert!(
-        !prints.iter().any(|run| run.text.contains(ph)),
-        "no print of a placeholder"
-    );
     let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
     p.process("\u{600}".as_bytes())?;
     p.process(&two)?;
@@ -618,133 +611,5 @@ fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
         let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
         assert_eq!(shown.cell, taken, "{cell:?}");
     }
-    Ok(())
-}
-
-/// `Prints` keeps text printed and drawn over within one feed up to its
-/// cap, 16 KiB on a small screen, and past it records nothing more and
-/// says so (`THREATS.md` B10); a take begins again.
-#[test]
-fn prints_keep_text_drawn_over_up_to_their_cap() -> Result<(), Error> {
-    let cap = 16 << 10;
-    for (bytes, lost) in [(cap - 1, false), (cap, false), (cap + 1, true)] {
-        let mut p = crate::Parser::new(Size::of(2, 10), 0)?;
-        p.record_prints(true);
-        // Runs of up to 8 bytes, each drawn over by the next, a and b in
-        // turn: 2,048 runs at most, within theirs.
-        let (mut left, mut a) = (bytes, true);
-        while left > 0 {
-            let n = left.min(8);
-            let c = if a { 'a' } else { 'b' };
-            let run: String = std::iter::repeat_n(c, n).chain(['\r']).collect();
-            p.process(run.as_bytes())?;
-            (left, a) = (left - n, !a);
-        }
-        let prints = p.take_prints();
-        assert_eq!(prints.lost(), lost, "{bytes} bytes");
-        let kept: usize = prints.iter().map(|r| r.text.len()).sum();
-        assert_eq!(kept, bytes.min(cap), "{bytes} bytes");
-        assert!(prints.heap() <= cap + crate::PRINT_RUNS * 32);
-        p.process(b"c")?;
-        let next = p.take_prints();
-        assert!(!next.lost(), "a take begins again");
-        assert_eq!(next.iter().map(|r| r.text).collect::<String>(), "c");
-    }
-    Ok(())
-}
-
-/// `Prints` keeps 4,096 runs; the 4,097th is lost. On 50 by 200 its text
-/// may be 4 bytes a cell, 40,000 (`THREATS.md` B10).
-#[test]
-fn prints_keep_at_most_their_runs() -> Result<(), Error> {
-    for (runs, lost) in [(4095, false), (4096, false), (4097, true)] {
-        let mut p = crate::Parser::new(Size::of(50, 200), 0)?;
-        p.record_prints(true);
-        // A run on each of two rows in turn: none joins the one before.
-        for i in 0..runs {
-            let (row, c) = (1 + i % 2, if i / 2 % 2 == 0 { 'x' } else { 'y' });
-            p.process(format!("\x1b[{row};1H{c}").as_bytes())?;
-        }
-        let prints = p.take_prints();
-        assert_eq!(prints.lost(), lost, "{runs} runs");
-        assert_eq!(prints.iter().count(), runs.min(4096));
-    }
-    let mut p = crate::Parser::new(Size::of(50, 200), 0)?;
-    p.record_prints(true);
-    assert_eq!(p.take_prints().cap(), 40_000);
-    Ok(())
-}
-
-/// A resize with prints untaken loses them: their rows and columns are
-/// the old size's. With none, nothing is lost.
-#[test]
-fn a_resize_loses_prints_untaken() -> Result<(), Error> {
-    let mut p = crate::Parser::new(Size::of(4, 10), 0)?;
-    p.record_prints(true);
-    p.resize(Size::of(4, 12))?;
-    p.process(b"a")?;
-    assert!(!p.take_prints().lost(), "nothing untaken");
-    p.process(b"b")?;
-    p.resize(Size::of(4, 10))?;
-    assert!(p.take_prints().lost());
-    Ok(())
-}
-
-/// A run of `Prints`: its text and columns.
-type Run = (String, (u16, u16));
-
-/// What `bytes` print, each run's text and columns.
-fn printed(bytes: &[&str]) -> Result<Vec<Run>, Error> {
-    let mut p = crate::Parser::new(Size::of(4, 20), 0)?;
-    p.record_prints(true);
-    for piece in bytes {
-        p.process(piece.as_bytes())?;
-    }
-    let prints = p.take_prints();
-    Ok(prints.iter().map(|r| (r.text.to_owned(), r.cols)).collect())
-}
-
-/// Characters that join a cell's cluster are printed, as they change it
-/// (`Prints`: "each run of text that changed cells"): a
-/// combining mark, and a flag's second regional indicator, which widens
-/// its cell; the same however the input is split.
-#[test]
-fn prints_hold_what_joins_a_cluster() -> Result<(), Error> {
-    let whole = "e\u{301} \u{1F1EF}\u{1F1F5}";
-    let want = vec![(whole.to_owned(), (0, 4))];
-    assert_eq!(printed(&[whole])?, want);
-    let split: Vec<String> = whole.chars().map(String::from).collect();
-    let split: Vec<&str> = split.iter().map(String::as_str).collect();
-    assert_eq!(printed(&split)?, want, "a character a call");
-    // A mark joined after the cursor moved away and back joins the run
-    // that took its cell; one after a take is a run of its own.
-    let after = printed(&["a\u{1b}[C\u{1b}[D\u{301}"])?;
-    assert_eq!(after, vec![("a\u{301}".to_owned(), (0, 1))]);
-    let mut p = crate::Parser::new(Size::of(4, 20), 0)?;
-    p.record_prints(true);
-    p.process("\u{1F44D}".as_bytes())?;
-    p.take_prints();
-    p.process("\u{1F3FD}".as_bytes())?;
-    let tone: Vec<_> = p
-        .take_prints()
-        .iter()
-        .map(|r| (r.text.to_owned(), r.cols))
-        .collect();
-    assert_eq!(tone, vec![("\u{1F3FD}".to_owned(), (0, 2))], "a skin tone");
-    Ok(())
-}
-
-/// The checker's 6a: a shell command set aside by a nested
-/// program's mark holds both nonces; one dropped from under it shows.
-#[cfg(feature = "checks")]
-#[test]
-fn the_checker_finds_a_command_set_aside_without_its_nonces() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::PromptMarks);
-    let mut p = crate::Parser::with_options(Size::of(4, 20), 0, options)?;
-    p.require_mark_nonce(Some(b"k3y"), Some(b"n3st"));
-    p.process(b"\x1b]133;C;nonce=k3y\x07\x1b]133;A;nonce=n3st\x07")?;
-    assert!(p.check().is_clean(), "{}", p.check());
-    p.screen_mut().nested_nonce = None;
-    assert!(p.check().faults_of("screen.nest").next().is_some());
     Ok(())
 }

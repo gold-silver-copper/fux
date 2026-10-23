@@ -185,8 +185,6 @@ impl Session {
         for arg in words {
             line.extend(string(arg).chain(["arg".to_owned()]));
         }
-        // Made, and left to run: a replay waits for no program.
-        line.extend(["0".to_owned(), "timeout".to_owned()]);
     }
 }
 

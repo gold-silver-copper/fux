@@ -48,7 +48,7 @@ wire! {
         Column(column: Column),
         /// A repeat mode's bar: `RESIZE  h j k l · Esc`.
         Repeat(bar: String),
-        /// A menu or a chooser.
+        /// A chooser.
         List(list: List),
         /// A line being typed: the command prompt, a rename (of `about`).
         Prompt {
@@ -90,15 +90,14 @@ wire! {
 }
 
 wire! {
-    /// A menu or a chooser, as drawn: its rows, the one marked current, the one
-    /// selected, and whether `r` and `x` act on its rows (a chooser's do).
+    /// A chooser, as drawn: its rows, the one marked current, and the one
+    /// selected.
     #[derive(Clone, Debug, PartialEq, Eq, Default)]
     pub struct List {
         pub title: String,
         pub items: Vec<String>,
         pub current: Option<usize>,
         pub selected: usize,
-        pub chooser: bool,
         /// What it was opened for: if it goes, the server closes the list.
         pub about: Option<AnyRef>,
     }
@@ -159,7 +158,7 @@ wire! {
     }
 }
 
-/// What moves a list (a menu, a chooser), made of the client's keys.
+/// What moves a chooser, made of the client's keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListAct {
     Move(Move),

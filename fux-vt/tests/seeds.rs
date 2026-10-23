@@ -260,20 +260,6 @@ fn seeds() -> Vec<Seed> {
             fuzz: Fuzz::None,
         },
         Seed {
-            name: "b10-prints-rep",
-            row: "B10",
-            size: defaults,
-            prefix: Prefix::None,
-            bytes: || b"X\x1b[65535b".to_vec(),
-            // Recorded up to the cap, 4 bytes a cell, at least.
-            reaches: |r| {
-                ensure(r.work.prints >= 39_000, || {
-                    format!("{} recorded", r.work.prints)
-                })
-            },
-            fuzz: Fuzz::Terminal,
-        },
-        Seed {
             name: "b11-every-cell-a-colour",
             row: "B11",
             size: (2, 10, 1 << 10),
@@ -493,21 +479,6 @@ fn seeds() -> Vec<Seed> {
                 ensure(keys == 0, || format!("{keys} keys typed"))
             },
             fuzz: Fuzz::Keys,
-        },
-        Seed {
-            name: "b29-late-command-marks",
-            row: "B29",
-            size: defaults,
-            prefix: Prefix::EmptyHistory,
-            bytes: || repeat(b"\x1b]133;C;late\x07", 290),
-            // Late marks with a full history behind them.
-            reaches: |r| {
-                let s = r.parser.screen();
-                ensure(FULL.contains(&s.history_len()), || {
-                    format!("{} rows", s.history_len())
-                })
-            },
-            fuzz: Fuzz::None,
         },
         Seed {
             name: "b31-marks-after-a-full-row",
@@ -1156,14 +1127,13 @@ fn pieces(mut rest: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// Replays `seed` on its screen, every feature on and prints recorded, in
+/// Replays `seed` on its screen, every feature on, in
 /// 4 KiB pieces after its prefix; a key seed through the key decoder, in
 /// 4 KiB reads too.
 fn replay(seed: &Seed) -> Result<Replayed> {
     let (rows, cols, history) = seed.size;
     let options: Options = Feature::ALL.into_iter().collect();
     let mut parser = Parser::with_options(Size::new(rows, cols)?, history, options)?;
-    parser.record_prints(true);
     let prefix = match seed.prefix {
         Prefix::None => Vec::new(),
         Prefix::EmptyHistory => repeat(b"\n", 349_600),
@@ -1232,8 +1202,7 @@ const TERMINAL_MAX: usize = 4096;
 
 /// The `deep` fuzz target's input for `output` at `size` (rows, columns,
 /// history bytes): a header for the nearest screen it makes (1 + 2h a
-/// side) and the history budget at least `size`'s, every option on, prints
-/// recorded; then `output` as its operations: a run of a pattern of up to
+/// side) and the history budget at least `size`'s, every option on; then `output` as its operations: a run of a pattern of up to
 /// 256 bytes repeated 16 times or more as `f2 n k`, the rest as plain
 /// output of up to 241 bytes an operation. `None` past what one run takes:
 /// 128 operations, 1 MiB of output, 64 KiB of input (fuzz/README.md).

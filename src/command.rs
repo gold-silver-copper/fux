@@ -5,14 +5,9 @@ use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
-use crate::log::Unit;
 use crate::wire::wire;
 use std::path::PathBuf;
 use std::time::Duration;
-
-/// The longest one `pause` may be, in milliseconds, and so the longest
-/// pause before a piece of input, pauses in a row added up.
-pub const PAUSE_MOST_MS: i64 = 10_000;
 
 wire! {
     /// A workspace named on the command line: `+N` or its name.
@@ -209,9 +204,6 @@ wire! {
         Paste(text: String),
         /// Bytes as they are: part of a key's sequence or of a character.
         Bytes(bytes: Vec<u8>),
-        /// A pause between two inputs: the one after it is written this long
-        /// after the one before, whatever the program did meanwhile.
-        Pause(gap: Duration),
     }
 }
 
@@ -257,41 +249,32 @@ wire! {
 }
 
 wire! {
-    /// What `wait` waits for.
+    /// What `wait` waits for, after it began (`crate::wait`).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Until {
-        /// The text appears: on the screen, or in a line written since the wait
-        /// began that has scrolled into history.
+        /// The program writes the text, escape sequences aside.
         Text(text: String),
-        /// The text is no longer on the screen.
-        Gone(text: String),
-        /// The program exits.
+        /// The program writes anything.
+        Change,
+        /// The program writes nothing for this long.
+        Quiet(quiet: Duration),
+        /// The program exits, or has.
         Exit,
         /// The program rings the bell or sends a desktop notification.
         Bell,
-        /// The pane settles: its program reads its terminal, waits quiet on
-        /// something else, or exits (`crate::ready`); for a bare `wait`, still
-        /// 2s too after input that found it still. What an action waits for
-        /// when it names nothing.
-        Settled,
-        /// The shell command marked running ends (its `D`): the wait lasts as
-        /// long as it runs, unless it is given a time limit.
+        /// A shell command ends, as its OSC 133 `D` mark says.
         Done,
     }
 }
 
 wire! {
-    /// A wait: for any of its conditions, in each of its panes, how long at
-    /// most, and how it is told.
+    /// A wait: for any of its conditions, in each of its panes, and how long
+    /// at most.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
         pub until: Vec<Until>,
         /// How long at most; if unsaid, the server's `wait-seconds`.
         pub timeout: Option<Duration>,
-        /// What came since it began, or the screen, as the wait ends.
-        pub print: bool,
-        /// What it prints with reverse video marked, as `capture`'s `marks`.
-        pub marks: bool,
     }
 }
 
@@ -710,7 +693,8 @@ impl Command {
         }
     }
 
-    /// When a wait it then does is armed (`Request::Then`), if it does one.
+    /// When the wait its wait words make is armed (`Request::Then`), if it
+    /// takes them.
     pub fn armed(&self) -> Option<Armed> {
         use Command as C;
         match self {
@@ -745,13 +729,11 @@ impl Command {
     }
 }
 
-/// When the wait a command then does is armed.
+/// When the wait a command's wait words make is armed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Armed {
-    /// From just before it acts, in these panes: the wait is made once it
-    /// has acted, counting from its input (`Pane::since`), so what its
-    /// input or signal brings is what the wait sees (send-keys,
-    /// send-mouse, signal).
+    /// Just as it acts, in these panes, in the same turn: what its input or
+    /// signal brings is what the wait sees (send-keys, send-mouse, signal).
     Before(AnyRef),
     /// Once it has started its pane's program, on that pane, before the
     /// server reads what the program writes (run, split, respawn).
@@ -770,15 +752,6 @@ wire! {
         /// A wait in the pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(target: AnyRef, wait: Wait),
-        /// A capture of the pane (its history and view) read once it
-        /// settles, waiting this long at most (if unsaid, the server's
-        /// `wait-seconds`), and said with its state.
-        Capture(
-            target: PaneId,
-            history: Option<usize>,
-            view: CaptureView,
-            timeout: Option<Duration>
-        ),
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),
@@ -801,27 +774,9 @@ impl Request {
     pub fn reaches(&self) -> Reaches<'_> {
         match self {
             Self::Do(command) | Self::Then(command, _) => command.reaches(),
-            Self::Wait(..) | Self::Capture(..) => Reaches::Reads,
+            Self::Wait(..) => Reaches::Reads,
             Self::Events(..) => Reaches::Streams,
             Self::Grant(..) | Self::Revoke(_) => Reaches::Server,
         }
-    }
-}
-
-/// What a key is to a program reading it (`crate::log::Unit`): an edit
-/// of the line typed (a character, BSpace, Delete, Tab, the cursor keys,
-/// and the line editor's control keys that move or delete), else a key
-/// that does something (Enter, Escape, a control or function key).
-pub fn unit(key: KeyPress) -> Unit {
-    use fux_vt::keys::{Key, Modifiers};
-    match (key.key, key.mods) {
-        (Key::Char(_), Modifiers::NONE | Modifiers::SHIFT)
-        | (Key::Char('a' | 'b' | 'e' | 'f' | 'h' | 'k' | 'u' | 'w' | 'y'), Modifiers::CTRL)
-        | (Key::Char('b' | 'd' | 'f'), Modifiers::ALT)
-        | (
-            Key::Backspace | Key::Delete | Key::Tab | Key::Arrow(_) | Key::Home | Key::End,
-            Modifiers::NONE,
-        ) => Unit::Edit,
-        _ => Unit::Submit,
     }
 }

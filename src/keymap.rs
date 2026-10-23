@@ -772,6 +772,7 @@ mod tests {
             "Workspaces",
             "Session",
             "Resize",
+            "Pane actions",
             "Move",
         ];
         assert_eq!(groups, order, "in the order keys.fux binds them");

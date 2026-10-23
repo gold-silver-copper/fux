@@ -11,12 +11,7 @@ const FAILED: NonZeroU8 = NonZeroU8::MIN;
 const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
 /// The pane waited on closed, or everything an event stream watched.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
-/// The shell command a wait lasted for ended before the wait was met.
-const ENDED: NonZeroU8 = NonZeroU8::MIN.saturating_add(4);
-/// The program reads its terminal, and the text waited for has not come
-/// (or gone): fux judges it cannot before the agent types.
-const READING: NonZeroU8 = NonZeroU8::MIN.saturating_add(6);
-/// The time limit came first, the program still at work: as `timeout(1)`.
+/// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
 /// `codes! { /// doc  Variant "name", Closed "closed" CLOSED, … }` expands
@@ -118,6 +113,9 @@ codes! {
     OnlyShell "only_shell",
     /// A pane's program is not reading its terminal.
     NotReading "not_reading",
+    /// A pane where no shell command was marked (OSC 133), for what needs
+    /// one (`last-output`).
+    NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
     /// A size no pane or tab can have.
@@ -139,8 +137,6 @@ codes! {
     // How a wait ends.
     /// The program exited, or was started again, before the wait was met.
     Exited "exited" EXITED,
-    /// The shell command a wait lasted for (`wait-done`) ended first.
-    Ended "ended" ENDED,
     /// A wait's limit came first.
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
@@ -149,8 +145,6 @@ codes! {
     Gone "gone" CLOSED,
     /// The reader of an event stream fell too far behind.
     Lost "lost",
-    /// The program reads its terminal and the text has not come.
-    Stopped "stopped" READING,
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps",
@@ -182,6 +176,8 @@ codes! {
     NoProgram "no_program",
     /// `send-keys` with no keys.
     NoKeys "no_keys",
+    /// A wait that names nothing to wait for.
+    NoWait "no_wait",
     /// A value that is not a client.
     NotAClient "not_a_client",
     /// A paste that could not be read.

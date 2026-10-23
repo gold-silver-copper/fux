@@ -284,7 +284,8 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
             }
         }
         let pane_now = session.panes.get(&pane);
-        // Entries it had not told were let go (journal-bytes): said so.
+        // Entries it had not told were let go (past what the journal
+        // keeps): said so.
         if pane_now.is_some_and(|p| p.record.lost_after(from)) {
             events.push(at(What::Missed));
         }
@@ -296,7 +297,6 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 Recorded::Title(title) => What::Title(title.clone()),
                 Recorded::Done(status) => What::Done(*status),
                 Recorded::Resize(size) => What::Resized(*size),
-                Recorded::Output(_) => continue,
             }));
         }
         let was = old.panes.get(&pane).and_then(|w| w.ended);

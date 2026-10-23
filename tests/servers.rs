@@ -92,6 +92,9 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         sh,
         "pane",
         "str",
+        "status=1",
+        "wait-text",
+        "str",
         &line,
         "text",
         "str",
@@ -221,8 +224,8 @@ fn events_tell_what_happens() -> Outcome {
     Ok(())
 }
 
-/// Keys sent to a tab reach each of its panes, and each answers once its
-/// shell reads again, with the command's status.
+/// Keys sent to a tab reach each of its panes, and a wait on them waits in
+/// each.
 #[test]
 fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
@@ -233,12 +236,16 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let a = first_word(&a);
     let b = server.ok(&[&["str", a, "pane", "horizontal"][..], &bash, &["split"]].concat())?;
     let b = first_word(&b);
-    server.ok(&["str", b, "pane", "wait"])?;
+    // Each pane writes the command's output: the tab's wait meets it in
+    // both, a line each.
     let both = server.ok(&[
         "str",
         a,
         "pane",
         "tab",
+        "str",
+        "both-42",
+        "wait-text",
         "str",
         "echo both-$((40+2))",
         "text",
@@ -247,30 +254,11 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "key",
         "send-keys",
     ])?;
-    // Where nothing says a shell reads (macOS), a quiet screen is taken
-    // as settled, the command maybe still running: wait for its output in
-    // each pane instead.
-    if !PROBED {
-        let tab = [
-            "str",
-            a,
-            "pane",
-            "tab",
-            "str",
-            "both-42",
-            "wait-text",
-            "wait",
-        ];
-        server.ok(&tab)?;
-        return Ok(());
-    }
-    // Each pane's answer: its state line, then the echo and the output.
     for pane in [a, b] {
-        let part = both
-            .split_once(&format!("{pane} {READING} · done 0\n"))
-            .map(|(_, rest)| rest)
-            .ok_or_else(|| format!("no answer from {pane}: {both}"))?;
-        assert!(part.contains("\nboth-42\n"), "{pane}: {both}");
+        assert!(
+            both.contains(&format!("{pane} text \"both-42\"\n")),
+            "{both}"
+        );
     }
     Ok(())
 }
@@ -575,7 +563,7 @@ fn a_crashed_server_comes_back() -> Outcome {
 fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     let server = Server::start("")?;
     let run = [
-        "opts", "str", "late", "name", "str", "sleep 60", "command", "0", "timeout", "run",
+        "opts", "str", "late", "name", "str", "sleep 60", "command", "run",
     ];
     let late = server.ok(&run)?;
     let late = first_word(&late);
@@ -622,8 +610,6 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         "echo built; sleep 60",
         "arg",
-        "0",
-        "timeout",
         "split",
     ])?;
     server.ok(&[
@@ -646,12 +632,15 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "{ls}\nfrom\n{dump}"
     );
     let (made, _) = server.newest_pane()?;
-    server.ok(&["str", &made, "pane", "str", "built", "wait-text", "wait"])?;
+    eventually("the worker's output", || {
+        Ok(server
+            .ok(&["str", &made, "pane", "capture"])?
+            .contains("built"))
+    })?;
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
     server.ok(&[
-        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "0",
-        "timeout", "run",
+        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "run",
     ])?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
@@ -672,15 +661,14 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.ok(&[
-        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "0",
-        "timeout", "run",
+        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "run",
     ])?;
     let dump = source.ok(&["dump"])?;
     let server = Server::start("")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&[&file.to_string_lossy()])?;
-    let named = server.ok(&["str", "tab-2", "pane", "0", "timeout", "wait"])?;
+    let named = server.ok(&["str", "tab-2", "pane"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(&format!("{} sleep ", first_word(&named))),
@@ -695,7 +683,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "opts", "str", "moved", "in", "str", "sleep 60", "command", "0", "timeout", "run",
+        "opts", "str", "moved", "in", "str", "sleep 60", "command", "run",
     ])?;
     server.ok(&[
         "str",
@@ -743,12 +731,12 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
         "str",
         "echo through-the-door; read x",
         "arg",
+        "str",
+        "through-the-door",
+        "wait-text",
         "run",
     ])?;
-    assert!(
-        answer.contains(READING) && answer.contains("through-the-door"),
-        "{answer}"
-    );
+    assert!(answer.contains("through-the-door"), "{answer}");
     Ok(())
 }
 
@@ -868,6 +856,9 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             sh,
             "pane",
             "str",
+            "door-42",
+            "wait-text",
+            "str",
             "echo door-$((40+2))",
             "text",
             "str",
@@ -875,10 +866,7 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             "key",
             "send-keys",
         ])?;
-        assert!(
-            keys.contains(READING) && keys.contains("\ndoor-42\n"),
-            "{keys}"
-        );
+        assert!(keys.ends_with("\ndoor-42\n"), "{keys}");
         let capture = server.ok(&["str", sh, "pane", "capture", "json"])?;
         assert!(
             capture.starts_with('{') && capture.contains("door-42"),
@@ -972,6 +960,9 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
             "str",
             "echo door-only; read x",
             "arg",
+            "str",
+            "door-only",
+            "wait-text",
             "run",
         ])?;
         assert!(answer.stdout.contains("door-only"), "{}", answer.stderr);
@@ -1017,7 +1008,7 @@ fn a_sandboxed_request_ends_with_its_server() -> Outcome {
     let checked = sandboxed(|| {
         let mut client = Command::new(FUX)
             .args(["str", "t", "server", "opts", "str", "python3", "program"])
-            .args(["str", "-c", "arg", "str", crash, "arg", "run"])
+            .args(["str", "-c", "arg", "str", crash, "arg", "wait-exit", "run"])
             .env("XDG_RUNTIME_DIR", &rt)
             .env("XDG_STATE_HOME", rt.join("state"))
             .env_remove("FUX_SOCKET")

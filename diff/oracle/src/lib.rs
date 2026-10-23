@@ -65,9 +65,8 @@ pub trait Side: Clone {
     ) -> Result<Option<(usize, Stop)>, Error>;
     /// `Parser::resize`.
     fn resize(&mut self, rows: u16, cols: u16) -> Result<(), Error>;
-    /// A host's call, and what it gave back, as text: a tick's count, the
-    /// prints taken.
-    fn host(&mut self, call: Call) -> String;
+    /// A host's call.
+    fn host(&mut self, call: Call);
     /// Everything about the screen but its rows.
     fn state(&self) -> State;
     /// How many rows the screen retains: its history and its live rows.

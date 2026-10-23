@@ -2,11 +2,9 @@
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::{Child, Ended, Pid};
-use crate::{after, classify::Echo, log, outer::Colours};
-use fux_vt::{Event, Feature, Print, Row, RowId, Screen, Size};
-use fuxix::process::Activity;
-use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
+use crate::{after, log, outer::Colours};
+use fux_vt::{Event, Feature, Screen, Size};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// The largest single piece of input: a whole paste and its envelope.
@@ -50,13 +48,10 @@ impl std::error::Error for Error {}
 
 /// Input and terminal replies waiting for the pane's program to read them,
 /// end to end, to be written together: at most [`INPUT_BYTES`] of them,
-/// however many pieces they came in, with room kept for a command line
-/// held until the shell is ready, which is then typed whatever else came.
+/// however many pieces they came in.
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
-    /// A command line held until the shell is ready.
-    held: Option<Typed>,
     /// Input was refused, and the program has not read since: everything
     /// is refused, so none arrives with a hole before it.
     refusing: bool,
@@ -97,8 +92,7 @@ impl InputQueue {
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
-        let held = self.held.as_ref().map_or(0, |typed| typed.line.len());
-        self.bytes.len().saturating_add(held)
+        self.bytes.len()
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -123,23 +117,6 @@ impl InputQueue {
         }
         untold
     }
-    /// When the held command line is to be typed, if one is held.
-    pub fn due_at(&self) -> Option<Instant> {
-        self.held.as_ref().map(Typed::due_at)
-    }
-    /// The shell wrote at `now`: a held line waits for it to be quiet. The
-    /// clock is read only while one is held.
-    pub fn heard(&mut self, now: impl FnOnce() -> Instant) {
-        if let Some(typed) = &mut self.held {
-            typed.last_output = Some(now());
-        }
-    }
-    /// Types the held command line now, into the room kept for it.
-    pub fn type_now(&mut self) {
-        if let Some(typed) = self.held.take() {
-            self.bytes.push(&typed.line);
-        }
-    }
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -161,16 +138,6 @@ impl InputQueue {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
         out
-    }
-}
-
-impl From<Typed> for InputQueue {
-    /// A queue holding `typed` until the shell is ready.
-    fn from(typed: Typed) -> InputQueue {
-        InputQueue {
-            held: Some(typed),
-            ..InputQueue::default()
-        }
     }
 }
 
@@ -258,8 +225,9 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
-    /// Its bells, notifications and titles, in order, for the journal.
-    happened: &'a mut Vec<log::Event>,
+    /// The journal its bells, notifications, titles and commands' ends go
+    /// to, in order.
+    record: &'a mut log::Log,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -275,7 +243,7 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.as_str().to_owned();
-        self.happened.push(log::Event::Title(title));
+        self.record.push(log::Event::Title(title));
     }
 }
 
@@ -299,7 +267,7 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             Event::Bell => {
-                self.happened.push(log::Event::Bell);
+                self.record.push(log::Event::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
@@ -307,7 +275,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
-                self.happened.push(log::Event::Notification(text.clone()));
+                self.record.push(log::Event::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
@@ -316,6 +284,7 @@ impl fux_vt::Sink for Sink<'_> {
                     *self.copied = Some(text);
                 }
             }
+            Event::CommandEnded(status) => self.record.push(log::Event::Done(status)),
             Event::IconName(_) | Event::Clipboard { .. } => {}
         }
     }
@@ -425,47 +394,6 @@ pub(crate) fn named(argv: &[String]) -> String {
     argv.first().map(|p| basename(p)).unwrap_or_default()
 }
 
-/// Shells a pane may run, taking commands typed at them.
-const SHELLS: &[&str] = &[
-    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh",
-];
-
-/// Programs that run what they are given on another machine and show it
-/// here (remote clients). What runs there is not theirs to probe, nor
-/// fux's: unless the client reports it (`OSC 133 ; S`, as `koh connect`
-/// does), whether they read their terminal says nothing of it.
-const REMOTE: &[&str] = &[
-    "ssh",
-    "slogin",
-    "autossh",
-    "mosh",
-    "mosh-client",
-    "et",
-    "telnet",
-    "rlogin",
-    "rsh",
-];
-
-/// A remote client in a pane's foreground that reports nothing of what it
-/// runs, and how: a command on a plain pipe, or a terminal there.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Remote {
-    /// Its program's name (`ssh`).
-    pub name: String,
-    /// It shows a terminal there (the local one raw, as for a session or
-    /// `ssh -t`), not one command's output on a pipe.
-    pub terminal: bool,
-}
-
-/// Whether `argv` runs a shell taking commands typed at it: no -c and no
-/// script (`bash`, `bash --norc -i`).
-fn takes_commands(argv: &[String]) -> bool {
-    argv.split_first().is_some_and(|(p, args)| {
-        let interactive = args.iter().all(|a| a.starts_with('-') && a != "-c");
-        interactive && SHELLS.contains(&basename(p).trim_start_matches('-'))
-    })
-}
-
 /// A program's file name, or the program as given if it has none.
 pub(crate) fn basename(program: &str) -> String {
     std::path::Path::new(program)
@@ -482,29 +410,6 @@ pub struct Alerts {
     pub last: Option<String>,
 }
 
-/// What of an action's input its program, exited, did not read.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Dropped {
-    #[default]
-    None,
-    /// Held by fux or in its terminal as it exited: it went nowhere.
-    Unread(Vec<String>),
-    /// A relay's, sent on after the key or line that may have ended its
-    /// program, which its relay never said it read: it likely went
-    /// nowhere.
-    Unanswered(Vec<String>),
-}
-
-/// A piece of an action's input, as an answer names it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Sent {
-    /// Text typed.
-    Text(String),
-    /// Anything else, by its bytes and its name: a key (`C-q`), a paste,
-    /// a mouse event.
-    Named(usize, String),
-}
-
 pub struct Pane {
     pub id: PaneId,
     pub name: String,
@@ -517,10 +422,9 @@ pub struct Pane {
     pub input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
-    /// from BSU on, since when (its timeout's start), where the parser will
-    /// end it, and when its first bytes came from the program (what its
-    /// output is told as of, `classify`); see [`Pane::output`].
-    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan, Instant)>,
+    /// from BSU on, since when (its timeout's start), and where the parser
+    /// will end it; see [`Pane::output`].
+    frame: Option<(Vec<u8>, Instant, fux_vt::FrameScan)>,
     /// Output read from the program but not yet given to the screen: a
     /// call of the parser did as much work as one may
     /// (`fux_vt::Stop::Budget`), and the rest waits for the pane's next
@@ -544,88 +448,16 @@ pub struct Pane {
     /// The text the program last put on the clipboard (OSC 52) since the
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
-    pace: Pace,
-    /// The screen as it was last seen to change (a mark of it, and the
-    /// cursor), and since when it has shown so: a program that redraws
-    /// the same screen changes no row, and has not changed it.
-    shown: (fux_vt::Mark, (u16, u16)),
-    pub changed_at: Instant,
-    /// When input last went to the program, if any has: it is busy with
-    /// it at first, even while still blocked reading (the kernel has yet
-    /// to wake it).
-    pub written_at: Option<Instant>,
-    /// When input went in that found it not redrawing on its own
-    /// (`Pane::redrawing`), the job then in front, and the shell commands
-    /// its marks had ended: that job is at work on it (a spinner) until
-    /// still `ready::REDRAWN`, or a command ends. More input while at work
-    /// moves it on.
-    work_from: Option<(Instant, Option<Pid>, u64)>,
-    /// The last input typed ended a line (Enter, or text ending in a line
-    /// end): what came of it is a command's, if its program marks them.
-    pub line_ended: bool,
-    /// The last piece of input written ended in an escape sequence begun
-    /// and not finished (a lone Escape, `ESC [`): a program telling a lone
-    /// Escape from a sequence may wait a moment for the rest, on a timer
-    /// fux need not see (`ready::ESCAPE`).
-    pub escape_open: bool,
-    /// The last action's input ended in an edit of the line (text, a cursor
-    /// key): where the cursor is next matters.
-    pub edited: bool,
-    /// The last action's input, each piece's bytes and how it is named
-    /// (`C-q`, `"text"`): what its program had yet to read as it exited.
-    pub sent: Vec<Sent>,
-    /// The bytes of the last action's input written, and how many of
-    /// them had left fux as a relay's state report said its program read
-    /// again (`OSC 133 ; S`, which a relay sends once its program took the
-    /// input): what it read.
-    written: (usize, usize),
-    /// Its relay said its program ended having read the input that had
-    /// left fux then (`OSC 133 ; S ; activity=ended`): what of the action's
-    /// input came after went nowhere.
-    relay_ended: bool,
-    /// What of the last action's input its program had not read as it
-    /// exited, which went nowhere, or, a relay's, what its relay never
-    /// said it read ([`Pane::lose_unread`]).
-    pub lost: Dropped,
-    /// The last state report its program relayed (`OSC 133 ; S`), by where
-    /// it came among the marks, when fux read it, and the terminal's
-    /// foreground group then: the relay's, while it runs.
-    pub reported_at: Option<(u64, Instant, Option<fuxix::process::Pid>)>,
-    /// How many times in a row its program drew on its own (a clock,
-    /// `top`), as of the commands its marks had begun and ended then: a
-    /// change a moment after the last (`ready::SETTLE`), no input written
-    /// since that one. A change after a longer quiet (`ready::REDRAWN`), or
-    /// another command, counts again from none.
-    drew_alone: (u64, u32),
-    /// What happened in it, in order, and what each piece of output
-    /// printed: its journal (`crate::log`), which waits read.
+    /// The last of what its program wrote, as it wrote it: what came since
+    /// the server last let the waits read it (`crate::wait`).
+    pub fresh: Vec<u8>,
+    /// How many bytes its program has written.
+    pub wrote: u64,
+    /// When its program last wrote, or started.
+    pub wrote_at: Instant,
+    /// What happened in it, in order: its journal (`crate::log`), which
+    /// events and waits read.
     pub record: log::Log,
-    /// Where the last action's input began (or the program started):
-    /// what came since is what it brought.
-    pub since: Start,
-    /// The screen's rows as they read then, by row: a line printed again
-    /// to read as it did brings nothing new; and where each was and what
-    /// it showed ([`shows`]): a row drawn again to show as it did is no
-    /// change. Shared with each wait that counts from then, which keeps
-    /// them though another input comes.
-    pub before: Before,
-    /// The rows printed on since then, as they read after the last piece
-    /// that printed on them: what the next piece finds there.
-    seen: HashMap<RowId, Cells>,
-    /// What each row showed as the screen was last seen to change.
-    shown_rows: HashMap<RowId, (u16, u64)>,
-    /// Where each piece of output came from (`crate::classify`).
-    classes: crate::classify::Classes,
-    /// The bytes of output read since the last action's input, as far as
-    /// `REDRAWS`: within them, a line drawn again is told from news.
-    redraws: usize,
-    /// The nonces its shell's marks carry, and its programs', if fux
-    /// marked its shell: then they are the authority on what it reads and
-    /// runs.
-    pub nonce: Option<crate::marks::Nonces>,
-    /// How many times what the screen shows has changed: a wait for a change
-    /// past one read earlier waits for it to grow.
-    pub revision: u64,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
@@ -637,151 +469,9 @@ pub struct Pane {
     pub log: Option<std::fs::File>,
 }
 
-/// How long a piece of input is given before the next is written, if
-/// the program was not reading as it went in: longer than a program waits
-/// to tell a lone Escape from one that begins a sequence, and than a burst
-/// of input it takes as a paste, as typing would leave.
-pub const PACE: Duration = Duration::from_millis(30);
-/// How long a piece of input is given at most for a program that was
-/// reading to take it: ncurses waits a second for an Escape's sequence to
-/// go on.
-pub const TAKE: Duration = Duration::from_secs(1);
-/// How often a program is asked whether it took a piece of input.
-const POLL: Duration = Duration::from_millis(2);
-/// How long after a piece is written the program may be taken to have it
-/// without drawing anything: the kernel hands it on within that.
-const FLOOR: Duration = Duration::from_millis(2);
-
-/// Where a wait counts from: a number in the pane's journal, and then, how
-/// many shell commands had begun and ended and whether the full screen was
-/// in use.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Start {
-    pub from: log::Seq,
-    pub started: u64,
-    pub finished: u64,
-    pub on_full: bool,
-    /// Where the cursor was: its row and column.
-    pub cursor: (u16, u16),
-    /// It is an action's input, not the program's start: a command marked
-    /// after it may be one that input began, which a wait waits for.
-    pub input: bool,
-}
-
-impl Start {
-    /// Counting from `from`, `screen` as it is now; `input`, an action's.
-    pub fn at(from: log::Seq, screen: &Screen, input: bool) -> Start {
-        Start {
-            from,
-            started: screen.commands().started,
-            finished: screen.commands().finished,
-            on_full: screen.mode(fux_vt::Mode::AlternateScreen),
-            cursor: screen.cursor_position(),
-            input,
-        }
-    }
-}
-
-/// Whether `bytes` end in an escape sequence begun and not finished: an
-/// Escape alone, or a CSI (`ESC [`) or SS3 (`ESC O`) with no final byte.
-fn escape_open(bytes: &[u8]) -> bool {
-    let Some(at) = bytes.iter().rposition(|b| *b == 0x1b) else {
-        return false;
-    };
-    match bytes.get(at.saturating_add(1)..).unwrap_or_default() {
-        [] | [b'O'] => true,
-        [b'[', rest @ ..] => rest.iter().all(|b| (0x20..=0x3f).contains(b)),
-        _ => false,
-    }
-}
-
-/// A piece of input: its bytes, what it is to the program that reads it,
-/// and, after a pause, how long after the piece before it is written,
-/// whatever the program did meanwhile (`gap`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Piece {
-    pub bytes: Vec<u8>,
-    pub unit: log::Unit,
-    pub gap: Option<Duration>,
-}
-
-impl Piece {
-    /// A piece written once the program took the one before.
-    pub fn new(bytes: Vec<u8>, unit: log::Unit) -> Piece {
-        Piece {
-            bytes,
-            unit,
-            gap: None,
-        }
-    }
-}
-
-/// Input written a piece at a time (`log::Unit`), each once the
-/// program took the one before (it reads its terminal again, every key
-/// read and its output read by fux), or once its time is up: so each
-/// piece of output follows the input it answers (`crate::classify`).
-#[derive(Default)]
-pub struct Pace {
-    /// Pieces waiting to be written.
-    waiting: VecDeque<Piece>,
-    /// When the last piece was written, until when it is given, and
-    /// whether it was a lone Escape, which a program must surely have
-    /// taken alone before the next piece.
-    /// Whether what follows it is told exactly, needing no pace: the
-    /// kernel's echo of it known, or a full-screen program's screen.
-    written: Option<(Instant, Instant, bool, bool)>,
-    /// Until when the next piece waits for output the program wrote before
-    /// it to be read: output that pours on goes on being written then.
-    drained_by: Option<Instant>,
-    /// When to look again.
-    until: Option<Instant>,
-}
-
-/// After the shell's output has been quiet this long, it is taken to be
-/// waiting at its prompt. Output within one burst -- a prompt drawn in
-/// pieces, lines of a startup message -- comes much closer together than
-/// this, while a person notices nothing shorter.
-pub const QUIET: Duration = Duration::from_millis(50);
-
-/// How many bytes of output after an input are read for lines drawn again
-/// as they read (each row printed on is read after each piece): a screen's
-/// redraws, many times over. Past them, in a flood, every run printed is
-/// news to a wait, and costs no more than recording it.
-const REDRAWS: usize = 1 << 20;
-
-/// A command line held until the new shell is ready for it: until its output
-/// has been quiet for `QUIET` after it first wrote, or at `deadline` if it
-/// writes nothing. Typed earlier, the terminal would echo the line before the
-/// shell had drawn its prompt, and a shell whose startup writes and then
-/// discards pending input would lose it. It always fits the input queue.
-pub struct Typed {
-    line: Vec<u8>,
-    deadline: Instant,
-    /// When the shell last wrote, once it has.
-    last_output: Option<Instant>,
-}
-
-impl Typed {
-    /// `line`, to be typed at `deadline` at the latest, unless it is too
-    /// long ever to fit the input queue.
-    pub fn new(line: Vec<u8>, deadline: Instant) -> Option<Typed> {
-        (line.len() <= INPUT_BYTES).then_some(Typed {
-            line,
-            deadline,
-            last_output: None,
-        })
-    }
-
-    /// The moment the line is to be typed, as things stand.
-    pub fn due_at(&self) -> Instant {
-        match self.last_output {
-            Some(at) => at
-                .checked_add(QUIET)
-                .map_or(self.deadline, |quiet| quiet.min(self.deadline)),
-            None => self.deadline,
-        }
-    }
-}
+/// What is said of a pane where no shell command was ever marked.
+pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
+                            `fux help-agents-on shells` says how to turn marks on";
 
 /// `rows` by `cols`, a zero taken as one: a pane always has a cell.
 pub fn size(rows: u16, cols: u16) -> Size {
@@ -797,11 +487,8 @@ impl Pane {
         size: Size,
         history: usize,
     ) -> Result<Pane, Error> {
-        let mut parser = fux_vt::Parser::with_options(size, history, OPTIONS)
+        let parser = fux_vt::Parser::with_options(size, history, OPTIONS)
             .map_err(|source| Error::Terminal { size, source })?;
-        // What it prints is recorded (`Pane::record`).
-        parser.record_prints(true);
-        let mark = parser.screen().mark();
         Ok(Pane {
             id,
             name,
@@ -817,29 +504,10 @@ impl Pane {
             colours: Colours::default(),
             bell: false,
             copied: None,
-            pace: Pace::default(),
-            shown: (mark, (0, 0)),
-            changed_at: Instant::now(),
-            written_at: None,
-            work_from: None,
-            line_ended: false,
-            escape_open: false,
-            edited: false,
-            sent: Vec::new(),
-            written: (0, 0),
-            relay_ended: false,
-            lost: Dropped::default(),
-            reported_at: None,
-            drew_alone: (0, 0),
-            record: log::Log::new(log::JOURNAL_BYTES),
-            since: Start::default(),
-            before: Rc::default(),
-            seen: HashMap::new(),
-            shown_rows: HashMap::new(),
-            classes: crate::classify::Classes::default(),
-            redraws: 0,
-            nonce: None,
-            revision: 0,
+            fresh: Vec::new(),
+            wrote: 0,
+            wrote_at: Instant::now(),
+            record: log::Log::default(),
             starts: 0,
             mouse_held: None,
             alerts: Alerts::default(),
@@ -875,11 +543,15 @@ impl Pane {
                 self.log = None;
             }
         }
+        self.fresh.extend_from_slice(bytes);
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        self.wrote = self.wrote.saturating_add(len);
+        self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
             return;
         }
-        self.read(bytes, now, now);
+        self.read(bytes, now);
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -913,42 +585,37 @@ impl Pane {
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
     pub fn read_unread(&mut self) {
-        // Told as of when it came, as the kernel's echo is looked for then;
-        // a frame it begins is timed from now.
-        let came = self.unread.1;
         let unread = std::mem::take(&mut self.unread.0);
         // Only the work of a sequence read already: a call of no bytes does
         // it, and stops again if that spends its budget.
         if unread.is_empty() {
-            let mut happened = Vec::new();
-            if self.parse(&[], false, &mut happened).is_some() {
-                self.wait_unread(Vec::new(), came);
+            if self.parse(&[], false).is_some() {
+                self.wait_unread(Vec::new());
             }
             return;
         }
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
-        if let Some((taken, _)) = self.feed(frame, false, came) {
+        if let Some((taken, _)) = self.parse(frame, false) {
             self.frame_left = frame.len().saturating_sub(taken);
-            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec(), came);
+            self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
             return;
         }
-        self.read(after, Instant::now(), came);
+        self.read(after, Instant::now());
     }
 
-    /// `left` waits to be read on the pane's next turn, from `now`.
-    fn wait_unread(&mut self, left: Vec<u8>, now: Instant) {
-        self.unread = (left, now);
+    /// `left` waits to be read on the pane's next turn, from now.
+    fn wait_unread(&mut self, left: Vec<u8>) {
+        self.unread = (left, Instant::now());
     }
 
-    /// Reads `bytes`, which came at `came`, as [`Pane::output_at`] does at
-    /// `now`, with no output waiting.
-    fn read(&mut self, bytes: &[u8], now: Instant, came: Instant) {
+    /// Reads `bytes` as [`Pane::output_at`] does at `now`, with no output
+    /// waiting.
+    fn read(&mut self, bytes: &[u8], now: Instant) {
         let mut rest = bytes;
         loop {
-            if let Some((held, _, scan, began)) = &mut self.frame {
-                let began = *began;
+            if let Some((held, _, scan)) = &mut self.frame {
                 let read = held.len();
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
@@ -962,21 +629,21 @@ impl Pane {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.feed(&frame, false, began) {
+                if let Some((taken, _)) = self.parse(&frame, false) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
-                    self.wait_unread([left, rest].concat(), began);
+                    self.wait_unread([left, rest].concat());
                     return;
                 }
             } else {
-                match self.feed(rest, true, came) {
+                match self.parse(rest, true) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
-                        self.frame = Some((Vec::new(), now, self.parser.frame_scan(), came));
+                        self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                         rest = rest.get(end..).unwrap_or_default();
                     }
                     Some((end, _)) => {
-                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec(), came);
+                        self.wait_unread(rest.get(end..).unwrap_or_default().to_vec());
                         return;
                     }
                 }
@@ -988,197 +655,31 @@ impl Pane {
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.frame
             .as_ref()
-            .map(|(_, since, ..)| after(*since, FRAME_TIMEOUT))
+            .map(|(_, since, _)| after(*since, FRAME_TIMEOUT))
     }
 
     /// Reads the held frame now, ended or not.
     pub fn release_frame(&mut self) {
-        if let Some((held, _, _, began)) = self.frame.take()
-            && let Some((taken, _)) = self.feed(&held, false, began)
+        if let Some((held, ..)) = self.frame.take()
+            && let Some((taken, _)) = self.parse(&held, false)
         {
             // No output waits while a frame is held: it is the first.
             let left = held.get(taken..).unwrap_or_default().to_vec();
             self.frame_left = left.len();
-            self.wait_unread(left, began);
+            self.wait_unread(left);
         }
     }
 
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`,
     /// and where a call of the parser did all the work one may
     /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
-    /// and why (`Stop::Begun` or `Stop::Budget`). They are read a
-    /// piece at a time, each ending at a bell or a shell mark, so that
-    /// each of those has its place among the pieces; each piece is told
-    /// (`crate::classify`), as of `came`, when fux read it from the
-    /// program, numbered as the screen took it, and recorded.
-    fn feed(
-        &mut self,
-        bytes: &[u8],
-        until_frame: bool,
-        came: Instant,
-    ) -> Option<(usize, fux_vt::Stop)> {
-        let now = Instant::now();
-        let mut done = 0usize;
-        let begun = loop {
-            let rest = bytes.get(done..).unwrap_or_default();
-            let marked = self.nonce.is_some();
-            let piece = rest.get(..cut(rest, marked)).unwrap_or_default();
-            let runs = (self.classes).classify(self.parser.screen(), marked, piece, came);
-            let mut start = 0usize;
-            let mut begun = None;
-            for &(end, origin) in &runs {
-                let run = piece.get(start..end).unwrap_or_default();
-                if let Some((taken, stop)) = self.record(run, origin, until_frame) {
-                    // The rest of the piece is read again later, and told
-                    // again then.
-                    let at = start.saturating_add(taken);
-                    self.classes.unread(piece, &runs, at);
-                    begun = Some((done.saturating_add(at), stop));
-                    break;
-                }
-                start = end;
-            }
-            done = done.saturating_add(piece.len());
-            if begun.is_some() || done >= bytes.len() || piece.is_empty() {
-                break begun;
-            }
-        };
-        self.input.heard(Instant::now);
-        // A report read now, which came after any input written before.
-        let report = self.screen().commands().report;
-        if let Some(fux_vt::Report { mark, activity }) = report
-            && Some(mark) != self.reported_at.map(|(mark, ..)| mark)
-        {
-            let group = (self.process.child())
-                .and_then(|child| fuxix::terminal::foreground_group(&child.master));
-            self.reported_at = Some((mark, now, group));
-            // Its program reads again, or ended having read every key
-            // its relay sent it: it read the input that left fux.
-            use fux_vt::Reported::{Ended, Idle, Polling, Reading};
-            if matches!(activity, Reading | Polling | Idle | Ended) {
-                self.written.1 = self.written.0.saturating_sub(self.input.len());
-            }
-            self.relay_ended |= activity == Ended;
-        }
-        begun
-    }
-
-    /// Gives `run`, which came from `origin`, to the screen, as `feed`
-    /// does, and records it: its number and what it printed, an entry kept
-    /// only if it printed something; the rows it let go, a bell it rang.
-    fn record(
-        &mut self,
-        run: &[u8],
-        origin: log::Origin,
-        until_frame: bool,
-    ) -> Option<(usize, fux_vt::Stop)> {
-        if run.is_empty() {
-            return None;
-        }
-        // Text typed ahead may be drawn again by a line editor reading it,
-        // as things stand before the run: a shell fux marks at its prompt,
-        // as they say; another program, with the terminal raw.
-        let reads = self.classes.ahead()
-            && match self.nonce {
-                Some(_) => self.at_prompt(),
-                None => (self.process.child())
-                    .and_then(|c| fuxix::terminal::attributes(&c.master).ok())
-                    .is_some_and(|t| !t.modes().canonical),
-            };
-        let finished = self.screen().commands().finished;
-        let mut happened = Vec::new();
-        let begun = self.parse(run, until_frame, &mut happened);
-        let seq = log::Seq(self.screen().version());
-        let prints = self.parser.take_prints();
-        let printed = (!prints.is_empty()).then(|| {
-            let screen = self.parser.screen();
-            let mut echo: Vec<_> = (prints.iter())
-                .map(|print| {
-                    let line =
-                        || (screen.row_by_id(print.row)).map_or(print.row, |r| line_top(r).id());
-                    self.classes.echo(origin, &print, line, reads)
-                })
-                .collect();
-            // A line drawn again as it read is no news, as far as the
-            // first `REDRAWS` bytes after an input tell: past them (a flood)
-            // every run is, and the rows it printed on are not read.
-            // Nor one that printed more than it records: what it changed
-            // is unknown (`Prints::lost`).
-            let tell = self.redraws < REDRAWS && !prints.lost();
-            self.redraws = self.redraws.saturating_add(run.len());
-            let held = |p: &Print<'_>| {
-                tell.then(|| (self.seen.get(&p.row)).or(self.before.get(&p.row).map(|b| &b.0)))
-                    .flatten()
-            };
-            // What each run changed, told only within `REDRAWS`: past it
-            // every run is whole (`Printed`).
-            let fresh = match tell {
-                true => (prints.iter().zip(&echo))
-                    .map(|(p, e): (Print<'_>, &Echo)| {
-                        let echo = *e != Echo::Not;
-                        held(&p).map_or((0, p.text.chars().count()), |row| changed(row, &p, echo))
-                    })
-                    .collect(),
-                false => Vec::new(),
-            };
-            if echo.iter().all(|e| *e == Echo::Not) {
-                echo = Vec::new();
-            }
-            // Each row printed on, once, as it reads now, if it is on the
-            // screen (found in one map of its rows: a row in history is
-            // printed on no more, and finding one there would read all of
-            // history); rows scrolled off since are let go.
-            if tell {
-                let rows: HashMap<_, _> = live(screen).map(|(_, row)| (row.id(), row)).collect();
-                let mut last = None;
-                for print in prints.iter() {
-                    if last.replace(print.row) == Some(print.row) {
-                        continue;
-                    }
-                    if let Some(row) = rows.get(&print.row) {
-                        self.seen.entry(print.row).or_default().read(row);
-                    }
-                }
-                prune(&mut self.seen, screen);
-            } else {
-                self.seen.clear();
-            }
-            let mut prints = prints;
-            prints.shrink_to_fit();
-            Box::new(log::Printed {
-                prints,
-                echo,
-                fresh,
-            })
-        });
-        // A piece that printed nothing has no reader in the journal.
-        if let Some(printed) = printed {
-            self.record.push(seq, log::Event::Output(printed));
-        }
-        // What else the piece did, after it, in the order it came; a shell
-        // command's end, by the shell's marks, with the last one's status.
-        let commands = self.screen().commands();
-        let ended = commands.finished.saturating_sub(finished);
-        happened.extend((0..ended.min(16)).map(|_| log::Event::Done(commands.last_status)));
-        for event in happened {
-            let seq = log::Seq(self.parser.tick());
-            self.record.push(seq, event);
-        }
-        begun
-    }
-
-    /// Gives `bytes` to the screen, as `feed` does. Never inlined: the
-    /// parser's loop compiles tighter on its own than inside `record`.
+    /// and why (`Stop::Begun` or `Stop::Budget`). Never inlined: the
+    /// parser's loop compiles tighter on its own.
     #[inline(never)]
-    fn parse(
-        &mut self,
-        bytes: &[u8],
-        until_frame: bool,
-        happened: &mut Vec<log::Event>,
-    ) -> Option<(usize, fux_vt::Stop)> {
+    fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
-            happened,
+            record: &mut self.record,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -1217,10 +718,7 @@ impl Pane {
         while let Some(bytes) = self.input.front() {
             match fuxix::io::write(&child.master, bytes) {
                 Ok(0) => break,
-                Ok(n) => {
-                    self.input.advance(n);
-                    self.written_at = Some(Instant::now());
-                }
+                Ok(n) => self.input.advance(n),
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }
@@ -1235,9 +733,7 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
-            // The number the resize gave every row it kept.
-            let seq = log::Seq(self.screen().version());
-            self.record.push(seq, log::Event::Resize(size));
+            self.record.push(log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -1258,211 +754,6 @@ impl Pane {
         self.parser.screen()
     }
 
-    /// Makes the pane's shell marks count only with `nonce`'s, a program's
-    /// within a command with its nested one (`None`: fux marked no shell in
-    /// it, and they carry no authority).
-    pub fn mark_with(&mut self, nonce: Option<crate::marks::Nonces>) {
-        self.parser.require_mark_nonce(
-            nonce.as_ref().map(|n| n.shell.as_bytes()),
-            nonce.as_ref().map(|n| n.nested.as_bytes()),
-        );
-        self.nonce = nonce;
-    }
-
-    /// An action's input begins: what comes after is what it brought.
-    pub fn note_input(&mut self) {
-        self.count_from(true);
-    }
-
-    /// The program starts: what comes after is what it brought, no input
-    /// of an action's among it.
-    pub fn note_start(&mut self) {
-        self.count_from(false);
-    }
-
-    /// What comes after now is new to a wait; `input`, an action's input
-    /// brings it.
-    fn count_from(&mut self, input: bool) {
-        self.since = Start::at(log::Seq(self.parser.tick()), self.parser.screen(), input);
-        self.redraws = 0;
-        self.before = Rc::new(
-            (live(self.screen()))
-                .map(|(y, row)| (row.id(), (row_cells(&row), (y, shows(&row)))))
-                .collect(),
-        );
-        self.shown_rows = (self.before.iter())
-            .map(|(id, (_, shows))| (*id, *shows))
-            .collect();
-        self.seen.clear();
-        self.sent.clear();
-        self.written = (0, 0);
-        self.relay_ended = false;
-    }
-
-    /// Its program exits: what of the last action's input it had not read
-    /// (still held by fux, or in its terminal) went nowhere. A relay reads
-    /// it all: what it sent on after its program last said it read again,
-    /// past the first key or line (which may have ended it), it never said
-    /// its program read; once it said its program ended having read what it
-    /// had (`ended`), the rest went nowhere. Named by the last pieces, a
-    /// text by its end.
-    pub fn lose_unread(&mut self) {
-        let waiting = (self.process.child()).map_or(0, |c| c.master.keys_waiting());
-        let unread = self.input_queued().saturating_add(waiting);
-        let relay = self.screen().commands().report.is_some();
-        let names = |tail: Vec<(bool, String)>| -> Vec<String> {
-            tail.into_iter().map(|(_, name)| name).collect()
-        };
-        let sent = (self.sent.iter())
-            .map(|s| match s {
-                Sent::Text(text) => text.len(),
-                Sent::Named(len, _) => *len,
-            })
-            .fold(0, usize::saturating_add);
-        let unconfirmed = sent.saturating_sub(self.written.1);
-        self.lost = match (unread, relay) {
-            (_, true) if self.relay_ended => match unconfirmed {
-                0 => Dropped::None,
-                after => Dropped::Unread(names(self.named_tail(after))),
-            },
-            (0, false) => Dropped::None,
-            (0, true) => {
-                let mut tail = self.named_tail(unconfirmed).into_iter();
-                // What came up to the first key or line end, and that.
-                let ended = (tail.by_ref()).any(|(ends, _)| ends);
-                match names(tail.collect()) {
-                    after if ended && !after.is_empty() => Dropped::Unanswered(after),
-                    _ => Dropped::None,
-                }
-            }
-            (unread, _) => Dropped::Unread(names(self.named_tail(unread))),
-        };
-    }
-
-    /// The last action's pieces of input its last `bytes` are of, named,
-    /// and whether each ends a line or is a key.
-    fn named_tail(&self, mut bytes: usize) -> Vec<(bool, String)> {
-        let mut named = Vec::new();
-        for sent in self.sent.iter().rev() {
-            if bytes == 0 {
-                break;
-            }
-            let (len, piece) = match sent {
-                Sent::Text(text) => {
-                    let from = text.len().saturating_sub(bytes);
-                    let tail = (text.char_indices())
-                        .find(|(at, _)| *at >= from)
-                        .and_then(|(at, _)| text.get(at..))
-                        .unwrap_or_default();
-                    (
-                        text.len(),
-                        (tail.contains(['\r', '\n']), format!("{tail:?}")),
-                    )
-                }
-                Sent::Named(len, name) => (*len, (true, name.clone())),
-            };
-            named.push(piece);
-            bytes = bytes.saturating_sub(len);
-        }
-        named.reverse();
-        named
-    }
-
-    /// Sends `units` of input in order, each written once the program took
-    /// the one before (`Pace`): the first at once if none is waiting, the
-    /// rest as the program takes them ([`Pane::pace_due`]). Refused whole,
-    /// as `InputQueue::push` refuses, if they would not fit.
-    pub fn send(&mut self, units: Vec<Piece>, now: Instant) -> Result<(), Error> {
-        self.room_for(&units)?;
-        self.edited = units.last().is_some_and(|p| p.unit == log::Unit::Edit);
-        self.pace.waiting.extend(units);
-        self.release_paced(now);
-        Ok(())
-    }
-
-    /// Whether it takes `units` now, as `send` would: refused whole if
-    /// they and what waits to be paced are more than its queue's room.
-    pub fn room_for(&self, units: &[Piece]) -> Result<(), Error> {
-        let held: usize = self.pace.waiting.iter().map(|p| p.bytes.len()).sum();
-        let total = units
-            .iter()
-            .map(|p| p.bytes.len())
-            .fold(held, usize::saturating_add);
-        match total > self.input.room() {
-            true => Err(Error::NotReading),
-            false => Ok(()),
-        }
-    }
-
-    /// When paced input is to be looked at again.
-    pub fn pace_due(&self) -> Option<Instant> {
-        self.pace.until.filter(|_| !self.pace.waiting.is_empty())
-    }
-
-    /// Writes the next piece of paced input if the program took the last
-    /// one by `now`, or its time is up.
-    pub fn release_paced(&mut self, now: Instant) {
-        if self.pace.until.is_some_and(|until| until > now) {
-            return;
-        }
-        while let Some(next) = self.pace.waiting.front() {
-            // After a pause, written once it is up, whatever the program
-            // did meanwhile: the gap is the agent's to time.
-            if let Some(gap) = next.gap {
-                let from = self.pace.written.map_or(now, |(at, ..)| at);
-                if now < after(from, gap) {
-                    self.pace.until = Some(after(from, gap));
-                    return;
-                }
-                if let Some(Piece { bytes, unit, .. }) = self.pace.waiting.pop_front()
-                    && !self.write_unit(bytes, unit, now)
-                {
-                    return;
-                }
-                continue;
-            }
-            let exact = self.pace.written.is_some_and(|(_, _, _, exact)| exact);
-            // A lone Escape is taken alone, wherever: one with keys after it
-            // reads as another key.
-            let held = (self.pace.written).is_some_and(|(at, limit, escape, _)| {
-                (escape || !exact) && now < limit && !self.taken(at, now, escape)
-            });
-            // Output the program wrote before now came before this piece:
-            // it is read first (unless it pours on for a while), so that
-            // nothing it printed is told as following the piece.
-            let unread = !exact && (self.process.child()).is_some_and(|c| c.master.output_unread());
-            let draining =
-                !held && unread && now < *(self.pace.drained_by).get_or_insert(after(now, TAKE));
-            if held || draining {
-                self.pace.until = Some(after(now, POLL));
-                return;
-            }
-            self.pace.drained_by = None;
-            let Some(Piece { bytes, unit, .. }) = self.pace.waiting.pop_front() else {
-                return;
-            };
-            // Paced where nothing exact tells what follows the piece. (A
-            // shell fux marks draws the line typed before Enter as it reads
-            // it, where nothing marks it apart from what follows: paced.)
-            if !self.write_unit(bytes, unit, now) {
-                return;
-            }
-        }
-    }
-
-    /// Whether rows of the main screen written since the last input were
-    /// let go (past history-bytes, or out of a scroll region): what came
-    /// since is not all on the screen or in history. What they printed is
-    /// in the journal (`record`).
-    pub fn cut(&self) -> bool {
-        self.screen().let_go() > self.since.from.0
-    }
-
-    /// The text typed on the line since a key last submitted one.
-    pub fn typed(&self) -> &str {
-        self.classes.typed()
-    }
-
     /// Whether its program is one a restore brought back, waiting for
     /// `respawn`.
     pub fn paused(&self) -> bool {
@@ -1475,166 +766,16 @@ impl Pane {
         }
     }
 
+    /// Whether a shell command was ever marked here (OSC 133 `C`): else
+    /// nothing says where one's output is or when it ends.
+    pub fn marked(&self) -> bool {
+        self.screen().commands().started > 0
+    }
+
     /// Whether a shell command runs, as the marks say: never once the
-    /// pane's program ended, which ended it too (a relay's remote shell
-    /// gone with the relay, its last command never marked done).
+    /// pane's program ended, which ended it too.
     pub fn command_running(&self) -> bool {
         self.screen().commands().running() && self.process.exit_status().is_none()
-    }
-
-    /// Whether the pane's shell, marked by fux, is at its prompt, reading
-    /// its command line, as its marks say.
-    fn at_prompt(&self) -> bool {
-        let commands = self.screen().commands();
-        commands.prompt && !commands.running()
-    }
-
-    /// Whether the program took the input written at `at`, by `now`: every
-    /// byte written and read, its output read by fux, and it reads its
-    /// terminal again, with no time limit. After a lone Escape (`escape`),
-    /// only where the system says it reads, not idle on something it does
-    /// not name: a program telling a lone Escape from a key's sequence
-    /// waits in a read with a timer.
-    fn taken(&self, at: Instant, now: Instant, escape: bool) -> bool {
-        let Process::Reading(child) = &self.process else {
-            return true;
-        };
-        let drawn = self.changed_at > at || now >= after(at, FLOOR);
-        // The program asked last, after the checks that read no `/proc`.
-        let taking = || crate::ready::taking(self, child, now);
-        // A lone Escape the program drew nothing for may wait on a timer
-        // fux does not see (an alarm): given its moment first.
-        let alone = !escape || self.changed_at > at || now >= after(at, crate::ready::ESCAPE);
-        self.input.is_empty()
-            && drawn
-            && !child.master.output_unread()
-            && !self.has_unread()
-            && match taking() {
-                Some(Activity::Reading) => alone,
-                Some(Activity::Idle) => !escape,
-                Some(
-                    Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
-                )
-                | None => false,
-            }
-    }
-
-    /// The remote client in the terminal's foreground, if one is and it
-    /// reports nothing of what it runs.
-    pub fn remote(&self) -> Option<Remote> {
-        let child = self.process.child()?;
-        if self.screen().commands().report.is_some() {
-            return None;
-        }
-        let argv = match (self.process.job(), &self.runs) {
-            (Some(job), _) => fuxix::process::argv(job).unwrap_or_default(),
-            (None, Runs::Program(launch)) => launch.argv.clone(),
-            (None, Runs::Shell) => return None,
-        };
-        let name = basename(argv.first()?);
-        if !REMOTE.contains(&name.as_str()) {
-            return None;
-        }
-        // One blocked reading its terminal alone (not watching it beside
-        // its socket) asks at a prompt of its own, here: a password, a
-        // host key. It reads as any program does (Linux; macOS does not
-        // say, and takes it for the client).
-        if fuxix::process::blocked_reading(&child.master, child.leader.pid()) {
-            return None;
-        }
-        let modes = fuxix::terminal::attributes(&child.master).ok()?.modes();
-        Some(Remote {
-            name,
-            terminal: !modes.canonical,
-        })
-    }
-
-    /// Whether it runs a shell taking commands typed at it: its own, or one
-    /// `run` started with no -c and no script (`run -- bash`).
-    pub fn runs_shell(&self) -> bool {
-        match &self.runs {
-            Runs::Shell => true,
-            Runs::Program(launch) => takes_commands(&launch.argv),
-        }
-    }
-
-    /// Whether a shell that could mark commands is in front: the program
-    /// in the terminal's foreground (a job the shell runs, else its own) is
-    /// one, or, a relay's (`koh connect SERVER -- bash`), the program its
-    /// words say it runs is one. A REPL, an editor, a debugger is not.
-    pub fn shell_in_front(&self) -> bool {
-        let relay = self.screen().commands().report.is_some();
-        let argv = match (self.process.job(), &self.runs) {
-            (Some(job), _) => fuxix::process::argv(job).unwrap_or_default(),
-            (None, Runs::Program(launch)) => launch.argv.clone(),
-            (None, Runs::Shell) => return true,
-        };
-        match relay {
-            false => takes_commands(&argv),
-            true => (0..argv.len()).any(|at| argv.get(at..).is_some_and(takes_commands)),
-        }
-    }
-
-    /// Writes a piece of input, `unit` its kind, and tells the classifier
-    /// of it (the terminal's modes then, the line the cursor is on, whether
-    /// it is typed ahead), and sets the pace for the next. Whether what
-    /// follows it is told exactly, needing no pace.
-    fn write_unit(&mut self, bytes: Vec<u8>, unit: log::Unit, now: Instant) -> bool {
-        // Replies or a resize report took the room `send` found: the piece
-        // waits for the program to read.
-        if bytes.len() > self.input.room() {
-            let piece = Piece::new(bytes, unit);
-            self.pace.waiting.push_front(piece);
-            self.pace.until = Some(after(now, POLL));
-            return false;
-        }
-        let escape = bytes == b"\x1b";
-        let child = self.process.child();
-        let taking = child.and_then(|child| crate::ready::taking(self, child, now));
-        let reading = self.input.is_empty()
-            && match taking {
-                Some(Activity::Reading | Activity::Idle) => true,
-                Some(
-                    Activity::Busy | Activity::Polling | Activity::Waiting | Activity::Unknown,
-                )
-                | None => false,
-            };
-        // Typed ahead: a shell fux marks says whether it reads its line.
-        // Another program's line typed ahead ends at Enter: what it draws
-        // after is output (`docs/agents.md`, what fux cannot tell). Else
-        // the keys go to a program that reads them at once or within a
-        // time limit (a read with a timer, or one thread reading while
-        // another sleeps).
-        let ahead = match self.nonce {
-            Some(_) => !self.at_prompt(),
-            None => {
-                unit == log::Unit::Edit
-                    && match taking {
-                        Some(Activity::Reading | Activity::Polling | Activity::Idle) => false,
-                        Some(Activity::Busy | Activity::Waiting | Activity::Unknown) | None => true,
-                    }
-            }
-        };
-        let modes = child
-            .and_then(|child| fuxix::terminal::attributes(&child.master).ok())
-            .map(|t| t.modes());
-        if unit == log::Unit::Submit {
-            self.parser.note_submit();
-        }
-        let line = cursor_line(self.screen());
-        let input = crate::classify::Input { unit, line, ahead };
-        let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
-            || self.screen().mode(fux_vt::Mode::AlternateScreen);
-        self.work_from = (self.at_work(now) || !self.redrawing(now))
-            .then(|| (now, self.process.job(), self.screen().commands().finished));
-        self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
-        self.escape_open = escape_open(&bytes);
-        self.written.0 = self.written.0.saturating_add(bytes.len());
-        let _ = self.input.push(&bytes); // room checked above
-        let gap = if reading { TAKE } else { PACE };
-        self.pace.written = Some((now, after(now, gap), escape, exact));
-        self.pace.until = Some(after(now, if reading { POLL } else { PACE }));
-        exact
     }
 
     /// Starts `launch` in the pane again as `process`, on a screen as new,
@@ -1651,95 +792,17 @@ impl Pane {
             Runs::Program(_) | Runs::Shell => self.name.clone(),
         };
         let runs = Runs::Program(launch);
-        // A new program, its own pane: a wait counts from its start. Kept
-        // are what the session has yet to take from the old one (a bell, a
-        // copy), its colours, nonce, log and journal budget, and its counts.
+        // A new program, its own pane. Kept are what the session has yet to
+        // take from the old one (a bell, a copy), its colours, log and
+        // counts.
         let mut fresh = Pane::new(self.id, name, runs, self.size(), history)?;
-        fresh.mark_with(self.nonce.take());
-        fresh.record.set_budget(self.record.budget);
         fresh.colours = std::mem::take(&mut self.colours);
         fresh.bell = self.bell;
         fresh.copied = self.copied.take();
         fresh.log = self.log.take();
-        fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
         fresh.process = process;
-        fresh.note_start();
         Ok(std::mem::replace(self, fresh).process)
-    }
-
-    /// Notes, after the screen was read into at `now`, whether what it
-    /// shows changed.
-    pub fn note_change(&mut self, now: Instant) {
-        let screen = self.parser.screen();
-        let cursor = screen.cursor_position();
-        // Rows written to that show as they did change nothing.
-        let mut changed = cursor != self.shown.1;
-        // Once a change is seen, the other rows are not read: they show
-        // anew when next written (an action's start reads them all again).
-        for (y, row) in screen.dirty_live_rows_since(self.shown.0) {
-            if changed {
-                self.shown_rows.remove(&row.id());
-                continue;
-            }
-            let now_shows = (y, shows(&row));
-            changed |= self.shown_rows.insert(row.id(), now_shows) != Some(now_shows);
-        }
-        prune(&mut self.shown_rows, screen);
-        self.shown = (screen.mark(), cursor);
-        if changed {
-            let gap = now.saturating_duration_since(self.changed_at);
-            let commands = screen.commands();
-            let marks = commands.started.wrapping_add(commands.finished);
-            let n = match self.drew_alone {
-                (counted, n) if counted == marks && gap < crate::ready::REDRAWN => n,
-                _ => 0,
-            };
-            let alone = gap >= crate::ready::SETTLE
-                && self.written_at.is_none_or(|at| at <= self.changed_at);
-            self.drew_alone = (marks, n.saturating_add(u32::from(alone)));
-            // Its work on the input is done: a later change is no part of it.
-            if !self.at_work(now) {
-                self.work_from = None;
-            }
-            self.changed_at = now;
-            self.revision = self.revision.wrapping_add(1);
-        }
-    }
-
-    /// Whether its program redraws on its own at `now`: it drew so twice
-    /// in a row at least, the last time within `ready::REDRAWN`.
-    pub fn redrawing(&self, now: Instant) -> bool {
-        self.drew_alone.1 >= 2 && now < after(self.changed_at, crate::ready::REDRAWN)
-    }
-
-    /// Whether its program is at work at `now` on input that found it
-    /// still: not still `ready::REDRAWN` since, no shell command ended, and
-    /// the job in front then runs on (a job the input started, `top` typed
-    /// at a shell, is no work).
-    pub fn at_work(&self, now: Instant) -> bool {
-        self.work_from.is_some_and(|(at, job, ended)| {
-            now < after(at.max(self.changed_at), crate::ready::REDRAWN)
-                && ended == self.screen().commands().finished
-                && self.process.child().is_some()
-                && job == self.process.job()
-        })
-    }
-
-    /// How many bytes of input sent the program has not read yet.
-    pub fn input_queued(&self) -> usize {
-        let paced: usize = self.pace.waiting.iter().map(|p| p.bytes.len()).sum();
-        paced.saturating_add(self.input.len())
-    }
-
-    /// Whether pacing still holds keys back from a running program.
-    pub fn holds_keys(&self) -> bool {
-        !self.pace.waiting.is_empty() && self.process.child().is_some()
-    }
-
-    /// Whether every piece of input sent has been written to the program.
-    pub fn input_written(&self) -> bool {
-        self.pace.waiting.is_empty() && self.input.is_empty()
     }
 
     pub fn label(&self) -> &str {
@@ -1748,194 +811,6 @@ impl Pane {
             title => title,
         }
     }
-}
-
-/// Where the first piece of `bytes` that `Pane::feed` reads alone ends:
-/// just after a bell (BEL, or a run of them, as a terminal whose line is
-/// full rings one for each key it drops), or, if `marks`, after a shell
-/// mark (OSC 133, which fux's shells end with BEL); else [`PIECE`] bytes
-/// at most. A BEL that ends another OSC (a title) is no bell. Only BEL is
-/// searched for, output seldom holding one; and no further than a piece's
-/// length, as the parser may stop sooner (a frame drawn in synchronized
-/// output begins), and what follows is read again from there.
-const PIECE: usize = 4096;
-
-/// Where the first piece of `bytes` that `Pane::feed` reads alone ends.
-fn cut(bytes: &[u8], marks: bool) -> usize {
-    let bytes = bytes.get(..PIECE).unwrap_or(bytes);
-    let mut from = 0usize;
-    while let Some(at) = (bytes.get(from..).unwrap_or_default().iter())
-        .position(|b| *b == 0x07)
-        .map(|i| from.saturating_add(i))
-    {
-        let next = at.saturating_add(1);
-        // An OSC holds no BEL: one this BEL ends began since the last.
-        match osc_before(bytes.get(from..at).unwrap_or_default()) {
-            // An OSC's end: a shell mark's, read alone; else a title's.
-            Some(start) => {
-                let start = from.saturating_add(start);
-                let mark = bytes
-                    .get(start..)
-                    .is_some_and(|o| o.starts_with(b"\x1b]133;"));
-                if marks && mark {
-                    return next;
-                }
-                from = next;
-            }
-            None => {
-                let run = bytes.get(at..).unwrap_or_default();
-                return at.saturating_add(run.iter().take_while(|b| **b == 0x07).count());
-            }
-        }
-    }
-    bytes.len()
-}
-
-/// Where the OSC that `before`, which holds no BEL, ends inside began, if
-/// it ends inside one (`ESC ]`, and no ST after it).
-fn osc_before(before: &[u8]) -> Option<usize> {
-    let mut end = before.len();
-    loop {
-        let at = before.get(..end)?.iter().rposition(|b| *b == b']')?;
-        let start = at.checked_sub(1)?;
-        if before.get(start) == Some(&0x1b) {
-            // Ended since, by ST.
-            let rest = before.get(at..).unwrap_or_default();
-            let st = (rest.iter().zip(rest.iter().skip(1))).any(|(a, b)| (*a, *b) == (0x1b, b'\\'));
-            return (!st).then_some(start);
-        }
-        end = at;
-    }
-}
-
-/// The screen's rows as they read as an input began, by row, and where
-/// each was and what it showed (`Pane::before`).
-pub type Before = Rc<HashMap<RowId, (Cells, (u16, u64))>>;
-
-/// A row's cells as they read: its text, a blank or placeholder a space,
-/// and where in it each column starts (a wide character's second cell
-/// where the next starts); none kept while each column is one byte, as in
-/// an ASCII row, column N starting at byte N.
-#[derive(Clone, Debug, Default)]
-pub struct Cells {
-    text: String,
-    at: Vec<usize>,
-}
-
-impl Cells {
-    /// Whether the row holds blanks alone.
-    pub fn blank(&self) -> bool {
-        self.text.trim().is_empty()
-    }
-
-    /// Whether the row reads as `before` did, and maybe more after it.
-    pub fn starts_with(&self, before: &Cells) -> bool {
-        self.text.starts_with(before.text.trim_end())
-    }
-
-    /// Reads `row` into these cells, in the room they have.
-    fn read(&mut self, row: &Row<'_>) {
-        self.text.clear();
-        self.at.clear();
-        for (col, c) in row.cells().enumerate() {
-            let start = self.text.len();
-            if !self.at.is_empty() || start != col {
-                if self.at.is_empty() {
-                    self.at.extend(0..col);
-                }
-                self.at.push(start);
-            }
-            if !c.is_wide_continuation() {
-                self.text.push_str(c.shown());
-            }
-        }
-    }
-}
-
-/// The cells of `row`.
-pub fn row_cells(row: &Row<'_>) -> Cells {
-    let mut cells = Cells::default();
-    cells.read(row);
-    cells
-}
-
-/// The text of `row`'s cells from column `col` on.
-fn text_from(row: &Cells, col: u16) -> &str {
-    let at = match row.at.is_empty() {
-        true => usize::from(col).min(row.text.len()),
-        false => (row.at.get(usize::from(col)).copied()).unwrap_or(row.text.len()),
-    };
-    row.text.get(at..).unwrap_or_default()
-}
-
-/// Whether `row`, a row's cells, holds what `print` printed at its
-/// columns, a wide character's two cells as one.
-pub fn holds_at(row: &Cells, print: &Print<'_>) -> bool {
-    text_from(row, print.cols.0).starts_with(print.text)
-}
-
-/// The characters of `print` that change `row` (its cells just before):
-/// none if it printed what was there; else, of a run that may be the echo
-/// of the line typed (a line editor drawing it again, its prompt and all),
-/// those from the first that differs from what stood in its cell to the
-/// last; of other output, all of it (its row may have been erased since).
-pub fn changed(row: &Cells, print: &Print<'_>, echo: bool) -> (usize, usize) {
-    if !echo {
-        return match holds_at(row, print) {
-            true => (0, 0),
-            false => (0, print.text.chars().count()),
-        };
-    }
-    let there: Vec<char> = text_from(row, print.cols.0).chars().collect();
-    let text: Vec<char> = print.text.chars().collect();
-    let same = |i: &usize| text.get(*i) == there.get(*i);
-    let first = (0..text.len()).find(|i| !same(i));
-    let last = (0..text.len()).rev().find(|i| !same(i));
-    match (first, last) {
-        (Some(first), Some(last)) => (first, last.saturating_add(1)),
-        _ => (0, 0),
-    }
-}
-
-/// What `row` shows, its text and colours, as one number.
-pub fn shows(row: &Row<'_>) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for cell in row.cells() {
-        cell.contents().hash(&mut hasher);
-        cell.attributes().hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
-/// The screen's rows, from the top, and where each is.
-fn live(screen: &Screen) -> impl Iterator<Item = (u16, Row<'_>)> {
-    let window = screen.window();
-    (0..window.rows()).filter_map(move |y| Some((y, window.row(y)?)))
-}
-
-/// Past four times the screen's rows, keeps in `map` only the rows on the
-/// screen: rows scrolled off are printed on no more.
-pub fn prune<V>(map: &mut HashMap<RowId, V>, screen: &Screen) {
-    if map.len() > usize::from(screen.size().rows()).saturating_mul(4) {
-        let rows: std::collections::HashSet<_> = live(screen).map(|(_, row)| row.id()).collect();
-        map.retain(|id, _| rows.contains(id));
-    }
-}
-
-/// The first row of the line the cursor is on (a line wider than the
-/// screen wraps from rows above).
-fn cursor_line(screen: &Screen) -> Option<RowId> {
-    let row = screen.window().row(screen.cursor_position().0)?;
-    Some(line_top(row).id())
-}
-
-/// The first row of the line `row` is on.
-pub fn line_top(mut row: Row<'_>) -> Row<'_> {
-    while let Some(up) = row.above().filter(Row::continues) {
-        row = up;
-    }
-    row
 }
 
 #[cfg(test)]
@@ -1985,62 +860,6 @@ mod tests {
         assert_eq!(pane.screen().cursor_shape(), fux_vt::CursorShape::Zero);
         pane.output(b"\x1b[?1004h\x1bc");
         assert!(!pane.screen().mode(Mode::FocusReporting));
-        Ok(())
-    }
-
-    #[test]
-    fn a_typed_line_waits_for_quiet_output_or_the_deadline() -> Result<(), &'static str> {
-        let t0 = std::time::Instant::now();
-        let ms = std::time::Duration::from_millis;
-        let mut typed = Typed::new(b"echo hi\r".to_vec(), t0 + ms(1000));
-        let typed = typed.as_mut().ok_or("too long")?;
-        // Nothing written yet: only the deadline.
-        assert_eq!(typed.due_at(), t0 + ms(1000));
-        // Output keeps pushing it back while it keeps coming within QUIET.
-        typed.last_output = Some(t0 + ms(100));
-        assert_eq!(typed.due_at(), t0 + ms(150));
-        typed.last_output = Some(t0 + ms(140));
-        assert_eq!(typed.due_at(), t0 + ms(190));
-        // Never past the deadline, however long the output lasts.
-        typed.last_output = Some(t0 + ms(990));
-        assert_eq!(typed.due_at(), t0 + ms(1000));
-        Ok(())
-    }
-
-    #[test]
-    fn output_records_when_the_shell_wrote_and_types_nothing_itself() -> Result<(), Error> {
-        let mut pane = pane(5, 20)?;
-        let deadline = Instant::now() + Duration::from_secs(1);
-        pane.input = Typed::new(b"x\r".to_vec(), deadline)
-            .map(InputQueue::from)
-            .ok_or(Error::NotReading)?;
-        pane.output(b"$ ");
-        assert!(pane.input.due_at().is_some_and(|at| at < deadline));
-        assert!(pane.input.is_empty(), "output alone types nothing");
-        // Input that comes first fills the queue but for the line's room.
-        while pane.input.push(vec![b'k'; MAX_INPUT]).is_ok() {}
-        pane.input.type_now();
-        assert!(pane.input.drain_all().ends_with(b"kx\r"));
-        assert_eq!(pane.input.due_at(), None);
-        Ok(())
-    }
-
-    /// A paced piece whose room replies took while it waited waits on for
-    /// the program to read, and is written then: it is never dropped.
-    #[test]
-    fn a_paced_piece_that_no_longer_fits_waits_for_room() -> Result<(), Error> {
-        let mut pane = pane(5, 20)?;
-        let now = Instant::now();
-        let pieces = [b"a", b"b"].map(|b| Piece::new(b.to_vec(), log::Unit::Edit));
-        pane.send(pieces.into(), now)?;
-        assert_eq!(pane.input.drain_all(), b"a");
-        // Replies fill the queue while the second piece waits its pace.
-        pane.input.push(vec![b'r'; pane.input.room()])?;
-        let later = now + Duration::from_secs(1);
-        pane.release_paced(later);
-        assert!(pane.input.drain_all().iter().all(|b| *b == b'r'));
-        pane.release_paced(later + Duration::from_secs(1));
-        assert_eq!(pane.input.drain_all(), b"b");
         Ok(())
     }
 
@@ -2140,24 +959,6 @@ mod tests {
         )
     }
 
-    /// Output that only moves rows (insert line, over and over) still
-    /// counts against the journal's budget, which lets the oldest go.
-    #[test]
-    fn rows_moved_alone_count_against_what_is_kept() -> Result<(), Error> {
-        let mut pane = pane(24, 80)?;
-        pane.record.set_budget(1 << 20);
-        pane.note_input();
-        for _ in 0..40_000 {
-            pane.output(b"\x1b[H\x1b[L");
-        }
-        assert!(
-            pane.record.lost_after(pane.since.from),
-            "{} kept",
-            pane.record.held()
-        );
-        Ok(())
-    }
-
     /// A call of the parser that does all the work one may stops the read
     /// (THREATS.md 4.4): the rest of the output, and output read after it,
     /// waits for the pane's next turn, and is read then, the screen ending
@@ -2246,88 +1047,6 @@ mod tests {
         }
         assert!(!pane.mid_frame());
         assert_eq!(first_row(&pane), "DONEZ");
-        Ok(())
-    }
-
-    /// The kernel's echo of what was typed, in the piece of output a
-    /// parser call's budget stopped in, is told an echo when it is read on
-    /// the next turn: the output read so far took none of the echo's bytes
-    /// the parser had yet to read; and the echo is looked for as of when
-    /// the output came, though read more than the second it is looked for
-    /// after (`classify::ECHO_WITHIN`) later.
-    #[test]
-    fn an_echo_read_after_a_budget_stop_is_an_echo() -> Result<(), String> {
-        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
-        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
-        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
-        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
-        let input = crate::classify::Input {
-            unit: log::Unit::Edit,
-            line: None,
-            ahead: false,
-        };
-        let now = Instant::now();
-        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
-        // Output that spends a budget, in one piece with the echo.
-        let mut out = spends_the_budget(1000, 1000);
-        out.extend_from_slice(b"\x1b[Habc");
-        pane.output_at(&out, now);
-        assert!(pane.has_unread(), "the budget stopped no call");
-        std::thread::sleep(Duration::from_millis(1100));
-        let mut turns = 0u32;
-        while pane.has_unread() && turns < 100 {
-            pane.read_unread();
-            turns = turns.saturating_add(1);
-        }
-        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
-            .flat_map(|(_, printed)| {
-                printed
-                    .runs()
-                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
-            })
-            .filter(|(text, _)| text == "abc")
-            .map(|(_, echo)| echo)
-            .collect();
-        assert_eq!(echoes, [Echo::Is]);
-        Ok(())
-    }
-
-    /// The echo of what was typed, inside a frame begun in output read a
-    /// turn after it came, is looked for as of when it came, as outside
-    /// one: the frame read more than the second it is looked for after.
-    #[test]
-    fn an_echo_in_a_frame_read_late_is_an_echo() -> Result<(), String> {
-        let terminal = fuxix::terminal::Size::new(2, 10).ok_or("a size")?;
-        let (_master, slave) = fuxix::pty::open(terminal).map_err(|e| e.to_string())?;
-        let modes = fuxix::terminal::attributes(&slave).map_err(|e| e.to_string())?;
-        let mut pane = pane(1000, 1000).map_err(|e| e.to_string())?;
-        let input = crate::classify::Input {
-            unit: log::Unit::Edit,
-            line: None,
-            ahead: false,
-        };
-        let now = Instant::now();
-        assert!(pane.classes.wrote(input, b"abc", Some(&modes.modes()), now));
-        let mut out = spends_the_budget(1000, 1000);
-        out.extend_from_slice(b"\x1b[?2026h\x1b[Habc\x1b[?2026l");
-        pane.output_at(&out, now);
-        assert!(pane.has_unread(), "the budget stopped no call");
-        std::thread::sleep(Duration::from_millis(1100));
-        let mut turns = 0u32;
-        while pane.has_unread() && turns < 100 {
-            pane.read_unread();
-            turns = turns.saturating_add(1);
-        }
-        let echoes: Vec<Echo> = (pane.record.printed_after(log::Seq(0)))
-            .flat_map(|(_, printed)| {
-                printed
-                    .runs()
-                    .map(|(p, e, _)| (p.text.to_owned(), e.clone()))
-            })
-            .filter(|(text, _)| text == "abc")
-            .map(|(_, echo)| echo)
-            .collect();
-        assert_eq!(echoes, [Echo::Is]);
         Ok(())
     }
 
@@ -2519,14 +1238,22 @@ mod tests {
         Ok(())
     }
 
-    /// Output is read in pieces that end at a bell, or a run of bells, or
-    /// a shell mark; a BEL that ends a title is no bell.
+    /// Each shell command that ends goes in the journal with its own
+    /// status, though several end in one read; and a bell and a title
+    /// with them, in order.
     #[test]
-    fn pieces_end_at_bells_and_shell_marks() {
-        assert_eq!(super::cut(b"\x1b]0;title\x07text\x07more", true), 15);
-        assert_eq!(super::cut(b"a\x07\x07\x07b", false), 4);
-        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", true), 17);
-        assert_eq!(super::cut(b"x\x1b]133;A;nonce=1\x07$ ", false), 19);
-        assert_eq!(super::cut(b"plain", true), 5);
+    fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
+        let mut pane = pane(3, 30)?;
+        pane.output(
+            b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
+        );
+        let said: Vec<String> = (pane.record.after(log::Seq(0)))
+            .map(|e| format!("{:?}", e.event))
+            .collect();
+        assert_eq!(
+            said,
+            ["Done(Some(1))", "Bell", "Done(Some(0))", "Title(\"t\")"]
+        );
+        Ok(())
     }
 }

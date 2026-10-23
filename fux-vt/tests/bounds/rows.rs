@@ -13,9 +13,7 @@ use fux_vt::{
 };
 
 use super::Heap;
-use super::probe::{
-    Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, prints, repeat, steady,
-};
+use super::probe::{Bound, CHUNKS, PICTURE_BYTES, Probe, Scale, Setup, pieces, repeat, steady};
 
 /// What a row's probe found: nothing, or how it broke its bound.
 pub type Found = Result<(), String>;
@@ -499,36 +497,6 @@ fn tall_pictures(scale: Scale, cell: (u16, u16), chunk: usize) -> Found {
     probe.finish()
 }
 
-// B10: `Prints` keeps at most max(4 B a cell, 16 KiB) of text and 4,096
-// runs between takes: 171,072 bytes at the defaults.
-pub fn b10(scale: Scale, chunk: usize) -> Found {
-    let setup = Setup::defaults();
-    // What `Prints` may keep, and the history the copies scroll into with
-    // its transients: nothing else grows.
-    let bound = heap(prints(&setup).saturating_add(history_peak(setup.history)));
-    let input = repeat(b"X\x1b[65535b", scale.times());
-    let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-    probe.feed(&input)?;
-    probe.at_least("prints", 40_000)?;
-    probe.finish()?;
-    // What `Prints` kept, untaken: at most 4 bytes a cell of text, and
-    // 171,072 bytes in all.
-    let kept = prints(&setup);
-    let prints = probe.parser.take_prints();
-    let text = prints
-        .iter()
-        .map(|p| p.text.len())
-        .fold(0, usize::saturating_add);
-    let most = setup.cells().saturating_mul(4).max(16 << 10);
-    if text > most || prints.heap() > kept {
-        return Err(format!(
-            "Prints kept {text} bytes of text, {} bytes in all, between takes",
-            prints.heap()
-        ));
-    }
-    Ok(())
-}
-
 /// SGRs that give each cell a direct background of its own, `count` of
 /// them from colour `from`, a cell each.
 fn colours(from: u32, count: u32) -> Vec<u8> {
@@ -677,17 +645,12 @@ pub fn b14(scale: Scale, chunk: usize) -> Found {
     let runs = usize::from(setup.rows).saturating_mul(256 * RUN);
     // The links' heap, their strings and the table of those with an id,
     // both tables while it grows (`LINK_BYTES`, `Links::held`); the runs;
-    // the list a sweep sorts, 16 bytes a run, at most a run a cell; and
-    // what `Prints` may hold. 7,982,976 bytes; the peak measured at 1x is
+    // and the list a sweep sorts, 16 bytes a run, at most a run a cell:
+    // 7,611,904 bytes. The peak measured at 1x is
     // 6,365,240 (box2), the links holding 3.0 MB when the short-id links
     // refuse the id table's growth to 131,072 buckets.
     let sweep = setup.cells().saturating_mul(16);
-    let bound = heap(
-        (4usize << 20)
-            .saturating_add(runs)
-            .saturating_add(sweep)
-            .saturating_add(prints(&setup)),
-    );
+    let bound = heap((4usize << 20).saturating_add(runs).saturating_add(sweep));
     let long = repeat(&link("", 2083), 2000);
     fed(
         &setup,
@@ -723,10 +686,9 @@ pub fn b15(scale: Scale, chunk: usize) -> Found {
     let input = repeat(&row, scale.times().saturating_mul(1000));
     // Once fed, history holds its term, its rows' runs included, beside
     // the screen's runs (two grids of 50 rows of at most 256 runs, room
-    // for twice that) and `Prints`.
+    // for twice that).
     let most = history_term(setup.history)
-        .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * RUN))
-        .saturating_add(prints(&setup));
+        .saturating_add(usize::from(setup.rows).saturating_mul(2 * 256 * RUN));
     fed(&setup, bound, chunk.max(16), scale.times(), &input, |p| {
         (p.live() <= most)
             .then_some(())
@@ -782,13 +744,12 @@ pub fn b16(scale: Scale, chunk: usize) -> Found {
 // included.
 pub fn b17(scale: Scale, chunk: usize) -> Found {
     // Rows of 2,049 cells: two never share a block. History holds at most
-    // its term once processed, and its transients on the way, beside what
-    // `Prints` holds at this size.
+    // its term once processed, and its transients on the way.
     let wide = Setup::defaults().sized(50, 2049).history(1 << 20);
-    let bound = heap(history_peak(wide.history).saturating_add(prints(&wide)));
+    let bound = heap(history_peak(wide.history));
     let row = [[b'x'; 2049].as_slice(), b"\r\n"].concat();
     let rows = 130usize.saturating_mul(scale.times());
-    let most = history_term(wide.history).saturating_add(prints(&wide));
+    let most = history_term(wide.history);
     fed(
         &wide,
         bound,
@@ -804,7 +765,7 @@ pub fn b17(scale: Scale, chunk: usize) -> Found {
     )?;
     // 349,525 empty rows, then full ones: the ring keeps its room.
     let setup = Setup::defaults();
-    let bound = heap(history_peak(setup.history).saturating_add(prints(&setup)));
+    let bound = heap(history_peak(setup.history));
     let mut input = empty_history();
     let full = [[b'x'; 200].as_slice(), b"\r\n"].concat();
     input.extend(repeat(&full, 6000));
@@ -1350,35 +1311,6 @@ pub fn b28(scale: Scale, chunk: usize) -> Found {
         .ok_or(format!("{answered} of the requests answered"))
 }
 
-// B29: a prompt mark costs a fixed number of row reads: at most 9 a byte.
-pub fn b29(scale: Scale, chunk: usize) -> Found {
-    let setup = Setup::defaults();
-    const BOUND: Bound = Bound {
-        work: &[("rows", 9, 0, 0)],
-        heap: 0,
-    };
-    let bound = Bound {
-        heap: steady(&setup),
-        ..BOUND
-    };
-    let feeds = repeat(b"\n", 400_000);
-    let marks = repeat(
-        b"\x1b]133;C;late\x07",
-        290usize.saturating_mul(scale.times()),
-    );
-    let mut probe = Probe::new(&setup, bound, 4096, 1)?;
-    probe.feed(&feeds)?;
-    probe.restart(bound, scale.times());
-    for piece in super::probe::pieces(&marks, chunk) {
-        probe.feed(piece)?;
-    }
-    // Each late mark reads a row of history at least, looking for where
-    // its command began.
-    let marks = u64::try_from(290usize.saturating_mul(scale.times())).unwrap_or(0);
-    probe.at_least("rows", marks)?;
-    probe.finish()
-}
-
 /// `e` and `marks` U+0301s: a cluster of 1 + 2 × `marks` bytes.
 fn cluster(marks: usize) -> Vec<u8> {
     let marks: String = std::iter::repeat_n("\u{301}", marks).collect();
@@ -1473,11 +1405,10 @@ pub fn b33(scale: Scale, chunk: usize) -> Found {
         |p| p.at_least("cells", 10_000),
     )?;
     let small = Setup::defaults().sized(2, 10).history(1 << 10);
-    // The heap: 64 KiB, and what Prints may keep at 2×10 (B10: 16 KiB of
-    // text and 4,096 runs of 32 bytes).
+    // The heap: 64 KiB.
     const SMALL: Bound = Bound {
         work: &[("cells", 0, 0, 720)],
-        heap: (64 << 10) + (16 << 10) + 4096 * 32,
+        heap: 64 << 10,
     };
     let copies = scale.times();
     fed(
@@ -1899,11 +1830,7 @@ pub fn b40(scale: Scale, chunk: usize) -> Found {
 /// history and all it holds stay within B17's bound.
 fn b40_spans(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
-    let bound = heap(
-        (history_peak(setup.history))
-            .saturating_add(prints(&setup))
-            .saturating_add(256 * 80),
-    );
+    let bound = heap((history_peak(setup.history)).saturating_add(256 * 80));
     let lines = 300_000usize.saturating_mul(scale.times()).min(3_000_000);
     fed(
         &setup,
@@ -2276,7 +2203,6 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B07", b07),
     ("B08", b08),
     ("B09", b09),
-    ("B10", b10),
     ("B11", b11),
     ("B12", b12),
     ("B13", b13),
@@ -2295,7 +2221,6 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B26", b26),
     ("B27", b27),
     ("B28", b28),
-    ("B29", b29),
     ("B30", b30),
     ("B31", b31),
     ("B32", b32),
@@ -2334,7 +2259,7 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `THREATS.md` 2 has: B01 to B45 and B34a.
-pub const COUNT: usize = 46;
+/// How many rows `THREATS.md` 2 has: B01 to B45 but B10 and B29, and B34a.
+pub const COUNT: usize = 44;
 
 const _: () = assert!(ROWS.len() == COUNT);

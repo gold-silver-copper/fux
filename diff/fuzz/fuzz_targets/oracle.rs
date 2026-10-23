@@ -138,18 +138,13 @@ fn case(data: &[u8]) -> Option<Case> {
                 let (&[which, n], rest) = input.split_first_chunk::<2>()?;
                 input = rest;
                 let side = |n: u8| u16::from(n % 20).saturating_add(1);
-                case.steps.push(Step::Host(match which % 9 {
+                case.steps.push(Step::Host(match which % 4 {
                     0 => {
                         Call::HistoryBytes(HISTORIES.get(usize::from(n % 10)).copied().unwrap_or(0))
                     }
                     1 => Call::ClearHistory,
-                    2 => Call::Tick,
-                    3 => Call::Palette(n),
-                    4 => Call::Graphics(side(n), side(n / 20)),
-                    5 => Call::Nonce(n.is_multiple_of(2)),
-                    6 => Call::Submit,
-                    7 => Call::Record(!n.is_multiple_of(4)),
-                    _ => Call::Prints,
+                    2 => Call::Palette(n),
+                    _ => Call::Graphics(side(n), side(n / 20)),
                 }));
             }
             0xfd | 0xfc => {

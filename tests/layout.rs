@@ -230,13 +230,11 @@ fn moving_a_pane_by_direction_nests_it_beside_its_neighbour() -> Outcome {
     Ok(())
 }
 
-/// The non-blank rows of a pane's screen, from `capture`, as it is now
-/// (its program sleeps, so it never settles): the state line dropped.
+/// The non-blank rows of a pane's screen, from `capture`, as it is now.
 fn captured(server: &Server, pane: &str) -> Result<Vec<String>, String> {
     Ok(server
-        .ok(&["str", pane, "pane", "0", "timeout", "capture"])?
+        .ok(&["str", pane, "pane", "capture"])?
         .lines()
-        .skip(1)
         .map(str::to_owned)
         .filter(|l| !l.trim().is_empty())
         .collect())
