@@ -189,6 +189,9 @@ pub struct Keymap {
 /// The group of bindings without the prefix that gave none.
 pub const ROOT_GROUP: &str = "Without the prefix";
 
+/// The group of bindings after the prefix that gave none, listed last.
+pub const OTHER_GROUP: &str = "Other";
+
 impl Keymap {
     /// No bindings, and the default prefix, `C-b`: the default keys
     /// (`crate::script::default_keys`) are bound on it.
@@ -330,11 +333,11 @@ impl Keymap {
         let mut groups: Vec<(bool, String)> = Vec::new();
         for entry in &entries {
             let group = (entry.root, entry.group.clone());
-            if !groups.contains(&group) && group != (false, "Other".to_owned()) {
+            if !groups.contains(&group) && group != (false, OTHER_GROUP.to_owned()) {
                 groups.push(group);
             }
         }
-        groups.push((false, "Other".to_owned()));
+        groups.push((false, OTHER_GROUP.to_owned()));
         entries.sort_by_key(|e| {
             let group = groups
                 .iter()
@@ -384,31 +387,34 @@ impl Keymap {
     /// them again. Not the config's definitions, which a binding may call.
     pub fn describe(&self) -> String {
         let prefix = words::quote(&self.prefix.to_string());
-        let mut out = format!("unbind-all\nstr {prefix} prefix\n");
-        for (keys, binding, repeat) in self.bindings.all() {
-            out += &binding.line("bind", &keys_text(&keys), "Other", repeat);
-        }
-        for (key, binding) in &self.root {
-            out += &binding.line("bind-root", &key.to_string(), "", false);
-        }
-        out
+        let bound = (self.bindings.all().into_iter())
+            .map(|(keys, binding, repeat)| binding.line(&keys_text(&keys), false, repeat));
+        let root =
+            (self.root.iter()).map(|(key, binding)| binding.line(&key.to_string(), true, false));
+        std::iter::once(format!("unbind-all\nstr {prefix} prefix\n"))
+            .chain(bound)
+            .chain(root)
+            .collect()
     }
 }
 
 impl Binding {
-    /// The config line that binds `keys` to it with `word`: its label and
-    /// group too, unless they are what `word` gives (its code, `group`).
-    fn line(&self, word: &str, keys: &str, group: &str, repeat: bool) -> String {
-        let mut line = format!(
-            "str {} str {} {word}",
-            words::quote(keys),
-            words::quote(&self.code)
-        );
+    /// The config line that binds `keys` to it, after the prefix or, if
+    /// `root`, without it: its label and group too, unless they are what
+    /// that word gives (its code; `Other`, or none).
+    fn line(&self, keys: &str, root: bool, repeat: bool) -> String {
+        let (word, group) = if root {
+            ("bind-root", "")
+        } else {
+            ("bind", OTHER_GROUP)
+        };
+        let quote = words::quote;
+        let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
         if self.label != self.code {
-            line += &format!("  str {} label", words::quote(&self.label));
+            line += &format!("  str {} label", quote(&self.label));
         }
         if self.group != group {
-            line += &format!("  str {} group", words::quote(&self.group));
+            line += &format!("  str {} group", quote(&self.group));
         }
         if repeat {
             line += "  repeat";
@@ -733,11 +739,6 @@ mod tests {
     use super::*;
     use crate::act::PAGE;
 
-    /// The default keys, as `keys.fux` makes them.
-    fn defaults() -> Result<Keymap, String> {
-        crate::script::default_keys().map_err(|e| e.to_string())
-    }
-
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
     }
@@ -751,14 +752,22 @@ mod tests {
 
     #[test]
     fn the_defaults_bind_and_list_in_groups() -> Result<(), String> {
-        let keymap = defaults()?;
-        let column = keymap.column(&[], 0);
-        let groups: Vec<String> = column
-            .map(|c| c.entries.into_iter().map(|e| e.group).collect())
-            .unwrap_or_default();
-        let first = groups.iter().position(|g| g == "Panes");
-        let focus = groups.iter().position(|g| g == "Focus");
-        assert!(first < focus, "{groups:?}");
+        let keymap = crate::script::default_keys()?;
+        let mut groups: Vec<String> = (keymap.column(&[], 0).ok_or("a column")?.entries)
+            .into_iter()
+            .map(|e| e.group)
+            .collect();
+        groups.dedup();
+        let order = [
+            "Panes",
+            "Focus",
+            "Tabs",
+            "Workspaces",
+            "Session",
+            "Resize",
+            "Move",
+        ];
+        assert_eq!(groups, order, "in the order keys.fux binds them");
         assert_eq!(
             keymap.repeat_bar(&keys("r")?).as_deref(),
             Some("RESIZE  h j k l · Esc")
@@ -768,7 +777,7 @@ mod tests {
 
     #[test]
     fn the_prefix_opens_the_column_a_key_runs_its_binding() -> Result<(), String> {
-        let keymap = defaults()?;
+        let keymap = crate::script::default_keys()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("C-b")?, false);
         assert!(matches!(
@@ -791,7 +800,7 @@ mod tests {
 
     #[test]
     fn a_repeat_mode_keeps_its_layer_until_escape() -> Result<(), String> {
-        let keymap = defaults()?;
+        let keymap = crate::script::default_keys()?;
         let mut held = Held::default();
         for name in ["C-b", "r", "h"] {
             held.press(&keymap, stroke(name)?, false);
@@ -809,7 +818,7 @@ mod tests {
 
     #[test]
     fn a_watching_client_only_detaches() -> Result<(), String> {
-        let keymap = defaults()?;
+        let keymap = crate::script::default_keys()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("x")?, true);
         assert!(matches!(
@@ -827,7 +836,7 @@ mod tests {
     /// bound without the prefix listed last.
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
-        let mut keymap = defaults()?;
+        let mut keymap = crate::script::default_keys()?;
         let binding = |code: &str| Binding {
             code: code.into(),
             label: code.into(),
@@ -895,7 +904,7 @@ mod tests {
         let binding = |code: &str| Binding {
             code: code.into(),
             label: code.into(),
-            group: "Other".into(),
+            group: OTHER_GROUP.into(),
         };
         keymap.bind(&keys("g n")?, binding("opts new-tab drop"), false)?;
         keymap.bind(

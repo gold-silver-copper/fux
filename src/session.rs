@@ -729,8 +729,7 @@ impl Session {
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
-            test_keymap: crate::script::default_keys()
-                .unwrap_or_else(|_| crate::keymap::Keymap::empty()),
+            test_keymap: crate::keymap::Keymap::empty(),
         }
     }
 
@@ -3526,6 +3525,7 @@ pub(crate) mod testing {
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
         session.start().map_err(|e| e.to_string())?;
+        session.test_keymap = crate::script::default_keys()?;
         Ok(session)
     }
 

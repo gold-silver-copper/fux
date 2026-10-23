@@ -547,7 +547,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
 | `fux detach [-c CLIENT]` | Detach a client |
-| `fux list-keys` | Key names and the current bindings |
+| `fux list-keys` | The current bindings, as config lines |
 
 Some commands act on a client's screen rather than on shared state:
 `command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,

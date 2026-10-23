@@ -32,7 +32,7 @@ pub type Config = std::sync::Arc<(String, String)>;
 pub const LIBRARY: &str = include_str!("library.fux");
 
 /// fux's default keys: a config, run before the user's.
-pub const KEYS: &str = include_str!("keys.fux");
+const KEYS: &str = include_str!("keys.fux");
 
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
@@ -334,6 +334,12 @@ impl std::fmt::Display for Failed {
             .map(|line| line.chars().map(escaped).collect())
             .collect();
         write!(f, "{}: {}", self.code, lines.join("\\n"))
+    }
+}
+
+impl From<Failed> for String {
+    fn from(failed: Failed) -> String {
+        failed.to_string()
     }
 }
 
@@ -951,14 +957,14 @@ fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    match config_keymap(Some(server)) {
+    let defaults = match default_keys() {
+        Ok(defaults) => defaults,
+        Err(failed) => return (Keymap::empty(), Some(format!("keys.fux: {failed}"))),
+    };
+    match config_keymap(defaults.clone(), Some(server)) {
         Ok(keymap) => (keymap, None),
-        // Half a config is no config: the defaults, and why. Defaults that
-        // fail are what failed, as the config runs on them: then none.
-        Err(failed) => (
-            default_keys().unwrap_or_else(|_| Keymap::empty()),
-            Some(format!("config: {failed}")),
-        ),
+        // Half a config is no config: the defaults, and why.
+        Err(failed) => (defaults, Some(format!("config: {failed}"))),
     }
 }
 
@@ -976,26 +982,30 @@ pub fn default_keys() -> Result<Keymap, Failed> {
     Ok(keymap)
 }
 
-/// The keymap the config file makes (`run_file`), if there is one; else
-/// the defaults.
-fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
+/// The keymap the config file makes on `defaults` (`run_file`), if there
+/// is one; else the defaults.
+fn config_keymap(defaults: Keymap, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     match crate::config::default_path().filter(|p| p.exists()) {
-        Some(path) => run_file(&path, server),
-        None => default_keys(),
+        Some(path) => run_file(&path, defaults, server),
+        None => Ok(defaults),
     }
 }
 
-/// The keymap a config file makes, its words run on the defaults, its
+/// The keymap a config file makes, its words run on `defaults`, its
 /// settings sent to `server`, or with none checked and sent nowhere (a dry
 /// run); or why it fails. A config attaches nothing, and chooses no other
 /// server.
-pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
+pub fn run_file(
+    path: &std::path::Path,
+    defaults: Keymap,
+    server: Option<&mut Server>,
+) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path, SOURCE_MAX)?;
     let context = client::context();
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
-        ..default_keys()?
+        ..defaults
     };
     run_quiet(
         &shown,

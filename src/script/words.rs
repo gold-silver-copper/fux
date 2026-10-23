@@ -1490,7 +1490,8 @@ impl fuxth::Host for Host<'_> {
             "list-keys" => {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => (super::config_keymap(None))
+                    None => (super::default_keys())
+                        .and_then(|defaults| super::config_keymap(defaults, None))
                         .map_err(|e| fail(Code::Config, e.to_string()))?
                         .describe(),
                 };
@@ -1534,7 +1535,9 @@ impl fuxth::Host for Host<'_> {
                     .file_name()
                     .is_some_and(|n| n == "config.fux");
                 if config {
-                    super::run_file(std::path::Path::new(&path), None).map_err(checked)?;
+                    (super::default_keys())
+                        .and_then(|d| super::run_file(std::path::Path::new(&path), d, None))
+                        .map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }
@@ -1599,7 +1602,7 @@ impl Host<'_> {
                             .bind(
                                 &keys,
                                 crate::keymap::Binding {
-                                    group: "Other".to_owned(),
+                                    group: crate::keymap::OTHER_GROUP.to_owned(),
                                     ..binding
                                 },
                                 false,
