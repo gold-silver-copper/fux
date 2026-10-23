@@ -2758,8 +2758,9 @@ impl Session {
         Ok(Reply::default())
     }
 
-    /// `split`: a new pane beside `target`, along `axis`, running `start`
-    /// in `dir`, with the id `id` asked for.
+    /// `split`: a new pane where `to` says, beside `target` (halving its
+    /// frame if it floats) or floating over its tab, running `start` in
+    /// `dir`, with the id `id` asked for.
     fn split(
         &mut self,
         target: PaneId,
@@ -3218,7 +3219,8 @@ impl Session {
             AnyRef::Pane(p) if self.frame(p).is_some() => {
                 let tab = tab_of(&mut self.workspaces, p)?;
                 let mut floating = tab.layout().floating.clone();
-                let moved = swap_sibling(&mut floating, |f| f.pane == p, toward) == Some(true);
+                let moved =
+                    swap_sibling(&mut floating, |f| f.pane == p, toward).is_some_and(|moved| moved);
                 if moved {
                     tab.edit(|l| l.floating = floating);
                 }
@@ -3629,14 +3631,21 @@ fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
 /// The pane beside `from` toward `direction` among those of its layer,
 /// tiled or floating, as placed in `area`.
 fn neighbor_in(layout: &Layout, area: Rect, from: PaneId, direction: Direction) -> Option<PaneId> {
-    let floating = layout.floats(from);
-    let mut placed = Placement::default();
-    layout.place_into(area, floating, None, &mut placed);
-    // Placed with none, the tiled panes are their layer alone; a floating
-    // one's is the floating panes, their frames with them.
-    if floating {
-        placed.panes.retain(|(p, _)| layout.floats(*p));
-    }
+    let placed = if layout.floats(from) {
+        let floating = Layout {
+            tiled: None,
+            floating: layout.floating.clone(),
+        };
+        let mut placed = Placement::default();
+        floating.place_into(area, true, None, &mut placed);
+        placed
+    } else {
+        layout
+            .tiled
+            .as_ref()
+            .map(|t| layout::place(t, area))
+            .unwrap_or_default()
+    };
     layout::neighbor(&placed, from, direction)
 }
 

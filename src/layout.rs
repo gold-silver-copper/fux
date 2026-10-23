@@ -347,7 +347,8 @@ impl Layout {
     pub fn top(&self) -> Option<PaneId> {
         self.floating.last().map(|f| f.pane)
     }
-    /// The first tiled pane, else the top floating one.
+    /// The first tiled pane, else the top floating one: the pane a client
+    /// whose focus went is shown.
     pub fn first_pane(&self) -> Option<PaneId> {
         self.tiled
             .as_ref()

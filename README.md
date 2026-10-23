@@ -236,7 +236,9 @@ pane keeps them shown). Among floating panes the keys act as on tiled ones:
 `h` `j` `k` `l` and `o` focus another (`o` reaches one right under
 another); `v` and `s` split one in two; `x` closes it, `z` zooms it; `r`
 then `h` `j` `k` `l` moves its right or bottom border (no further than the
-screen's edge), and `m` then `h` `j` `k` `l` moves it a cell.
+screen's edge), and `m` then `h` `j` `k` `l` moves it a cell. `PANE N
+resize-x` and `resize-y` size a floating pane inside its border, and `N
+percent` sizes its frame, so `100 percent` fills the tab.
 
 From a script: `PANE floating split` opens one over PANE's tab (`program`
 and the rest as for any split); `PANE COL ROW COLS ROWS float` floats a
