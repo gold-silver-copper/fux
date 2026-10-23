@@ -1778,12 +1778,15 @@ impl Session {
             sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
         }
         // With no client, a tab that fits clients is laid out as a typical
-        // terminal would show it (`tab_area`).
+        // terminal would show it (`tab_area`). Of a changed tab clients
+        // show, its floating panes none shows are sized so too.
         let client = self.views.values().next().map_or(TYPICAL, Self::pane_area);
-        let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
-        for (layout, area) in changed {
+        let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed(client));
+        for (layout, area, shown) in changed {
             layout.place_into(area, true, None, &mut placed);
-            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
+            let unshown = |(p, _): &&(PaneId, Rect)| !shown || !sizes.iter().any(|(s, _)| s == p);
+            let more: Vec<_> = placed.panes.iter().filter(unshown).copied().collect();
+            sizes.extend(more.into_iter().map(|(p, r)| (p, (r.h(), r.w()))));
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
@@ -2762,6 +2765,13 @@ impl Session {
             (Some(axis), Some(float)) => Some(halves(target, float.frame.fitted(area), axis)?),
             (Some(_), None) => None,
         };
+        let room = |frame: &Rect| frame.w() >= layout::FRAME_MIN && frame.h() >= layout::FRAME_MIN;
+        if frames.is_some_and(|(_, frame)| !room(&frame)) {
+            let message = format!(
+                "{target}'s tab has no room for a floating pane; make it bigger first (`TAB COLS ROWS resize`)"
+            );
+            return Err(fail(Code::Size, message));
+        }
         let size = match (frames, axis) {
             (Some((_, frame)), _) => pane::size(frame.inner().h(), frame.inner().w()),
             (None, axis) => self.split_size(target, axis.unwrap_or(Axis::Horizontal), here)?,
@@ -2926,9 +2936,12 @@ impl Session {
                     }
                     _ => match (layout.top(), focus) {
                         (Some(top), _) => top,
+                        // Opened as if typed at its terminal: it alone
+                        // follows, and the shell has its environment.
                         (None, Some(focus)) => {
                             let shell = Start::Shell(&[], &[]);
-                            self.split(focus, None, shell, None, None, origin)?;
+                            let typed = Origin::Client(client);
+                            self.split(focus, None, shell, None, None, &typed)?;
                             return Ok(Reply::default());
                         }
                         (None, None) => return Err(fail(Code::NoPane, "the tab is empty")),
@@ -3013,9 +3026,9 @@ impl Session {
         let least = layout::FRAME_MIN;
         let (w, h) = match by {
             PaneResize::Border(Direction::Left, n) => (w.saturating_sub(n).max(least), h),
-            PaneResize::Border(Direction::Right, n) => (w.saturating_add(n), h),
+            PaneResize::Border(Direction::Right, n) => (w.saturating_add(n).max(least), h),
             PaneResize::Border(Direction::Up, n) => (w, h.saturating_sub(n).max(least)),
-            PaneResize::Border(Direction::Down, n) => (w, h.saturating_add(n)),
+            PaneResize::Border(Direction::Down, n) => (w, h.saturating_add(n).max(least)),
             PaneResize::To(axis, extent) => {
                 let len = match extent {
                     Extent::Cells(n) => n,
@@ -3080,12 +3093,12 @@ impl Session {
         let (ws, tab) = match (to, self.placed_frame(pane, here)) {
             (&MoveTo::Float(col, row, cols, rows), _) => {
                 let least = layout::FRAME_MIN;
-                if cols < least || rows < least {
+                let frame = Rect::new(col, row, cols, rows);
+                if frame.w() < least || frame.h() < least {
                     let message =
                         format!("a floating pane is at least {least}x{least}, its border included");
                     return Err(fail(Code::Size, message));
                 }
-                let frame = Rect::new(col, row, cols, rows);
                 tab_of(&mut self.workspaces, pane)?.edit(|l| l.float_at(pane, frame));
                 return Ok(String::new());
             }
@@ -4722,6 +4735,9 @@ mod tests {
         assert!(screen.contains("╭─ %2"), "{screen}");
         run(&mut s, "str c1 client toggle-floating")?;
         assert_eq!(shown(&s), ("%1".into(), 0));
+        // Hidden, it is resized all the same.
+        run(&mut s, "str %2 pane 30 resize-x")?;
+        assert_eq!(output(&mut s, "str %2 pane str cols get")?, "30\n");
         run(&mut s, "str c1 client toggle-floating")?;
         assert_eq!(focused(&s).as_deref(), Some("%2"));
         // A split halves a floating pane's frame.

@@ -216,6 +216,16 @@ impl Rect {
             h: self.h.saturating_sub(2),
         }
     }
+    /// It and the cells round it: the frame round a floating pane's rect.
+    pub fn outer(self) -> Rect {
+        let (x, y) = (self.x.saturating_sub(1), self.y.saturating_sub(1));
+        Rect {
+            x,
+            y,
+            w: self.right().saturating_add(1).saturating_sub(x),
+            h: self.bottom().saturating_add(1).saturating_sub(y),
+        }
+    }
     /// It moved and cut to fit in `area`, of which (0, 0) is the corner: no
     /// larger than it, and inside.
     pub fn fitted(self, area: Rect) -> Rect {
@@ -350,10 +360,16 @@ impl Layout {
         }
         self.floating.iter().for_each(|float| f(float.pane));
     }
-    /// The panes of `pane`'s layer, tiled or floating, in order.
+    /// The panes of `pane`'s layer, tiled or floating, in order: the
+    /// floating ones by number, an order focusing them, which raises
+    /// them, does not change.
     pub fn layer(&self, pane: PaneId) -> Vec<PaneId> {
         match self.floats(pane) {
-            true => self.floating.iter().map(|f| f.pane).collect(),
+            true => {
+                let mut floating: Vec<PaneId> = self.floating.iter().map(|f| f.pane).collect();
+                floating.sort_unstable();
+                floating
+            }
             false => self.tiled.as_ref().map_or_else(Vec::new, Tree::panes),
         }
     }

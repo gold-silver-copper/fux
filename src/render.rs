@@ -937,9 +937,23 @@ pub struct Painted<'a> {
 }
 
 impl Painted<'_> {
-    /// Whether pane `id` was painted at `rect` on a grid of this size.
-    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16) -> bool {
-        (self.grid.rows, self.grid.cols) == (rows, cols) && self.panes.contains(&(id, rect))
+    /// Whether pane `id` was painted at `rect` on a grid of this size,
+    /// under the same panes as `now` puts over it: a floating pane's
+    /// frame painted over it is in what was painted there, and must be
+    /// over it still.
+    pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16, now: &Placement) -> bool {
+        /// The panes after it that cover any of it, frames and all.
+        fn over(
+            panes: &[(PaneId, Rect)],
+            pane: (PaneId, Rect),
+        ) -> Option<impl Iterator<Item = &(PaneId, Rect)>> {
+            let i = panes.iter().position(|p| *p == pane)?;
+            let after = panes.get(i.saturating_add(1)..).unwrap_or_default();
+            Some(after.iter().filter(move |(_, r)| r.outer().meets(pane.1)))
+        }
+        let (was, is) = (over(self.panes, (id, rect)), over(&now.panes, (id, rect)));
+        (self.grid.rows, self.grid.cols) == (rows, cols)
+            && was.zip(is).is_some_and(|(was, is)| was.eq(is))
     }
 }
 
@@ -973,7 +987,9 @@ pub fn compose_held(
     };
     put_panes(grid, session, view, placement, focus, copy);
     let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
-    let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
+    let kept = |id: PaneId, rect: Rect| {
+        painted.filter(|p| p.kept(id, rect, view.rows, view.cols, placement))
+    };
     let hold = |grid: &mut Grid, id: PaneId, rect: Rect| {
         if held(&id) {
             match kept(id, rect) {
@@ -1216,8 +1232,14 @@ fn put_frame(grid: &mut Grid, session: &Session, id: PaneId, frame: Rect, focuse
     let label = session.panes.get(&id).map_or("", |p| p.label());
     let title = format!(" {id} {label} ");
     // Within the corners, a cell in from each.
-    let room = frame.w().saturating_sub(4);
-    grid.text(top, left.saturating_add(2), &fit(&title, room), style, room);
+    let (start, room) = (left.saturating_add(2), frame.w().saturating_sub(4));
+    grid.text(
+        top,
+        start,
+        &fit(&title, room),
+        style,
+        start.saturating_add(room),
+    );
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is
