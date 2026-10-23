@@ -1799,13 +1799,15 @@ impl Session {
                 continue;
             };
             let layout = tab.layout();
-            let typists =
-                (self.views.values()).filter(|v| !v.read_only && self.shows(v.id, tab.id));
             let areas: Vec<Rect> = if !shown {
                 vec![self.tab_area(tab.fit(), Here::NOWHERE)]
             } else if layout.floating.is_empty() {
                 continue;
             } else {
+                let typists = self
+                    .views
+                    .values()
+                    .filter(|v| !v.read_only && self.shows(v.id, tab.id));
                 typists.map(Self::pane_area).collect()
             };
             // A floating pane is checked against the few panes clients show.
@@ -3200,10 +3202,7 @@ impl Session {
             }
         };
         // A floating pane moved to its own tab is tiled there.
-        let floats = |t: &Tab| t.layout().floats(pane);
-        if self.locate(pane).is_some_and(|(_, source)| source == tab)
-            && !self.tab(tab).is_some_and(floats)
-        {
+        if self.frame(pane).is_none() && self.locate(pane).is_some_and(|(_, s)| s == tab) {
             return Ok(String::new());
         }
         self.relocate(pane, tab);
@@ -3219,8 +3218,7 @@ impl Session {
             AnyRef::Pane(p) if self.frame(p).is_some() => {
                 let tab = tab_of(&mut self.workspaces, p)?;
                 let mut floating = tab.layout().floating.clone();
-                let moved =
-                    swap_sibling(&mut floating, |f| f.pane == p, toward).is_some_and(|moved| moved);
+                let moved = swap_sibling(&mut floating, |f| f.pane == p, toward) == Some(true);
                 if moved {
                     tab.edit(|l| l.floating = floating);
                 }
@@ -3329,17 +3327,13 @@ impl Session {
                 .iter()
                 .filter(|t| self.takes_in(only, ws.id, t.id))
             {
+                let layout = tab.layout();
                 out.push_str(&format!(
                     "  {} {}{}\n",
                     tab.id,
                     tab.name,
-                    if tab.layout().is_empty() {
-                        " (empty)"
-                    } else {
-                        ""
-                    }
+                    if layout.is_empty() { " (empty)" } else { "" }
                 ));
-                let layout = tab.layout();
                 for pane in layout.panes().filter(|p| listed_pane(*p)) {
                     let floating = if layout.floats(pane) { " floating" } else { "" };
                     if let Some(p) = self.panes.get(&pane) {
@@ -3381,15 +3375,15 @@ impl Session {
         out
     }
 
-    /// A pane's state, as `ls json` has it.
-    fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
+    /// A pane's state, `floating` over its tab or not, as `ls json` has it.
+    fn pane_json<'a>(&'a self, p: &'a Pane, floating: bool, now: Instant) -> Fields<'a> {
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
             ("name", Json::str(p.name.as_str())),
             ("title", Json::str(p.title.as_str())),
             ("rows", Json::Number(i64::from(p.size().rows()))),
             ("cols", Json::Number(i64::from(p.size().cols()))),
-            ("floating", Json::Bool(self.frame(p.id).is_some())),
+            ("floating", Json::Bool(floating)),
             (
                 "pid",
                 p.process.child().map_or(Json::Null, |c| {
@@ -3405,7 +3399,7 @@ impl Session {
     fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Fields<'a> {
         let panes = (t.layout().panes())
             .filter_map(|id| self.panes.get(&id))
-            .map(|p| Json::Object(self.pane_json(p, now)))
+            .map(|p| Json::Object(self.pane_json(p, t.layout().floats(p.id), now)))
             .collect();
         vec![
             ("id", Json::str(t.id.to_string())),
@@ -3433,7 +3427,9 @@ impl Session {
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
         let mut fields = match target {
-            AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
+            AnyRef::Pane(id) => {
+                (self.panes.get(&id)).map(|p| self.pane_json(p, self.frame(id).is_some(), now))
+            }
             AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
             AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
         }
@@ -3451,7 +3447,7 @@ impl Session {
             AnyRef::Pane(_) | AnyRef::Workspace(_) => None,
         };
         let pane = single.and_then(|id| self.panes.get(&id));
-        if let Some(more) = pane.map(|p| self.pane_json(p, now)) {
+        if let Some(more) = pane.map(|p| self.pane_json(p, self.frame(p.id).is_some(), now)) {
             fields.extend(
                 more.into_iter()
                     .filter(|(name, _)| !["id", "name"].contains(name)),
@@ -3632,12 +3628,8 @@ fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
 /// tiled or floating, as placed in `area`.
 fn neighbor_in(layout: &Layout, area: Rect, from: PaneId, direction: Direction) -> Option<PaneId> {
     let placed = if layout.floats(from) {
-        let floating = Layout {
-            tiled: None,
-            floating: layout.floating.clone(),
-        };
         let mut placed = Placement::default();
-        floating.place_into(area, true, None, &mut placed);
+        layout.place_floats(area, None, &mut placed);
         placed
     } else {
         layout
@@ -4729,7 +4721,7 @@ mod tests {
     fn the_json_help_names_every_pane_field() -> Result<(), Box<dyn std::error::Error>> {
         let (s, _) = attached(4, 30)?;
         let pane = s.panes.values().next().ok_or("no pane")?;
-        for (name, _) in s.pane_json(pane, Instant::now()) {
+        for (name, _) in s.pane_json(pane, false, Instant::now()) {
             let named = crate::help::JSON.contains(&format!("`{name}`"));
             assert!(named, "docs/json.md does not name a pane's {name:?}");
         }

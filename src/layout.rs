@@ -431,11 +431,16 @@ impl Layout {
             Some(tree) => place_into(tree, area, out),
             None => out.clear(),
         }
-        let shown: &[Float] = if floating { &self.floating } else { &[] };
-        let shown = shown.iter();
+        if floating {
+            self.place_floats(area, focus, out);
+        }
+    }
+    /// Places its floating panes in `area` after what `out` holds, `focus`,
+    /// if one of them, on top.
+    pub fn place_floats(&self, area: Rect, focus: Option<PaneId>, out: &mut Placement) {
         let focused = |f: &&Float| Some(f.pane) == focus;
-        let others = shown.clone().filter(|f| !focused(f));
-        for float in others.chain(shown.filter(focused)) {
+        let others = self.floating.iter().filter(|f| !focused(f));
+        for float in others.chain(self.floating.iter().filter(focused)) {
             let frame = float.frame.fitted(area);
             if frame.fits_frame() {
                 out.panes.push((float.pane, frame.inner()));
