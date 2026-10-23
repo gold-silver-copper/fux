@@ -22,7 +22,7 @@ fux opts str web name 100 30 size str ./app program str --fast arg run  # start:
 fux opts str 'cargo test' command run wait-exit wait   # start, and wait for its end
 fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pastes): answers as run does
 fux %3 str 'make test' line                    # a shell command: %3 reading · done 0, its output
-fux %2 wait                                    # settle again; `%2 300 timeout wait` waits longer
+fux %2 wait                                    # settle again; `%2 600 timeout wait` waits longer
 fux %2 str 'listening on' wait-text wait       # wait for a text; also wait-gone, wait-bell, wait-exit
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
 fux %2 capture json                            # as JSON; `%2 str state get` is one field
@@ -43,6 +43,18 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
 ```
+
+**A program at work** (an agent's TUI behind a spinner) answers your keys
+once it drew them, `waiting · redraws on its own`. A bare `wait` after keys
+that found it still waits until its screen is still 2s, the work done or a
+question asked: never guess a text it shows when done (`reading` answers at
+once: it waits for you).
+Drawing still at the limit, it is `busy` (124): a bare `wait` again waits
+until it is still 2s, or `capture` what your keys started that never stops
+(a game, a follow mode). A clock drawn before your keys,
+or a program they started (`top` typed at a shell), is no work: a `wait`
+answers it at once. `state get` cannot tell work from a clock; `%2 0
+timeout wait` answers `busy` at once while it works.
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
   program exited before the wait; 4 the pane closed; 5 the shell command
@@ -65,7 +77,8 @@ last screen, then what came after.
 
 The notes: `done N` (a shell command ended), `no change` (keys read,
 nothing drawn), `command running` (a marked shell command runs on),
-`redraws on its own` (a clock, `top`: what it draws later may differ),
+`redraws on its own` (a clock, `top`, a spinner: it drew on its own in
+the last 2s; what it draws later may differ),
 `highlight ROW,COL-END "TEXT"` (up to three runs the input highlighted
 anew: a selection, a menu's choice), `no status: nothing here marks its
 commands` (a shell fux did not start read a line: no `done` comes), `it

@@ -270,7 +270,8 @@ wire! {
         /// The program rings the bell or sends a desktop notification.
         Bell,
         /// The pane settles: its program reads its terminal, waits quiet on
-        /// something else, or exits (`crate::ready`). What an action waits for
+        /// something else, or exits (`crate::ready`); for a bare `wait`, still
+        /// 2s too after input that found it still. What an action waits for
         /// when it names nothing.
         Settled,
         /// The shell command marked running ends (its `D`): the wait lasts as

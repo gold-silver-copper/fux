@@ -60,10 +60,12 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
   0`, then the output. A `line` waits for the shell command it typed to end
   (or to take the full screen, or to wait for keys). A full-screen program
   that redraws by itself (a clock, `top`) settles once it read the keys and
-  drew after them (`· redraws on its own`). Notes after the state say what
-  plain text hides: a selection highlighted anew, keys an exited program
-  never read, a shell that marks no commands. [docs/agents.md](docs/agents.md)
-  says what each state and note means. A failure prints `fux: CODE:
+  drew after them (`· redraws on its own`). A bare `wait` after keys that
+  found a program still waits until it is still 2s (an agent's TUI at
+  work). Notes after the state say what plain text hides: a
+  selection highlighted anew, keys an exited program never read, a shell
+  that marks no commands. [docs/agents.md](docs/agents.md) says what each
+  state and note means. A failure prints `fux: CODE:
   MESSAGE` on stderr, with the file, line and word, and exits 1; an action's
   or wait's own status is the exit status, while its answer is left (`drop`
   it, and it is 0): 3 the program exited first, 4 the pane closed, 5 the
@@ -267,7 +269,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
+| `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits; after input that found it still, once still 2s too) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `MS pause` between two inputs writes the next MS milliseconds after the one before, whatever the program did (`str c3 bytes 50 pause str a9 bytes`); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |

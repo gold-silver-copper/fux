@@ -97,8 +97,9 @@ struct Watch {
     /// Its program has just started (run, split, respawn): its screen is
     /// blank, so a text is gone only once it has appeared.
     fresh: bool,
-    /// A bare `wait`, which on a pane that may go on alone waits for
-    /// something new.
+    /// A wait of its own, not an action's: it waits while its pane's
+    /// program is at work on the input, and a bare one, on a pane that may
+    /// go on alone, for something new.
     more: bool,
     /// It follows an action, counted from its input.
     action: bool,
@@ -404,9 +405,10 @@ impl Wait {
             // timeout` answers at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
                 let state = state();
-                let end = match limit.is_zero() || state != State::Busy {
-                    true => End::Done,
-                    false => End::Answered(Code::Timeout),
+                let end = if limit.is_zero() || state != State::Busy {
+                    End::Done
+                } else {
+                    End::Answered(Code::Timeout)
                 };
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), end)
@@ -738,9 +740,17 @@ impl Watch {
     }
 
     /// What `pane`'s program is doing at `now`, as this wait sees it: a
-    /// command its input began is waited for, if it waits for that.
+    /// command its input began is waited for, if it waits for that; and,
+    /// a wait of its own, one that may go on alone at work on the input (a
+    /// spinner) is busy until still `REDRAWN`.
     fn state(&self, pane: &Pane, now: Instant) -> State {
-        ready::state(pane, now, self.ends.then_some(self.start.started))
+        let state = ready::state(pane, now, self.ends.then_some(self.start.started));
+        let alone = matches!(state, State::Waiting | State::Redrawing | State::Settled);
+        if alone && self.more && pane.at_work(now) {
+            State::Busy
+        } else {
+            state
+        }
     }
 
     /// What the wait has come to in this pane, if anything: what it waited

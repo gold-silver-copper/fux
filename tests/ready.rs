@@ -484,8 +484,63 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
         "{answer}"
     );
     assert!(answer.contains("\ngot x"), "{answer}");
+    // A bare wait answers it at once: it drew so before the keys too.
+    let began = std::time::Instant::now();
+    let answer = server.ok(&[&p[..], &["5", "timeout", "wait"]].concat())?;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(3),
+        "{answer}"
+    );
+    assert!(
+        answer.starts_with(&format!("{pane} waiting · redraws on its own\n")),
+        "{answer}"
+    );
     let answer = server.ok(&[&p[..], &["str", "q", "type"]].concat())?;
     assert!(answer.starts_with(&format!("{pane} exited 0")), "{answer}");
+    Ok(())
+}
+
+/// A full-screen program still until a key, then at work on it behind a
+/// spinner whose frames come 0.4s apart (an agent's TUI), polling its
+/// terminal throughout, answers its keys at once, a key sent meanwhile too;
+/// a bare `wait` after waits on until its screen is still 2s, its work done
+/// (`busy`, 124, at its limit before, from the first key on).
+#[test]
+fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
+    let server = Server::start("")?;
+    let spinner = "import os, select, tty\n\
+                   tty.setraw(0); os.write(1, b'\\x1b[?1049hready'); os.read(0, 1)\n\
+                   for n in range(12):\n\
+                   \x20   os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n)\n\
+                   \x20   if select.select([0], [], [], 0.4)[0]: os.read(0, 1)\n\
+                   os.write(1, b'\\x1b[H\\x1b[2Jall done')\n\
+                   while not select.select([0], [], [], 1)[0]: pass\n";
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", spinner, "arg", "run",
+    ])?;
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let p = ["str", pane.as_str(), "pane"];
+    server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
+    let limit = server.fux(&[&p[..], &["1", "timeout", "wait"]].concat())?;
+    assert_eq!(limit.status, 124, "{}{}", limit.stdout, limit.stderr);
+    server.ok(&[&p[..], &["str", "y", "type"]].concat())?;
+    let began = std::time::Instant::now();
+    let done = server.ok(&[&p[..], &["wait"]].concat())?;
+    assert!(
+        began.elapsed() >= std::time::Duration::from_secs(2),
+        "{done}"
+    );
+    // Where fux is not told what it is blocked in (macOS), it is `settled`.
+    let state = done
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix(pane.as_str()));
+    assert!(matches!(state, Some(" waiting" | " settled")), "{done}");
+    assert!(done.contains("all done"), "{done}");
     Ok(())
 }
 

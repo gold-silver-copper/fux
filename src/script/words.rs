@@ -122,7 +122,7 @@ pub const WORDS: &[Word] = &[
     word("Waiting", "wait-bell", "x -- x", "wait until the program rings or notifies"),
     word("Waiting", "wait-done", "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
     word("Waiting", "timeout", "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
-    word("Waiting", "wait", "place -- answer", "wait for the pane to settle, or as the wait words on it say, in a pane, or each pane of a tab or workspace"),
+    word("Waiting", "wait", "place -- answer", "wait for the pane to settle (after input to a still program, until still 2s: a spinner's work done), or as the wait words on it say; a tab or workspace: each pane"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),

@@ -62,9 +62,9 @@ pub enum State {
     Waiting,
     /// The system does not say; the screen has been quiet a while.
     Settled,
-    /// A full-screen program that redraws on its own (a clock, `top`) and
-    /// is never quiet: it read every key and drew after them. What it
-    /// draws next may differ, keys or not.
+    /// A full-screen program that redraws on its own (a clock, `top`, a
+    /// spinner), its last frame within `REDRAWN`: it read every key and
+    /// drew after them. What it draws next may differ, keys or not.
     Redrawing,
     /// It runs, sleeps, prints, or has not read the keys sent yet.
     Busy,
@@ -150,7 +150,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let redraws = |activity| {
         (activity == Activity::Polling || (!command && screen.mode(fux_vt::Mode::AlternateScreen)))
             && !owed
-            && pane.redraws()
+            && pane.redrawing(now)
             && remote().is_none()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
             && quiet >= SETTLE
