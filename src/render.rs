@@ -136,7 +136,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         return Vec::new();
     };
     let mut visible = Vec::new();
-    for &(id, rect) in &placement.panes {
+    for (i, &(id, rect)) in placement.panes.iter().enumerate() {
         let Some(pane) = session.panes.get(&id) else {
             continue;
         };
@@ -159,8 +159,11 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                 rect.y().saturating_add(top),
                 rect.x().saturating_add(shown.col),
             );
-            let over = placement.over((id, rect), Rect::new(x, y, cols, rows));
-            if over.into_iter().flatten().next().is_some() {
+            if placement
+                .over(i, Rect::new(x, y, cols, rows))
+                .next()
+                .is_some()
+            {
                 continue;
             }
             let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
@@ -934,12 +937,12 @@ impl Painted<'_> {
     /// under the same floating panes' frames as `now` puts over it: those
     /// are in what was painted there.
     pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16, now: &Placement) -> bool {
-        let (was, is) = (
-            self.placement.over((id, rect), rect),
-            now.over((id, rect), rect),
-        );
+        let at = |placed: &Placement| placed.panes.iter().position(|p| *p == (id, rect));
+        let (Some(was), Some(is)) = (at(self.placement), at(now)) else {
+            return false;
+        };
         (self.grid.rows, self.grid.cols) == (rows, cols)
-            && was.zip(is).is_some_and(|(was, is)| was.eq(is))
+            && self.placement.over(was, rect).eq(now.over(is, rect))
     }
 }
 
@@ -991,7 +994,7 @@ pub fn compose_held(
     // The floating panes over them, bottom to top.
     for (id, rect, frame) in placement.floating() {
         put_frame(grid, session, id, frame, focus == Some(id));
-        put_pane(grid, session, id, rect, copy);
+        put_pane(grid, session, (id, rect), copy, None);
         hold(grid, id, rect);
     }
     if tab.is_some_and(|t| t.layout().is_empty()) && area.h() > 0 {
@@ -1132,26 +1135,35 @@ fn put_panes(
         .fold(0u32, u32::saturating_add);
     let whole = covered == Session::pane_area(view).area();
     grid.reset(view.rows, view.cols, !whole);
-    let keys = (placement.tiled())
-        .map(|(id, rect)| put_pane(grid, session, *id, *rect, copy))
-        .collect();
+    // Each pane's row keys, if the frame is memo'd.
+    let mut keys = Vec::new();
+    for &(id, rect) in placement.tiled() {
+        let mut rows = Vec::new();
+        put_pane(
+            grid,
+            session,
+            (id, rect),
+            copy,
+            frame.is_some().then_some(&mut rows),
+        );
+        keys.push(rows);
+    }
     separators(grid, placement, focus);
     grid.memo = frame.map(|frame| Memo { frame, keys });
 }
 
 /// Puts pane `id` on the grid at `rect`, copy mode's selection shown if it
-/// is in copy mode: the keys of the rows it drew.
+/// is in copy mode, and into `keys`, if given, the keys of the rows it
+/// drew.
 fn put_pane(
     grid: &mut Grid,
     session: &Session,
-    id: PaneId,
-    rect: Rect,
+    (id, rect): (PaneId, Rect),
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
-) -> Vec<RowKey> {
-    let mut keys = Vec::new();
+    mut keys: Option<&mut Vec<RowKey>>,
+) {
     let Some(pane) = session.panes.get(&id) else {
-        grid.blank(rect);
-        return keys;
+        return grid.blank(rect);
     };
     let screen = pane.screen();
     // A pane whose program changed its colours is drawn in them.
@@ -1163,7 +1175,9 @@ fn put_pane(
     // window's included, is blank.
     for (y, line) in (0..rect.h()).zip(rect.lines()) {
         let row = window.row(y);
-        keys.push(row.map(|r| (r.id(), r.version())));
+        if let Some(keys) = &mut keys {
+            keys.push(row.map(|r| (r.id(), r.version())));
+        }
         draw_row(grid, id, row, (line, window.cols()), colours);
         let (Some(at), Some(row)) = (at, row) else {
             continue;
@@ -1186,7 +1200,16 @@ fn put_pane(
             }
         }
     }
-    keys
+}
+
+/// The colour of a border, a separator or a floating pane's frame: green
+/// beside the focused pane.
+fn border(focused: bool) -> Color {
+    if focused {
+        Color::Idx(2)
+    } else {
+        Color::Idx(240)
+    }
 }
 
 /// A floating pane's frame: a border, green round the focused pane, with
@@ -1194,12 +1217,7 @@ fn put_pane(
 /// is, so a wide glyph it cuts in half is blanked whole; the pane drawn
 /// inside it covers the rest.
 fn put_frame(grid: &mut Grid, session: &Session, id: PaneId, frame: Rect, focused: bool) {
-    let colour = if focused {
-        Color::Idx(2)
-    } else {
-        Color::Idx(240)
-    };
-    let style = Attributes::new(colour, Color::Default);
+    let style = Attributes::new(border(focused), Color::Default);
     let (top, bottom) = (frame.y(), frame.bottom().saturating_sub(1));
     let (left, right) = (frame.x(), frame.right().saturating_sub(1));
     let mut put = |y: u16, x: u16, glyph: &str| grid.set(y, x, CellRef::new(glyph, false, style));
@@ -1332,11 +1350,7 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             b if b == LEFT | RIGHT | UP => "┴",
             _ => "┼",
         };
-        let color = if focused.is_some_and(|r| r.near(y, x)) {
-            Color::Idx(2)
-        } else {
-            Color::Idx(240)
-        };
+        let color = border(focused.is_some_and(|r| r.near(y, x)));
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
         grid.put(

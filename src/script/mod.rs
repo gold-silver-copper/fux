@@ -13,7 +13,6 @@ use crate::code::Code;
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Until, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
-use crate::layout::Axis;
 use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
@@ -109,9 +108,8 @@ pub struct Opts {
     pub env: crate::command::Env,
     pub argv: Vec<String>,
     pub typed: Option<String>,
-    /// Where a split puts its pane: beside along an axis, or floating
-    /// (`None`); side by side unless one is given.
-    pub axis: Option<Option<Axis>>,
+    /// Where a split puts its pane: side by side unless one is given.
+    pub split: Option<crate::command::SplitTo>,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
     pub log: Option<String>,

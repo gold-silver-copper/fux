@@ -289,15 +289,17 @@ impl Placement {
         let floating = self.panes.iter().skip(self.tiles()).zip(&self.frames);
         floating.map(|((p, r), f)| (*p, *r, *f))
     }
-    /// The frames of the floating panes over `pane`, placed at its rect,
-    /// that cover any of `area`; none if it is not placed so.
-    pub fn over(&self, pane: (PaneId, Rect), area: Rect) -> Option<impl Iterator<Item = &Rect>> {
-        let i = self.panes.iter().position(|p| *p == pane)?;
-        let above = self
-            .frames
+    /// The frames of the floating panes over the pane at `i` of `panes`
+    /// that cover any of `area`: over a tiled pane, every frame; over a
+    /// floating one, those above its own.
+    pub fn over(&self, i: usize, area: Rect) -> impl Iterator<Item = &Rect> {
+        let above = i
+            .checked_sub(self.tiles())
+            .map_or(0, |j| j.saturating_add(1));
+        self.frames
             .iter()
-            .skip(i.saturating_add(1).saturating_sub(self.tiles()));
-        Some(above.filter(move |f| f.meets(area)))
+            .skip(above)
+            .filter(move |f| f.meets(area))
     }
 }
 
@@ -347,20 +349,16 @@ impl Layout {
     }
     /// The first tiled pane, else the top floating one.
     pub fn first_pane(&self) -> Option<PaneId> {
-        (self.tiled.as_ref().and_then(Tree::first_pane)).or_else(|| self.top())
+        self.tiled
+            .as_ref()
+            .and_then(Tree::first_pane)
+            .or_else(|| self.top())
     }
     /// Every pane: the tiled ones in tree order, then the floating ones,
     /// bottom to top.
-    pub fn panes(&self) -> Vec<PaneId> {
-        let mut out = Vec::new();
-        self.for_each_pane(&mut |pane| out.push(pane));
-        out
-    }
-    pub fn for_each_pane(&self, f: &mut impl FnMut(PaneId)) {
-        if let Some(tree) = &self.tiled {
-            tree.for_each_pane(f);
-        }
-        self.floating.iter().for_each(|float| f(float.pane));
+    pub fn panes(&self) -> impl Iterator<Item = PaneId> {
+        let tiled = self.tiled.iter().flat_map(Tree::panes);
+        tiled.chain(self.floating.iter().map(|f| f.pane))
     }
     /// The panes of `pane`'s layer, tiled or floating, in order.
     pub fn layer(&self, pane: PaneId) -> Vec<PaneId> {
@@ -381,11 +379,11 @@ impl Layout {
             swap(tree, a, b);
         }
         for float in &mut self.floating {
-            float.pane = match float.pane {
-                p if p == a => b,
-                p if p == b => a,
-                p => p,
-            };
+            if float.pane == a {
+                float.pane = b;
+            } else if float.pane == b {
+                float.pane = a;
+            }
         }
     }
     /// A pane floating in `frame`: taken out of the tree, on top, if it
@@ -400,15 +398,16 @@ impl Layout {
         }
     }
     /// The frame a new floating pane takes on `area`: three quarters of it
-    /// each way, centred, and a little down and right of each one there is,
-    /// so that none hides another whole; never less than `FRAME_MIN`, so
-    /// that it shows once there is room.
+    /// each way, centred, or a little down and right of the top one, so
+    /// that it does not hide it whole; never less than `FRAME_MIN`, so that
+    /// it shows once there is room.
     pub fn new_frame(&self, area: Rect) -> Rect {
         let three_quarters = |len: u16| (len / 4).saturating_mul(3).max(FRAME_MIN);
         let (w, h) = (three_quarters(area.w), three_quarters(area.h));
-        let n = u16::try_from(self.floating.len()).unwrap_or(u16::MAX);
-        let x = (area.w.saturating_sub(w) / 2).saturating_add(n.saturating_mul(2));
-        let y = (area.h.saturating_sub(h) / 2).saturating_add(n);
+        let (x, y) = match self.floating.last() {
+            Some(top) => (top.frame.x.saturating_add(2), top.frame.y.saturating_add(1)),
+            None => (area.w.saturating_sub(w) / 2, area.h.saturating_sub(h) / 2),
+        };
         Rect::new(x, y, w, h)
     }
     /// Places its tiled panes in `area`, and with `floating` its floating

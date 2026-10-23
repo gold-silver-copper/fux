@@ -52,8 +52,7 @@ impl Session {
         out: &mut String,
     ) {
         let layout = tab.layout();
-        let panes = layout.panes();
-        let Some(&first) = panes.first() else {
+        let Some(first) = layout.panes().next() else {
             return;
         };
         let program = self.program(first);
@@ -137,7 +136,7 @@ impl Session {
             }
         }
         // Panes renamed keep their names.
-        for pane in panes {
+        for pane in layout.panes() {
             let Some(p) = self.panes.get(&pane) else {
                 continue;
             };

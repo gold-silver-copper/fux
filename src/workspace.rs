@@ -202,7 +202,7 @@ impl Workspace {
         }
         for tab in &mut self.tabs {
             tab.seats.entry(client).or_default();
-            tab.refocus(&BTreeSet::new());
+            tab.refocus(|_| false);
         }
     }
 
@@ -252,7 +252,7 @@ impl Tab {
             seats: clients.map(|c| (c, Seat::default())).collect(),
             typist: None,
         };
-        tab.refocus(&BTreeSet::new());
+        tab.refocus(|_| false);
         tab
     }
 
@@ -326,18 +326,20 @@ impl Tab {
             .collect();
         let out = change(&mut self.layout);
         self.changed = true;
-        self.refocus(&floated);
+        self.refocus(|c| floated.contains(c));
         out
     }
 
-    fn refocus(&mut self, floated: &BTreeSet<ClientId>) {
+    /// Each client focuses a pane the tab holds; `floated` says which
+    /// focused a floating pane before the change.
+    fn refocus(&mut self, floated: impl Fn(&ClientId) -> bool) {
         let layout = &self.layout;
         let inside = |p: &PaneId| layout.contains(*p);
         for (client, seat) in &mut self.seats {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
             // A client loses its focus to its own layer: from a floating
             // pane to the top one, from a tiled one to a tiled one.
-            let floated = floated.contains(client);
+            let floated = floated(client);
             let top = layout.top().filter(|_| floated);
             let back = last.filter(|l| floated || layout.tiles(*l));
             seat.held &= focus.is_some();

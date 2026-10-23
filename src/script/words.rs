@@ -5,8 +5,8 @@ use super::{Answer, Ask, Bound, Fux, Host, Local, On, Opts, Said, Then, Waits};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Usage, Wait,
-    Wheel, WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SplitTo, SwapWith, Until, Usage,
+    Wait, Wheel, WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId, Wanted};
@@ -510,9 +510,9 @@ fn modify(
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
         "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
-        "horizontal" => built.axis = Some(Some(Axis::Horizontal)),
-        "vertical" => built.axis = Some(Some(Axis::Vertical)),
-        "floating" => built.axis = Some(None),
+        "horizontal" => built.split = Some(SplitTo::Beside(Axis::Horizontal)),
+        "vertical" => built.split = Some(SplitTo::Beside(Axis::Vertical)),
+        "floating" => built.split = Some(SplitTo::Floating),
         "kill-first" => built.kill = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
@@ -1071,7 +1071,7 @@ impl fuxth::Host for Host<'_> {
                     }
                 };
                 let split = Command::Split {
-                    axis: built.axis.unwrap_or(Some(Axis::Horizontal)),
+                    to: (built.split).unwrap_or(SplitTo::Beside(Axis::Horizontal)),
                     target: p,
                     cmd,
                     cwd: built.cwd,

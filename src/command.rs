@@ -109,6 +109,17 @@ wire! {
 }
 
 wire! {
+    /// Where `split` puts its new pane.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SplitTo {
+        /// Beside the pane split, along an axis (halving it, if it floats).
+        Beside(axis: Axis),
+        /// Floating over its tab.
+        Floating,
+    }
+}
+
+wire! {
     /// Which pane `focus` picks.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum PanePick {
@@ -395,9 +406,7 @@ wire! {
             ids: Wanted,
         },
         Split {
-            /// Beside the target along this axis (halving it, if it
-            /// floats); none, floating over its tab.
-            axis: Option<Axis>,
+            to: SplitTo,
             target: PaneId,
             cmd: Vec<String>,
             /// Where its shell starts (default: where the split pane's is).

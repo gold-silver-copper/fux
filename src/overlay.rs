@@ -9,14 +9,10 @@ use crate::session::{Error, Session};
 
 /// The names of the panes in `layouts`, for a chooser row, shortened.
 fn pane_names<'a>(session: &Session, layouts: impl IntoIterator<Item = &'a Layout>) -> String {
-    let mut names: Vec<String> = Vec::new();
-    for layout in layouts {
-        layout.for_each_pane(&mut |id| {
-            if let Some(p) = session.panes.get(&id) {
-                names.push(format!("{} {}", p.id, p.label()));
-            }
-        });
-    }
+    let panes = layouts.into_iter().flat_map(Layout::panes);
+    let names: Vec<String> = (panes.filter_map(|id| session.panes.get(&id)))
+        .map(|p| format!("{} {}", p.id, p.label()))
+        .collect();
     if names.is_empty() {
         "empty".into()
     } else {
@@ -61,12 +57,12 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
         }
         Choices::Panes(source) => {
             let tab = session.locate(source).and_then(|(_, tab)| session.tab(tab));
-            if let Some(layout) = tab.map(|t| t.layout()) {
-                layout.for_each_pane(&mut |id| {
-                    if let Some(p) = session.panes.get(&id).filter(|_| id != source) {
-                        rows.push((AnyRef::Pane(p.id), format!("{} {}", p.id, p.label())));
-                    }
-                });
+            let others = tab.into_iter().flat_map(|t| t.layout().panes());
+            for p in others
+                .filter(|id| *id != source)
+                .filter_map(|id| session.panes.get(&id))
+            {
+                rows.push((AnyRef::Pane(p.id), format!("{} {}", p.id, p.label())));
             }
             if rows.is_empty() {
                 return Err(Error::OnlyOne(Kind::Pane));
