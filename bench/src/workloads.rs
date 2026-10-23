@@ -12,7 +12,7 @@
 //!   history reflowed, both ways. `vt/resize-193`, `:no-reflow`,
 //!   `:no-history` and `:short-rows`: to 193 columns and back, as
 //!   [`RESIZINGS`] sets each up.
-//! - `vt/late-c`, `vt/direct-colours`, `vt/links`: a moment each, as
+//! - `vt/direct-colours`, `vt/links`: a moment each, as
 //!   [`MOMENTS`] says: what is set up is the baseline's too, and what
 //!   follows it, 4 KiB a call, is measured.
 //! - `vt/vtebench:NAME`, `vt/kitty:NAME`, `vt/avt:NAME`,
@@ -46,9 +46,6 @@
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
 //!   look at each output while a wait is armed.
-//! - `ready/probe`: what a pane's program is blocked in
-//!   (`fuxix::process::activity`, which `fux::ready` asks while a wait
-//!   is armed), of a sleeping child, over and over.
 //! - `script/compile`: fuxth's checker and compiler on command lines an
 //!   agent sends (`fux::script::compile`), over and over: what every
 //!   `fux WORDS` does before it runs.
@@ -60,7 +57,6 @@ use crate::census;
 use crate::corpus::{self, Recording};
 use crate::synthetic;
 use std::hint::black_box;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 
 /// fux-vt is fed this much at a time, as `compare`'s `bench` feeds it.
@@ -132,14 +128,7 @@ type Moment = (
     fn(usize) -> Vec<u8>,
 );
 
-const MOMENTS: [Moment; 3] = [
-    (
-        "vt/late-c",
-        "400,000 empty lines of history, then 290 OSC 133;C marks with no prompt anywhere in \
-         one 4 KiB call (each mark looks back through history for a prompt)",
-        |shrink| repeated(b"\n", 400_000_usize.checked_div(shrink).unwrap_or(1)),
-        |_| repeated(b"\x1b]133;C;late\x07", 290 * 14),
-    ),
+const MOMENTS: [Moment; 2] = [
     (
         "vt/direct-colours",
         "4 MiB of cells each in a 24-bit colour none had before: the style table's inserts \
@@ -208,8 +197,6 @@ const KEYSTROKES: usize = 20_000;
 const STROKES: usize = 1 << 20;
 /// Bytes read into the panes of `wait/text`, over and over to this many.
 const WAITED: usize = 4 << 20;
-/// Activity probes, this many.
-const PROBES: usize = 2_000;
 /// Command lines compiled, this many.
 const COMPILES: usize = 2_000;
 /// Command lines an agent sends, as `docs/agents.md` shows them.
@@ -348,10 +335,6 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             "a wait on four panes asked after each read of every recording, 4 MiB",
         ),
         (
-            "ready/probe",
-            "what a sleeping child is blocked in, 2000 times: the user part (instructions:u), most of a probe being the kernel's",
-        ),
-        (
             "script/compile",
             "fuxth's checker and compiler on four agent command lines, 2000 times",
         ),
@@ -485,7 +468,6 @@ fn run_shrunk(
         ),
         "encode/kitty" => encode(&recordings, kitty_mode(KITTY_ALL)?, baseline, size(STROKES)),
         "wait/text" => wait(&recordings, baseline, size(WAITED)),
-        "ready/probe" => ready(baseline, size(PROBES)),
         "script/compile" => compile(baseline, size(COMPILES)),
         _ => Err(format!("no workload {name:?}; `list` lists them")),
     }
@@ -1110,14 +1092,11 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
         let wait = fux::command::Wait {
             until: vec![fux::command::Until::Text("a text never written".into())],
             timeout: Some(std::time::Duration::from_secs(3600)),
-            print: true,
-            marks: false,
         };
         let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
         fux::wait::Waiting::new(
             &shown,
             wait,
-            fux::wait::Follows::Action,
             now,
             std::time::Duration::from_secs(3600),
         )
@@ -1149,44 +1128,6 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     }
     Ok(Done {
         units,
-        frames: 0,
-        painted: 0,
-    })
-}
-
-fn ready(baseline: bool, probes: usize) -> Result<Done, String> {
-    // The probe is asked of a child of this process, with no session
-    // around it: a sleep in a group of its own.
-    let mut child = std::process::Command::new("sleep")
-        .arg("3600")
-        .process_group(0)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let pid = fuxix::process::Pid::of(&child).ok_or("no pid")?;
-    // Asleep before the probes, and before the baseline kills it: the
-    // count includes the child's own start, which a child killed early
-    // had not finished (7.8 million instructions of 15 to 23). The wait,
-    // up to 2 s of 1 ms looks, is counted in the run and its baseline
-    // alike, so the baseline takes it away; how many looks it takes moves
-    // with the machine's load, and so the workload's spread.
-    let wchan = format!("/proc/{}/wchan", pid.as_raw());
-    for _ in 0..if cfg!(target_os = "linux") { 2000 } else { 0 } {
-        if std::fs::read_to_string(&wchan).is_ok_and(|w| w.contains("nanosleep")) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    for _ in 0..probes {
-        if baseline {
-            black_box(pid);
-            continue;
-        }
-        black_box(fuxix::process::activity(pid, Path::new("/dev/null"), pid));
-    }
-    child.kill().map_err(|e| e.to_string())?;
-    child.wait().map_err(|e| e.to_string())?;
-    Ok(Done {
-        units: probes,
         frames: 0,
         painted: 0,
     })

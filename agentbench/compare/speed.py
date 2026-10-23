@@ -34,17 +34,16 @@ def jobs(bin_, tag):
     out = {}
     out["start"] = ms(lambda: run(bin_, e, "start"))
     out["ls (round trip)"] = ms(lambda: run(bin_, e, "ls"))
-    pane = run(bin_, e, "opts", "0", "timeout", "str", "sh", "program", "str", "-c", "arg",
+    pane = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
                "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout.split()[0]
     out["wait for a text (0.2s program)"] = ms(lambda: run(bin_, e, pane, "opts", "str", "READY", "wait-text", "wait"))
     out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "opts", "capture"))
     out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "capture", "json"))
     def fan():
         for i in range(30):
-            run(bin_, e, "opts", "0", "timeout", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c", "arg",
-                "str", f"echo up-{i}; exec cat", "arg", "run")
-        run(bin_, e, "str", "agent", "workspace", "opts", "wait")
-    out["30 panes started and settled"] = ms(fan)
+            run(bin_, e, "opts", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c", "arg",
+                "str", f"echo up-{i}; exec cat", "arg", "str", f"up-{i}", "wait-text", "run")
+    out["30 panes started, each waited for its text"] = ms(fan)
     command = "echo 'the quick brown fox jumps over 42'"  # 40 characters
     assert len(command) == 40
     sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split()[0]

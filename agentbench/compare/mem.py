@@ -46,7 +46,8 @@ def measure(bin_):
     pid = server()
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "120", "timeout", "run")
+    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg",
+                  "str", "59999 ", "wait-text", "120", "timeout", "run")
     first = started.stdout[:60] + started.stderr[:200]
     pane = started.stdout.split()[0]
     kept = run(bin_, e, pane, "opts", "all-history", "capture").stdout.count("\n")

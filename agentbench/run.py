@@ -203,6 +203,9 @@ def one(tool, task_id, rep, slot, fux_bin):
             answer = held(task, "solve").solve(d, work, fixtures)
         else:
             answer = getattr(solutions, task["recipe"])(d, task.get("args", {}), FX)
+        # fux's driver holds an action until it knows what to wait for after.
+        if hasattr(d, "flush"):
+            d.flush()
         if answer is not None:
             with open(os.path.join(work, "answer.txt"), "w") as f:
                 f.write(str(answer))
