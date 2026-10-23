@@ -123,6 +123,9 @@ exactly as typed is output. A full-screen program's screen is all output.
   matches what the program printed since your input, lines scrolled away and
   text drawn over too, never the echo of what you typed. Met, the answer is
   the state line, `· met "T"`, then the line that held it.
+- A full-screen program draws what you send it back as its own output
+  (an agent's TUI shows your prompt): a wait for a text your prompt holds
+  meets that copy at once. Wait for a text only the reply can hold.
 - **Status 7:** the program is blocked reading its terminal and the text
   has not come (or gone): send it what it waits for. A program that may go
   on alone (`waiting`) gets no 7: the wait runs to its limit.
