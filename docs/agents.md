@@ -49,7 +49,7 @@ your keys once it drew them, `waiting · redraws on its own`. A bare `wait`
 then waits until its screen is still 2s, the work done or a question asked:
 never guess a text it shows when done. Drawing still at the limit, it is
 `busy` (124): wait again. A clock it drew before your keys is no work: a
-`wait` answers it at once.
+`wait` answers it at once. `state get` cannot tell the two: wait.
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
   program exited before the wait; 4 the pane closed; 5 the shell command

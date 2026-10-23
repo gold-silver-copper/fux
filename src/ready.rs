@@ -150,10 +150,10 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
     let redraws = |activity| {
         (activity == Activity::Polling || (!command && screen.mode(fux_vt::Mode::AlternateScreen)))
             && !owed
-            && pane.redraws()
+            && pane.redrawing(now)
             && remote().is_none()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
-            && (SETTLE..REDRAWN).contains(&quiet)
+            && quiet >= SETTLE
             && !child.master.keys_unread()
     };
     // A remote client reporting nothing of what it runs reads its

@@ -1039,13 +1039,12 @@ impl Watch {
     /// as it was.
     fn settled(&mut self, pane: &Pane, now: Instant, more: bool) -> Option<Found> {
         let state = self.state(pane, now);
-        // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
-        // with nothing known) waits for something new, what it waits on or
-        // a change, for `MORE` at most; and while at work on the input, until
-        // still `REDRAWN`. A clock it kept before the input is no work.
-        let more = more
-            && (pane.revision == self.revision && now < after(self.began, MORE)
-                || pane.at_work(now));
+        // A bare `wait` waits while its program is at work on the input (a
+        // spinner), until still `REDRAWN`; on a pane that may go on alone
+        // (`waiting`, or quiet with nothing known), for something new too,
+        // what it waits on or a change, `MORE` at most.
+        let work = more && pane.at_work(now);
+        let new = more && pane.revision == self.revision && now < after(self.began, MORE);
         // A program just started that reads its terminal before it printed
         // anything (ssh, `koh connect`: they take keys while they connect)
         // has yet to show what it is: it settles once it prints, or once
@@ -1055,10 +1054,10 @@ impl Watch {
             && now < after(pane.changed_at, ready::QUIET);
         let unsettled = match state {
             State::Busy => true,
-            State::Waiting | State::Redrawing | State::Settled => more,
+            State::Waiting | State::Redrawing | State::Settled => work || new,
             // An exit settles at once.
             State::Exited(_) => return Some(Found::Settled(state)),
-            State::Reading => blank,
+            State::Reading => blank || work,
             State::Absent => false,
         };
         if unsettled {

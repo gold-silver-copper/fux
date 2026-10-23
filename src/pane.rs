@@ -554,9 +554,10 @@ pub struct Pane {
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
-    /// It drew nothing on its own lately as input last went in: what it
-    /// draws after (a spinner) is its work on that input, no clock it keeps.
-    still_at_input: bool,
+    /// When input went in that found it still, drawing nothing on its own
+    /// lately (more input while at work keeps it): what it draws after (a
+    /// spinner) is its work on that input, no clock it keeps.
+    work_from: Option<Instant>,
     /// The last input typed ended a line (Enter, or text ending in a line
     /// end): what came of it is a command's, if its program marks them.
     pub line_ended: bool,
@@ -818,7 +819,7 @@ impl Pane {
             shown: (mark, (0, 0)),
             changed_at: Instant::now(),
             written_at: None,
-            still_at_input: false,
+            work_from: None,
             line_ended: false,
             escape_open: false,
             edited: false,
@@ -1216,10 +1217,7 @@ impl Pane {
                 Ok(0) => break,
                 Ok(n) => {
                     self.input.advance(n);
-                    let now = Instant::now();
-                    self.still_at_input =
-                        !self.redraws() || now >= after(self.changed_at, crate::ready::REDRAWN);
-                    self.written_at = Some(now);
+                    self.written_at = Some(Instant::now());
                 }
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
@@ -1625,6 +1623,9 @@ impl Pane {
         let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
+        if !self.at_work(now) {
+            self.work_from = (!self.redrawing(now)).then_some(now);
+        }
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
         self.escape_open = escape_open(&bytes);
         self.written.0 = self.written.0.saturating_add(bytes.len());
@@ -1701,16 +1702,17 @@ impl Pane {
         }
     }
 
-    /// Whether its program redraws on its own: it drew so twice in a row
-    /// at least, lately.
-    pub fn redraws(&self) -> bool {
-        self.drew_alone.1 >= 2
+    /// Whether its program redraws on its own at `now`: it drew so twice
+    /// in a row at least, the last time within `ready::REDRAWN`.
+    pub fn redrawing(&self, now: Instant) -> bool {
+        self.drew_alone.1 >= 2 && now < after(self.changed_at, crate::ready::REDRAWN)
     }
 
-    /// Whether its program, still as the last input went in, draws on at
-    /// `now`: at work on that input, a spinner as it goes.
+    /// Whether its program is at work on input that found it still at
+    /// `now`: it drew after it, the last time within `ready::REDRAWN`.
     pub fn at_work(&self, now: Instant) -> bool {
-        self.still_at_input && now < after(self.changed_at, crate::ready::REDRAWN)
+        self.work_from.is_some_and(|at| self.changed_at > at)
+            && now < after(self.changed_at, crate::ready::REDRAWN)
     }
 
     /// How many bytes of input sent the program has not read yet.
