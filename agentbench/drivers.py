@@ -560,7 +560,7 @@ class Fux(Driver):
         return not self.state(pane)["cursor_visible"]
 
     def main_screen(self, pane):
-        return self.read(self.fux(*self.pane(pane), "main-screen", "all-history", "0",
+        return self.read(self.fux(*self.pane(pane), "other-screen", "all-history", "0",
                                   "timeout", "capture").stdout)
 
     def respawn(self, pane):

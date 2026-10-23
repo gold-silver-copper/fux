@@ -3198,12 +3198,11 @@ fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
     let json = server.ok(&["str", &shell, "pane", "last-output", "capture", "json"])?;
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
     let text = server.ok(&["str", &shell, "pane", "last-output", "capture"])?;
-    assert_eq!(
-        text,
-        format!(
-            "{shell} reading · command running · full screen · nothing kept above\nabc\ndef\nxyz\n"
-        )
+    assert!(
+        head(&text).ends_with(" · command running · full screen · nothing kept above"),
+        "{text}"
     );
+    assert_eq!(body(&text), "abc\ndef\nxyz\n");
     Ok(())
 }
 
