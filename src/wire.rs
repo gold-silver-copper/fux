@@ -522,6 +522,8 @@ mod tests {
             env: Env::default(),
             run: false,
             id: None,
+            closes: false,
+            history_file: false,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();
         assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));

@@ -1305,6 +1305,51 @@ impl Session {
 
     // ------------------------------------------------------------ creation
 
+    /// What pane `id` showed, as plain text, a line wrapped at its width
+    /// joined whole: its history and main screen, then a full-screen
+    /// program's screen; in a new file only the user reads, in the server's
+    /// temporary directory.
+    fn history_file(&self, id: PaneId) -> Result<pane::Removes, Error> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let pane = self.pane(id)?;
+        let read = |source| {
+            let view = command::CaptureView {
+                source,
+                ..command::CaptureView::default()
+            };
+            crate::capture::pane(pane, Some(usize::MAX), view, false, false).0
+        };
+        let mut text = read(command::Source::Main);
+        if pane.screen().mode(fux_vt::Mode::AlternateScreen) {
+            text.push('\n');
+            text.push_str(&read(command::Source::Alternate));
+        }
+        text.push('\n');
+        let failed = |e: std::io::Error| fail(Code::Output, format!("the history file: {e}"));
+        let dir = std::path::absolute(std::env::temp_dir()).map_err(failed)?;
+        let dir = dir
+            .to_str()
+            .ok_or_else(|| failed(std::io::Error::other("not UTF-8")))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = format!(
+            "{dir}/fux-{}-{}-{stamp}.txt",
+            std::process::id(),
+            id.number()
+        );
+        let mut file = (std::fs::OpenOptions::new().write(true).create_new(true))
+            .mode(0o600)
+            .open(&path)
+            .map_err(failed)?;
+        // From here a failure removes it.
+        let removes = pane::Removes(path);
+        file.write_all(text.as_bytes()).map_err(failed)?;
+        Ok(removes)
+    }
+
     fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
         let near = match here {
             Here::Cli(_, Some(cwd)) => return cwd.to_owned(),
@@ -1424,24 +1469,25 @@ impl Session {
         let config = &self.config;
         let start = new.start;
         let env = match start {
-            Start::Shell(_, env) | Start::Program(_, env) => env,
+            Start::Shell(_, env) | Start::Program { env, .. } => env,
         };
         let launch = pane::Launch {
             argv: match start {
                 Start::Shell(..) => config.shell.argv(),
-                Start::Program(argv, _) => argv.to_vec(),
+                Start::Program { argv, .. } => argv.to_vec(),
             },
             cwd: new.cwd.to_path_buf(),
             env: env.to_vec(),
+            closes: matches!(start, Start::Program { closes: true, .. }),
         };
         let (cmd, runs) = match start {
             Start::Shell(cmd, _) => (cmd, Runs::Shell),
-            Start::Program(argv, _) => (argv, Runs::Program(launch.clone())),
+            Start::Program { argv, .. } => (argv, Runs::Program(launch.clone())),
         };
         // The line to type is made before anything else: a line too long to
         // type must not leave a process behind.
         let typed = match start {
-            Start::Shell([], _) | Start::Program(..) => None,
+            Start::Shell([], _) | Start::Program { .. } => None,
             Start::Shell(cmd, _) => {
                 let fish = basename(config.shell.program()) == "fish";
                 let mut line = crate::words::shell_line(cmd, fish)
@@ -1458,7 +1504,7 @@ impl Session {
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
         pane.record.set_budget(config.journal_bytes);
         // A program brought back by a restore waits for `respawn`.
-        let paused = new.starting.restoring && matches!(start, Start::Program(..));
+        let paused = new.starting.restoring && matches!(start, Start::Program { .. });
         if !paused && let Some((child, nonce)) = self.spawn(id, &launch, new.starting, new.size)? {
             pane.process = Process::Reading(child);
             pane.mark_with(nonce);
@@ -1906,8 +1952,9 @@ impl Session {
         self.settle();
     }
 
-    /// A pane's program exited with `status`: a shell's pane closes, and a
-    /// program's stays, the status kept, for its last screen to be read.
+    /// A pane's program exited with `status`: a shell's pane closes, as
+    /// does a program's started with `close-on-exit`; another program's
+    /// stays, the status kept, for its last screen to be read.
     /// What a program wrote as it exited may still be on its terminal, or
     /// read and waiting for the pane's next turns (`Pane::has_unread`): it
     /// is told exited once all of it is on its screen, from the turn that
@@ -1941,7 +1988,9 @@ impl Session {
             }
         }
         match pane.runs {
-            Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
+            Runs::Shell | Runs::Program(pane::Launch { closes: true, .. }) => {
+                self.close_pane(id, Some(format!("exited with status {status}")));
+            }
             Runs::Program(_) => {
                 pane.lose_unread();
                 // Its leader, exited and unreaped, is reaped with the dying.
@@ -2307,6 +2356,7 @@ impl Session {
                 argv,
                 log,
                 ids,
+                closes,
             } => {
                 let (dir, fit, _) = self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 // Its place is out of every client's way: no client follows.
@@ -2318,7 +2368,11 @@ impl Session {
                 // Named after its program, if that makes a name.
                 let derived = Some(pane::named(argv)).filter(|n| check_name(n).is_ok());
                 let new = NewPane {
-                    start: Start::Program(argv, env.as_slice()),
+                    start: Start::Program {
+                        argv,
+                        env: env.as_slice(),
+                        closes: *closes,
+                    },
                     cwd: &dir,
                     starting: &starting,
                     size,
@@ -2405,12 +2459,26 @@ impl Session {
                 ref env,
                 run,
                 id,
+                closes,
+                history_file,
             } => {
+                // The new pane's, or removed with this split if refused.
+                let file = history_file
+                    .then(|| self.history_file(target))
+                    .transpose()?;
+                let mut argv = cmd.clone();
+                argv.extend(file.iter().map(|f| f.0.clone()));
                 let start = match run {
-                    true => Start::Program(cmd, env.as_slice()),
+                    true => Start::Program {
+                        argv: &argv,
+                        env: env.as_slice(),
+                        closes,
+                    },
                     false => Start::Shell(cmd, env.as_slice()),
                 };
-                self.split(target, axis, start, cwd.as_deref(), id, origin)
+                let made = self.split(target, axis, start, cwd.as_deref(), id, origin)?;
+                self.pane_mut(made.pane)?.removes = file;
+                Ok(made.reply(Kind::Pane))
             }
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
@@ -2719,7 +2787,7 @@ impl Session {
     }
 
     /// `split`: a new pane beside `target`, along `axis`, running `start`
-    /// in `dir`, with the id `id` asked for.
+    /// in `dir`, with the id `id` asked for: what it made.
     fn split(
         &mut self,
         target: PaneId,
@@ -2728,7 +2796,7 @@ impl Session {
         dir: Option<&Path>,
         id: Option<PaneId>,
         origin: &Origin,
-    ) -> Result<Reply, Error> {
+    ) -> Result<Made, Error> {
         let (here, starting) = (self.here(origin)?, self.starting_for(origin));
         let wanted = Wanted {
             pane: id,
@@ -2768,7 +2836,7 @@ impl Session {
             view.zoom = false;
         }
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        Ok(Made { ws, tab, pane: new }.reply(Kind::Pane))
+        Ok(Made { ws, tab, pane: new })
     }
 
     /// `kill`: from the command line it says what it closed, so a script or
@@ -3401,8 +3469,13 @@ enum Start<'a> {
     /// The shell, with a command line typed into it if one is given, and
     /// variables set for it.
     Shell(&'a [String], &'a [(String, String)]),
-    /// A program, run in place of a shell, with variables set for it.
-    Program(&'a [String], &'a [(String, String)]),
+    /// A program, run in place of a shell, with variables set for it; its
+    /// exit closes its pane if it `closes`, as a shell's does.
+    Program {
+        argv: &'a [String],
+        env: &'a [(String, String)],
+        closes: bool,
+    },
 }
 
 fn check_name(name: &str) -> Result<(), Error> {

@@ -114,6 +114,8 @@ pub struct Opts {
     pub ids: crate::id::Wanted,
     pub log: Option<String>,
     pub kill: bool,
+    pub closes: bool,
+    pub history_file: bool,
     pub waits: Waits,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,

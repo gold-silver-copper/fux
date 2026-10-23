@@ -130,8 +130,8 @@ fux opts str sh program run let P   P str 'echo hi' line   P screen
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
 and a key into a pane), `line` (a line typed, then the shell's command
-waited for), `screen` (a capture) and `shell` (a tab with a shell in
-workspace `agent`).
+waited for), `screen` (a capture), `shell` (a tab with a shell in
+workspace `agent`) and `edit-history` (a pane's text in your editor).
 
 ### Finding things
 
@@ -183,6 +183,7 @@ prefix again sends it to the pane.
 | `a` | `me me focused menu` | pane actions |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer` | paste the newest copy |
+| `i` | `me focused edit-history drop` | history in an editor |
 | `n` / `b` | `me next-tab` / `me previous-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
@@ -196,8 +197,8 @@ any other key ends it and is dropped, which the bar says.
 
 `t` and `w` are **layers**, sharing their verbs: `n` new, `h`/`l` previous
 and next, `g` choose, `r` rename, `x` close, `a` actions, and `m` then
-`h`/`l` to move it earlier or later, repeating. `f`, `g`, `i`, `u` and `y`
-are free for your own bindings. These keys are themselves a config, run
+`h`/`l` to move it earlier or later, repeating. `f`, `g`, `u` and `y` are
+free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
 ([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
 the same way.
@@ -253,6 +254,19 @@ query has a capital letter. `[` and `]` find prompts marked with
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
 
+**In your editor.** `C-b i` (`PANE edit-history`) opens what the pane
+showed, as plain text, in `$VISUAL` (else `$EDITOR`, else `vi`; a shell
+command, as git runs it) in a pane split below it, to search and copy with
+your editor's own keys: its history and screen, a line wrapped at the
+pane's width joined whole, and below them a full-screen program's screen
+(which keeps no history of its own). The server writes the text to a file
+only you can read, in its temporary directory, and removes it with the
+editor's pane, which closes as the editor exits, with its status. The
+editor is the pane's: the server's `$VISUAL`, unless `update-environment`
+names it. If the editor's pane closes at once, the bar's status says why
+(127: no such editor; 0: an editor that returns before you close it, which
+needs its waiting flag, `gvim -f`, `code --wait`, as git does).
+
 **Clipboards.** A copy goes to fux's paste buffers (the newest 16,
 `buffers`); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
@@ -266,8 +280,8 @@ and Helix do, copies the same way. fux never reads the clipboard.
 
 | Words | Do |
 | --- | --- |
-| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
-| `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
+| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status, unless `close-on-exit`. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, `close-on-exit`, and any wait condition, which waits from its first output on |
+| `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program; `close-on-exit` closes its pane as it exits, as a shell's does, and `history-file` gives it a last argument, a file of what the split pane showed, removed with the new pane), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
 | `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits; after input that found it still, once still 2s too) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `MS pause` between two inputs writes the next MS milliseconds after the one before, whatever the program did (`str c3 bytes 50 pause str a9 bytes`); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
@@ -339,7 +353,7 @@ define split-right me focused horizontal split drop end   # a word of the config
 str v str split-right bind
 str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
 str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l, then Esc
-str g str 'me focused vertical str lazygit program split drop' bind
+str g str 'me focused vertical str lazygit program close-on-exit split drop' bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 ```

@@ -622,6 +622,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         "echo built; sleep 60",
         "arg",
+        "close-on-exit",
         "0",
         "timeout",
         "split",
@@ -635,6 +636,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "rename",
     ])?;
     let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
+    assert!(dump.contains("close-on-exit"), "{dump}");
     server.ok(&["str", "build", "workspace", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("build"));
     let file = server.dir.join("build.fux");

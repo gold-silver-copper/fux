@@ -898,6 +898,8 @@ fn paint(
             env: fux::command::Env::default(),
             run: false,
             id: None,
+            closes: false,
+            history_file: false,
         };
         s.run_command(
             &split,
@@ -1087,6 +1089,8 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
             env: fux::command::Env::default(),
             run: false,
             id: None,
+            closes: false,
+            history_file: false,
         };
         s.run_command(
             &split,

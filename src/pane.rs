@@ -405,8 +405,8 @@ pub enum Runs {
     /// The shell: its exit closes the pane.
     Shell,
     /// A program `fux run` started in place of a shell: its exit leaves the
-    /// pane, with its last screen and its status (`Process::Exited`); how it
-    /// was started, which `fux respawn` starts again.
+    /// pane, with its last screen and its status (`Process::Exited`), unless
+    /// it `closes`; how it was started, which `fux respawn` starts again.
     Program(Launch),
 }
 
@@ -417,6 +417,20 @@ pub struct Launch {
     pub argv: Vec<String>,
     pub cwd: std::path::PathBuf,
     pub env: Vec<(String, String)>,
+    /// Whether its exit closes its pane, as a shell's does
+    /// (`close-on-exit`); else the pane stays, for its last screen.
+    pub closes: bool,
+}
+
+/// A file removed once the pane holding it is gone, however it goes, or
+/// with the start that would have made that pane (`history-file`).
+#[derive(Debug)]
+pub struct Removes(pub String);
+
+impl Drop for Removes {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// What a pane running `argv` is named until it is renamed: its program's
@@ -635,6 +649,8 @@ pub struct Pane {
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
+    /// The file its program was given to read (`history-file`).
+    pub removes: Option<Removes>,
 }
 
 /// How long a piece of input is given before the next is written, if
@@ -844,6 +860,7 @@ impl Pane {
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
+            removes: None,
         })
     }
 
@@ -1653,7 +1670,8 @@ impl Pane {
         let runs = Runs::Program(launch);
         // A new program, its own pane: a wait counts from its start. Kept
         // are what the session has yet to take from the old one (a bell, a
-        // copy), its colours, nonce, log and journal budget, and its counts.
+        // copy), its colours, nonce, log, file and journal budget, and its
+        // counts.
         let mut fresh = Pane::new(self.id, name, runs, self.size(), history)?;
         fresh.mark_with(self.nonce.take());
         fresh.record.set_budget(self.record.budget);
@@ -1661,6 +1679,7 @@ impl Pane {
         fresh.bell = self.bell;
         fresh.copied = self.copied.take();
         fresh.log = self.log.take();
+        fresh.removes = self.removes.take();
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
         fresh.process = process;

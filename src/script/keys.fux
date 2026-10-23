@@ -10,6 +10,7 @@ str z str 'me zoom' bind  str 'zoom or restore' label  str Panes group
 str a str 'me me focused menu' bind  str 'pane actions' label  str Panes group
 str c str 'me copy-mode' bind  str 'copy and select' label  str Panes group
 str p str 'me focused 0 paste-buffer' bind  str 'paste the newest copy' label  str Panes group
+str i str 'me focused edit-history drop' bind  str 'history in an editor' label  str Panes group
 
 str h str 'me str left focus' bind  str 'focus left' label  str Focus group
 str j str 'me str down focus' bind  str 'focus down' label  str Focus group

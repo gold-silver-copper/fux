@@ -110,7 +110,9 @@ pub const WORDS: &[Word] = &[
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
-    word("Starting", "run", "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
+    word("Starting", "close-on-exit", "x -- x", "the program's exit closes its pane, as a shell's does, rather than leave its last screen (a wait on it then ends closed, 4)"),
+    word("Starting", "history-file", "x -- x", "split, with program: its last argument, a file only you can read holding what the split pane showed as plain text (its history and screen, then a full-screen program's), removed with the new pane"),
+    word("Starting", "run", "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits, unless close-on-exit"),
     word("Starting", "split", "subject -- pane", "split a pane: a shell, or the program given"),
     word("Starting", "new-tab", "opts -- pane", "a tab with a shell"),
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
@@ -510,6 +512,8 @@ fn modify(
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
         "kill-first" => built.kill = true,
+        "close-on-exit" => built.closes = true,
+        "history-file" => built.history_file = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
         "styles" => built.view.styles = true,
@@ -1024,6 +1028,7 @@ impl fuxth::Host for Host<'_> {
                             argv: built.argv,
                             log: built.log,
                             ids: built.ids,
+                            closes: built.closes,
                         };
                         let run = followed(run, wait(&built.waits, self.settle));
                         return later(ask(run, Then::Handle(Kind::Pane)));
@@ -1059,6 +1064,10 @@ impl fuxth::Host for Host<'_> {
                     return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
                 };
                 let (run, cmd) = match (built.argv.is_empty(), built.typed) {
+                    (true, _) if built.closes || built.history_file => {
+                        let why = "takes close-on-exit and history-file with a program: a shell's pane closes as the shell exits, and takes no file";
+                        return Err(fail(Lang::Unused, why));
+                    }
                     (true, typed) => (false, typed.into_iter().collect()),
                     (false, None) => (true, built.argv),
                     (false, Some(_)) => {
@@ -1074,6 +1083,8 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     run,
                     id,
+                    closes: built.closes,
+                    history_file: built.history_file,
                 };
                 let split = followed(split, wait(&built.waits, self.settle));
                 later(ask(split, Then::Handle(Kind::Pane)))

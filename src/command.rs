@@ -403,6 +403,11 @@ wire! {
             run: bool,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
+            /// Its program's exit closes its pane, as a shell's does.
+            closes: bool,
+            /// Its program's last argument is a file of what `target`
+            /// showed, which its pane removes as it goes (`history-file`).
+            history_file: bool,
         },
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.
@@ -416,6 +421,7 @@ wire! {
             /// A file everything the program writes goes to too.
             log: Option<String>,
             ids: Wanted,
+            closes: bool,
         },
         /// The program `run` started, started again in its pane.
         Respawn {

@@ -11,3 +11,8 @@ define line text str Enter key send-keys end
 define screen capture end
 # -- pane : a tab with a shell, in workspace agent
 define shell opts str agent in new-tab end
+# pane -- pane : the pane's text in $VISUAL (else $EDITOR, else vi), in a pane split below it that closes with the editor
+define edit-history
+  vertical close-on-exit history-file str sh program str -c arg
+  str 'eval "${VISUAL:-${EDITOR:-vi}} \"\$1\""' arg str sh arg 0 timeout split
+end

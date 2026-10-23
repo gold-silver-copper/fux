@@ -277,3 +277,121 @@ fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
     );
     Ok(())
 }
+
+/// An editor for `edit-history` that keeps a copy of the file it is given,
+/// its mode, its arguments and its path, in `seen` and beside it, and exits
+/// 3; with `--hold` it stays open, deaf to a hang-up. Its path has a space,
+/// so `$VISUAL` must quote it.
+fn editor(server: &Server) -> Result<(String, std::path::PathBuf), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let seen = server.dir.join("seen");
+    let path = server.dir.join("my editor");
+    let script = format!(
+        "#!/bin/sh\nfor f; do :; done\nprintf '%s\\n' \"$@\" > '{0}.args'\n\
+         ls -l \"$f\" > '{0}.mode'; printf %s \"$f\" > '{0}.path'; cp \"$f\" '{0}'\n\
+         [ \"$1\" = --hold ] && trap '' HUP && exec sleep 60\nexit 3\n",
+        seen.display()
+    );
+    std::fs::write(&path, script).map_err(e)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    Ok((format!("'{}'", path.display()), seen))
+}
+
+/// The history files the server of `pid` has made and not removed.
+fn history_files(pid: Option<u32>) -> Result<usize, String> {
+    let made = format!("fux-{}-", pid.ok_or("the server's pid")?);
+    let names = std::fs::read_dir(std::env::temp_dir()).map_err(e)?;
+    Ok(names
+        .filter_map(Result::ok)
+        .filter(|f| f.file_name().to_string_lossy().starts_with(&made))
+        .count())
+}
+
+/// `C-b i` in an attached terminal opens the focused pane's text, a line
+/// wrapped at its width whole, in the terminal's `$VISUAL`, a shell
+/// command (which may `exec`), from a file only the user reads; the
+/// editor's pane closes as it exits, saying its status, and the file goes
+/// with it.
+#[test]
+fn the_key_opens_the_focused_pane_in_the_editor() -> Outcome {
+    let server = Server::start("str update-environment str VISUAL set")?;
+    let (editor, seen) = editor(&server)?;
+    let visual = format!("exec {editor} --flag 'two words'");
+    let mut terminal = Terminal::start(12, 80, &[fux()], |command| {
+        command
+            .env("FUX_SOCKET", &server.socket)
+            .env("XDG_CONFIG_HOME", server.dir.join("config"))
+            .env("VISUAL", &visual)
+            .env_remove("FUX_PANE")
+            .env_remove("FUX_SERVER");
+    })?;
+    terminal.wait_for("$")?;
+    let long: String = std::iter::repeat_n('7', 150).collect();
+    let printed = format!("echo early; seq 1 40; echo {long}");
+    server.ok(&["%1", "str", &printed, "line"])?;
+    terminal.type_bytes(b"\x02i")?;
+    terminal.wait_for("exited with status 3")?;
+    let text = std::fs::read_to_string(&seen).map_err(e)?;
+    // Scrolled off the screen long since, and wrapped at its width.
+    assert!(text.lines().any(|l| l == "early"), "{text}");
+    assert!(text.lines().any(|l| l == long), "{text}");
+    let args = std::fs::read_to_string(server.dir.join("seen.args")).map_err(e)?;
+    assert!(args.starts_with("--flag\ntwo words\n"), "{args}");
+    let mode = std::fs::read_to_string(server.dir.join("seen.mode")).map_err(e)?;
+    assert!(mode.starts_with("-rw-------"), "{mode}");
+    let file = std::fs::read_to_string(server.dir.join("seen.path")).map_err(e)?;
+    eventually("the file removed", || {
+        Ok(!std::path::Path::new(&file).exists())
+    })?;
+    Ok(())
+}
+
+/// From the command line too, the text is the screen's alone, a
+/// full-screen program's screen after the history; a dump leaves the file
+/// out, closing the editor's pane removes it, and a split refused for want
+/// of room makes none.
+#[test]
+fn edit_history_leaves_no_file_however_its_pane_goes() -> Outcome {
+    let server = Server::start("str update-environment str VISUAL set")?;
+    let (editor, seen) = editor(&server)?;
+    let typed = "echo before; printf '\\033[?1049hon the alt screen'; read x";
+    server.ok(&[
+        "%1",
+        "str",
+        typed,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "0",
+        "timeout",
+        "send-keys",
+    ])?;
+    eventually("the alt screen", || {
+        Ok(server.ok(&["%1", "str", "alt_screen", "get"])?.trim() == "true")
+    })?;
+    let visual = format!("{editor} --hold");
+    let env = [("VISUAL", visual.as_str())];
+    assert_eq!(server.fux_env(&["%1", "edit-history"], &env)?.status, 0);
+    eventually("the editor's copy", || {
+        Ok(std::fs::read_to_string(&seen).is_ok_and(|t| t.contains("on the alt screen")))
+    })?;
+    let text = std::fs::read_to_string(&seen).map_err(e)?;
+    let (before, alt) = (text.find("\nbefore\n"), text.find("\non the alt screen"));
+    assert!(before.is_some() && before < alt, "{text}");
+    assert!(!text.contains("%1 "), "no state line: {text}");
+    assert_eq!(history_files(server.pid())?, 1);
+    // The file is the pane's alone: a dump gives a pane made again its own.
+    let file = std::fs::read_to_string(server.dir.join("seen.path")).map_err(e)?;
+    let dump = server.ok(&["dump"])?;
+    assert!(
+        dump.contains("history-file") && !dump.contains(&file),
+        "{dump}"
+    );
+    server.ok(&["%2", "kill"])?;
+    eventually("the file removed", || Ok(history_files(server.pid())? == 0))?;
+    server.ok(&["%1", "tab", "20", "3", "resize"])?;
+    assert_ne!(server.fux_env(&["%1", "edit-history"], &env)?.status, 0);
+    assert_eq!(history_files(server.pid())?, 0);
+    Ok(())
+}

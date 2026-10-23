@@ -172,7 +172,7 @@ codes! {
     Check "check",
     /// A file that could not be read.
     Read "read",
-    /// Output that could not be written.
+    /// Output, or a file, that could not be written.
     Output "output",
     /// A word that may not run inside another's run.
     Nested "nested",

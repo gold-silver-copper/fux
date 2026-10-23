@@ -2436,6 +2436,7 @@ mod tests {
             argv: vec!["x".into()],
             cwd: "/".into(),
             env: Vec::new(),
+            closes: false,
         };
         let pane = s.panes.get_mut(&id).ok_or("the pane")?;
         pane.respawned(launch, crate::pane::Process::Absent, 1 << 10)

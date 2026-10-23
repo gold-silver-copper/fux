@@ -57,7 +57,8 @@ answers it at once. `state get` cannot tell work from a clock; `%2 0
 timeout wait` answers `busy` at once while it works.
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
-  program exited before the wait; 4 the pane closed; 5 the shell command
+  program exited before the wait; 4 the pane closed (as a `close-on-exit`
+  program's does when it exits); 5 the shell command
   `wait-done` waited on ended first; 7 it reads its terminal and the text
   has not come; 124 still at work at the limit, not failed.
 - **Clean up:** `fux str agent workspace kill`; stop what you start by its
@@ -156,6 +157,9 @@ screen row a line; else a line wrapped at the pane's width is joined
 whole), `0 4 rows`, `0 39 cols`, `full`, `marks` (highlights as
 `⟦this⟧`), `styles`; then `json` for the screen and the pane's state
 (`cursor` is `[ROW,COL]`). Rows and columns count from 0.
+`PANE vertical str less program history-file split` gives a program a file
+of what the pane showed (its last argument, removed with its pane);
+`PANE edit-history` opens one in `$VISUAL`.
 
 ## shells: Shells and their marks
 

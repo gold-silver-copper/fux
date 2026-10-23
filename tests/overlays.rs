@@ -73,10 +73,10 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
         .split("\x1b[0;2")
         .any(|chunk| chunk.contains("next pane"));
     assert!(dimmed, "next pane is dimmed with only one pane");
-    // Enter on it: `next pane` is the 12th entry (after 7 pane bindings
+    // Enter on it: `next pane` is the 13th entry (after 8 pane bindings
     // and 4 directions of focus).
     client.keys("\x1b[H")?;
-    client.keys(&std::iter::repeat_n(DOWN, 11).collect::<String>())?;
+    client.keys(&std::iter::repeat_n(DOWN, 12).collect::<String>())?;
     client.keys("\r")?;
     bar_has(&mut client, "only one pane")?;
     // And by its key, straight from the column.

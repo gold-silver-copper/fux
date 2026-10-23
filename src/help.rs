@@ -174,12 +174,12 @@ pub fn explain(name: &str) -> Option<String> {
 pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "run",
-        "name size cwd env command program arg in log-to id",
+        "name size cwd env command program arg in log-to id close-on-exit",
         true,
     ),
     (
         "split",
-        "horizontal vertical cwd env command program arg typed id",
+        "horizontal vertical cwd env command program arg typed id close-on-exit history-file",
         true,
     ),
     ("new-tab", "name size cwd env typed in id", false),
