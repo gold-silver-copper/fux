@@ -400,9 +400,9 @@ impl Wait {
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), End::Done)
             }
-            // At its limit a settling wait fails (124) only while busy, as
-            // a bare `wait` on a pane at work on the input is; `0 timeout`
-            // answers at once, so, and never fails.
+            // At its limit a settling wait fails (124) only while busy, and
+            // a bare `wait` on a pane still at work on the input is busy;
+            // `0 timeout` answers at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
                 let state = if watch.more && pane.at_work(now) {
                     State::Busy
@@ -1039,11 +1039,11 @@ impl Watch {
     /// as it was.
     fn settled(&mut self, pane: &Pane, now: Instant, more: bool) -> Option<Found> {
         let state = self.state(pane, now);
-        // A bare `wait` waits while its program is at work on the input (a
-        // spinner), until still `REDRAWN`, even `reading` (an input thread
-        // reads while another awaits the network); on a pane that may go on
-        // alone (`waiting`, or quiet with nothing known), for something new
-        // too, what it waits on or a change, `MORE` at most.
+        // A bare `wait` waits while its program is at work on the input,
+        // until still `REDRAWN`, even `reading` (an input thread reads while
+        // another awaits the network); on a pane that may go on alone
+        // (`waiting`, or quiet with nothing known), for something new too,
+        // what it waits on or a change, `MORE` at most.
         let work = more && pane.at_work(now);
         let new = more && pane.revision == self.revision && now < after(self.began, MORE);
         // A program just started that reads its terminal before it printed

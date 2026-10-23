@@ -501,19 +501,25 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
 }
 
 /// A full-screen program still until a key, then at work on it behind a
-/// spinner (an agent's TUI), looks as a clock does while it works, and an
-/// action on it answers so, a key sent meanwhile too; a bare `wait` after
-/// waits on until its screen is still 2s, its work done (`busy`, 124, at
-/// its limit before).
+/// spinner (an agent's TUI: its main thread reads its terminal, `reading`,
+/// while another draws a frame for each tick from elsewhere), answers its
+/// keys at once, a key sent meanwhile too; a bare `wait` after waits on
+/// until its screen is still 2s, its work done (`busy`, 124, at its limit
+/// before).
 #[test]
 fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
     let server = Server::start("")?;
-    let spinner = "import os, select, tty\n\
+    let spinner = "import os, subprocess, threading, tty\n\
                    tty.setraw(0); os.write(1, b'\\x1b[?1049hready'); os.read(0, 1)\n\
-                   for n in range(40):\n\
-                   \x20   os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n)\n\
-                   \x20   if select.select([0], [], [], 0.1)[0]: os.read(0, 1)\n\
-                   os.write(1, b'\\x1b[H\\x1b[2Jall done'); os.read(0, 1)\n";
+                   def work():\n\
+                   \x20   tick = 'for i in $(seq 40); do sleep 0.1; echo; done'\n\
+                   \x20   ticks = subprocess.Popen(['sh', '-c', tick], stdout=subprocess.PIPE,\n\
+                   \x20       start_new_session=True).stdout\n\
+                   \x20   for n, _ in enumerate(ticks):\n\
+                   \x20       os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n)\n\
+                   \x20   os.write(1, b'\\x1b[H\\x1b[2Jall done')\n\
+                   threading.Thread(target=work).start()\n\
+                   while os.read(0, 1) != b'q': pass\n";
     let answer = server.ok(&[
         "opts", "str", "python3", "program", "str", "-c", "arg", "str", spinner, "arg", "run",
     ])?;
@@ -523,11 +529,10 @@ fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
         .unwrap_or_default()
         .to_owned();
     let p = ["str", pane.as_str(), "pane"];
-    let working = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
-    assert!(working.contains("working"), "{working}");
-    server.ok(&[&p[..], &["str", "y", "type"]].concat())?;
+    server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
     let limit = server.fux(&[&p[..], &["1", "timeout", "wait"]].concat())?;
     assert_eq!(limit.status, 124, "{}{}", limit.stdout, limit.stderr);
+    server.ok(&[&p[..], &["str", "y", "type"]].concat())?;
     let began = std::time::Instant::now();
     let done = server.ok(&[&p[..], &["wait"]].concat())?;
     assert!(

@@ -555,9 +555,9 @@ pub struct Pane {
     /// to wake it).
     pub written_at: Option<Instant>,
     /// When input went in that found it still (drawing nothing on its own
-    /// within `ready::REDRAWN`), and the job then in front: what that job
-    /// draws on its own after is work on that input (a spinner) until
-    /// still `ready::REDRAWN`. More input while at work keeps it.
+    /// within `ready::REDRAWN`), and the job then in front: that job is at
+    /// work on it (a spinner) until still `ready::REDRAWN`. More input
+    /// while at work keeps it.
     work_from: Option<(Instant, Option<Pid>)>,
     /// The last input typed ended a line (Enter, or text ending in a line
     /// end): what came of it is a command's, if its program marks them.
@@ -1698,9 +1698,10 @@ impl Pane {
             let alone = gap >= crate::ready::SETTLE
                 && self.written_at.is_none_or(|at| at <= self.changed_at);
             self.drew_alone = (marks, n.saturating_add(u32::from(alone)));
-            // Still `REDRAWN` since the input before: its work is done.
-            if gap >= crate::ready::REDRAWN
-                && self.work_from.is_some_and(|(at, _)| at <= self.changed_at)
+            // Still `REDRAWN` since: its work on the input is done.
+            if self
+                .work_from
+                .is_some_and(|(at, _)| now >= after(at.max(self.changed_at), crate::ready::REDRAWN))
             {
                 self.work_from = None;
             }
@@ -1716,12 +1717,14 @@ impl Pane {
     }
 
     /// Whether its program is at work at `now` on input that found it
-    /// still: the job in front then redraws on its own since (a job the
-    /// input started, `top` typed at a shell, is no work).
+    /// still: the job in front then runs on, not still `ready::REDRAWN`
+    /// since (a job the input started, `top` typed at a shell, is no work).
     pub fn at_work(&self, now: Instant) -> bool {
-        self.work_from
-            .is_some_and(|(at, job)| self.changed_at > at && job == self.process.job())
-            && self.redrawing(now)
+        self.process.child().is_some()
+            && self.work_from.is_some_and(|(at, job)| {
+                job == self.process.job()
+                    && now < after(at.max(self.changed_at), crate::ready::REDRAWN)
+            })
     }
 
     /// How many bytes of input sent the program has not read yet.
