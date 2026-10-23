@@ -337,6 +337,10 @@ fn starts_programs(request: &Request) -> bool {
             | Command::Run { .. }
             | Command::Respawn { .. }
             | Command::Split { .. }
+            | Command::Client {
+                action: crate::command::ClientAction::ToggleFloating,
+                ..
+            }
     )
 }
 

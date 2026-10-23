@@ -180,6 +180,7 @@ prefix again sends it to the pane.
 | `v` / `s` | `me focused horizontal split drop` / `… vertical …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
 | `z` | `me zoom` | zoom the pane, or restore it |
+| `f` | `me toggle-floating` | show the floating panes, opening one if there is none; or hide them |
 | `a` | `me me focused menu` | pane actions |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer` | paste the newest copy |
@@ -196,8 +197,8 @@ any other key ends it and is dropped, which the bar says.
 
 `t` and `w` are **layers**, sharing their verbs: `n` new, `h`/`l` previous
 and next, `g` choose, `r` rename, `x` close, `a` actions, and `m` then
-`h`/`l` to move it earlier or later, repeating. `f`, `g`, `i`, `u` and `y`
-are free for your own bindings. These keys are themselves a config, run
+`h`/`l` to move it earlier or later, repeating. `g`, `i`, `u` and `y` are
+free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
 ([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
 the same way.
@@ -221,6 +222,27 @@ the same way.
 Directional focus picks, among the panes beyond the focused pane's edge,
 the one whose centre is closest across the direction, then along it, then
 the lowest number.
+
+### Floating panes
+
+A floating pane is a pane like any other, drawn over its tab's tiled panes
+in a frame that shows its number and name. A terminal shows a tab's
+floating panes while it focuses one of them. `C-b f` shows them (focusing
+the top one), opening a shell in one if the tab has none; from a floating
+pane it hides them again, back to the tiled pane you were in. Among
+floating panes the keys act as on tiled ones: `h` `j` `k` `l` and `o`
+focus another floating pane, which comes to the top; `v` and `s` split one
+in two; `x` closes it, `z` zooms it; `r` then `h` `j` `k` `l` moves its
+right or bottom border, and `m` then `h` `j` `k` `l` moves it a cell.
+
+From a script: `PANE floating split` opens one over PANE's tab (`program`
+and the rest as for any split); `PANE COL ROW COLS ROWS float` floats a
+pane, tiled or floating, with its frame (border included) at that place on
+the panes' area, which starts at `0 0` top left; a frame that does not fit
+a terminal is moved and cut to fit it. `PANE TAB move-to`, its own tab,
+tiles a floating pane again. `CLIENT PANE focus-pane` shows one to a
+client. `ls` marks floating panes `floating`, and `ls json` gives
+`"floating": true`; capture, keys and waits treat them as any pane.
 
 ### Copy and select
 
@@ -267,7 +289,7 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | Words | Do |
 | --- | --- |
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
-| `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
+| `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`/`floating`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
 | `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits; after input that found it still, once still 2s too) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `MS pause` between two inputs writes the next MS milliseconds after the one before, whatever the program did (`str c3 bytes 50 pause str a9 bytes`); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
@@ -279,12 +301,13 @@ and Helix do, copies the same way. fux never reads the clipboard.
 | `X COLS ROWS resize`, `X resize-auto` | what a tab is laid out on while no client shows it |
 | `pane N resize-x`, `pane N percent resize-y`, `pane str WAY N move-border` | a pane's width or height in cells or a percent; move its nearest border |
 | `pane X move-to`, `pane str WAY move-beside`, `pane pane swap-panes`, `X str next reorder` | move a pane to a tab, workspace, `new-tab` or `new-workspace`; beside a neighbour; swap; move one place |
+| `pane COL ROW COLS ROWS float`, `pane floating split` | float a pane over its tab, or open a floating one ([Floating panes](#floating-panes)) |
 | `pane str TERM signal` | a signal to what runs in the pane's foreground, never a shell itself |
 | `pane str FILE start-log`, `pane stop-log`, `pane clear-history` | keep what its program writes from now on; stop; drop its history |
 | `buffers`, `N buffer`, `pane N paste-buffer` | paste buffers, newest 0 |
 | `dump`, `X dump-of` | what there is, as a program that makes it again |
 | `str WS str PATH grant`, `str PATH revoke` | a socket whose requests reach workspace WS alone (see [Security](#security)) |
-| `client …` | `focus`, `focus-pane`, `show-tab`, `next-tab`, `show-workspace`, `choose-tab`, `menu`, `rename-prompt`, `confirm-close`, `zoom`, `copy-mode`, `command-prompt`, `detach`, `capture-client`, `resize-client` act on a client's screen |
+| `client …` | `focus`, `focus-pane`, `show-tab`, `next-tab`, `show-workspace`, `choose-tab`, `menu`, `rename-prompt`, `confirm-close`, `zoom`, `toggle-floating`, `copy-mode`, `command-prompt`, `detach`, `capture-client`, `resize-client` act on a client's screen |
 | `COLS ROWS headless` | a client with no terminal, for tests and scripts: prints its id, ends on a signal |
 | `start`, `status`, `servers`, `kill-server`, `force-kill-server`, `version` | the server |
 
@@ -310,7 +333,7 @@ interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
-  "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
+  "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"floating":false,"pid":4242,
     "program":"vim","state":"reading","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,

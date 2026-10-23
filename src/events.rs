@@ -45,8 +45,7 @@ impl Snapshot {
             snapshot.workspaces.insert(ws.id, ws.name.clone());
             for tab in ws.tabs() {
                 snapshot.tabs.insert(tab.id, (ws.id, tab.name.clone()));
-                let panes = tab.root().map(crate::layout::Tree::panes);
-                for id in panes.unwrap_or_default() {
+                for id in tab.layout().panes() {
                     let Some(pane) = session.panes.get(&id) else {
                         continue;
                     };

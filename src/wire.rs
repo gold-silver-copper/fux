@@ -515,7 +515,7 @@ mod tests {
     fn a_directory_goes_as_its_bytes() {
         let dir = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/caf\xe9"));
         let split = Command::Split {
-            axis: crate::layout::Axis::Vertical,
+            axis: Some(crate::layout::Axis::Vertical),
             target: crate::id::PaneId::of(1),
             cmd: Vec::new(),
             cwd: Some(dir.clone()),

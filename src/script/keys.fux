@@ -7,6 +7,7 @@ str v str 'me focused horizontal split drop' bind  str 'split side by side' labe
 str s str 'me focused vertical split drop' bind  str 'split stacked' label  str Panes group
 str x str 'me me focused confirm-close' bind  str 'close pane' label  str Panes group
 str z str 'me zoom' bind  str 'zoom or restore' label  str Panes group
+str f str 'me toggle-floating' bind  str 'floating panes: show, hide or open' label  str Panes group
 str a str 'me me focused menu' bind  str 'pane actions' label  str Panes group
 str c str 'me copy-mode' bind  str 'copy and select' label  str Panes group
 str p str 'me focused 0 paste-buffer' bind  str 'paste the newest copy' label  str Panes group

@@ -135,6 +135,15 @@ impl Rect {
     pub fn contains(&self, y: u16, x: u16) -> bool {
         self.rows().contains(&y) && self.cols().contains(&x)
     }
+    /// Whether it and `other` have a cell in common.
+    pub fn meets(&self, other: Rect) -> bool {
+        !self.is_empty()
+            && !other.is_empty()
+            && self.x < other.right()
+            && other.x < self.right()
+            && self.y < other.bottom()
+            && other.y < self.bottom()
+    }
     /// Whether (y, x) on the screen is inside the rect or beside it, edges
     /// and corners: within a cell of it.
     pub fn near(&self, y: u16, x: u16) -> bool {
@@ -191,6 +200,33 @@ impl Rect {
             h,
         }
     }
+    /// `w` by `h` at (`y`, `x`), cut short where it would pass the last
+    /// cell a u16 counts.
+    pub fn new(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        let w = w.min(u16::MAX.saturating_sub(x));
+        let h = h.min(u16::MAX.saturating_sub(y));
+        Rect { x, y, w, h }
+    }
+    /// It without its outermost cells: what a frame drawn on them holds.
+    pub fn inner(self) -> Rect {
+        Rect {
+            x: self.x.saturating_add(1),
+            y: self.y.saturating_add(1),
+            w: self.w.saturating_sub(2),
+            h: self.h.saturating_sub(2),
+        }
+    }
+    /// It moved and cut to fit in `area`, of which (0, 0) is the corner: no
+    /// larger than it, and inside.
+    pub fn fitted(self, area: Rect) -> Rect {
+        let (w, h) = (self.w.min(area.w), self.h.min(area.h));
+        Rect {
+            x: area.x.saturating_add(self.x.min(area.w.saturating_sub(w))),
+            y: area.y.saturating_add(self.y.min(area.h.saturating_sub(h))),
+            w,
+            h,
+        }
+    }
     /// Twice the centre, so that it is whole.
     fn centre2(&self) -> (u32, u32) {
         (
@@ -212,8 +248,13 @@ pub struct Separator {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Placement {
+    /// Each pane's rect: the tiled ones, then the floating ones, bottom to
+    /// top, each inside its frame.
     pub panes: Vec<(PaneId, Rect)>,
     pub separators: Vec<Separator>,
+    /// The floating panes' frames, in their order: the last `frames.len()`
+    /// of `panes` are theirs.
+    pub frames: Vec<Rect>,
     /// Room for each split's sizes while it is placed; empty between
     /// placements.
     scratch: Vec<u16>,
@@ -224,9 +265,170 @@ impl Placement {
     pub fn clear(&mut self) {
         self.panes.clear();
         self.separators.clear();
+        self.frames.clear();
     }
     pub fn rect(&self, pane: PaneId) -> Option<Rect> {
         self.panes.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r)
+    }
+    /// The tiled panes.
+    pub fn tiled(&self) -> &[(PaneId, Rect)] {
+        let tiled = self.panes.len().saturating_sub(self.frames.len());
+        self.panes.get(..tiled).unwrap_or_default()
+    }
+    /// The floating panes, bottom to top, each with its frame.
+    pub fn floating(&self) -> impl Iterator<Item = (PaneId, Rect, Rect)> {
+        let tiled = self.panes.len().saturating_sub(self.frames.len());
+        let floating = self.panes.iter().skip(tiled).zip(&self.frames);
+        floating.map(|((p, r), f)| (*p, *r, *f))
+    }
+}
+
+/// The least a floating pane's frame is each way: a pane at its smallest,
+/// and the border round it.
+pub const FRAME_MIN: u16 = MIN + 2;
+
+/// A pane floating over a tab's tiled panes: its frame, border included, on
+/// a pane area whose corner is (0, 0). On an area too small for it, it is
+/// moved and cut to fit (`Rect::fitted`); on one too small for a pane, it
+/// is not shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Float {
+    pub pane: PaneId,
+    pub frame: Rect,
+}
+
+/// A tab's panes: those its tree tiles, and those floating over them, the
+/// last on top.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Layout {
+    pub tiled: Option<Tree>,
+    pub floating: Vec<Float>,
+}
+
+impl Layout {
+    pub fn tiled(tree: Option<Tree>) -> Layout {
+        Layout {
+            tiled: tree,
+            floating: Vec::new(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tiled.is_none() && self.floating.is_empty()
+    }
+    pub fn contains(&self, pane: PaneId) -> bool {
+        self.tiles(pane) || self.floats(pane)
+    }
+    /// Whether `pane` is one of its tiled panes.
+    pub fn tiles(&self, pane: PaneId) -> bool {
+        self.tiled.as_ref().is_some_and(|t| t.contains(pane))
+    }
+    /// Whether `pane` is one of its floating panes.
+    pub fn floats(&self, pane: PaneId) -> bool {
+        self.floating.iter().any(|f| f.pane == pane)
+    }
+    pub fn float(&self, pane: PaneId) -> Option<&Float> {
+        self.floating.iter().find(|f| f.pane == pane)
+    }
+    /// The floating pane on top.
+    pub fn top(&self) -> Option<PaneId> {
+        self.floating.last().map(|f| f.pane)
+    }
+    /// The first tiled pane, else the top floating one.
+    pub fn first_pane(&self) -> Option<PaneId> {
+        (self.tiled.as_ref().and_then(Tree::first_pane)).or_else(|| self.top())
+    }
+    /// Every pane: the tiled ones in tree order, then the floating ones,
+    /// bottom to top.
+    pub fn panes(&self) -> Vec<PaneId> {
+        let mut out = Vec::new();
+        self.for_each_pane(&mut |pane| out.push(pane));
+        out
+    }
+    pub fn for_each_pane(&self, f: &mut impl FnMut(PaneId)) {
+        if let Some(tree) = &self.tiled {
+            tree.for_each_pane(f);
+        }
+        self.floating.iter().for_each(|float| f(float.pane));
+    }
+    /// The panes of `pane`'s layer, tiled or floating, in order.
+    pub fn layer(&self, pane: PaneId) -> Vec<PaneId> {
+        match self.floats(pane) {
+            true => self.floating.iter().map(|f| f.pane).collect(),
+            false => self.tiled.as_ref().map_or_else(Vec::new, Tree::panes),
+        }
+    }
+    /// Removes a pane, tiled or floating.
+    pub fn remove(&mut self, pane: PaneId) -> bool {
+        let floated = self.floating.len();
+        self.floating.retain(|f| f.pane != pane);
+        remove(&mut self.tiled, pane) || self.floating.len() != floated
+    }
+    /// Swaps two panes' places, whichever layers they are in.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) {
+        if let Some(tree) = &mut self.tiled {
+            swap(tree, a, b);
+        }
+        for float in &mut self.floating {
+            float.pane = match float.pane {
+                p if p == a => b,
+                p if p == b => a,
+                p => p,
+            };
+        }
+    }
+    /// Puts floating pane `pane` on top.
+    pub fn raise(&mut self, pane: PaneId) {
+        if let Some(float) = self.float(pane).copied() {
+            self.floating.retain(|f| f.pane != pane);
+            self.floating.push(float);
+        }
+    }
+    /// A pane floating in `frame`: taken out of the tree, on top, if it
+    /// was tiled; moved there if it floated.
+    pub fn float_at(&mut self, pane: PaneId, frame: Rect) {
+        match self.floating.iter_mut().find(|f| f.pane == pane) {
+            Some(float) => float.frame = frame,
+            None => {
+                remove(&mut self.tiled, pane);
+                self.floating.push(Float { pane, frame });
+            }
+        }
+    }
+    /// The frame a new floating pane takes on `area`: three quarters of it
+    /// each way, centred, and a little down and right of each one there is,
+    /// so that none hides another whole.
+    pub fn new_frame(&self, area: Rect) -> Rect {
+        let three_quarters = |len: u16| (len / 4).saturating_mul(3).max(FRAME_MIN);
+        let (w, h) = (three_quarters(area.w), three_quarters(area.h));
+        let n = u16::try_from(self.floating.len()).unwrap_or(u16::MAX);
+        let x = (area.w.saturating_sub(w) / 2).saturating_add(n.saturating_mul(2));
+        let y = (area.h.saturating_sub(h) / 2).saturating_add(n);
+        Rect::new(x, y, w, h).fitted(area)
+    }
+    /// Places its tiled panes in `area`, and with `floating` its floating
+    /// ones over them, into `out`, whatever it held; `focus`, if one of
+    /// them, on top, where whoever focuses it sees it.
+    pub fn place_into(
+        &self,
+        area: Rect,
+        floating: bool,
+        focus: Option<PaneId>,
+        out: &mut Placement,
+    ) {
+        match &self.tiled {
+            Some(tree) => place_into(tree, area, out),
+            None => out.clear(),
+        }
+        let shown = self.floating.iter().filter(|_| floating);
+        let focused = |f: &&Float| Some(f.pane) == focus;
+        let others = shown.clone().filter(|f| !focused(f));
+        for float in others.chain(shown.filter(focused)) {
+            let frame = float.frame.fitted(area);
+            if frame.w >= FRAME_MIN && frame.h >= FRAME_MIN {
+                out.panes.push((float.pane, frame.inner()));
+                out.frames.push(frame);
+            }
+        }
     }
 }
 
@@ -642,11 +844,10 @@ fn place_split(axis: Axis, Split(children): &Split, area: Rect, out: &mut Placem
 /// The pane in `direction` from `from`, among the placed panes: rectangles
 /// beyond `from`'s edge, ranked by the distance between centres across the
 /// direction, then by the distance along it, then by ID.
-pub fn neighbor(placement: &Placement, from: PaneId, direction: Direction) -> Option<PaneId> {
-    let source = placement.rect(from)?;
+pub fn neighbor(panes: &[(PaneId, Rect)], from: PaneId, direction: Direction) -> Option<PaneId> {
+    let source = panes.iter().find(|(p, _)| *p == from)?.1;
     let (sx, sy) = source.centre2();
-    placement
-        .panes
+    panes
         .iter()
         .filter(|(p, _)| *p != from)
         .filter_map(|(p, r)| {
@@ -720,7 +921,9 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
         let neighbours = [(start, end), (end, start)]
             .into_iter()
             .filter(|_| now > len)
-            .filter_map(|(direction, back)| Some((neighbor(&placed, pane, direction)?, back)));
+            .filter_map(|(direction, back)| {
+                Some((neighbor(&placed.panes, pane, direction)?, back))
+            });
         let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
             resize(&mut moved, area, which, direction, amount).then_some(())?;
@@ -1011,6 +1214,30 @@ mod tests {
         assert_eq!(empty, None);
     }
 
+    /// Floating panes are placed over the tiled ones, inside their frames,
+    /// the focused one on top: a frame past the area's edge moves in, one
+    /// larger than it is cut, and on an area too small for a pane none is
+    /// placed.
+    #[test]
+    fn floating_panes_fit_the_area_they_float_over() {
+        let mut layout = Layout::tiled(Some(tree()));
+        layout.float_at(p(2), Rect::new(70, 20, 20, 10));
+        layout.float_at(p(3), Rect::new(0, 0, 200, 4));
+        let mut placed = Placement::default();
+        layout.place_into(area(80, 24), true, Some(p(2)), &mut placed);
+        let floating: Vec<_> = placed.floating().collect();
+        let (moved, cut) = (Rect::new(60, 14, 20, 10), Rect::new(0, 0, 80, 4));
+        assert_eq!(
+            floating,
+            vec![(p(3), cut.inner(), cut), (p(2), moved.inner(), moved)]
+        );
+        assert_eq!(placed.tiled().len(), 2);
+        layout.place_into(area(80, 24), false, None, &mut placed);
+        assert!(placed.frames.is_empty() && placed.panes.len() == 2);
+        layout.place_into(area(3, 3), true, None, &mut placed);
+        assert!(placed.frames.is_empty());
+    }
+
     #[test]
     fn directional_neighbours_prefer_alignment_then_distance_then_id() {
         // 0 | (1 / 2)
@@ -1018,12 +1245,12 @@ mod tests {
         root.split(p(1), p(2), Axis::Vertical, Side::After);
         let node = &root;
         let placed = place(node, area(80, 24));
-        assert_eq!(neighbor(&placed, p(0), Direction::Right), Some(p(1)));
-        assert_eq!(neighbor(&placed, p(2), Direction::Left), Some(p(0)));
-        assert_eq!(neighbor(&placed, p(1), Direction::Down), Some(p(2)));
-        assert_eq!(neighbor(&placed, p(2), Direction::Up), Some(p(1)));
-        assert_eq!(neighbor(&placed, p(0), Direction::Left), None);
-        assert_eq!(neighbor(&placed, p(1), Direction::Right), None);
+        assert_eq!(neighbor(&placed.panes, p(0), Direction::Right), Some(p(1)));
+        assert_eq!(neighbor(&placed.panes, p(2), Direction::Left), Some(p(0)));
+        assert_eq!(neighbor(&placed.panes, p(1), Direction::Down), Some(p(2)));
+        assert_eq!(neighbor(&placed.panes, p(2), Direction::Up), Some(p(1)));
+        assert_eq!(neighbor(&placed.panes, p(0), Direction::Left), None);
+        assert_eq!(neighbor(&placed.panes, p(1), Direction::Right), None);
     }
 
     #[test]

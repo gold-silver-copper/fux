@@ -179,7 +179,7 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     ),
     (
         "split",
-        "horizontal vertical cwd env command program arg typed id",
+        "horizontal vertical floating cwd env command program arg typed id",
         true,
     ),
     ("new-tab", "name size cwd env typed in id", false),
@@ -253,6 +253,8 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "kill" => "fux %3 kill",
         "resize-x" => "fux %3 30 percent resize-x",
         "move-to" => "fux %3 str new-tab move-to",
+        "float" => "fux %3 10 4 60 20 float",
+        "floating" => "fux %3 floating split",
         "focus" => "fux str c1 client str left focus",
         "bind" => "str 'g v' str 'me focused horizontal split drop' bind",
         "bind-root" => "str M-n str 'me next-tab' bind-root",

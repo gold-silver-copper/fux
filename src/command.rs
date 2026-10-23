@@ -128,6 +128,9 @@ wire! {
         NewTab,
         NewWorkspace,
         Beside(direction: Direction),
+        /// Floating over its tab, its frame's corner at `col` and `row`,
+        /// `cols` by `rows` border included.
+        Float(col: u16, row: u16, cols: u16, rows: u16),
     }
 }
 
@@ -392,7 +395,9 @@ wire! {
             ids: Wanted,
         },
         Split {
-            axis: Axis,
+            /// Beside the target along this axis (halving it, if it
+            /// floats); none, floating over its tab.
+            axis: Option<Axis>,
             target: PaneId,
             cmd: Vec<String>,
             /// Where its shell starts (default: where the split pane's is).
@@ -543,6 +548,9 @@ wire! {
         /// take them as a person's keys.
         Keys(inputs: Vec<Input>),
         Zoom,
+        /// Shows its tab's floating panes, opening one if there is none, or
+        /// hides them.
+        ToggleFloating,
         SelectPane(pick: PanePick),
         SelectTab(pick: Pick<TabId>),
         SelectWorkspace(pick: Pick<WsRef>),
@@ -702,6 +710,7 @@ impl Command {
                     ClientAction::Detach
                     | ClientAction::Choices(_)
                     | ClientAction::Zoom
+                    | ClientAction::ToggleFloating
                     | ClientAction::SelectPane(_)
                     | ClientAction::SelectTab(_)
                     | ClientAction::SelectWorkspace(_) => false,

@@ -29,7 +29,7 @@ impl Session {
                 if !self.takes_in(only, ws.id, tab.id) {
                     continue;
                 }
-                if tab.root().is_none() {
+                if tab.layout().is_empty() {
                     continue;
                 }
                 self.dump_tab(ws, tab, whole, opens, ids, &mut out);
@@ -51,7 +51,9 @@ impl Session {
         ids: bool,
         out: &mut String,
     ) {
-        let Some((root, first)) = tab.root().and_then(|r| Some((r, r.first_pane()?))) else {
+        let layout = tab.layout();
+        let panes = layout.panes();
+        let Some(&first) = panes.first() else {
             return;
         };
         let program = self.program(first);
@@ -99,15 +101,32 @@ impl Session {
         if tab.given && makes {
             push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
         }
-        if let Tree::Split(axis, split) = root {
+        if let Some(Tree::Split(axis, split)) = layout.tiled.as_ref() {
             self.dump_split(*axis, split, ids, out);
         }
-        // Each pane's size, for the shares of its splits, the last taking
-        // what is left: in a tab of a fixed size, the only one whose panes'
-        // sizes stay as they are wherever it is made.
-        let panes = root.panes();
+        // The floating panes, bottom to top, each split from the first
+        // pane, then floated where it was: the first itself if none is
+        // tiled.
+        for float in &layout.floating {
+            let name = pane_name(float.pane);
+            if float.pane != first {
+                let mut line = vec![pane_name(first), "floating".into()];
+                self.pane_words(float.pane, ids, &mut line);
+                line.extend(["split".to_owned(), "let".to_owned(), name.clone()]);
+                push(out, &line);
+            }
+            let frame = float.frame;
+            let mut line = vec![name];
+            line.extend([frame.x(), frame.y(), frame.w(), frame.h()].map(|n| n.to_string()));
+            line.push("float".to_owned());
+            push(out, &line);
+        }
+        // Each tiled pane's size, for the shares of its splits, the last
+        // taking what is left: in a tab of a fixed size, the only one whose
+        // panes' sizes stay as they are wherever it is made.
+        let tiled = layout.tiled.as_ref().map_or_else(Vec::new, Tree::panes);
         let fixed = matches!(tab.fit(), Fit::Fixed(_));
-        if let (Some((_, sized)), true) = (panes.split_last(), fixed) {
+        if let (Some((_, sized)), true) = (tiled.split_last(), fixed) {
             for pane in sized {
                 let Some(size) = self.panes.get(pane).map(|p| p.size()) else {
                     continue;
@@ -118,7 +137,7 @@ impl Session {
             }
         }
         // Panes renamed keep their names.
-        for pane in root.panes() {
+        for pane in panes {
             let Some(p) = self.panes.get(&pane) else {
                 continue;
             };

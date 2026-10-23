@@ -3,15 +3,15 @@
 //! knows; and the room a panel has on a screen of a size.
 use crate::command::{AnyRef, Choices, Kind};
 use crate::id::ClientId;
-use crate::layout::Tree;
+use crate::layout::Layout;
 use crate::protocol::{Reply, Scalar};
 use crate::session::{Error, Session};
 
-/// The names of the panes in `roots`, for a chooser row, shortened.
-fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) -> String {
+/// The names of the panes in `layouts`, for a chooser row, shortened.
+fn pane_names<'a>(session: &Session, layouts: impl IntoIterator<Item = &'a Layout>) -> String {
     let mut names: Vec<String> = Vec::new();
-    for root in roots {
-        root.for_each_pane(&mut |id| {
+    for layout in layouts {
+        layout.for_each_pane(&mut |id| {
             if let Some(p) = session.panes.get(&id) {
                 names.push(format!("{} {}", p.id, p.label()));
             }
@@ -43,7 +43,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     "{} {} — {}",
                     tab.id,
                     tab.name,
-                    pane_names(session, tab.root())
+                    pane_names(session, [tab.layout()])
                 );
                 rows.push((AnyRef::Tab(tab.id), label));
             }
@@ -54,17 +54,15 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 if Some(ws.id) == shown {
                     current = Some(rows.len());
                 }
-                let roots = ws.tabs().iter().filter_map(|t| t.root());
-                let label = format!("{} {} — {}", ws.id, ws.name, pane_names(session, roots));
+                let layouts = ws.tabs().iter().map(|t| t.layout());
+                let label = format!("{} {} — {}", ws.id, ws.name, pane_names(session, layouts));
                 rows.push((AnyRef::Workspace(ws.id), label));
             }
         }
         Choices::Panes(source) => {
-            let root = session
-                .locate(source)
-                .and_then(|(_, tab)| session.root(tab));
-            if let Some(root) = root {
-                root.for_each_pane(&mut |id| {
+            let tab = session.locate(source).and_then(|(_, tab)| session.tab(tab));
+            if let Some(layout) = tab.map(|t| t.layout()) {
+                layout.for_each_pane(&mut |id| {
                     if let Some(p) = session.panes.get(&id).filter(|_| id != source) {
                         rows.push((AnyRef::Pane(p.id), format!("{} {}", p.id, p.label())));
                     }

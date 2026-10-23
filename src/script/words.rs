@@ -106,6 +106,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "typed", "x line -- x", "a command line typed into its new shell"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
+    word("Starting", "floating", "x -- x", "split: a pane floating over the tab, not beside the pane"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
@@ -170,7 +171,8 @@ pub const WORDS: &[Word] = &[
     word("Changing", "percent", "n -- size", "n percent of the tab, for resize-x and resize-y"),
     word("Changing", "move-border", "pane way cells --", "move the pane's nearest border: left right up down"),
     word("Changing", "move-to", "pane where --", "move a pane to a tab, a workspace, new-tab or new-workspace"),
-    word("Changing", "move-beside", "pane way --", "move a pane beside its neighbour: left right up down"),
+    word("Changing", "move-beside", "pane way --", "move a pane beside its neighbour, or a floating one a cell: left right up down"),
+    word("Changing", "float", "pane col row cols rows --", "float a pane over its tab, its frame at col row, cols by rows border included (move-to its tab tiles it again)"),
     word("Changing", "swap-panes", "pane pane --", "swap two panes"),
     word("Changing", "swap-toward", "pane way --", "swap a pane with its neighbour"),
     word("Changing", "reorder", "handle way --", "move one place: next or previous"),
@@ -202,6 +204,7 @@ pub const WORDS: &[Word] = &[
     word("Clients", "rename-prompt", "client handle --", "a prompt for its new name"),
     word("Clients", "confirm-close", "client handle --", "close it, once confirmed"),
     word("Clients", "zoom", "client --", "zoom the focused pane, or restore"),
+    word("Clients", "toggle-floating", "client --", "show the tab's floating panes, opening one if it has none; or hide them"),
     word("Clients", "copy-mode", "client --", "copy and select in the focused pane"),
     word("Clients", "command-prompt", "client --", "a prompt for fuxth"),
     word("Clients", "detach", "client --", "detach a client"),
@@ -509,6 +512,7 @@ fn modify(
         "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
+        "floating" => built.floating = true,
         "kill-first" => built.kill = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
@@ -1066,8 +1070,17 @@ impl fuxth::Host for Host<'_> {
                         return Err(fail(Lang::Unused, why));
                     }
                 };
+                let axis = match (built.floating, built.axis) {
+                    (false, axis) => Some(axis.unwrap_or(Axis::Horizontal)),
+                    (true, None) => None,
+                    (true, Some(_)) => {
+                        let why =
+                            "floating takes no horizontal or vertical: it floats over the tab";
+                        return Err(fail(Lang::Unused, why));
+                    }
+                };
                 let split = Command::Split {
-                    axis: built.axis.unwrap_or(Axis::Horizontal),
+                    axis,
                     target: p,
                     cmd,
                     cwd: built.cwd,
@@ -1346,6 +1359,13 @@ impl fuxth::Host for Host<'_> {
                 };
                 tell(Command::MovePane { target: p, to })
             }
+            "float" => {
+                let p = pane(&next()?)?;
+                let (col, row) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
+                let (cols, rows) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
+                let to = MoveTo::Float(col, row, cols, rows);
+                tell(Command::MovePane { target: p, to })
+            }
             "swap-panes" => {
                 let (a, b) = (pane(&next()?)?, pane(&next()?)?);
                 tell(Command::SwapPane {
@@ -1433,7 +1453,7 @@ impl fuxth::Host for Host<'_> {
                 later(act(c, ClientAction::SelectWorkspace(Pick::Id(w))))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
-            | "detach" => {
+            | "toggle-floating" | "detach" => {
                 let c = client(&next()?)?;
                 let step = match name.starts_with("next") {
                     true => Sibling::Next,
@@ -1441,6 +1461,7 @@ impl fuxth::Host for Host<'_> {
                 };
                 let action = match name {
                     "zoom" => ClientAction::Zoom,
+                    "toggle-floating" => ClientAction::ToggleFloating,
                     "detach" => ClientAction::Detach,
                     "next-tab" | "previous-tab" => ClientAction::SelectTab(Pick::Step(step)),
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),

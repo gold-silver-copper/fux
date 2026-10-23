@@ -135,8 +135,19 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         return Vec::new();
     };
     let mut visible = Vec::new();
-    for &(id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(&id) else {
+    // A pane a floating pane's frame covers any of shows none: text over a
+    // picture takes it away.
+    let tiled = placement.panes.len().saturating_sub(placement.frames.len());
+    for (i, &(id, rect)) in placement.panes.iter().enumerate() {
+        let above = placement
+            .frames
+            .iter()
+            .skip(i.saturating_add(1).saturating_sub(tiled));
+        let Some(pane) = session
+            .panes
+            .get(&id)
+            .filter(|_| !above.clone().any(|f| f.meets(rect)))
+        else {
             continue;
         };
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
@@ -290,7 +301,9 @@ impl Frame {
         placement: &Placement,
         focus: Option<PaneId>,
     ) -> Option<Frame> {
-        if !view.mode.is_normal() {
+        // Floating panes overlap others: a row of one can change what
+        // shows of another.
+        if !view.mode.is_normal() || !placement.frames.is_empty() {
             return None;
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
@@ -961,14 +974,25 @@ pub fn compose_held(
     put_panes(grid, session, view, placement, focus, copy);
     let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
     let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
-    for &(id, rect) in placement.panes.iter().filter(|(id, _)| held(id)) {
-        match kept(id, rect) {
-            Some(painted) => grid.keep_area(painted.grid, rect),
-            None => grid.blank(rect),
+    let hold = |grid: &mut Grid, id: PaneId, rect: Rect| {
+        if held(&id) {
+            match kept(id, rect) {
+                Some(painted) => grid.keep_area(painted.grid, rect),
+                None => grid.blank(rect),
+            }
+            grid.memo = None;
         }
-        grid.memo = None;
+    };
+    for &(id, rect) in placement.tiled() {
+        hold(grid, id, rect);
     }
-    if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
+    // The floating panes over them, bottom to top.
+    for (id, rect, frame) in placement.floating() {
+        put_frame(grid, session, id, frame, focus == Some(id));
+        put_pane(grid, session, id, rect, copy);
+        hold(grid, id, rect);
+    }
+    if tab.is_some_and(|t| t.layout().is_empty()) && area.h() > 0 {
         // Its keys are the client's: the server names what to do.
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
@@ -1096,60 +1120,104 @@ fn put_panes(
         grid.memo = Some(memo.update(grid, session));
         return;
     }
-    // The panes and separators, which never overlap, cover the pane area
-    // unless a split has no room for even its first child; the bar covers
-    // its row. Covered, every cell is written below, and the grid needs no
-    // blanking first.
+    // The tiled panes and separators, which never overlap, cover the pane
+    // area unless a split has no room for even its first child; the bar
+    // covers its row. Covered, every cell is written below, and the grid
+    // needs no blanking first.
+    let tiled = placement.tiled();
     let lines = placement.separators.iter().map(|s| &s.rect);
-    let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
+    let covered = (tiled.iter().map(|(_, r)| r).chain(lines))
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
-    let tiled = covered == Session::pane_area(view).area();
-    grid.reset(view.rows, view.cols, !tiled);
-    let mut keys = Vec::new();
-    for (id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(id) else {
-            grid.blank(*rect);
-            continue;
-        };
-        let screen = pane.screen();
-        // A pane whose program changed its colours is drawn in them.
-        let colours = own_colours(screen).then_some(screen);
-        let at = copy.filter(|(c, _)| c.pane == *id).map(|(_, at)| at);
-        let window = at.map_or_else(|| screen.window(), |at| at.top.window());
-        let width = rect.w().min(window.cols());
-        // What the pane's screen does not cover of its place, rows below
-        // its window's included, is blank.
-        let mut pane_keys = Vec::new();
-        for (y, line) in (0..rect.h()).zip(rect.lines()) {
-            let row = window.row(y);
-            pane_keys.push(row.map(|r| (r.id(), r.version())));
-            draw_row(grid, *id, row, (line, window.cols()), colours);
-            let (Some(at), Some(row)) = (at, row) else {
-                continue;
-            };
-            // A row drawn twice as wide shows each cell in two columns.
-            let doubled = row.rendition().is_double();
-            for x in 0..width {
-                // A wide glyph is selected if either half is, as `y`
-                // copies it whole.
-                let col = if doubled { x / 2 } else { x };
-                if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
-                    && let Some(cell) = grid.cells.get(i)
-                    && !cell.is_wide_continuation()
-                    && (at.selected(&row, col)
-                        || cell.is_wide()
-                            && col.checked_add(1).is_some_and(|col| at.selected(&row, col)))
-                {
-                    let attrs = cell.attributes().with_inverse(!cell.inverse());
-                    grid.cells.set_attributes(i, attrs);
-                }
-            }
-        }
-        keys.push(pane_keys);
-    }
+    let whole = covered == Session::pane_area(view).area();
+    grid.reset(view.rows, view.cols, !whole);
+    let keys = (tiled.iter())
+        .map(|(id, rect)| put_pane(grid, session, *id, *rect, copy))
+        .collect();
     separators(grid, placement, focus);
     grid.memo = frame.map(|frame| Memo { frame, keys });
+}
+
+/// Puts pane `id` on the grid at `rect`, copy mode's selection shown if it
+/// is in copy mode: the keys of the rows it drew.
+fn put_pane(
+    grid: &mut Grid,
+    session: &Session,
+    id: PaneId,
+    rect: Rect,
+    copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
+) -> Vec<RowKey> {
+    let mut keys = Vec::new();
+    let Some(pane) = session.panes.get(&id) else {
+        grid.blank(rect);
+        return keys;
+    };
+    let screen = pane.screen();
+    // A pane whose program changed its colours is drawn in them.
+    let colours = own_colours(screen).then_some(screen);
+    let at = copy.filter(|(c, _)| c.pane == id).map(|(_, at)| at);
+    let window = at.map_or_else(|| screen.window(), |at| at.top.window());
+    let width = rect.w().min(window.cols());
+    // What the pane's screen does not cover of its place, rows below its
+    // window's included, is blank.
+    for (y, line) in (0..rect.h()).zip(rect.lines()) {
+        let row = window.row(y);
+        keys.push(row.map(|r| (r.id(), r.version())));
+        draw_row(grid, id, row, (line, window.cols()), colours);
+        let (Some(at), Some(row)) = (at, row) else {
+            continue;
+        };
+        // A row drawn twice as wide shows each cell in two columns.
+        let doubled = row.rendition().is_double();
+        for x in 0..width {
+            // A wide glyph is selected if either half is, as `y` copies it
+            // whole.
+            let col = if doubled { x / 2 } else { x };
+            if let Some(i) = line.at(0, x).and_then(|(gy, gx)| grid.index(gy, gx))
+                && let Some(cell) = grid.cells.get(i)
+                && !cell.is_wide_continuation()
+                && (at.selected(&row, col)
+                    || cell.is_wide()
+                        && col.checked_add(1).is_some_and(|col| at.selected(&row, col)))
+            {
+                let attrs = cell.attributes().with_inverse(!cell.inverse());
+                grid.cells.set_attributes(i, attrs);
+            }
+        }
+    }
+    keys
+}
+
+/// A floating pane's frame: a border, green round the focused pane, with
+/// the pane's id and label on its top edge; inside it, blank.
+fn put_frame(grid: &mut Grid, session: &Session, id: PaneId, frame: Rect, focused: bool) {
+    let colour = if focused {
+        Color::Idx(2)
+    } else {
+        Color::Idx(240)
+    };
+    let style = Attributes::new(colour, Color::Default);
+    grid.blank(frame);
+    let (top, bottom) = (frame.y(), frame.bottom().saturating_sub(1));
+    let (left, right) = (frame.x(), frame.right().saturating_sub(1));
+    let mut put = |y: u16, x: u16, glyph: &str| grid.put(y, x, CellRef::new(glyph, false, style));
+    for x in frame.cols() {
+        put(top, x, "─");
+        put(bottom, x, "─");
+    }
+    for y in frame.rows() {
+        put(y, left, "│");
+        put(y, right, "│");
+    }
+    put(top, left, "╭");
+    put(top, right, "╮");
+    put(bottom, left, "╰");
+    put(bottom, right, "╯");
+    let label = session.panes.get(&id).map_or("", |p| p.label());
+    let title = format!(" {id} {label} ");
+    // Within the corners, a cell in from each.
+    let room = frame.w().saturating_sub(4);
+    grid.text(top, left.saturating_add(2), &fit(&title, room), style, room);
 }
 
 /// A prompt's text with its cursor bar, in at most `room` cells: when it is

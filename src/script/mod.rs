@@ -110,6 +110,7 @@ pub struct Opts {
     pub argv: Vec<String>,
     pub typed: Option<String>,
     pub axis: Option<Axis>,
+    pub floating: bool,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
     pub log: Option<String>,

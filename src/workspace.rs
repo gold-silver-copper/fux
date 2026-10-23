@@ -4,7 +4,7 @@
 //! and its layout changes only through [`Tab::edit`], which keeps each focus
 //! on one of its panes: no client names a tab or pane that is gone.
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::layout::{Rect, Tree};
+use crate::layout::{Layout, Rect, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -26,7 +26,7 @@ pub struct Tab {
     /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
     /// program's): a name given is the only one, and takes fux's.
     pub given: bool,
-    root: Option<Tree>,
+    layout: Layout,
     /// Its layout changed since its panes were sized for it: one no client
     /// shows is then laid out again (`Session::size_panes`).
     changed: bool,
@@ -73,6 +73,9 @@ pub struct Seat {
     /// The pane it focused before (`str last focus`), another of the
     /// tab's.
     last: Option<PaneId>,
+    /// The tiled pane it focused last, which `toggle-floating` goes back
+    /// to from a floating one.
+    tiled: Option<PaneId>,
     /// The bell rang here while it was shown another tab, marked in its bar
     /// until it shows this one (`Session::ring`).
     pub(crate) rang: bool,
@@ -84,6 +87,9 @@ pub struct Seat {
 impl Seat {
     pub fn last(&self) -> Option<PaneId> {
         self.last
+    }
+    pub fn tiled(&self) -> Option<PaneId> {
+        self.tiled
     }
 }
 
@@ -163,23 +169,24 @@ impl Workspace {
     /// panes were sized, each with the area its fit lays it out in given
     /// `client`, a client's screen, for sizing them. Those are then taken
     /// as sized, as is a shown one, by its clients.
-    pub(crate) fn changed_unshown(&mut self, client: Rect) -> impl Iterator<Item = (&Tree, Rect)> {
+    pub(crate) fn changed_unshown(
+        &mut self,
+        client: Rect,
+    ) -> impl Iterator<Item = (&Layout, Rect)> {
         let (viewers, shown_to) = (&self.viewers, &self.shown);
         self.tabs.iter_mut().filter_map(move |tab| {
             let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
             let changed = std::mem::take(&mut tab.changed);
             let tab = &*tab;
-            (tab.root.as_ref())
-                .filter(|_| changed && !shown)
-                .map(|root| (root, tab.fit.area(client)))
+            (changed && !shown).then(|| (&tab.layout, tab.fit.area(client)))
         })
     }
 
     /// Removes tab `tab`, giving back its layout: the clients it was shown
     /// to are shown its neighbour.
-    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
+    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Layout> {
         let index = self.tabs.iter().position(|t| t.id == tab)?;
-        let root = self.tabs.get_mut(index)?.root.take();
+        let root = std::mem::take(&mut self.tabs.get_mut(index)?.layout);
         // Tab IDs are unique: this removes the tab at `index`.
         self.tabs.retain(|t| t.id != tab);
         let next = index.min(self.tabs.len().saturating_sub(1));
@@ -189,7 +196,7 @@ impl Workspace {
                 .filter(|t| **t == tab)
                 .for_each(|t| *t = next);
         }
-        root
+        Some(root)
     }
 
     /// A client attaches: it is shown the first tab, and focuses each tab's
@@ -200,7 +207,7 @@ impl Workspace {
         }
         for tab in &mut self.tabs {
             tab.seats.entry(client).or_default();
-            tab.refocus();
+            tab.refocus(&BTreeSet::new());
         }
     }
 
@@ -241,19 +248,24 @@ impl Tab {
             id,
             name,
             given: false,
-            root,
+            layout: Layout::tiled(root),
             changed: true,
             fit,
             seats: clients.map(|c| (c, Seat::default())).collect(),
             typist: None,
         };
-        tab.refocus();
+        tab.refocus(&BTreeSet::new());
         tab
     }
 
-    /// Its layout, unless it is empty.
+    /// Its tiled panes' tree, unless it has none.
     pub fn root(&self) -> Option<&Tree> {
-        self.root.as_ref()
+        self.layout.tiled.as_ref()
+    }
+
+    /// Its panes, tiled and floating.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
     }
 
     pub fn fit(&self) -> Fit {
@@ -267,7 +279,7 @@ impl Tab {
     }
 
     pub fn holds(&self, pane: PaneId) -> bool {
-        self.root.as_ref().is_some_and(|r| r.contains(pane))
+        self.layout.contains(pane)
     }
 
     pub fn seat(&self, client: ClientId) -> Option<&Seat> {
@@ -292,33 +304,46 @@ impl Tab {
     }
 
     /// Focuses `pane` for `client`, if the tab holds it, remembering the
-    /// pane it replaces.
+    /// pane it replaces; a floating pane focused comes to the top.
     pub(crate) fn set_focus(&mut self, client: ClientId, pane: PaneId) {
-        let holds = self.holds(pane);
+        let (holds, floats) = (self.holds(pane), self.layout.floats(pane));
+        if floats {
+            self.layout.raise(pane);
+        }
         let seat = self.seats.get_mut(&client);
         if let Some(seat) = seat.filter(|s| holds && s.focus != Some(pane)) {
             (seat.last, seat.focus, seat.held) = (seat.focus, Some(pane), false);
+            if !floats {
+                seat.tiled = Some(pane);
+            }
         }
     }
 
     /// Changes the layout with `change`; each client then focuses the pane
-    /// it did if the tab still holds it, else the one before, else the
-    /// first.
-    pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Option<Tree>) -> R) -> R {
-        let out = change(&mut self.root);
+    /// it did if the tab still holds it, else, from a floating pane, the
+    /// top one; else the one before, else the first.
+    pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Layout) -> R) -> R {
+        let floated: BTreeSet<ClientId> = (self.seats.iter())
+            .filter(|(_, s)| s.focus.is_some_and(|f| self.layout.floats(f)))
+            .map(|(c, _)| *c)
+            .collect();
+        let out = change(&mut self.layout);
         self.changed = true;
-        self.refocus();
+        self.refocus(&floated);
         out
     }
 
-    fn refocus(&mut self) {
-        let root = self.root.as_ref();
-        let inside = |p: &PaneId| root.is_some_and(|r| r.contains(*p));
-        for seat in self.seats.values_mut() {
+    fn refocus(&mut self, floated: &BTreeSet<ClientId>) {
+        let layout = &self.layout;
+        let inside = |p: &PaneId| layout.contains(*p);
+        let tiled = |p: &PaneId| layout.tiles(*p);
+        for (client, seat) in &mut self.seats {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
+            let top = layout.top().filter(|_| floated.contains(client));
             seat.held &= focus.is_some();
-            seat.focus = focus.or(last).or_else(|| root.and_then(Tree::first_pane));
+            seat.focus = focus.or(top).or(last).or_else(|| layout.first_pane());
             seat.last = last.filter(|l| Some(*l) != seat.focus);
+            seat.tiled = seat.tiled.filter(tiled).or(seat.focus.filter(tiled));
         }
     }
 }
