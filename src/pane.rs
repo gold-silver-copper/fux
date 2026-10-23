@@ -422,12 +422,12 @@ pub struct Launch {
     pub closes: bool,
 }
 
-/// A file removed once the pane holding it is gone, however it goes, or
-/// with the start that would have made that pane (`history-file`).
+/// The file of what a pane showed (`history-file`), removed once dropped:
+/// with the pane holding it, however it goes, or with a refused split.
 #[derive(Debug)]
-pub struct Removes(pub String);
+pub struct HistoryFile(pub String);
 
-impl Drop for Removes {
+impl Drop for HistoryFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
@@ -650,7 +650,7 @@ pub struct Pane {
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
     /// The file its program was given to read (`history-file`).
-    pub removes: Option<Removes>,
+    pub history_file: Option<HistoryFile>,
 }
 
 /// How long a piece of input is given before the next is written, if
@@ -860,7 +860,7 @@ impl Pane {
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
-            removes: None,
+            history_file: None,
         })
     }
 
@@ -1679,7 +1679,7 @@ impl Pane {
         fresh.bell = self.bell;
         fresh.copied = self.copied.take();
         fresh.log = self.log.take();
-        fresh.removes = self.removes.take();
+        fresh.history_file = self.history_file.take();
         fresh.revision = self.revision.wrapping_add(1);
         fresh.starts = self.starts.wrapping_add(1);
         fresh.process = process;

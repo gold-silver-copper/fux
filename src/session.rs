@@ -1309,7 +1309,7 @@ impl Session {
     /// joined whole: its history and main screen, then a full-screen
     /// program's screen; in a new file only the user reads, in the server's
     /// temporary directory.
-    fn history_file(&self, id: PaneId) -> Result<pane::Removes, Error> {
+    fn history_file(&self, id: PaneId) -> Result<pane::HistoryFile, Error> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let pane = self.pane(id)?;
@@ -1325,12 +1325,10 @@ impl Session {
             text.push('\n');
             text.push_str(&read(command::Source::Alternate));
         }
-        text.push('\n');
         let failed = |e: std::io::Error| fail(Code::Output, format!("the history file: {e}"));
         let dir = std::path::absolute(std::env::temp_dir()).map_err(failed)?;
-        let dir = dir
-            .to_str()
-            .ok_or_else(|| failed(std::io::Error::other("not UTF-8")))?;
+        let dir = (dir.to_str())
+            .ok_or_else(|| fail(Code::Output, "the temporary directory is not UTF-8"))?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1345,9 +1343,9 @@ impl Session {
             .open(&path)
             .map_err(failed)?;
         // From here a failure removes it.
-        let removes = pane::Removes(path);
+        let history = pane::HistoryFile(path);
         file.write_all(text.as_bytes()).map_err(failed)?;
-        Ok(removes)
+        Ok(history)
     }
 
     fn cwd_for(&self, here: Here, near: Option<PaneId>) -> PathBuf {
@@ -2477,7 +2475,7 @@ impl Session {
                     false => Start::Shell(cmd, env.as_slice()),
                 };
                 let made = self.split(target, axis, start, cwd.as_deref(), id, origin)?;
-                self.pane_mut(made.pane)?.removes = file;
+                self.pane_mut(made.pane)?.history_file = file;
                 Ok(made.reply(Kind::Pane))
             }
             &Command::Signal { target, signal } => {

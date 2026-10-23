@@ -179,7 +179,7 @@ impl Session {
         let Some(launch) = program else {
             return;
         };
-        let file = (self.panes.get(&id)).and_then(|p| p.removes.as_ref());
+        let file = (self.panes.get(&id)).and_then(|p| p.history_file.as_ref());
         let argv = file
             .and_then(|f| launch.argv.strip_suffix(std::slice::from_ref(&f.0)))
             .unwrap_or(&launch.argv);
