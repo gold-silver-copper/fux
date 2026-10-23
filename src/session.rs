@@ -729,7 +729,7 @@ impl Session {
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
-            test_keymap: crate::keymap::Keymap::default(),
+            test_keymap: crate::keymap::Keymap::empty(),
         }
     }
 
@@ -3525,6 +3525,7 @@ pub(crate) mod testing {
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
         session.start().map_err(|e| e.to_string())?;
+        session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         Ok(session)
     }
 
@@ -3608,7 +3609,8 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
-        let mut keymap = std::mem::take(&mut session.test_keymap);
+        let mut keymap =
+            std::mem::replace(&mut session.test_keymap, crate::keymap::Keymap::empty());
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()

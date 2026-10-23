@@ -547,7 +547,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux reload` | Re-run the config file against the defaults |
 | `fux list-buffers`, `fux show-buffer [-b N]`, `fux paste-buffer [-b N] [-t %N]` | Paste buffers |
 | `fux detach [-c CLIENT]` | Detach a client |
-| `fux list-keys` | Key names and the current bindings |
+| `fux list-keys` | The current bindings, as config lines |
 
 Some commands act on a client's screen rather than on shared state:
 `command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
@@ -568,10 +568,11 @@ Key names, for `send-keys` and the prefix, are:
 - plus any single character.
 
 The keys of `bind` and `unbind` are any keys, one or more, as they are typed
-after the prefix; `bind -n` binds one key with no prefix (as first designed,
-letters only).
+after the prefix; `bind-root` binds any one key with no prefix (first
+designed as `bind -n`, letters only).
 
-`keys.rs` defines the full list, and `fux list-keys` prints it.
+The default keys are a bundled config, `src/script/keys.fux`, and
+`fux list-keys` prints a client's keys as config lines.
 
 ## Configuration
 

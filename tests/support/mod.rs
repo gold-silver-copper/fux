@@ -203,7 +203,7 @@ impl Server {
             dir,
             socket,
             child: Some(child),
-            keymap: Keymap::default(),
+            keymap: Keymap::empty(),
         };
         let deadline = after(PATIENCE);
         while UnixStream::connect(&server.socket).is_err() {

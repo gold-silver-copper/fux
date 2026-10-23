@@ -229,7 +229,7 @@ pub const WORDS: &[Word] = &[
     word("Config", "unbind", "keys --", "keys after the prefix run nothing"),
     word("Config", "unbind-root", "key --", "a key without the prefix runs nothing"),
     word("Config", "unbind-all", "--", "no bindings at all"),
-    word("Config", "list-keys", "--", "this client's bindings"),
+    word("Config", "list-keys", "--", "this client's keys, as config lines that make them"),
     word("Config", "key-names", "--", "the names keys go by"),
     // Help
     word("Help", "help", "--", "the words, under their headings"),
@@ -1582,11 +1582,7 @@ impl Host<'_> {
                 };
                 let tokens = fuxth::token::source("binding", &code).map_err(mistake)?;
                 super::compiled(keymap.config.as_ref(), &tokens).map_err(mistake)?;
-                let binding = crate::keymap::Binding {
-                    label: code.clone(),
-                    code,
-                    group: String::new(),
-                };
+                let binding = crate::keymap::Binding::new(code, name == "bind-root");
                 let keys = crate::keymap::keys(&keys_text).map_err(refused)?;
                 match (name, keys.as_slice()) {
                     ("bind-root", [key]) => {
@@ -1595,16 +1591,7 @@ impl Host<'_> {
                     }
                     ("bind-root", _) => return Err(refused("takes one key".to_owned())),
                     _ => {
-                        keymap
-                            .bind(
-                                &keys,
-                                crate::keymap::Binding {
-                                    group: "Other".to_owned(),
-                                    ..binding
-                                },
-                                false,
-                            )
-                            .map_err(refused)?;
+                        keymap.bind(&keys, binding, false).map_err(refused)?;
                         self.last_bound = Some(Bound::Prefix(keys));
                     }
                 }

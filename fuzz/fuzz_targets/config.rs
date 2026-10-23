@@ -182,7 +182,7 @@ impl Models {
                     let binding = Binding {
                         code: code.clone(),
                         label: code.clone(),
-                        group: String::new(),
+                        group: "Without the prefix".to_owned(),
                     };
                     match self.root.iter_mut().find(|(k, _)| k == key) {
                         Some((_, old)) => *old = binding,
@@ -343,7 +343,7 @@ fn check_keymap(keymap: &Keymap) {
 /// The defaults, built once.
 fn defaults() -> &'static Keymap {
     static DEFAULTS: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
-    DEFAULTS.get_or_init(Keymap::default)
+    DEFAULTS.get_or_init(|| fux::script::default_keys().expect("the default keys bind"))
 }
 
 /// Runs `machine` as a config against `keymap`, for at most `BUDGET`

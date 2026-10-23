@@ -195,7 +195,10 @@ any other key ends it and is dropped, which the bar says.
 `t` and `w` are **layers**, sharing their verbs: `n` new, `h`/`l` previous
 and next, `g` choose, `r` rename, `x` close, `a` actions, and `m` then
 `h`/`l` to move it earlier or later, repeating. `f`, `g`, `i`, `u` and `y`
-are free for your own bindings; `fux list-keys` prints them all.
+are free for your own bindings. These keys are themselves a config, run
+before yours, in the words yours uses
+([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
+the same way.
 
 - **Choosers** (`t g`, `w g`) list tabs or workspaces with their panes.
   Enter selects, `r` renames, `x` closes, Esc or `q` cancels; arrows,
@@ -361,7 +364,18 @@ space-separated (`str 't n'` makes `t` a layer); `bind-root` one key, with
 no prefix, which then never reaches any program: bind chords or function
 keys rather than letters. A key sequence is a binding or a layer, never
 both. Esc after the prefix always closes the column. `label`, `group` and
-`repeat` change the binding just made.
+`repeat` change the binding just made; the column lists groups in the order
+their keys were first bound, `Other` last (a key bound again keeps its place).
+
+The default keys are a config like yours, run before it, so anything one
+binding does, yours may: rebind a key, `unbind` it, or start from none.
+`fux list-keys` prints your keys as config lines that make them, from
+`unbind-all` on; not your definitions, which a binding may call, so add
+them to your config rather than replace it: `fux list-keys >>
+~/.config/fux/config.fux` gives you every key to edit in place. What it
+appends starts with `unbind-all`, which undoes any key lines earlier in your
+config, so delete those. Default keys a later fux adds then reach you only
+once you bind them.
 
 ## Saved sessions
 

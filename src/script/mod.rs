@@ -31,6 +31,9 @@ pub type Config = std::sync::Arc<(String, String)>;
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
 
+/// fux's default keys: a config, run before the user's.
+const KEYS: &str = include_str!("keys.fux");
+
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
@@ -950,9 +953,21 @@ fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     match config_keymap(Some(server)) {
         Ok(keymap) => (keymap, None),
-        // Half a config is no config: the defaults, and why.
-        Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
+        // Half a config is no config: the defaults, and why; none, if they
+        // are what failed (the failure names keys.fux).
+        Err(failed) => match default_keys() {
+            Ok(defaults) => (defaults, Some(format!("config: {failed}"))),
+            Err(broken) => (Keymap::empty(), Some(broken.to_string())),
+        },
     }
+}
+
+/// The default keys: the bundled config `keys.fux`, run on no bindings.
+pub fn default_keys() -> Result<Keymap, Failed> {
+    let mut keymap = Keymap::empty();
+    let dry = &mut Settings(None);
+    run_quiet("keys.fux", KEYS, Context::default(), Some(&mut keymap), dry)?;
+    Ok(keymap)
 }
 
 /// The keymap the config file makes (`run_file`), if there is one; else
@@ -960,7 +975,7 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
 fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
     match crate::config::default_path().filter(|p| p.exists()) {
         Some(path) => run_file(&path, server),
-        None => Ok(Keymap::default()),
+        None => default_keys(),
     }
 }
 
@@ -974,7 +989,7 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
     let context = client::context();
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
-        ..Keymap::default()
+        ..default_keys()?
     };
     run_quiet(
         &shown,
@@ -1250,6 +1265,37 @@ mod tests {
         let tokens = super::program(&["%2 str \"ls /tmp\" line".to_owned()])?;
         let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
         assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
+        Ok(())
+    }
+
+    /// The default keys are a config every line of which binds; what
+    /// `list-keys` prints are config lines that make the same keys again,
+    /// from any keys.
+    #[test]
+    fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
+        let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
+            let dry = &mut super::Settings(None);
+            super::run_quiet(name, text, Default::default(), Some(keymap), dry)
+        };
+        let mut keymap = super::default_keys()?;
+        let lines = (super::KEYS.lines())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count();
+        assert_eq!(keymap.bindings.all().len(), lines);
+        // Quotes, a backslash and a line end, as a config writes them.
+        let mine = r#"str M-t str 'me zoom' bind-root str Mine group
+            str g str 'me focused horizontal str "echo it'\''s" typed split drop' bind
+            str "a \\ and
+            a line" label"#;
+        run("mine", mine, &mut keymap)?;
+        let mut again = super::Keymap::empty();
+        run(
+            "other",
+            "str C-a prefix str M-n str 'me next-tab' bind-root",
+            &mut again,
+        )?;
+        run("listed", &keymap.describe(), &mut again)?;
+        assert_eq!(again, keymap);
         Ok(())
     }
 

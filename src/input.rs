@@ -703,7 +703,7 @@ mod tests {
     /// mode.
     #[test]
     fn every_default_binding_runs_its_program() -> Outcome {
-        let keymap = crate::keymap::Keymap::default();
+        let keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         let bindings = keymap.bindings.all();
         assert!(!bindings.is_empty());
         let mut refused = Vec::new();
@@ -731,7 +731,8 @@ mod tests {
         }
         // Refused as the session stands: no pane that way, no copy to
         // paste, nothing before the first tab or workspace.
-        assert_eq!(refused, ["k", "l", "p", "mk", "ml", "tmh", "wmh"]);
+        refused.sort();
+        assert_eq!(refused, ["k", "l", "mk", "ml", "p", "tmh", "wmh"]);
         Ok(())
     }
 

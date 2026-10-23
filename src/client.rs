@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn keys_wait_for_a_running_program_till_it_is_done() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
-        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::default(), false)?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
         let now = Instant::now();
         let run = ToAttached::Run("begin false until".into());
         assert!(keyboard.frame(run).is_empty());
