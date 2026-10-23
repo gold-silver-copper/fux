@@ -554,11 +554,12 @@ pub struct Pane {
     /// it at first, even while still blocked reading (the kernel has yet
     /// to wake it).
     pub written_at: Option<Instant>,
-    /// When input went in that found it still (drawing nothing on its own
-    /// within `ready::REDRAWN`), and the job then in front: that job is at
-    /// work on it (a spinner) until still `ready::REDRAWN`. More input
-    /// while at work keeps it.
-    work_from: Option<(Instant, Option<Pid>)>,
+    /// When input went in that found it not redrawing on its own
+    /// (`Pane::redrawing`), the job then in front, and the shell commands
+    /// its marks had ended: that job is at work on it (a spinner) until
+    /// still `ready::REDRAWN`, or a command ends. More input while at work
+    /// moves it on.
+    work_from: Option<(Instant, Option<Pid>, u64)>,
     /// The last input typed ended a line (Enter, or text ending in a line
     /// end): what came of it is a command's, if its program marks them.
     pub line_ended: bool,
@@ -1624,9 +1625,11 @@ impl Pane {
         let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
-        if !self.at_work(now) {
-            self.work_from = (!self.redrawing(now)).then(|| (now, self.process.job()));
-        }
+        self.work_from = match self.work_from {
+            Some((_, job, ended)) if self.at_work(now) => Some((now, job, ended)),
+            _ => (!self.redrawing(now))
+                .then(|| (now, self.process.job(), self.screen().commands().finished)),
+        };
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
         self.escape_open = escape_open(&bytes);
         self.written.0 = self.written.0.saturating_add(bytes.len());
@@ -1698,11 +1701,8 @@ impl Pane {
             let alone = gap >= crate::ready::SETTLE
                 && self.written_at.is_none_or(|at| at <= self.changed_at);
             self.drew_alone = (marks, n.saturating_add(u32::from(alone)));
-            // Still `REDRAWN` since: its work on the input is done.
-            if self
-                .work_from
-                .is_some_and(|(at, _)| now >= after(at.max(self.changed_at), crate::ready::REDRAWN))
-            {
+            // Its work on the input is done: a later change is no part of it.
+            if !self.at_work(now) {
                 self.work_from = None;
             }
             self.changed_at = now;
@@ -1717,14 +1717,16 @@ impl Pane {
     }
 
     /// Whether its program is at work at `now` on input that found it
-    /// still: the job in front then runs on, not still `ready::REDRAWN`
-    /// since (a job the input started, `top` typed at a shell, is no work).
+    /// still: not still `ready::REDRAWN` since, no shell command ended, and
+    /// the job in front then runs on (a job the input started, `top` typed
+    /// at a shell, is no work).
     pub fn at_work(&self, now: Instant) -> bool {
-        self.process.child().is_some()
-            && self.work_from.is_some_and(|(at, job)| {
-                job == self.process.job()
-                    && now < after(at.max(self.changed_at), crate::ready::REDRAWN)
-            })
+        self.work_from.is_some_and(|(at, job, ended)| {
+            now < after(at.max(self.changed_at), crate::ready::REDRAWN)
+                && ended == self.screen().commands().finished
+                && self.process.child().is_some()
+                && job == self.process.job()
+        })
     }
 
     /// How many bytes of input sent the program has not read yet.

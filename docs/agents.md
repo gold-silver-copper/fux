@@ -45,11 +45,12 @@ fux str agent workspace kill                   # at the end: everything run star
 ```
 
 **A program at work** (an agent's TUI behind a spinner) answers your keys
-once it drew them, `waiting · redraws on its own`. A bare `wait` after keys
-that found it still waits until its screen is still 2s, the work done or a
-question asked: never guess a text it shows when done. Drawing still at the
-limit, it is `busy` (124): wait again, or `capture` what your keys started
-that never stops (a game, a follow mode). A clock drawn before your keys,
+once it drew them (`reading`, or `waiting · redraws on its own`). A bare
+`wait` after keys that found it still waits until its screen is still 2s,
+the work done or a question asked: never guess a text it shows when done.
+Drawing still at the limit, it is `busy` (124), and every `wait` is until
+it is still 2s: wait again, or `capture` what your keys started that never
+stops (a game, a follow mode). A clock drawn before your keys,
 or a program they started (`top` typed at a shell), is no work: a `wait`
 answers it at once. `state get` cannot tell work from a clock; `%2 0
 timeout wait` answers `busy` at once while it works.

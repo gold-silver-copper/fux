@@ -113,9 +113,9 @@ line's notes are fields, each only when said: `done` (a shell command
 ended: its status, `null` if not known), `no_change` (`true`: the keys
 were read and drew nothing), `command_running` (`true`: a marked shell
 command runs on, one the keys went into or one that took the full
-screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that redraws on
-its own, as in the last 2s, read the keys and drew after them: a clock,
-`top`, a spinner; what it draws later may differ), `highlight` (after keys
+screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that drew on its
+own in the last 2s (a clock, `top`, a spinner) read the keys and drew
+after them; what it draws later may differ), `highlight` (after keys
 or a mouse event: up to three runs they highlighted anew, each
 `{"row","col","len","text"}`, row and column from 0 as a mouse event counts
 them), `unread` (bytes of input fux holds, not yet
