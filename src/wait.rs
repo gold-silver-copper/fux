@@ -195,10 +195,19 @@ impl Watch {
             self.last = pane.wrote_at;
             self.text.read(new);
         }
+        // Every text in one search: the first written wins.
+        let texts: Vec<&String> = (wait.until.iter())
+            .filter_map(|u| match u {
+                Until::Text(text) => Some(text),
+                Until::Change | Until::Quiet(_) | Until::Exit | Until::Bell | Until::Done => None,
+            })
+            .collect();
+        let mut text = (!texts.is_empty())
+            .then(|| self.text.find(&texts))
+            .flatten();
         let journal = || pane.record.after(self.from);
         let found = wait.until.iter().find_map(|until| match until {
-            Until::Text(text) => (self.text.find(text))
-                .map(|line| Found::Text(text.clone(), String::from_utf8_lossy(line).into_owned())),
+            Until::Text(_) => text.take().map(|(text, line)| Found::Text(text, line)),
             Until::Change => self.changed.then_some(Found::Change),
             Until::Quiet(quiet) => (now >= after(self.last, *quiet)).then_some(Found::Quiet),
             Until::Exit => pane.process.exit_status().map(Found::Exit),
@@ -411,21 +420,25 @@ impl Text {
         }
     }
 
-    /// The line `text` was written on, as written so far, if it was
-    /// written since the last search. Past `KEEP`, what was searched is let
-    /// go, but for what a text may go on from.
-    fn find(&mut self, text: &str) -> Option<&[u8]> {
-        let needle = text.as_bytes();
-        let from = self.searched.saturating_sub(needle.len().saturating_sub(1));
+    /// The first of `texts` written since the last search, by where it
+    /// starts, and the line it was written on, as written so far. Past
+    /// `KEEP`, what was searched is let go, but for what a text may go on
+    /// from.
+    fn find(&mut self, texts: &[&String]) -> Option<(String, String)> {
+        let longest = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+        let from = self.searched.saturating_sub(longest.saturating_sub(1));
         let rest = self.kept.get(from..).unwrap_or_default();
-        let last = rest
-            .len()
-            .checked_sub(needle.len())
-            .filter(|_| !needle.is_empty());
-        let at = last.and_then(|last| {
+        let at = |needle: &[u8]| {
+            let last = rest
+                .len()
+                .checked_sub(needle.len())
+                .filter(|_| !needle.is_empty())?;
             (0..=last).find(|at| rest.get(*at..).is_some_and(|r| r.starts_with(needle)))
-        });
-        let Some(at) = at.map(|at| from.saturating_add(at)) else {
+        };
+        let found = (texts.iter())
+            .filter_map(|t| Some((at(t.as_bytes())?, *t)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, text)) = found else {
             self.searched = self.kept.len();
             if self.kept.len() > KEEP {
                 let drop = self.kept.len().saturating_sub(KEEP / 2);
@@ -434,20 +447,29 @@ impl Text {
             }
             return None;
         };
-        let end = at.saturating_add(needle.len());
+        let at = from.saturating_add(at);
+        let end = at.saturating_add(text.len());
         self.searched = end;
         let (before, after) = self.kept.split_at_checked(end)?;
         let start = (before.get(..at)?.iter().rposition(|b| *b == b'\n'))
             .map_or(0, |n| n.saturating_add(1));
         let stop = (after.iter().position(|b| *b == b'\n'))
             .map_or(self.kept.len(), |n| end.saturating_add(n));
-        self.kept.get(start..stop)
+        let line = String::from_utf8_lossy(self.kept.get(start..stop)?).into_owned();
+        Some((text.clone(), line))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Text;
+
+    /// The line the first of `texts` written was on, searching `text`.
+    fn found(text: &mut Text, texts: &[&str]) -> Option<String> {
+        let texts: Vec<String> = texts.iter().map(|t| (*t).to_owned()).collect();
+        let texts: Vec<&String> = texts.iter().collect();
+        text.find(&texts).map(|(_, line)| line)
+    }
 
     /// What `wait-text` reads of output: the text written, escape
     /// sequences and controls left out, across pieces however split; and
@@ -459,19 +481,34 @@ mod tests {
             let mut text = Text::default();
             let (a, b) = output.split_at_checked(split).unwrap_or((output, &[]));
             text.read(a);
-            let early = text.find("listening on :80").is_some();
+            let early = found(&mut text, &["listening on :80"]).is_some();
             text.read(b);
-            let found = text.find("listening on :80").map(<[u8]>::to_vec);
+            let late = found(&mut text, &["listening on :80"]);
             assert!(
-                early || found.as_deref() == Some(&b"listening on :80"[..]),
+                early || late.as_deref() == Some("listening on :80"),
                 "split {split}"
             );
         }
         let mut text = Text::default();
         text.read(b"a\x1b(Bb\tc\x18d");
-        assert_eq!(text.find("ab\tcd"), Some(&b"ab\tcd"[..]));
+        assert_eq!(found(&mut text, &["ab\tcd"]).as_deref(), Some("ab\tcd"));
         // A text is found once: a later search looks past it.
-        assert_eq!(text.find("ab"), None);
+        assert_eq!(found(&mut text, &["ab"]), None);
+    }
+
+    /// Of several texts, the first written is found, whichever came first
+    /// among the texts asked for; one not written takes nothing from the
+    /// others.
+    #[test]
+    fn of_several_texts_the_first_written_is_found() {
+        let mut text = Text::default();
+        text.read(b"one B\n");
+        assert_eq!(found(&mut text, &["A", "B"]).as_deref(), Some("one B"));
+        text.read(b"then A and B\n");
+        assert_eq!(
+            found(&mut text, &["B", "A"]).as_deref(),
+            Some("then A and B")
+        );
     }
 
     /// A long stream is searched in parts, a text written across where one
@@ -481,11 +518,8 @@ mod tests {
         let mut text = Text::default();
         text.read(&vec![b'x'; super::KEEP + 10]);
         text.read(b"READ");
-        assert_eq!(text.find("READY"), None);
+        assert_eq!(found(&mut text, &["READY"]), None);
         text.read(b"Y now\n");
-        assert!(
-            text.find("READY")
-                .is_some_and(|line| line.ends_with(b"READY now"))
-        );
+        assert!(found(&mut text, &["READY"]).is_some_and(|line| line.ends_with("READY now")));
     }
 }
