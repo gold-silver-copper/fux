@@ -484,33 +484,29 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
         "{answer}"
     );
     assert!(answer.contains("\ngot x"), "{answer}");
-    // Never still, it is drawing at a bare wait's limit: at work (124).
-    let drawing = server.fux(&[&p[..], &["1", "timeout", "wait"]].concat())?;
-    assert_eq!(drawing.status, 124, "{}{}", drawing.stdout, drawing.stderr);
+    // A bare wait answers it as at once: it drew so before the keys too.
+    let answer = server.ok(&[&p[..], &["5", "timeout", "wait"]].concat())?;
     assert!(
-        drawing.stdout.starts_with(&format!("{pane} busy ")),
-        "{}",
-        drawing.stdout
+        answer.starts_with(&format!("{pane} waiting · redraws on its own\n")),
+        "{answer}"
     );
     let answer = server.ok(&[&p[..], &["str", "q", "type"]].concat())?;
     assert!(answer.starts_with(&format!("{pane} exited 0")), "{answer}");
     Ok(())
 }
 
-/// A full-screen program at work behind a spinner (an agent's TUI) looks
-/// as a clock does while it works, and an action on it answers so; a bare
-/// `wait` after waits on until its screen is still, its work done, and
-/// answers that, no longer drawing on its own.
+/// A full-screen program still until a key, then at work on it behind a
+/// spinner (an agent's TUI), looks as a clock does while it works, and an
+/// action on it answers so; a bare `wait` after waits on until its screen
+/// is still, its work done (`busy`, 124, at its limit before).
 #[test]
 fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
     let server = Server::start("")?;
-    let spinner = "import os, select, time, tty\n\
-                   tty.setraw(0); os.write(1, b'\\x1b[?1049h')\n\
+    let spinner = "import os, time, tty\n\
+                   tty.setraw(0); os.write(1, b'\\x1b[?1049hready'); os.read(0, 1)\n\
                    for n in range(30):\n\
                    \x20   os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n); time.sleep(0.1)\n\
-                   os.write(1, b'\\x1b[H\\x1b[2Jall done')\n\
-                   while os.read(0, 1) != b'q': pass\n\
-                   os.write(1, b'\\x1b[?1049l')\n";
+                   os.write(1, b'\\x1b[H\\x1b[2Jall done'); os.read(0, 1)\n";
     let answer = server.ok(&[
         "opts", "str", "python3", "program", "str", "-c", "arg", "str", spinner, "arg", "run",
     ])?;
@@ -519,8 +515,11 @@ fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
         .next()
         .unwrap_or_default()
         .to_owned();
-    assert!(answer.contains("working"), "{answer}");
     let p = ["str", pane.as_str(), "pane"];
+    let working = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
+    assert!(working.contains("working"), "{working}");
+    let limit = server.fux(&[&p[..], &["1", "timeout", "wait"]].concat())?;
+    assert_eq!(limit.status, 124, "{}{}", limit.stdout, limit.stderr);
     let done = server.ok(&[&p[..], &["wait"]].concat())?;
     // Where fux is not told what it is blocked in (macOS), it is `settled`.
     let first = done.lines().next().unwrap_or_default();

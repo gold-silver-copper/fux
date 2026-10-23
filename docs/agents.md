@@ -22,7 +22,7 @@ fux opts str web name 100 30 size str ./app program str --fast arg run  # start:
 fux opts str 'cargo test' command run wait-exit wait   # start, and wait for its end
 fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pastes): answers as run does
 fux %3 str 'make test' line                    # a shell command: %3 reading · done 0, its output
-fux %2 wait                                    # until it is done: still 2s; `%2 600 timeout wait` waits longer
+fux %2 wait                                    # settle again; `%2 600 timeout wait` waits longer
 fux %2 str 'listening on' wait-text wait       # wait for a text; also wait-gone, wait-bell, wait-exit
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
 fux %2 capture json                            # as JSON; `%2 str state get` is one field
@@ -40,17 +40,16 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 reading · done 0        a shell command ended with status 0, and the shell reads again
 %2 reading · no change     it read your keys and drew nothing: do not send them again
 %2 waiting                 quiet 1s, but it may go on alone (the network, a timer)
-%2 waiting · redraws on its own   it draws on its own: a clock, or a spinner while it works
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
 ```
 
 **A full-screen program at work** (an agent's TUI behind a spinner) answers
-your keys once it drew them, `waiting · redraws on its own`. Then `%2 600
-timeout wait`: it answers once the screen is still 2s, the work done or a
-question asked, whatever the program; never guess a text it shows when done.
-Drawing still at the limit, it is `busy` (124): wait again. It may start
-again alone (a background job of its own ended): wait again for that.
+your keys once it drew them, `waiting · redraws on its own`. A bare `wait`
+then waits until its screen is still 2s, the work done or a question asked:
+never guess a text it shows when done. Drawing still at the limit, it is
+`busy` (124): wait again. A clock it drew before your keys is no work: a
+`wait` answers it at once.
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
   program exited before the wait; 4 the pane closed; 5 the shell command
@@ -120,10 +119,6 @@ exactly as typed is output. A full-screen program's screen is all output.
   `wait-seconds`); `SECS timeout` on the pane changes it for one. `0
   timeout` answers at once. A `wait` on a tab or workspace waits for each
   pane, a line each, the first failing status naming the whole.
-- A bare `wait` on a program that may go on alone waits up to 5s for
-  something new; once it changes, until its screen is still 2s. On one
-  that draws on its own, an action answers once it drew your keys; a bare
-  `wait` waits for it to stop: a spinner's work done (a clock never stops).
 - Busy at the limit is status 124, not a failure: `%2 wait` waits on. A
   shell command of unknown length: `%2 wait-done wait` waits as long as it
   runs; with a text, `%2 str 'build ok' wait-text wait-done wait` fails
