@@ -485,7 +485,12 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
     );
     assert!(answer.contains("\ngot x"), "{answer}");
     // A bare wait answers it at once: it drew so before the keys too.
+    let began = std::time::Instant::now();
     let answer = server.ok(&[&p[..], &["5", "timeout", "wait"]].concat())?;
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(3),
+        "{answer}"
+    );
     assert!(
         answer.starts_with(&format!("{pane} waiting · redraws on its own\n")),
         "{answer}"
@@ -505,7 +510,7 @@ fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
     let server = Server::start("")?;
     let spinner = "import os, select, tty\n\
                    tty.setraw(0); os.write(1, b'\\x1b[?1049hready'); os.read(0, 1)\n\
-                   for n in range(30):\n\
+                   for n in range(40):\n\
                    \x20   os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n)\n\
                    \x20   if select.select([0], [], [], 0.1)[0]: os.read(0, 1)\n\
                    os.write(1, b'\\x1b[H\\x1b[2Jall done'); os.read(0, 1)\n";
@@ -530,11 +535,11 @@ fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
         "{done}"
     );
     // Where fux is not told what it is blocked in (macOS), it is `settled`.
-    let first = done.lines().next().unwrap_or_default();
-    assert!(
-        [format!("{pane} reading"), format!("{pane} settled")].contains(&first.to_owned()),
-        "{done}"
-    );
+    let state = done
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix(pane.as_str()));
+    assert!(matches!(state, Some(" reading" | " settled")), "{done}");
     assert!(done.contains("all done"), "{done}");
     Ok(())
 }
