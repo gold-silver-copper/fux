@@ -20,7 +20,7 @@ you never sleep or poll.
 ```sh
 fux opts str web name 100 30 size str ./app program str --fast arg run  # start: answers %2 reading, then its output
 fux opts str 'cargo test' command run wait-exit wait   # start, and wait for its end
-fux %2 str y text str Enter key send-keys      # keys (str T paste pastes): answers as run does
+fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pastes): answers as run does
 fux %3 str 'make test' line                    # a shell command: %3 reading · done 0, its output
 fux %2 wait                                    # settle again; `%2 300 timeout wait` waits longer
 fux %2 str 'listening on' wait-text wait       # wait for a text; also wait-gone, wait-bell, wait-exit
@@ -179,8 +179,8 @@ answer: printed, it is the lines above; given to a word that wants a pane,
 it is its pane; `string` makes it text (`%2 screen string str error
 contains`). The standard library, written in fuxth, does the rest (`fux
 help` lists it). A mistake every run would make (too few values, a string
-given to `add` or `if`, a request nothing acts on) fails before any word
-acts; words before a failing one have already acted otherwise. A run exits
+given to `add` or `if`, a request nothing acts on: its error names the word
+to end it with) fails before any word acts; words before a failing one have already acted otherwise. A run exits
 with the status of the first answer it leaves that has one.
 
 ## servers: Servers, sizes and more

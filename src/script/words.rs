@@ -51,8 +51,8 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("options nothing takes: end them with run, new-tab or new-workspace (`opts str ./app program run`)")),
-    ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request: end it with the word that does (`%2 str ready wait-text wait`, `%2 str y text send-keys`, `%2 all-history capture`)")),
+    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
 /// The names the words' effects use beyond the kinds' own, each with the
@@ -442,12 +442,8 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
     let Some(option) = built.given.iter().find(|o| !takes(o)) else {
         return Ok(());
     };
-    let instead = format!(
-        "{option} goes on {}; {word} takes {}",
-        takers(option),
-        own(word)
-    );
-    Err(fail(Lang::Unused, format!("takes no {option}: {instead}")))
+    let instead = format!("takes no {option}: {option} goes on {}", takers(option));
+    Err(fail(Lang::Unused, instead))
 }
 
 /// What a request is on: a pane, tab or workspace (an action's answer is
@@ -733,31 +729,13 @@ fn closest_key(word: &str) -> Option<String> {
     (far <= lower.chars().count().div_ceil(2)).then(|| format!("{}{name}", mods.to_uppercase()))
 }
 
-/// The options `word` takes of its own, said as a list: a wait's words
-/// for one that waits, `nothing else` for one that takes none.
-fn own(word: &str) -> String {
-    let (takes, waits) = (help::OPTIONS.iter())
-        .find(|(w, ..)| *w == word)
-        .map_or(("", false), |(_, takes, waits)| (*takes, *waits));
-    let mut own: Vec<&str> = takes.split_whitespace().collect();
-    if waits {
-        own.push("a wait's words");
-    }
-    match own.is_empty() {
-        true => "nothing else".to_owned(),
-        false => crate::words::listed(&own, "and"),
-    }
-}
-
-/// The words that take `option`, listed.
-fn takers(option: &str) -> String {
+/// The words that take `option`, listed; every word that takes options,
+/// for a word that is none.
+pub(super) fn takers(option: &str) -> String {
     let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
-    let on: Vec<&str> = help::OPTIONS
-        .iter()
-        .map(|(w, ..)| *w)
-        .filter(takes)
-        .collect();
-    crate::words::listed(&on, "or")
+    let words: Vec<&str> = help::OPTIONS.iter().map(|(w, ..)| *w).collect();
+    let on: Vec<&str> = words.iter().copied().filter(takes).collect();
+    crate::words::listed(if on.is_empty() { &words } else { &on }, "or")
 }
 
 /// Where a pause goes, for one that is not between two inputs.
