@@ -109,8 +109,9 @@ pub struct Opts {
     pub env: crate::command::Env,
     pub argv: Vec<String>,
     pub typed: Option<String>,
-    pub axis: Option<Axis>,
-    pub floating: bool,
+    /// Where a split puts its pane: beside along an axis, or floating
+    /// (`None`); side by side unless one is given.
+    pub axis: Option<Option<Axis>>,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
     pub log: Option<String>,

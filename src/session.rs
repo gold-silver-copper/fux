@@ -756,7 +756,7 @@ impl Session {
             .flat_map(Workspace::tabs)
             .find(|t| t.id == id)
     }
-    /// A tab's layout, unless it is empty.
+    /// A tab's tiled panes' tree, unless it has none.
     pub fn root(&self, tab: TabId) -> Option<&Tree> {
         self.tab(tab)?.root()
     }
@@ -765,10 +765,14 @@ impl Session {
         let mut tabs = (self.workspaces.iter()).flat_map(|w| w.tabs().iter().map(|t| (w.id, t)));
         tabs.find(|(_, t)| t.holds(pane)).map(|(w, t)| (w, t.id))
     }
+    /// Floating pane `pane`'s frame, as kept; none for a tiled pane.
+    pub fn frame(&self, pane: PaneId) -> Option<Rect> {
+        let mut tabs = self.workspaces.iter().flat_map(Workspace::tabs);
+        tabs.find_map(|t| t.layout().float(pane)).map(|f| f.frame)
+    }
     /// Whether `pane` floats over its tab.
     pub fn floats(&self, pane: PaneId) -> bool {
-        let tab = self.locate(pane).and_then(|(_, tab)| self.tab(tab));
-        tab.is_some_and(|t| t.layout().floats(pane))
+        self.frame(pane).is_some()
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
@@ -1786,7 +1790,11 @@ impl Session {
         let changed: Vec<(TabId, bool)> = (self.workspaces.iter_mut())
             .flat_map(|w| w.changed())
             .collect();
-        let sized: HashSet<PaneId> = sizes.iter().map(|(p, _)| *p).collect();
+        let sized: HashSet<PaneId> = if changed.is_empty() {
+            HashSet::new()
+        } else {
+            sizes.iter().map(|(p, _)| *p).collect()
+        };
         for (tab, shown) in changed {
             let Some(tab) = self.tab(tab) else {
                 continue;
@@ -1796,7 +1804,9 @@ impl Session {
                 || (self.views.values()).find(|v| !v.read_only && self.shows(v.id, tab.id));
             let area = if !shown {
                 self.tab_area(tab.fit(), Here::NOWHERE)
-            } else if let Some(view) = typist().filter(|_| !layout.floating.is_empty()) {
+            } else if !layout.floating.is_empty()
+                && let Some(view) = typist()
+            {
                 Self::pane_area(view)
             } else {
                 continue;
@@ -2771,15 +2781,16 @@ impl Session {
             Here::Client(client, _) => vec![client],
             Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
         };
-        // Its tab found (by `split_size`) before the program starts, which
-        // nothing can then leave running. A floating pane's split halves
-        // its frame; a new floating pane takes a frame of its own.
+        // Its place found before the program starts, which nothing can
+        // then leave running. A floating pane's split halves its frame; a
+        // new floating pane takes a frame of its own.
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
         let area = self.reference_area(tab, here);
         let layout = self.tab(tab).ok_or(Error::NoTab(tab))?.layout();
-        let goes = match (axis, self.placed_frame(target, here)) {
+        let shown = self.frame(target).map(|f| f.fitted(area));
+        let goes = match (axis, shown) {
             (None, _) => Goes::Floating(None, layout.new_frame(area)),
-            (Some(axis), Some((_, shown, _))) if shown.frames() => {
+            (Some(axis), Some(shown)) if shown.fits_frame() => {
                 let (kept, new) = halves(target, shown, axis)?;
                 Goes::Floating(Some(kept), new)
             }
@@ -2866,8 +2877,8 @@ impl Session {
     fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let area = self.reference_area(tab, here);
-        if let Some((_, frame, area)) = self.placed_frame(pane, here) {
-            return self.resize_float(pane, frame, area, by);
+        if let Some(frame) = self.frame(pane) {
+            return self.resize_float(pane, frame.fitted(area), area, by);
         }
         match by {
             PaneResize::Border(direction, amount) => {
@@ -2944,29 +2955,24 @@ impl Session {
                 let layout = tab.layout();
                 let focus = tab.focus(client);
                 // Back to the pane it left in the other layer, else the
-                // first tiled one or the top floating one.
+                // first tiled one or the top floating one; a floating pane
+                // in a tab with none tiled stays.
                 let away = tab.seat(client).and_then(Seat::away);
-                let pane = match focus {
-                    Some(f) if layout.floats(f) => {
-                        let tiled = away.filter(|a| layout.tiles(*a));
-                        let tiled = tiled.or_else(|| tab.root().and_then(Tree::first_pane));
-                        tiled.ok_or_else(|| {
-                            let message = format!("{} has no tiled pane", tab.id);
-                            fail(Code::NothingThere, message)
-                        })?
-                    }
-                    _ => match (away.filter(|a| layout.floats(*a)).or(layout.top()), focus) {
-                        (Some(floating), _) => floating,
-                        // Opened as if typed at its terminal: it alone
-                        // follows, and the shell has its environment.
-                        (None, Some(focus)) => {
-                            let shell = Start::Shell(&[], &[]);
-                            let typed = Origin::Client(client);
-                            self.split(focus, None, shell, None, None, &typed)?;
-                            return Ok(Reply::default());
-                        }
-                        (None, None) => return Err(fail(Code::NoPane, "the tab is empty")),
-                    },
+                let floating = away.filter(|a| layout.floats(*a)).or(layout.top());
+                let pane = if let Some(f) = focus.filter(|f| layout.floats(*f)) {
+                    let tiled = away.filter(|a| layout.tiles(*a));
+                    tiled
+                        .or_else(|| layout.tiled.as_ref().and_then(Tree::first_pane))
+                        .unwrap_or(f)
+                } else if let Some(floating) = floating {
+                    floating
+                } else {
+                    // Opened as if typed at its terminal: it alone follows,
+                    // and the shell has its environment.
+                    let focus = focus.ok_or_else(|| fail(Code::NoPane, "the tab is empty"))?;
+                    let shell = Start::Shell(&[], &[]);
+                    self.split(focus, None, shell, None, None, &Origin::Client(client))?;
+                    return Ok(Reply::default());
                 };
                 let spot = Spot {
                     tab: place.tab,
@@ -3023,16 +3029,6 @@ impl Session {
         found.ok_or(Error::NoNeighbor { from, direction })
     }
 
-    /// Floating pane `pane`'s frame as kept, and as placed for the
-    /// command in the area, the third, it is placed in; none for a tiled
-    /// pane.
-    fn placed_frame(&self, pane: PaneId, here: Here) -> Option<(Rect, Rect, Rect)> {
-        let (_, tab) = self.locate(pane)?;
-        let area = self.reference_area(tab, here);
-        let frame = self.tab(tab)?.layout().float(pane)?.frame;
-        Some((frame, frame.fitted(area), area))
-    }
-
     /// `resize-x`, `resize-y` and `move-border` on floating pane `pane`,
     /// its frame as placed in `area`: a size is the pane's, inside its
     /// border; a border moved is its right or bottom one. A frame that
@@ -3044,7 +3040,7 @@ impl Session {
         area: Rect,
         by: PaneResize,
     ) -> Result<Reply, Error> {
-        if !frame.frames() {
+        if !frame.fits_frame() {
             return Err(unshown(pane));
         }
         let (w, h) = (frame.w(), frame.h());
@@ -3055,11 +3051,12 @@ impl Session {
             PaneResize::Border(Direction::Up, n) => (w, h.saturating_sub(n).max(least)),
             PaneResize::Border(Direction::Down, n) => (w, h.saturating_add(n).max(least)),
             PaneResize::To(axis, extent) => {
+                // Cells are the pane's, inside its border; a percent, of
+                // the tab, its frame's.
                 let len = match extent {
-                    Extent::Cells(n) => n,
+                    Extent::Cells(n) => n.saturating_add(2),
                     Extent::Percent(p) => p.of(area.len(axis)),
                 };
-                let len = len.saturating_add(2);
                 if len < least || len > area.len(axis) {
                     let message = format!(
                         "{pane} cannot be {} cells {} in its tab",
@@ -3115,10 +3112,10 @@ impl Session {
 
     fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
         let pane = self.pane(target)?.id;
-        let (ws, tab) = match (to, self.placed_frame(pane, here)) {
+        let (ws, tab) = match (to, self.frame(pane)) {
             (&MoveTo::Float(col, row, cols, rows), _) => {
                 let frame = Rect::new(col, row, cols, rows);
-                if !frame.frames() {
+                if !frame.fits_frame() {
                     let least = layout::FRAME_MIN;
                     let message =
                         format!("a floating pane is at least {least}x{least}, its border included");
@@ -3129,8 +3126,11 @@ impl Session {
             }
             // A floating pane moves a cell, from where it shows, its size
             // kept.
-            (&MoveTo::Beside(direction), Some((kept, frame, area))) => {
-                if !frame.frames() {
+            (&MoveTo::Beside(direction), Some(kept)) => {
+                let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+                let area = self.reference_area(tab, here);
+                let frame = kept.fitted(area);
+                if !frame.fits_frame() {
                     return Err(unshown(pane));
                 }
                 let (x, y) = (frame.x(), frame.y());
@@ -3207,8 +3207,8 @@ impl Session {
                 .edit(|l| swap_sibling(&mut l.floating, |f| f.pane == p, toward))
                 .ok_or(Error::NoPane(p))?,
             AnyRef::Pane(p) => {
-                let tab = self.locate(p).and_then(|(_, t)| self.tab(t));
-                let panes = tab.map_or_else(Vec::new, |t| t.layout().layer(p));
+                let panes = self.locate(p).and_then(|(_, t)| self.root(t));
+                let panes = panes.map_or_else(Vec::new, Tree::panes);
                 let index = panes.iter().position(|x| *x == p);
                 let other = index
                     .and_then(|i| match toward {
@@ -3629,7 +3629,7 @@ fn unshown(pane: PaneId) -> Error {
 /// keeps, and what a pane split from it takes.
 fn halves(pane: PaneId, frame: Rect, axis: Axis) -> Result<(Rect, Rect), Error> {
     let (kept, new) = frame.split(axis, frame.len(axis) / 2);
-    if !kept.frames() || !new.frames() {
+    if !kept.fits_frame() || !new.fits_frame() {
         let word = match axis {
             Axis::Horizontal => "resize-x",
             Axis::Vertical => "resize-y",
@@ -4764,7 +4764,7 @@ mod tests {
     /// A floating pane is a pane like any other, over its tab: a client
     /// sees the floating panes while it focuses one, toggling goes back to
     /// the tiled pane it left, a floating pane closed leaves the focus on
-    /// the one below, and one moved to its own tab is tiled there.
+    /// the top one, and one moved to its own tab is tiled there.
     #[test]
     fn floating_panes_show_while_focused() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = attached(24, 80)?;
@@ -4796,6 +4796,15 @@ mod tests {
         run(&mut s, "str %2 pane str @1 tab move-to")?;
         assert_eq!(shown(&s), ("%1 %2".into(), 0));
         assert_eq!(output(&mut s, "str %2 pane str floating get")?, "false\n");
+        // With no tiled pane left, toggling stays on a floating pane,
+        // unzoomed, the others shown again.
+        run(
+            &mut s,
+            "str %2 pane 0 0 20 8 float str %1 pane 2 2 30 9 float",
+        )?;
+        run(&mut s, "str c1 client zoom str c1 client toggle-floating")?;
+        assert_eq!(focused(&s).as_deref(), Some("%2"));
+        assert_eq!(shown(&s).1, 2);
         Ok(())
     }
 

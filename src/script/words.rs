@@ -510,9 +510,9 @@ fn modify(
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
         "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
-        "horizontal" => built.axis = Some(Axis::Horizontal),
-        "vertical" => built.axis = Some(Axis::Vertical),
-        "floating" => built.floating = true,
+        "horizontal" => built.axis = Some(Some(Axis::Horizontal)),
+        "vertical" => built.axis = Some(Some(Axis::Vertical)),
+        "floating" => built.axis = Some(None),
         "kill-first" => built.kill = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
@@ -1070,17 +1070,8 @@ impl fuxth::Host for Host<'_> {
                         return Err(fail(Lang::Unused, why));
                     }
                 };
-                let axis = match (built.floating, built.axis) {
-                    (false, axis) => Some(axis.unwrap_or(Axis::Horizontal)),
-                    (true, None) => None,
-                    (true, Some(_)) => {
-                        let why =
-                            "floating takes no horizontal or vertical: it floats over the tab";
-                        return Err(fail(Lang::Unused, why));
-                    }
-                };
                 let split = Command::Split {
-                    axis,
+                    axis: built.axis.unwrap_or(Some(Axis::Horizontal)),
                     target: p,
                     cmd,
                     cwd: built.cwd,

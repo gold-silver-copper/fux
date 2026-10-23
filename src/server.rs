@@ -1235,10 +1235,10 @@ impl Server {
         };
         // A pane part way through a frame shows as it was last painted
         // (render::compose_held), its pictures too.
-        let placed = attached.placement.panes.clone();
+        let placed = attached.placement.clone();
         let painted = (attached.known).then_some(render::Painted {
             grid: &attached.shown,
-            panes: &placed,
+            placement: &placed,
         });
         render::compose_held(
             session,
@@ -1261,7 +1261,7 @@ impl Server {
                 let (rows, cols) = (attached.spare.rows, attached.spare.cols);
                 let painted = render::Painted {
                     grid: &attached.shown,
-                    panes: &placed,
+                    placement: &placed,
                 };
                 if known && painted.kept(id, rect, rows, cols, &attached.placement) {
                     pictures.extend(attached.pictures.iter().filter(|p| p.pane == id).cloned());

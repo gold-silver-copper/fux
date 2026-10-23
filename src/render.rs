@@ -136,13 +136,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         return Vec::new();
     };
     let mut visible = Vec::new();
-    let tiled = placement.panes.len().saturating_sub(placement.frames.len());
-    for (i, &(id, rect)) in placement.panes.iter().enumerate() {
-        // The frames of the floating panes over it.
-        let above = placement
-            .frames
-            .iter()
-            .skip(i.saturating_add(1).saturating_sub(tiled));
+    for &(id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(&id) else {
             continue;
         };
@@ -165,7 +159,8 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                 rect.y().saturating_add(top),
                 rect.x().saturating_add(shown.col),
             );
-            if above.clone().any(|f| f.meets(Rect::new(x, y, cols, rows))) {
+            let over = placement.over((id, rect), Rect::new(x, y, cols, rows));
+            if over.into_iter().flatten().next().is_some() {
                 continue;
             }
             let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
@@ -931,25 +926,18 @@ pub fn compose_view(session: &Session, view: &View, grid: &mut Grid, placement: 
 #[derive(Clone, Copy)]
 pub struct Painted<'a> {
     pub grid: &'a Grid,
-    pub panes: &'a [(PaneId, Rect)],
+    pub placement: &'a Placement,
 }
 
 impl Painted<'_> {
     /// Whether pane `id` was painted at `rect` on a grid of this size,
-    /// under the same panes as `now` puts over it: a floating pane's
-    /// frame painted over it is in what was painted there, and must be
-    /// over it still.
+    /// under the same floating panes' frames as `now` puts over it: those
+    /// are in what was painted there.
     pub fn kept(&self, id: PaneId, rect: Rect, rows: u16, cols: u16, now: &Placement) -> bool {
-        /// The panes after it that cover any of it, frames and all.
-        fn over(
-            panes: &[(PaneId, Rect)],
-            pane: (PaneId, Rect),
-        ) -> Option<impl Iterator<Item = &(PaneId, Rect)>> {
-            let i = panes.iter().position(|p| *p == pane)?;
-            let after = panes.get(i.saturating_add(1)..).unwrap_or_default();
-            Some(after.iter().filter(move |(_, r)| r.outer().meets(pane.1)))
-        }
-        let (was, is) = (over(self.panes, (id, rect)), over(&now.panes, (id, rect)));
+        let (was, is) = (
+            self.placement.over((id, rect), rect),
+            now.over((id, rect), rect),
+        );
         (self.grid.rows, self.grid.cols) == (rows, cols)
             && was.zip(is).is_some_and(|(was, is)| was.eq(is))
     }
@@ -1138,14 +1126,13 @@ fn put_panes(
     // area unless a split has no room for even its first child; the bar
     // covers its row. Covered, every cell is written below, and the grid
     // needs no blanking first.
-    let tiled = placement.tiled();
     let lines = placement.separators.iter().map(|s| &s.rect);
-    let covered = (tiled.iter().map(|(_, r)| r).chain(lines))
+    let covered = (placement.tiled().map(|(_, r)| r).chain(lines))
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
     let whole = covered == Session::pane_area(view).area();
     grid.reset(view.rows, view.cols, !whole);
-    let keys = (tiled.iter())
+    let keys = (placement.tiled())
         .map(|(id, rect)| put_pane(grid, session, *id, *rect, copy))
         .collect();
     separators(grid, placement, focus);
@@ -2550,12 +2537,13 @@ mod tests {
                 .is_some_and(crate::pane::Pane::mid_frame)
         );
         let (held, other) = (place(&s, c, 1)?, place(&s, c, 2)?);
-        let panes = [(PaneId::of(1), held), (PaneId::of(2), other)];
+        let mut placed = Placement::default();
+        placed.panes = vec![(PaneId::of(1), held), (PaneId::of(2), other)];
         let compose = |s: &Session, painted: &Grid| {
             let mut grid = Grid::new(0, 0);
             let painted = Some(Painted {
                 grid: painted,
-                panes: &panes,
+                placement: &placed,
             });
             if let Some(view) = s.views.get(&c) {
                 compose_held(s, view, &mut grid, &mut Placement::default(), painted);
@@ -2631,12 +2619,13 @@ mod tests {
             before.text(y, 0, &xs, Attributes::default(), 40);
         }
         s.input(c, b"\x02x");
-        let panes = [(PaneId::of(1), place(&s, c, 1)?)];
+        let mut placed = Placement::default();
+        placed.panes = vec![(PaneId::of(1), place(&s, c, 1)?)];
         let rows = compose(
             &s,
             Some(Painted {
                 grid: &before,
-                panes: &panes,
+                placement: &placed,
             }),
         );
         assert!(rows.iter().any(|r| r.contains("close")), "{rows:#?}");

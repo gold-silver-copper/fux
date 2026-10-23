@@ -68,6 +68,9 @@ const SIDE: &[&str] = &[
     "str %2 pane str new-tab move-to",
     "str %1 pane str %2 pane swap-panes",
     "str %1 pane str right 5 move-border",
+    "str %1 pane floating split drop",
+    "str %2 pane 3 2 20 8 float",
+    "str c1 client toggle-floating",
     "str @1 tab str renamed rename",
     "str @1 tab str next reorder",
     "str c1 client zoom",
@@ -741,7 +744,7 @@ fn check(run: &Run) {
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
     for ws in &s.workspaces {
         for tab in ws.tabs() {
-            for pane in tab.root().iter().flat_map(|r| r.panes()) {
+            for pane in tab.layout().panes() {
                 assert!(
                     s.panes.contains_key(&pane),
                     "{pane} is in {} but gone",

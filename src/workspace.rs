@@ -243,7 +243,10 @@ impl Tab {
             id,
             name,
             given: false,
-            layout: Layout::tiled(root),
+            layout: Layout {
+                tiled: root,
+                ..Layout::default()
+            },
             changed: true,
             fit,
             seats: clients.map(|c| (c, Seat::default())).collect(),

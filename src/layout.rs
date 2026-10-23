@@ -69,8 +69,9 @@ fn separators(children: usize) -> u16 {
 
 /// A rectangle of cells on a screen. Its right and bottom edges are within a
 /// u16, as a screen's are: one is made only as a whole screen
-/// ([`Rect::screen`]) or cut from another ([`Rect::split`], [`Rect::corner`],
-/// [`Rect::lines`]), so every position inside one is exact.
+/// ([`Rect::screen`]), cut from another ([`Rect::split`], [`Rect::corner`],
+/// [`Rect::lines`]) or cut at the last cell ([`Rect::new`]), so every
+/// position inside one is exact.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
     x: u16,
@@ -216,16 +217,6 @@ impl Rect {
             h: self.h.saturating_sub(2),
         }
     }
-    /// It and the cells round it: the frame round a floating pane's rect.
-    pub fn outer(self) -> Rect {
-        let (x, y) = (self.x.saturating_sub(1), self.y.saturating_sub(1));
-        Rect {
-            x,
-            y,
-            w: self.right().saturating_add(1).saturating_sub(x),
-            h: self.bottom().saturating_add(1).saturating_sub(y),
-        }
-    }
     /// It moved and cut to fit in `area`, a pane area, whose corner is
     /// (0, 0) as its own is: no larger than it, and inside.
     pub fn fitted(self, area: Rect) -> Rect {
@@ -237,9 +228,9 @@ impl Rect {
             h,
         }
     }
-    /// Whether a pane fits inside it with a frame round it: `FRAME_MIN`
-    /// each way.
-    pub fn frames(&self) -> bool {
+    /// Whether it is room for a floating pane's frame: a pane inside it
+    /// and the border round it, `FRAME_MIN` each way.
+    pub fn fits_frame(&self) -> bool {
         self.w >= FRAME_MIN && self.h >= FRAME_MIN
     }
     /// Twice the centre, so that it is whole.
@@ -285,16 +276,28 @@ impl Placement {
     pub fn rect(&self, pane: PaneId) -> Option<Rect> {
         self.panes.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r)
     }
+    /// How many of its panes are tiled: those before the floating ones.
+    fn tiles(&self) -> usize {
+        self.panes.len().saturating_sub(self.frames.len())
+    }
     /// The tiled panes.
-    pub fn tiled(&self) -> &[(PaneId, Rect)] {
-        let tiled = self.panes.len().saturating_sub(self.frames.len());
-        self.panes.get(..tiled).unwrap_or_default()
+    pub fn tiled(&self) -> impl Iterator<Item = &(PaneId, Rect)> {
+        self.panes.iter().take(self.tiles())
     }
     /// The floating panes, bottom to top, each with its frame.
     pub fn floating(&self) -> impl Iterator<Item = (PaneId, Rect, Rect)> {
-        let tiled = self.panes.len().saturating_sub(self.frames.len());
-        let floating = self.panes.iter().skip(tiled).zip(&self.frames);
+        let floating = self.panes.iter().skip(self.tiles()).zip(&self.frames);
         floating.map(|((p, r), f)| (*p, *r, *f))
+    }
+    /// The frames of the floating panes over `pane`, placed at its rect,
+    /// that cover any of `area`; none if it is not placed so.
+    pub fn over(&self, pane: (PaneId, Rect), area: Rect) -> Option<impl Iterator<Item = &Rect>> {
+        let i = self.panes.iter().position(|p| *p == pane)?;
+        let above = self
+            .frames
+            .iter()
+            .skip(i.saturating_add(1).saturating_sub(self.tiles()));
+        Some(above.filter(move |f| f.meets(area)))
     }
 }
 
@@ -321,12 +324,6 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn tiled(tree: Option<Tree>) -> Layout {
-        Layout {
-            tiled: tree,
-            floating: Vec::new(),
-        }
-    }
     pub fn is_empty(&self) -> bool {
         self.tiled.is_none() && self.floating.is_empty()
     }
@@ -374,10 +371,9 @@ impl Layout {
         }
     }
     /// Removes a pane, tiled or floating.
-    pub fn remove(&mut self, pane: PaneId) -> bool {
-        let floated = self.floating.len();
+    pub fn remove(&mut self, pane: PaneId) {
         self.floating.retain(|f| f.pane != pane);
-        remove(&mut self.tiled, pane) || self.floating.len() != floated
+        remove(&mut self.tiled, pane);
     }
     /// Swaps two panes' places, whichever layers they are in.
     pub fn swap(&mut self, a: PaneId, b: PaneId) {
@@ -429,12 +425,13 @@ impl Layout {
             Some(tree) => place_into(tree, area, out),
             None => out.clear(),
         }
-        let shown = self.floating.iter().filter(|_| floating);
+        let shown: &[Float] = if floating { &self.floating } else { &[] };
+        let shown = shown.iter();
         let focused = |f: &&Float| Some(f.pane) == focus;
         let others = shown.clone().filter(|f| !focused(f));
         for float in others.chain(shown.filter(focused)) {
             let frame = float.frame.fitted(area);
-            if frame.frames() {
+            if frame.fits_frame() {
                 out.panes.push((float.pane, frame.inner()));
                 out.frames.push(frame);
             }
@@ -1230,7 +1227,10 @@ mod tests {
     /// placed.
     #[test]
     fn floating_panes_fit_the_area_they_float_over() {
-        let mut layout = Layout::tiled(Some(tree()));
+        let mut layout = Layout {
+            tiled: Some(tree()),
+            ..Layout::default()
+        };
         layout.float_at(p(2), Rect::new(70, 20, 20, 10));
         layout.float_at(p(3), Rect::new(0, 0, 200, 4));
         let mut placed = Placement::default();
@@ -1241,7 +1241,7 @@ mod tests {
             floating,
             vec![(p(3), cut.inner(), cut), (p(2), moved.inner(), moved)]
         );
-        assert_eq!(placed.tiled().len(), 2);
+        assert_eq!(placed.tiled().count(), 2);
         layout.place_into(area(80, 24), false, None, &mut placed);
         assert!(placed.frames.is_empty() && placed.panes.len() == 2);
         layout.place_into(area(3, 3), true, None, &mut placed);
