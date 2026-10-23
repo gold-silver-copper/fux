@@ -42,8 +42,10 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 waiting                 quiet 1s, but it may go on alone (the network, a timer)
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
-%2 reading · 80 lines above    a capture left out history: `all-history` reads it
-%2 reading · earlier lines gone  what came before is gone: a full screen keeps none
+%2 reading · 80 lines above
+                           a capture left out history: `all-history` reads it
+%2 reading · earlier lines gone
+                           what came before is gone: a full screen keeps none
 ```
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
@@ -147,7 +149,8 @@ columns count from 0.
 A capture's state line says what it leaves out: `· 80 lines above`, the
 history it did not read, and `· earlier lines gone`, lines before those
 kept are gone (a full-screen program's screen keeps no history; history
-past `history-bytes`, or cleared; a last output whose start is gone).
+past `history-bytes`, or cleared; a last output whose start is gone, or
+that erased the screen or drew on a full screen).
 Nothing said: you have it all. JSON says the same in `above` and `gone`
 (a program's capture, with no state line, only there). A full-screen
 program that redraws its screen keeps only what it shows: run an agent's

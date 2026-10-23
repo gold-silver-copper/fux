@@ -289,6 +289,22 @@ fn a_start_while_a_command_runs_begins_none() -> Result {
     Ok(())
 }
 
+/// A command that takes the alternate screen, or erases the screen, has
+/// lost some of its output, after it ends too; the next command has not.
+#[test]
+fn a_command_that_draws_a_full_screen_or_erases_lost_output() -> Result {
+    let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07a\r\n")?;
+    assert!(!p.screen().commands().lost);
+    p.process(b"\x1b[?1049hanswer\x1b[?1049l\x1b]133;D;0\x07")?;
+    assert!(p.screen().commands().lost);
+    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07b\r\n")?;
+    assert!(!p.screen().commands().lost);
+    p.process(b"\x1b[2J\x1b[Hc\r\n")?;
+    assert!(p.screen().commands().lost);
+    Ok(())
+}
+
 /// A late `C` (a line the shell could not run) starts the output after
 /// the line last submitted, not after the prompt's first line: the
 /// continuation prompts and the lines typed at them are not its output.

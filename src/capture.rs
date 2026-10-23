@@ -18,12 +18,27 @@ type Read = (String, Option<String>);
 /// The rows a capture reads, each with the columns of it it reads.
 type Rows<'a> = Vec<(Row<'a>, std::ops::Range<usize>)>;
 
-/// A pane's capture: its text, its JSON if asked, and what it leaves
-/// out, as its state line says it.
+/// A pane's capture: its text, its JSON if asked, and what it leaves out:
+/// rows of history above it unread, and whether lines before those kept
+/// are gone.
 pub struct Captured {
     pub text: String,
     pub json: Option<String>,
-    pub note: String,
+    pub above: usize,
+    pub gone: bool,
+}
+
+impl Captured {
+    /// What it leaves out, as its state line says it.
+    pub fn note(&self) -> String {
+        let unread = match self.above {
+            0 => None,
+            1 => Some(" · 1 line above".to_owned()),
+            n => Some(format!(" · {n} lines above")),
+        };
+        let gone = self.gone.then(|| " · earlier lines gone".to_owned());
+        unread.into_iter().chain(gone).collect()
+    }
 }
 
 /// A pane's screen, and `history` rows before it, as `view` asks, with
@@ -131,14 +146,12 @@ pub fn pane(
         (lines, view, screen_background(screen)),
         state,
     );
-    let unread = match above {
-        0 => None,
-        1 => Some(" · 1 line above".to_owned()),
-        n => Some(format!(" · {n} lines above")),
-    };
-    let lost = gone.then(|| " · earlier lines gone".to_owned());
-    let note = unread.into_iter().chain(lost).collect();
-    Captured { text, json, note }
+    Captured {
+        text,
+        json,
+        above,
+        gone,
+    }
 }
 
 /// A run of highlighted cells on the screen shown, as a selection is
@@ -229,11 +242,11 @@ fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<
     let alt = screen.mode(Mode::AlternateScreen);
     // The screen read is a full-screen program's, which keeps no history:
     // what it drew before is gone.
-    let full = alt != (view.source == Source::Other);
+    let unkept = alt != (view.source == Source::Other);
     if view.source == Source::LastOutput
         && let Some((read, lost)) = last_output(screen)
     {
-        return (read, 0, lost || full);
+        return (read, 0, lost || unkept);
     }
     let rows = match view.source {
         Source::Shown | Source::LastOutput => screen.rows(),
@@ -246,13 +259,14 @@ fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<
     let skip = rows.len().saturating_sub(keep);
     let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
     // The main screen's history let rows go: past its budget, or cleared.
-    (read, skip, full || screen.let_go() > 0)
+    (read, skip, unkept || screen.let_go() > 0)
 }
 
 /// The last command's output between its marks, a range of each row's
 /// columns: while one runs, its output so far, to the screen's foot (what
-/// it drew below the cursor too). Then whether its start is gone. None
-/// if no command was marked.
+/// it drew below the cursor too). Then whether some of it is gone: its
+/// start, or what it erased or drew on the alternate screen. None if no
+/// command was marked.
 fn last_output(screen: &Screen) -> Option<(Rows<'_>, bool)> {
     let commands = screen.commands();
     let window = screen.window();
@@ -271,7 +285,7 @@ fn last_output(screen: &Screen) -> Option<(Rows<'_>, bool)> {
     // screen's top if the start was cleared.
     let (first, start, lost) = match screen.row_index(start.row) {
         Some(first) if first <= last && (first, start.col) <= (last, end.col) => {
-            (first, start, false)
+            (first, start, commands.lost)
         }
         Some(_) => (
             screen.history_len().min(last),

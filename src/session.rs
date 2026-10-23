@@ -2457,7 +2457,7 @@ impl Session {
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
-                // No state line here to put its note on: its JSON has it.
+                // No state line here to say what it leaves out: its JSON does.
                 let read = crate::capture::pane(pane, history, view, true, copying);
                 Ok(Reply {
                     json: read.json.unwrap_or_default(),

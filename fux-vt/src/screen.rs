@@ -2956,6 +2956,7 @@ impl Screen {
             (to.cursor, to.lines) = (from.cursor, from.lines);
             to.set_columns(from.columns());
             to.fit_cursor();
+            self.commands.lost |= alternate && self.commands.running();
         }
         self.alternate_active = alternate;
         self.structural = self.version;

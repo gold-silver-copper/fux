@@ -238,10 +238,10 @@ impl Waiting {
         if let (Some((history, view)), Some(pane)) = (capture, watched) {
             let copying = session.copying(pane.id);
             let read = crate::capture::pane(pane, history, view, true, copying);
+            let line = outcome.text.lines().next().unwrap_or_default();
+            outcome.text = format!("{line}{}\n{}", read.note(), read.text);
             // Its JSON, read at the same moment, for `json` to give.
             outcome.json = read.json.unwrap_or_default();
-            let line = outcome.text.lines().next().unwrap_or_default();
-            outcome.text = format!("{line}{}\n{}", read.note, read.text);
         }
         Some(outcome)
     }

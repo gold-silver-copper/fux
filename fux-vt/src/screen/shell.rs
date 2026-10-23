@@ -45,6 +45,10 @@ pub struct Commands {
     /// full-screen program there marks commands of its own (a remote
     /// shell's), rather than being a command the shell ran.
     pub full_screen: bool,
+    /// Some of the running command's output, else the last one's, is gone:
+    /// it took the alternate screen, which keeps none, or erased the
+    /// screen.
+    pub lost: bool,
     /// The shell drew a prompt (`A`) and has started no command since
     /// (`C`): it is reading its command line.
     pub prompt: bool,
@@ -131,6 +135,7 @@ impl Screen {
                 let late = option == Some(&b"late"[..]);
                 if !self.commands.running() {
                     self.commands.started = self.commands.started.wrapping_add(1);
+                    self.commands.lost = false;
                 }
                 self.commands.prompt = false;
                 // Looked for on the screen alone (THREATS.md B29): a line
@@ -208,6 +213,7 @@ impl Screen {
         });
         if let Some(top) = top {
             self.commands.output_start = Some(top);
+            self.commands.lost = true;
         }
     }
 
