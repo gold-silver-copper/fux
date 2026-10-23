@@ -219,9 +219,10 @@ the same way.
   keys you type wait for it, and go to the screen it opens. The prefix, then
   Esc, stops a program a key or the prompt runs, if it takes long.
 
-Directional focus picks, among the panes beyond the focused pane's edge,
-the one whose centre is closest across the direction, then along it, then
-the lowest number.
+Directional focus picks, among the panes beyond the focused pane's edge
+(or, as floating panes do, overlapping it with their centre that way), the
+one whose centre is closest across the direction, then along it, then the
+lowest number.
 
 ### Floating panes
 

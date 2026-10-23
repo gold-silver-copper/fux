@@ -29,6 +29,7 @@ fux %2 capture json                            # as JSON; `%2 str state get` is 
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
+fux %2 floating split; fux %3 4 2 60 20 float  # a pane over the tab, its frame placed
 fux %2 str TERM signal; fux %2 respawn         # stop it; start it again
 fux str web pane                               # a pane by its tab's name
 fux ls                                         # what there is: workspaces, tabs, panes

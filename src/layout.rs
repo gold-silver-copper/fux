@@ -200,8 +200,8 @@ impl Rect {
             h,
         }
     }
-    /// `w` by `h` at (`y`, `x`), cut short where it would pass the last
-    /// cell a u16 counts.
+    /// `w` by `h`, its corner at (`x`, `y`), cut short where it would pass
+    /// the last cell a u16 counts.
     pub fn new(x: u16, y: u16, w: u16, h: u16) -> Rect {
         let w = w.min(u16::MAX.saturating_sub(x));
         let h = h.min(u16::MAX.saturating_sub(y));

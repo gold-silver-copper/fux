@@ -2531,7 +2531,7 @@ impl Session {
                 let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
                 self.send_keys(AnyRef::Pane(target), &[paste])
             }
-            &Command::Client { client, ref action } => self.client(client, action, origin),
+            &Command::Client { client, ref action } => self.client(client, action, here),
         }
     }
 
@@ -2776,7 +2776,13 @@ impl Session {
         let float = layout.and_then(|l| l.float(target));
         let frames = match (axis, float) {
             (None, _) => layout.map(|l| (None, l.new_frame(area))),
-            (Some(axis), Some(float)) => Some(halves(target, float.frame.fitted(area), axis)?),
+            (Some(axis), Some(float)) => {
+                let frame = float.frame.fitted(area);
+                if frame.w() < layout::FRAME_MIN || frame.h() < layout::FRAME_MIN {
+                    return Err(unshown(target));
+                }
+                Some(halves(target, frame, axis)?)
+            }
             (Some(_), None) => None,
         };
         // On a tab too small for it, a floating pane is made all the same,
@@ -2886,9 +2892,8 @@ impl Session {
         &mut self,
         client: Option<ClientId>,
         action: &ClientAction,
-        origin: &Origin,
+        here: Here,
     ) -> Result<Reply, Error> {
-        let here = self.here(origin)?;
         let (client, place) = match (client, here) {
             (Some(c), _) => (c, self.place(c).ok_or(Error::NoClient(c))?),
             (None, Here::Client(client, place)) => (client, place),

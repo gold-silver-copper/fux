@@ -122,7 +122,8 @@ impl PartialEq for Visible {
 /// The pictures client `client`'s panes, placed as `placement` has them,
 /// show on its screen: none unless its terminal draws sixel, nothing covers
 /// its panes (an overlay, copy mode), and a picture was laid out in its
-/// cell size. Each is clipped to its pane.
+/// cell size. Each is clipped to its pane; one a floating pane's frame
+/// covers any of is not shown, as text over a picture takes it away.
 pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> Vec<Visible> {
     let Some(view) = session.views.get(&client) else {
         return Vec::new();
@@ -135,19 +136,14 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         return Vec::new();
     };
     let mut visible = Vec::new();
-    // A pane a floating pane's frame covers any of shows none: text over a
-    // picture takes it away.
     let tiled = placement.panes.len().saturating_sub(placement.frames.len());
     for (i, &(id, rect)) in placement.panes.iter().enumerate() {
+        // The frames of the floating panes over it.
         let above = placement
             .frames
             .iter()
             .skip(i.saturating_add(1).saturating_sub(tiled));
-        let Some(pane) = session
-            .panes
-            .get(&id)
-            .filter(|_| !above.clone().any(|f| f.meets(rect)))
-        else {
+        let Some(pane) = session.panes.get(&id) else {
             continue;
         };
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
@@ -165,16 +161,18 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
                 continue;
             }
             let (rows, cols) = (bottom.saturating_sub(top), right.saturating_sub(shown.col));
+            let (y, x) = (
+                rect.y().saturating_add(top),
+                rect.x().saturating_add(shown.col),
+            );
+            if above.clone().any(|f| f.meets(Rect::new(x, y, cols, rows))) {
+                continue;
+            }
             let skipped = u32::try_from(start.saturating_sub(shown.row)).unwrap_or(0);
             let (width, height) = (u32::from(cell.0), u32::from(cell.1));
             visible.push(Visible {
                 pane: id,
-                area: (
-                    rect.y().saturating_add(top),
-                    rect.x().saturating_add(shown.col),
-                    rows,
-                    cols,
-                ),
+                area: (y, x, rows, cols),
                 crop: (
                     0,
                     skipped.saturating_mul(height),

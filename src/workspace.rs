@@ -315,7 +315,8 @@ impl Tab {
 
     /// Changes the layout with `change`; each client then focuses the pane
     /// it did if the tab still holds it, else, from a floating pane, the
-    /// top one; else the one before, else the first.
+    /// top one; else the one before (from a tiled pane, a tiled one), else
+    /// the first.
     pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Layout) -> R) -> R {
         let floated: BTreeSet<ClientId> = (self.seats.iter())
             .filter(|(_, s)| s.focus.is_some_and(|f| self.layout.floats(f)))
@@ -333,9 +334,13 @@ impl Tab {
         let tiled = |p: &PaneId| layout.tiles(*p);
         for (client, seat) in &mut self.seats {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
-            let top = layout.top().filter(|_| floated.contains(client));
+            // A client loses its focus to its own layer: from a floating
+            // pane to the top one, from a tiled one to a tiled one.
+            let floated = floated.contains(client);
+            let top = layout.top().filter(|_| floated);
+            let back = last.filter(|l| floated || tiled(l));
             seat.held &= focus.is_some();
-            seat.focus = focus.or(top).or(last).or_else(|| layout.first_pane());
+            seat.focus = focus.or(top).or(back).or_else(|| layout.first_pane());
             seat.last = last.filter(|l| Some(*l) != seat.focus);
             seat.tiled = seat.focus.filter(tiled).or(seat.tiled.filter(tiled));
         }
