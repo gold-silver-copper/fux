@@ -3525,7 +3525,7 @@ pub(crate) mod testing {
         };
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
         session.start().map_err(|e| e.to_string())?;
-        session.test_keymap = crate::script::default_keys()?;
+        session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         Ok(session)
     }
 

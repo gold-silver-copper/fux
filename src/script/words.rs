@@ -1490,8 +1490,7 @@ impl fuxth::Host for Host<'_> {
             "list-keys" => {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
-                    None => (super::default_keys())
-                        .and_then(|defaults| super::config_keymap(defaults, None))
+                    None => (super::config_keymap(None))
                         .map_err(|e| fail(Code::Config, e.to_string()))?
                         .describe(),
                 };
@@ -1535,9 +1534,7 @@ impl fuxth::Host for Host<'_> {
                     .file_name()
                     .is_some_and(|n| n == "config.fux");
                 if config {
-                    (super::default_keys())
-                        .and_then(|d| super::run_file(std::path::Path::new(&path), d, None))
-                        .map_err(checked)?;
+                    super::run_file(std::path::Path::new(&path), None).map_err(checked)?;
                 }
                 self.show(&format!("{path}: ok\n"))
             }
@@ -1585,11 +1582,7 @@ impl Host<'_> {
                 };
                 let tokens = fuxth::token::source("binding", &code).map_err(mistake)?;
                 super::compiled(keymap.config.as_ref(), &tokens).map_err(mistake)?;
-                let binding = crate::keymap::Binding {
-                    label: code.clone(),
-                    code,
-                    group: String::new(),
-                };
+                let binding = crate::keymap::Binding::new(code, name == "bind-root");
                 let keys = crate::keymap::keys(&keys_text).map_err(refused)?;
                 match (name, keys.as_slice()) {
                     ("bind-root", [key]) => {
@@ -1598,16 +1591,7 @@ impl Host<'_> {
                     }
                     ("bind-root", _) => return Err(refused("takes one key".to_owned())),
                     _ => {
-                        keymap
-                            .bind(
-                                &keys,
-                                crate::keymap::Binding {
-                                    group: crate::keymap::OTHER_GROUP.to_owned(),
-                                    ..binding
-                                },
-                                false,
-                            )
-                            .map_err(refused)?;
+                        keymap.bind(&keys, binding, false).map_err(refused)?;
                         self.last_bound = Some(Bound::Prefix(keys));
                     }
                 }

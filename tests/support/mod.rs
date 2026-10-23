@@ -216,9 +216,7 @@ impl Server {
         // bindings to the keymap the scripted clients type through.
         let socket = fux::socket::Choice::Path(server.socket.to_string_lossy().into_owned());
         let mut to = fux::script::Server::new(socket);
-        server.keymap = (fux::script::default_keys())
-            .and_then(|defaults| fux::script::run_file(&config_path, defaults, Some(&mut to)))
-            .map_err(e)?;
+        server.keymap = fux::script::run_file(&config_path, Some(&mut to)).map_err(e)?;
         Ok((server, held))
     }
 

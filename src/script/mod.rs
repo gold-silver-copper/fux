@@ -337,12 +337,6 @@ impl std::fmt::Display for Failed {
     }
 }
 
-impl From<Failed> for String {
-    fn from(failed: Failed) -> String {
-        failed.to_string()
-    }
-}
-
 impl From<fuxth::Error> for Failed {
     fn from(error: fuxth::Error) -> Failed {
         // A word given too few values, the wrong kind, or one out of its
@@ -957,14 +951,14 @@ fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
 /// The client's keymap, its config run on the defaults; and what was wrong
 /// with the config, if anything was.
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
-    let defaults = match default_keys() {
-        Ok(defaults) => defaults,
-        Err(failed) => return (Keymap::empty(), Some(format!("keys.fux: {failed}"))),
-    };
-    match config_keymap(defaults.clone(), Some(server)) {
+    match config_keymap(Some(server)) {
         Ok(keymap) => (keymap, None),
-        // Half a config is no config: the defaults, and why.
-        Err(failed) => (defaults, Some(format!("config: {failed}"))),
+        // Half a config is no config: the defaults, and why; none, if they
+        // are what failed (the failure names keys.fux).
+        Err(failed) => match default_keys() {
+            Ok(defaults) => (defaults, Some(format!("config: {failed}"))),
+            Err(broken) => (Keymap::empty(), Some(broken.to_string())),
+        },
     }
 }
 
@@ -982,30 +976,26 @@ pub fn default_keys() -> Result<Keymap, Failed> {
     Ok(keymap)
 }
 
-/// The keymap the config file makes on `defaults` (`run_file`), if there
-/// is one; else the defaults.
-fn config_keymap(defaults: Keymap, server: Option<&mut Server>) -> Result<Keymap, Failed> {
+/// The keymap the config file makes (`run_file`), if there is one; else
+/// the defaults.
+fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
     match crate::config::default_path().filter(|p| p.exists()) {
-        Some(path) => run_file(&path, defaults, server),
-        None => Ok(defaults),
+        Some(path) => run_file(&path, server),
+        None => default_keys(),
     }
 }
 
-/// The keymap a config file makes, its words run on `defaults`, its
+/// The keymap a config file makes, its words run on the defaults, its
 /// settings sent to `server`, or with none checked and sent nowhere (a dry
 /// run); or why it fails. A config attaches nothing, and chooses no other
 /// server.
-pub fn run_file(
-    path: &std::path::Path,
-    defaults: Keymap,
-    server: Option<&mut Server>,
-) -> Result<Keymap, Failed> {
+pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path, SOURCE_MAX)?;
     let context = client::context();
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
-        ..defaults
+        ..default_keys()?
     };
     run_quiet(
         &shown,
@@ -1294,7 +1284,9 @@ mod tests {
             super::run_quiet(name, text, Default::default(), Some(keymap), &mut dry)
         };
         let mut keymap = super::default_keys()?;
-        let lines = super::KEYS.lines().filter(|l| l.contains(" bind ")).count();
+        let lines = (super::KEYS.lines())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count();
         assert_eq!(keymap.bindings.all().len(), lines);
         run(
             "mine",

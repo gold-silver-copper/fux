@@ -190,7 +190,7 @@ pub struct Keymap {
 pub const ROOT_GROUP: &str = "Without the prefix";
 
 /// The group of bindings after the prefix that gave none, listed last.
-pub const OTHER_GROUP: &str = "Other";
+const OTHER_GROUP: &str = "Other";
 
 impl Keymap {
     /// No bindings, and the default prefix, `C-b`: the default keys
@@ -289,8 +289,8 @@ impl Keymap {
     }
 
     /// The column for the layer at `path`, `selected` chosen: its entries
-    /// grouped, groups in the order first bound and `Other` last; right
-    /// after the prefix, the bindings without it follow.
+    /// grouped, groups in the order their keys were first bound and `Other`
+    /// last; right after the prefix, the bindings without it follow.
     pub fn column(&self, path: &[KeyPress], selected: usize) -> Option<Column> {
         let layer = self.bindings.layer(path)?;
         let mut entries: Vec<ColumnEntry> = (layer.iter())
@@ -387,10 +387,12 @@ impl Keymap {
     /// them again. Not the config's definitions, which a binding may call.
     pub fn describe(&self) -> String {
         let prefix = words::quote(&self.prefix.to_string());
-        let bound = (self.bindings.all().into_iter())
-            .map(|(keys, binding, repeat)| binding.line(&keys_text(&keys), false, repeat));
-        let root =
-            (self.root.iter()).map(|(key, binding)| binding.line(&key.to_string(), true, false));
+        let bound = (self.bindings.all().into_iter()).map(|(keys, binding, repeat)| {
+            let repeat = if repeat { "  repeat" } else { "" };
+            format!("{}{repeat}\n", binding.line(&keys_text(&keys), false))
+        });
+        let root = (self.root.iter())
+            .map(|(key, binding)| format!("{}\n", binding.line(&key.to_string(), true)));
         std::iter::once(format!("unbind-all\nstr {prefix} prefix\n"))
             .chain(bound)
             .chain(root)
@@ -399,27 +401,32 @@ impl Keymap {
 }
 
 impl Binding {
+    /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
+    /// its code, in `Other`, or in no group without the prefix.
+    pub fn new(code: String, root: bool) -> Binding {
+        let group = if root { "" } else { OTHER_GROUP };
+        Binding {
+            label: code.clone(),
+            code,
+            group: group.to_owned(),
+        }
+    }
+
     /// The config line that binds `keys` to it, after the prefix or, if
     /// `root`, without it: its label and group too, unless they are what
-    /// that word gives (its code; `Other`, or none).
-    fn line(&self, keys: &str, root: bool, repeat: bool) -> String {
-        let (word, group) = if root {
-            ("bind-root", "")
-        } else {
-            ("bind", OTHER_GROUP)
-        };
+    /// that word gives.
+    fn line(&self, keys: &str, root: bool) -> String {
+        let word = if root { "bind-root" } else { "bind" };
         let quote = words::quote;
+        let made = Binding::new(self.code.clone(), root);
         let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
-        if self.label != self.code {
+        if self.label != made.label {
             line += &format!("  str {} label", quote(&self.label));
         }
-        if self.group != group {
+        if self.group != made.group {
             line += &format!("  str {} group", quote(&self.group));
         }
-        if repeat {
-            line += "  repeat";
-        }
-        line + "\n"
+        line
     }
 }
 
@@ -739,6 +746,10 @@ mod tests {
     use super::*;
     use crate::act::PAGE;
 
+    fn defaults() -> Result<Keymap, String> {
+        crate::script::default_keys().map_err(|e| e.to_string())
+    }
+
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
     }
@@ -752,7 +763,7 @@ mod tests {
 
     #[test]
     fn the_defaults_bind_and_list_in_groups() -> Result<(), String> {
-        let keymap = crate::script::default_keys()?;
+        let keymap = defaults()?;
         let mut groups: Vec<String> = (keymap.column(&[], 0).ok_or("a column")?.entries)
             .into_iter()
             .map(|e| e.group)
@@ -777,7 +788,7 @@ mod tests {
 
     #[test]
     fn the_prefix_opens_the_column_a_key_runs_its_binding() -> Result<(), String> {
-        let keymap = crate::script::default_keys()?;
+        let keymap = defaults()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("C-b")?, false);
         assert!(matches!(
@@ -800,7 +811,7 @@ mod tests {
 
     #[test]
     fn a_repeat_mode_keeps_its_layer_until_escape() -> Result<(), String> {
-        let keymap = crate::script::default_keys()?;
+        let keymap = defaults()?;
         let mut held = Held::default();
         for name in ["C-b", "r", "h"] {
             held.press(&keymap, stroke(name)?, false);
@@ -818,7 +829,7 @@ mod tests {
 
     #[test]
     fn a_watching_client_only_detaches() -> Result<(), String> {
-        let keymap = crate::script::default_keys()?;
+        let keymap = defaults()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("x")?, true);
         assert!(matches!(
@@ -836,7 +847,7 @@ mod tests {
     /// bound without the prefix listed last.
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
-        let mut keymap = crate::script::default_keys()?;
+        let mut keymap = defaults()?;
         let binding = |code: &str| Binding {
             code: code.into(),
             label: code.into(),

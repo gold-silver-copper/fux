@@ -365,7 +365,7 @@ no prefix, which then never reaches any program: bind chords or function
 keys rather than letters. A key sequence is a binding or a layer, never
 both. Esc after the prefix always closes the column. `label`, `group` and
 `repeat` change the binding just made; the column lists groups in the order
-first bound, `Other` last.
+their keys were first bound, `Other` last.
 
 The default keys are a config like yours, run before it, so anything one
 binding does, yours may: rebind a key, `unbind` it, or start from none.

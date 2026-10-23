@@ -41,7 +41,7 @@ str 'w m h' str 'me focused workspace str previous reorder' bind  str 'move work
 str 'w m l' str 'me focused workspace str next reorder' bind  str 'move workspace later' label  str Reorder group  repeat
 
 str e str 'me command-prompt' bind  str 'command prompt' label  str Session group
-str d str 'me detach' bind  str 'detach' label  str Session group
+str d str 'me detach' bind  str detach label  str Session group
 
 str 'r h' str 'me focused str left 1 move-border' bind  str 'shrink or grow left' label  str Resize group  repeat
 str 'r j' str 'me focused str down 1 move-border' bind  str 'shrink or grow down' label  str Resize group  repeat

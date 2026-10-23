@@ -471,7 +471,8 @@ mod tests {
     /// Key `name` typed at `screen`, with the default bindings.
     fn key(screen: &mut Screen, name: &str) -> Result<Vec<Effect>, String> {
         let stroke = crate::keymap::key(name)?.into();
-        Ok(screen.key(&crate::script::default_keys()?, stroke, false))
+        let keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
+        Ok(screen.key(&keymap, stroke, false))
     }
 
     fn list() -> Screen {
