@@ -2457,10 +2457,11 @@ impl Session {
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
-                let (text, form, _) = crate::capture::pane(pane, history, view, true, copying);
+                // No state line here to put its note on: its JSON has it.
+                let read = crate::capture::pane(pane, history, view, true, copying);
                 Ok(Reply {
-                    json: form.unwrap_or_default(),
-                    ..text.into()
+                    json: read.json.unwrap_or_default(),
+                    ..read.text.into()
                 })
             }
             &Command::Reorder { ref target, toward } => {

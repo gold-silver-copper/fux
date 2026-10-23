@@ -144,7 +144,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "styles", "x -- x", "capture: colours and attributes"),
     word("Reading", "marks", "x -- x", "highlighted text as ⟦this⟧: in a capture, or the screen a wait prints"),
     word("Reading", "other-screen", "x -- x", "capture: the screen not shown: under a full-screen program, what was printed before it; else the full screen a program drew last"),
-    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (under a full-screen program, its screen); not with other-screen"),
+    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (with no command marked, the screen); not with other-screen"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),

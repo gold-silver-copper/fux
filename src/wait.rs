@@ -237,11 +237,11 @@ impl Waiting {
             .and_then(|(id, _)| session.panes.get(id));
         if let (Some((history, view)), Some(pane)) = (capture, watched) {
             let copying = session.copying(pane.id);
-            let (read, form, note) = crate::capture::pane(pane, history, view, true, copying);
+            let read = crate::capture::pane(pane, history, view, true, copying);
             // Its JSON, read at the same moment, for `json` to give.
-            outcome.json = form.unwrap_or_default();
+            outcome.json = read.json.unwrap_or_default();
             let line = outcome.text.lines().next().unwrap_or_default();
-            outcome.text = format!("{line}{note}\n{read}");
+            outcome.text = format!("{line}{}\n{}", read.note, read.text);
         }
         Some(outcome)
     }
@@ -1235,8 +1235,7 @@ fn lines_from(pane: &Pane, from: usize) -> String {
         rows: (u16::try_from(from.saturating_sub(kept)).ok()).map(|top| (top, u16::MAX)),
         ..CaptureView::default()
     };
-    let (text, ..) =
-        crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
+    let text = crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false).text;
     if text == "\n" { String::new() } else { text }
 }
 
@@ -1376,7 +1375,7 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
             source,
             ..CaptureView::default()
         };
-        crate::capture::pane(pane, None, view, false, false).0
+        crate::capture::pane(pane, None, view, false, false).text
     };
     let (first, then) = if alt {
         (Source::Other, Source::Shown)
@@ -1384,7 +1383,7 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
         (Source::Shown, Source::Other)
     };
     let first = read(first);
-    // The last full screen is the one not shown while the main one is.
+    // On the alternate screen, the other is the shell's: no falling back.
     if first.trim().is_empty() && !pane.screen().mode(fux_vt::Mode::AlternateScreen) {
         return read(then);
     }
@@ -1455,7 +1454,7 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
             source: Source::Other,
             ..CaptureView::default()
         };
-        crate::capture::pane(pane, None, view, false, false).0
+        crate::capture::pane(pane, None, view, false, false).text
     });
     // A row changed since, or moved (`Print`).
     let moved: HashSet<RowId> = (pane.record.printed_after(start.from))

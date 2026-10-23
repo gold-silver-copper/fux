@@ -18,35 +18,32 @@ type Read = (String, Option<String>);
 /// The rows a capture reads, each with the columns of it it reads.
 type Rows<'a> = Vec<(Row<'a>, std::ops::Range<usize>)>;
 
+/// A pane's capture: its text, its JSON if asked, and what it leaves
+/// out, as its state line says it.
+pub struct Captured {
+    pub text: String,
+    pub json: Option<String>,
+    pub note: String,
+}
+
 /// A pane's screen, and `history` rows before it, as `view` asks, with
 /// `json` its JSON too; with `copy_mode`, that says a client is in copy
-/// mode on it. Third, what it leaves out, as its state line says it:
-/// lines kept above it, or that those above it are gone.
+/// mode on it.
 pub fn pane(
     pane: &Pane,
     history: Option<usize>,
     view: CaptureView,
     json: bool,
     copy_mode: bool,
-) -> (String, Option<String>, String) {
+) -> Captured {
     let screen = pane.screen();
-    // The screen read is a full-screen program's, which keeps no history:
-    // what it drew before is gone.
-    let full = match view.source {
-        Source::Shown => screen.mode(Mode::AlternateScreen),
-        Source::Other => !screen.mode(Mode::AlternateScreen),
-        Source::LastOutput => false,
-    };
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
     };
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
-    let (read, above, lost) = rows_of(screen, history, view);
-    // A blank full screen (one never drawn) has lost nothing.
-    let drawn = || (read.iter()).any(|(row, _)| row.cells().any(|c| !c.shown().trim().is_empty()));
-    let gone = lost || (full && drawn());
+    let (read, above, gone) = rows_of(screen, history, view);
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
     let live = view.source != Source::Other;
@@ -134,13 +131,14 @@ pub fn pane(
         (lines, view, screen_background(screen)),
         state,
     );
-    let note = match (above, gone) {
-        (0, true) => " · nothing kept above".to_owned(),
-        (0, false) => String::new(),
-        (1, _) => " · 1 line above".to_owned(),
-        (n, _) => format!(" · {n} lines above"),
+    let unread = match above {
+        0 => None,
+        1 => Some(" · 1 line above".to_owned()),
+        n => Some(format!(" · {n} lines above")),
     };
-    (text, json, note)
+    let lost = gone.then(|| " · earlier lines gone".to_owned());
+    let note = unread.into_iter().chain(lost).collect();
+    Captured { text, json, note }
 }
 
 /// A run of highlighted cells on the screen shown, as a selection is
@@ -224,43 +222,49 @@ fn screen_background(screen: &Screen) -> Color {
 
 /// The rows a capture reads: the screen and `history` rows above it (of
 /// the screen not shown with `other-screen`), or the last command's
-/// output; then how many rows of history above them it leaves out, and
-/// whether the last output's start is gone.
+/// output (the screen if no command was marked); then how many rows of
+/// history above them it leaves out, and whether lines before those kept
+/// are gone.
 fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<'_>, usize, bool) {
+    let alt = screen.mode(Mode::AlternateScreen);
+    // The screen read is a full-screen program's, which keeps no history:
+    // what it drew before is gone.
+    let full = alt != (view.source == Source::Other);
+    if view.source == Source::LastOutput
+        && let Some((read, lost)) = last_output(screen)
+    {
+        return (read, 0, lost || full);
+    }
     let rows = match view.source {
-        Source::Shown => screen.rows(),
-        Source::Other if screen.mode(Mode::AlternateScreen) => screen.main_rows(),
+        Source::Shown | Source::LastOutput => screen.rows(),
+        Source::Other if alt => screen.main_rows(),
         Source::Other => screen.alternate_rows(),
-        Source::LastOutput => {
-            let (read, lost) = last_output(screen);
-            return (read, 0, lost);
-        }
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
     let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
-    (read, skip, false)
+    // The main screen's history let rows go: past its budget, or cleared.
+    (read, skip, full || screen.let_go() > 0)
 }
 
 /// The last command's output between its marks, a range of each row's
 /// columns: while one runs, its output so far, to the screen's foot (what
-/// it drew below the cursor too). Then whether its start is gone (or no
-/// command was marked).
-fn last_output(screen: &Screen) -> (Rows<'_>, bool) {
+/// it drew below the cursor too). Then whether its start is gone. None
+/// if no command was marked.
+fn last_output(screen: &Screen) -> Option<(Rows<'_>, bool)> {
     let commands = screen.commands();
     let window = screen.window();
+    // The foot's whole row: no column is past `u16::MAX`.
     let foot = (window.row(window.rows().saturating_sub(1))).map(|r| CommandMark {
         row: r.id(),
         col: u16::MAX,
     });
     let running = commands.output_start.zip(foot);
-    let Some((start, end)) = running.or(commands.last_output) else {
-        return (Vec::new(), true);
-    };
+    let (start, end) = running.or(commands.last_output)?;
     let Some(last) = screen.row_index(end.row) else {
-        return (Vec::new(), true);
+        return Some((Vec::new(), true));
     };
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
@@ -298,7 +302,7 @@ fn last_output(screen: &Screen) -> (Rows<'_>, bool) {
             (from < to).then_some((row, from..to))
         })
         .collect();
-    (read, lost)
+    Some((read, lost))
 }
 
 /// What a client's terminal shows, row by row, as `capture-client` prints
@@ -594,7 +598,7 @@ mod tests {
             let size = fux_vt::Size::new(3, 5)?;
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(&pane, None, join, false, false).0)
+            Ok(super::pane(&pane, None, join, false, false).text)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -621,7 +625,7 @@ mod tests {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(&pane, None, view, false, false).0;
+        let text = super::pane(&pane, None, view, false, false).text;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -640,7 +644,7 @@ mod tests {
         let size = fux_vt::Size::new(3, 8)?;
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         pane.output(b"\x1b[44m\x1b[2J\x1b[Hab\x1b[2;1Hcd\x1b[41m  ");
-        let text = super::pane(&pane, None, view, false, false).0;
+        let text = super::pane(&pane, None, view, false, false).text;
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines

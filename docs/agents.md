@@ -43,7 +43,7 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
 %2 reading · 80 lines above    a capture left out history: `all-history` reads it
-%2 reading · nothing kept above  what was above it is gone: a full screen keeps none
+%2 reading · earlier lines gone  what came before is gone: a full screen keeps none
 ```
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
@@ -137,21 +137,22 @@ exactly as typed is output. A full-screen program's screen is all output.
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
 `other-screen` (the screen not shown: under a full-screen program, what
 was printed before it; after one, the last screen it drew), `last-output`
-(the last shell command's output, or the running one's so far; under a
-full-screen program, its screen), `wrapped` (each screen row a line; else
+(the last shell command's output, or the running one's so far; with no
+command marked, the screen), `wrapped` (each screen row a line; else
 a line wrapped at the pane's width is joined whole), `0 4 rows`, `0 39
 cols`, `full`, `marks` (highlights as `⟦this⟧`), `styles`; then `json` for
 the screen and the pane's state (`cursor` is `[ROW,COL]`). Rows and
 columns count from 0.
 
 A capture's state line says what it leaves out: `· 80 lines above`, the
-history it did not read, or `· nothing kept above`, the lines above it
-are gone (a full-screen program's screen keeps no history; a last output
-whose start is gone, or no command marked). Nothing said: you have it
-all. JSON says the same in `above` and `gone`. A full-screen program that
-redraws its screen keeps only what it shows: run an agent's TUI inline
-where it can (e.g. `codex --no-alt-screen`), and `all-history` reads its
-whole answer.
+history it did not read, and `· earlier lines gone`, lines before those
+kept are gone (a full-screen program's screen keeps no history; history
+past `history-bytes`, or cleared; a last output whose start is gone).
+Nothing said: you have it all. JSON says the same in `above` and `gone`
+(a program's capture, with no state line, only there). A full-screen
+program that redraws its screen keeps only what it shows: run an agent's
+TUI inline where it can (e.g. `codex --no-alt-screen`), and `all-history`
+reads its whole answer.
 
 ## shells: Shells and their marks
 
