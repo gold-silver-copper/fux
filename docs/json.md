@@ -62,9 +62,9 @@ prints `null` (`string` makes it the text).
 `above` counts the rows of history above `lines` the capture left out
 (`all-history` reads them; a line wrapped over rows counts each); `gone`,
 lines before those kept are gone: a full-screen program's screen, which
-keeps no history, history let go past `history-bytes` or cleared, or a
-last output whose start is gone, or that erased the screen or drew on a
-full screen.
+keeps no history, history let go past `history-bytes` or cleared, the
+screen erased whole, or a last output whose start is gone, or that
+erased the screen or drew on a full screen.
 Neither: `lines` is all.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`

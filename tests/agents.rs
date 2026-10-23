@@ -958,6 +958,14 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     // With no command marked, the last output is the screen.
     let unmarked = server.ok(&["str", &pane, "pane", "last-output", "capture"])?;
     assert_eq!(unmarked, full);
+    // A main screen erased whole kept nothing of what it showed.
+    let wipe = r"printf 'before\n\033[2J\033[Hafter'; exec cat";
+    let wipe = id(&server.ok(&run(&["str", "after", "wait-text"], &["sh", "-c", wipe]))?);
+    let wiped = server.ok(&["str", &wipe, "pane", "all-history", "capture"])?;
+    assert_eq!(
+        wiped,
+        format!("{wipe} reading · earlier lines gone\nafter\n")
+    );
     let refused = server.fux(&["str", &pane, "pane", "str", "Entr", "key", "send-keys"])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);

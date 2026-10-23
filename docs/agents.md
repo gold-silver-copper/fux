@@ -140,7 +140,7 @@ exactly as typed is output. A full-screen program's screen is all output.
 `other-screen` (the screen not shown: under a full-screen program, what
 was printed before it; after one, the last screen it drew), `last-output`
 (the last shell command's output, or the running one's so far; with no
-command marked, the screen), `wrapped` (each screen row a line; else
+shell marks, the screen), `wrapped` (each screen row a line; else
 a line wrapped at the pane's width is joined whole), `0 4 rows`, `0 39
 cols`, `full`, `marks` (highlights as `⟦this⟧`), `styles`; then `json` for
 the screen and the pane's state (`cursor` is `[ROW,COL]`). Rows and
@@ -149,8 +149,9 @@ columns count from 0.
 A capture's state line says what it leaves out: `· 80 lines above`, the
 history it did not read, and `· earlier lines gone`, lines before those
 kept are gone (a full-screen program's screen keeps no history; history
-past `history-bytes`, or cleared; a last output whose start is gone, or
-that erased the screen or drew on a full screen).
+past `history-bytes`, or cleared; the screen erased whole; a last output
+whose start is gone, or that erased the screen or drew on a full
+screen).
 Nothing said: you have it all. JSON says the same in `above` and `gone`
 (a program's capture, with no state line, only there). A full-screen
 program that redraws its screen keeps only what it shows: run an agent's

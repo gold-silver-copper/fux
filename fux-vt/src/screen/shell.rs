@@ -135,7 +135,9 @@ impl Screen {
                 let late = option == Some(&b"late"[..]);
                 if !self.commands.running() {
                     self.commands.started = self.commands.started.wrapping_add(1);
-                    self.commands.lost = false;
+                    // Only the shell's own command starts clean: a nested
+                    // one's loss is the command set aside's too.
+                    self.commands.lost &= self.outer.is_some();
                 }
                 self.commands.prompt = false;
                 // Looked for on the screen alone (THREATS.md B29): a line
@@ -199,11 +201,16 @@ impl Screen {
         }
     }
 
-    /// The main screen erased whole while a command runs (`clear`): its
-    /// output begins again at the screen's top. The alternate screen's
-    /// erases are ignored: the marks are the main screen's.
+    /// The main screen erased whole (`clear`): what it showed is gone, and
+    /// a running command's output begins again at the screen's top. The
+    /// alternate screen's erases are ignored: the marks are the main
+    /// screen's, and it keeps nothing anyway.
     pub(crate) fn screen_erased(&mut self) {
-        if !self.commands.running() || self.mode(crate::Mode::AlternateScreen) {
+        if self.mode(crate::Mode::AlternateScreen) {
+            return;
+        }
+        self.wiped = true;
+        if !self.commands.running() {
             return;
         }
         let grid = self.grid();

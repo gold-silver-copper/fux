@@ -653,6 +653,8 @@ pub struct Screen {
     /// The shell's running command, set aside while a nested program's
     /// marks count: its output's start, and whether on the alternate screen.
     outer: Option<(CommandMark, bool)>,
+    /// The main screen was erased whole (`Screen::wiped`).
+    wiped: bool,
     /// Where the cursor was as the host last said a line was submitted
     /// (`note_submit`): a late `C` starts the output after that line.
     submitted: Option<CommandMark>,
@@ -901,6 +903,7 @@ impl Screen {
             mark_nonce: None,
             nested_nonce: None,
             outer: None,
+            wiped: false,
             submitted: None,
         })
     }
@@ -1297,6 +1300,11 @@ impl Screen {
         (self.prints.as_mut())
             .map(|prints| prints.take(cells))
             .unwrap_or_default()
+    }
+    /// Whether the main screen was ever erased whole (ED 2, ED 0 from its
+    /// top-left corner, RIS): what it showed then went into no history.
+    pub fn wiped(&self) -> bool {
+        self.wiped
     }
     /// The number of the last change to a row of the primary screen's
     /// history that has since been let go past its budget: 0 if none was.
@@ -2674,6 +2682,8 @@ impl Screen {
                 self.alternate.reset_links();
                 self.pictures.clear();
                 self.alternate_active = false;
+                // What the main screen and its history held is gone.
+                self.wiped = true;
                 // What DECSTR resets; the grids are new already.
                 self.terminal = Terminal::default();
                 self.soft_reset();
@@ -2956,7 +2966,8 @@ impl Screen {
             (to.cursor, to.lines) = (from.cursor, from.lines);
             to.set_columns(from.columns());
             to.fit_cursor();
-            self.commands.lost |= alternate && self.commands.running();
+            let running = self.commands.running() || self.outer.is_some();
+            self.commands.lost |= alternate && running;
         }
         self.alternate_active = alternate;
         self.structural = self.version;
@@ -3680,7 +3691,9 @@ impl Screen {
                             });
                         });
                     }
-                    if byte == b'J' && part == Erase::All {
+                    // From the top-left corner, ED 0 erases it all too.
+                    let home = part == Erase::Below && self.cursor_position() == (0, 0);
+                    if byte == b'J' && (part == Erase::All || home) {
                         self.screen_erased();
                     }
                 }
