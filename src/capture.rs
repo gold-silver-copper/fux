@@ -15,32 +15,49 @@ type Cells<'a> = Vec<(&'a str, Attributes)>;
 /// A capture as text, and as JSON if it was asked for too: read once.
 type Read = (String, Option<String>);
 
+/// What a capture says when lines above it are gone: scrolled off a
+/// screen that kept none, or past history's limit.
+const GONE: &str = "nothing kept above";
+
+/// The rows a capture reads, each with the columns of it it reads.
+type Rows<'a> = Vec<(Row<'a>, std::ops::Range<usize>)>;
+
 /// A pane's screen, and `history` rows before it, as `view` asks, with
 /// `json` its JSON too; with `copy_mode`, that says a client is in copy
-/// mode on it.
+/// mode on it. Third, what it leaves out, as its state line says it.
 pub fn pane(
     pane: &Pane,
     history: Option<usize>,
     view: CaptureView,
     json: bool,
     copy_mode: bool,
-) -> Read {
+) -> (String, Option<String>, String) {
     let screen = pane.screen();
+    // The screen read is a full-screen program's: what it drew before is
+    // gone unless it scrolled into history.
+    let full = screen.mode(Mode::AlternateScreen) == (view.source != Source::Other);
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
     };
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
-    let read = rows_of(screen, history, view);
+    let (read, above, gap) = rows_of(screen, history, view, full);
+    let note: String = [
+        full.then(|| "full screen".to_owned()),
+        match above {
+            0 => gap.map(str::to_owned),
+            1 => Some("1 line above".to_owned()),
+            n => Some(format!("{n} lines above")),
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .map(|clause| format!(" · {clause}"))
+    .collect();
     // The cursor's row and column, if it shows on the screen captured: the
     // last output is read from the screen shown, whatever else is asked.
-    let alt = screen.mode(Mode::AlternateScreen);
-    let live = match view.source {
-        Source::Shown | Source::LastOutput => true,
-        Source::Main => !alt,
-        Source::Alternate => alt,
-    };
+    let live = view.source != Source::Other;
     // Where it is on the screen, as a mouse event and a state line count.
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
@@ -110,17 +127,22 @@ pub fn pane(
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let state = json.then(|| state(pane, Instant::now(), copy_mode));
+    let state = json.then(|| {
+        let mut fields = vec![("above", Json::int(above))];
+        fields.extend(state(pane, Instant::now(), copy_mode));
+        fields
+    });
     // A glyph went into the last column: the next one goes on the next
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
-    print(
+    let (text, json) = print(
         ("pane", pane.id.to_string()),
         (rows, cols),
         (cursor, Some(pending)),
         (lines, view, screen_background(screen)),
         state,
-    )
+    );
+    (text, json, note)
 }
 
 /// A run of highlighted cells on the screen shown, as a selection is
@@ -202,50 +224,74 @@ fn screen_background(screen: &Screen) -> Color {
         .map_or(default, |(c, _)| c)
 }
 
-/// The rows a capture reads, each with the columns of it it reads: the
-/// screen and `history` rows above it (of the main screen with `main-screen`), or
-/// the last command's output.
+/// The rows a capture reads: the screen and `history` rows above it (of
+/// the screen not shown with `other-screen`), or the last command's
+/// output; then how many rows of history above them it leaves out, and
+/// what is missing above them that no capture reads, if anything is (on a
+/// `full` screen, history it never kept).
 fn rows_of(
     screen: &Screen,
     history: Option<usize>,
     view: CaptureView,
-) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
+    full: bool,
+) -> (Rows<'_>, usize, Option<&'static str>) {
     let rows = match view.source {
         Source::Shown => screen.rows(),
-        Source::Main => screen.main_rows(),
-        Source::Alternate => screen.alternate_rows(),
-        Source::LastOutput => return last_output(screen),
+        Source::Other if screen.mode(Mode::AlternateScreen) => screen.main_rows(),
+        Source::Other => screen.alternate_rows(),
+        Source::LastOutput => {
+            let (read, gap) = last_output(screen);
+            return (read, 0, gap);
+        }
     };
     let shown = usize::from(screen.size().rows());
     let keep = shown.saturating_add(history.unwrap_or(0));
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
-    rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect()
+    let gap = (full && rows.len() <= shown).then_some(GONE);
+    let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
+    (read, skip, gap)
 }
 
 /// The last command's output between its marks, a range of each row's
-/// columns: while one runs, its output so far, to the cursor.
-fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
+/// columns: while one runs, its output so far, to the cursor. Then what is
+/// missing, if anything: its start, or any command marked.
+fn last_output(screen: &Screen) -> (Rows<'_>, Option<&'static str>) {
     let commands = screen.commands();
     let (row, col) = screen.cursor_position();
     let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
     let running = commands.output_start.zip(cursor);
     let Some((start, end)) = running.or(commands.last_output) else {
-        return Vec::new();
+        return (Vec::new(), Some("no command marked"));
     };
     let Some(last) = screen.row_index(end.row) else {
-        return Vec::new();
+        return (Vec::new(), Some(GONE));
     };
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
     // screen's top if the start was cleared.
-    let (first, start) = match screen.row_index(start.row) {
-        Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+    let (first, start, gap) = match screen.row_index(start.row) {
+        Some(first) if first <= last && (first, start.col) <= (last, end.col) => {
+            (first, start, None)
+        }
         Some(_) => (
             screen.history_len().min(last),
             CommandMark { col: 0, ..start },
+            Some(GONE),
         ),
-        None => (0, CommandMark { col: 0, ..start }),
+        None => (0, CommandMark { col: 0, ..start }, Some(GONE)),
+    };
+    // Running with its start gone (a full-screen program's, on a screen of
+    // its own): to the screen's foot, what it drew below the cursor too.
+    let (last, end) = match running.is_some() && gap.is_some() {
+        true => (
+            screen.rows().len().saturating_sub(1),
+            CommandMark {
+                col: u16::MAX,
+                ..end
+            },
+        ),
+        false => (last, end),
     };
     let rows: Vec<Row<'_>> = screen
         .rows()
@@ -253,7 +299,8 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
         .take(last.saturating_sub(first).saturating_add(1))
         .collect();
     let count = rows.len();
-    rows.into_iter()
+    let read = rows
+        .into_iter()
         .enumerate()
         .filter_map(|(i, row)| {
             let from = if i == 0 { usize::from(start.col) } else { 0 };
@@ -267,7 +314,8 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
             };
             (from < to).then_some((row, from..to))
         })
-        .collect()
+        .collect();
+    (read, gap)
 }
 
 /// What a client's terminal shows, row by row, as `capture-client` prints

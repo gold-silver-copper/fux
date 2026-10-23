@@ -2457,7 +2457,7 @@ impl Session {
             } => {
                 let pane = self.pane(target)?;
                 let copying = self.copying(pane.id);
-                let (text, form) = crate::capture::pane(pane, history, view, true, copying);
+                let (text, form, _) = crate::capture::pane(pane, history, view, true, copying);
                 Ok(Reply {
                     json: form.unwrap_or_default(),
                     ..text.into()
@@ -4766,11 +4766,11 @@ mod tests {
         assert_eq!(cursor(&mut s, "")?, "[2,2]");
         assert_eq!(cursor(&mut s, "wrapped")?, "[2,2]");
         s.output(PaneId::of(1), b"\x1b[?1049h\x1b[HALT");
-        assert_eq!(cursor(&mut s, "alt-screen")?, "[0,3]");
-        assert_eq!(cursor(&mut s, "main-screen")?, "null");
+        assert_eq!(cursor(&mut s, "")?, "[0,3]");
+        assert_eq!(cursor(&mut s, "other-screen")?, "null");
         s.output(PaneId::of(1), b"\x1b[?1049l");
-        assert_eq!(cursor(&mut s, "alt-screen")?, "null");
-        assert_eq!(cursor(&mut s, "main-screen")?, "[2,2]");
+        assert_eq!(cursor(&mut s, "other-screen")?, "null");
+        assert_eq!(cursor(&mut s, "")?, "[2,2]");
         // What is highlighted is marked in JSON's lines too.
         s.output(PaneId::of(1), b"\x1b[7mSEL\x1b[0m");
         let json = output(&mut s, "%1 marks capture json")?;

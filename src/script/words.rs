@@ -143,9 +143,8 @@ pub const WORDS: &[Word] = &[
     word("Reading", "full", "x -- x", "capture: every row and cell, untrimmed"),
     word("Reading", "styles", "x -- x", "capture: colours and attributes"),
     word("Reading", "marks", "x -- x", "highlighted text as ⟦this⟧: in a capture, or the screen a wait prints"),
-    word("Reading", "main-screen", "x -- x", "capture: what was printed before a program took the screen"),
-    word("Reading", "alt-screen", "x -- x", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
+    word("Reading", "other-screen", "x -- x", "capture: the screen not shown: under a full-screen program, what was printed before it; else the full screen a program drew last"),
+    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (under a full-screen program, its screen); not with other-screen"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
@@ -571,14 +570,13 @@ fn modify(
                 .push(key, value)
                 .map_err(|why| fail(Code::BadValue, why))?;
         }
-        "main-screen" | "alt-screen" | "last-output" => {
+        "other-screen" | "last-output" => {
             if built.view.source != Source::Shown {
                 let why = "a capture reads one screen, and one is given";
                 return Err(fail(Lang::Unused, why));
             }
             built.view.source = match name {
-                "main-screen" => Source::Main,
-                "alt-screen" => Source::Alternate,
+                "other-screen" => Source::Other,
                 _ => Source::LastOutput,
             };
         }

@@ -187,7 +187,7 @@ pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     ("respawn", "kill-first env command program arg", true),
     (
         "capture",
-        "history all-history wrapped full styles marks main-screen alt-screen last-output \
+        "history all-history wrapped full styles marks other-screen last-output \
          rows cols timeout",
         false,
     ),
@@ -240,8 +240,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "wrapped" => "fux %3 wrapped 0 2 rows capture",
         "full" => "fux %3 full capture",
         "styles" => "fux %3 styles capture",
-        "main-screen" => "fux %3 main-screen capture",
-        "alt-screen" => "fux %3 alt-screen capture",
+        "other-screen" => "fux %3 other-screen all-history capture",
         "last-output" => "fux %3 last-output capture",
         "rows" => "fux %3 0 4 rows capture",
         "cols" => "fux %3 0 39 cols capture",

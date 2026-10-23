@@ -901,8 +901,8 @@ fn a_nested_programs_marks_count_in_a_shell_pane() -> Outcome {
 
 /// `respawn` starts a run program again in its pane, found by its tab's
 /// name; `log-to` keeps all it wrote; `all-history` reads all history,
-/// `main-screen` what a full-screen program hides, `alt-screen` its last
-/// screen; a mistyped key name is refused.
+/// `other-screen` what a full-screen program hides, and its last screen
+/// once it left it; a mistyped key name is refused.
 #[test]
 fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let server = Server::start("")?;
@@ -938,12 +938,24 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "str",
         &pane,
         "pane",
-        "main-screen",
+        "other-screen",
         "all-history",
         "capture",
     ])?;
     assert!(body(&main).starts_with("before\n1\n"), "{main}");
     assert!(main.contains("\n500\n"), "{main}");
+    // Each capture says what it leaves out: the history above it, or that
+    // a full screen keeps none.
+    assert!(!head(&main).contains("above"), "{main}");
+    let part = server.ok(&["str", &pane, "pane", "other-screen", "capture", "json"])?;
+    assert!(part.contains("\"above\":492,"), "{part}");
+    let part = server.ok(&["str", &pane, "pane", "other-screen", "capture"])?;
+    assert!(head(&part).ends_with(" · 492 lines above"), "{part}");
+    let full = server.ok(&["str", &pane, "pane", "all-history", "capture"])?;
+    assert!(
+        head(&full).ends_with(" · full screen · nothing kept above"),
+        "{full}"
+    );
     let refused = server.fux(&["str", &pane, "pane", "str", "Entr", "key", "send-keys"])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);
@@ -989,8 +1001,8 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
             .contains("picked")
     );
     assert_eq!(
-        server.ok(&["str", &menu, "pane", "alt-screen", "capture"])?,
-        format!("{menu} exited 0\npicked beta\n")
+        server.ok(&["str", &menu, "pane", "other-screen", "capture"])?,
+        format!("{menu} exited 0 · full screen · nothing kept above\npicked beta\n")
     );
     Ok(())
 }
@@ -2242,7 +2254,7 @@ fn an_answer_holds_only_what_came() -> Outcome {
             left.contains(&format!("MAIN-{mode}")) && !left.contains("MENU"),
             "{left}"
         );
-        let alt = server.ok(&["str", &pane, "pane", "alt-screen", "capture"])?;
+        let alt = server.ok(&["str", &pane, "pane", "other-screen", "capture"])?;
         assert!(alt.contains("MENU>"), "{alt}");
     }
     let quiet = id(&server.ok(&run(&[], &["sh", "-c", "echo BEFORE-INPUT; read x"]))?);
@@ -2786,7 +2798,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         &["vertical"],
         &["kill-first"],
         &["full"],
-        &["alt-screen"],
+        &["other-screen"],
         &["last-output"],
         &["wrapped"],
         &["0", "5", "rows"],
@@ -3174,9 +3186,9 @@ fn bash_marks_hold_under_a_traced_debug_trap() -> Outcome {
     Ok(())
 }
 
-/// The last output of a full-screen command is its screen: the cursor is
-/// said where it is on it. (With `main-screen` too it is refused: a capture
-/// reads one screen.)
+/// The last output of a full-screen command is its screen, whole, and
+/// says so: the cursor is said where it is on it. (With `other-screen` too
+/// it is refused: a capture reads one screen.)
 #[test]
 fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
     let server = Server::start("")?;
@@ -3185,6 +3197,13 @@ fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
     server.ok(&typed(&shell, draw, &["str", "xyz", "wait-text"]))?;
     let json = server.ok(&["str", &shell, "pane", "last-output", "capture", "json"])?;
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
+    let text = server.ok(&["str", &shell, "pane", "last-output", "capture"])?;
+    assert_eq!(
+        text,
+        format!(
+            "{shell} reading · command running · full screen · nothing kept above\nabc\ndef\nxyz\n"
+        )
+    );
     Ok(())
 }
 

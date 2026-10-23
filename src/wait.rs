@@ -237,11 +237,11 @@ impl Waiting {
             .and_then(|(id, _)| session.panes.get(id));
         if let (Some((history, view)), Some(pane)) = (capture, watched) {
             let copying = session.copying(pane.id);
-            let (read, form) = crate::capture::pane(pane, history, view, true, copying);
+            let (read, form, note) = crate::capture::pane(pane, history, view, true, copying);
             // Its JSON, read at the same moment, for `json` to give.
             outcome.json = form.unwrap_or_default();
             let line = outcome.text.lines().next().unwrap_or_default();
-            outcome.text = format!("{line}\n{read}");
+            outcome.text = format!("{line}{note}\n{read}");
         }
         Some(outcome)
     }
@@ -1235,7 +1235,8 @@ fn lines_from(pane: &Pane, from: usize) -> String {
         rows: (u16::try_from(from.saturating_sub(kept)).ok()).map(|top| (top, u16::MAX)),
         ..CaptureView::default()
     };
-    let (text, _) = crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
+    let (text, ..) =
+        crate::capture::pane(pane, Some(kept.saturating_sub(from)), view, false, false);
     if text == "\n" { String::new() } else { text }
 }
 
@@ -1369,20 +1370,24 @@ fn control_echo(text: &str) -> Option<&str> {
 /// leaves the shell's so), the screen the program last drew. `alt`: that
 /// last full screen first.
 fn text(pane: &Pane, marks: bool, alt: bool) -> String {
-    let view = |alt| CaptureView {
-        marks,
-        source: if alt {
-            Source::Alternate
-        } else {
-            Source::Shown
-        },
-        ..CaptureView::default()
+    let read = |source| {
+        let view = CaptureView {
+            marks,
+            source,
+            ..CaptureView::default()
+        };
+        crate::capture::pane(pane, None, view, false, false).0
     };
-    let (first, _) = crate::capture::pane(pane, None, view(alt), false, false);
-    if first.trim().is_empty() {
-        return crate::capture::pane(pane, None, view(!alt), false, false).0;
+    let (first, then) = match alt {
+        true => (Source::Other, Source::Shown),
+        false => (Source::Shown, Source::Other),
+    };
+    let first = read(first);
+    // The last full screen is the one not shown while the main one is.
+    match first.trim().is_empty() && !pane.screen().mode(fux_vt::Mode::AlternateScreen) {
+        true => read(then),
+        false => first,
     }
-    first
 }
 
 /// Where what came since a wait began starts on a full screen drawn as a
@@ -1446,7 +1451,7 @@ fn since_text(pane: &Pane, watch: &Watch, marks: bool) -> String {
     let last = (start.on_full && pane.process.exit_status().is_some()).then(|| {
         let view = CaptureView {
             marks,
-            source: Source::Alternate,
+            source: Source::Other,
             ..CaptureView::default()
         };
         crate::capture::pane(pane, None, view, false, false).0

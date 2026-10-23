@@ -222,12 +222,10 @@ wire! {
         /// The screen the pane shows, and its history.
         #[default]
         Shown,
-        /// The main screen and its history, though a program holds the
-        /// alternate one: what was printed before it took the screen.
-        Main,
-        /// The alternate screen as a full-screen program last drew it, though
-        /// it has left it, or exited.
-        Alternate,
+        /// The screen not shown: under a full-screen program, the main
+        /// screen and its history, what was printed before it took the
+        /// screen; else the alternate screen as such a program last drew it.
+        Other,
         /// The last shell command's output alone, between its OSC 133 marks.
         LastOutput,
     }

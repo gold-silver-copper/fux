@@ -24,7 +24,7 @@ fux %2 str y text str Enter key send-keys      # keys (str T paste send-keys pas
 fux %3 str 'make test' line                    # a shell command: %3 reading · done 0, its output
 fux %2 wait                                    # settle again; `%2 300 timeout wait` waits longer
 fux %2 str 'listening on' wait-text wait       # wait for a text; also wait-gone, wait-bell, wait-exit
-fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
+fux %2 all-history capture                     # read the screen; also other-screen, last-output, styles
 fux %2 capture json                            # as JSON; `%2 str state get` is one field
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
@@ -42,6 +42,8 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 waiting                 quiet 1s, but it may go on alone (the network, a timer)
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
+%2 reading · 80 lines above                  a capture left out history: `all-history` reads it
+%2 reading · full screen · nothing kept above   a full-screen program's screen: what it showed before is gone
 ```
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
@@ -133,13 +135,21 @@ exactly as typed is output. A full-screen program's screen is all output.
 ## read: Reading the screen
 
 `PANE READ capture`, READ any of: `100 history`, `all-history`,
-`main-screen` (what was printed before a program took the screen),
-`alt-screen` (the full screen a program drew last), `last-output` (the
-last shell command's output, or the running one's so far), `wrapped` (each
-screen row a line; else a line wrapped at the pane's width is joined
-whole), `0 4 rows`, `0 39 cols`, `full`, `marks` (highlights as
-`⟦this⟧`), `styles`; then `json` for the screen and the pane's state
-(`cursor` is `[ROW,COL]`). Rows and columns count from 0.
+`other-screen` (the screen not shown: under a full-screen program, what
+was printed before it; after one, the last screen it drew), `last-output`
+(the last shell command's output, or the running one's so far; under a
+full-screen program, its screen), `wrapped` (each screen row a line; else
+a line wrapped at the pane's width is joined whole), `0 4 rows`, `0 39
+cols`, `full`, `marks` (highlights as `⟦this⟧`), `styles`; then `json` for
+the screen and the pane's state (`cursor` is `[ROW,COL]`). Rows and
+columns count from 0.
+
+A capture's state line says what it leaves out: `· 80 lines above`, the
+history it did not read; `· full screen`, a full-screen program's screen,
+where what it showed before is the program's to keep or lose, and `·
+nothing kept above` when no line of it was kept (a capture of a full
+screen, or a last output whose start is gone). Nothing said: you have it
+all. In JSON, `above` is that count.
 
 ## shells: Shells and their marks
 

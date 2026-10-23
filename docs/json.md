@@ -31,7 +31,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `cursor_visible` | the cursor shows |
-| `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
+| `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`other-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |
 | `revision` | grows with every change to the screen |
 | `command_running` | a shell command runs (OSC 133 marks) |
@@ -56,8 +56,11 @@ prints `null` (`string` makes it the text).
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
+{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],"above":0,PANE FIELDS…}
 ```
+
+`above` counts the lines of history above `lines` the capture left out
+(`all-history` reads them).
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with
@@ -66,7 +69,7 @@ strikeout) stay, in `lines` and `styles` alike: a painted surface shows
 whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
 `wrapped` count them, whatever
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
-screen not captured (`main-screen` under a full-screen program). `wrap_pending` (after `lines`):
+screen not captured (`other-screen`). `wrap_pending` (after `lines`):
 a glyph went into the last column, autowrap on, and the next goes on the
 next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
