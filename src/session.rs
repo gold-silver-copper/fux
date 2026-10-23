@@ -2771,15 +2771,13 @@ impl Session {
             (Some(axis), Some(float)) => Some(halves(target, float.frame.fitted(area), axis)?),
             (Some(_), None) => None,
         };
-        let room = |frame: &Rect| frame.w() >= layout::FRAME_MIN && frame.h() >= layout::FRAME_MIN;
-        if frames.is_some_and(|(_, frame)| !room(&frame)) {
-            let message = format!(
-                "{target}'s tab has no room for a floating pane; make it bigger first (`TAB COLS ROWS resize`)"
-            );
-            return Err(fail(Code::Size, message));
-        }
+        // On a tab too small for it, a floating pane is made all the same,
+        // and shows once there is room.
         let size = match (frames, axis) {
-            (Some((_, frame)), _) => pane::size(frame.inner().h(), frame.inner().w()),
+            (Some((_, frame)), _) => {
+                let inner = frame.fitted(area).inner();
+                pane::size(inner.h(), inner.w())
+            }
             (None, axis) => self.split_size(target, axis.unwrap_or(Axis::Horizontal), here)?,
         };
         let mut ids = self.ids;

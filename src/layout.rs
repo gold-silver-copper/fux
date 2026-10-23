@@ -412,14 +412,15 @@ impl Layout {
     }
     /// The frame a new floating pane takes on `area`: three quarters of it
     /// each way, centred, and a little down and right of each one there is,
-    /// so that none hides another whole.
+    /// so that none hides another whole; never less than `FRAME_MIN`, so
+    /// that it shows once there is room.
     pub fn new_frame(&self, area: Rect) -> Rect {
         let three_quarters = |len: u16| (len / 4).saturating_mul(3).max(FRAME_MIN);
         let (w, h) = (three_quarters(area.w), three_quarters(area.h));
         let n = u16::try_from(self.floating.len()).unwrap_or(u16::MAX);
         let x = (area.w.saturating_sub(w) / 2).saturating_add(n.saturating_mul(2));
         let y = (area.h.saturating_sub(h) / 2).saturating_add(n);
-        Rect::new(x, y, w, h).fitted(area)
+        Rect::new(x, y, w, h)
     }
     /// Places its tiled panes in `area`, and with `floating` its floating
     /// ones over them, into `out`, whatever it held; `focus`, if one of
