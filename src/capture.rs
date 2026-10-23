@@ -260,15 +260,15 @@ fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
     let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
-    // What scrolled off is kept nowhere: on the alternate screen once
-    // drawn, on the main one with no history. Or the main screen let rows
-    // go: past history's budget, history cleared, or erased whole.
-    let unkept = if reads_alt {
-        screen.alternate_drawn()
+    // The alternate screen, once shown, keeps nothing that left it; the
+    // main one keeps nothing with no history, and lost rows let go past
+    // history's budget, history cleared, or the screen erased whole.
+    let gone = if reads_alt {
+        screen.alternate_shown()
     } else {
-        screen.history_bytes() == 0
+        screen.history_bytes() == 0 || screen.let_go() > 0 || screen.wiped()
     };
-    (read, skip, unkept || screen.let_go() > 0 || screen.wiped())
+    (read, skip, gone)
 }
 
 /// The last command's output between its marks, a range of each row's

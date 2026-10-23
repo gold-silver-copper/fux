@@ -965,10 +965,8 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let wipe = r"printf 'before\n\033[2J\033[Hafter'; exec cat";
     let wipe = id(&server.ok(&run(&["str", "after", "wait-text"], &["sh", "-c", wipe]))?);
     let wiped = server.ok(&["str", &wipe, "pane", "all-history", "capture"])?;
-    assert_eq!(
-        wiped,
-        format!("{wipe} reading · earlier lines gone\nafter\n")
-    );
+    assert!(head(&wiped).ends_with(" · earlier lines gone"), "{wiped}");
+    assert_eq!(body(&wiped), "after\n");
     let refused = server.fux(&["str", &pane, "pane", "str", "Entr", "key", "send-keys"])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);

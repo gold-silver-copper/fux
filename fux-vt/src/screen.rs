@@ -1306,8 +1306,8 @@ impl Screen {
     pub fn history_bytes(&self) -> usize {
         self.primary.history_bytes()
     }
-    /// Whether the alternate screen was ever drawn (its cells made).
-    pub fn alternate_drawn(&self) -> bool {
+    /// Whether the alternate screen was ever shown (its cells made then).
+    pub fn alternate_shown(&self) -> bool {
         self.alternate.is_made()
     }
     /// Whether the main screen was ever erased whole while it showed text
@@ -3697,7 +3697,7 @@ impl Screen {
                             Erase::Below => at == (0, 0),
                             Erase::Above => at == (rows.saturating_sub(1), cols.saturating_sub(1)),
                         };
-                    let shown = whole && !self.alternate_active && self.grid().shows_text();
+                    let wipes = whole && !self.alternate_active && self.grid().shows_text();
                     // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
                     // DECSCA's glyphs and every rendition, ED and EL SPA's.
                     if private || self.protected {
@@ -3710,7 +3710,7 @@ impl Screen {
                             });
                         });
                     }
-                    if shown && !self.grid().shows_text() {
+                    if wipes && !self.grid().shows_text() {
                         self.screen_erased();
                     }
                 }

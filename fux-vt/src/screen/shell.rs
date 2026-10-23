@@ -203,8 +203,8 @@ impl Screen {
 
     /// The main screen, showing text, erased whole (`clear`): that text is
     /// gone. A running command's output begins again at the screen's top,
-    /// having lost some; the last one lost some if it printed any that
-    /// ended on the screen.
+    /// having lost some; so did one set aside; the last one lost some if it
+    /// printed any that ended on the screen.
     pub(crate) fn screen_erased(&mut self) {
         self.wiped = true;
         let grid = self.grid();
@@ -219,7 +219,8 @@ impl Screen {
             let printed = |(start, end): (Mark, Mark)| {
                 start != end && grid.screen_index_of(end.row).is_some()
             };
-            self.commands.lost |= self.commands.last_output.is_some_and(printed);
+            let set_aside = self.outer.is_some();
+            self.commands.lost |= set_aside || self.commands.last_output.is_some_and(printed);
         }
     }
 

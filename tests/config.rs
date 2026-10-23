@@ -73,9 +73,16 @@ fn settings_reach_the_server() -> Outcome {
     let rows = history.lines().count();
     let screen = server.ok(&["str", pane, "pane", "screen"])?.lines().count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
-    // And the capture says the lines before them are gone.
+    // And the capture says the lines before them are gone; one that left
+    // them out says that too.
     let head = history.lines().next().unwrap_or_default();
     assert!(head.ends_with(" · earlier lines gone"), "{history}");
+    let screen = server.ok(&["str", pane, "pane", "capture"])?;
+    let head = screen.lines().next().unwrap_or_default();
+    assert!(
+        head.contains(" lines above · earlier lines gone"),
+        "{screen}"
+    );
     // A new shell program applies to new panes.
     server.ok(&[
         "str",

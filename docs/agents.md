@@ -147,17 +147,13 @@ the screen and the pane's state (`cursor` is `[ROW,COL]`). Rows and
 columns count from 0.
 
 A capture's state line says what it leaves out: `· 80 lines above`, the
-history it did not read, and `· earlier lines gone`, lines before those
-kept are gone (a full-screen program's screen keeps no history, nor the
-main screen with `history-bytes` 0; history past `history-bytes`, or
-cleared; the screen erased whole, as `clear` does; a last output
-whose start is gone, or that erased the screen or drew on a full
-screen). Nothing said: you have it all. A screen's loss is said for the
-rest of the pane's life; `last-output`'s is its command's alone. JSON
-says the same in `above` and `gone` (a program's capture, with no state
-line, only there). A full-screen program that redraws its screen keeps
-only what it shows: run an agent's TUI inline where it can (e.g. `codex
---no-alt-screen`), and `all-history` reads its whole answer.
+history it did not read, and `· earlier lines gone`, lines fux kept
+nowhere (a full screen keeps none; history past `history-bytes`; `clear`).
+Nothing said: you have it all. A screen's loss is said for the pane's
+life, `last-output`'s for its command alone; JSON has both as `above` and
+`gone`. A full-screen program keeps only what it shows: run an agent's
+TUI inline where it can (e.g. `codex --no-alt-screen`), and `all-history`
+reads its whole answer.
 
 ## shells: Shells and their marks
 
