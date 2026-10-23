@@ -568,11 +568,11 @@ Key names, for `send-keys` and the prefix, are:
 - plus any single character.
 
 The keys of `bind` and `unbind` are any keys, one or more, as they are typed
-after the prefix; `bind -n` binds one key with no prefix (as first designed,
-letters only).
+after the prefix; `bind-root` binds any one key with no prefix (first
+designed as `bind -n`, letters only).
 
-The default keys are a bundled config, `src/script/keys.fux`, and `fux list-keys`
-prints a client's keys as config lines.
+The default keys are a bundled config, `src/script/keys.fux`, and
+`fux list-keys` prints a client's keys as config lines.
 
 ## Configuration
 

@@ -23,14 +23,18 @@ pub struct Binding {
 
 impl Binding {
     /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
-    /// its code, in `Other`, or in no group without the prefix.
+    /// its code, in its word's group.
     pub fn new(code: String, root: bool) -> Binding {
-        let group = if root { "" } else { OTHER_GROUP };
         Binding {
             label: code.clone(),
             code,
-            group: group.to_owned(),
+            group: Binding::group_of(root).to_owned(),
         }
+    }
+
+    /// The group `bind` gives, or `bind-root` if `root`.
+    fn group_of(root: bool) -> &'static str {
+        if root { ROOT_GROUP } else { OTHER_GROUP }
     }
 
     /// The config line that binds `keys` to it, after the prefix or, if
@@ -38,12 +42,11 @@ impl Binding {
     /// that word gives.
     fn line(&self, keys: &str, root: bool) -> String {
         let word = if root { "bind-root" } else { "bind" };
-        let made = Binding::new(self.code.clone(), root);
         let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
-        if self.label != made.label {
+        if self.label != self.code {
             line += &format!("  str {} label", quote(&self.label));
         }
-        if self.group != made.group {
+        if self.group != Binding::group_of(root) {
             line += &format!("  str {} group", quote(&self.group));
         }
         line
@@ -216,7 +219,7 @@ pub struct Keymap {
 }
 
 /// The group of bindings without the prefix that gave none.
-pub const ROOT_GROUP: &str = "Without the prefix";
+const ROOT_GROUP: &str = "Without the prefix";
 
 /// The group of bindings after the prefix that gave none, listed last.
 const OTHER_GROUP: &str = "Other";
@@ -345,18 +348,12 @@ impl Keymap {
             })
             .collect();
         if path.is_empty() {
-            entries.extend(self.root.iter().map(|(key, binding)| {
-                let group = match binding.group.as_str() {
-                    "" => ROOT_GROUP.to_owned(),
-                    group => group.to_owned(),
-                };
-                ColumnEntry {
-                    key: *key,
-                    label: binding.label.clone(),
-                    group,
-                    layer: false,
-                    root: true,
-                }
+            entries.extend(self.root.iter().map(|(key, binding)| ColumnEntry {
+                key: *key,
+                label: binding.label.clone(),
+                group: binding.group.clone(),
+                layer: false,
+                root: true,
             }));
         }
         let mut groups: Vec<(bool, String)> = Vec::new();
@@ -847,11 +844,7 @@ mod tests {
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let binding = |code: &str| Binding {
-            code: code.into(),
-            label: code.into(),
-            group: String::new(),
-        };
+        let binding = |code: &str| Binding::new(code.into(), true);
         keymap.bind_root(key("M-t")?, binding("opts new-tab drop"))?;
         let entries = keymap.column(&[], 0).map(|c| c.entries).unwrap_or_default();
         let last = entries.len().saturating_sub(1);

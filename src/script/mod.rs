@@ -965,14 +965,8 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
 /// The default keys: the bundled config `keys.fux`, run on no bindings.
 pub fn default_keys() -> Result<Keymap, Failed> {
     let mut keymap = Keymap::empty();
-    let mut dry = Settings(None);
-    run_quiet(
-        "keys.fux",
-        KEYS,
-        Context::default(),
-        Some(&mut keymap),
-        &mut dry,
-    )?;
+    let dry = &mut Settings(None);
+    run_quiet("keys.fux", KEYS, Context::default(), Some(&mut keymap), dry)?;
     Ok(keymap)
 }
 
