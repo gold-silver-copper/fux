@@ -511,10 +511,13 @@ fn answers_say_what_the_program_does() -> Outcome {
     let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
     assert_eq!(met(&since), "later\n", "it came after the keys");
     let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
-    assert_eq!(
-        (now.status, now.stdout.as_str()),
-        (0, format!("{pane} {}\nlater\n", asleep(&pane, 0)).as_str()),
-        "what came since the keys"
+    // Not told it sleeps (not Linux), it is at work on the keys till still 2s.
+    let busy = format!("busy · `{pane} wait` waits for it to settle");
+    let said = [asleep(&pane, 0), busy].map(|state| format!("{pane} {state}\nlater\n"));
+    assert!(
+        now.status == 0 && said.contains(&now.stdout),
+        "what came since the keys: {}",
+        now.stdout
     );
     assert_eq!(
         server.ok(&["str", &pane, "pane", "str", "state", "get"])?,
