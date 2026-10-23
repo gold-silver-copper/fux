@@ -365,15 +365,15 @@ no prefix, which then never reaches any program: bind chords or function
 keys rather than letters. A key sequence is a binding or a layer, never
 both. Esc after the prefix always closes the column. `label`, `group` and
 `repeat` change the binding just made; the column lists groups in the order
-their keys were first bound, `Other` last.
+their keys were first bound, `Other` last (a key bound again keeps its place).
 
 The default keys are a config like yours, run before it, so anything one
 binding does, yours may: rebind a key, `unbind` it, or start from none.
 `fux list-keys` prints your keys as config lines that make them, from
 `unbind-all` on; not your definitions, which a binding may call, so add
 them to your config rather than replace it: `fux list-keys >>
-~/.config/fux/config.fux` gives you every key to edit in place, and its
-`unbind-all` makes the key lines above it dead: delete them. Default keys
+~/.config/fux/config.fux` gives you every key to edit in place; the
+`unbind-all` it starts with discards the key lines above it, so delete those. Default keys
 a later fux adds then reach you only once you bind them.
 
 ## Saved sessions

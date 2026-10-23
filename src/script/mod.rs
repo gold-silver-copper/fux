@@ -1280,19 +1280,20 @@ mod tests {
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
-            let mut dry = super::Settings(None);
-            super::run_quiet(name, text, Default::default(), Some(keymap), &mut dry)
+            let dry = &mut super::Settings(None);
+            super::run_quiet(name, text, Default::default(), Some(keymap), dry)
         };
         let mut keymap = super::default_keys()?;
         let lines = (super::KEYS.lines())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .count();
         assert_eq!(keymap.bindings.all().len(), lines);
-        run(
-            "mine",
-            "str M-t str 'me zoom' bind-root str Mine group",
-            &mut keymap,
-        )?;
+        // Quotes, a backslash and a line end, as a config writes them.
+        let mine = r#"str M-t str 'me zoom' bind-root str Mine group
+            str g str 'me focused horizontal str "echo it'\''s" typed split drop' bind
+            str "a \\ and
+            a line" label"#;
+        run("mine", mine, &mut keymap)?;
         let mut again = super::Keymap::empty();
         run(
             "other",

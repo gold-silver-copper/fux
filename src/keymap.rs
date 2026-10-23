@@ -10,7 +10,7 @@
 use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::{Effect, HIDE};
-use crate::words;
+use crate::words::quote;
 
 /// What a key runs: fuxth code, what the column says it does, and the
 /// group the column lists it under.
@@ -19,6 +19,35 @@ pub struct Binding {
     pub code: String,
     pub label: String,
     pub group: String,
+}
+
+impl Binding {
+    /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
+    /// its code, in `Other`, or in no group without the prefix.
+    pub fn new(code: String, root: bool) -> Binding {
+        let group = if root { "" } else { OTHER_GROUP };
+        Binding {
+            label: code.clone(),
+            code,
+            group: group.to_owned(),
+        }
+    }
+
+    /// The config line that binds `keys` to it, after the prefix or, if
+    /// `root`, without it: its label and group too, unless they are what
+    /// that word gives.
+    fn line(&self, keys: &str, root: bool) -> String {
+        let word = if root { "bind-root" } else { "bind" };
+        let made = Binding::new(self.code.clone(), root);
+        let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
+        if self.label != made.label {
+            line += &format!("  str {} label", quote(&self.label));
+        }
+        if self.group != made.group {
+            line += &format!("  str {} group", quote(&self.group));
+        }
+        line
+    }
 }
 
 /// What a key of a layer does: runs a binding, or opens a layer of more
@@ -386,7 +415,7 @@ impl Keymap {
     /// Every binding, as `list-keys` shows them: config lines that make
     /// them again. Not the config's definitions, which a binding may call.
     pub fn describe(&self) -> String {
-        let prefix = words::quote(&self.prefix.to_string());
+        let prefix = quote(&self.prefix.to_string());
         let bound = (self.bindings.all().into_iter()).map(|(keys, binding, repeat)| {
             let repeat = if repeat { "  repeat" } else { "" };
             format!("{}{repeat}\n", binding.line(&keys_text(&keys), false))
@@ -397,36 +426,6 @@ impl Keymap {
             .chain(bound)
             .chain(root)
             .collect()
-    }
-}
-
-impl Binding {
-    /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
-    /// its code, in `Other`, or in no group without the prefix.
-    pub fn new(code: String, root: bool) -> Binding {
-        let group = if root { "" } else { OTHER_GROUP };
-        Binding {
-            label: code.clone(),
-            code,
-            group: group.to_owned(),
-        }
-    }
-
-    /// The config line that binds `keys` to it, after the prefix or, if
-    /// `root`, without it: its label and group too, unless they are what
-    /// that word gives.
-    fn line(&self, keys: &str, root: bool) -> String {
-        let word = if root { "bind-root" } else { "bind" };
-        let quote = words::quote;
-        let made = Binding::new(self.code.clone(), root);
-        let mut line = format!("str {} str {} {word}", quote(keys), quote(&self.code));
-        if self.label != made.label {
-            line += &format!("  str {} label", quote(&self.label));
-        }
-        if self.group != made.group {
-            line += &format!("  str {} group", quote(&self.group));
-        }
-        line
     }
 }
 
@@ -912,21 +911,17 @@ mod tests {
     #[test]
     fn list_keys_shows_sequences_repeats_and_keys_without_the_prefix() -> Result<(), String> {
         let mut keymap = Keymap::empty();
-        let binding = |code: &str| Binding {
-            code: code.into(),
-            label: code.into(),
-            group: OTHER_GROUP.into(),
-        };
-        keymap.bind(&keys("g n")?, binding("opts new-tab drop"), false)?;
+        let binding = |code: &str, root| Binding::new(code.into(), root);
+        keymap.bind(&keys("g n")?, binding("opts new-tab drop", false), false)?;
         keymap.bind(
             &keys("y l")?,
-            binding("me focused str right 1 move-border"),
+            binding("me focused str right 1 move-border", false),
             true,
         )?;
-        keymap.bind_root(key("M-t")?, binding("me zoom"))?;
+        keymap.bind_root(key("M-t")?, binding("me zoom", true))?;
         assert_eq!(
             keymap.describe(),
-            "unbind-all\nstr C-b prefix\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root  str Other group\n"
+            "unbind-all\nstr C-b prefix\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root\n"
         );
         Ok(())
     }
