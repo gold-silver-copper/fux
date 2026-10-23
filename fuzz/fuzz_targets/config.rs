@@ -182,7 +182,7 @@ impl Models {
                     let binding = Binding {
                         code: code.clone(),
                         label: code.clone(),
-                        group: String::new(),
+                        group: "Without the prefix".to_owned(),
                     };
                     match self.root.iter_mut().find(|(k, _)| k == key) {
                         Some((_, old)) => *old = binding,
