@@ -953,24 +953,27 @@ fn started(server: &mut Server) -> Result<(SocketPath, bool), Failed> {
 pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     match config_keymap(Some(server)) {
         Ok(keymap) => (keymap, None),
-        // Half a config is no config: the defaults, and why.
-        Err(failed) => (Keymap::default(), Some(format!("config: {failed}"))),
+        // Half a config is no config: the defaults, and why. Defaults that
+        // fail are what failed, as the config runs on them: then none.
+        Err(failed) => (
+            default_keys().unwrap_or_else(|_| Keymap::empty()),
+            Some(format!("config: {failed}")),
+        ),
     }
 }
 
 /// The default keys: the bundled config `keys.fux`, run on no bindings.
-/// A test runs it, so it binds every key it names.
-pub fn default_keys() -> Keymap {
+pub fn default_keys() -> Result<Keymap, Failed> {
     let mut keymap = Keymap::empty();
     let mut dry = Settings(None);
-    let _ = run_quiet(
+    run_quiet(
         "keys.fux",
         KEYS,
         Context::default(),
         Some(&mut keymap),
         &mut dry,
-    );
-    keymap
+    )?;
+    Ok(keymap)
 }
 
 /// The keymap the config file makes (`run_file`), if there is one; else
@@ -978,7 +981,7 @@ pub fn default_keys() -> Keymap {
 fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
     match crate::config::default_path().filter(|p| p.exists()) {
         Some(path) => run_file(&path, server),
-        None => Ok(Keymap::default()),
+        None => default_keys(),
     }
 }
 
@@ -992,7 +995,7 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
     let context = client::context();
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
-        ..Keymap::default()
+        ..default_keys()?
     };
     run_quiet(
         &shown,
@@ -1280,11 +1283,9 @@ mod tests {
             let mut dry = super::Settings(None);
             super::run_quiet(name, text, Default::default(), Some(keymap), &mut dry)
         };
-        let mut keymap = super::Keymap::empty();
-        run("keys.fux", super::KEYS, &mut keymap)?;
+        let mut keymap = super::default_keys()?;
         let lines = super::KEYS.lines().filter(|l| l.contains(" bind ")).count();
         assert_eq!(keymap.bindings.all().len(), lines);
-        assert_eq!(keymap, super::default_keys());
         run(
             "mine",
             "str M-t str 'me zoom' bind-root str Mine group",

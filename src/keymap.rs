@@ -5,7 +5,8 @@
 //!
 //! A binding runs fuxth: its code is compiled and run by the client, fresh,
 //! each time its keys are typed, the client itself its `me`. The default
-//! bindings are a config too, `script/keys.fux`, run before the user's.
+//! bindings are a config too, `script/keys.fux`, run on `Keymap::empty`
+//! before the user's.
 use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
 use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::{Effect, HIDE};
@@ -188,15 +189,9 @@ pub struct Keymap {
 /// The group of bindings without the prefix that gave none.
 pub const ROOT_GROUP: &str = "Without the prefix";
 
-impl Default for Keymap {
-    /// The default keys, as the bundled config `keys.fux` makes them.
-    fn default() -> Self {
-        crate::script::default_keys()
-    }
-}
-
 impl Keymap {
-    /// No bindings, and `C-b` the prefix.
+    /// No bindings, and the default prefix, `C-b`: the default keys
+    /// (`crate::script::default_keys`) are bound on it.
     pub fn empty() -> Self {
         Self {
             prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
@@ -738,6 +733,11 @@ mod tests {
     use super::*;
     use crate::act::PAGE;
 
+    /// The default keys, as `keys.fux` makes them.
+    fn defaults() -> Result<Keymap, String> {
+        crate::script::default_keys().map_err(|e| e.to_string())
+    }
+
     fn stroke(name: &str) -> Result<Keystroke, String> {
         key(name).map(Keystroke::from)
     }
@@ -750,8 +750,8 @@ mod tests {
     }
 
     #[test]
-    fn the_defaults_bind_and_list_in_groups() {
-        let keymap = Keymap::default();
+    fn the_defaults_bind_and_list_in_groups() -> Result<(), String> {
+        let keymap = defaults()?;
         let column = keymap.column(&[], 0);
         let groups: Vec<String> = column
             .map(|c| c.entries.into_iter().map(|e| e.group).collect())
@@ -760,14 +760,15 @@ mod tests {
         let focus = groups.iter().position(|g| g == "Focus");
         assert!(first < focus, "{groups:?}");
         assert_eq!(
-            keymap.repeat_bar(&keys("r").unwrap_or_default()).as_deref(),
+            keymap.repeat_bar(&keys("r")?).as_deref(),
             Some("RESIZE  h j k l · Esc")
         );
+        Ok(())
     }
 
     #[test]
     fn the_prefix_opens_the_column_a_key_runs_its_binding() -> Result<(), String> {
-        let keymap = Keymap::default();
+        let keymap = defaults()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("C-b")?, false);
         assert!(matches!(
@@ -790,7 +791,7 @@ mod tests {
 
     #[test]
     fn a_repeat_mode_keeps_its_layer_until_escape() -> Result<(), String> {
-        let keymap = Keymap::default();
+        let keymap = defaults()?;
         let mut held = Held::default();
         for name in ["C-b", "r", "h"] {
             held.press(&keymap, stroke(name)?, false);
@@ -808,7 +809,7 @@ mod tests {
 
     #[test]
     fn a_watching_client_only_detaches() -> Result<(), String> {
-        let keymap = Keymap::default();
+        let keymap = defaults()?;
         let mut held = Held::default();
         let steps = held.press(&keymap, stroke("x")?, true);
         assert!(matches!(
@@ -826,7 +827,7 @@ mod tests {
     /// bound without the prefix listed last.
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
-        let mut keymap = Keymap::default();
+        let mut keymap = defaults()?;
         let binding = |code: &str| Binding {
             code: code.into(),
             label: code.into(),

@@ -729,7 +729,8 @@ impl Session {
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
-            test_keymap: crate::keymap::Keymap::default(),
+            test_keymap: crate::script::default_keys()
+                .unwrap_or_else(|_| crate::keymap::Keymap::empty()),
         }
     }
 
@@ -3608,7 +3609,8 @@ pub(crate) mod testing {
             Ok(machine) => machine,
             Err(failed) => return (out, Err(failed)),
         };
-        let mut keymap = std::mem::take(&mut session.test_keymap);
+        let mut keymap =
+            std::mem::replace(&mut session.test_keymap, crate::keymap::Keymap::empty());
         let context = crate::protocol::Context {
             client,
             ..crate::protocol::Context::default()

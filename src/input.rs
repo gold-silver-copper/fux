@@ -703,7 +703,7 @@ mod tests {
     /// mode.
     #[test]
     fn every_default_binding_runs_its_program() -> Outcome {
-        let keymap = crate::keymap::Keymap::default();
+        let keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         let bindings = keymap.bindings.all();
         assert!(!bindings.is_empty());
         let mut refused = Vec::new();

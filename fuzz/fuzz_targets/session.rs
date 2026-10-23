@@ -205,13 +205,19 @@ struct Run {
     shut: bool,
 }
 
+/// The default keys, built once.
+fn defaults() -> &'static Keymap {
+    static DEFAULTS: std::sync::OnceLock<Keymap> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| fux::script::default_keys().expect("the default keys bind"))
+}
+
 impl Run {
     fn new(rows: u16, cols: u16) -> Run {
         let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
         s.start().expect("a session starts");
         let mut run = Run {
             s,
-            keymap: Keymap::default(),
+            keymap: defaults().clone(),
             keys: BTreeMap::new(),
             grids: BTreeMap::new(),
             shut: false,

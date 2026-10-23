@@ -571,7 +571,8 @@ The keys of `bind` and `unbind` are any keys, one or more, as they are typed
 after the prefix; `bind -n` binds one key with no prefix (as first designed,
 letters only).
 
-`keys.rs` defines the full list, and `fux list-keys` prints it.
+The default keys are a bundled config, `src/script/keys.fux`, and `fux list-keys`
+prints a client's keys as config lines.
 
 ## Configuration
 
