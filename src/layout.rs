@@ -226,13 +226,13 @@ impl Rect {
             h: self.bottom().saturating_add(1).saturating_sub(y),
         }
     }
-    /// It moved and cut to fit in `area`, of which (0, 0) is the corner: no
-    /// larger than it, and inside.
+    /// It moved and cut to fit in `area`, a pane area, whose corner is
+    /// (0, 0) as its own is: no larger than it, and inside.
     pub fn fitted(self, area: Rect) -> Rect {
         let (w, h) = (self.w.min(area.w), self.h.min(area.h));
         Rect {
-            x: area.x.saturating_add(self.x.min(area.w.saturating_sub(w))),
-            y: area.y.saturating_add(self.y.min(area.h.saturating_sub(h))),
+            x: self.x.min(area.w.saturating_sub(w)),
+            y: self.y.min(area.h.saturating_sub(h)),
             w,
             h,
         }
@@ -859,25 +859,27 @@ fn place_split(axis: Axis, Split(children): &Split, area: Rect, out: &mut Placem
 }
 
 /// The pane in `direction` from `from`, among the placed panes: rectangles
-/// beyond `from`'s edge, ranked by the distance between centres across the
-/// direction, then by the distance along it, then by ID.
-pub fn neighbor(panes: &[(PaneId, Rect)], from: PaneId, direction: Direction) -> Option<PaneId> {
-    let source = panes.iter().find(|(p, _)| *p == from)?.1;
+/// beyond `from`'s edge, or overlapping it (floating panes) with their
+/// centre beyond its centre, ranked by the distance between centres across
+/// the direction, then by the distance along it, then by ID.
+pub fn neighbor(placement: &Placement, from: PaneId, direction: Direction) -> Option<PaneId> {
+    let source = placement.rect(from)?;
     let (sx, sy) = source.centre2();
-    panes
+    placement
+        .panes
         .iter()
         .filter(|(p, _)| *p != from)
         .filter_map(|(p, r)| {
-            let beyond = match direction {
-                Direction::Left => r.right() <= source.x,
-                Direction::Right => r.x >= source.right(),
-                Direction::Up => r.bottom() <= source.y,
-                Direction::Down => r.y >= source.bottom(),
+            let (cx, cy) = r.centre2();
+            let (edge, centre) = match direction {
+                Direction::Left => (r.right() <= source.x, cx < sx),
+                Direction::Right => (r.x >= source.right(), cx > sx),
+                Direction::Up => (r.bottom() <= source.y, cy < sy),
+                Direction::Down => (r.y >= source.bottom(), cy > sy),
             };
-            if !beyond {
+            if !edge && !(centre && r.meets(source)) {
                 return None;
             }
-            let (cx, cy) = r.centre2();
             let (cross, forward) = match direction {
                 Direction::Left | Direction::Right => (sy.abs_diff(cy), sx.abs_diff(cx)),
                 Direction::Up | Direction::Down => (sx.abs_diff(cx), sy.abs_diff(cy)),
@@ -938,9 +940,7 @@ pub fn resize_to(root: &Tree, area: Rect, pane: PaneId, axis: Axis, len: u16) ->
         let neighbours = [(start, end), (end, start)]
             .into_iter()
             .filter(|_| now > len)
-            .filter_map(|(direction, back)| {
-                Some((neighbor(&placed.panes, pane, direction)?, back))
-            });
+            .filter_map(|(direction, back)| Some((neighbor(&placed, pane, direction)?, back)));
         let tried = growing.chain(neighbours).filter_map(|(which, direction)| {
             let mut moved = tree.clone();
             resize(&mut moved, area, which, direction, amount).then_some(())?;
@@ -1253,6 +1253,15 @@ mod tests {
         assert!(placed.frames.is_empty() && placed.panes.len() == 2);
         layout.place_into(area(3, 3), true, None, &mut placed);
         assert!(placed.frames.is_empty());
+        // Floating panes that overlap are each other's neighbours by their
+        // centres.
+        let mut floats = Layout::default();
+        floats.float_at(p(2), Rect::new(10, 4, 60, 15));
+        floats.float_at(p(3), Rect::new(12, 5, 60, 15));
+        floats.place_into(area(80, 24), true, None, &mut placed);
+        assert_eq!(neighbor(&placed, p(3), Direction::Left), Some(p(2)));
+        assert_eq!(neighbor(&placed, p(2), Direction::Down), Some(p(3)));
+        assert_eq!(neighbor(&placed, p(2), Direction::Left), None);
     }
 
     #[test]
@@ -1262,12 +1271,12 @@ mod tests {
         root.split(p(1), p(2), Axis::Vertical, Side::After);
         let node = &root;
         let placed = place(node, area(80, 24));
-        assert_eq!(neighbor(&placed.panes, p(0), Direction::Right), Some(p(1)));
-        assert_eq!(neighbor(&placed.panes, p(2), Direction::Left), Some(p(0)));
-        assert_eq!(neighbor(&placed.panes, p(1), Direction::Down), Some(p(2)));
-        assert_eq!(neighbor(&placed.panes, p(2), Direction::Up), Some(p(1)));
-        assert_eq!(neighbor(&placed.panes, p(0), Direction::Left), None);
-        assert_eq!(neighbor(&placed.panes, p(1), Direction::Right), None);
+        assert_eq!(neighbor(&placed, p(0), Direction::Right), Some(p(1)));
+        assert_eq!(neighbor(&placed, p(2), Direction::Left), Some(p(0)));
+        assert_eq!(neighbor(&placed, p(1), Direction::Down), Some(p(2)));
+        assert_eq!(neighbor(&placed, p(2), Direction::Up), Some(p(1)));
+        assert_eq!(neighbor(&placed, p(0), Direction::Left), None);
+        assert_eq!(neighbor(&placed, p(1), Direction::Right), None);
     }
 
     #[test]

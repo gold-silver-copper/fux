@@ -891,7 +891,7 @@ fn paint(
         .map_err(|e| e.to_string())?;
     if split {
         let split = fux::command::Command::Split {
-            axis: fux::layout::Axis::Horizontal,
+            axis: Some(fux::layout::Axis::Horizontal),
             target: *s.panes.keys().next().ok_or("no pane")?,
             cmd: Vec::new(),
             cwd: None,
@@ -1080,7 +1080,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     s.start().map_err(|e| e.to_string())?;
     for _ in 1..panes {
         let split = fux::command::Command::Split {
-            axis: fux::layout::Axis::Horizontal,
+            axis: Some(fux::layout::Axis::Horizontal),
             target: *s.panes.keys().next().ok_or("no pane")?,
             cmd: Vec::new(),
             cwd: None,
