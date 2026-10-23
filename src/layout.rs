@@ -237,6 +237,11 @@ impl Rect {
             h,
         }
     }
+    /// Whether a pane fits inside it with a frame round it: `FRAME_MIN`
+    /// each way.
+    pub fn frames(&self) -> bool {
+        self.w >= FRAME_MIN && self.h >= FRAME_MIN
+    }
     /// Twice the centre, so that it is whole.
     fn centre2(&self) -> (u32, u32) {
         (
@@ -360,17 +365,12 @@ impl Layout {
         }
         self.floating.iter().for_each(|float| f(float.pane));
     }
-    /// The panes of `pane`'s layer, tiled or floating, in order: the
-    /// floating ones by number, an order focusing them, which raises
-    /// them, does not change.
+    /// The panes of `pane`'s layer, tiled or floating, in order.
     pub fn layer(&self, pane: PaneId) -> Vec<PaneId> {
-        match self.floats(pane) {
-            true => {
-                let mut floating: Vec<PaneId> = self.floating.iter().map(|f| f.pane).collect();
-                floating.sort_unstable();
-                floating
-            }
-            false => self.tiled.as_ref().map_or_else(Vec::new, Tree::panes),
+        if self.floats(pane) {
+            self.floating.iter().map(|f| f.pane).collect()
+        } else {
+            self.tiled.as_ref().map_or_else(Vec::new, Tree::panes)
         }
     }
     /// Removes a pane, tiled or floating.
@@ -390,13 +390,6 @@ impl Layout {
                 p if p == b => a,
                 p => p,
             };
-        }
-    }
-    /// Puts floating pane `pane` on top.
-    pub fn raise(&mut self, pane: PaneId) {
-        if let Some(float) = self.float(pane).copied() {
-            self.floating.retain(|f| f.pane != pane);
-            self.floating.push(float);
         }
     }
     /// A pane floating in `frame`: taken out of the tree, on top, if it
@@ -441,7 +434,7 @@ impl Layout {
         let others = shown.clone().filter(|f| !focused(f));
         for float in others.chain(shown.filter(focused)) {
             let frame = float.frame.fitted(area);
-            if frame.w >= FRAME_MIN && frame.h >= FRAME_MIN {
+            if frame.frames() {
                 out.panes.push((float.pane, frame.inner()));
                 out.frames.push(frame);
             }

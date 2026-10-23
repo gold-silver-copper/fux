@@ -228,11 +228,12 @@ lowest number.
 
 A floating pane is a pane like any other, drawn over its tab's tiled panes
 in a frame that shows its number and name. A terminal shows a tab's
-floating panes while it focuses one of them. `C-b f` shows them (focusing
-the top one), opening a shell in one if the tab has none; from a floating
-pane it hides them again, back to the tiled pane you were in. Among
-floating panes the keys act as on tiled ones: `h` `j` `k` `l` and `o`
-focus another floating pane, which comes to the top; `v` and `s` split one
+floating panes while it focuses one of them, and the one it focuses on
+top. `C-b f` shows them, back on the floating pane you were in (else the
+top one), opening a shell in one if the tab has none; from a floating pane
+it hides them again, back to the tiled pane you were in (a tab with no
+tiled pane keeps them shown). Among floating panes the keys act as on
+tiled ones: `h` `j` `k` `l` and `o` focus another; `v` and `s` split one
 in two; `x` closes it, `z` zooms it; `r` then `h` `j` `k` `l` moves its
 right or bottom border, and `m` then `h` `j` `k` `l` moves it a cell.
 

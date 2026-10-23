@@ -28,7 +28,8 @@ pub struct Tab {
     pub given: bool,
     layout: Layout,
     /// Its layout changed since its panes were sized for it: one no client
-    /// shows is then laid out again (`Session::size_panes`).
+    /// shows is then laid out again, and of one clients show, the floating
+    /// panes none of them shows (`Session::size_panes`).
     changed: bool,
     fit: Fit,
     seats: BTreeMap<ClientId, Seat>,
@@ -73,9 +74,9 @@ pub struct Seat {
     /// The pane it focused before (`str last focus`), another of the
     /// tab's.
     last: Option<PaneId>,
-    /// The tiled pane it focused last, which `toggle-floating` goes back
-    /// to from a floating one.
-    tiled: Option<PaneId>,
+    /// The pane it focused last in the other layer, tiled or floating:
+    /// the one `toggle-floating` goes back to.
+    away: Option<PaneId>,
     /// The bell rang here while it was shown another tab, marked in its bar
     /// until it shows this one (`Session::ring`).
     pub(crate) rang: bool,
@@ -88,8 +89,8 @@ impl Seat {
     pub fn last(&self) -> Option<PaneId> {
         self.last
     }
-    pub fn tiled(&self) -> Option<PaneId> {
-        self.tiled
+    pub fn away(&self) -> Option<PaneId> {
+        self.away
     }
 }
 
@@ -298,18 +299,16 @@ impl Tab {
     }
 
     /// Focuses `pane` for `client`, if the tab holds it, remembering the
-    /// pane it replaces; a floating pane focused comes to the top.
+    /// pane it replaces, and it as the other layer's if it is.
     pub(crate) fn set_focus(&mut self, client: ClientId, pane: PaneId) {
-        let (holds, floats) = (self.holds(pane), self.layout.floats(pane));
-        if floats {
-            self.layout.raise(pane);
-        }
+        let layout = &self.layout;
+        let (holds, floats) = (layout.contains(pane), layout.floats(pane));
         let seat = self.seats.get_mut(&client);
         if let Some(seat) = seat.filter(|s| holds && s.focus != Some(pane)) {
-            (seat.last, seat.focus, seat.held) = (seat.focus, Some(pane), false);
-            if !floats {
-                seat.tiled = Some(pane);
+            if seat.focus.is_some_and(|f| layout.floats(f) != floats) {
+                seat.away = seat.focus;
             }
+            (seat.last, seat.focus, seat.held) = (seat.focus, Some(pane), false);
         }
     }
 
@@ -331,18 +330,17 @@ impl Tab {
     fn refocus(&mut self, floated: &BTreeSet<ClientId>) {
         let layout = &self.layout;
         let inside = |p: &PaneId| layout.contains(*p);
-        let tiled = |p: &PaneId| layout.tiles(*p);
         for (client, seat) in &mut self.seats {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
             // A client loses its focus to its own layer: from a floating
             // pane to the top one, from a tiled one to a tiled one.
             let floated = floated.contains(client);
             let top = layout.top().filter(|_| floated);
-            let back = last.filter(|l| floated || tiled(l));
+            let back = last.filter(|l| floated || layout.tiles(*l));
             seat.held &= focus.is_some();
             seat.focus = focus.or(top).or(back).or_else(|| layout.first_pane());
             seat.last = last.filter(|l| Some(*l) != seat.focus);
-            seat.tiled = seat.focus.filter(tiled).or(seat.tiled.filter(tiled));
+            seat.away = seat.away.filter(inside);
         }
     }
 }
