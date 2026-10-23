@@ -765,10 +765,11 @@ impl Session {
         let mut tabs = (self.workspaces.iter()).flat_map(|w| w.tabs().iter().map(|t| (w.id, t)));
         tabs.find(|(_, t)| t.holds(pane)).map(|(w, t)| (w, t.id))
     }
-    /// Floating pane `pane`'s frame, as kept; none for a tiled pane.
-    pub fn frame(&self, pane: PaneId) -> Option<Rect> {
+    /// Floating pane `pane`'s tab and frame, as kept; none for a tiled
+    /// pane.
+    pub fn frame(&self, pane: PaneId) -> Option<(TabId, Rect)> {
         let mut tabs = self.workspaces.iter().flat_map(Workspace::tabs);
-        tabs.find_map(|t| t.layout().float(pane)).map(|f| f.frame)
+        tabs.find_map(|t| Some((t.id, t.layout().float(pane)?.frame)))
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
@@ -2883,7 +2884,7 @@ impl Session {
     fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let area = self.reference_area(tab, here);
-        if let Some(frame) = self.frame(pane) {
+        if let Some((_, frame)) = self.frame(pane) {
             return self.resize_float(pane, on_screen(pane, frame, area)?, area, by);
         }
         match by {
@@ -3135,8 +3136,7 @@ impl Session {
             &MoveTo::Beside(direction) => {
                 // A floating pane moves a cell, from where it shows, its
                 // size kept.
-                if let Some(kept) = self.frame(pane) {
-                    let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+                if let Some((tab, kept)) = self.frame(pane) {
                     let area = self.reference_area(tab, here);
                     let frame = on_screen(pane, kept, area)?;
                     let (x, y) = (frame.x(), frame.y());
@@ -4803,7 +4803,7 @@ mod tests {
             (panes.collect::<Vec<_>>().join(" "), placed.frames.len())
         };
         let focused = |s: &Session| s.focused(c).map(|p| p.to_string());
-        run(&mut s, "str %1 pane floating split")?;
+        run(&mut s, "str c1 client toggle-floating")?;
         assert_eq!(shown(&s), ("%1 %2".into(), 1));
         assert_eq!(focused(&s).as_deref(), Some("%2"));
         let screen = output(&mut s, "str c1 client capture-client")?;
