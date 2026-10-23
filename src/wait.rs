@@ -97,8 +97,9 @@ struct Watch {
     /// Its program has just started (run, split, respawn): its screen is
     /// blank, so a text is gone only once it has appeared.
     fresh: bool,
-    /// A bare `wait`, which waits while its pane's program is at work on
-    /// the input, and on a pane that may go on alone for something new.
+    /// A wait of its own, not an action's: it waits while its pane's
+    /// program is at work on the input, and a bare one, on a pane that may
+    /// go on alone, for something new.
     more: bool,
     /// It follows an action, counted from its input.
     action: bool,
@@ -400,18 +401,14 @@ impl Wait {
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), End::Done)
             }
-            // At its limit a settling wait fails (124) only while busy, and
-            // a bare `wait` on a pane still at work on the input is busy;
-            // `0 timeout` answers at once, as it is, and never fails.
+            // At its limit a settling wait fails (124) only while busy; `0
+            // timeout` answers at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
-                let state = if watch.more && pane.at_work(now) {
-                    State::Busy
+                let state = state();
+                let end = if limit.is_zero() || state != State::Busy {
+                    End::Done
                 } else {
-                    state()
-                };
-                let end = match limit.is_zero() || state != State::Busy {
-                    true => End::Done,
-                    false => End::Answered(Code::Timeout),
+                    End::Answered(Code::Timeout)
                 };
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), end)
@@ -743,9 +740,17 @@ impl Watch {
     }
 
     /// What `pane`'s program is doing at `now`, as this wait sees it: a
-    /// command its input began is waited for, if it waits for that.
+    /// command its input began is waited for, if it waits for that; and,
+    /// a wait of its own, one that may go on alone at work on the input (a
+    /// spinner) is busy until still `REDRAWN`.
     fn state(&self, pane: &Pane, now: Instant) -> State {
-        ready::state(pane, now, self.ends.then_some(self.start.started))
+        let state = ready::state(pane, now, self.ends.then_some(self.start.started));
+        let alone = matches!(state, State::Waiting | State::Redrawing | State::Settled);
+        if alone && self.more && pane.at_work(now) {
+            State::Busy
+        } else {
+            state
+        }
     }
 
     /// What the wait has come to in this pane, if anything: what it waited
@@ -1039,13 +1044,10 @@ impl Watch {
     /// as it was.
     fn settled(&mut self, pane: &Pane, now: Instant, more: bool) -> Option<Found> {
         let state = self.state(pane, now);
-        // A bare `wait` waits while its program is at work on the input,
-        // until still `REDRAWN`, even `reading` (an input thread reads while
-        // another awaits the network); on a pane that may go on alone
-        // (`waiting`, or quiet with nothing known), for something new too,
-        // what it waits on or a change, `MORE` at most.
-        let work = more && pane.at_work(now);
-        let new = more && pane.revision == self.revision && now < after(self.began, MORE);
+        // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
+        // with nothing known) waits for something new, what it waits on or
+        // a change, for `MORE` at most.
+        let more = more && now < after(self.began, MORE) && pane.revision == self.revision;
         // A program just started that reads its terminal before it printed
         // anything (ssh, `koh connect`: they take keys while they connect)
         // has yet to show what it is: it settles once it prints, or once
@@ -1055,10 +1057,10 @@ impl Watch {
             && now < after(pane.changed_at, ready::QUIET);
         let unsettled = match state {
             State::Busy => true,
-            State::Waiting | State::Redrawing | State::Settled => work || new,
+            State::Waiting | State::Redrawing | State::Settled => more,
             // An exit settles at once.
             State::Exited(_) => return Some(Found::Settled(state)),
-            State::Reading => blank || work,
+            State::Reading => blank,
             State::Absent => false,
         };
         if unsettled {

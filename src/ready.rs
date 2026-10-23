@@ -63,7 +63,7 @@ pub enum State {
     /// The system does not say; the screen has been quiet a while.
     Settled,
     /// A full-screen program that redraws on its own (a clock, `top`, a
-    /// spinner) and was not still `REDRAWN` since: it read every key and
+    /// spinner), its last frame within `REDRAWN`: it read every key and
     /// drew after them. What it draws next may differ, keys or not.
     Redrawing,
     /// It runs, sleeps, prints, or has not read the keys sent yet.

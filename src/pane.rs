@@ -1625,11 +1625,8 @@ impl Pane {
         let input = crate::classify::Input { unit, line, ahead };
         let exact = self.classes.wrote(input, &bytes, modes.as_ref(), now)
             || self.screen().mode(fux_vt::Mode::AlternateScreen);
-        self.work_from = match self.work_from {
-            Some((_, job, ended)) if self.at_work(now) => Some((now, job, ended)),
-            _ => (!self.redrawing(now))
-                .then(|| (now, self.process.job(), self.screen().commands().finished)),
-        };
+        self.work_from = (self.at_work(now) || !self.redrawing(now))
+            .then(|| (now, self.process.job(), self.screen().commands().finished));
         self.line_ended = matches!(bytes.last(), Some(b'\r' | b'\n'));
         self.escape_open = escape_open(&bytes);
         self.written.0 = self.written.0.saturating_add(bytes.len());
