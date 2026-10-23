@@ -955,6 +955,9 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     assert!(full.contains("\"above\":0,\"gone\":true,"), "{full}");
     let full = server.ok(&["str", &pane, "pane", "all-history", "capture"])?;
     assert!(head(&full).ends_with(" · earlier lines gone"), "{full}");
+    // An alternate screen never drawn lost nothing.
+    let never = server.ok(&["str", "other", "pane", "other-screen", "capture"])?;
+    assert!(!head(&never).contains(" · "), "{never}");
     // With no command marked, the last output is the screen.
     let unmarked = server.ok(&["str", &pane, "pane", "last-output", "capture"])?;
     assert_eq!(unmarked, full);

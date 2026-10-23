@@ -297,8 +297,9 @@ fn a_start_while_a_command_runs_begins_none() -> Result {
 /// it shows text, has lost some of its output, after it ends too; so has
 /// one that ended on a screen erased after; the next command has not. The
 /// main screen erased whole (ED 2, or ED 0 or 1 from a corner) while it
-/// showed text is wiped; a blank one's erase, or the alternate screen's,
-/// is not.
+/// showed text is wiped; a blank one's erase, the alternate screen's, or
+/// one that leaves protected text, is not, and an ended command that
+/// printed nothing lost nothing.
 #[test]
 fn a_command_that_draws_a_full_screen_or_erases_lost_output() -> Result {
     let lost = |p: &Parser| p.screen().commands().lost;
@@ -314,13 +315,13 @@ fn a_command_that_draws_a_full_screen_or_erases_lost_output() -> Result {
     p.process(b"\x1b[H\x1b[Jc\r\n")?;
     assert!(lost(&p) && p.screen().wiped());
     let mut p = Parser::with_options(Size::new(8, 20)?, 10, MARKS)?;
+    p.process(b"\x1b[1\"qkept\x1b[0\"q\x1b[?2J")?;
+    assert!(!p.screen().wiped(), "protected text stays");
+    p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;0\x07\x1b[2J")?;
+    assert!(!lost(&p) && p.screen().wiped(), "it printed nothing");
     p.process(b"\x1b]133;A\x07$ \x1b]133;C\x07d\r\n\x1b]133;D;0\x07")?;
-    assert!(!lost(&p));
     p.process(b"\x1b[8;20H\x1b[1J")?;
-    assert!(
-        lost(&p) && p.screen().wiped(),
-        "the ended command's screen erased"
-    );
+    assert!(lost(&p), "the ended command's screen erased");
     Ok(())
 }
 

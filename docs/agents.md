@@ -148,8 +148,9 @@ columns count from 0.
 
 A capture's state line says what it leaves out: `· 80 lines above`, the
 history it did not read, and `· earlier lines gone`, lines before those
-kept are gone (a full-screen program's screen keeps no history; history
-past `history-bytes`, or cleared; the screen erased whole; a last output
+kept are gone (a full-screen program's screen keeps no history, nor the
+main screen with `history-bytes` 0; history past `history-bytes`, or
+cleared; the screen erased whole, as `clear` does; a last output
 whose start is gone, or that erased the screen or drew on a full
 screen). Nothing said: you have it all. A screen's loss is said for the
 rest of the pane's life; `last-output`'s is its command's alone. JSON

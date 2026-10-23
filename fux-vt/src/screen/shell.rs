@@ -201,29 +201,25 @@ impl Screen {
         }
     }
 
-    /// The main screen erased whole (`clear`): a running command's output
-    /// begins again at the screen's top. If it `shown` text, that is gone:
-    /// the screen is wiped, and the running command, else the last one if
-    /// it ended on the screen, lost output. The alternate screen's erases
-    /// are ignored: the marks are the main screen's, and it keeps nothing
-    /// anyway.
-    pub(crate) fn screen_erased(&mut self, shown: bool) {
-        if self.mode(crate::Mode::AlternateScreen) {
-            return;
-        }
-        self.wiped |= shown;
+    /// The main screen, showing text, erased whole (`clear`): that text is
+    /// gone. A running command's output begins again at the screen's top,
+    /// having lost some; the last one lost some if it printed any that
+    /// ended on the screen.
+    pub(crate) fn screen_erased(&mut self) {
+        self.wiped = true;
         let grid = self.grid();
-        let top = grid.row_at(grid.history_len()).map(|row| Mark {
-            row: row.id(),
-            col: 0,
-        });
-        let ended_here = (self.commands.last_output)
-            .is_some_and(|(_, end)| grid.screen_index_of(end.row).is_some());
         if self.commands.running() {
+            let top = grid.row_at(grid.history_len()).map(|row| Mark {
+                row: row.id(),
+                col: 0,
+            });
             self.commands.output_start = top.or(self.commands.output_start);
-            self.commands.lost |= shown;
+            self.commands.lost = true;
         } else {
-            self.commands.lost |= shown && ended_here;
+            let printed = |(start, end): (Mark, Mark)| {
+                start != end && grid.screen_index_of(end.row).is_some()
+            };
+            self.commands.lost |= self.commands.last_output.is_some_and(printed);
         }
     }
 

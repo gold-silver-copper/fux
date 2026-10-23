@@ -433,6 +433,10 @@ impl Grid {
         Self::made(size, 0, next, version, true)
     }
 
+    /// Whether its cells are made (`Grid::unmade`).
+    pub(crate) fn is_made(&self) -> bool {
+        !self.unmade
+    }
     /// Gives an unmade grid its blank cells; on failure it stays unmade.
     pub fn make(&mut self) -> Result<(), Error> {
         if !self.unmade {

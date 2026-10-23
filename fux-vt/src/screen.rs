@@ -653,7 +653,8 @@ pub struct Screen {
     /// The shell's running command, set aside while a nested program's
     /// marks count: its output's start, and whether on the alternate screen.
     outer: Option<(CommandMark, bool)>,
-    /// The main screen was erased whole (`Screen::wiped`).
+    /// The main screen, showing text, was erased whole: what it showed
+    /// went into no history.
     wiped: bool,
     /// Where the cursor was as the host last said a line was submitted
     /// (`note_submit`): a late `C` starts the output after that line.
@@ -1300,6 +1301,14 @@ impl Screen {
         (self.prints.as_mut())
             .map(|prints| prints.take(cells))
             .unwrap_or_default()
+    }
+    /// The most bytes the main screen's history holds: with 0 it keeps none.
+    pub fn history_bytes(&self) -> usize {
+        self.primary.history_bytes()
+    }
+    /// Whether the alternate screen was ever drawn (its cells made).
+    pub fn alternate_drawn(&self) -> bool {
+        self.alternate.is_made()
     }
     /// Whether the main screen was ever erased whole while it showed text
     /// (ED 2, ED 0 or 1 from a corner, RIS): that went into no history.
@@ -3679,8 +3688,8 @@ impl Screen {
                         continue;
                     };
                     known = true;
-                    // ED erasing it all: the whole screen, or from or to a
-                    // corner; and whether it showed text.
+                    // ED erasing the whole main screen (all of it, or from
+                    // or to a corner): a wipe if it took all its text.
                     let (at, (rows, cols)) = (self.cursor_position(), self.size().into());
                     let whole = byte == b'J'
                         && match part {
@@ -3688,7 +3697,7 @@ impl Screen {
                             Erase::Below => at == (0, 0),
                             Erase::Above => at == (rows.saturating_sub(1), cols.saturating_sub(1)),
                         };
-                    let shown = whole && self.grid().shows_text();
+                    let shown = whole && !self.alternate_active && self.grid().shows_text();
                     // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
                     // DECSCA's glyphs and every rendition, ED and EL SPA's.
                     if private || self.protected {
@@ -3701,8 +3710,8 @@ impl Screen {
                             });
                         });
                     }
-                    if whole {
-                        self.screen_erased(shown);
+                    if shown && !self.grid().shows_text() {
+                        self.screen_erased();
                     }
                 }
                 if !known {

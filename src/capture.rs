@@ -242,13 +242,13 @@ fn screen_background(screen: &Screen) -> Color {
 /// are gone.
 fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<'_>, usize, bool) {
     let alt = screen.mode(Mode::AlternateScreen);
-    // The screen read is a full-screen program's, which keeps no history:
-    // what it drew before is gone.
-    let unkept = alt != (view.source == Source::Other);
+    // The alternate screen is a full-screen program's, which keeps no
+    // history: what it drew before is gone.
+    let reads_alt = alt != (view.source == Source::Other);
     if view.source == Source::LastOutput
         && let Some((read, lost)) = last_output(screen)
     {
-        return (read, 0, lost || unkept);
+        return (read, 0, lost || reads_alt);
     }
     let rows = match view.source {
         Source::Shown | Source::LastOutput => screen.rows(),
@@ -260,8 +260,14 @@ fn rows_of(screen: &Screen, history: Option<usize>, view: CaptureView) -> (Rows<
     // Only the rows kept are read: history past them is skipped unread.
     let skip = rows.len().saturating_sub(keep);
     let read = rows.skip(skip).map(|row| (row, 0..usize::MAX)).collect();
-    // The main screen let rows go: past history's budget, history cleared,
-    // or the screen erased whole.
+    // What scrolled off is kept nowhere: on the alternate screen once
+    // drawn, on the main one with no history. Or the main screen let rows
+    // go: past history's budget, history cleared, or erased whole.
+    let unkept = if reads_alt {
+        screen.alternate_drawn()
+    } else {
+        screen.history_bytes() == 0
+    };
     (read, skip, unkept || screen.let_go() > 0 || screen.wiped())
 }
 
