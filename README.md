@@ -372,9 +372,10 @@ binding does, yours may: rebind a key, `unbind` it, or start from none.
 `fux list-keys` prints your keys as config lines that make them, from
 `unbind-all` on; not your definitions, which a binding may call, so add
 them to your config rather than replace it: `fux list-keys >>
-~/.config/fux/config.fux` gives you every key to edit in place. Its first
-line, `unbind-all`, undoes the key lines above it, so delete those. Default
-keys a later fux adds then reach you only once you bind them.
+~/.config/fux/config.fux` gives you every key to edit in place. What it
+appends starts with `unbind-all`, which undoes any key lines earlier in your
+config, so delete those. Default keys a later fux adds then reach you only
+once you bind them.
 
 ## Saved sessions
 

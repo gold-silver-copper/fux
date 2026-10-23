@@ -24,11 +24,11 @@ pub struct Binding {
 impl Binding {
     /// What `bind` makes of `code`, or `bind-root` if `root`: labelled with
     /// its code, in its word's group.
-    pub fn new(code: String, root: bool) -> Binding {
-        Binding {
+    pub fn new(code: String, root: bool) -> Self {
+        Self {
             label: code.clone(),
             code,
-            group: Binding::group_of(root).to_owned(),
+            group: Self::group_of(root).to_owned(),
         }
     }
 
@@ -46,7 +46,7 @@ impl Binding {
         if self.label != self.code {
             line += &format!("  str {} label", quote(&self.label));
         }
-        if self.group != Binding::group_of(root) {
+        if self.group != Self::group_of(root) {
             line += &format!("  str {} group", quote(&self.group));
         }
         line
@@ -844,8 +844,7 @@ mod tests {
     #[test]
     fn the_column_scrolls_within_its_bindings() -> Result<(), String> {
         let mut keymap = defaults()?;
-        let binding = |code: &str| Binding::new(code.into(), true);
-        keymap.bind_root(key("M-t")?, binding("opts new-tab drop"))?;
+        keymap.bind_root(key("M-t")?, Binding::new("opts new-tab drop".into(), true))?;
         let entries = keymap.column(&[], 0).map(|c| c.entries).unwrap_or_default();
         let last = entries.len().saturating_sub(1);
         assert!(
@@ -904,14 +903,17 @@ mod tests {
     #[test]
     fn list_keys_shows_sequences_repeats_and_keys_without_the_prefix() -> Result<(), String> {
         let mut keymap = Keymap::empty();
-        let binding = |code: &str, root| Binding::new(code.into(), root);
-        keymap.bind(&keys("g n")?, binding("opts new-tab drop", false), false)?;
+        keymap.bind(
+            &keys("g n")?,
+            Binding::new("opts new-tab drop".into(), false),
+            false,
+        )?;
         keymap.bind(
             &keys("y l")?,
-            binding("me focused str right 1 move-border", false),
+            Binding::new("me focused str right 1 move-border".into(), false),
             true,
         )?;
-        keymap.bind_root(key("M-t")?, binding("me zoom", true))?;
+        keymap.bind_root(key("M-t")?, Binding::new("me zoom".into(), true))?;
         assert_eq!(
             keymap.describe(),
             "unbind-all\nstr C-b prefix\nstr 'g n' str 'opts new-tab drop' bind\nstr 'y l' str 'me focused str right 1 move-border' bind  repeat\nstr M-t str 'me zoom' bind-root\n"
