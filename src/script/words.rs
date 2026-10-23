@@ -229,7 +229,7 @@ pub const WORDS: &[Word] = &[
     word("Config", "unbind", "keys --", "keys after the prefix run nothing"),
     word("Config", "unbind-root", "key --", "a key without the prefix runs nothing"),
     word("Config", "unbind-all", "--", "no bindings at all"),
-    word("Config", "list-keys", "--", "this client's bindings"),
+    word("Config", "list-keys", "--", "this client's keys, as a config that makes them"),
     word("Config", "key-names", "--", "the names keys go by"),
     // Help
     word("Help", "help", "--", "the words, under their headings"),

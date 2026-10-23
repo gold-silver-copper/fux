@@ -1,0 +1,55 @@
+# fux's default keys: a config like yours, run before it. Your config may
+# rebind or unbind any of them, or start from none with `unbind-all`.
+# The column lists groups in the order they first appear here, `Other` last.
+
+str C-b prefix
+
+str v str 'me focused horizontal split drop' bind  str 'split side by side' label  str Panes group
+str s str 'me focused vertical split drop' bind  str 'split stacked' label  str Panes group
+str x str 'me me focused confirm-close' bind  str 'close pane' label  str Panes group
+str z str 'me zoom' bind  str 'zoom or restore' label  str Panes group
+str a str 'me me focused menu' bind  str 'pane actions' label  str Panes group
+str c str 'me copy-mode' bind  str 'copy and select' label  str Panes group
+str p str 'me focused 0 paste-buffer' bind  str 'paste the newest copy' label  str Panes group
+
+str h str 'me str left focus' bind  str 'focus left' label  str Focus group
+str j str 'me str down focus' bind  str 'focus down' label  str Focus group
+str k str 'me str up focus' bind  str 'focus up' label  str Focus group
+str l str 'me str right focus' bind  str 'focus right' label  str Focus group
+str o str 'me str next focus' bind  str 'next pane' label  str Focus group
+str q str 'me str last focus' bind  str 'last pane' label  str Focus group
+
+str n str 'me next-tab' bind  str 'next tab' label  str Tabs group
+str b str 'me previous-tab' bind  str 'previous tab' label  str Tabs group
+str 't n' str 'opts new-tab drop' bind  str 'new tab' label  str Tabs group
+str 't h' str 'me previous-tab' bind  str 'previous tab' label  str Tabs group
+str 't l' str 'me next-tab' bind  str 'next tab' label  str Tabs group
+str 't g' str 'me choose-tab' bind  str 'choose a tab' label  str Tabs group
+str 't r' str 'me me focused tab rename-prompt' bind  str 'rename tab' label  str Tabs group
+str 't x' str 'me me focused tab confirm-close' bind  str 'close tab' label  str Tabs group
+str 't a' str 'me me focused tab menu' bind  str 'tab actions' label  str Tabs group
+str 't m h' str 'me focused tab str previous reorder' bind  str 'move tab earlier' label  str Reorder group  repeat
+str 't m l' str 'me focused tab str next reorder' bind  str 'move tab later' label  str Reorder group  repeat
+
+str 'w n' str 'opts new-workspace drop' bind  str 'new workspace' label  str Workspaces group
+str 'w h' str 'me previous-workspace' bind  str 'previous workspace' label  str Workspaces group
+str 'w l' str 'me next-workspace' bind  str 'next workspace' label  str Workspaces group
+str 'w g' str 'me choose-workspace' bind  str 'choose a workspace' label  str Workspaces group
+str 'w r' str 'me me focused workspace rename-prompt' bind  str 'rename workspace' label  str Workspaces group
+str 'w x' str 'me me focused workspace confirm-close' bind  str 'close workspace' label  str Workspaces group
+str 'w a' str 'me me focused workspace menu' bind  str 'workspace actions' label  str Workspaces group
+str 'w m h' str 'me focused workspace str previous reorder' bind  str 'move workspace earlier' label  str Reorder group  repeat
+str 'w m l' str 'me focused workspace str next reorder' bind  str 'move workspace later' label  str Reorder group  repeat
+
+str e str 'me command-prompt' bind  str 'command prompt' label  str Session group
+str d str 'me detach' bind  str 'detach' label  str Session group
+
+str 'r h' str 'me focused str left 1 move-border' bind  str 'shrink or grow left' label  str Resize group  repeat
+str 'r j' str 'me focused str down 1 move-border' bind  str 'shrink or grow down' label  str Resize group  repeat
+str 'r k' str 'me focused str up 1 move-border' bind  str 'shrink or grow up' label  str Resize group  repeat
+str 'r l' str 'me focused str right 1 move-border' bind  str 'shrink or grow right' label  str Resize group  repeat
+
+str 'm h' str 'me focused str left move-beside' bind  str 'move left' label  str Move group  repeat
+str 'm j' str 'me focused str down move-beside' bind  str 'move down' label  str Move group  repeat
+str 'm k' str 'me focused str up move-beside' bind  str 'move up' label  str Move group  repeat
+str 'm l' str 'me focused str right move-beside' bind  str 'move right' label  str Move group  repeat

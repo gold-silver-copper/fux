@@ -731,7 +731,7 @@ mod tests {
         }
         // Refused as the session stands: no pane that way, no copy to
         // paste, nothing before the first tab or workspace.
-        assert_eq!(refused, ["k", "l", "p", "mk", "ml", "tmh", "wmh"]);
+        assert_eq!(refused, ["p", "k", "l", "tmh", "wmh", "mk", "ml"]);
         Ok(())
     }
 

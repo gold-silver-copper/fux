@@ -499,7 +499,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     }
     // The command line's own keymap: the defaults.
     let keys = server.ok(&["list-keys"])?;
-    assert!(keys.contains("After the prefix, C-b"), "{keys}");
+    assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
     // help lists every word.
     let help = server.ok(&["help"])?;
     for word in fux::script::WORDS {

@@ -31,6 +31,9 @@ pub type Config = std::sync::Arc<(String, String)>;
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
 
+/// fux's default keys: a config, run before the user's.
+pub const KEYS: &str = include_str!("keys.fux");
+
 /// A value of fux's own on the stack.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fux {
@@ -955,6 +958,21 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
     }
 }
 
+/// The default keys: the bundled config `keys.fux`, run on no bindings.
+/// A test runs it, so it binds every key it names.
+pub fn default_keys() -> Keymap {
+    let mut keymap = Keymap::empty();
+    let mut dry = Settings(None);
+    let _ = run_quiet(
+        "keys.fux",
+        KEYS,
+        Context::default(),
+        Some(&mut keymap),
+        &mut dry,
+    );
+    keymap
+}
+
 /// The keymap the config file makes (`run_file`), if there is one; else
 /// the defaults.
 fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
@@ -1250,6 +1268,36 @@ mod tests {
         let tokens = super::program(&["%2 str \"ls /tmp\" line".to_owned()])?;
         let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
         assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
+        Ok(())
+    }
+
+    /// The default keys are a config every line of which binds; what
+    /// `list-keys` prints is a config that makes the same keys again, from
+    /// any keys.
+    #[test]
+    fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
+        let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
+            let mut dry = super::Settings(None);
+            super::run_quiet(name, text, Default::default(), Some(keymap), &mut dry)
+        };
+        let mut keymap = super::Keymap::empty();
+        run("keys.fux", super::KEYS, &mut keymap)?;
+        let lines = super::KEYS.lines().filter(|l| l.contains(" bind ")).count();
+        assert_eq!(keymap.bindings.all().len(), lines);
+        assert_eq!(keymap, super::default_keys());
+        run(
+            "mine",
+            "str M-t str 'me zoom' bind-root str Mine group",
+            &mut keymap,
+        )?;
+        let mut again = super::Keymap::empty();
+        run(
+            "other",
+            "str C-a prefix str M-n str 'me next-tab' bind-root",
+            &mut again,
+        )?;
+        run("listed", &keymap.describe(), &mut again)?;
+        assert_eq!(again, keymap);
         Ok(())
     }
 
