@@ -381,13 +381,10 @@ fn edit_history_leaves_no_file_however_its_pane_goes() -> Outcome {
     assert!(before.is_some() && before < alt, "{text}");
     assert!(!text.contains("%1 "), "no state line: {text}");
     assert_eq!(history_files(server.pid())?, 1);
-    // The file is the pane's alone: a dump gives a pane made again its own.
+    // The file is the pane's alone: a dump makes the editor again without it.
     let file = std::fs::read_to_string(server.dir.join("seen.path")).map_err(e)?;
     let dump = server.ok(&["dump"])?;
-    assert!(
-        dump.contains("history-file") && !dump.contains(&file),
-        "{dump}"
-    );
+    assert!(!dump.contains(&file) && !dump.contains("history-file"), "{dump}");
     server.ok(&["%2", "kill"])?;
     eventually("the file removed", || Ok(history_files(server.pid())? == 0))?;
     server.ok(&["%1", "tab", "20", "3", "resize"])?;

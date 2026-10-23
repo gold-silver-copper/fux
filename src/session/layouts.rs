@@ -82,7 +82,7 @@ impl Session {
             }
             line.extend(asked(&tab.id.to_string()));
         }
-        self.pane_words(first, ids, false, &mut line);
+        self.pane_words(first, ids, &mut line);
         line.push(match (program.is_some(), makes) {
             (true, _) => "run".to_owned(),
             (false, true) => "new-workspace".to_owned(),
@@ -142,7 +142,7 @@ impl Session {
         };
         for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
             let mut line = vec![pane_name(*before), way.into()];
-            self.pane_words(*pane, ids, true, &mut line);
+            self.pane_words(*pane, ids, &mut line);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
         }
@@ -164,9 +164,8 @@ impl Session {
 
     /// The options a line gives pane `id`: where it starts, and a program's
     /// variables, words and `close-on-exit`; with `ids`, the id it asks for.
-    /// A history file is the pane's alone: its words leave it out, and a pane
-    /// split `beside` another is given one of that pane anew.
-    fn pane_words(&self, id: PaneId, ids: bool, beside: bool, line: &mut Vec<String>) {
+    /// A history file is the pane's alone, and its words leave it out.
+    fn pane_words(&self, id: PaneId, ids: bool, line: &mut Vec<String>) {
         let program = self.program(id);
         let shell = || self.cwd_for(super::Here::NOWHERE, Some(id));
         let cwd = program.map_or_else(shell, |launch| launch.cwd.clone());
@@ -181,11 +180,10 @@ impl Session {
             return;
         };
         let file = (self.panes.get(&id)).and_then(|p| p.removes.as_ref());
-        let given = launch
-            .argv
-            .len()
-            .saturating_sub(usize::from(file.is_some()));
-        let mut words = launch.argv.iter().take(given);
+        let argv = file
+            .and_then(|f| launch.argv.strip_suffix(std::slice::from_ref(&f.0)))
+            .unwrap_or(&launch.argv);
+        let mut words = argv.iter();
         if let Some(program) = words.next() {
             line.extend(string(program).chain(["program".to_owned()]));
         }
@@ -194,9 +192,6 @@ impl Session {
         }
         if launch.closes {
             line.push("close-on-exit".to_owned());
-        }
-        if file.is_some() && beside {
-            line.push("history-file".to_owned());
         }
         // Made, and left to run: a replay waits for no program.
         line.extend(["0".to_owned(), "timeout".to_owned()]);
