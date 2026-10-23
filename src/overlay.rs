@@ -10,7 +10,8 @@ use crate::session::{Error, Session};
 /// The names of the panes in `layouts`, for a chooser row, shortened.
 fn pane_names<'a>(session: &Session, layouts: impl IntoIterator<Item = &'a Layout>) -> String {
     let panes = layouts.into_iter().flat_map(Layout::panes);
-    let names: Vec<String> = (panes.filter_map(|id| session.panes.get(&id)))
+    let names: Vec<String> = panes
+        .filter_map(|id| session.panes.get(&id))
         .map(|p| format!("{} {}", p.id, p.label()))
         .collect();
     if names.is_empty() {

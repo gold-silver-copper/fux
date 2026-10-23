@@ -277,16 +277,16 @@ impl Placement {
         self.panes.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r)
     }
     /// How many of its panes are tiled: those before the floating ones.
-    fn tiles(&self) -> usize {
+    fn tiled_len(&self) -> usize {
         self.panes.len().saturating_sub(self.frames.len())
     }
     /// The tiled panes.
     pub fn tiled(&self) -> impl Iterator<Item = &(PaneId, Rect)> {
-        self.panes.iter().take(self.tiles())
+        self.panes.iter().take(self.tiled_len())
     }
     /// The floating panes, bottom to top, each with its frame.
     pub fn floating(&self) -> impl Iterator<Item = (PaneId, Rect, Rect)> {
-        let floating = self.panes.iter().skip(self.tiles()).zip(&self.frames);
+        let floating = self.panes.iter().skip(self.tiled_len()).zip(&self.frames);
         floating.map(|((p, r), f)| (*p, *r, *f))
     }
     /// The frames of the floating panes over the pane at `i` of `panes`
@@ -294,7 +294,7 @@ impl Placement {
     /// floating one, those above its own.
     pub fn over(&self, i: usize, area: Rect) -> impl Iterator<Item = &Rect> {
         let above = i
-            .checked_sub(self.tiles())
+            .checked_sub(self.tiled_len())
             .map_or(0, |j| j.saturating_add(1));
         self.frames
             .iter()
@@ -398,17 +398,23 @@ impl Layout {
         }
     }
     /// The frame a new floating pane takes on `area`: three quarters of it
-    /// each way, centred, or a little down and right of the top one, so
-    /// that it does not hide it whole; never less than `FRAME_MIN`, so that
-    /// it shows once there is room.
+    /// each way, a little down and right of the top one as it shows, so
+    /// that it does not hide it whole, else, past the area's edge, centred;
+    /// never less than `FRAME_MIN`, so that it shows once there is room.
     pub fn new_frame(&self, area: Rect) -> Rect {
         let three_quarters = |len: u16| (len / 4).saturating_mul(3).max(FRAME_MIN);
         let (w, h) = (three_quarters(area.w), three_quarters(area.h));
-        let (x, y) = match self.floating.last() {
-            Some(top) => (top.frame.x.saturating_add(2), top.frame.y.saturating_add(1)),
-            None => (area.w.saturating_sub(w) / 2, area.h.saturating_sub(h) / 2),
-        };
-        Rect::new(x, y, w, h)
+        let top = self.floating.last().map(|f| f.frame.fitted(area));
+        let below = top.map(|t| Rect::new(t.x.saturating_add(2), t.y.saturating_add(1), w, h));
+        let centred = Rect::new(
+            area.w.saturating_sub(w) / 2,
+            area.h.saturating_sub(h) / 2,
+            w,
+            h,
+        );
+        below
+            .filter(|r| r.right() <= area.w && r.bottom() <= area.h)
+            .unwrap_or(centred)
     }
     /// Places its tiled panes in `area`, and with `floating` its floating
     /// ones over them, into `out`, whatever it held; `focus`, if one of
@@ -1245,6 +1251,16 @@ mod tests {
         assert!(placed.frames.is_empty() && placed.panes.len() == 2);
         layout.place_into(area(3, 3), true, None, &mut placed);
         assert!(placed.frames.is_empty());
+        // A new one goes down and right of the top one as it shows, or,
+        // with no room there, in the middle.
+        let at_edge = Layout {
+            floating: vec![Float {
+                pane: p(2),
+                frame: Rect::new(65531, 0, 4, 8),
+            }],
+            ..Layout::default()
+        };
+        assert_eq!(at_edge.new_frame(area(80, 24)), Rect::new(10, 3, 60, 18));
         // Floating panes that overlap are each other's neighbours by their
         // centres.
         let mut floats = Layout::default();

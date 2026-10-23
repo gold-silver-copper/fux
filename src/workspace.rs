@@ -181,7 +181,7 @@ impl Workspace {
     /// to are shown its neighbour.
     pub(crate) fn remove_tab(&mut self, tab: TabId) -> Option<Layout> {
         let index = self.tabs.iter().position(|t| t.id == tab)?;
-        let root = std::mem::take(&mut self.tabs.get_mut(index)?.layout);
+        let layout = std::mem::take(&mut self.tabs.get_mut(index)?.layout);
         // Tab IDs are unique: this removes the tab at `index`.
         self.tabs.retain(|t| t.id != tab);
         let next = index.min(self.tabs.len().saturating_sub(1));
@@ -191,7 +191,7 @@ impl Workspace {
                 .filter(|t| **t == tab)
                 .for_each(|t| *t = next);
         }
-        Some(root)
+        Some(layout)
     }
 
     /// A client attaches: it is shown the first tab, and focuses each tab's
@@ -320,7 +320,7 @@ impl Tab {
     /// top one; else the one before (from a tiled pane, a tiled one), else
     /// the first.
     pub(crate) fn edit<R>(&mut self, change: impl FnOnce(&mut Layout) -> R) -> R {
-        let floated: BTreeSet<ClientId> = (self.seats.iter())
+        let floated: Vec<ClientId> = (self.seats.iter())
             .filter(|(_, s)| s.focus.is_some_and(|f| self.layout.floats(f)))
             .map(|(c, _)| *c)
             .collect();
