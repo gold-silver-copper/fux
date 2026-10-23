@@ -56,11 +56,13 @@ prints `null` (`string` makes it the text).
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],"above":0,PANE FIELDS…}
+{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],"above":0,"gone":false,PANE FIELDS…}
 ```
 
 `above` counts the lines of history above `lines` the capture left out
-(`all-history` reads them).
+(`all-history` reads them); `gone`, the lines above are not kept: a
+full-screen program's screen, which keeps no history, or a last output
+whose start is gone or that no command marked. Neither: `lines` is all.
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with

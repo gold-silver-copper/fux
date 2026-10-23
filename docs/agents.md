@@ -42,8 +42,8 @@ fux str agent workspace kill                   # at the end: everything run star
 %2 waiting                 quiet 1s, but it may go on alone (the network, a timer)
 %2 busy                    still at work at the time limit (status 124): `%2 wait` waits on
 %2 exited 3                the program ended; what it printed since your input follows
-%2 reading · 80 lines above                  a capture left out history: `all-history` reads it
-%2 reading · full screen · nothing kept above   a full-screen program's screen: what it showed before is gone
+%2 reading · 80 lines above    a capture left out history: `all-history` reads it
+%2 reading · nothing kept above  what was above it is gone: a full screen keeps none
 ```
 
 - **Status:** 0 done; 1 failed (`fux: CODE: MESSAGE` on stderr); 3 the
@@ -145,11 +145,13 @@ the screen and the pane's state (`cursor` is `[ROW,COL]`). Rows and
 columns count from 0.
 
 A capture's state line says what it leaves out: `· 80 lines above`, the
-history it did not read; `· full screen`, a full-screen program's screen,
-where what it showed before is the program's to keep or lose, and `·
-nothing kept above` when no line of it was kept (a capture of a full
-screen, or a last output whose start is gone). Nothing said: you have it
-all. In JSON, `above` is that count.
+history it did not read, or `· nothing kept above`, the lines above it
+are gone (a full-screen program's screen keeps no history; a last output
+whose start is gone, or no command marked). Nothing said: you have it
+all. JSON says the same in `above` and `gone`. A full-screen program that
+redraws its screen keeps only what it shows: run an agent's TUI inline
+where it can (e.g. `codex --no-alt-screen`), and `all-history` reads its
+whole answer.
 
 ## shells: Shells and their marks
 

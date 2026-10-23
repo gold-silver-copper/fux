@@ -944,18 +944,20 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     ])?;
     assert!(body(&main).starts_with("before\n1\n"), "{main}");
     assert!(main.contains("\n500\n"), "{main}");
-    // Each capture says what it leaves out: the history above it, or that
-    // a full screen keeps none.
+    // Each capture says what it leaves out, in text and JSON alike: the
+    // history above it, or that a full screen keeps none (a blank one, never
+    // drawn, lost nothing).
     assert!(!head(&main).contains("above"), "{main}");
     let part = server.ok(&["str", &pane, "pane", "other-screen", "capture", "json"])?;
-    assert!(part.contains("\"above\":492,"), "{part}");
+    assert!(part.contains("\"above\":492,\"gone\":false,"), "{part}");
     let part = server.ok(&["str", &pane, "pane", "other-screen", "capture"])?;
     assert!(head(&part).ends_with(" · 492 lines above"), "{part}");
+    let full = server.ok(&["str", &pane, "pane", "all-history", "capture", "json"])?;
+    assert!(full.contains("\"above\":0,\"gone\":true,"), "{full}");
     let full = server.ok(&["str", &pane, "pane", "all-history", "capture"])?;
-    assert!(
-        head(&full).ends_with(" · full screen · nothing kept above"),
-        "{full}"
-    );
+    assert!(head(&full).ends_with(" · nothing kept above"), "{full}");
+    let never = server.ok(&["str", "other", "pane", "other-screen", "capture"])?;
+    assert!(!head(&never).contains("above"), "{never}");
     let refused = server.fux(&["str", &pane, "pane", "str", "Entr", "key", "send-keys"])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("Entr"), "{}", refused.stderr);
@@ -1002,7 +1004,7 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     );
     assert_eq!(
         server.ok(&["str", &menu, "pane", "other-screen", "capture"])?,
-        format!("{menu} exited 0 · full screen · nothing kept above\npicked beta\n")
+        format!("{menu} exited 0 · nothing kept above\npicked beta\n")
     );
     Ok(())
 }
@@ -3199,7 +3201,7 @@ fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
     let text = server.ok(&["str", &shell, "pane", "last-output", "capture"])?;
     assert!(
-        head(&text).ends_with(" · command running · full screen · nothing kept above"),
+        head(&text).ends_with(" · command running · nothing kept above"),
         "{text}"
     );
     assert_eq!(body(&text), "abc\ndef\nxyz\n");

@@ -1378,16 +1378,17 @@ fn text(pane: &Pane, marks: bool, alt: bool) -> String {
         };
         crate::capture::pane(pane, None, view, false, false).0
     };
-    let (first, then) = match alt {
-        true => (Source::Other, Source::Shown),
-        false => (Source::Shown, Source::Other),
+    let (first, then) = if alt {
+        (Source::Other, Source::Shown)
+    } else {
+        (Source::Shown, Source::Other)
     };
     let first = read(first);
     // The last full screen is the one not shown while the main one is.
-    match first.trim().is_empty() && !pane.screen().mode(fux_vt::Mode::AlternateScreen) {
-        true => read(then),
-        false => first,
+    if first.trim().is_empty() && !pane.screen().mode(fux_vt::Mode::AlternateScreen) {
+        return read(then);
     }
+    first
 }
 
 /// Where what came since a wait began starts on a full screen drawn as a
