@@ -62,9 +62,9 @@ pub enum State {
     Waiting,
     /// The system does not say; the screen has been quiet a while.
     Settled,
-    /// A full-screen program that redraws on its own (a clock, `top`) and
-    /// is never quiet: it read every key and drew after them. What it
-    /// draws next may differ, keys or not.
+    /// A full-screen program that redraws on its own (a clock, `top`, a
+    /// spinner) and was not still `REDRAWN` since: it read every key and
+    /// drew after them. What it draws next may differ, keys or not.
     Redrawing,
     /// It runs, sleeps, prints, or has not read the keys sent yet.
     Busy,
@@ -153,7 +153,7 @@ pub fn state(pane: &Pane, now: Instant, typed: Option<u64>) -> State {
             && pane.redraws()
             && remote().is_none()
             && pane.written_at.is_none_or(|at| pane.changed_at > at)
-            && quiet >= SETTLE
+            && (SETTLE..REDRAWN).contains(&quiet)
             && !child.master.keys_unread()
     };
     // A remote client reporting nothing of what it runs reads its

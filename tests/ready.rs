@@ -484,8 +484,46 @@ fn a_full_screen_program_that_redraws_on_its_own_answers_its_keys() -> Outcome {
         "{answer}"
     );
     assert!(answer.contains("\ngot x"), "{answer}");
+    // Never still, it is drawing at a bare wait's limit: at work (124).
+    let drawing = server.fux(&[&p[..], &["1", "timeout", "wait"]].concat())?;
+    assert_eq!(drawing.status, 124, "{}{}", drawing.stdout, drawing.stderr);
+    assert!(
+        drawing.stdout.starts_with(&format!("{pane} busy ")),
+        "{}",
+        drawing.stdout
+    );
     let answer = server.ok(&[&p[..], &["str", "q", "type"]].concat())?;
     assert!(answer.starts_with(&format!("{pane} exited 0")), "{answer}");
+    Ok(())
+}
+
+/// A full-screen program at work behind a spinner (an agent's TUI) looks
+/// as a clock does while it works, and an action on it answers so; a bare
+/// `wait` after waits on until its screen is still, its work done, and
+/// answers that, no longer drawing on its own.
+#[test]
+fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
+    let server = Server::start("")?;
+    let spinner = "import os, select, time, tty\n\
+                   tty.setraw(0); os.write(1, b'\\x1b[?1049h')\n\
+                   for n in range(30):\n\
+                   \x20   os.write(1, b'\\x1b[H\\x1b[2Jworking %d' % n); time.sleep(0.1)\n\
+                   os.write(1, b'\\x1b[H\\x1b[2Jall done')\n\
+                   while os.read(0, 1) != b'q': pass\n\
+                   os.write(1, b'\\x1b[?1049l')\n";
+    let answer = server.ok(&[
+        "opts", "str", "python3", "program", "str", "-c", "arg", "str", spinner, "arg", "run",
+    ])?;
+    let pane = answer
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(answer.contains("working"), "{answer}");
+    let p = ["str", pane.as_str(), "pane"];
+    let done = server.ok(&[&p[..], &["wait"]].concat())?;
+    assert!(done.starts_with(&format!("{pane} reading\n")), "{done}");
+    assert!(done.contains("all done"), "{done}");
     Ok(())
 }
 

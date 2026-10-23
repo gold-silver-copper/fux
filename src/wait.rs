@@ -400,10 +400,14 @@ impl Wait {
                 let asked = self.print.then(came).unwrap_or_default();
                 (state, None, output(asked), End::Done)
             }
-            // At its limit a settling wait fails (124) only while busy; `0
-            // timeout` answers at once, as it is, and never fails.
+            // At its limit a settling wait fails (124) only while busy, as
+            // a bare `wait` on a pane drawing still is; `0 timeout` answers
+            // at once, as it is, and never fails.
             Told::TimedOut(_) if self.until.contains(&Until::Settled) => {
-                let state = state();
+                let state = match (state(), watch.more) {
+                    (State::Redrawing, true) => State::Busy,
+                    (state, _) => state,
+                };
                 let end = match limit.is_zero() || state != State::Busy {
                     true => End::Done,
                     false => End::Answered(Code::Timeout),
@@ -1036,8 +1040,14 @@ impl Watch {
         let state = self.state(pane, now);
         // A bare `wait` on a pane that may go on alone (`waiting`, or quiet
         // with nothing known) waits for something new, what it waits on or
-        // a change, for `MORE` at most.
-        let more = more && now < after(self.began, MORE) && pane.revision == self.revision;
+        // a change, for `MORE` at most; once a change came, until the screen
+        // is still `REDRAWN`: a program at work behind a spinner or a clock
+        // of its own draws on, and stops once done.
+        let more = more
+            && match pane.revision == self.revision {
+                true => now < after(self.began, MORE),
+                false => now < after(pane.changed_at, ready::REDRAWN),
+            };
         // A program just started that reads its terminal before it printed
         // anything (ssh, `koh connect`: they take keys while they connect)
         // has yet to show what it is: it settles once it prints, or once
