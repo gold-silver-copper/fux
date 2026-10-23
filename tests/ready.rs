@@ -522,7 +522,12 @@ fn a_bare_wait_waits_for_a_spinner_to_stop() -> Outcome {
     assert!(answer.contains("working"), "{answer}");
     let p = ["str", pane.as_str(), "pane"];
     let done = server.ok(&[&p[..], &["wait"]].concat())?;
-    assert!(done.starts_with(&format!("{pane} reading\n")), "{done}");
+    // Where fux is not told what it is blocked in (macOS), it is `settled`.
+    let first = done.lines().next().unwrap_or_default();
+    assert!(
+        [format!("{pane} reading"), format!("{pane} settled")].contains(&first.to_owned()),
+        "{done}"
+    );
     assert!(done.contains("all done"), "{done}");
     Ok(())
 }
