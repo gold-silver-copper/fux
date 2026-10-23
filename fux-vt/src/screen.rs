@@ -1301,8 +1301,8 @@ impl Screen {
             .map(|prints| prints.take(cells))
             .unwrap_or_default()
     }
-    /// Whether the main screen was ever erased whole (ED 2, ED 0 from its
-    /// top-left corner, RIS): what it showed then went into no history.
+    /// Whether the main screen was ever erased whole while it showed text
+    /// (ED 2, ED 0 or 1 from a corner, RIS): that went into no history.
     pub fn wiped(&self) -> bool {
         self.wiped
     }
@@ -2649,6 +2649,8 @@ impl Screen {
             // RIS: it resets synchronized output too, which
             // `parser::FrameScan::ends` restates.
             b'c' => {
+                // What the main screen and its history held is gone.
+                self.wiped |= self.primary.shows_text() || self.primary.history_len() > 0;
                 let size = self.size();
                 let mut next = self.next_id;
                 // Both grids start again: in their storage if they can,
@@ -2682,8 +2684,6 @@ impl Screen {
                 self.alternate.reset_links();
                 self.pictures.clear();
                 self.alternate_active = false;
-                // What the main screen and its history held is gone.
-                self.wiped = true;
                 // What DECSTR resets; the grids are new already.
                 self.terminal = Terminal::default();
                 self.soft_reset();
@@ -3679,6 +3679,16 @@ impl Screen {
                         continue;
                     };
                     known = true;
+                    // ED erasing it all: the whole screen, or from or to a
+                    // corner; and whether it showed text.
+                    let (at, (rows, cols)) = (self.cursor_position(), self.size().into());
+                    let whole = byte == b'J'
+                        && match part {
+                            Erase::All => true,
+                            Erase::Below => at == (0, 0),
+                            Erase::Above => at == (rows.saturating_sub(1), cols.saturating_sub(1)),
+                        };
+                    let shown = whole && self.grid().shows_text();
                     // DECSED and DECSEL (`CSI ? Ps J`, `CSI ? Ps K`) leave
                     // DECSCA's glyphs and every rendition, ED and EL SPA's.
                     if private || self.protected {
@@ -3691,10 +3701,8 @@ impl Screen {
                             });
                         });
                     }
-                    // From the top-left corner, ED 0 erases it all too.
-                    let home = part == Erase::Below && self.cursor_position() == (0, 0);
-                    if byte == b'J' && (part == Erase::All || home) {
-                        self.screen_erased();
+                    if whole {
+                        self.screen_erased(shown);
                     }
                 }
                 if !known {

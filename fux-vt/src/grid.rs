@@ -581,6 +581,10 @@ impl Grid {
     pub fn history_len(&self) -> usize {
         self.history.len()
     }
+    /// Whether a cell of the screen holds text.
+    pub(crate) fn shows_text(&self) -> bool {
+        (0..self.meta.len()).any(|slot| self.slice(slot).iter().any(Compact::has_contents))
+    }
     /// The cursor's row, counted from the oldest row history keeps.
     pub(crate) fn cursor_index(&self) -> Option<usize> {
         self.history_len()
