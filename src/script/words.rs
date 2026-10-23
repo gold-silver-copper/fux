@@ -1071,7 +1071,7 @@ impl fuxth::Host for Host<'_> {
                     }
                 };
                 let split = Command::Split {
-                    to: (built.split).unwrap_or(SplitTo::Beside(Axis::Horizontal)),
+                    to: built.split.unwrap_or(SplitTo::Beside(Axis::Horizontal)),
                     target: p,
                     cmd,
                     cwd: built.cwd,

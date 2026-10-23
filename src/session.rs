@@ -1816,8 +1816,8 @@ impl Session {
             let mut more = Vec::new();
             for area in areas {
                 layout.place_into(area, true, None, &mut placed);
-                let placed = placed.panes.iter().filter(|(p, _)| hidden(p));
-                more.extend(placed.map(|(p, r)| (*p, (r.h(), r.w()))));
+                let unseen = placed.panes.iter().filter(|(p, _)| hidden(p));
+                more.extend(unseen.map(|(p, r)| (*p, (r.h(), r.w()))));
             }
             sizes.extend(more);
         }
@@ -3131,32 +3131,33 @@ impl Session {
 
     fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
         let pane = self.pane(target)?.id;
-        // A floating pane moves a cell, from where it shows, its size kept.
-        if let (&MoveTo::Beside(direction), Some(kept)) = (to, self.frame(pane)) {
-            let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
-            let area = self.reference_area(tab, here);
-            let frame = on_screen(pane, kept, area)?;
-            let (x, y) = (frame.x(), frame.y());
-            let (x, y) = match direction {
-                Direction::Left => (x.saturating_sub(1), y),
-                Direction::Right => (x.saturating_add(1), y),
-                Direction::Up => (x, y.saturating_sub(1)),
-                Direction::Down => (x, y.saturating_add(1)),
-            };
-            let moved = Rect::new(x, y, kept.w(), kept.h());
-            if moved.fitted(area) == frame {
-                let message = format!("{pane} is at the edge {}", direction.name());
-                return Err(fail(Code::NothingThere, message));
-            }
-            tab_of(&mut self.workspaces, pane)?.edit(|l| l.float_at(pane, moved));
-            return Ok(String::new());
-        }
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
-                let destination = self.neighbor(pane, direction, here)?;
-                tab_of(&mut self.workspaces, pane)?.edit(|layout| {
-                    layout::move_beside(&mut layout.tiled, pane, destination, direction)
-                });
+                // A floating pane moves a cell, from where it shows, its
+                // size kept.
+                if let Some(kept) = self.frame(pane) {
+                    let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+                    let area = self.reference_area(tab, here);
+                    let frame = on_screen(pane, kept, area)?;
+                    let (x, y) = (frame.x(), frame.y());
+                    let (x, y) = match direction {
+                        Direction::Left => (x.saturating_sub(1), y),
+                        Direction::Right => (x.saturating_add(1), y),
+                        Direction::Up => (x, y.saturating_sub(1)),
+                        Direction::Down => (x, y.saturating_add(1)),
+                    };
+                    let moved = Rect::new(x, y, kept.w(), kept.h());
+                    if moved.fitted(area) == frame {
+                        let message = format!("{pane} is at the edge {}", direction.name());
+                        return Err(fail(Code::NothingThere, message));
+                    }
+                    tab_of(&mut self.workspaces, pane)?.edit(|l| l.float_at(pane, moved));
+                } else {
+                    let destination = self.neighbor(pane, direction, here)?;
+                    tab_of(&mut self.workspaces, pane)?.edit(|layout| {
+                        layout::move_beside(&mut layout.tiled, pane, destination, direction)
+                    });
+                }
                 return Ok(String::new());
             }
             &MoveTo::Float(col, row, cols, rows) => {

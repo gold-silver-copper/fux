@@ -228,7 +228,7 @@ impl Rect {
             h,
         }
     }
-    /// Whether it is room for a floating pane's frame: a pane inside it
+    /// Whether it has room for a floating pane's frame: a pane inside it
     /// and the border round it, `FRAME_MIN` each way.
     pub fn fits_frame(&self) -> bool {
         self.w >= FRAME_MIN && self.h >= FRAME_MIN

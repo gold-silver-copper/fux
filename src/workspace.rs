@@ -74,8 +74,9 @@ pub struct Seat {
     /// The pane it focused before (`str last focus`), another of the
     /// tab's.
     last: Option<PaneId>,
-    /// The pane it focused last in the other layer, tiled or floating:
-    /// the one `toggle-floating` goes back to.
+    /// The pane it focused before it last changed layer, tiled or
+    /// floating: the one `toggle-floating` goes back to while it is still
+    /// in the other layer.
     away: Option<PaneId>,
     /// The bell rang here while it was shown another tab, marked in its bar
     /// until it shows this one (`Session::ring`).
@@ -245,7 +246,7 @@ impl Tab {
             given: false,
             layout: Layout {
                 tiled: root,
-                floating: Vec::new(),
+                ..Layout::default()
             },
             changed: true,
             fit,
