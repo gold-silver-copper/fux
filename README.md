@@ -265,7 +265,7 @@ between prompts; without them, each says there are none. To send them, in
 your own startup files:
 
 ```sh
-# bash 4.4 or later: ~/.bashrc
+# bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0): ~/.bashrc
 PS0='\e]133;C\a'
 PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}
 ```

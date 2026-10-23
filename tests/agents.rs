@@ -69,6 +69,20 @@ const FISH_MARKS: &str = r#"function mark_start --on-event fish_preexec; printf 
 function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
 function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end"#;
 
+/// Whether the `bash` here is 4.4 or later, which has `PS0`, as the
+/// README's marks need (macOS's own is 3.2).
+fn bash_has_ps0() -> Result<bool, String> {
+    let version = std::process::Command::new("bash")
+        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+        .output()
+        .map_err(e)?;
+    let version: u32 = String::from_utf8_lossy(&version.stdout)
+        .trim()
+        .parse()
+        .map_err(e)?;
+    Ok(version >= 404)
+}
+
 /// A bash pane named `name` that marks its commands as the README says.
 fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
     let rc = server.dir.join(format!("{name}.bashrc"));
@@ -288,7 +302,10 @@ fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
         assert!(readme.contains(marks), "the README shows {marks}");
     }
     let server = Server::start("")?;
-    marked_bash(&server, "b")?;
+    let bash = bash_has_ps0()?;
+    if bash {
+        marked_bash(&server, "b")?;
+    }
     let done = |pane: &str, line: &str| {
         server.ok(&[
             "str",
@@ -313,7 +330,9 @@ fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
         assert!(ok.ends_with(" done 0\n"), "{ok}");
         Ok(())
     };
-    check("b")?;
+    if bash {
+        check("b")?;
+    }
     // A shell the tests may have: its marks as the README has them.
     // Each read from its own startup file, where the README puts them.
     let shells = [
@@ -1105,6 +1124,9 @@ fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
 /// full-screen one's is its screen, the cursor where it is on it.
 #[test]
 fn last_output_is_the_running_command_s_so_far() -> Outcome {
+    if !bash_has_ps0()? {
+        return Ok(());
+    }
     let server = Server::start("")?;
     marked_bash(&server, "r")?;
     server.ok(&[
