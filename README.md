@@ -233,8 +233,8 @@ top. `C-b f` shows them, back on the floating pane you were in (else the
 top one), opening a shell in one if the tab has none; from a floating pane
 it hides them again, back to the tiled pane you were in (a tab with no
 tiled pane keeps them shown). Among floating panes the keys act as on
-tiled ones: `h` `j` `k` `l` and `o` focus another; `v` and `s` split one
-in two; `x` closes it, `z` zooms it; `r` then `h` `j` `k` `l` moves its
+tiled ones: `h` `j` `k` `l` and `o` focus another (`o` reaches one right
+under another); `v` and `s` split one in two; `x` closes it, `z` zooms it; `r` then `h` `j` `k` `l` moves its
 right or bottom border (no further than the screen's edge), and `m` then
 `h` `j` `k` `l` moves it a cell.
 
@@ -243,8 +243,8 @@ and the rest as for any split); `PANE COL ROW COLS ROWS float` floats a
 pane, tiled or floating, with its frame (border included) at that place on
 the panes' area, which starts at `0 0` top left; a frame that does not fit
 a terminal is moved and cut to fit it. `PANE TAB move-to` tiles a
-floating pane in that tab, its own or another. `CLIENT PANE focus-pane` shows one to a
-client. `ls` marks floating panes `floating`, and `ls json` gives
+floating pane in that tab, its own or another. `CLIENT PANE focus-pane`
+shows one to a client. `ls` marks floating panes `floating`, and `ls json` gives
 `"floating": true`; capture, keys and waits treat them as any pane.
 
 ### Copy and select

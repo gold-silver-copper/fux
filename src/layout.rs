@@ -338,7 +338,7 @@ impl Layout {
     }
     /// Whether `pane` is one of its floating panes.
     pub fn floats(&self, pane: PaneId) -> bool {
-        self.floating.iter().any(|f| f.pane == pane)
+        self.float(pane).is_some()
     }
     pub fn float(&self, pane: PaneId) -> Option<&Float> {
         self.floating.iter().find(|f| f.pane == pane)
