@@ -1416,8 +1416,9 @@ impl Session {
             cwd: new.cwd.to_path_buf(),
             env: env.to_vec(),
         };
+        // A shell is named after the shell, whatever line is typed into it.
         let (named, runs) = match start {
-            Start::Shell(typed, _) => (typed, Runs::Shell),
+            Start::Shell(..) => (None, Runs::Shell),
             Start::Program(argv, _) => (
                 argv.first().map(String::as_str),
                 Runs::Program(launch.clone()),
@@ -1435,7 +1436,8 @@ impl Session {
             if line.len() > TYPED || line.chars().any(char::is_control) {
                 let why = format!(
                     "a command line typed into a new shell is at most {TYPED} bytes, with no \
-                     control character: its terminal takes it before the shell reads"
+                     control character (a tab too): its terminal, or the shell, would act on it \
+                     as a key"
                 );
                 return Err(fail(Code::BadValue, why));
             }
@@ -2349,7 +2351,7 @@ impl Session {
                     return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
                 }
                 let copying = self.copying(pane.id);
-                let (text, form) = crate::capture::pane(pane, history, view, true, copying);
+                let (text, form) = crate::capture::pane(pane, history, view, copying);
                 Ok(Reply {
                     json: form.unwrap_or_default(),
                     ..text.into()
@@ -4233,6 +4235,44 @@ mod tests {
         assert_eq!(holding(&s, PaneId::of(1)), 1);
         run(&mut s, "str %1 pane kill")?;
         assert_eq!(holding(&s, PaneId::of(1)), 0);
+        Ok(())
+    }
+
+    /// A wait begun answers what comes after it, in order: output in one
+    /// of a workspace's panes, that pane alone; its pane's close, `closed`
+    /// (4). Begun first here, it cannot miss what it waits for.
+    #[test]
+    fn a_wait_begun_answers_the_change_and_the_close_after_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "str %1 pane horizontal split")?;
+        let origin = Origin::Cli(Caller::default());
+        let wait = |target| {
+            let wait = command::Wait {
+                since: None,
+                timeout: None,
+            };
+            Request::Wait(target, wait)
+        };
+        let ws = s.workspaces.first().map(|w| w.id).ok_or("a workspace")?;
+        let Begun::Waiting(mut waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin) else {
+            return Err("the workspace's wait answered at once".into());
+        };
+        assert!(waiting.answer(&s, Instant::now()).is_none());
+        s.output(PaneId::of(2), b"E");
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        assert!(
+            answer.text.starts_with("%2 ") && !answer.text.contains("%1"),
+            "{}",
+            answer.text
+        );
+        let Begun::Waiting(mut waiting) = s.begin(wait(AnyRef::Pane(PaneId::of(1))), &origin)
+        else {
+            return Err("the pane's wait answered at once".into());
+        };
+        run(&mut s, "str %1 pane kill")?;
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        assert_eq!(answer.end.code(), Some(Code::Closed), "{}", answer.text);
         Ok(())
     }
 

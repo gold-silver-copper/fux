@@ -117,10 +117,10 @@ fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys
 ```
 
-A program can name what it made:
+A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P string str ' ' split-on 1 at let V   P V changed wait drop   P screen
+fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P wait drop   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text

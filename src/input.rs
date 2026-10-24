@@ -120,7 +120,7 @@ impl Session {
     /// Types into the client's focused pane what `write` makes for its
     /// screen: a key or a paste, as its program asked. Refused already, and
     /// said so: nothing more goes in, nor is said again, so a client typing
-    /// into a program that has stopped reading costs nothing per key.
+    /// into a pane whose input queue is full costs nothing per key.
     fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
         let Some(pane) = self.focused(client) else {
             return;

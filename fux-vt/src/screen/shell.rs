@@ -12,9 +12,8 @@ use crate::RowId;
 pub struct Mark {
     /// The row.
     pub row: RowId,
-    /// The column, from 0: where the next character goes, so past the
-    /// last column (the row's width) once one printed there is pending
-    /// its wrap.
+    /// The column, from 0: where the next character goes, one past the
+    /// cursor's while a wrap is pending (`Grid::next_column`).
     pub col: u16,
 }
 
@@ -77,23 +76,6 @@ impl Screen {
         }
     }
 
-    /// The main screen erased whole while a command runs (`clear`): its
-    /// output begins again at the screen's top. The alternate screen's
-    /// erases are ignored: the marks are the main screen's.
-    pub(crate) fn screen_erased(&mut self) {
-        if !self.commands.running() || self.mode(crate::Mode::AlternateScreen) {
-            return;
-        }
-        let grid = self.grid();
-        let top = grid.row_at(grid.history_len()).map(|row| Mark {
-            row: row.id(),
-            col: 0,
-        });
-        if let Some(top) = top {
-            self.commands.output_start = Some(top);
-        }
-    }
-
     /// A prompt was drawn on the cursor's row.
     pub(crate) fn prompted(&mut self) {
         let (row, version) = (self.grid().cursor.row(), self.version);
@@ -103,10 +85,9 @@ impl Screen {
     pub(crate) fn cursor_mark(&self) -> Option<Mark> {
         let grid = self.grid();
         let row = grid.row_at(grid.cursor_index()?)?.id();
-        let col = grid.cursor.col();
         Some(Mark {
             row,
-            col: col.saturating_add(u16::from(grid.cursor.pending_wrap)),
+            col: grid.next_column(),
         })
     }
 }

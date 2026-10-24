@@ -806,7 +806,7 @@ fn serving(socket: &std::path::Path) -> Option<i32> {
 
 /// A client in a sandbox that refuses sockets (Codex's: `connect`, `bind`,
 /// `send` and `setsockopt` denied) reaches a server outside it through the
-/// door: its requests, an action's settled answer, a capture, `status`, a
+/// door: its requests, an action's answer, a capture, `status`, a
 /// grant's door, and `kill-server`. A socket with no door beside it, such
 /// as an older server's, is a clear error, not a wait.
 #[cfg(target_os = "linux")]

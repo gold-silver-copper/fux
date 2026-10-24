@@ -55,7 +55,6 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 #[derive(Debug)]
 pub struct Master(
     OwnedFd,
-    PathBuf,
     #[cfg(target_os = "macos")]
     #[expect(dead_code, reason = "held open, never read: see above")]
     OwnedFd,
@@ -66,14 +65,6 @@ pub struct Master(
 /// controlling terminal.
 #[derive(Debug)]
 pub struct Slave(OwnedFd);
-
-impl Master {
-    /// The path of its slave (`/dev/pts/N`), as programs on it see their
-    /// terminal.
-    pub fn slave_path(&self) -> &Path {
-        &self.1
-    }
-}
 
 impl AsFd for Master {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -203,14 +194,13 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
     #[cfg(target_os = "macos")]
     let master = Master(
         master,
-        name,
         slave
             .try_clone()
             .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
             .map_err(at("holding the PTY slave"))?,
     );
     #[cfg(not(target_os = "macos"))]
-    let master = Master(master, name);
+    let master = Master(master);
     Ok((master, Slave(slave)))
 }
 

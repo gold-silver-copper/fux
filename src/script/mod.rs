@@ -115,6 +115,9 @@ pub struct Opts {
     pub log: Option<String>,
     pub kill: bool,
     pub waits: Waits,
+    /// The version an action's answer (or a wait's) held, which the request
+    /// was made from: what `wait` waits from, unless `changed` says.
+    pub held: Option<crate::command::Version>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,

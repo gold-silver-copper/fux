@@ -458,13 +458,14 @@ pub struct Pane {
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it, in order: its journal (`crate::log`), which
-    /// events and waits read.
+    /// events read.
     pub record: log::Log,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
     /// How many times its program was started again (`respawn`), each on a
-    /// screen of its own: a wait on the program before ends with it.
+    /// screen of its own: a wait from the program before answers
+    /// `respawned`.
     pub starts: u64,
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
@@ -805,9 +806,9 @@ impl Pane {
             Runs::Program(_) | Runs::Shell => self.name.clone(),
         };
         let runs = Runs::Program(launch);
-        // A new program, its own pane. Kept are what the session has yet to
-        // take from the old one (a bell, a copy), its colours, log and
-        // counts.
+        // A new program, its own pane, its counts afresh but `starts`. Kept
+        // are what the session has yet to take from the old one (a bell, a
+        // copy), its colours and log.
         let mut started = Pane::new(self.id, name, runs, self.size(), history)?;
         started.colours = std::mem::take(&mut self.colours);
         started.bell = self.bell;

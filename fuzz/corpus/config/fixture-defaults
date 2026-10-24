@@ -9,7 +9,7 @@ str 'v' str 'me focused horizontal split drop' bind str 'split side by side' lab
 str 's' str 'me focused vertical split drop' bind str 'split stacked' label str 'Panes' group
 str 'x' str 'me me focused confirm-close' bind str 'close pane' label str 'Panes' group
 str 'z' str 'me zoom' bind str 'zoom or restore' label str 'Panes' group
-str 'a' str 'me me focused menu' bind str 'pane actions' label str 'Panes' group
+str 'a r' str 'me me focused rename-prompt' bind str 'rename pane' label str 'Pane actions' group
 str 'c' str 'me copy-mode' bind str 'copy and select' label str 'Panes' group
 str 'p' str 'me focused 0 paste-buffer' bind str 'paste the newest copy' label str 'Panes' group
 str 'r h' str 'me focused str left 1 move-border' bind str 'shrink or grow left' label str 'Resize' group repeat
@@ -28,7 +28,6 @@ str 't l' str 'me next-tab' bind str 'next tab' label str 'Tabs' group
 str 't g' str 'me choose-tab' bind str 'choose a tab' label str 'Tabs' group
 str 't r' str 'me me focused tab rename-prompt' bind str 'rename tab' label str 'Tabs' group
 str 't x' str 'me me focused tab confirm-close' bind str 'close tab' label str 'Tabs' group
-str 't a' str 'me me focused tab menu' bind str 'tab actions' label str 'Tabs' group
 str 't m h' str 'me focused tab str previous reorder' bind str 'move tab earlier' label str 'Reorder' group repeat
 str 't m l' str 'me focused tab str next reorder' bind str 'move tab later' label str 'Reorder' group repeat
 str 'w n' str 'opts new-workspace drop' bind str 'new workspace' label str 'Workspaces' group
@@ -37,7 +36,6 @@ str 'w l' str 'me next-workspace' bind str 'next workspace' label str 'Workspace
 str 'w g' str 'me choose-workspace' bind str 'choose a workspace' label str 'Workspaces' group
 str 'w r' str 'me me focused workspace rename-prompt' bind str 'rename workspace' label str 'Workspaces' group
 str 'w x' str 'me me focused workspace confirm-close' bind str 'close workspace' label str 'Workspaces' group
-str 'w a' str 'me me focused workspace menu' bind str 'workspace actions' label str 'Workspaces' group
 str 'w m h' str 'me focused workspace str previous reorder' bind str 'move workspace earlier' label str 'Reorder' group repeat
 str 'w m l' str 'me focused workspace str next reorder' bind str 'move workspace later' label str 'Reorder' group repeat
 str 'e' str 'me command-prompt' bind str 'command prompt' label str 'Session' group

@@ -14,12 +14,12 @@ start from `opts`, and only `run` takes a program: the other two start a
 shell (`str 'CMD' typed` types a line into it).
 
 **Every pane has a version, and a wait waits for it to change.** A version
-(`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows:
-its program's starts (`respawn`), its screen's revision (one more for each
+(`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows
+while one program runs (`respawn` starts all but the first afresh): its
+program's starts (`respawn`), its screen's revision (one more for each
 piece of output read, each resize, each change to its history: cleared,
-or `history-bytes` set), bells and
-notifications rung, shell commands ended (OSC 133 marks), and 1 once its
-program ended. Every action (`run`, `send-keys`, `send-mouse`, `signal`,
+or `history-bytes` set), bells and notifications rung, shell commands
+ended (OSC 133 marks), and 1 once its program ended. Every action (`run`, `send-keys`, `send-mouse`, `signal`,
 `split`, `new-tab`, `new-workspace`, `respawn`) acts at once and prints
 its pane and the version from just before it acted (a new pane's, or a
 respawned one's, as it starts): wait from that one, and nothing its input
@@ -32,6 +32,7 @@ fux %2 str y text str Enter key send-keys      # keys: %2 0.57.0.3.0, its versio
 fux %2 str 'a long prompt' paste send-keys     # a paste, bracketed if the program asked
 fux %2 str 0.57.0.3.0 changed wait             # until it differs: %2 0.61.0.3.0 screen
 fux %2 wait                                    # until it differs from now's
+fux %2 str y text send-keys wait               # in one program: from the answer's version
 fux %2 str 0.61.0.3.0 changed 600 timeout wait # 600s at most (else 30, the server's wait-seconds)
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
 fux %2 capture json                            # as JSON, with version, exited, idle_ms
@@ -39,7 +40,8 @@ fux %2 str version get                         # one field: version, exited, las
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
-fux %2 str TERM signal; fux %2 respawn         # stop it; start it again
+fux %2 str TERM signal                         # signal what runs in its foreground
+fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its tab's name
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
@@ -101,8 +103,7 @@ quiet() {
   input, then count, so it is in the count, not in what you wait for; a
   program that draws the input again (a TUI that keeps it above the
   reply) counts it again. `grep -c` counts lines, and history beyond
-  `history-lines` is dropped, which a count over a long run must allow
-  for.
+  `history-bytes` is dropped, so a count over a long run can fall.
 
   ```sh
   read -r P V < <(fux %2 str 'What is 6 times 7? Digits only.' paste send-keys)
@@ -189,7 +190,9 @@ quiet() {
 `main-screen` (what was printed before a program took the screen),
 `alt-screen` (the full screen a program drew last), `last-output` (the
 last shell command's output, or the running one's so far, between its
-marks), `wrapped` (each screen row a line; else a line wrapped at the
+marks: what a clear erased there reads blank, and an ended command's
+last row ends at its end mark, so a last line ending in `\r` reads
+empty), `wrapped` (each screen row a line; else a line wrapped at the
 pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
 (reverse video and any background colour as `⟦this⟧`: a program that
 paints its whole background is marked whole), `styles`; then `json`
@@ -236,21 +239,20 @@ names between steps:
 
 ```sh
 # test.fux: run the tests, wait until they end, read what they printed
-opts str tests name str 'cargo test' command run let T
-T string str ' ' split-on 1 at                 # the version run answered
+opts str tests name str 'cargo test' command run   # its answer: %2 0.1.0.0.0
 begin
-  dup str . split-on last str 1 eq             # its last count: ended
-  if true else T swap changed 600 timeout wait string str ' ' split-on 1 at false then
+  dup string str ' ' split-on 1 at str . split-on last str 1 eq   # ended: last count 1
+  if true else 600 timeout wait false then     # a wait on an answer waits from its version
 until
-drop
-T all-history capture
+all-history capture
 ```
 
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
 then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element. An action leaves its
 answer: printed, it is the lines above; given to a word that wants a pane,
-it is its pane; `string` makes it text (`%2 screen string str error
+it is its pane, and to `wait`, the version it holds too (`T str y text
+send-keys wait` waits from before the keys); `string` makes it text (`%2 screen string str error
 contains`). The standard library, written in fuxth, does the rest (`fux
 help` lists it). A mistake every run would make (too few values, a string
 given to `add` or `if`, a request nothing acts on: its error names the word

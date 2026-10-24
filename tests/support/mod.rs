@@ -270,7 +270,7 @@ impl Server {
 
     /// Waits from `since` until `pane`'s version differs, by `deadline`: the
     /// new version. Unchanged in one wait (124), it waits again.
-    fn changed(&self, pane: &str, since: &str, deadline: Instant) -> Result<String, String> {
+    pub fn changed(&self, pane: &str, since: &str, deadline: Instant) -> Result<String, String> {
         loop {
             let left = deadline.saturating_duration_since(Instant::now()).as_secs();
             if left == 0 {

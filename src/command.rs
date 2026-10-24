@@ -249,7 +249,8 @@ wire! {
 }
 
 wire! {
-    /// Where a pane stands, as counts that only grow: its program's starts
+    /// Where a pane stands, as counts that only grow while one program
+    /// runs (a respawn starts all but `starts` afresh): its program's starts
     /// (`respawn`), its screen's revision (fux-vt's: bumped by each piece
     /// of output it reads, each resize and each change to its history:
     /// cleared, or `history-bytes` set), bells and notifications rung,

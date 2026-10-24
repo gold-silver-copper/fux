@@ -119,7 +119,7 @@ pub const WORDS: &[Word] = &[
     // Waiting
     word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE.ENDED, as an action or `str version get` gives it), not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
-    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from now's (or the one changed gives) or the pane closes; a tab or workspace: any of its panes"),
+    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of its panes"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
@@ -450,6 +450,17 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
     target(value).map(On::Target)
 }
 
+/// The version an action's answer, or a wait's, holds: its pane's from
+/// before what it did. A wait on it waits from there, so nothing that came
+/// between is missed.
+fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
+    let Value::App(Fux::Answer(a)) = value else {
+        return None;
+    };
+    let one = matches!(a.said, Said::Action(_));
+    (one.then(|| a.text.split_whitespace().nth(1)).flatten()).and_then(|v| v.parse().ok())
+}
+
 /// The options or request `value` is, `word` given it: options stay
 /// options; what else it goes on (a pane, tab, workspace or client, an
 /// action's answer) becomes a request on that.
@@ -465,6 +476,7 @@ fn modifying(word: &'static str, value: Value<Fux>) -> Result<Box<Opts>, Failure
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             Box::new(Opts {
                 on: Some(on),
+                held: held(&other),
                 ..Opts::default()
             })
         }
@@ -653,6 +665,7 @@ fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::List(_)
         | Value::App(_)) => Opts {
             on: Some(on(&other)?),
+            held: held(&other),
             ..Opts::default()
         },
     };
@@ -1045,7 +1058,7 @@ impl fuxth::Host for Host<'_> {
                 };
                 // On a tab or workspace, in each of its panes.
                 let wait = Wait {
-                    since: built.waits.since,
+                    since: built.waits.since.or(built.held),
                     timeout: built.waits.timeout,
                 };
                 let wait = Request::Wait(target, wait);

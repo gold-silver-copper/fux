@@ -1211,8 +1211,10 @@ impl Screen {
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
-    /// The number of the last processing: each row
-    /// keeps the number of the one that last changed it (`Row::version`).
+    /// The screen's revision: one more for each call that processes
+    /// output (whether or not it changed a cell), each resize, and each
+    /// change to its history (`clear_history`, `set_history_bytes`). Each
+    /// row keeps the one that last changed it (`Row::version`).
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -3420,9 +3422,6 @@ impl Screen {
                                 g.erase(y, start, end, a, v);
                             });
                         });
-                    }
-                    if byte == b'J' && part == Erase::All {
-                        self.screen_erased();
                     }
                 }
                 if !known {

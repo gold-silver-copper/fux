@@ -15,16 +15,10 @@ type Cells<'a> = Vec<(&'a str, Attributes)>;
 /// A capture as text, and as JSON if it was asked for too: read once.
 type Read = (String, Option<String>);
 
-/// A pane's screen, and `history` rows before it, as `view` asks, with
-/// `json` its JSON too; with `copy_mode`, that says a client is in copy
-/// mode on it.
-pub fn pane(
-    pane: &Pane,
-    history: Option<usize>,
-    view: CaptureView,
-    json: bool,
-    copy_mode: bool,
-) -> Read {
+/// A pane's screen, and `history` rows before it, as `view` asks, and its
+/// JSON (which `json` gives, read once with the text); with `copy_mode`,
+/// that says a client is in copy mode on it.
+pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: bool) -> Read {
     let screen = pane.screen();
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
@@ -110,13 +104,10 @@ pub fn pane(
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let state = json.then(|| {
-        let mut state = state(pane, Instant::now(), copy_mode);
-        // The history rows kept above the first row read: history it was
-        // not asked for (rows a range leaves out are not counted).
-        state.push(("above", above.map_or(Json::Null, Json::int)));
-        state
-    });
+    let mut state = state(pane, Instant::now(), copy_mode);
+    // The history rows kept above the first row read: history it was not
+    // asked for (rows a range leaves out are not counted).
+    state.push(("above", above.map_or(Json::Null, Json::int)));
     // A glyph went into the last column: the next one goes on the next
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
@@ -125,7 +116,7 @@ pub fn pane(
         (rows, cols),
         (cursor, Some(pending)),
         (lines, view),
-        state,
+        Some(state),
     )
 }
 
@@ -170,11 +161,13 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     // switched) or below the end: from what is kept above the end, the
     // screen's top if the start was cleared.
     let (first, start) = match screen.row_index(start.row) {
-        // A running command's cursor may go back before its start (a
-        // progress line's `\r`).
-        Some(first) if first < last || (first == last && (!ended || start.col <= end.col)) => {
-            (first, start)
+        // An ended command's end left of its start on one row (its last
+        // write a `\r`): the row up to the end. A running one's cursor may
+        // go back so too, its row then whole.
+        Some(first) if first == last && ended && start.col > end.col => {
+            (first, CommandMark { col: 0, ..start })
         }
+        Some(first) if first <= last => (first, start),
         Some(_) => (
             screen.history_len().min(last),
             CommandMark { col: 0, ..start },
@@ -490,7 +483,7 @@ mod tests {
             let size = fux_vt::Size::new(3, 5)?;
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(&pane, None, join, false, false).0)
+            Ok(super::pane(&pane, None, join, false).0)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -517,7 +510,7 @@ mod tests {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(&pane, None, view, false, false).0;
+        let text = super::pane(&pane, None, view, false).0;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -534,12 +527,12 @@ mod tests {
         let size = fux_vt::Size::new(3, 20)?;
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(&pane, None, view, false, false).0;
+        let text = super::pane(&pane, None, view, false).0;
         assert_eq!(text, "hello\n");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
-        let text = super::pane(&pane, None, view, false, false).0;
+        let text = super::pane(&pane, None, view, false).0;
         assert_eq!(text, "step 1\n");
         Ok(())
     }

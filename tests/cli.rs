@@ -35,10 +35,6 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
     // The command ended; the shell is still there and takes more input.
     server.type_line("%2", "echo still-here")?;
     shows(&server, "%2", "\nstill-here")?;
-    assert!(
-        server.ok(&["ls"])?.contains("%2 printf"),
-        "the pane is named after its command"
-    );
     // new-tab and new-workspace type theirs too.
     server.ok(&[
         "opts",
@@ -52,6 +48,9 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "new-tab",
     ])?;
     shows(&server, "%3", "\ntab-cmd")?;
+    // Named after its shell, not the line typed into it.
+    let name = server.ok(&["str", "%3", "pane", "str", "name", "get"])?;
+    assert!(!name.contains("echo"), "{name}");
     server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
     shows(&server, "%4", "\nws-cmd")?;
     // The terminal takes the line before the shell reads: a control

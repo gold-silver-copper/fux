@@ -106,30 +106,23 @@ fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
 }
 
 /// Types `line` into shell pane `pane` and waits, as the docs' recipe
-/// does, until a shell command ends there: the version's last count grows.
+/// does, until a shell command ends there: the version's fourth count,
+/// `DONE`, grows.
 fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
     let since = version(&server.ok(&typed(pane, line))?);
-    // `DONE`, the version's fourth count.
     let done = |v: &str| v.split('.').nth(3).and_then(|d| d.parse::<u64>().ok());
-    let before = done(&since);
-    let deadline = after(PATIENCE);
+    let (before, deadline) = (done(&since), after(PATIENCE));
     let mut at = since;
     while done(&at) <= before {
-        if Instant::now() > deadline {
-            return Err(format!("{line:?} did not end, at {at}"));
-        }
-        let waited = [
-            "str", pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
-        ];
-        at = version(&server.ok(&waited)?);
+        at = server.changed(pane, &at, deadline)?;
     }
     Ok(())
 }
 
 /// A program `run` starts keeps its pane once it exits: its last screen,
 /// and its status, which a wait and `ls` report (a signal's too); one that
-/// cannot start is refused. It takes no more input. The program starts at its `size`, in
-/// the `agent` workspace, which no client is moved to.
+/// cannot start is refused. It takes no more input. The program starts at
+/// its `size`, in the `agent` workspace, which no client is moved to.
 #[test]
 fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
@@ -224,6 +217,12 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
     let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
+    // In one program, a wait on the action's answer waits from the version
+    // it holds, a timeout given between them too.
+    let echoes = id(&server.ok(&run(&[], &["sh", "-c", "read x; sleep 30"]))?);
+    let chained = [&typed(&echoes, "x")[..], &["5", "timeout", "wait"]].concat();
+    let answer = server.ok(&chained)?;
+    assert!(answer.ends_with(" screen\n"), "{answer}");
     Ok(())
 }
 
@@ -710,31 +709,30 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
-/// A wait on a workspace answers once any of its panes changes, a line
-/// for each that did; a version is one pane's, so it waits from now.
+/// A wait on a workspace waits on each of its panes, and answers a line for
+/// each: here none changed, so each timed out, the whole 124. A version is
+/// one pane's, so a wait on several takes none. (`session`'s tests begin a
+/// wait before what it waits for: the answer of the pane that changed, and
+/// of one that closed.)
 #[test]
-fn a_wait_on_a_workspace_answers_the_panes_that_changed() -> Outcome {
+fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
-    let quiet = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
-    let rings = id(&server.ok(&run(
-        &["str", "g", "in"],
-        &["sh", "-c", "read x; echo E; sleep 30"],
-    ))?);
-    let mut wait = std::process::Command::new(FUX);
-    (wait.args(["str", "g", "workspace", "10", "timeout", "wait"]))
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE");
-    let waiting = std::thread::spawn(move || wait.output());
-    // Time for the wait to begin before the pane changes.
-    std::thread::sleep(Duration::from_secs(1));
-    server.ok(&typed(&rings, "go"))?;
-    let answer = waiting.join().map_err(|_| "the wait")?.map_err(e)?;
-    let answer = String::from_utf8_lossy(&answer.stdout);
-    assert!(
-        answer.starts_with(&format!("{rings} ")) && !answer.contains(&quiet),
-        "{answer}"
-    );
-    let since = server.version(&rings)?;
+    let one = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
+    let two = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
+    let timed = server.fux(&["str", "g", "workspace", "1", "timeout", "wait"])?;
+    assert_eq!(timed.status, 124, "{}", timed.stderr);
+    for pane in [&one, &two] {
+        let line = timed
+            .stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("{pane} ")));
+        assert!(
+            line.is_some_and(|l| l.ends_with(" timeout")),
+            "{}",
+            timed.stdout
+        );
+    }
+    let since = server.version(&one)?;
     let given = server.fux(&["str", "g", "workspace", "str", &since, "changed", "wait"])?;
     assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
     Ok(())
@@ -946,29 +944,6 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     Ok(())
 }
 
-/// A wait whose pane closes under it fails so, with status 4 and the
-/// code `closed`.
-#[test]
-fn a_wait_whose_pane_closes_says_so() -> Outcome {
-    let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sleep", "30"]))?);
-    let waiting = std::process::Command::new(FUX)
-        .args(["str", &pane, "pane", "20", "timeout", "wait"])
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(e)?;
-    // Time for the wait to begin before the pane goes.
-    std::thread::sleep(Duration::from_secs(1));
-    server.ok(&["str", &pane, "pane", "kill"])?;
-    let closed = waiting.wait_with_output().map_err(e)?;
-    let stderr = String::from_utf8_lossy(&closed.stderr);
-    assert_eq!(closed.status.code(), Some(4), "{stderr}");
-    assert!(stderr.starts_with("fux: closed: "), "{stderr}");
-    Ok(())
-}
-
 /// While a command runs, its output so far is the last output; a
 /// full-screen one's is its screen, the cursor where it is on it.
 #[test]
@@ -1039,8 +1014,8 @@ fn recipe(after: &str) -> Result<String, String> {
 }
 
 /// The docs' recipes run as written, under bash, with their helpers: a
-/// reply's text, a program's exit, and a command's end that comes with its
-/// program's.
+/// reply's text, a program's exit, a command's end that comes with its
+/// program's, and quiet.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
@@ -1062,7 +1037,18 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    for (recipe, said) in [(text, "answered\n"), (exit, "3\n"), (ended, "5\nhi\n")] {
+    let talks = "read x; echo one; sleep 0.3; echo two; sleep 30";
+    let talks = id(&server.ok(&run(&[], &["sh", "-c", talks]))?);
+    let quiet = recipe("- **Quiet for N seconds**")?
+        .replace("%2", &talks)
+        .replace("quiet 600 5", "quiet 600 1");
+    let recipes = [
+        (text, "answered\n"),
+        (exit, "3\n"),
+        (ended, "5\nhi\n"),
+        (quiet, "two\n"),
+    ];
+    for (recipe, said) in recipes {
         let script = format!("{step}{recipe}");
         let out = std::process::Command::new("bash")
             .args(["-c", &script])

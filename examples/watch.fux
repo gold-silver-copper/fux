@@ -1,7 +1,7 @@
-# Run a program, wait for its exit, and read what it printed. A wait
-# answers each change of the pane's version, from the version run
-# answered; the version's last count is 1 once its program ended, and
-# `get` reads how it ended.
+# Run a program, wait for its exit, and read what it printed. A wait on an
+# answer (run's, then its own) waits from the version it holds and answers
+# the next change; the version's last count is 1 once the program ended,
+# and `get` reads how it ended.
 # expect: tick 1
 # expect: tick 2
 # expect: tick 3
@@ -9,11 +9,10 @@
 # expect: 0
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
-run let W
-W string str ' ' split-on 1 at
+run
 begin
-  dup str . split-on last str 1 eq
-  if true else W swap changed 600 timeout wait string str ' ' split-on 1 at false then
+  dup string str ' ' split-on 1 at str . split-on last str 1 eq
+  if true else 600 timeout wait false then
 until
-drop
+let W
 W capture W str exited get
