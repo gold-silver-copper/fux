@@ -1092,8 +1092,7 @@ impl Asks for Layout<'_> {
 /// line. Why it failed, if it did.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
     let mut machine = compile(&program(args)?)?;
-    let mut out = Checked { out, failed: None };
-    let mut host = Host::new(client::context(), None, &mut out);
+    let mut host = Host::new(client::context(), None, out);
     let ran = run_capped(
         &mut machine,
         &mut host,
@@ -1102,29 +1101,22 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
         None,
     );
     // What the words before a failure left is printed too: their answers.
+    // The run's failure, if it failed, came first, and is the one told.
     let stack = match &ran {
         Ok(stack) => stack.as_slice(),
         Err(_) => machine.stack(),
     };
-    for value in stack {
+    let printed = (stack.iter())
         // An answer with nothing to say (an empty listing) prints no
         // blank line; options or a request, nothing.
-        if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
-            || matches!(value, Value::App(Fux::Opts(_)))
-        {
-            continue;
-        }
-        let _ = writeln!(host.out, "{}", value.text());
-    }
-    let _ = host.out.flush();
+        .filter(|value| {
+            !matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
+                && !matches!(value, Value::App(Fux::Opts(_)))
+        })
+        .try_for_each(|value| writeln!(host.out, "{}", value.text()))
+        .and_then(|()| host.out.flush());
     ran?;
-    match out.failed {
-        Some(error) => Err(Failed::new(
-            Code::Output,
-            format!("writing the output: {error}"),
-        )),
-        None => Ok(()),
-    }
+    printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
 }
 
 /// The program `args` give: none attaches; `-` is stdin; one argument
@@ -1187,36 +1179,6 @@ fn read_file(path: &std::path::Path, most: (usize, &str)) -> Result<String, Fail
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
     read_text(&name, file, most)
-}
-
-/// Output that keeps its first failure, so that a run whose output cannot
-/// be written fails, however its words wrote it.
-struct Checked<'a> {
-    out: &'a mut dyn Write,
-    failed: Option<io::Error>,
-}
-
-impl Write for Checked<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let written = self.out.write(bytes);
-        self.keep(written)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        let flushed = self.out.flush();
-        self.keep(flushed)
-    }
-}
-
-impl Checked<'_> {
-    /// `result`, its error kept if it is the first.
-    fn keep<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
-        if let Err(error) = &result
-            && self.failed.is_none()
-        {
-            self.failed = Some(io::Error::new(error.kind(), error.to_string()));
-        }
-        result
-    }
 }
 
 #[cfg(test)]

@@ -499,3 +499,39 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
     Ok(())
 }
+
+/// Output that cannot be written fails where it is written, with
+/// `output`: what comes after it never runs, and a stream ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_that_fails_stops_the_program() -> Outcome {
+    let server = Server::start("")?;
+    let full = || -> Result<std::process::Command, String> {
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full");
+        let mut command = std::process::Command::new(fux());
+        command
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(full.map_err(e)?)
+            .stderr(std::process::Stdio::piped());
+        Ok(command)
+    };
+    let ran = full()?
+        .args([
+            "help", "opts", "str", "sleep", "program", "str", "9", "arg", "run",
+        ])
+        .output()
+        .map_err(e)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(ran.status.code(), Some(1), "{said}");
+    assert!(said.starts_with("fux: output: "), "{said}");
+    assert!(
+        !server.ok(&["ls"])?.contains("%2"),
+        "run ran after help failed"
+    );
+    let mut events = full()?.arg("events").spawn().map_err(e)?;
+    eventually("events to end", || {
+        Ok(events.try_wait().map_err(e)?.is_some())
+    })?;
+    Ok(())
+}

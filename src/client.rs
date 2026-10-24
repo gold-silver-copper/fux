@@ -54,6 +54,8 @@ pub enum Error {
     Mismatch(Mismatch),
     Protocol(crate::protocol::Error),
     NotATerminal,
+    /// What a request streamed could not be written out.
+    Output(io::Error),
     /// Anything else that failed: why.
     Failed(String),
 }
@@ -64,6 +66,7 @@ impl Error {
         match self {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
             Error::Mismatch(_) => Code::Mismatch,
+            Error::Output(_) => Code::Output,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
@@ -93,6 +96,7 @@ impl std::fmt::Display for Error {
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
+            Error::Output(error) => write!(f, "writing the output: {error}"),
             Error::Failed(why) => f.write_str(why),
         }
     }
@@ -285,7 +289,8 @@ impl Requests {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
                     ToCommand::Stdout(bytes) => {
-                        let _ = out.write_all(&bytes).and_then(|()| out.flush());
+                        (out.write_all(&bytes).and_then(|()| out.flush()))
+                            .map_err(Error::Output)?;
                     }
                     ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
                     ToCommand::PartsEnd => {
@@ -972,7 +977,8 @@ fn attached(
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
                 (ToAttached::Welcome(me, _), None) => {
                     if !terminal {
-                        let _ = writeln!(stdout, "{me}").and_then(|()| stdout.flush());
+                        (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
+                            .map_err(Error::Output)?;
                     }
                     let keymap = attaching.keymap.clone();
                     keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
@@ -987,7 +993,7 @@ fn attached(
                 (_, None) => {}
             }
         }
-        let _ = stdout.flush();
+        stdout.flush().map_err(failed("writing the terminal"))?;
         for act in std::mem::take(&mut acts) {
             let act = AttachedFrame::Act(Box::new(act));
             if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &act) {

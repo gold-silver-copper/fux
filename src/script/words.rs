@@ -1498,9 +1498,9 @@ impl fuxth::Host for Host<'_> {
 }
 
 impl Host<'_> {
-    /// Writes `text` out, whether or not it goes.
+    /// Writes `text` out.
     fn show(&mut self, text: &str) -> Result<Done<Ask>, Failure> {
-        let _ = write!(self.out, "{text}");
+        write!(self.out, "{text}").map_err(|e| fail(Code::Output, e.to_string()))?;
         Ok(Done::Now)
     }
 

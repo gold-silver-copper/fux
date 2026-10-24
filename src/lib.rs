@@ -119,8 +119,7 @@ pub fn main() -> ExitCode {
     {
         return serve(rest);
     }
-    let mut stdout = std::io::stdout();
-    let status = match args.and_then(|args| script::main(&args, &mut stdout)) {
+    let status = match args.and_then(|args| script::main(&args, &mut std::io::stdout())) {
         Ok(()) => 0,
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
@@ -128,7 +127,6 @@ pub fn main() -> ExitCode {
             failed.code.status().get()
         }
     };
-    let _ = stdout.flush();
     ExitCode::from(status)
 }
 
