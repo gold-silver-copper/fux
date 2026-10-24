@@ -232,9 +232,9 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
-    /// Its bells, notifications, titles and commands' ends, in order, for
-    /// the journal.
-    happened: &'a mut Vec<log::Event>,
+    /// The journal its bells, notifications, titles and commands' ends go
+    /// to, in order.
+    happened: &'a mut log::Log,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -676,10 +676,9 @@ impl Pane {
     /// parser's loop compiles tighter on its own.
     #[inline(never)]
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
-        let mut happened = Vec::new();
         let mut sink = Sink {
             replies: Vec::new(),
-            happened: &mut happened,
+            happened: &mut self.record,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -707,9 +706,6 @@ impl Pane {
         if !replies.is_empty() {
             self.input.reply(&replies);
         }
-        happened
-            .into_iter()
-            .for_each(|event| self.record.push(event));
         begun
     }
 

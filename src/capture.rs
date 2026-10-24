@@ -26,9 +26,6 @@ pub fn pane(
     copy_mode: bool,
 ) -> Read {
     let screen = pane.screen();
-    let in_rows = |i: &usize| {
-        (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
-    };
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
@@ -44,24 +41,21 @@ pub fn pane(
     // Where it is on the screen, as a mouse event and a state line count.
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
-    // line each row is part of, and the lines the range touches.
-    let line_of: Vec<usize> = read
-        .iter()
-        .scan((0usize, false), |(line, wrapped), (row, _)| {
-            if !*wrapped {
-                *line = line.saturating_add(1);
-            }
-            *wrapped = !view.wrapped && row.continues();
-            Some(*line)
-        })
-        .collect();
-    let touched: std::collections::HashSet<usize> = (line_of.iter().enumerate())
-        .filter(|(i, _)| in_rows(i))
-        .map(|(_, line)| *line)
-        .collect();
-    let taken = |i: &usize| {
-        in_rows(i) || (!view.wrapped && line_of.get(*i).is_some_and(|line| touched.contains(line)))
-    };
+    // range widened to the whole lines at its ends.
+    let continues = |i: usize| !view.wrapped && read.get(i).is_some_and(|(row, _)| row.continues());
+    let taken = view.rows.map(|(start, end)| {
+        let (mut first, mut last) = (usize::from(start), usize::from(end));
+        while let Some(before) = first.checked_sub(1)
+            && continues(before)
+        {
+            first = before;
+        }
+        while continues(last) {
+            last = last.saturating_add(1);
+        }
+        first..=last
+    });
+    let taken = |i: &usize| taken.as_ref().is_none_or(|rows| rows.contains(i));
     for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
@@ -515,6 +509,29 @@ mod tests {
             first("abc\x1b[41m\x1b[K\x1b[m\x1b[5G世")?.as_deref(),
             Some("abc  世")
         );
+        Ok(())
+    }
+
+    /// Rows that start or end inside a wrapped line take it whole, joined;
+    /// `wrapped`, they take the rows asked alone.
+    #[test]
+    fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(6, 5)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        pane.output(b"top\r\nabcdefghijklm\r\nend");
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let capture = |rows, wrapped| {
+            let view = CaptureView {
+                rows: Some(rows),
+                wrapped,
+                ..CaptureView::default()
+            };
+            super::pane(&pane, run, None, view, false).0
+        };
+        assert_eq!(capture((2, 2), false), "abcdefghijklm\n");
+        assert_eq!(capture((0, 1), false), "top\nabcdefghijklm\n");
+        assert_eq!(capture((3, 4), false), "abcdefghijklm\nend\n");
+        assert_eq!(capture((2, 2), true), "fghij\n");
         Ok(())
     }
 
