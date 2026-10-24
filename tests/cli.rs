@@ -210,6 +210,14 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         failed.stdout
     );
     assert_eq!(failed.stderr.lines().count(), 1, "{}", failed.stderr);
+    // A try naming the timeout goes on after it: the wait's answer goes
+    // with the body's values, its code is left.
+    let caught = server.fux(&[
+        "str", "timeout", "try", "%1", "1", "timeout", "wait", "catch", "nip", "end", "str",
+        "after",
+    ])?;
+    assert_eq!(caught.status, 0, "{}", caught.stderr);
+    assert_eq!(caught.stdout, "timeout\nafter\n");
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;

@@ -256,7 +256,10 @@ all-history capture
 
 `X let NAME` names a value, `define NAME … end` makes a word, `if … else …
 then` and `begin … until` decide and repeat, `list … end` gathers what its
-body leaves, `SEQ each … end` runs once per element. An action leaves its
+body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
+end` runs its handler instead of failing with one of CODES (`str timeout
+try %2 5 timeout wait catch … end`: the stack as at `try`, then the
+failure's message and code). An action leaves its
 answer: printed, it is the lines above; given to a word that wants a pane,
 it is its pane (an action's or wait's on a tab or workspace is none,
 however many panes it has: name the tab again, `@1 wait`), and to `wait`,

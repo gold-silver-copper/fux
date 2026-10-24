@@ -80,8 +80,10 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its v
   end` (a word of your own; it may call itself, and a call in last place
   loops in one frame), `X let NAME` (NAME pushes X from then on), `if …
   else … then`, `begin … until`, `list … end` (a list of what its body
-  leaves) and `SEQ each … end` (its body once per element of a string or
-  list). Values are integers (checked: an overflow fails; `div` truncates
+  leaves), `SEQ each … end` (its body once per element of a string or
+  list) and `CODES try … catch … end` (its body; failing with one of
+  CODES, `str timeout try`, its handler instead, on the stack as it was
+  and the failure's message and code). Values are integers (checked: an overflow fails; `div` truncates
   toward zero), booleans, strings, lists, and fux's own (panes, options …).
   A word may call one defined after it in the same file, and a definition
   may take a library word's name (from there on; the core's words are kept).

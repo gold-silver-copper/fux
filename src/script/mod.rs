@@ -396,6 +396,9 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
+    for code in Code::ALL.iter().filter(|c| c.raised()) {
+        vocabulary.code(code.name())?;
+    }
     Ok(vocabulary)
 }
 
@@ -709,18 +712,21 @@ pub fn run_capped(
             }) => {
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
-                let reply = asks
-                    .ask(
-                        &Asked {
-                            request: *request,
-                            context,
-                        },
-                        host.out,
-                    )
-                    .map_err(|f| placed(machine, f))?;
+                let asked = Asked {
+                    request: *request,
+                    context,
+                };
+                let reply = match asks.ask(&asked, host.out) {
+                    Ok(reply) => reply,
+                    Err(failed) => {
+                        pushed(machine, Err(failed))?;
+                        continue;
+                    }
+                };
                 match &reply.end {
                     // A failure that answered too (a wait's): its answer is
-                    // left, printed before why it failed.
+                    // left, printed before why it failed, unless a `try`
+                    // catches the failure.
                     End::Failed { message, .. }
                         if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
                     {
@@ -739,13 +745,21 @@ pub fn run_capped(
     }
 }
 
-/// Pushes what a word asked for gave, or its failure, placed.
+/// Pushes what a word asked for gave; or raises its failure there, for a
+/// `try` to catch, else placed at the word.
 fn pushed(
     machine: &mut Machine<Fux>,
     values: Result<Vec<Value<Fux>>, Failed>,
 ) -> Result<(), Failed> {
-    for value in values.map_err(|f| placed(machine, f))? {
-        machine.push(value)?;
+    match values {
+        Ok(values) => {
+            for value in values {
+                machine.push(value)?;
+            }
+        }
+        Err(failed) => machine
+            .raise(fuxth::Failure::new(failed.code.into(), failed.message))
+            .map_err(|e| ours(machine, e))?,
     }
     Ok(())
 }
