@@ -1,4 +1,4 @@
-use crate::compact::{Compact, PROTECTED};
+use crate::compact::{BLANK, Compact, PROTECTED};
 use crate::keys::KITTY_FLAGS_KEPT;
 use crate::keys::encode::OtherKeysLevel;
 use crate::link::Held;
@@ -1505,7 +1505,7 @@ impl Screen {
             }
             return Ok(());
         }
-        if self.extend_cluster(c, properties) {
+        if self.extend_cluster(c, properties)? {
             // A Prepend character of no width joins nothing after it
             // (README): what follows is segmented afresh.
             if width == 0
@@ -1744,21 +1744,22 @@ impl Screen {
     /// spacing vowel sign, a variation selector, a ZWJ sequence, a flag's
     /// second regional indicator. A narrow cell whose cluster becomes two
     /// columns wide is widened, as programs laid out with unicode-width
-    /// expect and kitty and Ghostty (mode 2027) do. A zero-width mark joins
-    /// the cell before the cursor, even after a cursor move. Whether `c`
-    /// was taken: joined, or dropped because the cluster is full.
-    fn extend_cluster(&mut self, c: char, properties: Properties) -> bool {
+    /// expect and kitty and Ghostty (mode 2027) do, or in the last column
+    /// moved as a wide glyph (`relocate`). A zero-width mark joins the cell
+    /// before the cursor, even after a cursor move. Whether `c` was taken:
+    /// joined, or dropped because the cluster is full.
+    fn extend_cluster(&mut self, c: char, properties: Properties) -> Result<bool, Error> {
         let anchor = match self.last_print {
             Some(printed) => printed,
             None if properties.width() == Some(0) => match self.mark_anchor() {
                 Some(printed) => printed,
-                None => return false,
+                None => return Ok(false),
             },
-            None => return false,
+            None => return Ok(false),
         };
         let mut cluster = anchor.cluster;
         if !cluster.push_properties(properties) {
-            return false;
+            return Ok(false);
         }
         self.join(c, properties, Printed { cluster, ..anchor })
     }
@@ -1777,7 +1778,7 @@ impl Screen {
 
     /// `extend_cluster` once `c` continues `anchor`'s cluster: joins it, if
     /// the cursor is just past the anchor's cell on its row.
-    fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> bool {
+    fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> Result<bool, Error> {
         let g = self.grid();
         let (row, col) = (g.cursor.row(), g.next_column());
         let Printed {
@@ -1786,7 +1787,7 @@ impl Screen {
             kept: known,
         } = anchor;
         let Some(cell) = g.stored(anchor_row, anchor_col) else {
-            return false;
+            return Ok(false);
         };
         let narrow = !cell.is_wide();
         let next = anchor_col.checked_add(if narrow { 1 } else { 2 });
@@ -1795,7 +1796,7 @@ impl Screen {
             || !cell.has_contents()
             || cell.is_wide_continuation()
         {
-            return false;
+            return Ok(false);
         }
         let at = usize::from(anchor_col);
         let cursor = usize::from(col);
@@ -1819,15 +1820,14 @@ impl Screen {
         // And after: summed still if `c` too is none the rule looks at.
         let summed = one && !properties.in_context();
         let still_one = summed && properties.width() == Some(0);
-        let mut widen = false;
+        let mut grows = false;
         let mut kept = known != Kept::Full;
         self.with_grid(|g, _, v| {
             g.mutate_line(row, v, col.saturating_add(1), |line| {
                 kept = kept && line.append(at, c);
-                // Width is kept once wide; the last column has no room to widen.
-                widen = kept
+                // Width is kept once wide.
+                grows = kept
                     && narrow
-                    && fits
                     && if summed {
                         !still_one
                     } else {
@@ -1836,20 +1836,88 @@ impl Screen {
                 kept
             });
         });
-        if widen {
-            self.widen(row, at, cursor);
-        }
+        let at = match (grows, fits) {
+            (true, true) => {
+                self.widen(row, at, cursor);
+                Some((anchor_row, anchor_col))
+            }
+            (true, false) => self.relocate(row, anchor_col)?,
+            (false, _) => Some((anchor_row, anchor_col)),
+        };
         let known = match (kept, still_one) {
             (false, _) => Kept::Full,
             (true, true) => Kept::One,
             (true, false) => Kept::Unknown,
         };
-        self.last_print = Some(Printed {
-            at: (anchor_row, anchor_col),
+        self.last_print = at.map(|at| Printed {
+            at,
             cluster,
             kept: known,
         });
-        true
+        Ok(true)
+    }
+
+    /// Moves the cluster in cell `at` of `row`, the line's last, grown two
+    /// columns wide, to where a wide glyph goes (`wrap_for`), and says
+    /// where it went. Mode 2027's spec ("Variation Selector 16"): the
+    /// cluster's width is 2, "which may possibly cause reflowing of that
+    /// symbol to the next line if on right margin with AutoWrap mode set";
+    /// so it is placed as a wide glyph printed there is, the line feed
+    /// scrolling at the bottom margin, under IRM inserted. With autowrap
+    /// off the spec leaves it undefined ("Margins and AutoWrap with
+    /// Emoji"), and it is not printed, as a wide glyph with no room is not
+    /// (xterm, the DECAWM row of the README). It keeps its style,
+    /// protection and link. The column it leaves is blank in the default
+    /// attributes and unlinked, as the one a wide glyph did not fit in is
+    /// before anything is printed there: wrapped, a spacer
+    /// (`Row::ends_in_spacer`).
+    #[cold]
+    #[inline(never)]
+    fn relocate(&mut self, row: u16, at: u16) -> Result<Option<(u16, u16)>, Error> {
+        let g = self.grid();
+        let (Some(&cell), Some(text)) = (g.stored(row, at), g.cell(row, at)) else {
+            return Ok(None);
+        };
+        let text = text.contents().to_owned();
+        let link = (g.live_row(row))
+            .and_then(|r| r.link(usize::from(at)))
+            .cloned();
+        let Some(mut glyph) = cell.holding(b" ") else {
+            return Ok(None);
+        };
+        glyph.widen();
+        let links = self.links_seen;
+        self.with_grid(|g, _, v| {
+            let at = usize::from(at);
+            g.mutate_row(row, v, 0, |cells| {
+                cells.get_mut(at).map(|c| *c = BLANK).is_some()
+            });
+            if links {
+                g.set_link(row, at..at.saturating_add(1), None, v);
+            }
+        });
+        let Some(end) = self.wrap_for(2)? else {
+            return Ok(None);
+        };
+        work!(cells, 2);
+        if self.mode(Mode::Insert) {
+            let blank = self.blank_style();
+            self.with_grid(|g, _, v| g.edit_cells(2, true, blank, v));
+        }
+        let (row, col) = self.grid().cursor.at();
+        let to = usize::from(col);
+        self.with_grid(|g, _, v| {
+            g.mutate_line(row, v, col.saturating_add(2), |line| {
+                put(line.cells, to, glyph, 2);
+                line.set(to, glyph, &text);
+                true
+            });
+            if links {
+                g.set_link(row, to..to.saturating_add(2), link.as_ref(), v);
+            }
+            g.advance_within(col.saturating_add(2), end);
+        });
+        Ok(Some((row, col)))
     }
 
     /// Widens cell `at` of `row` over the cell under the cursor, which

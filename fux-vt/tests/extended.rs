@@ -224,15 +224,101 @@ fn a_cluster_joins_across_process_calls_but_not_across_cursor_moves() -> Result 
     Ok(())
 }
 
+/// A cluster in the last column that grows two columns wide is placed as
+/// a wide glyph printed there is (mode 2027's spec, "Variation Selector
+/// 16": it "may possibly cause reflowing of that symbol to the next line
+/// if on right margin with AutoWrap mode set"): on the next line, the
+/// column it left a spacer, the line feed scrolling at the bottom margin.
+#[test]
+fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
+    let heart = "\u{2764}\u{fe0f}";
+    let left = |p: &Parser| -> Result<bool> {
+        let c = cell(p, 0, 3)?;
+        Ok(!c.has_contents() && c.bgcolor() == Color::Default)
+    };
+    // Whole or a byte at a time, the same.
+    let text = "abc\u{2764}\u{fe0f}X";
+    let mut whole = Parser::new(Size::new(2, 4)?, 0)?;
+    whole.process(text.as_bytes())?;
+    let mut split = Parser::new(Size::new(2, 4)?, 0)?;
+    for byte in text.as_bytes() {
+        split.process(std::slice::from_ref(byte))?;
+    }
+    for p in [&whole, &split] {
+        assert_eq!(lines(p), ["abc", &format!("{heart}X")]);
+        assert!(cell(p, 1, 0)?.is_wide() && cell(p, 1, 1)?.is_wide_continuation());
+        assert!(left(p)? && p.screen().row_wrapped(0));
+        let row = p.screen().window().row(0).ok_or("row 0")?;
+        assert!(row.ends_in_spacer());
+        assert_eq!(p.screen().cursor_position(), (1, 3));
+    }
+    // A mark after it joins it where it went: the cluster's cell moved.
+    let mut p = Parser::new(Size::new(2, 4)?, 0)?;
+    p.process("abc\u{2764}\u{fe0f}\u{200d}\u{1f525}".as_bytes())?;
+    assert_eq!(
+        cell(&p, 1, 0)?.contents(),
+        "\u{2764}\u{fe0f}\u{200d}\u{1f525}"
+    );
+    assert_eq!(p.screen().cursor_position(), (1, 2));
+    // On the last line it scrolls, the row it left going to history.
+    let mut p = Parser::new(Size::new(2, 4)?, 1000)?;
+    p.process(format!("top\r\nabc{heart}").as_bytes())?;
+    assert_eq!(lines(&p), ["abc", heart]);
+    assert!(left(&p)? && p.screen().history_len() == 1);
+    // At the scroll region's bottom margin only the region scrolls.
+    let mut p = Parser::new(Size::new(3, 4)?, 0)?;
+    p.process(format!("\x1b[3;1Hlow\x1b[1;2r\x1b[2;1Habc{heart}").as_bytes())?;
+    assert_eq!(lines(&p), ["abc", heart, "low"]);
+    // At the right margin (DECLRMM) it goes to the next line's left one.
+    let mut p = Parser::new(Size::new(2, 6)?, 0)?;
+    p.process("\x1b[?69h\x1b[2;5s\x1b[1;2Habc\u{2764}\u{fe0f}".as_bytes())?;
+    assert_eq!(lines(&p), [" abc", &format!(" {heart}")]);
+    assert_eq!(p.screen().cursor_position(), (1, 3));
+    // Under IRM it is inserted where it lands.
+    let mut p = Parser::new(Size::new(2, 4)?, 0)?;
+    p.process(format!("\x1b[2;1Hyz\x1b[4h\x1b[1;1Habc{heart}").as_bytes())?;
+    assert_eq!(lines(&p), ["abc", &format!("{heart}yz")]);
+    // It keeps its own style and link; the column left has neither.
+    let mut p = Parser::with_options(
+        Size::new(2, 4)?,
+        0,
+        Options::new().with(Feature::Hyperlinks),
+    )?;
+    p.process("abc\x1b[41m\x1b]8;;u\x1b\\\u{2764}\x1b[m\x1b]8;;\x1b\\\u{fe0f}".as_bytes())?;
+    assert_eq!(cell(&p, 1, 0)?.bgcolor(), Color::Idx(1));
+    let rows = p.screen().window();
+    let link = |y: u16, x: usize| {
+        let row = rows.row(y)?;
+        row.link(x).map(|l| l.uri().to_owned())
+    };
+    assert_eq!(
+        (link(1, 0), link(1, 1)),
+        (Some("u".into()), Some("u".into()))
+    );
+    assert!(left(&p)? && link(0, 3).is_none());
+    // With autowrap off it is not printed, as a wide glyph with no room
+    // is not (the spec leaves it undefined).
+    let mut p = Parser::new(Size::new(2, 4)?, 0)?;
+    p.process(format!("\x1b[?7labc{heart}X").as_bytes())?;
+    assert_eq!(lines(&p), ["abcX", ""]);
+    assert_eq!(p.screen().cursor_position(), (0, 3));
+    Ok(())
+}
+
+/// Reflow joins the line again over the spacer the cluster left.
+#[test]
+fn reflow_joins_a_cluster_that_wrapped_as_it_grew() -> Result {
+    let mut p = Parser::with_options(Size::new(2, 4)?, 1000, REFLOW)?;
+    p.process("abc\u{2764}\u{fe0f}X".as_bytes())?;
+    p.resize(Size::new(2, 8)?)?;
+    assert_eq!(lines(&p), ["abc\u{2764}\u{fe0f}X", ""]);
+    assert!(cell(&p, 0, 3)?.is_wide());
+    assert_eq!(p.screen().cursor_position(), (0, 6));
+    Ok(())
+}
+
 #[test]
 fn widening_needs_room_and_clears_what_it_covers() -> Result {
-    // In the last column the cell stays narrow and nothing wraps.
-    let mut p = Parser::new(Size::new(2, 3)?, 0)?;
-    p.process("ab\u{2764}\u{fe0f}".as_bytes())?;
-    assert_eq!(cell(&p, 0, 2)?.contents(), "\u{2764}\u{fe0f}");
-    assert!(!cell(&p, 0, 2)?.is_wide());
-    assert_eq!(p.screen().cursor_position(), (0, 2));
-    assert!(p.screen().pending_wrap());
     // Widening over the first half of a wide glyph blanks its second half.
     let mut p = Parser::new(Size::new(2, 6)?, 0)?;
     p.process("a\u{4f60}\x1b[1G\u{2764}".as_bytes())?;

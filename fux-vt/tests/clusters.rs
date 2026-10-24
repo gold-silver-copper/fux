@@ -129,33 +129,23 @@ fn each_rule_at_a_rows_start() -> Result {
     Ok(())
 }
 
-/// In the last column: a narrow cell whose cluster becomes two wide is not
-/// widened there, and keeps the wrap pending; a wide first character does
-/// not fit, and goes to the next line's start as a wide glyph does (the
-/// README's "Grapheme clusters" and DECAWM rows).
+/// In the last column every cluster ends as a wide glyph printed there
+/// does, at the next line's start: a narrow cell whose cluster becomes two
+/// wide moves there (mode 2027's spec, "Variation Selector 16"), a wide
+/// first character goes there (the README's "Grapheme clusters" and
+/// DECAWM rows).
 #[test]
 fn each_rule_in_the_last_column() -> Result {
     for (name, x) in RULES {
         let got = plain(2, 3, format!("ab{x}").as_bytes())?;
-        let want = if name == "jamo" {
-            (
-                vec![
-                    row(&[c("a", false), c("b", false)], 3),
-                    row(&[c(x, true)], 3),
-                ],
-                (1, 2),
-                false,
-            )
-        } else {
-            (
-                vec![
-                    row(&[c("a", false), c("b", false), c(x, false)], 3),
-                    row(&[], 3),
-                ],
-                (0, 2),
-                true,
-            )
-        };
+        let want = (
+            vec![
+                row(&[c("a", false), c("b", false)], 3),
+                row(&[c(x, true)], 3),
+            ],
+            (1, 2),
+            false,
+        );
         assert_eq!(got, want, "{name}");
     }
     Ok(())
@@ -185,18 +175,7 @@ fn each_rule_at_the_right_margin() -> Result {
     for (name, x) in RULES {
         let got = plain(2, 8, format!("\x1b[?69h\x1b[1;4sabc{x}").as_bytes())?;
         let abc = [c("a", false), c("b", false), c("c", false)];
-        let want = if name == "jamo" {
-            (vec![row(&abc, 8), row(&[c(x, true)], 8)], (1, 2), false)
-        } else {
-            (
-                vec![
-                    row(&[abc.to_vec(), vec![c(x, false)]].concat(), 8),
-                    row(&[], 8),
-                ],
-                (0, 3),
-                true,
-            )
-        };
+        let want = (vec![row(&abc, 8), row(&[c(x, true)], 8)], (1, 2), false);
         assert_eq!(got, want, "{name}");
     }
     Ok(())

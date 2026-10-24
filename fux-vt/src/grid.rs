@@ -851,7 +851,13 @@ impl Grid {
         let link = self.intern(pen, version);
         self.links.open = link.map_or(Held::Refused, Held::At);
     }
-    fn set_link(&mut self, row: u16, span: Range<usize>, link: Option<&Hyperlink>, version: u64) {
+    pub(crate) fn set_link(
+        &mut self,
+        row: u16,
+        span: Range<usize>,
+        link: Option<&Hyperlink>,
+        version: u64,
+    ) {
         let slot = self
             .slot(row)
             .filter(|_| span.end <= usize::from(self.size.cols()));
