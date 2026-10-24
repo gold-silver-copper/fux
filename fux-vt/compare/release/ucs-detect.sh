@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # release/ucs-detect.sh OUT [NAME [MIN]]: ucs-detect 2.3.8 (wcwidth 0.9.2)
-# in a pane of a private fux server, FUX's build, with Ghostty's pinned
+# in a pane of a private fux server, FUX_BIN's build, with Ghostty's pinned
 # limits (its test/ucs-detect.sh: 5,000 code points and graphemes a
 # category, 1,000 errors). Writes OUT/ucs-detect-NAME.json (NAME: fux) and
 # its summary, OUT/ucs-detect-NAME.txt: each category's score beside the

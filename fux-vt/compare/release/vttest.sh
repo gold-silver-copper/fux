@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # release/vttest.sh ENGINE OUT: vttest 2.7 (20251205), live at 24x80.80, in
-# ENGINE: `fux` (a pane of a private fux server, FUX's build: fux-vt as fux
+# ENGINE: `fux` (a pane of a private fux server, FUX_BIN's build: fux-vt as fux
 # runs it) or `xterm` (real xterm 411, its own defaults, on a private Xvfb
 # display). vttest replays vttest.keys as its own command file (-c), reads
 # every answer from the terminal live, and logs (-l) each self-check;

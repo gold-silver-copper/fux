@@ -337,11 +337,12 @@ prints them all.
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"$FUX"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
 The rest is the server's own environment, as it was when the server
-started. Over all of it, the table's too, come the names in
-`update-environment`, which a pane takes from whoever starts it (one they
-lack is unset; from a starter that sends no environment, such as a client
-with no terminal, none), and last what a program's `env` sets: `opts str
-NAME str VALUE env str PROGRAM program run`.
+started. A name in `update-environment` a pane takes instead from whoever
+starts it, over the table too: one they have is set, one they lack unset
+(the `FUX_` ones then keep the table's); a starter that sends no
+environment, such as a client with no terminal, gives none. Last, what a
+program's `env` sets overrides everything: `opts str NAME str VALUE env str
+PROGRAM program run`.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a

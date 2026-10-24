@@ -3,7 +3,7 @@
 # test data (24), each case's bytes read by every ENGINE (default: fux and
 # xterm) at the case's size, and the screens scored by refs.py: beside the
 # suite's own expected screen, and beside real xterm 411's. `fux` is a pane
-# of a private fux server (FUX's build), `xterm` real xterm 411 on a private
+# of a private fux server (FUX_BIN's build), `xterm` real xterm 411 on a private
 # Xvfb display, printing its screen (MC), set up as compare's xterm engine
 # is where it matters (UTF-8 always, no precomposing) and fed a byte a
 # write: fed in larger pieces, xterm 411 shows alacritty/scroll_up_reset's
