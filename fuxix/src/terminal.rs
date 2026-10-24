@@ -5,17 +5,13 @@ use crate::process::Pid;
 use std::num::NonZeroU16;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
-/// The type of an `ioctl` request, which differs between C libraries.
+/// The type of an `ioctl` request, which differs between C libraries; on
+/// macOS some request constants are typed narrower, and `Request::from`
+/// widens them.
 #[cfg(target_os = "macos")]
-type Request = libc::c_ulong;
+pub(crate) type Request = libc::c_ulong;
 #[cfg(not(target_os = "macos"))]
-type Request = libc::Ioctl;
-
-/// A request constant as the C library's `ioctl` takes it: on macOS, some
-/// are typed narrower.
-pub(crate) fn request(value: impl Into<Request>) -> Request {
-    value.into()
-}
+pub(crate) type Request = libc::Ioctl;
 
 /// A terminal's modes.
 #[derive(Clone)]
@@ -210,7 +206,7 @@ pub fn window_size(fd: impl AsFd) -> Option<Size> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let get = request(libc::TIOCGWINSZ);
+    let get = Request::from(libc::TIOCGWINSZ);
     // SAFETY: TIOCGWINSZ writes one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), get, &mut size) }).ok()?;
     Size::new(size.ws_row, size.ws_col)
@@ -225,7 +221,7 @@ pub fn set_window_size(fd: impl AsFd, size: Size) -> Result<()> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let set = request(libc::TIOCSWINSZ);
+    let set = Request::from(libc::TIOCSWINSZ);
     // SAFETY: TIOCSWINSZ reads one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), set, &size) }).map(drop)
 }

@@ -419,7 +419,7 @@ pub(crate) fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
         error => return Err(Errno::from_raw(error)),
     }
     #[cfg(target_os = "macos")]
-    let get = terminal::request(libc::TIOCPTYGNAME);
+    let get = terminal::Request::from(libc::TIOCPTYGNAME);
     #[cfg(target_os = "macos")]
     // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL included, and the
     // buffer is 128 bytes.
