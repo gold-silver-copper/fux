@@ -63,21 +63,32 @@ fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, Stri
     server.until(&id(answer), &version(answer), |c| c.contains(text))
 }
 
-/// The marks the README shows for bash, which a bash pane here sends.
-const BASH_MARKS: &str = r#"PS0='\e]133;C\a'
-PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}"#;
+/// The block of `docs/agents.md` fenced as `lang` first after `after`: as
+/// written, its indent taken off.
+fn block(after: &str, lang: &str) -> Result<String, String> {
+    let docs = include_str!("../docs/agents.md");
+    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
+    let fence = format!("```{lang}\n");
+    let (_, block) = from.split_once(&fence).ok_or(format!("no {lang} block"))?;
+    let (block, _) = block.split_once("```").ok_or("no end")?;
+    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
+    Ok(lines.map(|l| format!("{l}\n")).collect())
+}
 
-/// The marks the README shows for zsh.
-const ZSH_MARKS: &str = r#"autoload -Uz add-zsh-hook
-mark_start() { print -n '\e]133;C\a' }
-mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
-add-zsh-hook preexec mark_start
-precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's"#;
+/// The marks `docs/agents.md` shows for `shell`, in its startup file.
+fn marks(shell: &str) -> Result<String, String> {
+    block("## shells:", shell)
+}
 
-/// The marks the README shows for fish.
-const FISH_MARKS: &str = r#"function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
-function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
-function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end"#;
+/// A prompt hook of a user's own, for `shell`, run after the marks' end:
+/// it says the status it sees.
+fn later_hook(shell: &str) -> &'static str {
+    match shell {
+        "bash" => "after() { echo \"hook saw $?\"; }\nPROMPT_COMMAND=after\n",
+        "zsh" => "after() { echo \"hook saw $?\" }\nprecmd_functions=(after)\n",
+        _ => "function after --on-event fish_postexec; echo \"hook saw $status\"; end\n",
+    }
+}
 
 /// Whether the `bash` here is 4.4 or later, which has `PS0`, as the
 /// README's marks need (macOS's own is 3.2).
@@ -93,10 +104,12 @@ fn bash_has_ps0() -> Result<bool, String> {
     Ok(version >= 404)
 }
 
-/// A bash pane named `name` that marks its commands as the README says.
+/// A bash pane named `name` that marks its commands as the docs say, after
+/// a prompt hook of its own.
 fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
     let rc = server.dir.join(format!("{name}.bashrc"));
-    std::fs::write(&rc, format!("PS1='$ '\n{BASH_MARKS}\n")).map_err(e)?;
+    let (hook, marks) = (later_hook("bash"), marks("bash")?);
+    std::fs::write(&rc, format!("PS1='$ '\n{hook}{marks}")).map_err(e)?;
     let rc = rc.to_string_lossy().into_owned();
     let argv = ["bash", "--noprofile", "--rcfile", &rc, "-i"];
     let made = server.ok(&run(&["str", name, "name"], &argv))?;
@@ -265,14 +278,12 @@ fn bells_and_respawns_change_the_version() -> Outcome {
 
 /// A shell's OSC 133 marks count the commands that end in its pane's
 /// version, `last_status` says how the last ended and `last-output` reads
-/// its output alone; where no command was marked, `last-output` says so
-/// and the count stays. The marks are the README's, for each shell here.
+/// its output alone; a prompt hook after the marks sees the command's
+/// status; a line that runs nothing ends no command. Where no command was
+/// marked, `last-output` says so and the count stays. The marks are the
+/// docs', for each shell here.
 #[test]
 fn shell_marks_count_commands_and_give_their_output() -> Outcome {
-    let readme = include_str!("../README.md");
-    for marks in [BASH_MARKS, ZSH_MARKS, FISH_MARKS] {
-        assert!(readme.contains(marks), "the README shows {marks}");
-    }
     let server = Server::start("")?;
     let bash = bash_has_ps0()?;
     if bash {
@@ -284,27 +295,39 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         assert_eq!(status(pane)?, "1\n");
         let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
         assert_eq!(output, "one\n");
+        server.shows(pane, "hook saw 1")?;
+        // An empty line, a comment and a syntax error run nothing: the
+        // next command is the one that ends.
+        let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
+        let before = done(&server.version(pane)?);
+        for nothing in ["", "# nothing", ")"] {
+            server.ok(&typed(pane, nothing))?;
+        }
         line_done(&server, pane, "echo two")?;
+        assert_eq!(
+            done(&server.version(pane)?),
+            before.map(|d| d.saturating_add(1))
+        );
         assert_eq!(status(pane)?, "0\n");
         Ok(())
     };
     if bash {
         check("b")?;
     }
-    // A shell the tests may have: its marks as the README has them, each
-    // read from its own startup file, where the README puts them.
+    // A shell the tests may have: its marks as the docs have them, each
+    // read from its own startup file, where the docs put them.
     let shells = [
-        ("zsh", ZSH_MARKS, "ZDOTDIR", ".zshrc"),
-        ("fish", FISH_MARKS, "XDG_CONFIG_HOME", "fish/config.fish"),
+        ("zsh", "ZDOTDIR", ".zshrc"),
+        ("fish", "XDG_CONFIG_HOME", "fish/config.fish"),
     ];
-    for (shell, marks, home, rc) in shells {
+    for (shell, home, rc) in shells {
         if std::env::var_os("FUX_TEST_SHELLS").is_none() {
             break;
         }
         let dir = server.dir.join(shell);
         let rc = dir.join(rc);
         std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
-        std::fs::write(&rc, format!("{marks}\n")).map_err(e)?;
+        std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
         let words = [
             "opts", "str", shell, "name", "str", home, "str", &dir, "env",
@@ -1036,67 +1059,56 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
     Ok(())
 }
 
-/// The code block of `docs/agents.md` after `after`: as written, its
-/// indent taken off.
-fn recipe(after: &str) -> Result<String, String> {
-    let docs = include_str!("../docs/agents.md");
-    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
-    let (_, block) = from.split_once("```sh\n").ok_or("no block")?;
-    let (block, _) = block.split_once("```").ok_or("no end")?;
-    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
-    Ok(lines.map(|l| format!("{l}\n")).collect())
-}
-
-/// The docs' recipes run as written, under bash, with their helpers: a
-/// reply's text, a program's exit, a command's end that comes with its
-/// program's, and quiet.
+/// The docs' recipes run as written, as programs: a quiet screen, a
+/// reply's text, a shell command's end and a program's exit, and a
+/// deadline's fallback, each in a pane of its own; and every program the
+/// guide shows checks.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
-    let step = recipe("## recipes: Waiting for what you need")?;
-    let answers = "read q; sleep 1; echo the answer is 42; sleep 30";
-    let asks = id(&server.ok(&run(&[], &["sh", "-c", answers]))?);
-    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
-    let exit =
-        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
-    // A command's end, marked, that comes with its program's own.
-    let marked = r#"opts str sh program str -c arg str 'sleep 1; printf "\033]133;C\007hi\n\033]133;D;5\007"' arg run"#;
-    let ended = recipe("- **A shell command's end, with marks**")?
-        .replace("%3 str 'make test' line", marked);
-    let bin = std::path::Path::new(fux())
-        .parent()
-        .ok_or("fux's directory")?;
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let talks = "read x; echo one; sleep 0.3; echo two; sleep 30";
-    let talks = id(&server.ok(&run(&[], &["sh", "-c", talks]))?);
+    let pane = |script: &str| -> Result<String, String> {
+        Ok(id(&server.ok(&run(&[], &["sh", "-c", script]))?))
+    };
+    let recipe = |after: &str| block(after, "fux");
+    let talks = pane("read x; echo one; sleep 0.3; echo two; sleep 30")?;
     let quiet = recipe("- **Quiet for N seconds**")?
         .replace("%2", &talks)
-        .replace("quiet 600 5", "quiet 600 1");
-    let recipes = [
-        (text, "answered\n"),
-        (exit, "3\n"),
-        (ended, "5\nhi\n"),
+        .replace("5 quiet", "1 quiet");
+    let asks = pane("read q; sleep 1; echo the answer is 42; sleep 30")?;
+    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
+    // A command's end, marked, once a line comes.
+    let marks = r#"read x; printf '\033]133;C\007hi\n\033]133;D;5\007'; sleep 30"#;
+    let ended = recipe("- **A shell command's end, with marks**")?.replace("%3", &pane(marks)?);
+    let exit =
+        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    let deaf = pane("stty -echo; sleep 30")?;
+    let fallback = recipe("- **A deadline, a fallback, a retry:**")?
+        .replace("%2", &deaf)
+        .replace("10 timeout", "1 timeout");
+    for (i, (recipe, said)) in [
         (quiet, "two\n"),
-    ];
-    for (recipe, said) in recipes {
-        let script = format!("{step}{recipe}");
-        // With `set -e`, as scripts often are: a recipe must not stop on a
-        // status it expects.
-        let out = std::process::Command::new("bash")
-            .args(["-e", "-c", &script])
-            .env("PATH", &path)
-            .env("FUX_SOCKET", &server.socket)
-            .env("XDG_CONFIG_HOME", server.dir.join("config"))
-            .env_remove("FUX_PANE")
-            .output()
-            .map_err(e)?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stdout.ends_with(said), "{script}\n{stdout}{stderr}");
+        (text, "answered\n"),
+        (ended, "5\nhi\n"),
+        (exit, "3\n"),
+        (fallback, ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = server.dir.join(format!("recipe-{i}.fux"));
+        std::fs::write(&file, &recipe).map_err(e)?;
+        let out = server.fux(&[&file.to_string_lossy()])?;
+        assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.ends_with(said), "{recipe}\n{}", out.stdout);
+    }
+    // C-c after nothing came of the key.
+    server.exits(&deaf)?;
+    let docs = include_str!("../docs/agents.md");
+    for (i, program) in docs.split("```fux\n").skip(1).enumerate() {
+        let program = program.split("```").next().unwrap_or_default();
+        let file = server.dir.join(format!("shown-{i}.fux"));
+        std::fs::write(&file, program).map_err(e)?;
+        server.ok(&["str", &file.to_string_lossy(), "check"])?;
     }
     Ok(())
 }
