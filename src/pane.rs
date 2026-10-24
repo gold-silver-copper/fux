@@ -773,7 +773,7 @@ impl Pane {
     pub fn counts(&self) -> crate::command::Counts {
         crate::command::Counts {
             starts: self.starts,
-            screen: self.screen().version(),
+            screen: self.screen().revision(),
             bells: self.alerts.rung,
             done: self.screen().commands().finished,
             ended: self.process.exit_status().is_some(),

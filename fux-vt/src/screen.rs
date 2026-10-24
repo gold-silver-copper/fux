@@ -594,6 +594,9 @@ pub struct Screen {
     next_id: u64,
     version: u64,
     structural: u64,
+    /// `revision`'s count, and the bytes read whose work is left over.
+    revision: u64,
+    unfinished: u64,
     alternate_active: bool,
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
@@ -834,6 +837,8 @@ impl Screen {
             next_id,
             version: 1,
             structural: 1,
+            revision: 0,
+            unfinished: 0,
             alternate_active: false,
             attributes: Attributes::default(),
             pen_style: 0,
@@ -876,8 +881,9 @@ impl Screen {
     pub(crate) fn clear_history(&mut self) {
         self.primary.clear_history();
         // Rows left history: every reader reads again.
-        self.version = self.version.wrapping_add(1);
+        self.version = self.version.saturating_add(1);
         self.structural = self.version;
+        self.revise(1);
     }
 
     fn grid_mut(&mut self) -> &mut Grid {
@@ -933,7 +939,22 @@ impl Screen {
     /// A new version, for what is processed next: like identities, 64 bits
     /// counted up by one do not run out.
     pub(crate) fn begin(&mut self) {
-        self.version = self.version.wrapping_add(1);
+        self.version = self.version.saturating_add(1);
+    }
+    /// Counts `bytes` read by a call in `revision`, once their work is
+    /// done: with work left over, when the call that finishes it ends.
+    pub(crate) fn read(&mut self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.unfinished = self.unfinished.saturating_add(bytes);
+        if !self.left_over() {
+            let done = mem::take(&mut self.unfinished);
+            self.revise(done);
+        }
+    }
+    /// `revision` moves on by `n`. A u64 of bytes read is never reached,
+    /// so it saturates rather than wrap.
+    fn revise(&mut self, n: u64) {
+        self.revision = self.revision.saturating_add(n);
     }
     /// The screen's rows and columns.
     pub fn size(&self) -> Size {
@@ -1211,12 +1232,23 @@ impl Screen {
     pub fn mark(&self) -> Mark {
         Mark(self.version)
     }
-    /// The screen's revision: one more for each call that processes
+    /// The screen's version: one more for each call that processes
     /// output (whether or not it changed a cell), each resize, and each
     /// change to its history (`clear_history`, `set_history_bytes`). Each
-    /// row keeps the one that last changed it (`Row::version`).
+    /// row keeps the one that last changed it (`Row::version`). How the
+    /// output was cut into calls changes it; `revision` does not.
     pub fn version(&self) -> u64 {
         self.version
+    }
+    /// The screen's revision: the bytes of output read, each counted once
+    /// its work is done (a call that stops at its budget with work left
+    /// counts its bytes when the call that finishes the work ends), plus
+    /// one for each resize to another size and each change to its history
+    /// (`clear_history`, also `CSI 3 J`; `set_history_bytes` to another
+    /// limit). It is the same however the output was cut into calls, and
+    /// moves on after anything that changes the screen.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
     /// Whether the screen may have changed since `mark`: true after any
     /// processing at all, as the README says; false, nothing changed.
@@ -1250,7 +1282,7 @@ impl Screen {
             return Ok(());
         }
         self.last_print = None;
-        let version = self.version.wrapping_add(1);
+        let version = self.version.saturating_add(1);
         let mut next = self.next_id;
         let (mut primary, kept) = if reflow {
             self.primary.reflowed(size, &mut next, version)?
@@ -1270,6 +1302,7 @@ impl Screen {
         self.next_id = next;
         self.version = version;
         self.structural = version;
+        self.revise(1);
         // History is made anew: the pictures are found in it again.
         self.retrack_pictures();
         Ok(())
@@ -1281,8 +1314,9 @@ impl Screen {
         }
         self.primary.set_history_bytes(bytes);
         // Rows may have left history: every reader reads again.
-        self.version = self.version.wrapping_add(1);
+        self.version = self.version.saturating_add(1);
         self.structural = self.version;
+        self.revise(1);
     }
 
     fn scroll(&mut self, region: Span, count: u16, direction: Scroll) {

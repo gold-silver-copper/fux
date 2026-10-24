@@ -302,10 +302,11 @@ impl std::str::FromStr for Run {
 
 /// What only grows while one program runs in a pane (a respawn starts all
 /// but `starts` afresh): its program's starts (`respawn`), its screen's
-/// revision (fux-vt's: bumped by each piece of output it reads, each
-/// resize to another size and each change to its history: cleared, or
-/// `history-bytes` set), bells and notifications rung, shell commands
-/// ended (OSC 133 `D`), and whether its program ended. Written
+/// revision (fux-vt's: the bytes of output read, plus one for each resize
+/// to another size and each change to its history: cleared, or
+/// `history-bytes` set; the same however the output was cut into reads),
+/// bells and notifications rung, shell commands ended (OSC 133 `D`), and
+/// whether its program ended. Written
 /// `STARTS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {

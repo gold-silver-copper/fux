@@ -4391,10 +4391,10 @@ mod tests {
         assert!(run(&mut s, "opts str main name new-workspace").is_err());
         assert_eq!(
             output(&mut s, "opts str workspace-3 name new-workspace")?,
-            format!("%2:0.1.0.0.0:{}\n", s.run)
+            format!("%2:0.0.0.0.0:{}\n", s.run)
         );
         // +3 would be workspace-3, which is taken.
-        let third = format!("%3:0.1.0.0.0:{}\n", s.run);
+        let third = format!("%3:0.0.0.0.0:{}\n", s.run);
         assert_eq!(output(&mut s, "opts new-workspace")?, third);
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);

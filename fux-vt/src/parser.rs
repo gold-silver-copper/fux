@@ -1153,6 +1153,21 @@ impl Parser {
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
+        let ran = self.run_on::<UNTIL_STOP>(bytes, sink);
+        // Every byte is read but those after a stop.
+        let read = match ran {
+            Ok(Some((taken, _))) => taken,
+            Ok(None) | Err(_) => bytes.len(),
+        };
+        self.screen.read(read);
+        ran
+    }
+    /// `run`, but for counting the bytes read.
+    fn run_on<const UNTIL_STOP: bool>(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut impl Sink,
+    ) -> Result<Option<(usize, Stop)>, Error> {
         if bytes.is_empty() {
             return self.run_left::<UNTIL_STOP>(sink);
         }
