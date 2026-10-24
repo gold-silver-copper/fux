@@ -1,34 +1,15 @@
 #!/usr/bin/env python3
 """Server memory with a full 50,000-line history: a pane fills its history
 with 60,000 lines of 80 characters, then the server's resident set is read.
-Also after an input, as an agent's wait keeps what was printed since.
 
   mem.py BIN...
 """
 import os, shutil, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fuxwait import run, until_text  # noqa: E402
+
 D = os.path.join(os.environ.get("BENCH_DIR", os.path.expanduser("~/.cache/fux-bench")), "C", "mwork")
-
-
-def run(bin_, e, *args):
-    return subprocess.run([bin_, *args], env=e, capture_output=True, text=True, timeout=300)
-
-
-def until_text(bin_, e, answer, text, secs=30):
-    """From an action's answer (`%2 VERSION`), waits for each change until
-    the pane's history holds `text`, `secs` at most in all: the pane. A
-    timeout, a closed pane, a failure or the program's end first fails."""
-    pane, version = answer.split()[:2]
-    end = time.monotonic() + secs
-    while text not in run(bin_, e, pane, "all-history", "capture").stdout:
-        left = int(end - time.monotonic())
-        if left < 1 or version.rsplit(".", 1)[-1] == "1":
-            raise RuntimeError(f"{pane} never showed {text!r}, at {version}")
-        out = run(bin_, e, pane, "str", version, "changed", str(left), "timeout", "wait")
-        if out.returncode != 0:
-            raise RuntimeError(f"{pane}: {out.returncode} {out.stderr.strip()}")
-        version = out.stdout.split()[1]
-    return pane
 
 
 def rss(pid):
@@ -64,9 +45,8 @@ def measure(bin_):
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
     started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "run")
-    first = started.stdout[:60] + started.stderr[:200]
     pane = until_text(bin_, e, started.stdout, "59999 ", 120)
-    kept = run(bin_, e, pane, "opts", "all-history", "capture").stdout.count("\n")
+    kept = run(bin_, e, pane, "all-history", "capture").stdout.count("\n")
     time.sleep(1)
     full = rss(pid)
     print(f"  {os.path.basename(bin_)}: {kept} lines kept")

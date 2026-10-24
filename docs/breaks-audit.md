@@ -21,8 +21,8 @@ macOS) was pushed to a throwaway branch and run by CI.
 | 014: socket cleanup trusts a reused inode number | The socket's inode stays allocated while fux holds it (`fuxix::file::pin`, `socket.rs`, `Pinned`) | `cleanup_leaves_a_socket_that_replaced_ours_where_inodes_are_reused` (`socket.rs`): "fux's socket was inode 8912904, the replacement's 8912904" | CI, Ubuntu (ext4; this machine's `/home` is btrfs, its `/tmp` tmpfs) |
 | 016: a file is read without bound | The config file is read up to 1 MiB, and a larger one refused (`config.rs`, `read_bounded`) | `a_config_file_over_a_mebibyte_is_refused`, new | here |
 | 017: a resized pane loses its bottom line | A shrink keeps the cursor's row on screen (`fux-vt` `grid.rs`, `reflowed`) | `a_split_pane_keeps_its_last_line_and_regains_its_rows` (`tests/layout.rs`) | here |
-| 020: a stopped pane process reads as exited on macOS | `fuxix::process::ended` decides by the report's code: a stop is not an end | `input_waits_for_a_program_that_is_not_reading` failed first, with a broken pipe: the stopped program's pane was closed. `a_stopped_child_has_not_ended_and_a_killed_one_has` (`fuxix`) and `a_stopped_pane_stays_until_its_program_ends` cover it too | CI, macOS (Linux never reported a stop here) |
-| 021: input past sixteen pieces is lost | A pane's input queue is bounded by bytes, not pieces (`pane.rs`, `InputQueue`) | `input_waits_for_a_program_that_is_not_reading` (`tests/pressure.rs`) | here |
+| 020: a stopped pane process reads as exited on macOS | `fuxix::process::ended` decides by the report's code: a stop is not an end | `input_waits_while_the_queue_is_full` failed first, with a broken pipe: the stopped program's pane was closed. `a_stopped_child_has_not_ended_and_a_killed_one_has` (`fuxix`) and `a_stopped_pane_stays_until_its_program_ends` cover it too | CI, macOS (Linux never reported a stop here) |
+| 021: input past sixteen pieces is lost | A pane's input queue is bounded by bytes, not pieces (`pane.rs`, `InputQueue`) | `input_waits_while_the_queue_is_full` (`tests/pressure.rs`) | here |
 
 ### What is not proven
 

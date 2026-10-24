@@ -1203,19 +1203,15 @@ impl Session {
     /// `pane_mut`, for input: a pane whose program has exited takes none.
     fn live_pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(id)?;
-        if let Process::HungUp(_) = pane.process {
-            let why = format!("{id}: its program closed its terminal: nothing reads input there");
-            return Err(fail(Code::NotRunning, why));
-        }
-        if pane.paused() {
-            let why =
-                format!("{id}: paused since the server restarted: respawn starts its program");
-            return Err(fail(Code::NotRunning, why));
-        }
-        match pane.process.exit_status() {
-            Some(status) => Err(ended(pane.id, status)),
-            None => Ok(pane),
-        }
+        let why = match pane.process {
+            Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
+            Process::Absent if pane.paused() => {
+                "paused since the server restarted: respawn starts its program"
+            }
+            Process::Exited(status) => return Err(ended(id, status)),
+            Process::Absent | Process::Reading(_) => return Ok(pane),
+        };
+        Err(fail(Code::NotRunning, format!("{id}: {why}")))
     }
 
     /// The size a pane starts at in a new tab laid out on `fit`.
@@ -2071,10 +2067,17 @@ impl Session {
             let why = "a version is one pane's: on a tab or workspace, wait from now";
             return Err(fail(Code::Usage, why));
         }
-        // Its program started fewer times than the version says: the
-        // version is another pane's, or made up.
+        // A count above the pane's, of the same program (every count grows
+        // while it runs) or a later one: the version is another pane's, or
+        // made up.
         if let (Some(since), [pane]) = (wait.since, panes.as_slice())
-            && since.starts > pane.version().starts
+            && let now = pane.version()
+            && (since.starts > now.starts
+                || since.starts == now.starts
+                    && (since.screen > now.screen
+                        || since.bells > now.bells
+                        || since.done > now.done
+                        || since.ended > now.ended))
         {
             let why = format!("{since} is no version of {}: from another pane?", pane.id);
             return Err(fail(Code::BadValue, why));

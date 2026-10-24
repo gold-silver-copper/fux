@@ -217,14 +217,13 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
     let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
-    // A version of a program started more often than this pane's is
-    // another pane's, or made up.
-    let other = server.fux(&["str", &pane, "pane", "str", "3.0.0.0.0", "changed", "wait"])?;
-    assert!(
-        other.stderr.starts_with("fux: bad_value: "),
-        "{}",
-        other.stderr
-    );
+    // A version with a count above this pane's (a program started more
+    // often, or more output read) is another pane's, or made up.
+    for other in ["3.0.0.0.0", "0.99999.0.0.0"] {
+        let other = server.fux(&["str", &pane, "pane", "str", other, "changed", "wait"])?;
+        let refused = other.stderr.starts_with("fux: bad_value: ");
+        assert!(refused, "{}", other.stderr);
+    }
     // In one program, a wait on the action's answer waits from the version
     // it holds, a timeout given between them too: asked again once the
     // change surely came, it answers at once, where one from now would

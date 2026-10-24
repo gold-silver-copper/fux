@@ -18,7 +18,7 @@ cd ~/code/fux && for c in master my-branch; do d=$HOME/.cache/fux-bench/src-$c; 
 
 ## C. Speed and memory
 
-- `speed.py BASE CAND [ROUNDS]`: PR #160's speed table; `speed_extra.py`: actions the echo and burst cases touch (erase and retype, a line editor redrawing its line, floods); medians, builds alternating, a fresh server each round. `mem.py`: a pane with a full 50,000-line history.
+- `speed.py BASE CAND [ROUNDS]`: PR #160's speed table, for builds that wait on versions; medians, builds alternating, a fresh server each round. `mem.py`: a pane with a full 50,000-line history.
 - Instructions: `bench/` (`fux-bench --against REF`). Where `perf` is missing, `perf/perf` stands in for the one command fux-bench runs, through `perf_event_open`, one counter per kind of core (`PATH=agentbench/compare/perf:$PATH`).
 
 ## D. fux against tmux, zellij and herdr

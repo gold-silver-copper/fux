@@ -147,7 +147,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd"),
-    word("Reading", "json", "value -- json", "value as JSON: an answer, or a list holding one, stays an answer, with its status"),
+    word("Reading", "json", "value -- json", "value as JSON (an answer as its JSON); a failed wait stops the program before json runs"),
     word("Reading", "events", "--", "what happens, a line each, as it happens"),
     word("Reading", "events-json", "--", "what happens, as JSON lines"),
     word("Reading", "events-of", "handle --", "what happens in a pane, tab or workspace"),
@@ -457,8 +457,10 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     let Value::App(Fux::Answer(a)) = value else {
         return None;
     };
-    let one = matches!(a.said, Said::Action(_));
-    (one.then(|| a.text.split_whitespace().nth(1)).flatten()).and_then(|v| v.parse().ok())
+    let Said::Action(_) = a.said else {
+        return None;
+    };
+    a.text.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// The options or request `value` is, `word` given it: options stay
@@ -1091,7 +1093,8 @@ impl fuxth::Host for Host<'_> {
                             client: Some(c),
                             action: keys,
                         };
-                        // Its answer, empty, as send-keys to a pane leaves one.
+                        // Its answer, empty: the client's keys go to the pane
+                        // it chooses, so there is no one version to answer.
                         return later(ask(typed, Then::Outcome));
                     }
                 };

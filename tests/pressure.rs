@@ -128,7 +128,7 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// notice, and, as it says, nothing more is queued until its terminal takes some:
 /// what arrives is exactly what was accepted.
 #[test]
-fn input_waits_for_a_program_that_is_input_full() -> Outcome {
+fn input_waits_while_the_queue_is_full() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;

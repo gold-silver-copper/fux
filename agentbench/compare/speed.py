@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Speed of master's fux and the branch's on the same jobs, each on a private
-server: PR #160's table, plus an agent's typical action (a 40-character
-command and Enter) in a shell fux marks and in a program that reads keys
-raw with no marks (python's REPL), where input is paced. Medians of N
-rounds, in milliseconds, master and branch alternating.
+"""Speed of two fux builds on the same jobs, each on a private server:
+PR #160's table, plus an agent's typical action (a 40-character command
+and Enter) in bash and in a program that reads keys raw (python's REPL).
+Medians of N rounds, in milliseconds, the builds alternating. Both builds
+must speak versions (`str V changed wait`): this fux or later.
 
-  speed.py MASTER_BIN BRANCH_BIN [ROUNDS]
+  speed.py BASE_BIN CAND_BIN [ROUNDS]
 """
 import os, shutil, statistics, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fuxwait import run, until_text  # noqa: E402
 
 D = os.path.join(os.environ.get("BENCH_DIR", os.path.expanduser("~/.cache/fux-bench")), "C", "work")
 
@@ -25,27 +28,6 @@ def ms(f):
     t = time.perf_counter(); f(); return 1000 * (time.perf_counter() - t)
 
 
-def run(bin_, e, *args):
-    return subprocess.run([bin_, *args], env=e, capture_output=True, text=True, timeout=300)
-
-
-def until_text(bin_, e, answer, text, secs=30):
-    """From an action's answer (`%2 VERSION`), waits for each change until
-    the pane's history holds `text`, `secs` at most in all: the pane. A
-    timeout, a closed pane, a failure or the program's end first fails."""
-    pane, version = answer.split()[:2]
-    end = time.monotonic() + secs
-    while text not in run(bin_, e, pane, "all-history", "capture").stdout:
-        left = int(end - time.monotonic())
-        if left < 1 or version.rsplit(".", 1)[-1] == "1":
-            raise RuntimeError(f"{pane} never showed {text!r}, at {version}")
-        out = run(bin_, e, pane, "str", version, "changed", str(left), "timeout", "wait")
-        if out.returncode != 0:
-            raise RuntimeError(f"{pane}: {out.returncode} {out.stderr.strip()}")
-        version = out.stdout.split()[1]
-    return pane
-
-
 def jobs(bin_, tag):
     e = env(tag)
     out = {}
@@ -57,8 +39,8 @@ def jobs(bin_, tag):
     # Started and waited for in one measure: the start is part of the work.
     out["start and wait for a text (0.2s program)"] = ms(lambda: panes.append(until_text(bin_, e, start(), "READY")))
     pane = panes[0]
-    out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "opts", "capture"))
-    out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "capture", "json"))
+    out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "capture"))
+    out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "all-history", "capture", "json"))
     def fan():
         for i in range(30):
             until_text(bin_, e, run(bin_, e, "opts", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c",
@@ -67,11 +49,11 @@ def jobs(bin_, tag):
     command = "echo 'the quick brown fox jumps over 42'"  # 40 characters
     assert len(command) == 40
     sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split()[0]
-    out["40-char command + Enter, marked bash"] = ms(lambda: run(bin_, e, sh, "keys", "str", command, "text", "str", "Enter", "key", "send-keys"))
+    out["40-char command + Enter, bash"] = ms(lambda: run(bin_, e, sh, "str", command, "text", "str", "Enter", "key", "send-keys"))
     py = until_text(bin_, e, run(bin_, e, "opts", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "run").stdout, ">>>")
     line = "x = 'the quick brown fox jumps over 42'"
     line = line + " " * (40 - len(line))
-    out["40-char line + Enter, python REPL (raw)"] = ms(lambda: run(bin_, e, py, "keys", "str", line, "text", "str", "Enter", "key", "send-keys"))
+    out["40-char line + Enter, python REPL (raw)"] = ms(lambda: run(bin_, e, py, "str", line, "text", "str", "Enter", "key", "send-keys"))
     run(bin_, e, "force-kill-server")
     return out
 

@@ -1098,7 +1098,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let mut units = 0usize;
     let mut n = 0usize;
     for part in pieces(&bytes, each) {
-        let mut waiting = arm(&s);
+        let waiting = arm(&s);
         for read in pieces(part, PANE_READ) {
             let pane = panes
                 .get(n.checked_rem(panes.len()).unwrap_or(0))

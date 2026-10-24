@@ -1755,9 +1755,9 @@ impl Server {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
-                    // A little, as an echo or a prompt is: that was all,
-                    // and the poll says when there is more, without a read
-                    // to find none. A flood's reads are larger, and go on.
+                    // A short read: that was all, and the poll says when
+                    // there is more, without a read to find none. Full
+                    // reads go on.
                     if n < SHORT_READ {
                         break false;
                     }
