@@ -312,7 +312,8 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     );
     let echoed = server.ok(&typed(&id(&plain), "echo un''marked"))?;
     shows_after(&server, &echoed, "unmarked")?;
-    assert!(server.version(&id(&plain))?.ends_with(".0"));
+    let done = server.version(&id(&plain))?;
+    assert_eq!(done.split('.').nth(3), Some("0"), "{done}");
     Ok(())
 }
 
@@ -1037,8 +1038,9 @@ fn recipe(after: &str) -> Result<String, String> {
     Ok(lines.map(|l| format!("{l}\n")).collect())
 }
 
-/// The docs' recipes run as written, under bash, with its `step` helper:
-/// a reply's text, and a program's exit.
+/// The docs' recipes run as written, under bash, with their helpers: a
+/// reply's text, a program's exit, and a command's end that comes with its
+/// program's.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
@@ -1048,6 +1050,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
     let exit =
         recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    // A command's end, marked, that comes with its program's own.
+    let marked = r#"opts str sh program str -c arg str 'sleep 1; printf "\033]133;C\007hi\n\033]133;D;5\007"' arg run"#;
+    let ended = recipe("- **A shell command's end, with marks**")?
+        .replace("%3 str 'make test' line", marked);
     let bin = std::path::Path::new(fux())
         .parent()
         .ok_or("fux's directory")?;
@@ -1056,8 +1062,8 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    for (recipe, said) in [(text, "ok=1\n"), (exit, "3\nok=1\n")] {
-        let script = format!("{step}{recipe}echo ok=$ok\n");
+    for (recipe, said) in [(text, "answered\n"), (exit, "3\n"), (ended, "5\nhi\n")] {
+        let script = format!("{step}{recipe}");
         let out = std::process::Command::new("bash")
             .args(["-c", &script])
             .env("PATH", &path)

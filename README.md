@@ -185,8 +185,9 @@ prefix again sends it to the pane.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`); the prefix ends the mode and opens the column;
-any other key ends it and is dropped, which the bar says.
+prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`);
+the prefix ends the mode and opens the column; any other key ends it and
+is dropped, which the bar says.
 
 `a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
 `h`/`l` previous and next, `g` choose, `r` rename, `x` close, and `m` then
@@ -337,7 +338,7 @@ interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "version":"0.57.0.3.0","program":"vim","reading":false,"paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "version":"0.57.0.3.0","program":"vim","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",

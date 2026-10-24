@@ -185,8 +185,19 @@ fn n_ends_the_command_running() -> Result {
     assert_eq!(commands.finished, 1);
     assert_eq!(commands.last_status, None);
     assert!(commands.last_output.is_some());
-    assert!(commands.prompt);
     assert_eq!(marks(&p), [0, 2]);
+    Ok(())
+}
+
+/// A mark is where the next character goes: after output that fills its
+/// row, pending its wrap, past the last column, so the output ends after
+/// its last character.
+#[test]
+fn a_mark_after_a_full_row_is_past_its_last_column() -> Result {
+    let mut p = Parser::with_options(Size::new(3, 5)?, 0, MARKS)?;
+    p.process(b"\x1b]133;C\x07hello\x1b]133;D;0\x07")?;
+    let (start, end) = p.screen().commands().last_output.ok_or("no output")?;
+    assert_eq!((start.col, end.col), (0, 5));
     Ok(())
 }
 

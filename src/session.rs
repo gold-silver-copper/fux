@@ -686,8 +686,7 @@ fn acted(panes: impl IntoIterator<Item = (PaneId, command::Version)>) -> Reply {
     reply
 }
 
-/// A command that failed, told with its code: a usage error's
-/// status is 2.
+/// A command that failed, told with its code (its status: 1, 4 or 124).
 fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
     // caller whose `FUX_PANE` is another server's pane: why it got none.
@@ -1429,9 +1428,9 @@ impl Session {
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
         // A command line typed into the new shell is queued at once, and
         // written before the shell reads: its terminal takes it in line
-        // mode, which gives
-        // a control character its effect and keeps at most `TYPED` bytes of
-        // a line. Refused so, it leaves no process behind.
+        // mode, which gives a control character its effect and keeps at
+        // most `TYPED` bytes of a line. Refused so, it leaves no process
+        // behind.
         if let Start::Shell(Some(line), _) = start {
             if line.len() > TYPED || line.chars().any(char::is_control) {
                 let why = format!(
@@ -2052,6 +2051,10 @@ impl Session {
         let panes = (self.panes_of(target)?.into_iter())
             .map(|id| self.pane(id))
             .collect::<Result<Vec<_>, _>>()?;
+        // A wait on no pane would only time out.
+        if panes.is_empty() {
+            return Err(fail(Code::NoPane, "it holds no pane to wait on"));
+        }
         // A version is one pane's.
         if wait.since.is_some() && panes.len() != 1 {
             let why = "a version is one pane's: on a tab or workspace, wait from now";
@@ -3091,15 +3094,10 @@ impl Session {
     /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let mut fields = match (target, get) {
-            // A pane's version alone, which the recipes read after every
-            // change: not the rest of its state (`reading` reads `/proc`).
-            (AnyRef::Pane(id), Some("version")) => {
-                (self.panes.get(&id)).map(|p| vec![("version", Json::str(p.version().to_string()))])
-            }
-            (AnyRef::Pane(id), _) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
-            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now)),
-            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now)),
+        let mut fields = match target {
+            AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
+            AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
+            AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
         }
         .unwrap_or_default();
         let Some(field) = get else {

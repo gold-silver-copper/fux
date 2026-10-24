@@ -12,7 +12,9 @@ use crate::RowId;
 pub struct Mark {
     /// The row.
     pub row: RowId,
-    /// The column, from 0.
+    /// The column, from 0: where the next character goes, so past the
+    /// last column (the row's width) once one printed there is pending
+    /// its wrap.
     pub col: u16,
 }
 
@@ -31,9 +33,6 @@ pub struct Commands {
     /// Where the running command's output began (`C`); `None` once it
     /// ended (`D`), and before any began.
     pub output_start: Option<Mark>,
-    /// The shell drew a prompt (`A`) and has started no command since
-    /// (`C`): it is reading its command line.
-    pub prompt: bool,
 }
 
 impl Commands {
@@ -60,7 +59,6 @@ impl Screen {
                 if !self.commands.running() {
                     self.commands.started = self.commands.started.wrapping_add(1);
                 }
-                self.commands.prompt = false;
                 self.commands.output_start = Some(here);
             }
             b"D" => {
@@ -100,15 +98,15 @@ impl Screen {
     pub(crate) fn prompted(&mut self) {
         let (row, version) = (self.grid().cursor.row(), self.version);
         self.grid_mut().set_prompt(row, true, version);
-        self.commands.prompt = true;
     }
 
     pub(crate) fn cursor_mark(&self) -> Option<Mark> {
         let grid = self.grid();
         let row = grid.row_at(grid.cursor_index()?)?.id();
+        let col = grid.cursor.col();
         Some(Mark {
             row,
-            col: grid.cursor.col(),
+            col: col.saturating_add(u16::from(grid.cursor.pending_wrap)),
         })
     }
 }

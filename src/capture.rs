@@ -170,7 +170,11 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     // switched) or below the end: from what is kept above the end, the
     // screen's top if the start was cleared.
     let (first, start) = match screen.row_index(start.row) {
-        Some(first) if first <= last && (first, start.col) <= (last, end.col) => (first, start),
+        // A running command's cursor may go back before its start (a
+        // progress line's `\r`).
+        Some(first) if first < last || (first == last && (!ended || start.col <= end.col)) => {
+            (first, start)
+        }
         Some(_) => (
             screen.history_len().min(last),
             CommandMark { col: 0, ..start },
@@ -190,11 +194,10 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
             // An ended command's output ends at its end mark; a running
             // one's last row is whole, what it wrote right of the cursor
             // too.
-            let to = match (i.saturating_add(1) == count, end.col) {
-                (true, 0) => 0,
+            let to = match (i.saturating_add(1) == count && ended, end.col) {
                 (true, col) if i == 0 && start.col >= col => 0,
-                (true, col) if ended => usize::from(col),
-                _ => usize::MAX,
+                (true, col) => usize::from(col),
+                (false, _) => usize::MAX,
             };
             (from < to).then_some((row, from..to))
         })
@@ -245,14 +248,9 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
-    // Whether a thread of its foreground blocks reading its terminal, where
-    // the system says.
-    let reading =
-        (pane.process.child()).and_then(|child| fuxix::process::reading_terminal(&child.master));
     vec![
         ("version", Json::str(pane.version().to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
-        ("reading", reading.map_or(Json::Null, Json::Bool)),
         ("paused", Json::Bool(paused)),
         ("exited", exited),
         ("signal", signal),
@@ -525,7 +523,8 @@ mod tests {
     }
 
     /// An ended command's output is what lies between its marks: a prompt
-    /// drawn after its end mark on the same row is not part of it.
+    /// drawn after its end mark on the same row is not part of it. A
+    /// running one's is all of its rows so far.
     #[test]
     fn last_output_ends_at_the_end_mark() -> Result<(), Box<dyn std::error::Error>> {
         let view = CaptureView {
@@ -534,9 +533,14 @@ mod tests {
         };
         let size = fux_vt::Size::new(3, 20)?;
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
-        pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07\x1b]133;A\x07PROMPT> ");
+        pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(&pane, None, view, false, false).0;
         assert_eq!(text, "hello\n");
+        // A running command's row is whole, its cursor at the start of it
+        // too (a progress line it rewrites).
+        pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
+        let text = super::pane(&pane, None, view, false, false).0;
+        assert_eq!(text, "step 1\n");
         Ok(())
     }
 }

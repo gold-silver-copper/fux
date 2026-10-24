@@ -146,7 +146,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
-    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: exited, idle_ms, cwd"),
+    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd"),
     word("Reading", "json", "value -- json", "value as JSON: an answer, or a list holding one, stays an answer, with its status"),
     word("Reading", "events", "--", "what happens, a line each, as it happens"),
     word("Reading", "events-json", "--", "what happens, as JSON lines"),

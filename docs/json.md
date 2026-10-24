@@ -21,7 +21,6 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `pid` | its program's process, `null` once it exited |
 | `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow: its program's starts, its screen's revision (one more for each piece of output read, each resize, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
 | `program` | what runs in its foreground, `null` if unknown |
-| `reading` | a thread of its foreground is blocked reading its terminal (Linux); `null` where the system does not say |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |

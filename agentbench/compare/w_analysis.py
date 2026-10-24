@@ -71,9 +71,10 @@ def calls(work, tool):
     # A wait that ends without its condition (a timeout; fux's statuses 3, 4
     # and 7: exited, closed, or waiting for input first) is an answer, counted
     # apart from errors.
-    # fux's every action waits for its pane to settle, and its documented
-    # statuses 3, 4, 7 and 124 say what the pane did instead (exited, closed,
-    # reading, still busy): answers, like another tool's wait timing out.
+    # In the fux these runs recorded, every action waited for its pane to
+    # settle, and its statuses 3, 4, 7 and 124 said what the pane did
+    # instead (exited, closed, reading, still busy): answers, like another
+    # tool's wait timing out. Today's fux answers 4 and 124 alone.
     wait = lambda c: WAIT.search(c[2]) is not None or (tool == "fux" and c[3] in ("3", "4", "7", "124"))
     return {
         "calls": len(mine),

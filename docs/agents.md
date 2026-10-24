@@ -34,8 +34,8 @@ fux %2 str 0.57.0.3.0 changed wait             # until it differs: %2 0.61.0.3.0
 fux %2 wait                                    # until it differs from now's
 fux %2 str 0.61.0.3.0 changed 600 timeout wait # 600s at most (else 30, the server's wait-seconds)
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
-fux %2 capture json                            # as JSON, with version, exited, reading
-fux %2 str version get                         # one field: version, exited, reading, last_status
+fux %2 capture json                            # as JSON, with version, exited, idle_ms
+fux %2 str version get                         # one field: version, exited, last_status, cwd
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
@@ -61,26 +61,45 @@ Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 
 ## recipes: Waiting for what you need
 
-Each is a few lines of bash around one helper, `step`: it waits from the
+Each is a line or two of bash around three helpers. `step` waits from the
 version in `V` for pane `P` to change, at most `$1` seconds, and puts the
-new version in `V`. `V` is always from before what you wait for, so a
-change between two calls is never missed. Each loop ends with `ok` set
-only if what it waited for came; otherwise `s` holds why it stopped
-(`step`'s status, or 124 once its own time is up).
+new version in `V`; `V` is always from before what you wait for, so a
+change between two calls is never missed. `wait_for SECS CHECK…` steps
+until the command CHECK succeeds, checking before each step and once more
+after the last, so what came with the program's end counts. `quiet SECS
+N` steps until no change comes for N seconds. Each answers 0 once what
+it waited for came, else why not: 124 time is up, 2 its program ended, 4
+the pane closed, 1 fux failed (stderr says why).
 
 ```sh
-step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the pane closed; 1 failed
+step() {
   local out; out=$(fux "$P" str "$V" changed "$1" timeout wait) || return
   V=${out#* }; V=${V%% *}
   case ${V##*.} in 1) return 2 ;; esac
+}
+wait_for() {
+  local end=$((SECONDS + $1)) s=0; shift
+  until "$@"; do
+    [ "$s" = 0 ] || return "$s"
+    [ "$SECONDS" -lt "$end" ] || return 124
+    step $((end - SECONDS)); s=$?
+  done
+}
+quiet() {
+  local end=$((SECONDS + $1)) s
+  while [ $((end - SECONDS)) -ge "$2" ]; do
+    step "$2"; s=$?
+    case $s in 0) ;; 124) return 0 ;; *) return "$s" ;; esac
+  done
+  return 124
 }
 ```
 
 - **A text the reply writes:** count it before, act, and wait until there
   is one more. Choose a text only the reply holds: here the question holds
-  no `42`. If the input itself holds it, `step` until the capture shows
-  the input, then count, so it is in the count, not in what you wait for;
-  a program that draws the input again (a TUI that keeps it above the
+  no `42`. If the input itself holds it, wait until the capture shows the
+  input, then count, so it is in the count, not in what you wait for; a
+  program that draws the input again (a TUI that keeps it above the
   reply) counts it again. `grep -c` counts lines, and history beyond
   `history-lines` is dropped, which a count over a long run must allow
   for.
@@ -88,68 +107,46 @@ step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the p
   ```sh
   read -r P V < <(fux %2 str 'What is 6 times 7? Digits only.' paste send-keys)
   n=$(fux "$P" all-history capture | grep -c 42)
+  more() { [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ]; }
   read -r P V < <(fux "$P" str Enter key send-keys)
-  end=$((SECONDS + 600)) ok= s=124
-  while [ "$SECONDS" -lt "$end" ]; do
-    [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ] && { ok=1; break; }
-    [ "$s" = 2 ] && break                 # it ended, and the text never came
-    step $((end - SECONDS)); s=$?
-    case $s in 0|2) ;; *) break ;; esac
-  done
+  wait_for 600 more && echo answered
   ```
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
-  wait until no change comes for N seconds, `step`'s 124. A spinner or
-  clock on the screen is a change: then wait for a text.
+  a spinner or clock on the screen is a change, so then wait for a text.
 
   ```sh
   read -r P V < <(fux %2 str 'fix the test' paste str Enter key send-keys)
-  end=$((SECONDS + 600)) ok= s=124
-  while [ "$SECONDS" -lt "$end" ]; do
-    step 5; s=$?
-    case $s in 0) ;; 124) ok=1; break ;; *) break ;; esac
-  done
+  quiet 600 5 && fux "$P" all-history capture
   ```
 - **A shell command's end, with marks** (`shells` says how to turn them
   on): the version's fourth count, `DONE`, grows as one ends.
 
   ```sh
   read -r P V < <(fux %3 str 'make test' line); D=$(cut -d. -f4 <<<"$V")
-  end=$((SECONDS + 600)) ok= s=124
-  while [ "$SECONDS" -lt "$end" ]; do
-    [ "$(cut -d. -f4 <<<"$V")" -gt "$D" ] && { ok=1; break; }
-    step $((end - SECONDS)); s=$?
-    [ "$s" = 0 ] || break
-  done
-  [ "$ok" ] && fux "$P" str last_status get && fux "$P" last-output capture
+  ended() { [ "$(cut -d. -f4 <<<"$V")" -gt "$D" ]; }
+  wait_for 600 ended && fux "$P" str last_status get && fux "$P" last-output capture
   ```
 - **A shell command's end, without marks:** print a text only its end can
   show, quoted so the line you type does not hold it, and wait for it as
   for a text: `str "make test; echo END-OF''-RUN \$?" line` (`$status` in
   fish) shows `END-OF''-RUN` as you type it and `END-OF-RUN 0` at its end.
-- **A program's exit:** `step` gives 2 once the version's last count,
-  `ENDED`, is 1.
+- **A program's exit:** the version's last count, `ENDED`, is 1.
 
   ```sh
   read -r P V < <(fux opts str 'cargo test' command run)
-  end=$((SECONDS + 600)) ok= s=124
-  [ "${V##*.}" = 1 ] && ok=1
-  while [ ! "$ok" ] && [ "$SECONDS" -lt "$end" ]; do
-    step $((end - SECONDS)); s=$?
-    case $s in 0) ;; 2) ok=1 ;; *) break ;; esac
-  done
-  [ "$ok" ] && fux "$P" str exited get
+  exited() { [ "${V##*.}" = 1 ]; }
+  wait_for 600 exited && fux "$P" str exited get
   ```
 - **A bell or notification:** the version's third count, `BELLS`, grows:
-  loop as for a command's end, with `-f3`.
+  as for a command's end, with `-f3`.
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude
   --settings '{"tui":"default"}'`) and `fux %2 all-history capture` reads
   all of it.
-- **Whether a program waits for keys:** `str reading get` says whether a
-  thread of its foreground is blocked reading its terminal, where the
-  system says (Linux; `null` on macOS). A program waiting in poll or
-  select, as most full-screen ones do, is not reading.
+- **Whether a program waits for keys:** fux does not say; no system
+  reports it as a fact. Wait for what the program shows when it asks (a
+  prompt's text), or for quiet.
 - **A pane's history in your editor:** `f=$(mktemp) && fux %N all-history
   capture > "$f" && $EDITOR "$f"`. On a key, in `config.fux` (`env` gives
   the program the pane's id):
