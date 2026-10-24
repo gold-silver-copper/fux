@@ -582,7 +582,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     assert_eq!(
         said("1 ticket lt"),
-        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket"
+        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket; `string` makes it text"
     );
     assert_eq!(
         said("ticket if 1 then"),

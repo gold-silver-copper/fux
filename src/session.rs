@@ -4703,6 +4703,9 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
+        // A capture where text is taken: `string` makes it text.
+        let text = failed(&mut s, "%1 capture lines");
+        assert!(text.contains("`string` makes it text"), "{text}");
         // A capture's option given what is no pane says where it goes.
         for (code, shown) in [
             ("%1 capture last-output", "fux %3 last-output capture"),

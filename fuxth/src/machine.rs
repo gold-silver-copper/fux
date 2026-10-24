@@ -482,10 +482,14 @@ impl<A: AppValue> Machine<A> {
                     let list = self.list(items)?;
                     self.push(list)?;
                 }
-                Op::EachStart => match Seq::of(self.pop()?) {
-                    Ok(seq) => self.iters.push((seq, 0)),
-                    Err(kind) => return Err(self.type_error(Wants::Each.not(kind))),
-                },
+                Op::EachStart => {
+                    let walked = self.pop()?;
+                    let app = matches!(walked, Value::App(_));
+                    match Seq::of(walked) {
+                        Ok(seq) => self.iters.push((seq, 0)),
+                        Err(kind) => return Err(self.type_error(Wants::Each.not(kind, app))),
+                    }
+                }
                 Op::EachNext(out) => {
                     let out = *out;
                     let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
@@ -668,7 +672,7 @@ impl<A: AppValue> Machine<A> {
         match self.pop()? {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(Wants::Flag.not(other.kind())))
+                Err(self.type_error(Wants::Flag.not(other.kind(), false)))
             }
         }
     }
@@ -700,10 +704,10 @@ impl<A: AppValue> Machine<A> {
 
     /// `word` given `got` in a place that takes `arg`'s kinds.
     #[cold]
-    fn refused(&self, word: Builtin, arg: Arg, got: &str) -> Error {
+    fn refused(&self, word: Builtin, arg: Arg, got: &str, app: bool) -> Error {
         // A place that takes any value refuses none.
         let wants = arg.wants.map(|wants| wants(word));
-        self.type_error(wants.map_or_else(|| got.to_owned(), |wants| wants.not(got)))
+        self.type_error(wants.map_or_else(|| got.to_owned(), |wants| wants.not(got, app)))
     }
 
     /// A built-in's `N` values off the stack, the deepest first. Too few
@@ -837,7 +841,10 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
-            (Sequence::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
+            (Sequence::Str(_), x) => {
+                let app = matches!(x, Value::App(_));
+                Err(self.type_error(Wants::PushText.not(x.kind(), app)))
+            }
         }
     }
 
@@ -874,7 +881,10 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
-            (Sequence::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
+            (Sequence::Str(_), x) => {
+                let app = matches!(x, Value::App(_));
+                Err(self.type_error(Wants::PutText.not(x.kind(), app)))
+            }
         }
     }
 }
@@ -919,7 +929,8 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
         (a, b) = (p, q);
     }
     if path.is_empty() {
-        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()))
+        let app = matches!(a, Value::App(_)) || matches!(b, Value::App(_));
+        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()), app)
     } else {
         format!(
             "lt compares lists element by element, and at {} it finds {} and {}",
@@ -1142,8 +1153,9 @@ macro_rules! builtins {
                 match word {
                     $(Builtin::$variant => {
                         let [$($arg),*] = $m.take()?;
-                        $(let $arg = $ty::of($arg)
-                            .map_err(|got| $m.refused(word, $ty::ARG, got))?;)*
+                        $(let app = matches!($arg, Value::App(_));
+                        let $arg = $ty::of($arg)
+                            .map_err(|got| $m.refused(word, $ty::ARG, got, app))?;)*
                         $body
                     })*
                 }

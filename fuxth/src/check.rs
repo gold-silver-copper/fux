@@ -78,6 +78,11 @@ impl Kinds {
     pub(crate) const fn may_be(self, kind: Self) -> bool {
         self.0 & kind.0 != 0
     }
+
+    /// Whether every value of these kinds is the application's.
+    pub(crate) const fn app_only(self) -> bool {
+        self.0 != 0 && !self.may_be(INT.union(BOOL).union(SEQ))
+    }
 }
 
 /// What the stack is known to be at a step.
@@ -934,7 +939,9 @@ fn must(words: &Vocabulary, wants: Wants, kinds: Kinds, may_be: Kinds) -> Result
     if kinds.may_be(may_be) {
         Ok(())
     } else {
-        Err(Failing::Type(wants.not(words.describe(kinds))))
+        Err(Failing::Type(
+            wants.not(words.describe(kinds), kinds.app_only()),
+        ))
     }
 }
 
@@ -967,7 +974,7 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
             && let Some(wants) = arg.wants
         {
             let got = placed(words.describe(at(i)), i, args.len());
-            return Err(Failing::Type(wants(builtin).not(got)));
+            return Err(Failing::Type(wants(builtin).not(got, at(i).app_only())));
         }
     }
     // What it leaves, and what one value's kind asks of another's.
@@ -998,7 +1005,8 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
             let (a, b) = (at(0), at(1));
             if !a.and(b).may_be(INT.union(SEQ)) {
                 let got = format!("{} and {}", words.describe(a), words.describe(b));
-                return Err(Failing::Type(Wants::Ordered.not(got)));
+                let app = a.app_only() || b.app_only();
+                return Err(Failing::Type(Wants::Ordered.not(got, app)));
             }
             state.push(BOOL);
         }

@@ -176,19 +176,28 @@ pub(crate) enum Wants {
 impl Wants {
     /// "each walks a string or a list, not an integer": `got`, the kinds
     /// found.
-    pub(crate) fn not(self, got: impl std::fmt::Display) -> String {
-        match self {
-            Self::Flag => format!("takes a boolean (from eq or lt), not {got}"),
+    /// `app` if what was found is a value of the application's alone.
+    pub(crate) fn not(self, got: impl std::fmt::Display, app: bool) -> String {
+        let said = match self {
+            Self::Flag => return format!("takes a boolean (from eq or lt), not {got}"),
+            Self::Int(word) => return format!("{} takes an integer, not {got}", word.name()),
+            Self::Concat => {
+                return format!("concat takes a list of strings or of lists, not {got}");
+            }
             Self::Each => format!("each walks a string or a list, not {got}"),
             Self::Seq(word) => format!("{} takes a string or a list, not {got}", word.name()),
-            Self::Int(word) => format!("{} takes an integer, not {got}", word.name()),
             Self::Ordered => {
                 format!("lt compares two integers, two strings or two lists, not {got}")
             }
-            Self::Concat => format!("concat takes a list of strings or of lists, not {got}"),
             Self::PushText => format!("push onto a string takes a string, not {got}"),
             Self::PutText => format!("put into a string takes a string, not {got}"),
             Self::Char => format!("code takes a one-character string, not {got}"),
+        };
+        // An application's value where text is taken: the word that makes
+        // it text.
+        match app {
+            true => format!("{said}; `string` makes it text"),
+            false => said,
         }
     }
 }
