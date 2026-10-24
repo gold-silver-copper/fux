@@ -36,6 +36,7 @@ pub mod wait;
 pub mod wire;
 pub mod words;
 pub mod workspace;
+pub mod written;
 
 use json::Json;
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};

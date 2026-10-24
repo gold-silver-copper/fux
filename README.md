@@ -121,7 +121,7 @@ fux %3 str 'make test' text str Enter key send-keys
 A program can name what it made:
 
 ```sh
-fux opts str sh program run let P   P str hi wait-text str 'echo hi' line   P screen
+fux opts str sh program run let P   P str hello wait-text str "echo hel''lo" line   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
@@ -153,7 +153,7 @@ fux str test server kill-server
 ## Keys
 
 Every key below follows the prefix, `C-b` by default, and is a lower-case
-letter: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
+letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
 each terminal attached has its own prefix and bindings, from its config, and
 the server knows none of them. A key that is not fux's reaches the focused
 pane as you typed it. So are fux's screens: the command column,
@@ -186,7 +186,7 @@ prefix again sends it to the pane.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter; the prefix ends the mode and opens the column;
+prefix until Esc or Enter (as `h` and `l` do after `a`, `t m` and `w m`); the prefix ends the mode and opens the column;
 any other key ends it and is dropped, which the bar says.
 
 `a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
@@ -375,7 +375,7 @@ define edit-history
   me focused vertical
   str FUX_TARGET me focused env
   str sh program str -c arg
-  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"' arg
+  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"; fux here kill' arg
   split drop
 end
 str y str edit-history bind  str 'edit history' label  str Panes group

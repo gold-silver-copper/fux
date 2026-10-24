@@ -455,7 +455,7 @@ frames! {
 
 wire! {
     /// Which of a client's screens the server draws: copy mode, or a panel
-    /// (a menu, chooser, prompt or confirmation). One the server ended is
+    /// (a chooser, prompt or confirmation). One the server ended is
     /// closed on the client only if it is still of that kind.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ScreenKind {
@@ -482,11 +482,11 @@ frames! {
         Exit(reason: &'a str) = EXIT,
         /// The server ended its screen of that kind by itself (copy mode
         /// whose rows dropped from history, whose pane went or is no longer
-        /// focused, or with no pane to copy; a menu, chooser, prompt or
+        /// focused, or with no pane to copy; a chooser, prompt or
         /// confirmation whose subject closed), the mode being the client's.
         Ended(kind: ScreenKind) = 14,
         /// fuxth to run as its own, asked of it from elsewhere (`str c1
-        /// client menu`).
+        /// client choose-tab`).
         Run(code: String) = 15,
         /// Keys to take as typed at its terminal (`send-keys` to a client).
         Keys(keys: Vec<crate::command::Input>) = 16,

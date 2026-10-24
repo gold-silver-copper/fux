@@ -357,7 +357,8 @@ wire! {
         },
         NewWorkspace {
             name: Option<String>,
-            cmd: Vec<String>,
+            /// A command line typed into its new shell.
+            typed: Option<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
@@ -368,7 +369,7 @@ wire! {
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
-            cmd: Vec<String>,
+            typed: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
@@ -377,13 +378,13 @@ wire! {
         Split {
             axis: Axis,
             target: PaneId,
-            cmd: Vec<String>,
+            /// A program started in place of a shell, as `run` starts one,
+            /// if given.
+            argv: Vec<String>,
+            typed: Option<String>,
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
-            /// `cmd` is the program, started in place of a shell, as `run`
-            /// starts one.
-            run: bool,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
         },
@@ -500,7 +501,7 @@ wire! {
             target: PaneId,
         },
         /// A command on one client's screen: the client named (`str c1 client`), or the one
-        /// whose key, menu or prompt ran it.
+        /// whose key, chooser or prompt ran it.
         Client {
             client: Option<ClientId>,
             action: ClientAction,
@@ -520,7 +521,7 @@ wire! {
         /// and which is the client's current one.
         Choices(choices: Choices),
         /// fuxth for the client to run as its own: what opens one of its
-        /// screens (a menu, the prompt, copy mode), asked from elsewhere.
+        /// screens (a chooser, the prompt, copy mode), asked from elsewhere.
         Run(code: String),
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
@@ -545,7 +546,7 @@ wire! {
 }
 
 impl ClientAction {
-    /// The action on the client it comes from, as a key, a menu or the
+    /// The action on the client it comes from, as a key, a chooser or the
     /// prompt runs it.
     pub fn here(self) -> Command {
         Command::Client {

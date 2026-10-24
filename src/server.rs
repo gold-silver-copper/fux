@@ -48,8 +48,8 @@ const PAINT: Duration = Duration::from_millis(16);
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
 /// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
 const QUIET: Duration = Duration::from_millis(1);
-/// A pane's read shorter than this, an echo's or a prompt's, is taken for
-/// all it had: the next is left to the poll.
+/// A pane's read shorter than this is taken for all its terminal had: the
+/// next is left to the poll.
 const SHORT_READ: usize = 512;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
@@ -1024,7 +1024,7 @@ impl Server {
             }
         }
         for pane in self.session.panes.values_mut() {
-            pane.fresh.clear();
+            pane.written.clear();
         }
     }
 

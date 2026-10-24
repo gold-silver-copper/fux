@@ -132,9 +132,7 @@ pub enum On {
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
-/// server gave with it, read at the same moment; and the code naming its
-/// status, if it has one of its own (closed, reading, still busy), which
-/// goes where the answer goes.
+/// server gave with it, read at the same moment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub text: String,

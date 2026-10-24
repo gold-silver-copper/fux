@@ -246,7 +246,7 @@ fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
         ("\x02", "the column", "Commands"),
         ("\x02t", "a layer", "Tabs"),
         ("\x02tg", "a chooser", "@1"),
-        ("\x02a", "a menu", "pane"),
+        ("\x02aw", "a pane's workspace chooser", "+1"),
         ("\x02e", "the prompt", "Enter accepts"),
         ("\x02x", "a confirmation", "close"),
         ("\x02c", "copy mode", "COPY"),

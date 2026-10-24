@@ -54,6 +54,15 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
     shows(&server, "%3", "\ntab-cmd")?;
     server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
     shows(&server, "%4", "\nws-cmd")?;
+    // The terminal takes the line before the shell reads: a control
+    // character would act as a key there, so it is refused, no pane made.
+    let refused = server.fux(&["str", "%1", "pane", "str", "echo a\nb", "typed", "split"])?;
+    assert!(
+        refused.stderr.starts_with("fux: bad_value: "),
+        "{}",
+        refused.stderr
+    );
+    assert!(!server.ok(&["ls"])?.contains("%5"));
     Ok(())
 }
 

@@ -1,5 +1,5 @@
-//! Milestone 7: the command column, the choosers, action menus, the `:`
-//! prompt, rename and confirmations.
+//! Milestone 7: the command column, the choosers, the pane actions layer,
+//! the `:` prompt, rename and confirmations.
 mod support;
 use support::*;
 
@@ -204,14 +204,9 @@ fn choosers_select_rename_and_close() -> Outcome {
     })?;
     client.keys(&format!("{DOWN}\r"))?;
     bar_has(&mut client, "elsewhere")?;
-    // The move choosers from the pane menu move the pane there.
+    // The move chooser of the pane actions moves the pane there.
     server.ok(&["str", "%4", "pane", "horizontal", "split"])?;
-    client.keys(&format!("{PREFIX}a"))?;
-    client.wait_for("move to workspace")?;
-    for _ in 0..6 {
-        client.keys(DOWN)?;
-    }
-    client.keys("\r")?;
+    client.keys(&format!("{PREFIX}aw"))?;
     client.wait_for("move %5 to workspace")?;
     // The chooser starts on the current workspace; +1 is above it.
     client.keys(&format!("{UP}\r"))?;
@@ -270,7 +265,7 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.wait_for("$")?;
-    // Renaming a pane has no key of its own (the pane menu offers it).
+    // Asked from the command line, as `a r` asks it.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
     client.wait_for("rename pane %1")?;
     client.wait_for("sh▏")?;

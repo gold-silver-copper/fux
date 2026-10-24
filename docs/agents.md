@@ -70,8 +70,9 @@ fux gives the facts; which one means "done" is yours to choose. Some ways:
   as it ends; `fux %3 last-output capture` reads its output alone.
 - **A shell command, without marks:** print a text only its end can show,
   quoted so the line you type does not hold it: `fux %3 str END-OF-RUN
-  wait-text str "make test; echo END-OF''-RUN \$?" line`. The echo of
-  your line shows `END-OF''-RUN`; the output, `END-OF-RUN 0`.
+  wait-text str "make test; echo END-OF''-RUN \$?" line` (`$status` in
+  fish). The echo of your line shows `END-OF''-RUN`; the output,
+  `END-OF-RUN 0`.
 - **A full-screen agent's turn** (Claude Code, Codex): its spinner redraws
   while it works, so wait until it writes nothing for a few seconds:
   `fux %2 600 timeout 5 wait-quiet str 'fix the test' paste str Enter key
@@ -97,7 +98,7 @@ fux gives the facts; which one means "done" is yours to choose. Some ways:
     me focused vertical
     str FUX_TARGET me focused env
     str sh program str -c arg
-    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"' arg
+    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"; fux here kill' arg
     split drop
   end
   str y str edit-history bind  str 'edit history' label  str Panes group
@@ -114,10 +115,16 @@ fux gives the facts; which one means "done" is yours to choose. Some ways:
   what came before is not looked at.
 - `wait-text` reads the bytes the program wrote, escape sequences and
   control characters left out, a carriage return or a line feed ending a
-  line, and finds the text exactly as written: case, blanks and all. Drawn
-  in pieces (a word in two colours) it is still found; drawn with cursor
-  moves between its letters, it is not. Met, the answer's second line is
-  the line it was written on, as written so far.
+  line, and finds the text exactly as written: case, blanks and all. A
+  text written in pieces with sequences between them (a word in two
+  colours, or letters a cursor move apart) is joined as the bytes come.
+  Met, the answer's second line is the line it was written on, as written
+  so far. At most 16 KiB; no control character but a tab or `\n`.
+- `wait-done` is met by the first shell command to end after the wait
+  began: one already running when you typed ends first (`command_running`
+  in `capture json` says whether one runs).
+- A shell pane closes when its shell exits: a wait there answers `%3
+  closed` (4), never `exited`. A pane `run` started stays, with its status.
 - `wait-quiet` counts from the wait's start or the last byte written,
   whichever is later: a clock or a spinner is never quiet, and its wait
   times out (124).
@@ -155,7 +162,8 @@ fux gives the facts; which one means "done" is yours to choose. Some ways:
 last shell command's output, or the running one's so far, between its
 marks), `wrapped` (each screen row a line; else a line wrapped at the
 pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
-(reverse video and background colours as `⟦this⟧`), `styles`; then `json`
+(reverse video and any background colour as `⟦this⟧`: a program that
+paints its whole background is marked whole), `styles`; then `json`
 for the screen and what is known of the pane: `cursor` is `[ROW,COL]`,
 `alt_screen` whether a program holds the alternate screen, `history_lines`
 the history kept, `above` the rows kept above what was read, `idle_ms`
@@ -235,4 +243,4 @@ to end it with) fails before any word acts; words before a failing one have alre
 - `opts str FILE log-to` keeps what a program writes; `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,
-  `capture-client` shows it): how to drive fux's own menus.
+  `capture-client` shows it): how to drive fux's own screens.

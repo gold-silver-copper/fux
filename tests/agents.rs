@@ -1088,7 +1088,7 @@ fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
     let typed = [
         "opts",
         "str",
-        "sleep 1; exit",
+        "read x; exit",
         "typed",
         "str",
         "w",
@@ -1097,7 +1097,18 @@ fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
     ];
     let pane = id(&server.ok(&typed)?);
     let p = ["str", pane.as_str(), "pane"];
-    let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait"]].concat())?;
+    // The shell reads the line, then exits once Enter goes in: the wait
+    // the Enter arms ends as the pane closes.
+    let enter = [
+        "str",
+        "NEVER",
+        "wait-text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    let out = server.fux(&[&p[..], &enter].concat())?;
     assert_eq!(out.status, 4, "{}{}", out.stdout, out.stderr);
     assert!(out.stderr.starts_with("fux: closed: "), "{}", out.stderr);
     // A program that, a moment after it starts, has its pane started
@@ -1224,5 +1235,63 @@ fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     ];
     let pane = id(&server.ok(&run(&before, &["sh", "-c", "echo \"$P $T $W\""]))?);
     assert_eq!(server.ok(&["str", &pane, "pane", "capture"])?, "%1 @1 +1\n");
+    Ok(())
+}
+
+/// A wait begins once fux has read all its program wrote, held frames and
+/// all: a bell written before it, in a frame not yet ended, is no bell to
+/// it; one written after it is met, however many journal entries follow it
+/// in the same read; and of conditions met in one read, the one written
+/// first answers, in whatever order they were given.
+#[test]
+fn waits_count_from_what_was_written_and_in_its_order() -> Outcome {
+    let server = Server::start("")?;
+    let held = r"printf 'x\033[?2026h\a'; read x; sleep 30";
+    let pane = id(&server.ok(&run(&["str", "x", "wait-text"], &["sh", "-c", held]))?);
+    let early = server.fux(&["str", &pane, "pane", "1", "timeout", "wait-bell", "wait"])?;
+    assert_eq!(early.status, 124, "{}{}", early.stdout, early.stderr);
+    let flood = r"read x; printf '\a'; i=0; while [ $i -lt 1100 ]; do printf '\033]2;t%s\a' $i; i=$((i+1)); done; read y";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", flood]))?);
+    let rung = [
+        "str",
+        &pane,
+        "pane",
+        "wait-bell",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    assert_eq!(server.ok(&rung)?, format!("{pane} bell\n"));
+    let both = r"read x; printf '\a\033]133;C\a\033]133;D;0\a'; printf 'READY\n'; exit 0";
+    for order in [["wait-done", "wait-bell"], ["wait-bell", "wait-done"]] {
+        let pane = id(&server.ok(&run(&[], &["sh", "-c", both]))?);
+        let words = [
+            &["str", pane.as_str(), "pane"][..],
+            &order,
+            &["str", "Enter", "key", "send-keys"],
+        ];
+        assert_eq!(
+            server.ok(&words.concat())?,
+            format!("{pane} bell\n"),
+            "{order:?}"
+        );
+    }
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", both]))?);
+    let words = [
+        "str",
+        &pane,
+        "pane",
+        "wait-exit",
+        "str",
+        "READY",
+        "wait-text",
+        "wait-done",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ];
+    assert_eq!(server.ok(&words)?, format!("{pane} done 0\n"));
     Ok(())
 }

@@ -2,6 +2,7 @@
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::{Child, Ended, Pid};
+use crate::written::Written;
 use crate::{after, log, outer::Colours};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::VecDeque;
@@ -93,6 +94,14 @@ impl InputQueue {
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
         self.bytes.len()
+    }
+    /// Whether `len` bytes more fit now: if not, they are refused, and so
+    /// is everything after them until the program reads, as `push`
+    /// refuses.
+    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
+        let fits = len <= self.room();
+        self.refusing |= !fits;
+        fits.then_some(()).ok_or(Error::NotReading)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -225,9 +234,9 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
-    /// The journal its bells, notifications, titles and commands' ends go
-    /// to, in order.
-    record: &'a mut log::Log,
+    /// Its bells, notifications, titles and commands' ends, in order, for
+    /// the journal.
+    happened: &'a mut Vec<log::Event>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -243,7 +252,7 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.as_str().to_owned();
-        self.record.push(log::Event::Title(title));
+        self.happened.push(log::Event::Title(title));
     }
 }
 
@@ -267,7 +276,7 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             Event::Bell => {
-                self.record.push(log::Event::Bell);
+                self.happened.push(log::Event::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
@@ -275,7 +284,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
-                self.record.push(log::Event::Notification(text.clone()));
+                self.happened.push(log::Event::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
@@ -284,7 +293,7 @@ impl fux_vt::Sink for Sink<'_> {
                     *self.copied = Some(text);
                 }
             }
-            Event::CommandEnded(status) => self.record.push(log::Event::Done(status)),
+            Event::CommandEnded(status) => self.happened.push(log::Event::Done(status)),
             Event::IconName(_) | Event::Clipboard { .. } => {}
         }
     }
@@ -448,11 +457,9 @@ pub struct Pane {
     /// The text the program last put on the clipboard (OSC 52) since the
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
-    /// The last of what its program wrote, as it wrote it: what came since
-    /// the server last let the waits read it (`crate::wait`).
-    pub fresh: Vec<u8>,
-    /// How many bytes its program has written.
-    pub wrote: u64,
+    /// What its program wrote, as far as its screen has taken it, as waits
+    /// read it.
+    pub written: Written,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it, in order: its journal (`crate::log`), which
@@ -471,7 +478,7 @@ pub struct Pane {
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
-                            `fux help-agents-on shells` says how to turn marks on";
+                            `fux help agents shells` says how to turn marks on";
 
 /// `rows` by `cols`, a zero taken as one: a pane always has a cell.
 pub fn size(rows: u16, cols: u16) -> Size {
@@ -504,8 +511,7 @@ impl Pane {
             colours: Colours::default(),
             bell: false,
             copied: None,
-            fresh: Vec::new(),
-            wrote: 0,
+            written: Written::default(),
             wrote_at: Instant::now(),
             record: log::Log::default(),
             starts: 0,
@@ -543,9 +549,6 @@ impl Pane {
                 self.log = None;
             }
         }
-        self.fresh.extend_from_slice(bytes);
-        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        self.wrote = self.wrote.saturating_add(len);
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
@@ -673,13 +676,15 @@ impl Pane {
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`,
     /// and where a call of the parser did all the work one may
     /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
-    /// and why (`Stop::Begun` or `Stop::Budget`). Never inlined: the
-    /// parser's loop compiles tighter on its own.
+    /// and why (`Stop::Begun` or `Stop::Budget`). They go in pieces
+    /// (`written::pieces`), what each did journaled at its end. Never
+    /// inlined: the parser's loop compiles tighter on its own.
     #[inline(never)]
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
+        let mut happened = Vec::new();
         let mut sink = Sink {
             replies: Vec::new(),
-            record: &mut self.record,
+            happened: &mut happened,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -693,13 +698,27 @@ impl Pane {
         // inlined into it, as it was before frames were held; with two it
         // was not, and escape-heavy output was a quarter slower. A call
         // that did all the work one may stops the read for this turn.
-        let (mut begun, mut read) = (None, 0usize);
-        while let Some(rest) = bytes.get(read..)
-            && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
-        {
-            read = read.saturating_add(taken);
-            if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
-                begun = Some((read, stop));
+        let (mut begun, mut done) = (None, 0usize);
+        // A call of no bytes does the work of a sequence read already.
+        let pieces = crate::written::pieces(bytes).chain(bytes.is_empty().then_some(bytes));
+        for piece in pieces {
+            let mut read = 0usize;
+            while let Some(rest) = piece.get(read..)
+                && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
+            {
+                read = read.saturating_add(taken);
+                if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
+                    begun = Some((done.saturating_add(read), stop));
+                    break;
+                }
+            }
+            let read = if begun.is_some() { read } else { piece.len() };
+            self.written.take(piece.get(..read).unwrap_or_default());
+            for event in std::mem::take(sink.happened) {
+                self.record.push(self.written.bytes, event);
+            }
+            done = done.saturating_add(read);
+            if begun.is_some() {
                 break;
             }
         }
@@ -733,7 +752,8 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
-            self.record.push(log::Event::Resize(size));
+            self.record
+                .push(self.written.bytes, log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -795,14 +815,14 @@ impl Pane {
         // A new program, its own pane. Kept are what the session has yet to
         // take from the old one (a bell, a copy), its colours, log and
         // counts.
-        let mut fresh = Pane::new(self.id, name, runs, self.size(), history)?;
-        fresh.colours = std::mem::take(&mut self.colours);
-        fresh.bell = self.bell;
-        fresh.copied = self.copied.take();
-        fresh.log = self.log.take();
-        fresh.starts = self.starts.wrapping_add(1);
-        fresh.process = process;
-        Ok(std::mem::replace(self, fresh).process)
+        let mut started = Pane::new(self.id, name, runs, self.size(), history)?;
+        started.colours = std::mem::take(&mut self.colours);
+        started.bell = self.bell;
+        started.copied = self.copied.take();
+        started.log = self.log.take();
+        started.starts = self.starts.wrapping_add(1);
+        started.process = process;
+        Ok(std::mem::replace(self, started).process)
     }
 
     pub fn label(&self) -> &str {

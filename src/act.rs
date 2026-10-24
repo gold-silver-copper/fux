@@ -1,7 +1,7 @@
 //! What an attached client sends the server about its terminal: typed
 //! actions, never keys to be read. The client reads its keyboard, runs its
 //! own bindings and owns every mode: the command column, repeat modes,
-//! menus, choosers, prompts, confirmations, copy mode and its search
+//! choosers, prompts, confirmations, copy mode and its search
 //! (`crate::screens`). The server is sent a key only as literal input to
 //! the pane the client focuses (`Act::Key`), what to draw of the client's
 //! screens (`Act::Show`), and the moves of copy mode, whose cursor is the

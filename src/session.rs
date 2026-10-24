@@ -382,6 +382,12 @@ pub enum Begun {
     Grant(String, Option<WsRef>),
 }
 
+/// The longest command line typed into a new shell: what a terminal in
+/// line mode keeps of a line on macOS (`MAX_CANON`), less its end.
+const TYPED: usize = 1023;
+/// The most bytes a wait reads from a pane's terminal as it begins
+/// (`Session::catch_up`).
+const CATCH_UP: usize = 1 << 20;
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
 /// The size a pane starts at, until it is laid out on a client's screen.
@@ -740,7 +746,7 @@ impl Session {
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
         let new = NewPane {
-            start: Start::Shell(&[], &[]),
+            start: Start::Shell(None, &[]),
             cwd: &home(),
             starting: &Starting::default(),
             size: default_size(),
@@ -1183,9 +1189,7 @@ impl Session {
         for id in self.panes_of(target)? {
             let pane = self.live_pane_mut(id)?;
             let bytes = bytes(pane, inputs);
-            if bytes.len() > pane.input.room() {
-                return Err(pane::Error::NotReading.into());
-            }
+            pane.input.fits(bytes.len())?;
             each.push((id, bytes));
         }
         for (id, bytes) in &each {
@@ -1410,20 +1414,29 @@ impl Session {
             cwd: new.cwd.to_path_buf(),
             env: env.to_vec(),
         };
-        let (cmd, runs) = match start {
-            Start::Shell(cmd, _) => (cmd, Runs::Shell),
-            Start::Program(argv, _) => (argv, Runs::Program(launch.clone())),
+        let (named, runs) = match start {
+            Start::Shell(typed, _) => (typed, Runs::Shell),
+            Start::Program(argv, _) => (
+                argv.first().map(String::as_str),
+                Runs::Program(launch.clone()),
+            ),
         };
         let id = ids.pane()?;
-        let name = basename(cmd.first().map_or(config.shell.program(), String::as_str));
+        let name = basename(named.unwrap_or(config.shell.program()));
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
         // A command line typed into the new shell goes in at once, before
-        // the shell starts, which reads it when it reads its terminal: one
-        // too long to type leaves no process behind.
-        if let Start::Shell(words @ [_, ..], _) = start {
-            let line = format!("{}\r", words.join(" "));
-            let too_long = |_| fail(Lang::TooLong, "the command line is too long to type");
-            pane.input.push(line).map_err(too_long)?;
+        // the shell starts: its terminal takes it in line mode, which gives
+        // a control character its effect and keeps at most `TYPED` bytes of
+        // a line. Refused so, it leaves no process behind.
+        if let Start::Shell(Some(line), _) = start {
+            if line.len() > TYPED || line.chars().any(char::is_control) {
+                let why = format!(
+                    "a command line typed into a new shell is at most {TYPED} bytes, with no \
+                     control character: its terminal takes it before the shell reads"
+                );
+                return Err(fail(Code::BadValue, why));
+            }
+            pane.input.push(format!("{line}\r"))?;
         }
         // A program brought back by a restore waits for `respawn`.
         let paused = new.starting.restoring && matches!(start, Start::Program(..));
@@ -1895,6 +1908,26 @@ impl Session {
         self.read_with(id, |pane| pane.output(bytes));
     }
 
+    /// Gives pane `id`'s screen all its program has written so far: what
+    /// its terminal holds (up to `CATCH_UP` bytes), a frame held, output
+    /// past a parser call's budget. A wait that begins next counts from
+    /// there: nothing written before it is new to it.
+    fn catch_up(&mut self, id: PaneId) {
+        let mut buffer = [0u8; 16384];
+        let mut read = 0usize;
+        while read < CATCH_UP
+            && let Some(Process::Reading(child)) = self.panes.get(&id).map(|p| &p.process)
+            && let Ok(n @ 1..) = fuxix::io::read(&child.master, &mut buffer)
+        {
+            read = read.saturating_add(n);
+            self.output(id, buffer.get(..n).unwrap_or_default());
+        }
+        self.read_with(id, Pane::release_frame);
+        while self.panes.get(&id).is_some_and(Pane::has_unread) {
+            self.read_with(id, Pane::read_unread);
+        }
+    }
+
     /// Everything the session waits for, each with when it is due: the
     /// server polls no longer than the soonest, and fires those due
     /// (`Session::fire`).
@@ -2038,8 +2071,10 @@ impl Session {
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
             Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
-        // Made as the action acts, in the same turn: the program's answer
-        // to it is read only after.
+        // Made as the action acts, in the same turn, all the panes' programs
+        // wrote before read first: what comes after is new.
+        let ids = self.panes_of(target)?;
+        ids.iter().for_each(|id| self.catch_up(*id));
         if let Some(command) = action {
             let outcome = self.run_command(&command, origin);
             match outcome.end {
@@ -2149,7 +2184,7 @@ impl Session {
             &Command::KillServer { force } => self.kill_server(force, origin),
             Command::NewWorkspace {
                 name,
-                cmd,
+                typed,
                 size,
                 cwd,
                 env,
@@ -2158,7 +2193,7 @@ impl Session {
                 let (cwd, fit, size) =
                     self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 let new = NewPane {
-                    start: Start::Shell(cmd, env.as_slice()),
+                    start: Start::Shell(typed.as_deref(), env.as_slice()),
                     cwd: &cwd,
                     starting: &starting,
                     size,
@@ -2170,7 +2205,7 @@ impl Session {
             Command::NewTab {
                 target,
                 name,
-                cmd,
+                typed,
                 size,
                 cwd,
                 env,
@@ -2182,7 +2217,7 @@ impl Session {
                     self.check_tab_name(name, None)?;
                 }
                 let new = NewPane {
-                    start: Start::Shell(cmd, env.as_slice()),
+                    start: Start::Shell(typed.as_deref(), env.as_slice()),
                     cwd: &cwd,
                     starting: &starting,
                     size,
@@ -2302,15 +2337,15 @@ impl Session {
             &Command::Split {
                 axis,
                 target,
-                ref cmd,
+                ref argv,
+                ref typed,
                 ref cwd,
                 ref env,
-                run,
                 id,
             } => {
-                let start = match run {
-                    true => Start::Program(cmd, env.as_slice()),
-                    false => Start::Shell(cmd, env.as_slice()),
+                let start = match argv.is_empty() {
+                    true => Start::Shell(typed.as_deref(), env.as_slice()),
+                    false => Start::Program(argv, env.as_slice()),
                 };
                 self.split(target, axis, start, cwd.as_deref(), id, origin)
             }
@@ -3301,7 +3336,7 @@ fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
 enum Start<'a> {
     /// The shell, with a command line typed into it if one is given, and
     /// variables set for it.
-    Shell(&'a [String], &'a [(String, String)]),
+    Shell(Option<&'a str>, &'a [(String, String)]),
     /// A program, run in place of a shell, with variables set for it.
     Program(&'a [String], &'a [(String, String)]),
 }
@@ -4068,6 +4103,18 @@ mod tests {
         assert!(sent.is_err_and(|e| e.contains("not_reading")), "refused");
         let first = s.panes.get(&PaneId::of(1)).ok_or("no %1")?;
         assert_eq!(first.input.len(), 0, "the first pane got none");
+        // Keys too many for the room left are refused, and so is a key
+        // after them, until the program reads: none lands past a hole.
+        let pane = s.panes.get_mut(&PaneId::of(1)).ok_or("no %1")?;
+        let room = pane.input.room();
+        pane.input
+            .push(vec![0; room.saturating_sub(4)])
+            .map_err(|e| e.to_string())?;
+        assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
+        assert!(
+            run(&mut s, "%1 str x text send-keys").is_err(),
+            "a key after a refusal"
+        );
         Ok(())
     }
 

@@ -151,7 +151,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
-    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
+    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: exited, idle_ms, cwd"),
     word("Reading", "json", "value -- json", "value as JSON: an answer, or a list holding one, stays an answer, with its status"),
     word("Reading", "events", "--", "what happens, a line each, as it happens"),
     word("Reading", "events-json", "--", "what happens, as JSON lines"),
@@ -565,7 +565,14 @@ fn modify(
         "env" => {
             let (key, value) = (string(&next()?)?, next()?);
             // A pane, tab or workspace as fux writes it (`%3`).
-            let value = target(&value).map_or_else(|_| text(&value), |t| Ok(t.to_string()))?;
+            let value = match (target(&value), text(&value)) {
+                (Ok(handle), _) => handle.to_string(),
+                (Err(_), Ok(text)) => text,
+                (Err(_), Err(_)) => {
+                    let what = "a string, a number, a boolean, or a pane, tab or workspace";
+                    return Err(wrong(what, &value));
+                }
+            };
             built
                 .env
                 .push(key, value)
@@ -595,9 +602,12 @@ fn modify(
         }
         "wait-text" => {
             let t = text(&next()?)?;
-            // A line end is read as `\n` (`crate::wait`): never a `\r`.
-            if t.is_empty() || t.contains('\r') {
-                let why = "a text, not empty, with no carriage return (a line end is \\n)";
+            // What a wait reads holds no control character but a line end,
+            // as `\n`, and a tab (`crate::written`).
+            let control = t.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
+            if t.is_empty() || control || t.len() > crate::wait::MAX_TEXT {
+                let why = "a text, not empty, at most 16 KiB, with no control character \
+                           but a tab or a line end (\\n)";
                 return Err(fail(Code::BadValue, why));
             }
             waits.until.push(Until::Text(t));
@@ -994,7 +1004,6 @@ impl fuxth::Host for Host<'_> {
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
             "run" | "new-tab" | "new-workspace" => {
                 let built = finished(name, next()?)?;
-                let typed: Vec<String> = built.typed.into_iter().collect();
                 let command = match name {
                     "run" => {
                         if built.argv.is_empty() {
@@ -1019,7 +1028,7 @@ impl fuxth::Host for Host<'_> {
                     "new-tab" => Command::NewTab {
                         target: built.place,
                         name: built.name,
-                        cmd: typed,
+                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1027,7 +1036,7 @@ impl fuxth::Host for Host<'_> {
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
-                        cmd: typed,
+                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1046,21 +1055,17 @@ impl fuxth::Host for Host<'_> {
                 else {
                     return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
                 };
-                let (run, cmd) = match (built.argv.is_empty(), built.typed) {
-                    (true, typed) => (false, typed.into_iter().collect()),
-                    (false, None) => (true, built.argv),
-                    (false, Some(_)) => {
-                        let why = "takes no typed with a program: a line is typed into the shell the program replaces";
-                        return Err(fail(Lang::Unused, why));
-                    }
-                };
+                if !built.argv.is_empty() && built.typed.is_some() {
+                    let why = "takes no typed with a program: a line is typed into the shell the program replaces";
+                    return Err(fail(Lang::Unused, why));
+                }
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
-                    cmd,
+                    argv: built.argv,
+                    typed: built.typed,
                     cwd: built.cwd,
                     env: built.env,
-                    run,
                     id,
                 };
                 let split = followed(split, wait(&built.waits)?);

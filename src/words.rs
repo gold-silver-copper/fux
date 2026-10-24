@@ -1,5 +1,5 @@
 //! Splitting a line into words as a shell does, for the `command` word and
-//! the `shell` setting; and quoting words back for display and for a shell.
+//! the `shell` setting; and quoting words back for display.
 
 /// `names` in a sentence: `a, b and c`, `last` (`and`, `or`) before the
 /// last one.
@@ -94,28 +94,6 @@ pub fn quote(word: &str) -> String {
     }
 }
 
-/// A command line for a shell to read as typed input, from an argv. Each
-/// argument is bare if it has only safe characters and otherwise in single
-/// quotes, with each `'` written `'\''`: literal in sh, dash, bash and zsh.
-/// fish also treats `\` inside single quotes as an escape, so for fish each
-/// `\` is doubled there. A control character would act as a key in the
-/// shell's line editor, so an argument with one is refused. One argument
-/// alone is a line as it is typed (`cd src && make`), unquoted.
-pub fn shell_line(argv: &[String], fish: bool) -> Result<String, String> {
-    let words = argv
-        .iter()
-        .map(|arg| match arg.chars().find(|c| c.is_control()) {
-            Some(character) => Err(format!(
-                "the command argument {arg:?} contains the control character {character:?}; \
-                 it would act as a key in the shell"
-            )),
-            None if argv.len() == 1 => Ok(arg.clone()),
-            None if fish => Ok(quote(&arg.replace('\\', "\\\\"))),
-            None => Ok(quote(arg)),
-        });
-    Ok(words.collect::<Result<Vec<_>, _>>()?.join(" "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,39 +150,5 @@ mod tests {
         let argv: Vec<String> = ["grep", "a b", "it's"].map(String::from).to_vec();
         let joined: Vec<String> = argv.iter().map(|w| quote(w)).collect();
         assert_eq!(split(&joined.join(" ")).ok(), Some(argv));
-    }
-
-    #[test]
-    fn shell_lines_quote_for_posix_shells_and_fish() {
-        let argv = |a: &[&str]| a.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            shell_line(&argv(&["grep", "-r", "a b", "it's", "x/y.z"]), false).ok(),
-            Some(r"grep -r 'a b' 'it'\''s' x/y.z".to_owned())
-        );
-        assert_eq!(
-            shell_line(&argv(&["echo", r"a\b"]), false).ok(),
-            Some(r"echo 'a\b'".to_owned())
-        );
-        assert_eq!(
-            shell_line(&argv(&["echo", r"a\b"]), true).ok(),
-            Some(r"echo 'a\\b'".to_owned())
-        );
-        for bad in ["a\nb", "tab\there", "esc\x1b"] {
-            let error = shell_line(&argv(&["echo", bad]), false)
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default();
-            assert!(error.contains("control character"), "{bad:?}: {error}");
-        }
-        // A leading `=` is quoted, as zsh expands `=ls`; `a=b` is left bare.
-        assert_eq!(
-            shell_line(&argv(&["cd src && make"]), false).ok(),
-            Some("cd src && make".to_owned()),
-            "one argument is a line as typed"
-        );
-        assert_eq!(
-            shell_line(&argv(&["echo", "=ls", "a=b"]), false).ok(),
-            Some("echo '=ls' a=b".to_owned())
-        );
     }
 }
