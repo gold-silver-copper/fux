@@ -2,7 +2,6 @@
 use crate::bytes::ByteQueue;
 use crate::id::PaneId;
 use crate::process::{Child, Ended, Pid};
-use crate::written::Written;
 use crate::{after, log, outer::Colours};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::VecDeque;
@@ -457,9 +456,6 @@ pub struct Pane {
     /// The text the program last put on the clipboard (OSC 52) since the
     /// session last looked, which copies it (`Session::copied`).
     pub copied: Option<String>,
-    /// What its program wrote, as far as its screen has taken it, as waits
-    /// read it.
-    pub written: Written,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it, in order: its journal (`crate::log`), which
@@ -511,7 +507,6 @@ impl Pane {
             colours: Colours::default(),
             bell: false,
             copied: None,
-            written: Written::default(),
             wrote_at: Instant::now(),
             record: log::Log::default(),
             starts: 0,
@@ -676,9 +671,9 @@ impl Pane {
     /// Gives `bytes` to the screen, stopping after a BSU if `until_frame`,
     /// and where a call of the parser did all the work one may
     /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
-    /// and why (`Stop::Begun` or `Stop::Budget`). They go in pieces
-    /// (`written::pieces`), what each did journaled at its end. Never
-    /// inlined: the parser's loop compiles tighter on its own.
+    /// and why (`Stop::Begun` or `Stop::Budget`). What they did (a bell, a
+    /// title, a command's end) is journaled after. Never inlined: the
+    /// parser's loop compiles tighter on its own.
     #[inline(never)]
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
         let mut happened = Vec::new();
@@ -698,27 +693,13 @@ impl Pane {
         // inlined into it, as it was before frames were held; with two it
         // was not, and escape-heavy output was a quarter slower. A call
         // that did all the work one may stops the read for this turn.
-        let (mut begun, mut done) = (None, 0usize);
-        // A call of no bytes does the work of a sequence read already.
-        let pieces = crate::written::pieces(bytes).chain(bytes.is_empty().then_some(bytes));
-        for piece in pieces {
-            let mut read = 0usize;
-            while let Some(rest) = piece.get(read..)
-                && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
-            {
-                read = read.saturating_add(taken);
-                if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
-                    begun = Some((done.saturating_add(read), stop));
-                    break;
-                }
-            }
-            let read = if begun.is_some() { read } else { piece.len() };
-            self.written.take(piece.get(..read).unwrap_or_default());
-            for event in std::mem::take(sink.happened) {
-                self.record.push(self.written.bytes, event);
-            }
-            done = done.saturating_add(read);
-            if begun.is_some() {
+        let (mut begun, mut read) = (None, 0usize);
+        while let Some(rest) = bytes.get(read..)
+            && let Ok(Some((taken, stop))) = self.parser.process_until_stop(rest, &mut sink)
+        {
+            read = read.saturating_add(taken);
+            if stop == fux_vt::Stop::Budget || until_frame && stop == fux_vt::Stop::Begun {
+                begun = Some((read, stop));
                 break;
             }
         }
@@ -726,6 +707,9 @@ impl Pane {
         if !replies.is_empty() {
             self.input.reply(&replies);
         }
+        happened
+            .into_iter()
+            .for_each(|event| self.record.push(event));
         begun
     }
 
@@ -752,8 +736,7 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
-            self.record
-                .push(self.written.bytes, log::Event::Resize(size));
+            self.record.push(log::Event::Resize(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -783,6 +766,16 @@ impl Pane {
                 Runs::Shell => false,
             },
             Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
+        }
+    }
+
+    /// Where it stands now (`Version`).
+    pub fn version(&self) -> crate::command::Version {
+        crate::command::Version {
+            starts: self.starts,
+            screen: self.screen().version(),
+            bells: self.alerts.rung,
+            done: self.screen().commands().finished,
         }
     }
 

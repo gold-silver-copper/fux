@@ -273,11 +273,9 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         "str",
         "Enter",
         "key",
-        "str",
-        "sleep-started",
-        "wait-text",
         "send-keys",
     ])?;
+    server.shows("%1", "sleep-started")?;
     let socket = server.socket.clone();
     std::thread::spawn(move || -> Outcome {
         let mut stream = UnixStream::connect(&socket).map_err(e)?;
@@ -325,29 +323,12 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
     let out = server.fux(&[
-        "opts",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        code,
-        "arg",
-        "60",
-        "timeout",
-        "wait-exit",
-        "run",
-        "dup",
-        "capture",
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "run",
     ])?;
-    assert!(
-        out.stdout.contains("exited 0"),
-        "{}{}",
-        out.stdout,
-        out.stderr
-    );
+    let pane = out.stdout.split_whitespace().next().ok_or("its pane")?;
+    let exited = server.exits(pane)?;
+    assert!(exited.contains("exited 0"), "{exited}");
+    let out = server.fux(&["str", pane, "pane", "capture"])?;
     assert!(
         out.stdout.contains("DONE"),
         "no DONE on its screen: {}",

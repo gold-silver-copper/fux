@@ -421,11 +421,115 @@ pub fn cwd(pid: Pid) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&path)))
 }
 
+/// Whether a process of the foreground group of the terminal whose master
+/// is `master` (`leader`'s group, with none) has a thread blocked in a read
+/// of that terminal (read, readv, pread, splice): as Linux says in `/proc`, each
+/// thread's state and system call. A thread waiting in poll, select or
+/// epoll is not reading. `None` where the system does not say.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub fn reading_terminal(master: &crate::pty::Master, leader: Pid) -> Option<bool> {
+    let group = crate::terminal::foreground_group(master).unwrap_or(leader);
+    let tty = master.slave_path();
+    let in_group = |pid: &Pid| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok())
+                == Some(group.as_raw())
+        })
+    };
+    // The leader's, and the orphans of the group this process adopted
+    // (`adopt_orphans`), with theirs.
+    let adopted = children("self").into_iter().filter(|p| *p != leader);
+    let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
+    let members = (roots.iter())
+        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
+        .filter(in_group);
+    let reads = |pid: Pid| {
+        let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
+            .into_iter()
+            .flatten();
+        tasks.flatten().any(|task| {
+            let fd = task.file_name().to_str().and_then(|tid| read_in(pid, tid));
+            fd.is_some_and(|fd| {
+                std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
+                    .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
+            })
+        })
+    };
+    Some(members.into_iter().any(reads))
+}
+
+/// The descriptor thread `tid` of `pid` is blocked reading, if it sleeps
+/// in read, readv, pread or splice.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+fn read_in(pid: Pid, tid: &str) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
+    if stat.rsplit_once(')')?.1.split_whitespace().next()? != "S" {
+        return None;
+    }
+    let call = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")).ok()?;
+    let mut words = call.split_whitespace();
+    let nr: libc::c_long = words.next()?.parse().ok()?;
+    let fd = u64::from_str_radix(words.next()?.trim_start_matches("0x"), 16).ok()?;
+    // splice too: `cat` reads its terminal so.
+    let reads = [
+        libc::SYS_read,
+        libc::SYS_readv,
+        libc::SYS_pread64,
+        libc::SYS_preadv,
+        libc::SYS_splice,
+    ];
+    reads.contains(&nr).then_some(fd)
+}
+
+/// Whether a process of the terminal's foreground group reads it: macOS,
+/// and machines whose system calls fux does not know, do not say.
+#[cfg(not(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)))]
+pub fn reading_terminal(_master: &crate::pty::Master, _leader: Pid) -> Option<bool> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
+
+    /// `cat` on a terminal of its own is blocked reading it; `sleep` is
+    /// not, where the system says.
+    #[test]
+    fn a_program_reading_its_terminal_is_said_to() -> std::io::Result<()> {
+        let size = crate::terminal::Size::new(2, 10).ok_or(std::io::Error::other("a size"))?;
+        let reads = |argv: &[&str]| -> std::io::Result<Option<bool>> {
+            let (master, slave) = crate::pty::open(size).map_err(std::io::Error::other)?;
+            let (mut child, leader) = slave.spawn(argv, |_| {})?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut said = reading_terminal(&master, leader);
+            while said == Some(false) && argv.first() == Some(&"cat") && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+                said = reading_terminal(&master, leader);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok(said)
+        };
+        let known = cfg!(all(
+            any(target_os = "linux", target_os = "android"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ));
+        assert_eq!(reads(&["cat"])?, known.then_some(true));
+        assert_eq!(reads(&["sleep", "5"])?, known.then_some(false));
+        Ok(())
+    }
 
     #[test]
     fn a_signal_is_found_again_by_its_number_and_its_name() {

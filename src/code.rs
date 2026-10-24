@@ -7,8 +7,6 @@ use std::num::NonZeroU8;
 /// The exit statuses, a meaning each, besides 0: what was asked came.
 /// Any failure but these.
 const FAILED: NonZeroU8 = NonZeroU8::MIN;
-/// The program exited, or was started again, before the wait was met.
-const EXITED: NonZeroU8 = NonZeroU8::MIN.saturating_add(2);
 /// The pane waited on closed, or everything an event stream watched.
 const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
@@ -135,8 +133,6 @@ codes! {
     /// `kill-server` with people attached, not forced.
     PeopleAttached "people_attached",
     // How a wait ends.
-    /// The program exited, or was started again, before the wait was met.
-    Exited "exited" EXITED,
     /// A wait's limit came first.
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
@@ -176,8 +172,6 @@ codes! {
     NoProgram "no_program",
     /// `send-keys` with no keys.
     NoKeys "no_keys",
-    /// A wait that names nothing to wait for.
-    NoWait "no_wait",
     /// A value that is not a client.
     NotAClient "not_a_client",
     /// A paste that could not be read.

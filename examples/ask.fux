@@ -1,12 +1,24 @@
-# A program that asks a question: `run` waits until it writes its prompt,
-# and `line` types the answer and waits for a text only the reply holds,
-# answering the pane (`%2` on a fresh server), the text, and the line it
-# was written on.
-# expect: %2 text "letters"
+# A program that asks a question: start it, wait until its prompt shows,
+# type the answer, and wait until the reply shows. fux reports each change
+# of the pane's version; whether the screen holds what you wait for is
+# yours to judge, here by `until-shows`.
 # expect: got 5 letters
+
+# pane text -- text: wait until the pane's screen holds text, from its
+# version as the word begins (no change is missed); its screen then
+define until-shows
+  let T let P
+  P str version get
+  begin
+    P capture dup string T contains
+    if swap drop string true else drop P swap changed wait string str ' ' split-on 1 at false then
+  until
+end
 
 opts str ask name 60 10 size
 str 'sh -c "printf \"name? \"; read n; echo got \${#n} letters; read n"' command
-str 'name? ' wait-text run let ASK
-ASK str letters wait-text str fuxth line
+run let ASK
+ASK str 'name?' until-shows drop
+ASK str fuxth line drop
+ASK str letters until-shows lines last
 ASK kill

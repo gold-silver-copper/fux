@@ -41,7 +41,7 @@
 //!   with the flags fux asks of it (5).
 //! - `encode/legacy`, `encode/kitty`: those keys encoded for a pane
 //!   (`fux::encode::key_bytes`), in legacy mode and in every kitty flag.
-//! - `wait/text`: waits for a text that never comes (`fux::wait::Waiting`),
+//! - `wait/version`: waits for a version that never changes (`fux::wait::Waiting`),
 //!   8 armed one after another, on four panes of a session, each asked for
 //!   its answer and when it is due
 //!   after each 64 KiB tick (in 16 KiB reads) of the recordings: the server's
@@ -195,7 +195,7 @@ const KEYS: usize = 1 << 20;
 const KEYSTROKES: usize = 20_000;
 /// Keys encoded, over and over to this many.
 const STROKES: usize = 1 << 20;
-/// Bytes read into the panes of `wait/text`, over and over to this many.
+/// Bytes read into the panes of `wait/version`, over and over to this many.
 const WAITED: usize = 4 << 20;
 /// Command lines compiled, this many.
 const COMPILES: usize = 2_000;
@@ -331,7 +331,7 @@ pub fn list(recordings: &[Recording]) -> Vec<Spec> {
             "the same encoded for a pane with every kitty flag",
         ),
         (
-            "wait/text",
+            "wait/version",
             "a wait on four panes asked after each read of every recording, 4 MiB",
         ),
         (
@@ -357,7 +357,7 @@ pub fn fed(name: &str) -> String {
         format!("{NO_STREAM}: fux_vt::sixel::encode of the whole picture, {ENCODES} times")
     } else if name.starts_with("pane/") {
         "fux::pane::Pane::output, 16384 bytes a call".into()
-    } else if name.starts_with("paint/") || name == "wait/text" {
+    } else if name.starts_with("paint/") || name == "wait/version" {
         "fux::session::Session::output, 16384 bytes a call, 65536 a tick".into()
     } else {
         NO_STREAM.into()
@@ -467,7 +467,7 @@ fn run_shrunk(
             size(STROKES),
         ),
         "encode/kitty" => encode(&recordings, kitty_mode(KITTY_ALL)?, baseline, size(STROKES)),
-        "wait/text" => wait(&recordings, baseline, size(WAITED)),
+        "wait/version" => wait(&recordings, baseline, size(WAITED)),
         "script/compile" => compile(baseline, size(COMPILES)),
         _ => Err(format!("no workload {name:?}; `list` lists them")),
     }
@@ -875,10 +875,10 @@ fn paint(
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
             target: *s.panes.keys().next().ok_or("no pane")?,
-            cmd: Vec::new(),
+            argv: Vec::new(),
+            typed: None,
             cwd: None,
             env: fux::command::Env::default(),
-            run: false,
             id: None,
         };
         s.run_command(
@@ -1064,10 +1064,10 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
             target: *s.panes.keys().next().ok_or("no pane")?,
-            cmd: Vec::new(),
+            argv: Vec::new(),
+            typed: None,
             cwd: None,
             env: fux::command::Env::default(),
-            run: false,
             id: None,
         };
         s.run_command(
@@ -1089,12 +1089,8 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
     let panes: Vec<_> = s.panes.keys().copied().collect();
     let now = std::time::Instant::now();
     let arm = |s: &fux::session::Session| {
-        let wait = fux::command::Wait {
-            until: vec![fux::command::Until::Text("a text never written".into())],
-            timeout: Some(std::time::Duration::from_secs(3600)),
-        };
         let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
-        fux::wait::Waiting::new(&shown, wait, now, std::time::Duration::from_secs(3600))
+        fux::wait::Waiting::new(&shown, None, now, std::time::Duration::from_secs(3600))
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
@@ -1341,7 +1337,7 @@ mod tests {
         let tick = vec![b'x'; super::PANE_READ];
         let calls: Vec<usize> = super::given(&tick).map(<[u8]>::len).collect();
         assert_eq!(calls, [16384; 4]);
-        for name in ["pane/ascii", "paint/corpus", "wait/text"] {
+        for name in ["pane/ascii", "paint/corpus", "wait/version"] {
             assert!(super::fed(name).contains("16384 bytes a call"), "{name}");
         }
     }

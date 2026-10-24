@@ -249,30 +249,57 @@ wire! {
 }
 
 wire! {
-    /// What `wait` waits for, after it began (`crate::wait`).
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Until {
-        /// The program writes the text, escape sequences aside.
-        Text(text: String),
-        /// The program writes anything.
-        Change,
-        /// The program writes nothing for this long.
-        Quiet(quiet: Duration),
-        /// The program exits, or has.
-        Exit,
-        /// The program rings the bell or sends a desktop notification.
-        Bell,
-        /// A shell command ends, as its OSC 133 `D` mark says.
-        Done,
+    /// Where a pane stands, as counts that only grow: its program's starts
+    /// (`respawn`), its screen's revision (fux-vt's: every change to the
+    /// screen or its history), bells and notifications rung, and shell
+    /// commands ended (OSC 133 `D`). Written `STARTS.SCREEN.BELLS.DONE`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Version {
+        pub starts: u64,
+        pub screen: u64,
+        pub bells: u64,
+        pub done: u64,
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Version {
+            starts,
+            screen,
+            bells,
+            done,
+        } = self;
+        write!(f, "{starts}.{screen}.{bells}.{done}")
+    }
+}
+
+/// `STARTS.SCREEN.BELLS.DONE`, as a version is written.
+impl std::str::FromStr for Version {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Version, ()> {
+        let mut parts = text.split('.').map(|n| n.parse::<u64>().map_err(drop));
+        let mut next = || parts.next().ok_or(())?;
+        let version = Version {
+            starts: next()?,
+            screen: next()?,
+            bells: next()?,
+            done: next()?,
+        };
+        match parts.next() {
+            None => Ok(version),
+            Some(_) => Err(()),
+        }
     }
 }
 
 wire! {
-    /// A wait: for any of its conditions, in each of its panes, and how long
-    /// at most.
+    /// A wait: until the version of any of its panes differs from `since`
+    /// (else from theirs as it begins), its program exits or its pane
+    /// closes; how long at most.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
-        pub until: Vec<Until>,
+        pub since: Option<Version>,
         /// How long at most; if unsaid, the server's `wait-seconds`.
         pub timeout: Option<Duration>,
     }
@@ -693,52 +720,6 @@ impl Command {
             },
         }
     }
-
-    /// When the wait its wait words make is armed (`Request::Then`), if it
-    /// takes them.
-    pub fn armed(&self) -> Option<Armed> {
-        use Command as C;
-        match self {
-            C::SendKeys { target, .. } => Some(Armed::Before(*target)),
-            C::SendMouse { target, .. } | C::Signal { target, .. } => {
-                Some(Armed::Before(AnyRef::Pane(*target)))
-            }
-            C::Run { .. } | C::Split { .. } | C::Respawn { .. } => Some(Armed::Started),
-            C::Ls { .. }
-            | C::KillServer { .. }
-            | C::NewWorkspace { .. }
-            | C::NewTab { .. }
-            | C::Notify { .. }
-            | C::Resize(_)
-            | C::Kill { .. }
-            | C::Rename { .. }
-            | C::MovePane { .. }
-            | C::SwapPane { .. }
-            | C::ResizePane { .. }
-            | C::DumpLayout { .. }
-            | C::Log { .. }
-            | C::ClearHistory { .. }
-            | C::CapturePane { .. }
-            | C::Reorder { .. }
-            | C::Set { .. }
-            | C::Resolve { .. }
-            | C::ListBuffers
-            | C::ShowBuffer { .. }
-            | C::PasteBuffer { .. }
-            | C::Client { .. } => None,
-        }
-    }
-}
-
-/// When the wait a command's wait words make is armed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Armed {
-    /// Just as it acts, in these panes, in the same turn: what its input or
-    /// signal brings is what the wait sees (send-keys, send-mouse, signal).
-    Before(AnyRef),
-    /// Once it has started its pane's program, on that pane, before the
-    /// server reads what the program writes (run, split, respawn).
-    Started,
 }
 
 wire! {
@@ -748,8 +729,6 @@ wire! {
     pub enum Request {
         /// A command, at once.
         Do(command: Command),
-        /// A command, then a wait, armed as the command's `armed` says.
-        Then(command: Command, wait: Box<Wait>),
         /// A wait in the pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(target: AnyRef, wait: Wait),
@@ -774,7 +753,7 @@ impl Request {
     /// What it reaches.
     pub fn reaches(&self) -> Reaches<'_> {
         match self {
-            Self::Do(command) | Self::Then(command, _) => command.reaches(),
+            Self::Do(command) => command.reaches(),
             Self::Wait(..) => Reaches::Reads,
             Self::Events(..) => Reaches::Streams,
             Self::Grant(..) | Self::Revoke(_) => Reaches::Server,

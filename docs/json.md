@@ -19,7 +19,9 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
+| `version` | `STARTS.SCREEN.BELLS.DONE`: its program's starts, its screen's revision, bells and notifications rung, shell commands ended (OSC 133 marks), counts that only grow |
 | `program` | what runs in its foreground, `null` if unknown |
+| `reading` | a thread of its foreground is blocked reading its terminal (Linux); `null` where the system does not say |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |
@@ -81,46 +83,41 @@ palette numbers or `"#rrggbb"`.
 
 ## What a word made
 
-`new-tab` and `new-workspace` leave the new pane: `json` of a pane, tab or
-workspace is its id as a string, `"%4"`, and `X info json` all of it.
-`run` and `split` leave an answer (below), which is also the new pane: a
-word that wants a pane takes it as one.
+`run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
+(below), which is also the new pane: a word that wants a pane takes it as
+one. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
+and `X info json` all of it.
 
 ## Answers and waits
 
-`json` of an action's answer (`send-keys`, `send-mouse`, `signal`) is
-`{"pane":"%3","status":0}`, one object a pane (an array of them for a tab
-or workspace's panes). `run`, `split` and `respawn` given no wait words
-leave the new pane (above).
+`json` of an action's answer (`send-keys`, `send-mouse`, `signal`,
+`run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`{"pane":"%3","version":"0.57.0.3","status":0}`: its pane's version from
+just before it acted, or as a new pane starts; one object a pane (an array
+of them for a tab's or workspace's panes).
 
-A wait (`wait`, or an action given wait words) answers what met it:
+A `wait` answers each pane whose version differs from the one it waited
+from, whose program exited, or that closed:
 
 ```json
-{"pane":"%3","met":"text","text":"PASS","line":"12 tests PASS","status":0}
-{"pane":"%3","met":"done","done":0,"status":0}
-{"pane":"%4","met":"exit","exited":5,"status":0}
-{"pane":"%2","status":124,"code":"timeout"}
+{"pane":"%3","version":"0.61.1.4","changed":["screen","bell","done"],"status":0}
+{"pane":"%4","version":"0.12.0.0","changed":["screen"],"exited":5,"status":0}
+{"pane":"%2","version":"1.3.0.0","changed":["respawned"],"status":0}
+{"pane":"%2","version":"0.61.0.3","status":124,"code":"timeout"}
+{"pane":"%3","status":4,"code":"closed"}
 ```
 
-| `met` | Also |
-| --- | --- |
-| `text` | `text`; `line`, the line it was written on, as written so far |
-| `change` | |
-| `quiet` | |
-| `exit` | `exited`, its status, or `signal`, the signal that killed it |
-| `bell` | `notification`: its text, else `null` |
-| `done` | `done`: the shell command's status, else `null` |
+`changed` lists `screen`, `bell` and `done` (a count of the version that
+grew), or `respawned` (the program started again: its counts start
+afresh). `exited` is the program's status once it exited, `signal` the
+signal that killed it. `code` names a status that is not 0.
 
-A wait that is not met has no `met`: its program exited first (3, with
-`exited` or `signal`), was started again (3), its pane closed (4), or its
-time limit came (124). `code` names a status that is not 0.
-
-`status` is the exit status. A wait that fails ends the program with that
-status and says why on stderr, one line, `fux: CODE: MESSAGE`;
+`status` is the exit status. A wait that fails (124, 4) ends the program
+with that status and says why on stderr, one line, `fux: CODE: MESSAGE`;
 its answer is printed first, as text. Nothing after the wait runs, `json`
 either. The answers of the words before it are printed first too. A wait
-on a tab's or a workspace's panes answers a line each, the first failing
-status naming the whole.
+on a tab's or a workspace's panes answers a line for each that changed,
+the first failing status naming the whole.
 
 ## `events-json`, `X events-of-json`
 
@@ -158,11 +155,10 @@ wait's own (above). CODE stays; every one fux gives
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `not_reading`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `exited` (3), `timeout` (124), `closed` (4), `gone` (4),
-  `lost`;
+- how a wait ends: `timeout` (124), `closed` (4), `gone` (4), `lost`;
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
-  `not_a_key`, `no_program`, `no_keys`, `no_wait`, `not_a_client`, `paste`;
+  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,

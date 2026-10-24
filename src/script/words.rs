@@ -1,12 +1,12 @@
 //! fux's words: each a name, what it does to the stack, in the names of
 //! the kinds it takes and gives (`KINDS`, `NAMES`), and a line of help;
 //! and what each does, run by the program's [`Host`].
-use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Then, Waits};
+use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Then};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Usage, Wait,
-    Wheel, WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Usage, Wait, Wheel,
+    WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId, Wanted};
@@ -117,14 +117,9 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", "x text -- x", "wait until the program writes text, exactly, escape sequences aside (the echo of keys typed counts)"),
-    word("Waiting", "wait-change", "x -- x", "wait until the program writes anything"),
-    word("Waiting", "wait-quiet", "x secs -- x", "wait until the program writes nothing for secs seconds"),
-    word("Waiting", "wait-exit", "x -- x", "wait until the program exits (or has)"),
-    word("Waiting", "wait-bell", "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "wait-done", "x -- x", "wait until a shell command ends, as its OSC 133 D mark says"),
+    word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE, as an action or capture json gives it), not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
-    word("Waiting", "wait", "place -- answer", "wait as the wait words on it say, from now; a tab or workspace: each pane. An action given wait words waits so from when it acts"),
+    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from now's (or the one changed gives), its program exits or the pane closes; a tab or workspace: any of its panes"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
@@ -515,14 +510,16 @@ fn modify(
         "styles" => built.view.styles = true,
         "marks" => built.view.marks = true,
         "timeout" => waits.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
-        "wait-quiet" => {
-            let quiet = Duration::from_secs(within(&next()?, 1..=i64::MAX)?);
-            waits.until.push(Until::Quiet(quiet));
+        "changed" => {
+            let text = string(&next()?)?;
+            let bad = || {
+                fail(
+                    Code::BadValue,
+                    format!("{text:?} is no version: STARTS.SCREEN.BELLS.DONE"),
+                )
+            };
+            waits.since = Some(text.parse().map_err(|()| bad())?);
         }
-        "wait-change" => waits.until.push(Until::Change),
-        "wait-exit" => waits.until.push(Until::Exit),
-        "wait-bell" => waits.until.push(Until::Bell),
-        "wait-done" => waits.until.push(Until::Done),
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
@@ -599,18 +596,6 @@ fn modify(
                 "rows" => built.view.rows = Some((from, to)),
                 _ => built.view.cols = Some((from, to)),
             }
-        }
-        "wait-text" => {
-            let t = text(&next()?)?;
-            // What a wait reads holds no control character but a line end,
-            // as `\n`, and a tab (`crate::written`).
-            let control = t.chars().any(|c| c.is_control() && c != '\n' && c != '\t');
-            if t.is_empty() || control || t.len() > crate::wait::MAX_TEXT {
-                let why = "a text, not empty, at most 16 KiB, with no control character \
-                           but a tab or a line end (\\n)";
-                return Err(fail(Code::BadValue, why));
-            }
-            waits.until.push(Until::Text(t));
         }
         "key" => {
             let word = string(&next()?)?;
@@ -800,36 +785,6 @@ fn fits(typed: usize) -> Result<(), Failure> {
         )),
         false => Ok(()),
     }
-}
-
-/// The wait an action's wait words make, if it is given any: none, it
-/// acts and answers at once.
-fn wait(waits: &Waits) -> Result<Option<Wait>, Failure> {
-    match *waits == Waits::default() {
-        true => Ok(None),
-        false => waited(waits).map(Some),
-    }
-}
-
-/// `command`, then `wait` if there is one.
-fn followed(command: Command, wait: Option<Wait>) -> Request {
-    match wait {
-        Some(wait) => Request::Then(command, Box::new(wait)),
-        None => Request::Do(command),
-    }
-}
-
-/// A wait for what `waits` names: refused if it names nothing.
-fn waited(waits: &Waits) -> Result<Wait, Failure> {
-    if waits.until.is_empty() {
-        let why = "a wait names what it waits for: wait-text, wait-change, wait-quiet, \
-                   wait-exit, wait-bell or wait-done";
-        return Err(fail(Code::NoWait, why));
-    }
-    Ok(Wait {
-        until: waits.until.clone(),
-        timeout: waits.timeout,
-    })
 }
 
 fn ask(request: impl Into<Request>, then: Then) -> Ask {
@@ -1022,7 +977,6 @@ impl fuxth::Host for Host<'_> {
                             log: built.log,
                             ids: built.ids,
                         };
-                        let run = followed(run, wait(&built.waits)?);
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
                     "new-tab" => Command::NewTab {
@@ -1068,7 +1022,6 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     id,
                 };
-                let split = followed(split, wait(&built.waits)?);
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
@@ -1079,7 +1032,6 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     argv: built.argv,
                 };
-                let respawn = followed(respawn, wait(&built.waits)?);
                 later(ask(respawn, Then::Handle(Kind::Pane)))
             }
             // ----------------------------------------------------- waiting
@@ -1092,7 +1044,11 @@ impl fuxth::Host for Host<'_> {
                     ));
                 };
                 // On a tab or workspace, in each of its panes.
-                let wait = Request::Wait(target, waited(&built.waits)?);
+                let wait = Wait {
+                    since: built.waits.since,
+                    timeout: built.waits.timeout,
+                };
+                let wait = Request::Wait(target, wait);
                 later(ask(wait, Then::Outcome))
             }
             // ------------------------------------------------------- input
@@ -1111,12 +1067,6 @@ impl fuxth::Host for Host<'_> {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
                         // here.
-                        if built.waits != Waits::default() {
-                            return Err(fail(
-                                Lang::Unused,
-                                "to a client takes no wait: wait on the pane after (PANE … wait)",
-                            ));
-                        }
                         if built.inputs.iter().any(|i| matches!(i, Input::Bytes(_))) {
                             return Err(fail(
                                 Lang::Unused,
@@ -1132,12 +1082,11 @@ impl fuxth::Host for Host<'_> {
                         return later(ask(typed, Then::Outcome));
                     }
                 };
-                let then = wait(&built.waits)?;
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
                 };
-                later(ask(followed(keys, then), Then::Outcome))
+                later(ask(keys, Then::Outcome))
             }
             "send-mouse" => {
                 let (p, built) = request_pane(name, next()?)?;
@@ -1147,21 +1096,19 @@ impl fuxth::Host for Host<'_> {
                         "needs a mouse event: %2 str click 3 10 mouse send-mouse",
                     ));
                 };
-                let then = wait(&built.waits)?;
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse,
                     row,
                     col,
                 };
-                later(ask(followed(mouse, then), Then::Outcome))
+                later(ask(mouse, Then::Outcome))
             }
             "signal" => {
-                let (p, built) = request_pane(name, next()?)?;
+                let (p, _) = request_pane(name, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
-                let then = wait(&built.waits)?;
-                let signal = followed(Command::Signal { target: p, signal }, then);
+                let signal = Command::Signal { target: p, signal };
                 later(ask(signal, Then::Outcome))
             }
             // ----------------------------------------------------- reading
@@ -1672,32 +1619,6 @@ mod tests {
         assert_eq!(made, Ok(()));
     }
 
-    /// An action given no wait words waits for nothing; a wait names what
-    /// it waits for, a timeout alone being none, and leaves how long to the
-    /// server (`wait-seconds`) unless it says.
-    #[test]
-    fn a_wait_names_what_it_waits_for() {
-        assert_eq!(wait(&Waits::default()).ok(), Some(None));
-        let timeout = Some(Duration::from_secs(5));
-        assert!(waited(&Waits::default()).is_err());
-        assert!(
-            wait(&Waits {
-                timeout,
-                ..Waits::default()
-            })
-            .is_err()
-        );
-        let exit = Waits {
-            until: vec![Until::Exit],
-            ..Waits::default()
-        };
-        assert_eq!(waited(&exit).map(|w| w.timeout).ok(), Some(None));
-        let said = waited(&Waits { timeout, ..exit }).map(|w| w.timeout);
-        assert_eq!(said.ok(), Some(timeout));
-    }
-
-    /// An answer in a list is its object; one of several panes, an array of
-    /// theirs: JSON either way.
     #[test]
     fn an_answer_of_several_panes_is_an_array() {
         let answer = |json: &str| {

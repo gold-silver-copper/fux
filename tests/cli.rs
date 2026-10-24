@@ -28,7 +28,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert_eq!(pane, "%2\n");
+    assert!(pane.starts_with("%2 "), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
@@ -78,7 +78,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let env = [("FUX_PANE", "%2")];
     let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.lines().next()),
+        (out.status, out.stdout.split_whitespace().next()),
         (0, Some("%3")),
         "{}",
         out.stderr
@@ -244,19 +244,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         separator.stderr
     );
-    // A text that never comes is waited for until the time is up.
+    // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "opts",
-        "str",
-        "sleep 30",
-        "command",
-        "run",
-        "str",
-        "never-shown",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
+        "opts", "str", "sleep 30", "command", "run", "1", "timeout", "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -264,28 +254,16 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
-    // A run whose program exits before the text: its pane's answer on
-    // stdout, and why on one line of stderr; what the words before it left
-    // is printed first.
-    let exited = server.fux(&[
-        "str",
-        "before",
-        "opts",
-        "str",
-        "sh -c 'echo ONE; echo TWO; exit 5'",
-        "command",
-        "str",
-        "NEVER",
-        "wait-text",
-        "run",
-    ])?;
-    assert_eq!(exited.status, 3, "{}", exited.stderr);
+    // What the words before a failing wait left is printed first, then its
+    // pane's answer, and why on one line of stderr.
+    let failed = server.fux(&["str", "before", "%1", "1", "timeout", "wait"])?;
+    assert_eq!(failed.status, 124, "{}", failed.stderr);
     assert!(
-        exited.stdout.starts_with("before\n%") && exited.stdout.ends_with(" exited 5\n"),
+        failed.stdout.starts_with("before\n%1 ") && failed.stdout.ends_with(" timeout\n"),
         "{}",
-        exited.stdout
+        failed.stdout
     );
-    assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
+    assert_eq!(failed.stderr.lines().count(), 1, "{}", failed.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
@@ -300,7 +278,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // tab starts a shell, and waits on nothing.
     for unused in [
         &["str", "top", "program"][..],
-        &["str", "x", "wait-text"][..],
+        &["str", "0.1.0.0", "changed"][..],
     ] {
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;

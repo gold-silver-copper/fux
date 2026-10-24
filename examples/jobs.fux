@@ -1,14 +1,17 @@
 # Three programs at once, each exiting with its own status; once all have
-# exited, the sum of their statuses. `fux examples/jobs.fux` prints 6, and
-# exits 0: a met wait for the exit is 0, its program's status read from the
-# pane (`str exited get`).
+# exited, the sum of their statuses. `fux examples/jobs.fux` prints 6.
 # expect: 6
 
 # n -- pane: a program that exits with status n; run answers at once, so
 # the next starts at once
 define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg run end
-# pane -- status: once its program has exited
-define exit-status dup wait-exit wait drop str exited get end
+# pane -- status: once its program has exited (a wait answers at once on
+# a program that has)
+define exit-status
+  let P
+  begin P str exited get string str null eq dup if P wait drop then not until
+  P str exited get
+end
 
 1 job 2 job 3 job
 rot exit-status rot exit-status rot exit-status

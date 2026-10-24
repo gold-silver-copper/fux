@@ -1,10 +1,10 @@
 //! Driving programs from the command line, as a script or an agent does:
 //! `run` starts one out of every client's way and keeps its pane once it
-//! exits; an action acts and answers at once; a wait answers once what it
-//! names happens after it began (a text written, any output, quiet, an
-//! exit, a bell, a shell command's end); `send-keys` and `send-mouse` send
-//! what a person would, sizes are set, and a headless client stands in for
-//! a terminal.
+//! exits; an action acts at once and answers its pane's version from
+//! before it acted; a wait answers once that version differs, the program
+//! exits or the pane closes; `send-keys` and `send-mouse` send what a
+//! person would, sizes are set, and a headless client stands in for a
+//! terminal.
 mod support;
 use std::time::{Duration, Instant};
 use support::*;
@@ -12,16 +12,6 @@ use support::*;
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
     out.split_whitespace().next().unwrap_or_default().to_owned()
-}
-
-/// An answer's first line: the pane and what happened.
-fn head(out: &str) -> &str {
-    out.lines().next().unwrap_or_default()
-}
-
-/// What an answer shows after its first line.
-fn body(out: &str) -> &str {
-    out.split_once('\n').map_or("", |(_, rest)| rest)
 }
 
 /// `argv` as options words: its program, then each argument.
@@ -43,14 +33,35 @@ fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
     [&["opts"][..], before, &program(argv), &["run"]].concat()
 }
 
-/// `send-keys` to `pane` typing `line`, then Enter, after `wait` (words).
-fn typed<'a>(pane: &'a str, line: &'a str, wait: &[&'a str]) -> Vec<&'a str> {
-    [
-        &["str", pane, "pane"][..],
-        wait,
-        &["str", line, "text", "str", "Enter", "key", "send-keys"],
+/// `send-keys` to `pane` typing `line`, then Enter.
+fn typed<'a>(pane: &'a str, line: &'a str) -> Vec<&'a str> {
+    vec![
+        "str",
+        pane,
+        "pane",
+        "str",
+        line,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
     ]
-    .concat()
+}
+
+/// The version an action's answer gives, from before it acted.
+fn version(answer: &str) -> String {
+    answer
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Waits from the version an action answered (`answer`) until its pane
+/// shows `text`: its capture then.
+fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, String> {
+    server.until(&id(answer), &version(answer), |c| c.contains(text))
 }
 
 /// The marks the README shows for bash, which a bash pane here sends.
@@ -89,31 +100,42 @@ fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
     std::fs::write(&rc, format!("PS1='$ '\n{BASH_MARKS}\n")).map_err(e)?;
     let rc = rc.to_string_lossy().into_owned();
     let argv = ["bash", "--noprofile", "--rcfile", &rc, "-i"];
-    server.ok(&run(
-        &["str", name, "name", "str", "$ ", "wait-text"],
-        &argv,
-    ))?;
+    let made = server.ok(&run(&["str", name, "name"], &argv))?;
+    server.until(name, &version(&made), |c| c.ends_with("$\n"))?;
+    Ok(())
+}
+
+/// Types `line` into shell pane `pane` and waits, as the docs' recipe
+/// does, until a shell command ends there: the version's last count grows.
+fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
+    let since = version(&server.ok(&typed(pane, line))?);
+    let done = |v: &str| v.rsplit('.').next().and_then(|d| d.parse::<u64>().ok());
+    let before = done(&since);
+    let mut at = since;
+    while done(&server.version(pane)?) <= before {
+        let waited = [
+            "str", pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
+        ];
+        at = version(&server.ok(&waited)?);
+    }
     Ok(())
 }
 
 /// A program `run` starts keeps its pane once it exits: its last screen,
-/// and its status, which `wait-exit` and `ls` report; one that cannot
-/// start is refused. It takes no more input. The program starts at its
-/// `size`, in the `agent` workspace, which no client is moved to.
+/// and its status, which a wait and `ls` report; one that cannot start is
+/// refused. It takes no more input. The program starts at its `size`, in
+/// the `agent` workspace, which no client is moved to.
 #[test]
 fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
-    let started = server.ok(&run(
-        &["40", "10", "size", "wait-exit"],
-        &["sh", "-c", script],
-    ))?;
+    let started = server.ok(&run(&["40", "10", "size"], &["sh", "-c", script]))?;
     let pane = id(&started);
-    assert_eq!(started, format!("{pane} exited 3\n"));
-    // Waited for again, the exit has come already: met at once, status 0.
-    let json = server.ok(&["str", &pane, "pane", "wait-exit", "wait", "json"])?;
-    let met = format!(r#"{{"pane":"{pane}","met":"exit","exited":3,"status":0}}"#);
-    assert_eq!(json.trim_end(), met);
+    let exited = server.exits(&pane)?;
+    assert!(exited.ends_with(" exited 3\n"), "{exited}");
+    // Waited on again, it has exited: answered at once.
+    let json = server.ok(&["str", &pane, "pane", "wait", "json"])?;
+    assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
     assert_eq!(
         server.ok(&["str", &pane, "pane", "str", "exited", "get"])?,
         "3\n"
@@ -133,12 +155,6 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         "{}",
         refused.stderr
     );
-    // Given no wait words, run answers at once with its pane.
-    let at_once = server.ok(&run(&[], &["sleep", "30"]))?;
-    assert!(
-        at_once.starts_with('%') && at_once.lines().count() == 1,
-        "{at_once}"
-    );
     let missing = server.fux(&run(&[], &["/no/such/program"]))?;
     assert_eq!(missing.status, 1);
     assert!(
@@ -149,154 +165,83 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     Ok(())
 }
 
-/// Actions act and answer at once, with their pane, whatever the program
-/// does next; a wait names what it waits for: a timeout alone, or nothing,
-/// is refused.
+/// An action acts at once and answers its pane's version from just before
+/// it acted; a wait from that version answers once the version differs,
+/// with what changed, however late it is asked: nothing between is
+/// missed. A wait from now on a pane that does not change times out (124).
 #[test]
-fn actions_answer_at_once_and_waits_name_what_they_wait_for() -> Outcome {
+fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "sleep 30"]))?);
+    let started = server.ok(&run(
+        &[],
+        &["sh", "-c", "echo ready; read x; echo got; sleep 30"],
+    ))?;
+    let pane = id(&started);
+    server.until(&pane, &version(&started), |c| c.contains("ready"))?;
     let began = Instant::now();
-    let sent = server.ok(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
-    assert_eq!(sent, format!("{pane}\n"));
-    let json = server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "y",
-        "text",
-        "send-keys",
-        "json",
-    ])?;
-    assert_eq!(
-        json.trim_end(),
-        format!(r#"{{"pane":"{pane}","status":0}}"#)
-    );
+    let sent = server.ok(&typed(&pane, "x"))?;
     assert!(
         began.elapsed() < Duration::from_secs(5),
         "{:?}",
         began.elapsed()
     );
-    for words in [
-        &["wait"][..],
-        &["5", "timeout", "wait"],
-        &["5", "timeout", "str", "x", "text", "send-keys"],
-    ] {
-        let refused = server.fux(&[&["str", pane.as_str(), "pane"][..], words].concat())?;
-        assert!(
-            refused.stderr.starts_with("fux: no_wait: "),
-            "{words:?}: {}",
-            refused.stderr
-        );
+    let since = version(&sent);
+    assert_eq!(sent, format!("{pane} {since}\n"));
+    // Asked once the program answered: met at once, from the version held.
+    server.until(&pane, &since, |c| c.contains("got"))?;
+    let changed = server.ok(&["str", &pane, "pane", "str", &since, "changed", "wait"])?;
+    assert!(
+        changed.starts_with(&format!("{pane} ")) && changed.ends_with(" screen\n"),
+        "{changed}"
+    );
+    let json = server.ok(&[
+        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
+    ])?;
+    assert!(
+        json.contains(r#""changed":["screen"],"status":0"#),
+        "{json}"
+    );
+    let still = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
+    assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
+    assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
+    let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
+    assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
+    Ok(())
+}
+
+/// A version counts bells and notifications rung, and a wait says one
+/// rang; a program started again is said so, its counts afresh.
+#[test]
+fn bells_and_respawns_change_the_version() -> Outcome {
+    let server = Server::start("")?;
+    let script = r"read x; printf '\a'; exec cat";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let mut at = version(&server.ok(&typed(&pane, ""))?);
+    loop {
+        let waited = [
+            "str", &pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
+        ];
+        let out = server.ok(&waited)?;
+        if out.contains(" bell") {
+            break;
+        }
+        at = version(&out);
     }
+    assert_eq!(server.version(&pane)?.split('.').nth(2), Some("1"));
+    let at = server.version(&pane)?;
+    let respawned = server.ok(&["str", &pane, "pane", "kill-first", "respawn"])?;
+    assert!(version(&respawned).starts_with("1."), "{respawned}");
+    let answer = server.ok(&["str", &pane, "pane", "str", &at, "changed", "wait"])?;
+    assert!(answer.contains(" respawned"), "{answer}");
     Ok(())
 }
 
-/// `wait-text` meets a text the program writes after the wait began,
-/// exactly, escape sequences aside, the echo of keys typed included, and
-/// answers the line it was written on; a text written before is not met,
-/// and the wait times out (124), saying so.
+/// A shell's OSC 133 marks count the commands that end in its pane's
+/// version, `last_status` says how the last ended and `last-output` reads
+/// its output alone; where no command was marked, `last-output` says so
+/// and the count stays. The marks are the README's, for each shell here.
 #[test]
-fn a_text_is_met_once_written_after_the_wait_began() -> Outcome {
-    let server = Server::start("")?;
-    let script = r#"printf 'READY\n'; read x; printf 'got \033[1mBO\033[0mLD %s\n' "$x"; exec cat"#;
-    let pane = id(&server.ok(&run(&["str", "READY", "wait-text"], &["sh", "-c", script]))?);
-    let p = ["str", pane.as_str(), "pane"];
-    // READY came before this wait: it waits to its limit.
-    let late = server.fux(
-        &[
-            &p[..],
-            &["1", "timeout", "str", "READY", "wait-text", "wait"],
-        ]
-        .concat(),
-    )?;
-    assert_eq!(late.status, 124, "{}{}", late.stdout, late.stderr);
-    assert_eq!(late.stdout, format!("{pane} timeout\n"));
-    assert!(
-        late.stderr.starts_with("fux: timeout: ") && late.stderr.contains("timed out after 1s"),
-        "{}",
-        late.stderr
-    );
-    let got = server.ok(&typed(&pane, "x", &["str", "BOLD x", "wait-text"]))?;
-    assert_eq!(got, format!("{pane} text \"BOLD x\"\ngot BOLD x\n"));
-    // `cat` under the kernel's echo: the echo of keys typed is written too.
-    let echo = server.ok(&[
-        &p[..],
-        &["str", "abc", "wait-text", "str", "abc", "text", "send-keys"],
-    ]
-    .concat())?;
-    assert_eq!(head(&echo), format!("{pane} text \"abc\""));
-    // Case and blanks as written.
-    let exact = [
-        "1",
-        "timeout",
-        "str",
-        "ABC",
-        "wait-text",
-        "str",
-        "d",
-        "text",
-        "send-keys",
-    ];
-    assert_eq!(server.fux(&[&p[..], &exact].concat())?.status, 124);
-    Ok(())
-}
-
-/// `wait-change` is met by any output; `wait-quiet` once the program wrote
-/// nothing for so long, counted from the wait's start or its last output;
-/// `wait-exit` by its exit, and a wait for anything else fails once it
-/// exits (3), saying how.
-#[test]
-fn change_quiet_and_exit_are_met_as_they_happen() -> Outcome {
-    let server = Server::start("")?;
-    let ticks = "read x; for i in 1 2 3 4; do echo tick; sleep 0.3; done; read y";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", ticks]))?);
-    let p = ["str", pane.as_str(), "pane"];
-    let changed =
-        server.ok(&[&p[..], &["wait-change", "str", "Enter", "key", "send-keys"]].concat())?;
-    assert_eq!(changed, format!("{pane} changed\n"));
-    let began = Instant::now();
-    let quiet = server.ok(&[&p[..], &["1", "wait-quiet", "wait"]].concat())?;
-    assert_eq!(quiet, format!("{pane} quiet\n"));
-    assert!(
-        began.elapsed() >= Duration::from_secs(1),
-        "{:?}",
-        began.elapsed()
-    );
-    let ended = server.fux(
-        &[
-            &p[..],
-            &[
-                "str",
-                "NEVER",
-                "wait-text",
-                "str",
-                "Enter",
-                "key",
-                "send-keys",
-            ],
-        ]
-        .concat(),
-    )?;
-    assert_eq!(
-        (ended.status, ended.stdout.as_str()),
-        (3, format!("{pane} exited 0\n").as_str())
-    );
-    assert!(
-        ended.stderr.starts_with("fux: exited: ") && ended.stderr.contains("its program exited 0"),
-        "{}",
-        ended.stderr
-    );
-    Ok(())
-}
-
-/// `wait-done` waits for a shell command to end as the shell's OSC 133
-/// marks say, with its status, and `last-output` reads its output alone;
-/// where no command was marked, `last-output` says so and `wait-done`
-/// times out saying so. The marks are the README's, for each shell here.
-#[test]
-fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
+fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     let readme = include_str!("../README.md");
     for marks in [BASH_MARKS, ZSH_MARKS, FISH_MARKS] {
         assert!(readme.contains(marks), "the README shows {marks}");
@@ -306,35 +251,21 @@ fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
     if bash {
         marked_bash(&server, "b")?;
     }
-    let done = |pane: &str, line: &str| {
-        server.ok(&[
-            "str",
-            pane,
-            "pane",
-            "10",
-            "timeout",
-            "wait-done",
-            "str",
-            line,
-            "line",
-        ])
-    };
+    let status = |pane: &str| server.ok(&["str", pane, "pane", "str", "last_status", "get"]);
     let check = |pane: &str| -> Outcome {
-        assert_eq!(
-            done(pane, "echo one; false")?,
-            format!("{} done 1\n", id(&server.ok(&["str", pane, "pane"])?))
-        );
+        line_done(&server, pane, "echo one; false")?;
+        assert_eq!(status(pane)?, "1\n");
         let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
         assert_eq!(output, "one\n");
-        let ok = done(pane, "echo two")?;
-        assert!(ok.ends_with(" done 0\n"), "{ok}");
+        line_done(&server, pane, "echo two")?;
+        assert_eq!(status(pane)?, "0\n");
         Ok(())
     };
     if bash {
         check("b")?;
     }
-    // A shell the tests may have: its marks as the README has them.
-    // Each read from its own startup file, where the README puts them.
+    // A shell the tests may have: its marks as the README has them, each
+    // read from its own startup file, where the README puts them.
     let shells = [
         ("zsh", ZSH_MARKS, "ZDOTDIR", ".zshrc"),
         ("fish", FISH_MARKS, "XDG_CONFIG_HOME", "fish/config.fish"),
@@ -354,53 +285,16 @@ fn shell_marks_tell_a_command_s_end_and_output() -> Outcome {
         server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
         check(shell)?;
     }
-    let plain = id(&server.ok(&run(&[], &["sh"]))?);
-    let refused = server.fux(&["str", &plain, "pane", "last-output", "capture"])?;
+    let plain = server.ok(&run(&[], &["sh"]))?;
+    let refused = server.fux(&["str", &id(&plain), "pane", "last-output", "capture"])?;
     assert!(
         refused.stderr.starts_with("fux: no_marks: "),
         "{}",
         refused.stderr
     );
-    let waited = server.fux(&[
-        "str",
-        &plain,
-        "pane",
-        "1",
-        "timeout",
-        "wait-done",
-        "str",
-        "true",
-        "line",
-    ])?;
-    assert_eq!(waited.status, 124);
-    assert!(
-        waited.stderr.contains("no shell command was marked"),
-        "{}",
-        waited.stderr
-    );
-    Ok(())
-}
-
-/// A bell, or a notification with its text, meets `wait-bell`.
-#[test]
-fn bells_and_notifications_meet_a_bell_wait() -> Outcome {
-    let server = Server::start("")?;
-    let script = r"read x; printf '\a'; read y; printf '\033]9;built\a'; exec cat";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
-    let ring = [
-        "str",
-        pane.as_str(),
-        "pane",
-        "wait-bell",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    assert_eq!(server.ok(&ring)?, format!("{pane} bell\n"));
-    let json = server.ok(&[&ring[..], &["json"]].concat())?;
-    let said = format!(r#"{{"pane":"{pane}","met":"bell","notification":"built","status":0}}"#);
-    assert_eq!(json.trim_end(), said);
+    let echoed = server.ok(&typed(&id(&plain), "echo un''marked"))?;
+    shows_after(&server, &echoed, "unmarked")?;
+    assert!(server.version(&id(&plain))?.ends_with(".0"));
     Ok(())
 }
 
@@ -423,22 +317,14 @@ while True:
     let path = server.dir.join("reads.py");
     std::fs::write(&path, READS).map_err(e)?;
     let script = path.to_string_lossy().into_owned();
-    let pane = id(&server.ok(&run(
-        &["str", "ready", "wait-text"],
-        &["python3", "-I", &script],
-    ))?);
+    let started = server.ok(&run(&[], &["python3", "-I", &script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "ready")?;
     // What the program read, as it said it.
     let sent = |keys: &[&str], read: &str| -> Outcome {
-        let said = format!("read {read}");
-        let wait = ["str", said.as_str(), "wait-text"];
-        let send = [
-            &["str", pane.as_str(), "pane"][..],
-            &wait,
-            keys,
-            &["send-keys"],
-        ];
-        let answer = server.ok(&send.concat())?;
-        assert_eq!(body(&answer), format!("{said}\n"), "{keys:?}");
+        let said = format!("read {read}\n");
+        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
+        shows_after(&server, &server.ok(&send.concat())?, &said)?;
         Ok(())
     };
     sent(&["str", "Escape", "key"], "1b")?;
@@ -451,23 +337,18 @@ while True:
     )?;
     let click = ["str", "click", "2", "4", "mouse"];
     let said = "read 1b5b3c303b353b334d1b5b3c303b353b336d";
-    let clicked = [
-        &["str", pane.as_str(), "pane", "str", said, "wait-text"][..],
-        &click,
-        &["send-mouse"],
-    ];
-    assert_eq!(body(&server.ok(&clicked.concat())?), format!("{said}\n"));
-    let quit = [
+    let clicked = [&["str", pane.as_str(), "pane"][..], &click, &["send-mouse"]];
+    shows_after(&server, &server.ok(&clicked.concat())?, said)?;
+    server.ok(&[
         "str",
         pane.as_str(),
         "pane",
-        "wait-exit",
         "str",
         "q",
         "text",
         "send-keys",
-    ];
-    assert_eq!(server.ok(&quit)?, format!("{pane} exited 0\n"));
+    ])?;
+    assert!(server.exits(&pane)?.ends_with(" exited 0\n"));
     Ok(())
 }
 
@@ -492,6 +373,7 @@ fn sizes_are_set_as_asked() -> Outcome {
         "tab",
     ])?;
     let (left, tab) = made.trim().split_once('\n').ok_or("a pane and its tab")?;
+    let left = left.split_whitespace().next().ok_or("a pane")?;
     let size = |pane: &str| -> Result<String, String> {
         let ls = server.ok(&["ls"])?;
         let line = ls
@@ -621,23 +503,13 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     // picture's last row (DEC STD 070, 11.3; xterm "requires only a single
     // newline"), so a line goes first lest the text cover it.
     let asked = r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo; echo drawn";
-    server.ok(&typed(
-        "%1",
-        asked,
-        &["str", "62;4;6;21;22;28c", "wait-text"],
-    ))?;
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
-        "drawn",
-        "wait-text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    shows_after(
+        &server,
+        &server.ok(&typed("%1", asked))?,
+        "62;4;6;21;22;28c",
+    )?;
+    let enter = ["str", "%1", "pane", "str", "Enter", "key", "send-keys"];
+    shows_after(&server, &server.ok(&enter)?, "drawn")?;
     eventually("the picture sent", || {
         client.pump()?;
         Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))
@@ -661,25 +533,12 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let log_arg = log.to_string_lossy().into_owned();
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
     let before = [
-        "str",
-        "job",
-        "name",
-        "str",
-        "V",
-        "str",
-        "a",
-        "env",
-        "str",
-        &log_arg,
-        "log-to",
-        "40",
-        "10",
+        "str", "job", "name", "str", "V", "str", "a", "env", "str", &log_arg, "log-to", "40", "10",
         "size",
-        "str",
-        "full a",
-        "wait-text",
     ];
-    let pane = id(&server.ok(&run(&before, &["sh", "-c", script]))?);
+    let started = server.ok(&run(&before, &["sh", "-c", script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "full a")?;
     let main = [
         "str",
         &pane,
@@ -706,24 +565,17 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "str",
         "b",
         "env",
-        "str",
-        "full b",
-        "wait-text",
         "respawn",
     ];
     let again = server.ok(&again)?;
-    assert_eq!(again, format!("{pane} text \"full b\"\nfull b\n"));
-    let empty = server.fux(&["str", &pane, "pane", "str", "", "wait-text", "wait"])?;
-    assert_eq!(
-        empty.status, 1,
-        "an empty text is refused: {}",
-        empty.stderr
-    );
+    assert!(again.starts_with(&format!("{pane} 1.")), "{again}");
+    shows_after(&server, &again, "full b")?;
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
-    let menu = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", menu]))?);
+    let menu = id(&server.ok(&run(&[], &["sh", "-c", menu]))?);
+    server.exits(&menu)?;
     assert!(
         !server
             .ok(&["str", &menu, "pane", "capture"])?
@@ -763,18 +615,12 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "resized by its tab's name"
     );
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
-    let before = [
-        "str",
-        "m",
-        "name",
-        "20",
-        "5",
-        "size",
-        "str",
+    let before = ["str", "m", "name", "20", "5", "size"];
+    shows_after(
+        &server,
+        &server.ok(&run(&before, &["sh", "-c", clicks]))?,
         "ready",
-        "wait-text",
-    ];
-    server.ok(&run(&before, &["sh", "-c", clicks]))?;
+    )?;
     let outside = [
         "str",
         "m",
@@ -807,8 +653,9 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
     let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
-    let before = ["20", "6", "size", "str", "next", "wait-text"];
-    let pane = id(&server.ok(&run(&before, &["sh", "-c", long]))?);
+    let started = server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "next")?;
     let line = server.ok(&["str", &pane, "pane", "1", "1", "rows", "capture"])?;
     assert_eq!(line, "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
     let plain = server.ok(&["str", &pane, "pane", "capture"])?;
@@ -822,11 +669,10 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
         "{rows}"
     );
     // A column range cuts a wide glyph to a blank, a column a cell.
-    let before = ["20", "6", "size", "str", "Z", "wait-text"];
-    let wide = id(&server.ok(&run(
-        &before,
-        &["sh", "-c", "printf 'A界BC              Z'; exec cat"],
-    ))?);
+    let wide = "printf 'A界BC              Z'; exec cat";
+    let wide = server.ok(&run(&["20", "6", "size"], &["sh", "-c", wide]))?;
+    shows_after(&server, &wide, "Z")?;
+    let wide = id(&wide);
     let cut = |first: &str, last: &str| {
         server.ok(&[
             "str", &wide, "pane", "0", "0", "rows", first, last, "cols", "capture",
@@ -845,40 +691,40 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     Ok(())
 }
 
-/// A wait on a workspace waits in each pane: met once every pane meets it,
-/// a line of each.
+/// A wait on a workspace answers once any of its panes changes, a line
+/// for each that did; a version is one pane's, so it waits from now.
 #[test]
-fn a_condition_on_a_workspace_is_met_in_each_pane() -> Outcome {
+fn a_wait_on_a_workspace_answers_the_panes_that_changed() -> Outcome {
     let server = Server::start("")?;
-    let mut panes = Vec::new();
-    for pause in ["0", "0.5", "1"] {
-        let made = server.ok(&run(
-            &["str", "g", "in"],
-            &["sh", "-c", &format!("sleep {pause}; echo E")],
-        ))?;
-        panes.push(id(&made));
-    }
-    let exited = server.ok(&["str", "g", "workspace", "wait-exit", "wait"])?;
-    for pane in &panes {
-        assert!(exited.contains(&format!("{pane} exited 0\n")), "{exited}");
-    }
+    let quiet = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
+    let rings = id(&server.ok(&run(
+        &["str", "g", "in"],
+        &["sh", "-c", "sleep 1; echo E; sleep 30"],
+    ))?);
+    let answer = server.ok(&["str", "g", "workspace", "10", "timeout", "wait"])?;
+    assert!(
+        answer.starts_with(&format!("{rings} ")) && !answer.contains(&quiet),
+        "{answer}"
+    );
+    let given = server.fux(&["str", "g", "workspace", "str", "0.1.0.0", "changed", "wait"])?;
+    assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
     Ok(())
 }
 
-/// A met wait's answer is its pane: a word that wants a pane takes it,
-/// never a pane named by what the program wrote (a line `%13 fake`).
+/// An action's answer, and a wait's, is its pane: a word that wants a pane
+/// takes it, never a pane named by what the program wrote (`%13 fake`).
 #[test]
-fn a_met_waits_answer_is_its_pane() -> Outcome {
+fn an_answer_is_its_pane() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(
-        &[],
-        &["sh", "-c", "read x; echo '%13 fake'; exec cat"],
-    ))?);
-    let met = [
-        &typed(&pane, "go", &["str", "fake", "wait-text"])[..],
-        &["str", "name", "get"],
+    let script = "read x; echo '%13 fake'; exec cat";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
+    assert_eq!(server.ok(&sent.concat())?.trim(), "sh");
+    server.shows(&pane, "%13 fake")?;
+    let waited = [
+        "str", &pane, "pane", "str", "0.0.0.0", "changed", "wait", "str", "name", "get",
     ];
-    assert_eq!(server.ok(&met.concat())?.trim(), "sh");
+    assert_eq!(server.ok(&waited)?.trim(), "sh");
     Ok(())
 }
 
@@ -898,15 +744,11 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
         &sink,
         "pane",
         "str",
-        "921600",
-        "wait-text",
-        "str",
         &path,
         "paste-file",
         "send-keys",
     ];
-    let pasted = server.fux(&paste)?;
-    assert_eq!(pasted.status, 0, "{}{}", pasted.stdout, pasted.stderr);
+    shows_after(&server, &server.ok(&paste)?, "921600")?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
     let many = [
         "str",
@@ -941,7 +783,9 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
 fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     let server = Server::start("")?;
     let script = "echo BEFORE; read x; echo LA\"\"TER; read y";
-    let pane = id(&server.ok(&run(&["str", "BEFORE", "wait-text"], &["sh", "-c", script]))?);
+    let started = server.ok(&run(&[], &["sh", "-c", script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "BEFORE")?;
     let json = server.ok(&[
         "str",
         &pane,
@@ -953,9 +797,6 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
         "let",
         "C",
         "P",
-        "str",
-        "LATER",
-        "wait-text",
         "str",
         "Enter",
         "key",
@@ -1007,7 +848,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let opts = ["opts"];
     let cat = ["str", "cat", "program"];
     for (before, unused, word) in [
-        (&on[..], &["str", "x", "wait-text"][..], "capture"),
+        (&on[..], &["str", "0.1.0.0", "changed"][..], "capture"),
         (&on, &["5", "timeout"], "capture"),
         (&on, &["100", "40", "size"], "capture"),
         (&on, &["str", "x", "name"], "wait"),
@@ -1020,7 +861,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["str", "%99", "id"], "respawn"),
         (&on, &["vertical"], "respawn"),
         (&opts, &["str", "nowhere", "in"], "new-workspace"),
-        (&opts, &["wait-exit"], "new-tab"),
+        (&opts, &["5", "timeout"], "new-tab"),
     ] {
         let refused = server.fux(&[before, unused, &[word]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} {word}: {}", refused.stdout);
@@ -1060,67 +901,41 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
 #[test]
 fn a_failed_wait_answers_as_text() -> Outcome {
     let server = Server::start("")?;
-    let started = server.ok(&run(&["wait-exit"], &["sh", "-c", "echo LAST; exit 2"]))?;
-    let pane = id(&started);
+    let pane = id(&server.ok(&run(&[], &["sleep", "30"]))?);
     let p = ["str", pane.as_str(), "pane"];
-    let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
-    assert_eq!(out.status, 3, "{}", out.stderr);
-    assert_eq!(out.stdout, format!("{pane} exited 2\n"), "{}", out.stderr);
+    let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
+    assert_eq!(out.status, 124, "{}", out.stderr);
+    assert!(out.stdout.starts_with(&format!("{pane} ")) && out.stdout.ends_with(" timeout\n"));
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
-    assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
+    assert!(out.stderr.starts_with("fux: timeout: "), "{}", out.stderr);
     // The same when the wait is a defined word's last step.
-    let wait = [
-        &["define", "w"],
-        &p[..],
-        &["str", "NEVER", "wait-text", "wait", "end"],
-    ];
-    let out = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
-    assert_eq!(out.stdout, format!("{pane} exited 2\n"), "{}", out.stderr);
+    let wait = [&["define", "w"], &p[..], &["1", "timeout", "wait", "end"]];
+    let again = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
+    assert_eq!(again.status, 124, "{}", again.stderr);
+    assert!(again.stdout.ends_with(" timeout\n"), "{}", again.stdout);
     Ok(())
 }
 
-/// A wait whose pane closes under it (its shell exited) fails so, with
-/// status 4 and the code `closed`; one whose program ends to be started
-/// again fails with status 3.
+/// A wait whose pane closes under it fails so, with status 4 and the
+/// code `closed`.
 #[test]
-fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
+fn a_wait_whose_pane_closes_says_so() -> Outcome {
     let server = Server::start("")?;
-    let typed = [
-        "opts",
-        "str",
-        "read x; exit",
-        "typed",
-        "str",
-        "w",
-        "in",
-        "new-tab",
-    ];
-    let pane = id(&server.ok(&typed)?);
-    let p = ["str", pane.as_str(), "pane"];
-    // The shell reads the line, then exits once Enter goes in: the wait
-    // the Enter arms ends as the pane closes.
-    let enter = [
-        "str",
-        "NEVER",
-        "wait-text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    let out = server.fux(&[&p[..], &enter].concat())?;
-    assert_eq!(out.status, 4, "{}{}", out.stdout, out.stderr);
-    assert!(out.stderr.starts_with("fux: closed: "), "{}", out.stderr);
-    // A program that, a moment after it starts, has its pane started
-    // again (once): the wait `run` armed on it ends so.
-    let again = format!(
-        "[ -n \"$AGAIN\" ] || {{ sleep 1; '{FUX}' str \"$FUX_PANE\" pane str AGAIN str 1 env \
-         kill-first respawn; }}; sleep 30"
-    );
-    let words = run(&["str", "NEVER", "wait-text"], &["sh", "-c", &again]);
-    let waited = server.fux(&words)?;
-    assert_eq!(waited.status, 3, "{}{}", waited.stdout, waited.stderr);
-    assert!(waited.stderr.contains("started again"), "{}", waited.stderr);
+    let pane = id(&server.ok(&run(&[], &["sleep", "30"]))?);
+    let waiting = std::process::Command::new(FUX)
+        .args(["str", &pane, "pane", "20", "timeout", "wait"])
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(e)?;
+    // Time for the wait to begin before the pane goes.
+    std::thread::sleep(Duration::from_secs(1));
+    server.ok(&["str", &pane, "pane", "kill"])?;
+    let closed = waiting.wait_with_output().map_err(e)?;
+    let stderr = String::from_utf8_lossy(&closed.stderr);
+    assert_eq!(closed.status.code(), Some(4), "{stderr}");
+    assert!(stderr.starts_with("fux: closed: "), "{stderr}");
     Ok(())
 }
 
@@ -1133,34 +948,14 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
     }
     let server = Server::start("")?;
     marked_bash(&server, "r")?;
-    server.ok(&[
-        "str",
-        "r",
-        "pane",
-        "wait-done",
-        "str",
-        "echo BEFORE",
-        "line",
-    ])?;
-    server.ok(&typed(
-        "r",
-        "echo CURRENT; read -r answer",
-        &["str", "CURRENT\n", "wait-text"],
-    ))?;
+    line_done(&server, "r", "echo BEFORE")?;
+    let asks = server.ok(&typed("r", "echo CURRENT; read -r answer"))?;
+    shows_after(&server, &asks, "\nCURRENT\n")?;
     let output = server.ok(&["str", "r", "pane", "last-output", "capture"])?;
     assert_eq!(output, "CURRENT\n");
-    server.ok(&[
-        "str",
-        "r",
-        "pane",
-        "wait-done",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
+    line_done(&server, "r", "")?;
     let draw = "printf 'before\\n\\033[?1049h\\033[Habc\\ndef\\nxy%s\\033[2;2H' z; read x";
-    server.ok(&typed("r", draw, &["str", "xyz", "wait-text"]))?;
+    shows_after(&server, &server.ok(&typed("r", draw))?, "xyz")?;
     let json = server.ok(&["str", "r", "pane", "last-output", "capture", "json"])?;
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
     Ok(())
@@ -1170,46 +965,12 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
 #[test]
 fn respawn_keeps_a_rename() -> Outcome {
     let server = Server::start("")?;
-    let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", "exit 0"]))?);
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 0"]))?);
+    server.exits(&pane)?;
     server.ok(&["str", &pane, "pane", "str", "keepme", "rename"])?;
     server.ok(&["str", &pane, "pane", "respawn"])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
-    Ok(())
-}
-
-/// Of several conditions, the first met answers, whatever order they were
-/// given in.
-#[test]
-fn the_condition_met_first_answers() -> Outcome {
-    let server = Server::start("")?;
-    let script = "read x; echo READY; sleep 0.3; exit 5";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
-    let both = [
-        "str",
-        &pane,
-        "pane",
-        "wait-exit",
-        "str",
-        "READY",
-        "wait-text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    assert_eq!(server.ok(&both)?, format!("{pane} text \"READY\"\nREADY\n"));
-    let exit = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "NEVER",
-        "wait-text",
-        "wait-exit",
-        "wait",
-    ];
-    assert_eq!(server.ok(&exit)?, format!("{pane} exited 5\n"));
     Ok(())
 }
 
@@ -1219,79 +980,10 @@ fn the_condition_met_first_answers() -> Outcome {
 fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     let server = Server::start("")?;
     let before = [
-        "str",
-        "P",
-        "%1",
-        "env",
-        "str",
-        "T",
-        "@1",
-        "env",
-        "str",
-        "W",
-        "+1",
-        "env",
-        "wait-exit",
+        "str", "P", "%1", "env", "str", "T", "@1", "env", "str", "W", "+1", "env",
     ];
     let pane = id(&server.ok(&run(&before, &["sh", "-c", "echo \"$P $T $W\""]))?);
+    server.exits(&pane)?;
     assert_eq!(server.ok(&["str", &pane, "pane", "capture"])?, "%1 @1 +1\n");
-    Ok(())
-}
-
-/// A wait begins once fux has read all its program wrote, held frames and
-/// all: a bell written before it, in a frame not yet ended, is no bell to
-/// it; one written after it is met, however many journal entries follow it
-/// in the same read; and of conditions met in one read, the one written
-/// first answers, in whatever order they were given.
-#[test]
-fn waits_count_from_what_was_written_and_in_its_order() -> Outcome {
-    let server = Server::start("")?;
-    let held = r"printf 'x\033[?2026h\a'; read x; sleep 30";
-    let pane = id(&server.ok(&run(&["str", "x", "wait-text"], &["sh", "-c", held]))?);
-    let early = server.fux(&["str", &pane, "pane", "1", "timeout", "wait-bell", "wait"])?;
-    assert_eq!(early.status, 124, "{}{}", early.stdout, early.stderr);
-    let flood = r"read x; printf '\a'; i=0; while [ $i -lt 1100 ]; do printf '\033]2;t%s\a' $i; i=$((i+1)); done; read y";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", flood]))?);
-    let rung = [
-        "str",
-        &pane,
-        "pane",
-        "wait-bell",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    assert_eq!(server.ok(&rung)?, format!("{pane} bell\n"));
-    let both = r"read x; printf '\a\033]133;C\a\033]133;D;0\a'; printf 'READY\n'; exit 0";
-    for order in [["wait-done", "wait-bell"], ["wait-bell", "wait-done"]] {
-        let pane = id(&server.ok(&run(&[], &["sh", "-c", both]))?);
-        let words = [
-            &["str", pane.as_str(), "pane"][..],
-            &order,
-            &["str", "Enter", "key", "send-keys"],
-        ];
-        assert_eq!(
-            server.ok(&words.concat())?,
-            format!("{pane} bell\n"),
-            "{order:?}"
-        );
-    }
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", both]))?);
-    let words = [
-        "str",
-        &pane,
-        "pane",
-        "wait-exit",
-        "str",
-        "READY",
-        "wait-text",
-        "wait-done",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    assert_eq!(server.ok(&words)?, format!("{pane} done 0\n"));
     Ok(())
 }

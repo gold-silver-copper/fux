@@ -1,7 +1,6 @@
-# Run a program, wait for its exit, and read what it printed: the wait
-# answers how it ended; as a value it is still the pane, so `capture`
-# reads its screen and `get` how it ended.
-# expect: %6 exited 0
+# Run a program, wait for its exit, and read what it printed. A wait
+# answers each change of the pane's version; its program's exit ends it
+# too, and `get` reads how it ended.
 # expect: tick 1
 # expect: tick 2
 # expect: tick 3
@@ -9,4 +8,6 @@
 # expect: 0
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
-wait-exit run dup capture over str exited get
+run let W
+begin W str exited get string str null eq dup if W wait drop then not until
+W capture W str exited get

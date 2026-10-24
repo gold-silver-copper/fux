@@ -237,6 +237,70 @@ impl Server {
         Ok(out.stdout)
     }
 
+    /// The version of `pane` (`STARTS.SCREEN.BELLS.DONE`).
+    pub fn version(&self, pane: &str) -> Result<String, String> {
+        Ok(self
+            .ok(&["str", pane, "pane", "str", "version", "get"])?
+            .trim()
+            .to_owned())
+    }
+
+    /// Waits, as `docs/agents.md`'s recipes do, from version `since` until
+    /// `done` holds of `pane`'s whole capture; its capture then.
+    pub fn until(
+        &self,
+        pane: &str,
+        since: &str,
+        done: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        let mut since = since.to_owned();
+        loop {
+            let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
+            if done(&capture) {
+                return Ok(capture);
+            }
+            let waited = [
+                "str", pane, "pane", "str", &since, "changed", "10", "timeout", "wait",
+            ];
+            let out = self.fux(&waited)?;
+            if out.status != 0 {
+                return Err(format!("{pane} never came to it: {}{capture}", out.stderr));
+            }
+            if out.stdout.contains(" exited ") || out.stdout.contains(" killed by ") {
+                let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
+                return match done(&capture) {
+                    true => Ok(capture),
+                    false => Err(format!("{pane} ended first: {}{capture}", out.stdout)),
+                };
+            }
+            since = out
+                .stdout
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned();
+        }
+    }
+
+    /// Waits, from now, until `pane`'s capture holds `text`; its capture.
+    pub fn shows(&self, pane: &str, text: &str) -> Result<String, String> {
+        let since = self.version(pane)?;
+        self.until(pane, &since, |capture| capture.contains(text))
+    }
+
+    /// Waits until `pane`'s program exits: the wait's answer.
+    pub fn exits(&self, pane: &str) -> Result<String, String> {
+        loop {
+            let out = self.fux(&["str", pane, "pane", "10", "timeout", "wait"])?;
+            if out.status != 0 && out.status != 124 {
+                return Err(format!("{pane}: {}", out.stderr));
+            }
+            if out.stdout.contains(" exited ") || out.stdout.contains(" killed by ") {
+                return Ok(out.stdout);
+            }
+        }
+    }
+
     pub fn attach(&self, rows: u16, cols: u16) -> Result<Client, String> {
         Client::connect(self, (rows, cols), None, false)
     }

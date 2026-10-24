@@ -695,7 +695,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
         "set",
     ])?;
     let pane = server.ok(&["opts", "new-workspace"])?;
-    let pane = pane.trim();
+    let pane = pane.split_whitespace().next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
         let screen = server.ok(&["str", pane, "pane", "capture"])?;

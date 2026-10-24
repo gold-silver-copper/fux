@@ -10,7 +10,7 @@ mod words;
 
 use crate::client;
 use crate::code::Code;
-use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Until, WsRef};
+use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
@@ -93,7 +93,8 @@ impl AppValue for Fux {
 /// What a wait waits for, as words give it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Waits {
-    pub until: Vec<Until>,
+    /// The version it waits to differ from (`changed`).
+    pub since: Option<Version>,
     pub timeout: Option<Duration>,
 }
 

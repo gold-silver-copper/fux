@@ -1,7 +1,6 @@
 //! A pane's journal: what happens in it, in the order it happens, each
-//! entry numbered and placed in what its program wrote: bells,
-//! notifications, titles, shell commands' ends and resizes. `events`
-//! streams it, and a wait reads what came after it began.
+//! entry numbered: bells, notifications, titles, shell commands' ends and
+//! resizes, which `events` streams.
 use std::collections::VecDeque;
 
 /// A number from a pane's journal: the order things happened in.
@@ -23,17 +22,15 @@ pub enum Event {
     Resize(fux_vt::Size),
 }
 
-/// One thing that happened, its number, and how many bytes its program
-/// had written as it happened (`crate::written`).
+/// One thing that happened, and its number.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub seq: Seq,
-    pub at: u64,
     pub event: Event,
 }
 
-/// How many entries a pane's journal keeps: what came since a reader last
-/// looked, which it does after every round of output.
+/// How many entries a pane's journal keeps: what came since a stream of
+/// events last looked, which it does after every round of output.
 const KEPT: usize = 1024;
 
 /// A pane's journal: its last [`KEPT`] entries, in order. A reader asking
@@ -46,16 +43,14 @@ pub struct Log {
 }
 
 impl Log {
-    /// Records `event`, numbered after the last, as its program had written
-    /// `at` bytes.
-    pub fn push(&mut self, at: u64, event: Event) {
+    /// Records `event`, numbered after the last.
+    pub fn push(&mut self, event: Event) {
         self.last = Seq(self.last.0.saturating_add(1));
         if self.entries.len() >= KEPT {
             self.entries.pop_front();
         }
         self.entries.push_back(Entry {
             seq: self.last,
-            at,
             event,
         });
     }
@@ -89,7 +84,7 @@ mod tests {
     fn the_oldest_entries_go_first_and_are_told() {
         let mut log = Log::default();
         for _ in 0..=KEPT {
-            log.push(0, Event::Bell);
+            log.push(Event::Bell);
         }
         assert!(log.lost_after(Seq(0)) && !log.lost_after(Seq(1)));
         assert_eq!(log.after(Seq(0)).count(), KEPT);

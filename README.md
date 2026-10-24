@@ -44,9 +44,10 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-fux opts str htop program str Load wait-text run  # start htop; wait until it writes "Load"
+fux opts str htop program run                     # start htop: %3 0.1.0.0, its pane and version
+fux %3 str 0.1.0.0 changed wait                   # until its version differs: %3 0.4.0.0 screen
 fux %3 capture                                    # its screen
-fux %3 wait-exit str q text send-keys             # press q, wait for its exit: %3 exited 0
+fux %3 str q text send-keys                       # press q: %3 0.9.0.0, its version before
 ```
 
 - A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
@@ -55,21 +56,18 @@ fux %3 wait-exit str q text send-keys             # press q, wait for its exit: 
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
-- An action (`run`, `send-keys`, `signal` …) acts and answers at once,
-  with its pane. fux never judges whether a program is done: wait words on
-  the pane say what to wait for, from the moment the action acts (`fux %3
-  str PASS wait-text str 'make test' line`), or from now with `wait`. They
-  wait for facts: a text the program writes (`wait-text`), any output
-  (`wait-change`), N seconds with none (`wait-quiet`), its exit
-  (`wait-exit`), a bell or notification (`wait-bell`), a shell command's
-  end as its OSC 133 marks say (`wait-done`). A wait answers what met it:
-  `%3 text "PASS"` and the line, `%3 done 0`, `%3 exited 2`.
-  [docs/agents.md](docs/agents.md) has recipes. A failure prints `fux:
-  CODE: MESSAGE` on stderr, with the file, line and word, and exits 1; a
-  wait that fails exits with its own status: 3 the program exited (or was
-  started again) first, 4 the pane closed, 124 the time limit came first (`SECS timeout` on the
-  pane; 30 s by default). A wait met by its program's exit (`wait-exit`)
-  exits 0: the program's own status is in the answer (`%3 exited 2`).
+- Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE`: counts of its
+  program's starts, its screen's changes, bells rung and shell commands
+  ended (OSC 133 marks), which only grow. An action (`run`, `send-keys`,
+  `signal` …) acts at once and answers its pane and its version from just
+  before it acted. `PANE str V changed wait` waits until the version
+  differs from V, its program exits or the pane closes, and answers what
+  changed: `%3 0.57.1.4 screen bell done`, `exited 2`. fux never judges
+  whether a program is done: [docs/agents.md](docs/agents.md) has recipes
+  (a text, quiet for N seconds, a command's end, an exit). A failure
+  prints `fux: CODE: MESSAGE` on stderr, with the file, line and word, and
+  exits 1; a wait exits 4 if the pane closed, 124 if nothing changed in
+  time (`SECS timeout` on the pane; 30 s by default).
 - A single argument with spaces is a whole program (`fux 'ls json'`);
   otherwise `fux FILE` runs a file (one with a `/` or ending `.fux`), and
   `fux -` runs what stdin says. `#` starts a comment. A paste is at most 900 KiB.
@@ -113,7 +111,7 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 
 ```sh
 fux opts str web name 120 40 size str './app --verbose' command run
-fux %3 str ready wait-text 60 timeout wait
+fux %3 str 0.57.0.3 changed 60 timeout wait
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys
 ```
@@ -121,7 +119,7 @@ fux %3 str 'make test' text str Enter key send-keys
 A program can name what it made:
 
 ```sh
-fux opts str sh program run let P   P str hello wait-text str "echo hel''lo" line   P screen
+fux opts str sh program run let P   P str 'echo hello' line drop   P wait   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
@@ -259,9 +257,10 @@ and Helix do, copies the same way. fux never reads the clipboard.
 
 fux starts your shell as it is, and reads the OSC 133 marks any program
 sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
-where a prompt starts. With them, `wait-done` waits for a command to end,
-`last-output` reads its output alone, and copy mode's `[` and `]` jump
-between prompts; without them, each says there are none. To send them, in
+where a prompt starts. With them, a pane's version counts the commands
+that end, `last_status` says how the last did, `last-output` reads its
+output alone, and copy mode's `[` and `]` jump between prompts; without
+them, each says there are none. To send them, in
 your own startup files:
 
 ```sh
@@ -292,11 +291,11 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 
 | Words | Do |
 | --- | --- |
-| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE, a pane, tab or workspace as its id: `%3`), `program`, `arg`, `log-to`, and any wait word, which waits from the program's start |
+| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE, a pane, tab or workspace as its id: `%3`), `program`, `arg`, `log-to`; answers the pane and its version as it starts |
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane … wait` | wait, from now, until its program writes a text (`str T wait-text`: exactly, escape sequences aside), anything (`wait-change`), nothing for N seconds (`N wait-quiet`), exits (`wait-exit`), rings or notifies (`wait-bell`), or a shell command ends as its marks say (`wait-done`); `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, in each pane |
-| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `N times` repeats the input just before it; answers at once, or, given wait words, waits from when the keys go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
+| `pane … wait` | wait until its version differs from `str V changed` (else from now's), its program exits or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of its panes |
+| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `N times` repeats the input just before it; answers at once, the pane and its version before the keys. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (reverse video and background colours as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |

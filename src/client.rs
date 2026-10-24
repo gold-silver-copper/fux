@@ -327,7 +327,7 @@ pub fn context() -> Context {
 /// Whether `request` may start programs: the only requests whose caller's
 /// environment the server reads.
 fn starts_programs(request: &Request) -> bool {
-    let (Request::Do(command) | Request::Then(command, _)) = request else {
+    let Request::Do(command) = request else {
         return false;
     };
     matches!(

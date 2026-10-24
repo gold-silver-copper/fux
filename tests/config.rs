@@ -215,9 +215,7 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
             "str",
             "x",
             "env",
-            "wait-exit",
             "run",
-            "capture",
         ])
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -227,7 +225,10 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
         .env("FUXT_BYTES", std::ffi::OsStr::from_bytes(b"caf\xe9"))
         .output()
         .map_err(e)?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let pane = String::from_utf8_lossy(&out.stdout);
+    let pane = pane.split_whitespace().next().ok_or("its pane")?;
+    server.exits(pane)?;
+    let stdout = server.ok(&["str", pane, "pane", "capture"])?;
     assert!(stdout.contains("[unset] [yes]"), "{stdout}");
     // od spaces its bytes as each system likes.
     let bytes = stdout.split_whitespace().collect::<Vec<_>>().join(" ");

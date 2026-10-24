@@ -242,8 +242,14 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
+    // Whether a thread of its foreground blocks reading its terminal, where
+    // the system says.
+    let reading = (pane.process.child())
+        .and_then(|child| fuxix::process::reading_terminal(&child.master, child.leader.pid()));
     vec![
+        ("version", Json::str(pane.version().to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
+        ("reading", reading.map_or(Json::Null, Json::Bool)),
         ("paused", Json::Bool(paused)),
         ("exited", exited),
         ("signal", signal),
