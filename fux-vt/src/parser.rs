@@ -396,17 +396,17 @@ enum Pending {
         /// No intermediate yet: `[` begins a CSI, `c` is RIS.
         plain: bool,
     },
-    Csi {
-        phase: Phase,
-        /// Read to its final byte and not carried out (`State::CsiIgnore`).
-        ignored: bool,
-    },
+    Csi(Phase),
+    /// Read to its final byte and not carried out (`State::CsiIgnore`).
+    CsiIgnore,
 }
 
 impl FrameScan {
     /// Whether synchronized output is reset by default, as RIS, and DECSTR
     /// for the modes it names, leave it.
     const RESET: bool = !Modes::DEFAULT.contains(Mode::SynchronizedOutput);
+    /// Whether a soft reset (DECSTR, DECSCL) leaves it reset.
+    const SOFT: bool = Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput);
     /// Reads `held`, the frame's bytes so far, from where it stopped: how
     /// many of them go up to and through the sequence that ends
     /// synchronized output (DECRST naming it, XTRESTORE of it saved reset,
@@ -441,33 +441,17 @@ impl FrameScan {
             (Pending::Escape { .. }, 0x20..=0x2f) => (Pending::Escape { plain: false }, false),
             (Pending::Escape { plain: true }, b'[') => {
                 self.params.clear();
-                let csi = Pending::Csi {
-                    phase: Phase::Entry,
-                    ignored: false,
-                };
-                (csi, false)
+                (Pending::Csi(Phase::Entry), false)
             }
             (Pending::Escape { plain: true }, b'c') => (Pending::Ground, Self::RESET),
             // A final byte, or a control string's introducer among them.
             (Pending::Escape { .. }, 0x30..=0x7e) => (Pending::Ground, false),
             (Pending::Escape { .. }, _) => (self.pending, false),
-            (Pending::Csi { ignored: true, .. }, 0x40..=0x7e) => (Pending::Ground, false),
-            (Pending::Csi { ignored: true, .. }, _) => (self.pending, false),
-            (Pending::Csi { phase, .. }, _) => match phase.next(byte, &mut self.params) {
-                Next::Phase(phase) => (
-                    Pending::Csi {
-                        phase,
-                        ignored: false,
-                    },
-                    false,
-                ),
-                Next::Ignore => (
-                    Pending::Csi {
-                        phase,
-                        ignored: true,
-                    },
-                    false,
-                ),
+            (Pending::CsiIgnore, 0x40..=0x7e) => (Pending::Ground, false),
+            (Pending::CsiIgnore, _) => (self.pending, false),
+            (Pending::Csi(phase), _) => match phase.next(byte, &mut self.params) {
+                Next::Phase(phase) => (Pending::Csi(phase), false),
+                Next::Ignore => (Pending::CsiIgnore, false),
                 Next::Control => (self.pending, false),
                 Next::Final(read) => (Pending::Ground, self.ends(read.as_slice(), byte)),
             },
@@ -491,12 +475,8 @@ impl FrameScan {
                 self.saved = self.saved || named();
                 false
             }
-            (b"!", b'p') => Self::RESET && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput),
-            (b"\"", b'p') => {
-                Self::RESET
-                    && Modes::SOFT_RESET.contains(Mode::SynchronizedOutput)
-                    && matches!(self.params.first(0, 0), 61 | 62)
-            }
+            (b"!", b'p') => Self::SOFT,
+            (b"\"", b'p') => Self::SOFT && matches!(self.params.first(0, 0), 61 | 62),
             _ => false,
         }
     }
@@ -1168,8 +1148,9 @@ impl Parser {
         bytes: &[u8],
         sink: &mut impl Sink,
     ) -> Result<Option<(usize, Stop)>, Error> {
-        if bytes.is_empty() {
-            return self.run_left::<UNTIL_STOP>(sink);
+        // No bytes: only what the last call left at its budget, if any.
+        if bytes.is_empty() && !self.screen.left_over() {
+            return Ok(None);
         }
         self.screen.begin();
         let (start, refused) = (crate::budget::spent(), self.refused);
@@ -1261,39 +1242,6 @@ impl Parser {
         }
         work!(bytes, bytes.len());
         self.count_degrades(degrades);
-        match self.refused == refused {
-            true => Ok(None),
-            false => Err(Error::Capacity),
-        }
-    }
-    /// `run` of no bytes: only what the last call left at its budget.
-    #[cold]
-    #[inline(never)]
-    fn run_left<const UNTIL_STOP: bool>(
-        &mut self,
-        sink: &mut impl Sink,
-    ) -> Result<Option<(usize, Stop)>, Error> {
-        if !self.screen.left_over() {
-            return Ok(None);
-        }
-        self.screen.begin();
-        let (start, refused) = (crate::budget::spent(), self.refused);
-        let degrades = crate::degrades();
-        self.end = match UNTIL_STOP {
-            true => start.saturating_add(crate::budget::LIMIT.saturating_sub(self.spent)),
-            false => u64::MAX,
-        };
-        (self.screen.stop_at, self.screen.stopped) = (self.end, false);
-        let stopped = self.resumed::<UNTIL_STOP>(sink);
-        (self.screen.stop_at, self.screen.stopped) = (u64::MAX, false);
-        self.count_degrades(degrades);
-        if stopped {
-            self.spend_since(start, Stop::Budget);
-            return Ok(Some((0, Stop::Budget)));
-        }
-        if UNTIL_STOP {
-            self.spend_since(start, Stop::Ended);
-        }
         match self.refused == refused {
             true => Ok(None),
             false => Err(Error::Capacity),
@@ -1875,13 +1823,7 @@ impl Parser {
             Some(Setting::Unknown) | None => b'0',
             Some(Setting::Unanswered) => return,
         };
-        let mut reply = Vec::with_capacity(setting.len().saturating_add(7));
-        reply.extend_from_slice(b"\x1bP");
-        reply.push(status);
-        reply.extend_from_slice(b"$r");
-        reply.extend_from_slice(setting.as_bytes());
-        reply.extend_from_slice(b"\x1b\\");
-        sink.reply(&reply);
+        sink.reply(format!("\x1bP{}$r{setting}\x1b\\", char::from(status)).as_bytes());
     }
 
     fn osc_command(&mut self, payload: &[u8], whole: bool, bel: bool, sink: &mut impl Sink) {
