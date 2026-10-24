@@ -900,7 +900,8 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Status => {
             let socket = server.socket()?;
             let probe = client::probe(&socket).map_err(client_failed)?;
-            let (text, json) = crate::status(&socket, &probe);
+            let (text, json) =
+                crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
             return Ok(vec![answer(&text, &json, Said::Status)]);
         }
         Local::Servers => {

@@ -4709,10 +4709,7 @@ mod tests {
             ("%1 capture 0 4 rows", "fux %3 0 4 rows capture"),
         ] {
             let option = failed(&mut s, code);
-            assert!(
-                option.contains("(use: a capture option, PANE-OR-OPTS "),
-                "{option}"
-            );
+            assert!(option.contains("(use: a capture option, PANE "), "{option}");
             assert!(option.contains(&format!("; e.g. {shown})")), "{option}");
         }
         let env = failed(&mut s, "opts str 1bad str v env new-tab");

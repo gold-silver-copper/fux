@@ -141,9 +141,9 @@ pub fn explain(name: &str) -> Option<String> {
             && takes.peek().is_some()
         {
             // What they go on: options, for what makes its own pane.
-            let on = match name {
-                "run" | "new-tab" | "new-workspace" => "opts",
-                _ => "the pane",
+            let on = match FROM_OPTS.contains(&name) {
+                true => "opts",
+                false => "the pane",
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
@@ -169,6 +169,10 @@ pub fn explain(name: &str) -> Option<String> {
     let (shape, about) = fuxth::Parsing::named(name)?.syntax();
     Some(format!("{name}  {shape}: {about}\n"))
 }
+
+/// The words that start from `opts`, empty options: they make their own
+/// pane. Every other word's options go on the pane it acts on.
+pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
@@ -204,21 +208,26 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
-        "name" | "size" | "cwd" | "env" | "program" | "arg" | "in" | "log-to" => {
-            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program run"
+        "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
+            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }
+        "env" => "fux opts str PORT 8080 env str ./app program run",
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
-        "respawn" => "fux %3 kill-first respawn",
-        "wait" => "fux %3 str 0.57.0.3.0 changed 60 timeout wait",
+        "respawn" | "kill-first" => "fux %3 kill-first respawn",
+        "wait" | "changed" => {
+            "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait"
+        }
         "help-agents-on" => "fux str recipes help-agents-on",
-        "changed" => "fux %3 str 0.57.0.3.0 changed wait",
         "timeout" => "fux %3 300 timeout wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",
+        "paste" => "fux %3 str 'a long prompt' paste str Enter key send-keys",
+        "paste-file" => "fux %3 str prompt.txt paste-file send-keys",
+        "signal" => "fux %3 str TERM signal",
         "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
         "capture" | "history" => "fux %3 100 history capture",
         "all-history" => "fux %3 all-history capture",
@@ -233,6 +242,14 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "get" => "fux %3 str exited get",
         "json" => "fux ls json",
         "info" => "fux %3 info json",
+        "ls" => "fux ls",
+        "pane" => "fux str web pane capture",
+        "tab" => "fux %3 tab str logs rename",
+        "workspace" => "fux str agent workspace kill",
+        "events-of" | "events-of-json" => "fux str agent workspace events-of-json",
+        "clear-history" => "fux %3 clear-history",
+        "notify" => "fux %3 str 'tests passed' notify",
+        "status" => "fux status || fux start",
         "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
         "rename" => "fux %3 str editor rename",
         "kill" => "fux %3 kill",
@@ -262,15 +279,12 @@ mod tests {
         for word in WORDS {
             assert!(overview.contains(word.name), "{}", word.name);
             assert!(explain(word.name).is_some(), "{}", word.name);
-            if let Some(example) = example(word.name) {
-                let code = example.strip_prefix("fux ").unwrap_or(example);
-                let code = code
-                    .split(';')
-                    .next()
-                    .unwrap_or_default()
-                    .split(" >")
-                    .next()
-                    .unwrap_or_default();
+            // Each fux command line in it, a shell line's too.
+            let commands = (example(word.name).into_iter())
+                .flat_map(|line| line.split(['(', ')', ';', '|', '>']))
+                .filter_map(|part| part.trim().strip_prefix("fux "))
+                .filter(|code| !code.ends_with(".fux"));
+            for code in commands {
                 let tokens = fuxth::token::source("example", code);
                 let compiled = tokens.map_err(|e| e.to_string()).and_then(|t| {
                     crate::script::compile(&t)

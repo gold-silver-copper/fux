@@ -58,12 +58,18 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     let status = named(&rt, &["str", "t", "server", "status", "json"], &[])?;
     assert_eq!(status.status, 0);
     assert!(
-        status.stdout.contains(r#""running":true"#) && status.stdout.contains("/fux/t.sock"),
+        status.stdout.contains(r#""compatible":true"#) && status.stdout.contains("/fux/t.sock"),
         "{}",
         status.stdout
     );
+    // With no server, status fails, so a shell's `if fux status` reads it.
     let none = named(&rt, &["str", "none", "server", "status"], &[])?;
-    assert!(none.stdout.starts_with("no fux server"), "{}", none.stdout);
+    assert_eq!(none.status, 1, "{}", none.stderr);
+    assert!(
+        none.stderr.starts_with("fux: no_server: ") && none.stderr.contains("no fux server at"),
+        "{}",
+        none.stderr
+    );
     // The test server's pane, as an agent in it would carry it, reaches
     // the private server: it is not that server's, and nothing is done to
     // what has its number there.
@@ -100,7 +106,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "key",
         "send-keys",
     ])?;
-    let since = sent.split_whitespace().nth(1).unwrap_or_default();
+    let since = sent.split_whitespace().next().unwrap_or_default();
     server.until(sh, since, |c| c.contains("status=1"))?;
     assert!(
         server.ok(&["ls"])?.contains("+1 main"),
@@ -759,8 +765,8 @@ fn a_door_alone_is_a_server() -> Outcome {
         named(&rt, &args, &[])
     };
     let left = t(&["status"])?;
-    assert_eq!(left.status, 0, "{}", left.stderr);
-    assert!(left.stdout.starts_with("no fux server"), "{}", left.stdout);
+    assert_eq!(left.status, 1, "{}", left.stderr);
+    assert!(left.stderr.contains("no fux server"), "{}", left.stderr);
     assert_eq!(t(&["start"])?.status, 0);
     std::fs::remove_file(dir.join("t.sock")).map_err(e)?;
     assert_eq!(t(&["start"])?.status, 0);
@@ -858,7 +864,7 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             "key",
             "send-keys",
         ])?;
-        let since = keys.split_whitespace().nth(1).unwrap_or_default();
+        let since = keys.split_whitespace().next().unwrap_or_default();
         server.until(sh, since, |c| c.contains("\ndoor-42"))?;
         let capture = server.ok(&["str", sh, "pane", "capture", "json"])?;
         assert!(
@@ -969,11 +975,7 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
         signal(pid, fuxix::process::Signal::Kill);
         eventually("the server gone", || Ok(!alive(pid)))?;
         let status = t(&["status"])?;
-        assert!(
-            status.stdout.starts_with("no fux server"),
-            "{}",
-            status.stdout
-        );
+        assert!(status.stderr.contains("no fux server"), "{}", status.stderr);
         assert_eq!(t(&["start"])?.status, 0);
         assert!(t(&["ls"])?.stdout.contains("main"));
         let killed = t(&["force-kill-server"])?;

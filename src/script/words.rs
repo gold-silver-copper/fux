@@ -110,11 +110,11 @@ pub const WORDS: &[Word] = &[
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
-    word("Starting", "run", "opts -- pane", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
-    word("Starting", "split", "subject -- pane", "split a pane: a shell, or the program given"),
-    word("Starting", "new-tab", "opts -- pane", "a tab with a shell"),
-    word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
-    word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
+    word("Starting", "run", "opts -- answer", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
+    word("Starting", "split", "subject -- answer", "split a pane: a shell, or the program given"),
+    word("Starting", "new-tab", "opts -- answer", "a tab with a shell"),
+    word("Starting", "new-workspace", "opts -- answer", "a workspace with a tab and a shell"),
+    word("Starting", "respawn", "subject -- answer", "start again in its pane the program run started"),
     // Waiting
     word("Waiting", "changed", "version -- request", "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
@@ -174,11 +174,11 @@ pub const WORDS: &[Word] = &[
     word("Changing", "clear-history", "pane --", "drop the pane's history"),
     word("Changing", "buffers", "-- text", "the paste buffers, newest 0"),
     word("Changing", "buffer", "n -- text", "paste buffer n"),
-    word("Changing", "paste-buffer", "pane n --", "paste buffer n into a pane"),
+    word("Changing", "paste-buffer", "pane n -- answer", "paste buffer n into a pane; answers as send-keys does"),
     // Clients
     word("Clients", "attach", "--", "show the server in this terminal"),
     word("Clients", "attach-to", "workspace --", "the same, on a workspace"),
-    word("Clients", "watch", "--", "show it, keys doing nothing but the prefix then d"),
+    word("Clients", "watch", "--", "attach without typing: keys do nothing but the prefix, then d, which detaches"),
     word("Clients", "headless", "cols rows --", "a client with no terminal, until signalled; prints its id"),
     word("Clients", "focus", "client way --", "left right up down next previous or last pane"),
     word("Clients", "focus-pane", "client pane --", "focus a pane"),
@@ -205,7 +205,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "server", "name --", "the server named so (NAME.sock in fux's directory), for what follows"),
     word("Server", "socket", "path --", "the server on this socket, for what follows"),
     word("Server", "start", "--", "start the server in the background, if none answers"),
-    word("Server", "status", "-- record", "whether a server answers, and its version"),
+    word("Server", "status", "-- record", "the server that answers, and its version; with none, fails no_server"),
     word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
@@ -262,16 +262,35 @@ pub fn usage(word: &str) -> Option<String> {
         },
     };
     let (takes, leaves) = effect.split_once("--").unwrap_or((effect, ""));
-    // What a request's word goes on: the pane, or opts.
+    // What a request's word goes on: the pane, opts, or either, as the
+    // words that take it do.
     let takes = takes.trim().to_uppercase();
     let request = takes.strip_prefix('X');
+    let taken_by = |w: &str| help::options(w).is_some_and(|mut o| o.any(|o| o == word));
+    let takers = help::OPTIONS
+        .iter()
+        .map(|(w, _)| *w)
+        .filter(|w| taken_by(w));
+    let (opts, panes): (Vec<&str>, Vec<&str>) = takers.partition(|w| help::FROM_OPTS.contains(w));
+    let on = match (opts.is_empty(), panes.is_empty()) {
+        (true, false) => "PANE",
+        (false, true) => "OPTS",
+        (true, true) | (false, false) => "PANE-OR-OPTS",
+    };
     let takes = match request.filter(|r| r.is_empty() || r.starts_with(' ')) {
-        Some(rest) => format!("PANE-OR-OPTS{rest}"),
+        Some(rest) => format!("{on}{rest}"),
         None => takes,
     };
     let leaves = match leaves.trim() {
         "" => String::new(),
-        "x" => ", which leaves a request (or opts) for the word that acts".to_owned(),
+        "x" => {
+            let left = match on {
+                "PANE" => "a request",
+                "OPTS" => "opts",
+                _ => "a request (or opts)",
+            };
+            format!(", which leaves {left} for the word that acts")
+        }
         leaves => format!(", which leaves {leaves}"),
     };
     let example = help::example(word).map_or_else(String::new, |e| format!("; e.g. {e}"));
@@ -1325,7 +1344,10 @@ impl fuxth::Host for Host<'_> {
             "paste-buffer" => {
                 let p = pane(&next()?)?;
                 let index = within(&next()?, COUNT)?;
-                tell(Command::PasteBuffer { index, target: p })
+                later(ask(
+                    Command::PasteBuffer { index, target: p },
+                    Then::Outcome,
+                ))
             }
             // ----------------------------------------------------- clients
             "attach" | "watch" | "attach-to" => {

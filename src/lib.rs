@@ -157,17 +157,20 @@ fn serve(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fux status`: what answers on `socket`, as text and as JSON, and
-/// whether it is a server this fux can drive.
-pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> (String, String) {
+/// `fux status`: the server that answers on `socket`, as text and as
+/// JSON, and whether it is one this fux can drive; with none, why not.
+pub(crate) fn status(
+    socket: &socket::SocketPath,
+    probe: &client::Probe,
+) -> Result<(String, String), String> {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
-    let (running, theirs, text) = match probe {
-        client::Probe::Absent => (false, vec![], format!("no fux server at {path}")),
+    let (theirs, text) = match probe {
+        client::Probe::Absent => return Err(format!("no fux server at {path}")),
         client::Probe::Left => {
-            let text =
-                format!("no fux server at {path} (its socket is left from one that stopped)");
-            (false, vec![("left", Json::Bool(true))], text)
+            return Err(format!(
+                "no fux server at {path} (its socket is left from one that stopped)"
+            ));
         }
         client::Probe::Server { protocol, version } => {
             let compatible = *protocol == protocol::PROTOCOL;
@@ -184,17 +187,16 @@ pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> (Str
                 ("server_protocol", Json::int(*protocol)),
                 ("compatible", Json::Bool(compatible)),
             ];
-            (true, theirs, text)
+            (theirs, text)
         }
     };
     let mut fields = vec![
-        ("running", Json::Bool(running)),
         ("socket", Json::str(&path)),
         ("version", Json::str(ours)),
         ("protocol", Json::int(protocol::PROTOCOL)),
     ];
     fields.extend(theirs);
-    (text, Json::Object(fields).render())
+    Ok((text, Json::Object(fields).render()))
 }
 
 /// `fux servers`: every server that answers in fux's directory, a line
