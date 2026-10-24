@@ -20,7 +20,6 @@ use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, V
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub use words::{WORDS, Word, usage};
 
@@ -106,7 +105,7 @@ pub struct Opts {
     pub log: Option<String>,
     pub kill: bool,
     /// How long a wait waits at most.
-    pub timeout: Option<Duration>,
+    pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,

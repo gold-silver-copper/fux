@@ -7,7 +7,6 @@ use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::wire::wire;
 use std::path::PathBuf;
-use std::time::Duration;
 
 wire! {
     /// A workspace named on the command line: `+N` or its name.
@@ -425,7 +424,7 @@ wire! {
     pub struct Wait {
         pub since: Since,
         /// How long at most; if unsaid, the server's `wait-seconds`.
-        pub timeout: Option<Duration>,
+        pub timeout: Option<crate::config::Limit>,
     }
 }
 

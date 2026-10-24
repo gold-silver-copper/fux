@@ -15,7 +15,6 @@ use crate::layout::Axis;
 use crate::screens::Open;
 use fuxth::{Code as Lang, Done, Failure, Value};
 use std::ops::RangeInclusive;
-use std::time::Duration;
 
 /// A word of fux's vocabulary.
 pub struct Word {
@@ -558,7 +557,11 @@ fn modify(
         "full" => built.view.full = true,
         "styles" => built.view.styles = true,
         "marks" => built.view.marks = true,
-        "timeout" => built.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
+        "timeout" => {
+            let secs = within(&next()?, COUNT)?;
+            let limit = crate::config::Limit::read(secs).map_err(|why| fail(Lang::Range, why))?;
+            built.timeout = Some(limit);
+        }
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),

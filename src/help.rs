@@ -39,7 +39,7 @@ pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
 pub fn overview() -> String {
-    let wait = crate::config::WAIT.as_secs();
+    let wait = crate::config::Limit::DEFAULT.seconds();
     let mut out = format!(
         "\
 usage: fux                 attach, starting a server if none runs

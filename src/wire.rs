@@ -285,6 +285,17 @@ text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
 text_wire!(crate::command::Version, "version");
 
+/// Its seconds, read back only if a wait may wait that long.
+impl Wire for crate::config::Limit {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.seconds().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let secs = u32::get(r)?;
+        crate::config::Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
+    }
+}
+
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant once (as fux-vt's
 /// `closed!` and fuxix's `signals!` make it): a variant's one-byte tag is

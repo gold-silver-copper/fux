@@ -2057,7 +2057,7 @@ impl Session {
         if watches.is_empty() {
             return Err(fail(Code::NoPane, "it holds no pane to wait on"));
         }
-        let limit = wait.timeout.unwrap_or(self.config.wait);
+        let limit = wait.timeout.unwrap_or(self.config.wait).duration();
         let waiting = Waiting::new(watches, self.run, now, limit);
         // Its answer, if it has one already; else the wait.
         Ok(match waiting.answer(self, now) {
@@ -4342,7 +4342,7 @@ mod tests {
         s.output(PaneId::of(1), &frame);
         let wait = Request::Wait(command::Wait {
             since: command::Since::Version(since),
-            timeout: Some(Duration::ZERO),
+            timeout: crate::config::Limit::secs(0),
         });
         let Begun::Waiting(waiting) = s.begin(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
@@ -4703,6 +4703,9 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
+        // A wait's limit is a day at most: its deadline a time there is.
+        let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
+        assert!(long.starts_with("range: ") && long.contains("at most 86400 s"), "{long}");
         // A capture where text is taken: `string` makes it text.
         let text = failed(&mut s, "%1 capture lines");
         assert!(text.contains("`string` makes it text"), "{text}");
