@@ -1,7 +1,7 @@
-# Run a program and read what it printed: `run` answers once the program
-# settles, here once it has exited, with its state and its output; as a
-# value it is still the pane, so `get` reads how it ended.
-# expect: %6 exited 0
+# Run a program, wait for its exit, and read what it printed. A wait on an
+# answer (run's, then its own) waits from the version it holds and answers
+# the next change; the version's last count is 1 once the program ended,
+# and `get` reads how it ended.
 # expect: tick 1
 # expect: tick 2
 # expect: tick 3
@@ -9,4 +9,10 @@
 # expect: 0
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
-run dup str exited get
+run
+begin
+  dup string str ' ' split-on 1 at str . split-on last str 1 eq
+  if true else 600 timeout wait false then
+until
+let W
+W capture W str exited get

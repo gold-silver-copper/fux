@@ -10,7 +10,7 @@ mod words;
 
 use crate::client;
 use crate::code::Code;
-use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Until, WsRef};
+use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keymap::Keymap;
 use crate::layout::Axis;
@@ -93,9 +93,9 @@ impl AppValue for Fux {
 /// What a wait waits for, as words give it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Waits {
-    pub until: Vec<Until>,
+    /// The version it waits to differ from (`changed`).
+    pub since: Option<Version>,
     pub timeout: Option<Duration>,
-    pub marks: bool,
 }
 
 /// Options, keys, waits and a mouse event, as words give them, and what
@@ -115,6 +115,9 @@ pub struct Opts {
     pub log: Option<String>,
     pub kill: bool,
     pub waits: Waits,
+    /// The version an action's answer (or a wait's) held, which the request
+    /// was made from: what `wait` waits from, unless `changed` says.
+    pub held: Option<crate::command::Version>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
@@ -133,15 +136,12 @@ pub enum On {
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
-/// server gave with it, read at the same moment; and the code naming its
-/// status, if it has one of its own (closed, reading, still busy), which
-/// goes where the answer goes.
+/// server gave with it, read at the same moment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Answer {
     pub text: String,
     pub json: Option<String>,
     pub said: Said,
-    pub code: Option<Code>,
 }
 
 /// What an answer is.
@@ -199,13 +199,8 @@ impl Said {
 
 impl Answer {
     /// An answer, as a value on the stack.
-    fn value(text: String, json: Option<String>, said: Said, code: Option<Code>) -> Value<Fux> {
-        Value::App(Fux::Answer(Box::new(Answer {
-            text,
-            json,
-            said,
-            code,
-        })))
+    fn value(text: String, json: Option<String>, said: Said) -> Value<Fux> {
+        Value::App(Fux::Answer(Box::new(Answer { text, json, said })))
     }
 }
 
@@ -279,10 +274,6 @@ pub struct Host<'a> {
     /// The binding `label`, `group` and `repeat` change.
     pub last_bound: Option<Bound>,
     pub out: &'a mut dyn Write,
-    /// A command line an agent or a person runs: an action waits for its
-    /// pane to settle unless it names what to wait for. Bindings, configs
-    /// and restores act at once.
-    pub settle: bool,
 }
 
 impl<'a> Host<'a> {
@@ -290,14 +281,12 @@ impl<'a> Host<'a> {
         context: Context,
         keymap: Option<&'a mut Keymap>,
         out: &'a mut dyn Write,
-        settle: bool,
     ) -> Host<'a> {
         Host {
             context,
             keymap,
             last_bound: None,
             out,
-            settle,
         }
     }
 }
@@ -739,7 +728,7 @@ pub fn run_capped(
                         };
                         pushed(machine, answered(answer, then))?;
                     }
-                    End::Failed { .. } | End::Done | End::Answered(_) => {}
+                    End::Failed { .. } | End::Done => {}
                 }
                 pushed(machine, answered(reply, then))?;
             }
@@ -814,7 +803,7 @@ pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
             };
             Err(Failed::new(code, message))
         }
-        End::Done | End::Answered(_) => Ok(reply),
+        End::Done => Ok(reply),
     }
 }
 
@@ -822,7 +811,6 @@ pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
 /// with its status, if it failed: why, else what it answered.
 pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
     let reply = succeeded(reply)?;
-    let code = reply.end.code();
     let text = reply.text.trim_end_matches('\n').to_owned();
     let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
     // An action's answer is its pane's, when the reply names one pane alone
@@ -837,12 +825,12 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
         (Some(_), Some(_)) | (None, _) => None,
     };
     let action = |text: String, json: Option<String>| {
-        Answer::value(text, json, pane.map_or(Said::Several, Said::Action), code)
+        Answer::value(text, json, pane.map_or(Said::Several, Said::Action))
     };
     Ok(match then {
         Then::Nothing => Vec::new(),
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
-            // A pane an action settled: its answer, which is its pane too.
+            // A pane an action waited on: its answer, which is its pane too.
             Some(AnyRef::Pane(p)) if json.is_some() && pane == Some(*p) => {
                 vec![action(text, json)]
             }
@@ -854,7 +842,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
                 ));
             }
         },
-        Then::Answer(said) => vec![Answer::value(text, json, said, code)],
+        Then::Answer(said) => vec![Answer::value(text, json, said)],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),
@@ -862,7 +850,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             Some(Scalar::Str(s)) => Value::str(s),
             // JSON that is no one value of fuxth's: `null`, a list, an
             // object, as text that `json` gives as it is.
-            None => Answer::value(text.clone(), Some(text), Said::Json, code),
+            None => Answer::value(text.clone(), Some(text), Said::Json),
         }],
         Then::Outcome => vec![action(text, json)],
     })
@@ -933,7 +921,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
 /// An answer the client made itself, as text and JSON.
 fn answer(text: &str, json: &str, said: Said) -> Value<Fux> {
     let (text, json) = (text.trim_end().to_owned(), json.trim_end().to_owned());
-    Answer::value(text, Some(json), said, None)
+    Answer::value(text, Some(json), said)
 }
 
 /// The server, started in the background if none answers: its socket, and
@@ -1012,7 +1000,7 @@ fn run_quiet(
 ) -> Result<(), Failed> {
     let mut machine = compile(&token::source(name, text)?)?;
     let mut out = io::sink();
-    let mut host = Host::new(context, keymap, &mut out, false);
+    let mut host = Host::new(context, keymap, &mut out);
     run_capped(&mut machine, &mut host, asks, Some(PROGRAM_STEPS), None).map(drop)
 }
 
@@ -1106,11 +1094,11 @@ impl Asks for Layout<'_> {
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Its status, or why it failed.
-pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+/// line. Why it failed, if it did.
+pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
     let mut machine = compile(&program(args)?)?;
     let mut out = Checked { out, failed: None };
-    let mut host = Host::new(client::context(), None, &mut out, true);
+    let mut host = Host::new(client::context(), None, &mut out);
     let ran = run_capped(
         &mut machine,
         &mut host,
@@ -1124,8 +1112,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         Err(_) => machine.stack(),
     };
     for value in stack {
-        // An answer with nothing to say (a wait for quiet, an empty
-        // listing) prints no blank line; options or a request, nothing.
+        // An answer with nothing to say (an empty listing) prints no
+        // blank line; options or a request, nothing.
         if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
             || matches!(value, Value::App(Fux::Opts(_)))
         {
@@ -1134,13 +1122,13 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         let _ = writeln!(host.out, "{}", value.text());
     }
     let _ = host.out.flush();
-    let status = code(&ran?).map_or(0, |code| code.status().get());
+    ran?;
     match out.failed {
         Some(error) => Err(Failed::new(
             Code::Output,
             format!("writing the output: {error}"),
         )),
-        None => Ok(status),
+        None => Ok(()),
     }
 }
 
@@ -1177,26 +1165,6 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
 /// The most steps a command line's program takes: one that loops without
 /// end fails rather than spinning.
 const LINE_STEPS: u64 = 1_000_000_000;
-
-/// The code naming the status of the first value, in order, that is an
-/// answer with a status of its own, or a list holding one (an answer
-/// dropped or taken by a word took its status with it). A run that
-/// finished exits with its status, else 0.
-fn code(values: &[Value<Fux>]) -> Option<Code> {
-    values.iter().find_map(|value| match value {
-        Value::App(Fux::Answer(answer)) => answer.code,
-        Value::List(list) => code(list.items()),
-        Value::Int(_) | Value::Bool(_) | Value::Str(_) => None,
-        Value::App(
-            Fux::Pane(_)
-            | Fux::Tab(_)
-            | Fux::Workspace(_)
-            | Fux::Client(_)
-            | Fux::Opts(_)
-            | Fux::Extent(_),
-        ) => None,
-    })
-}
 
 /// The most a program read from a file or stdin may be, and how that is
 /// said.

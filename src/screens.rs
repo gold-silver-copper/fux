@@ -1,4 +1,4 @@
-//! A client's own screens: menus, choosers, the command prompt, rename
+//! A client's own screens: choosers, the command prompt, rename
 //! prompts, confirmations and copy mode. They belong to the client, which
 //! reads the keys: every change of mode happens here, at the key that
 //! causes it, so no key is ever read in another mode's table. The server
@@ -19,7 +19,6 @@ use crate::view::Line;
 /// a chooser's rows) by `Open::build`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
-    Menu(AnyRef),
     /// The tabs of the client's workspace: to show one, or to move a pane to.
     ChooseTab(Option<PaneId>),
     ChooseWorkspace(Option<PaneId>),
@@ -47,16 +46,14 @@ pub enum Screen {
     Copy(Option<(Seek, Line<1024>)>),
 }
 
-/// A menu or a chooser: its rows, each running fuxth when chosen.
+/// A chooser: its rows, each running fuxth when chosen and about a tab,
+/// workspace or pane, which `r` renames and `x` closes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListScreen {
     pub title: String,
     pub items: Vec<Item>,
     pub current: Option<usize>,
     pub selected: usize,
-    /// A chooser's rows are each about a tab, workspace or pane, which `r`
-    /// renames and `x` closes.
-    pub chooser: bool,
     /// What it was opened for: the server closes it if that goes.
     pub about: Option<AnyRef>,
 }
@@ -102,10 +99,9 @@ fn about(target: AnyRef) -> String {
 
 impl Open {
     /// The fuxth that opens it on client `me`: what is relayed to a client
-    /// asked from elsewhere (`str c1 client menu`).
+    /// asked from elsewhere (`str c1 client choose-tab`).
     pub fn code(&self) -> String {
         match self {
-            Open::Menu(t) => format!("me {} menu", naming(*t)),
             Open::ChooseTab(None) => "me choose-tab".to_owned(),
             Open::ChooseTab(Some(p)) => format!("me str {p} pane choose-tab-for"),
             Open::ChooseWorkspace(None) => "me choose-workspace".to_owned(),
@@ -132,17 +128,6 @@ impl Open {
             Ok(reply.text.trim_end_matches('\n').to_owned())
         };
         Ok(match *self {
-            Open::Menu(target) => {
-                let title = format!("{} {}", about(target), name(target)?);
-                Screen::List(ListScreen {
-                    title,
-                    items: menu(target),
-                    current: None,
-                    selected: 0,
-                    chooser: false,
-                    about: Some(target),
-                })
-            }
             Open::Rename(target) => Screen::Prompt(Prompt {
                 title: format!("rename {}", about(target)),
                 line: Line::new(name(target)?),
@@ -165,48 +150,6 @@ impl Open {
             Open::ChoosePane(source) => chooser(ask, Choices::Panes(source), Some(source), "pane")?,
         })
     }
-}
-
-/// An action menu for a pane, tab or workspace: what has no default key.
-fn menu(target: AnyRef) -> Vec<Item> {
-    let it = naming(target);
-    let item = |label: &str, code: String| Item {
-        label: label.to_owned(),
-        code,
-        about: None,
-    };
-    let mut items = vec![
-        item("rename", Open::Rename(target).code()),
-        item("close", Open::Confirm(target).code()),
-    ];
-    match target {
-        AnyRef::Pane(p) => items.extend([
-            item(
-                "terminate the running command",
-                format!("{it} str TERM signal"),
-            ),
-            item("swap with…", Open::ChoosePane(p).code()),
-            item("move to tab…", Open::ChooseTab(Some(p)).code()),
-            item("move to a new tab", format!("{it} str new-tab move-to")),
-            item("move to workspace…", Open::ChooseWorkspace(Some(p)).code()),
-            item(
-                "move to a new workspace",
-                format!("{it} str new-workspace move-to"),
-            ),
-        ]),
-        AnyRef::Tab(_) => items.push(item(
-            "new tab",
-            format!("opts {it} workspace in new-tab drop"),
-        )),
-        AnyRef::Workspace(_) => {
-            items.push(item("new workspace", "opts new-workspace drop".to_owned()))
-        }
-    }
-    items.extend([
-        item("reorder previous", format!("{it} str previous reorder")),
-        item("reorder next", format!("{it} str next reorder")),
-    ]);
-    items
 }
 
 /// A chooser of tabs, workspaces or panes: to show one, or to move or swap
@@ -254,7 +197,6 @@ fn chooser(
         items,
         selected: current.unwrap_or(0),
         current,
-        chooser: true,
         about: moving.map(AnyRef::Pane),
     }))
 }
@@ -302,7 +244,6 @@ impl Screen {
                 items: list.items.iter().map(|i| i.label.clone()).collect(),
                 current: list.current,
                 selected: list.selected,
-                chooser: list.chooser,
                 about: list.about,
             })),
             Self::Prompt(prompt) => Some(Panel::Prompt {
@@ -370,7 +311,6 @@ impl Screen {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
         let about = chosen.and_then(|item| item.about);
-        // `r` and `x` in a menu, whose rows are about nothing, run nothing.
         let (moved, code) = match list_act(press) {
             None => (at, None),
             Some(ListAct::Move(moved)) => (moved.from(at, last), None),
@@ -486,7 +426,6 @@ mod tests {
             items: vec![item(1), item(2)],
             current: Some(0),
             selected: 0,
-            chooser: true,
             about: None,
         })
     }

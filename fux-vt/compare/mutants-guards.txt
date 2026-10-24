@@ -147,46 +147,6 @@ fux-vt/src/sixel.rs: replace || with && in fits_rgba @ !(width > MAX_SIDE || hei
 fux-vt/src/sixel.rs: replace && with || in fits_rgba @ !(width > MAX_SIDE || height > MAX_SIDE) && bytes == Some(len)
 fux-vt/src/sixel.rs: replace == with != in fits_rgba @ !(width > MAX_SIDE || height > MAX_SIDE) && bytes == Some(len)
 
-# B10
-fux-vt/src/lib.rs: replace Prints::push with () @ self.add(row, cols, text, false);
-fux-vt/src/lib.rs: replace Prints::add with () @ let start = self.text.len();
-fux-vt/src/lib.rs: replace match guard *last == row && !cols.is_empty() && (at.end == cols.start || joins && at.contains(&cols.start)) with true in Prints::add @ if *last == row
-fux-vt/src/lib.rs: replace match guard *last == row && !cols.is_empty() && (at.end == cols.start || joins && at.contains(&cols.start)) with false in Prints::add @ if *last == row
-fux-vt/src/lib.rs: replace == with != in Prints::add @ if *last == row
-fux-vt/src/lib.rs: replace == with != in Prints::add @ && (at.end == cols.start || joins && at.contains(&cols.start)) =>
-fux-vt/src/lib.rs: replace && with || in Prints::add @ && !cols.is_empty()
-fux-vt/src/lib.rs: replace && with || in Prints::add @ && (at.end == cols.start || joins && at.contains(&cols.start)) =>
-fux-vt/src/lib.rs: delete ! in Prints::add @ && !cols.is_empty()
-fux-vt/src/lib.rs: replace || with && in Prints::add @ && (at.end == cols.start || joins && at.contains(&cols.start)) =>
-fux-vt/src/lib.rs: replace Prints::heap -> usize with 0 @ let run = size_of::<(RowId, Range<u16>, Range<usize>)>();
-fux-vt/src/lib.rs: replace Prints::heap -> usize with 1 @ let run = size_of::<(RowId, Range<u16>, Range<usize>)>();
-fux-vt/src/lib.rs: replace Prints::over_cap -> bool with true @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace Prints::over_cap -> bool with false @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace > with == in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace > with < in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace > with >= in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace || with && in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace - with + in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace - with / in Prints::over_cap @ self.text.len().saturating_add(text) > self.cap || self.runs.len() > PRINT_RUNS - 1
-fux-vt/src/lib.rs: replace <= with > in Prints::add @ let fits = text.len() <= self.text.capacity().wrapping_sub(start)
-fux-vt/src/lib.rs: replace && with || in Prints::add @ && self.runs.len() != self.runs.capacity();
-fux-vt/src/lib.rs: replace != with == in Prints::add @ && self.runs.len() != self.runs.capacity();
-fux-vt/src/lib.rs: replace || with && in Prints::add @ if self.lost || !fits && !self.grow(text.len()) {
-fux-vt/src/lib.rs: replace && with || in Prints::add @ if self.lost || !fits && !self.grow(text.len()) {
-fux-vt/src/lib.rs: delete ! in Prints::add @ if self.lost || !fits && !self.grow(text.len()) {
-fux-vt/src/lib.rs: replace Prints::grow -> bool with true @ if self.over_cap(text) {
-fux-vt/src/lib.rs: replace Prints::grow -> bool with false @ if self.over_cap(text) {
-fux-vt/src/lib.rs: replace << with >> @ const PRINT_TEXT_FLOOR: usize = 16 << 10;
-fux-vt/src/lib.rs: replace Prints::lost -> bool with true @ self.lost
-fux-vt/src/lib.rs: replace Prints::lost -> bool with false @ self.lost
-fux-vt/src/lib.rs: replace Prints::lose with () @ self.lost = true;
-fux-vt/src/lib.rs: replace text_cap -> usize with 0 @ cells.saturating_mul(4).max(PRINT_TEXT_FLOOR)
-fux-vt/src/lib.rs: replace text_cap -> usize with 1 @ cells.saturating_mul(4).max(PRINT_TEXT_FLOOR)
-src/pane.rs: delete ! in Pane::record @ let tell = self.redraws < REDRAWS && !prints.lost();
-src/pane.rs: replace && with || in Pane::record @ let tell = self.redraws < REDRAWS && !prints.lost();
-src/log.rs: replace Log::prints_lost_after -> bool with true @ self.printed_after(seq).any(|(_, p)| p.prints.lost())
-src/log.rs: replace Log::prints_lost_after -> bool with false @ self.printed_after(seq).any(|(_, p)| p.prints.lost())
-
 # B11 to B13
 fux-vt/src/cell.rs: replace <impl std::hash::Hash for Attributes>::hash with () @ let (a, b) = self.bits();
 fux-vt/src/cell.rs: replace | with & in <impl std::hash::Hash for Attributes>::hash @ state.write_u128(u128::from(a) << 64 | u128::from(b));
@@ -461,22 +421,6 @@ fux-vt/src/lib.rs: replace Reply::push -> Option<()> with None @ let end = self.
 fux-vt/src/lib.rs: replace Reply::push -> Option<()> with Some(()) @ let end = self.len.checked_add(bytes.len())?;
 fux-vt/src/lib.rs: replace <impl fmt::Write for Reply>::write_str -> fmt::Result with Ok(Default::default()) @ self.push(text.as_bytes()).ok_or(fmt::Error)
 
-# B29
-fux-vt/src/screen/shell.rs: replace Screen::after_prompt -> Option<Mark> with None @ let grid = self.grid();
-fux-vt/src/screen/shell.rs: replace Screen::line_after -> Option<Mark> with None @ let grid = self.grid();
-fux-vt/src/screen/shell.rs: delete ! in Screen::line_after @ .find(|i| grid.row_at(*i).is_some_and(|r| !r.wrapped()))?
-fux-vt/src/screen/shell.rs: replace <= with > in Screen::line_after @ let row = grid.row_at(next).filter(|_| next <= cursor)?;
-fux-vt/src/screen/shell.rs: replace Screen::nest -> bool with true @ if self.outer.is_none() {
-fux-vt/src/screen/shell.rs: replace Screen::nest -> bool with false @ if self.outer.is_none() {
-fux-vt/src/screen/shell.rs: replace Screen::unnest with () @ if let Some((start, full_screen)) = self.outer.take() {
-fux-vt/src/screen.rs: replace == with != in Screen::prompt_osc @ (payload.split(|b| *b == b';')).any(|o| o.strip_prefix(b"nonce=") == Some(nonce))
-fux-vt/src/screen.rs: delete ! in Screen::prompt_osc @ let nested = !shell && self.nested_nonce.as_deref().is_some_and(carries);
-fux-vt/src/screen.rs: replace && with || in Screen::prompt_osc @ let nested = !shell && self.nested_nonce.as_deref().is_some_and(carries);
-fux-vt/src/screen.rs: delete ! in Screen::prompt_osc @ } else if !(nested && self.nest()) {
-fux-vt/src/screen.rs: replace && with || in Screen::prompt_osc @ } else if !(nested && self.nest()) {
-src/ready.rs: replace || with && in state @ && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
-src/ready.rs: delete ! in state @ && (commands.full_screen || !screen.mode(fux_vt::Mode::AlternateScreen));
-
 # B30
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::append @ .filter(|end| *end <= CLUSTER_CAPACITY)
 fux-vt/src/compact.rs: replace > with == in Line<'_, C>::store_long @ if self.text.long.len().saturating_add(text.len()) > limit {
@@ -611,8 +555,6 @@ fux-vt/src/parser.rs: replace Parser::refuse_many with () @ self.refused = self.
 fux-vt/src/check.rs: replace Checked::record with () @ if !self.ran.contains(&check) {
 fux-vt/src/check.rs: replace Checked::merge with () @ for check in other.ran {
 fux-vt/src/check.rs: replace ensure -> Result<(), String> with Ok(()) @ if holds { Ok(()) } else { Err(detail()) }
-fux-vt/src/lib.rs: replace Prints::check_cap -> Result<(), String> with Ok(()) @ check::ensure(
-fux-vt/src/lib.rs: replace Prints::check -> Result<(), String> with Ok(()) @ let mut end = 0;
 fux-vt/src/compact.rs: replace Text::check -> Result<(), String> with Ok(()) @ let (long, short) = (Self::long_limit(width), Self::short_limit(width));
 fux-vt/src/grid.rs: replace Grid::check with () @ report.record("grid.order", which, self.check_order());
 fux-vt/src/grid.rs: replace Grid::check_order -> Result<(), String> with Ok(()) @ let rows = usize::from(self.size.rows());
@@ -640,7 +582,6 @@ fux-vt/src/parser.rs: replace Parser::check_osc -> Result<(), String> with Ok(()
 fux-vt/src/parser.rs: replace Parser::check_params -> Result<(), String> with Ok(()) @ let len = self.params.len;
 fux-vt/src/parser.rs: replace Parser::check_sixel -> Result<(), String> with Ok(()) @ let sixel = matches!(self.state, State::Sixel);
 fux-vt/src/parser.rs: replace Parser::check_utf8 -> Result<(), String> with Ok(()) @ let State::Utf8(read) = self.state else {
-fux-vt/src/screen.rs: replace Screen::check_nest -> Result<(), String> with Ok(()) @ crate::check::ensure(
 fux-vt/src/screen.rs: replace Screen::check_ids -> Result<(), String> with Ok(()) @ let mut seen = std::collections::HashSet::new();
 fux-vt/src/screen.rs: replace Screen::check_structural -> Result<(), String> with Ok(()) @ crate::check::ensure(self.structural <= self.version, || {
 fux-vt/src/screen.rs: replace Screen::check_tabs -> Result<(), String> with Ok(()) @ let kept = self.terminal.tabs.stops.len();

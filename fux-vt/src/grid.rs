@@ -695,10 +695,6 @@ impl Grid {
             .and_then(|slot| self.meta.get(slot))
             .is_some_and(Meta::wrapped)
     }
-    #[inline]
-    pub(crate) fn live_id(&self, row: u16) -> Option<RowId> {
-        Some(self.meta.get(self.slot(row)?)?.id)
-    }
     pub fn live_row(&self, row: u16) -> Option<Row<'_>> {
         self.slot_row(self.slot(row)?, usize::from(row))
     }
@@ -759,25 +755,18 @@ impl Grid {
         }
     }
     /// Writes the ASCII `run` at `col` of live row `row` in `style`, taking
-    /// `version` only if a cell changed; whether one did. A wide glyph half
+    /// `version` only if a cell changed. A wide glyph half
     /// overwritten loses its other half (`put`).
     #[inline]
-    pub fn write_ascii(
-        &mut self,
-        row: u16,
-        col: u16,
-        run: &[u8],
-        style: u32,
-        version: u64,
-    ) -> bool {
+    pub fn write_ascii(&mut self, row: u16, col: u16, run: &[u8], style: u32, version: u64) {
         let Some(slot) = self.slot(row) else {
-            return false;
+            return;
         };
         work!(cells, run.len());
         let start = usize::from(col);
         let end = start.saturating_add(run.len());
         let Some(dst) = self.slice_mut(slot).get_mut(start..end) else {
-            return false;
+            return;
         };
         // A short run cell by cell; a long one by the word-wide loops, whose
         // set-up a short one would not repay.
@@ -795,13 +784,13 @@ impl Grid {
             if changed {
                 self.changed(slot, end, version);
             }
-            return changed;
+            return;
         }
         // A redraw of the same cells leaves the row's version alone; new
         // text usually differs at the first cell.
         let first = dst.first().zip(run.first());
         if first.is_some_and(|(c, b)| c.is_ascii(*b, style)) && unchanged(dst, run, style) {
-            return false;
+            return;
         }
         if run.len() < LONG_RUN {
             for (cell, byte) in dst.iter_mut().zip(run) {
@@ -811,7 +800,6 @@ impl Grid {
             Compact::fill_ascii(dst, run, style);
         }
         self.changed(slot, end, version);
-        true
     }
     /// `mutate_row` with the row's text too, for edits that store clusters.
     pub fn mutate_line(
@@ -1035,10 +1023,6 @@ impl Grid {
         }
     }
 
-    /// The newest version of a history row let go past the limit.
-    pub(crate) fn let_go(&self) -> u64 {
-        self.history.let_go
-    }
     /// Marks live row `row` as where a prompt starts (OSC 133 ; A), or
     /// not. A change gives the row `version` (`THREATS.md` section 6, 28),
     /// so a host redraws what shows the marks.
@@ -2847,7 +2831,7 @@ mod faults {
         let mut next = 1;
         let mut grid = Grid::new(size, 1 << 12, &mut next, 1)?;
         for _ in 0..5 {
-            let _ = grid.write_ascii(0, 0, b"ab", 0, 1);
+            grid.write_ascii(0, 0, b"ab", 0, 1);
             grid.scroll(
                 size.lines(),
                 1,

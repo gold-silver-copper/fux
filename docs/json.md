@@ -19,21 +19,21 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
+| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow while one program runs (`respawn` starts all but the first afresh; a server restart all of them): its program's starts, its screen's revision (one more for each piece of output read, each resize to another size, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
 | `program` | what runs in its foreground, `null` if unknown |
-| `state` | what it is doing: `reading` (blocked on its terminal, every key read), `waiting` (quiet 1s, but it may go on alone: the network, a poll with a time limit; a program asleep is `busy`), `busy`, `settled` (quiet; nothing else known), `exited N`, `killed by SIGTERM` (`killed by signal N` for a signal fux has no name for), or `empty`; for a relay's remote program (`koh connect`), as the relay's last state report says (`OSC 133 ; S ; activity=STATE`), while no mark came after it and it came after the last input, the screen quiet a moment after it |
 | `paused` | a program a restore brought back, waiting for `respawn` |
+| `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |
-| `idle_ms` | how long its screen has shown no change |
+| `idle_ms` | how long since its program last wrote (or started) |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
-| `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"other"` (a mode fux does not name), or `null` |
+| `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |
-| `revision` | grows with every change to the screen |
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
@@ -56,8 +56,12 @@ prints `null` (`string` makes it the text).
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…}
+{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…,"above":0}
 ```
+
+`above` is how many history rows are kept above the first row read:
+history not asked for (`null` for `last-output`; rows a `rows` range
+leaves out are not counted).
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with
@@ -80,74 +84,44 @@ palette numbers or `"#rrggbb"`.
 
 ## What a word made
 
-`new-tab` and `new-workspace` leave the new pane: `json` of a pane, tab or
-workspace is its id as a string, `"%4"`, and `X info json` all of it.
-`run` and `split` leave an answer (below), which is also the new pane: a
-word that wants a pane takes it as one.
+`run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
+(below), which is also the new pane: a word that wants a pane takes it as
+one. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
+and `X info json` all of it.
 
 ## Answers and waits
 
-`json` of an action's answer (`run`, `send-keys`, `send-mouse`, `signal`,
-a bare `wait` …): one object, or an array of them for several panes (a
-tab or workspace waited on, or sent keys). A
-pane that settled, still busy at the limit (124), blocked reading its
-terminal before the waited text came or went (7), or whose exit was waited for (`wait-exit`,
-0, its own status in `state`):
+`json` of an action's answer (`send-keys`, `send-mouse`, `signal`,
+`run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`{"pane":"%3","version":"0.57.0.3.0","status":0}`: its pane's version from
+just before it acted, or as a new pane starts: one object for an action
+or wait on a pane, an array for one on a tab or workspace, however many
+panes it has or answered.
+
+A `wait` answers each pane whose version differs from the one it waited
+from (its program's end too), or that closed:
 
 ```json
-{"pane":"%3","state":"reading","status":0,"output":"$ make test\n12 tests PASS\n"}
-{"pane":"%4","state":"exited 5","status":0,"output":"bye\n"}
+{"pane":"%3","version":"0.61.1.4.0","changed":["screen","bell","done"],"status":0}
+{"pane":"%4","version":"0.12.0.0.1","changed":["screen"],"exited":5,"status":0}
+{"pane":"%5","version":"0.9.0.0.1","changed":[],"signal":15,"status":0}
+{"pane":"%2","version":"1.3.0.0.0","changed":["respawned"],"status":0}
+{"pane":"%2","version":"0.61.0.3.0","status":124,"code":"timeout"}
+{"pane":"%3","status":4,"code":"closed"}
 ```
 
-`state` is the pane's (above), or `closed`: a settling action or bare
-`wait` whose pane closed answers
-`{"pane":"%3","state":"closed","status":4,"code":"closed"}`, with no
-`output` and nothing on stderr. `code` names a status that is not 0. `output` is what came since the
-input, from the line the keys went in on if it changed (its prompt too;
-a `no_change` answer holds nothing), else from the first line that
-changed (a lone Enter, a password or raw keys, which echo nothing), or the
-screen of a full-screen program (one the keys made leave it: what it
-printed after, in whole rows, so old text on the row it starts on too, else that full screen if they changed it, else
-the screen), or the screen for status 7; a met `wait-exit` or `wait-gone` answers so too. The state
-line's notes are fields, each only when said: `done` (a shell command
-ended: its status, `null` if not known), `no_change` (`true`: the keys
-were read and drew nothing), `command_running` (`true`: a marked shell
-command runs on, one the keys went into or one that took the full
-screen; never once the pane's program exited), `redraws` (`true`: a full-screen program that drew on its
-own in the last 2s (a clock, `top`, a spinner) read the keys and drew
-after them; what it draws later may differ), `highlight` (after keys
-or a mouse event: up to three runs they highlighted anew, each
-`{"row","col","len","text"}`, row and column from 0 as a mouse event counts
-them), `unread` (bytes of input fux holds, not yet
-taken by the terminal; what waits in the terminal's own buffers is not
-counted), `lost` (the program exited: the keys and texts it never read,
-which went nowhere, `["C-q","\"ab\""]`; through a relay that said its
-program ended having read what came before, what came after), `unanswered`
-(a relay ended without saying so: what it sent on after the first key or
-line its program did not say it read, which likely went nowhere). A
-wait for a text or a bell answers what met it too:
+`changed` lists `screen`, `bell` and `done` (a count of the version that
+grew), or `respawned` (the program started again: its counts start
+afresh). `exited` is the program's status if it ended since, `signal` the
+signal that killed it; a wait from a version that already holds its end
+waits for something else. `code` names a status that is not 0.
 
-```json
-{"pane":"%3","state":"busy","met":"text","text":"PASS","line":"12 tests PASS","status":0}
-```
-
-| `met` | Also |
-| --- | --- |
-| `text` | `text`, `line` |
-| `bell` | `notification`: its text, else `null` |
-
-`status` is the exit status: an answer left at the end (alone, as its
-JSON or in a list; the first of several) gives the run its status, one
-dropped or taken by a word gives none. A wait for a text, a bell or the exit that
-fails (the program exited first or was started again, 3; the pane closed,
-4; the shell command `wait-done` waited on ended first, 5; the time limit, 124) ends the
-program with that status and says why on stderr, one line, `fux: CODE:
-MESSAGE`; its answer is printed first, as text, with its pane's last
-lines (three when its program exited, one at the time limit; none for a
-pane closed or started again). Nothing after the wait runs, `json` either.
-The answers of the words before it are printed first too. A wait on a
-tab's or a workspace's panes answers a line each, the first failing status
-naming the whole.
+`status` is the exit status. A wait that fails (124, 4) ends the program
+with that status and says why on stderr, one line, `fux: CODE: MESSAGE`;
+its answer is printed first, as text. Nothing after the wait runs, `json`
+either. The answers of the words before it are printed first too. A wait
+on a tab's or a workspace's panes answers a line for each that changed,
+the first failing status naming the whole.
 
 ## `events-json`, `X events-of-json`
 
@@ -167,7 +141,7 @@ its journal recorded them, one line each.
 | `title` | `title` |
 | `resized` | `cols`, `rows` |
 | `lost` | last: the reader fell behind (status 1) |
-| `missed` | a pane's events were let go before they were told (past `journal-bytes` or `journal-total`) |
+| `missed` | a pane's events were let go before they were told (past the 1024 its journal keeps) |
 | `stopped` | last: `reason`, the server stopped |
 
 ## Errors
@@ -183,10 +157,9 @@ wait's own (above). CODE stays; every one fux gives
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
-  `not_reading`, `start`, `size`, `mouse`, `signal`, `log`,
+  `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `exited` (3), `ended` (5), `timeout` (124), `closed` (4), `gone` (4),
-  `lost`, `stopped` (7);
+- how a wait ends: `timeout` (124), `closed` (4), `gone` (4), `lost`;
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
@@ -198,8 +171,8 @@ wait's own (above). CODE stays; every one fux gives
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.34.0","protocol":14,
- "server_version":"0.34.0","server_protocol":14,"compatible":true}
+{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.34.0","protocol":15,
+ "server_version":"0.34.0","server_protocol":15,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.34.0","compatible":true}]
 ```
 

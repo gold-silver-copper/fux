@@ -44,9 +44,10 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-fux opts str htop program run                     # start htop; answers its pane, %3, and screen
-fux %3 str Load wait-text wait                    # wait until it shows "Load"
-fux %3 str q text send-keys                       # press q; answers: %3 exited 0
+fux opts str htop program run                     # start htop: %3 0.1.0.0.0, its pane and version
+fux %3 str 0.1.0.0.0 changed wait                 # until its version differs: %3 0.4.0.0.0 screen
+fux %3 capture                                    # its screen
+fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its version before
 ```
 
 - A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
@@ -55,25 +56,21 @@ fux %3 str q text send-keys                       # press q; answers: %3 exited 
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
-- An action (`run`, `send-keys`, `capture`, a bare `wait` …) answers once
-  its pane settles, with its state and what came since: `%3 reading · done
-  0`, then the output. A `line` waits for the shell command it typed to end
-  (or to take the full screen, or to wait for keys). A full-screen program
-  that redraws by itself (a clock, `top`) settles once it read the keys and
-  drew after them (`· redraws on its own`). A bare `wait` after keys that
-  found a program still waits until it is still 2s (an agent's TUI at
-  work). Notes after the state say what plain text hides: a
-  selection highlighted anew, keys an exited program never read, a shell
-  that marks no commands. [docs/agents.md](docs/agents.md) says what each
-  state and note means. A failure prints `fux: CODE:
-  MESSAGE` on stderr, with the file, line and word, and exits 1; an action's
-  or wait's own status is the exit status, while its answer is left (`drop`
-  it, and it is 0): 3 the program exited first, 4 the pane closed, 5 the
-  shell command a `wait-done` lasted for ended first, 7 the program reads
-  its terminal and the waited text has not come, 124 still busy at the time
-  limit (`SECS timeout` on the pane; 30 s by default; `0 timeout` answers at
-  once). A wait met by its program's exit (`wait-exit`) exits 0: the
-  program's own status is in the answer (`%3 exited 2`).
+- Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE.ENDED`: counts
+  of its program's starts, its screen's revisions (output read, resizes to another size,
+  history cleared or resized), bells rung and shell commands ended (OSC
+  133 marks), and 1 once its program ended; they only grow while one
+  program runs (`respawn` starts all but the first afresh, a server
+  restart all of them). An action (`run`,
+  `send-keys`, `signal` …) acts at once and answers its pane and its
+  version from just before it acted. `PANE str V changed wait` waits until
+  the version differs from V or the pane closes, and answers what changed:
+  `%3 0.57.1.4.0 screen bell done`, `exited 2`. fux never judges
+  whether a program is done: [docs/agents.md](docs/agents.md) has recipes
+  (a text, quiet for N seconds, a command's end, an exit). A failure
+  prints `fux: CODE: MESSAGE` on stderr, with the file, line and word, and
+  exits 1; a wait exits 4 if the pane closed, 124 if nothing changed in
+  time (`SECS timeout` on the pane; 30 s by default).
 - A single argument with spaces is a whole program (`fux 'ls json'`);
   otherwise `fux FILE` runs a file (one with a `/` or ending `.fux`), and
   `fux -` runs what stdin says. `#` starts a comment. A paste is at most 900 KiB.
@@ -117,20 +114,19 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 
 ```sh
 fux opts str web name 120 40 size str './app --verbose' command run
-fux %3 str ready wait-text 30 timeout wait
+fux %3 str 0.57.0.3.0 changed 60 timeout wait
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys
 ```
 
-A program can name what it made:
+A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts str sh program run let P   P str 'echo hi' line   P screen
+fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P wait drop   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
-and a key into a pane), `line` (a line typed, then the shell's command
-waited for), `screen` (a capture) and `shell` (a tab with a shell in
+and a key into a pane), `line` (a line typed and Enter), `screen` (a capture) and `shell` (a tab with a shell in
 workspace `agent`).
 
 ### Finding things
@@ -158,10 +154,10 @@ fux str test server kill-server
 ## Keys
 
 Every key below follows the prefix, `C-b` by default, and is a lower-case
-letter: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
+letter but `a W`: case counts, so `C-b T` is not `C-b t`. The keys are your client's:
 each terminal attached has its own prefix and bindings, from its config, and
 the server knows none of them. A key that is not fux's reaches the focused
-pane as you typed it. So are fux's screens: the command column, menus,
+pane as you typed it. So are fux's screens: the command column,
 choosers, prompts, confirmations and copy mode belong to your client, which
 switches between them at the key that does it, so a key typed fast is never
 read in the wrong one; the server draws what your client shows, and keeps
@@ -180,7 +176,7 @@ prefix again sends it to the pane.
 | `v` / `s` | `me focused horizontal split drop` / `… vertical …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
 | `z` | `me zoom` | zoom the pane, or restore it |
-| `a` | `me me focused menu` | pane actions |
+| `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer` | paste the newest copy |
 | `n` / `b` | `me next-tab` / `me previous-tab` | next / previous tab |
@@ -191,30 +187,31 @@ prefix again sends it to the pane.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter; the prefix ends the mode and opens the column;
-any other key ends it and is dropped, which the bar says.
+prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`);
+the prefix ends the mode and opens the column; any other key ends it and
+is dropped, which the bar says.
 
-`t` and `w` are **layers**, sharing their verbs: `n` new, `h`/`l` previous
-and next, `g` choose, `r` rename, `x` close, `a` actions, and `m` then
-`h`/`l` to move it earlier or later, repeating. `f`, `g`, `i`, `u` and `y`
+`a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
+`h`/`l` previous and next, `g` choose, `r` rename, `x` close, and `m` then
+`h`/`l` to move it earlier or later, repeating. A layer is bindings like any
+other: `str 'a g' str '…' bind` adds one to it, listed in the column beside
+the defaults, and `unbind` takes one away. `f`, `g`, `i`, `u` and `y`
 are free for your own bindings. These keys are themselves a config, run
 before yours, in the words yours uses
 ([src/script/keys.fux](src/script/keys.fux)); `fux list-keys` prints yours
 the same way.
 
-- **Choosers** (`t g`, `w g`) list tabs or workspaces with their panes.
+- **Choosers** (`t g`, `w g`, `a s`, `a t`, `a w`) list tabs, workspaces
+  or panes. A chooser acts on the item it was opened for, even once
+  renamed, and closes if that item is gone.
   Enter selects, `r` renames, `x` closes, Esc or `q` cancels; arrows,
   `j`/`k`, PageUp/PageDown and Home/End move.
-- **Action menus** (`a`, `t a`, `w a`) hold what has no key: rename, close,
-  terminate the running command, swap, move elsewhere, reorder. A menu acts
-  on the item it was opened for, even once renamed, and closes if that item
-  is gone.
 - **The command prompt** (`e`) runs fuxth as your client, `me` and all
   (`me focused vertical str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
 - **A key's program** runs as your client, one at a time. While one that may
-  open a screen runs (it has `menu`, `copy-mode` or another such word), the
+  open a screen runs (it has `copy-mode`, a chooser or another such word), the
   keys you type wait for it, and go to the screen it opens. The prefix, then
   Esc, stops a program a key or the prompt runs, if it takes long.
 
@@ -249,7 +246,7 @@ PageUp/PageDown, Home, End, Enter and Esc also work.
 
 Search is literal over the whole history, and ignores case unless the
 query has a capital letter. `[` and `]` find prompts marked with
-`OSC 133 ; A`, which the shells fux starts send. A copy keeps wide
+`OSC 133 ; A` (see [Shell marks](#shell-marks)). A copy keeps wide
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
 
@@ -260,31 +257,63 @@ to 1 MiB encoded, unless `str clipboard str off set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way. fux never reads the clipboard.
 
+## Shell marks
+
+fux starts your shell as it is, and reads the OSC 133 marks any program
+sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
+where a prompt starts. With them, a pane's version counts the commands
+that end, `last_status` says how the last did, `last-output` reads its
+output alone, and copy mode's `[` and `]` jump between prompts; without
+them, each says there are none. To send them, in
+your own startup files:
+
+```sh
+# bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0): ~/.bashrc
+PS0='\e]133;C\a'
+PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}
+```
+
+```zsh
+# zsh: ~/.zshrc
+autoload -Uz add-zsh-hook
+mark_start() { print -n '\e]133;C\a' }
+mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
+add-zsh-hook preexec mark_start
+precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's
+```
+
+```fish
+# fish: ~/.config/fish/config.fish
+function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
+function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
+function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
+```
+
 ## Words
 
 `fux help` is the full list. In short, with what each takes and leaves:
 
 | Words | Do |
 | --- | --- |
-| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE), `program`, `arg`, `log-to`, and any wait condition, which waits from its first output on |
+| `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE, a pane, tab or workspace as its id: `%3`), `program`, `arg`, `log-to`; answers the pane and its version as it starts |
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane … wait` | wait until the pane settles (its program reads its terminal, waits quiet, or exits; after input that found it still, once still 2s too) and answer its state and what came since the last input; or until it shows text anew (`str T wait-text`, even in a line that scrolled away), stops showing it (`wait-gone`), its program exits (`wait-exit`), or it rings or notifies (`wait-bell`); `SECS timeout` (else `wait-seconds`, 30) |
-| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `MS pause` between two inputs writes the next MS milliseconds after the one before, whatever the program did (`str c3 bytes 50 pause str a9 bytes`); `N times` repeats the input just before it; answers once the pane settles, or as a wait condition says, which waits for what the keys brought, armed before they go in. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
+| `pane … wait` | wait until its version differs from `str V changed` (else from the one an action's or wait's answer holds, else from now's) or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of the panes there as it begins |
+| `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `N times` repeats the input just before it; answers at once, the pane and its version before the keys. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
-| `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (highlights as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
+| `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (reverse video and background colours as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
 | `ls`, `X info`, `X str FIELD get` | everything; one pane, tab or workspace; one field of its JSON, as a number, boolean or text |
 | `events`, `X events-of` (and `-json`) | what happens, a line each as it happens: made, closed, moved, renamed; a program's exit, respawn, title, size, bells, notifications; a shell command's end |
 | `X kill`, `X str NAME rename`, `X str TEXT notify` | close (without asking), rename, a notice on the clients showing it |
 | `X COLS ROWS resize`, `X resize-auto` | what a tab is laid out on while no client shows it |
 | `pane N resize-x`, `pane N percent resize-y`, `pane str WAY N move-border` | a pane's width or height in cells or a percent; move its nearest border |
 | `pane X move-to`, `pane str WAY move-beside`, `pane pane swap-panes`, `X str next reorder` | move a pane to a tab, workspace, `new-tab` or `new-workspace`; beside a neighbour; swap; move one place |
-| `pane str TERM signal` | a signal to what runs in the pane's foreground, never a shell itself |
+| `pane str TERM signal` | a signal to what runs in the pane's terminal's foreground, never the shell of a shell pane |
 | `pane str FILE start-log`, `pane stop-log`, `pane clear-history` | keep what its program writes from now on; stop; drop its history |
 | `buffers`, `N buffer`, `pane N paste-buffer` | paste buffers, newest 0 |
 | `dump`, `X dump-of` | what there is, as a program that makes it again |
 | `str WS str PATH grant`, `str PATH revoke` | a socket whose requests reach workspace WS alone (see [Security](#security)) |
-| `client …` | `focus`, `focus-pane`, `show-tab`, `next-tab`, `show-workspace`, `choose-tab`, `menu`, `rename-prompt`, `confirm-close`, `zoom`, `copy-mode`, `command-prompt`, `detach`, `capture-client`, `resize-client` act on a client's screen |
+| `client …` | `focus`, `focus-pane`, `show-tab`, `next-tab`, `show-workspace`, `choose-tab`, `rename-prompt`, `confirm-close`, `zoom`, `copy-mode`, `command-prompt`, `detach`, `capture-client`, `resize-client` act on a client's screen |
 | `COLS ROWS headless` | a client with no terminal, for tests and scripts: prints its id, ends on a signal |
 | `start`, `status`, `servers`, `kill-server`, `force-kill-server`, `version` | the server |
 
@@ -303,17 +332,17 @@ version, and primary ones (`CSI c`) a VT220-class terminal.
 ### JSON
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
-`pane capture json`, `client capture-client json`, an action's answer
-`… wait json`, `status json`, `servers json`; `events-json` and
+`pane capture json`, `client capture-client json`, an action's or a
+wait's answer (`… wait json`), `status json`, `servers json`; `events-json` and
 `events-of-json` stream an object a line. These shapes are part of fux's
 interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "program":"vim","state":"reading","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "version":"0.57.0.3.0","program":"vim","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
-    "history_lines":0,"copy_mode":false,"revision":38,"command_running":false,
+    "history_lines":0,"copy_mode":false,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",
     "argv":["vim","notes.md"]}]}]}],
  "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
@@ -342,20 +371,28 @@ str 'r l' str 'me focused str right 1 move-border' bind  repeat   # C-b r l l l,
 str g str 'me focused vertical str lazygit program split drop' bind
   str 'lazygit' label  str Tools group            # what the column shows, and under which heading
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
+
+# C-b y: the focused pane's history in your editor, in a split; `env`
+# gives the program the pane's id; after a failure, Enter closes it
+define edit-history
+  me focused vertical
+  str FUX_TARGET me focused env
+  str sh program str -c arg
+  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
+  split drop
+end
+str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
 | Setting | Value | Default |
 | --- | --- | --- |
 | `shell` | a program and its arguments | `$SHELL`, else your login shell, else `/bin/sh` |
 | `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
-| `wait-seconds` | how long an action, a capture or a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
-| `journal-bytes` | bytes of each pane's journal, 1 MiB to 2 GiB: everything it printed, in order, which waits and events read; past it, the oldest goes and a wait says text may have passed unseen | 33554432 (32 MiB) |
-| `journal-total` | bytes of all panes' journals together, 1 MiB to 2 GiB; past it, the largest lets its oldest go first, below `journal-bytes` if need be | 536870912 (512 MiB) |
+| `wait-seconds` | how long a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
 | `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `shell-marks` | `on` or `off`: the bash, zsh and fish fux starts mark each command (OSC 133) after reading your own startup files, so `line` answers `· done STATUS` and `last-output` works with no setup | `on` |
 | `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys

@@ -14,22 +14,16 @@ fn pressure_lines(server: &Server) -> usize {
         .count()
 }
 
-/// A pane's screen once it settles: the capture after the state line, which
-/// names the pane (`%1 reading`) and so would pass for a zsh prompt.
+/// A pane's screen.
 fn screen(server: &Server, pane: &str) -> Result<String, String> {
-    let answer = server.ok(&["str", pane, "pane", "capture"])?;
-    Ok(answer
-        .split_once('\n')
-        .map(|(_, s)| s.to_owned())
-        .unwrap_or_default())
+    server.ok(&["str", pane, "pane", "capture"])
 }
 
-/// Sends keys to a pane, answering at once (`0 timeout`): a program that is
-/// stopped, sleeping or hung up never settles.
+/// Sends keys to a pane.
 fn send_now(server: &Server, pane: &str, keys: &[&str]) -> Outcome {
     let mut words = vec!["str", pane, "pane"];
     words.extend_from_slice(keys);
-    words.extend(["0", "timeout", "send-keys"]);
+    words.extend(["send-keys"]);
     server.ok(&words)?;
     Ok(())
 }
@@ -131,10 +125,10 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// being lost: thousands of single keys, from a client and from
 /// `send-keys`, and many pastes, all arrive in order once it reads again.
 /// Past the queue's bound, input is refused whole with the documented
-/// notice, and, as it says, nothing more is queued until the program reads:
+/// notice, and, as it says, nothing more is queued until its terminal takes some:
 /// what arrives is exactly what was accepted.
 #[test]
-fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
+fn input_waits_while_the_queue_is_full() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
@@ -180,9 +174,9 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     client.wait("the notice", |t| {
         t.lines()
             .last()
-            .is_some_and(|b| b.contains("not reading its input"))
+            .is_some_and(|b| b.contains("input queue is full"))
     })?;
-    // Nothing more is queued until the program reads: not even a key.
+    // Nothing more is queued until its terminal takes some: not even a key.
     client.send(b"Z")?;
     std::thread::sleep(Duration::from_millis(200));
     signal(cat, fuxix::process::Signal::Cont);
@@ -279,11 +273,9 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
         "str",
         "Enter",
         "key",
-        "str",
-        "sleep-started",
-        "wait-text",
         "send-keys",
     ])?;
+    server.shows("%1", "sleep-started")?;
     let socket = server.socket.clone();
     std::thread::spawn(move || -> Outcome {
         let mut stream = UnixStream::connect(&socket).map_err(e)?;
@@ -323,27 +315,23 @@ fn a_client_flooding_a_pane_that_does_not_read_holds_up_no_one() -> Outcome {
 
 /// Output that spends a parser call's work budget (THREATS.md 4.4) is read
 /// on the pane's next turns, to its end. A program that prints past a read
-/// budget and exits at once is told exited with all it printed on its screen: `run`'s answer, which tells
-/// the exit once, has its last line. 4,000 REPs of 65,535 spend
-/// two budgets.
+/// budget and exits at once is told exited with all it printed on its
+/// screen: its last line is there as the exit is told. 4,000 REPs of
+/// 65,535 spend two budgets.
 #[test]
 fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let server = Server::start("")?;
     let code = "printf 'X\\033[65535b%.0s' $(seq 4000); echo; echo DO''NE";
     let out = server.fux(&[
-        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "60", "timeout",
-        "run",
+        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "run",
     ])?;
-    assert!(
-        out.stdout.contains("exited 0"),
-        "{}{}",
-        out.stdout,
-        out.stderr
-    );
+    let pane = out.stdout.split_whitespace().next().ok_or("its pane")?;
+    assert_eq!(server.exits(pane)?, "0");
+    let out = server.fux(&["str", pane, "pane", "capture"])?;
     assert!(
         out.stdout.contains("DONE"),
-        "no DONE in the answer: {}",
-        out.stderr
+        "no DONE on its screen: {}",
+        out.stdout
     );
     Ok(())
 }

@@ -92,8 +92,7 @@ const BLOCK_CELLS: usize = 1 << 12;
 /// more than its own cells where `cols` does not divide [`BLOCK_CELLS`]);
 /// and, with any history, [`HISTORY_ROOM`] beside them: so fux-vt keeps at
 /// least the rows of plain cells (styles count in the budget too,
-/// `fux-vt/THREATS.md` B11), and a row lost is seen. The adapter's and
-/// `bench`'s fux-vt+prints'.
+/// `fux-vt/THREATS.md` B11), and a row lost is seen.
 pub fn history_bytes(rows: usize, cols: u16) -> usize {
     if rows == 0 {
         return 0;

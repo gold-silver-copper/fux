@@ -28,17 +28,13 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert!(pane.starts_with(&format!("%2 {READING}\n")), "{pane}");
+    assert!(pane.starts_with("%2 "), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
     // The command ended; the shell is still there and takes more input.
     server.type_line("%2", "echo still-here")?;
     shows(&server, "%2", "\nstill-here")?;
-    assert!(
-        server.ok(&["ls"])?.contains("%2 printf"),
-        "the pane is named after its command"
-    );
     // new-tab and new-workspace type theirs too.
     server.ok(&[
         "opts",
@@ -52,23 +48,25 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "new-tab",
     ])?;
     shows(&server, "%3", "\ntab-cmd")?;
+    // Named after its shell, not the line typed into it.
+    let name = server.ok(&["str", "%3", "pane", "str", "name", "get"])?;
+    assert!(!name.contains("echo"), "{name}");
     server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
     shows(&server, "%4", "\nws-cmd")?;
-    // A control character would act as a key in the shell: refused, and no
-    // pane is made.
-    let refused = server.fux(&[
-        "str",
-        "%1",
-        "pane",
-        "horizontal",
-        "str",
-        "echo a\nb",
-        "typed",
-        "split",
-    ])?;
-    assert_eq!(refused.status, 1);
+    // The terminal takes the line before the shell reads: a control
+    // character would act as a key there, so it is refused, no pane made.
+    let refused = server.fux(&["str", "%1", "pane", "str", "echo a\nb", "typed", "split"])?;
     assert!(
-        refused.stderr.contains("control character"),
+        refused.stderr.starts_with("fux: bad_value: "),
+        "{}",
+        refused.stderr
+    );
+    assert!(!server.ok(&["ls"])?.contains("%5"));
+    // So is a line longer than the terminal keeps (1023 bytes, macOS's).
+    let long: String = std::iter::repeat_n('x', 1024).collect();
+    let refused = server.fux(&["str", "%1", "pane", "str", &long, "typed", "split"])?;
+    assert!(
+        refused.stderr.starts_with("fux: bad_value: "),
         "{}",
         refused.stderr
     );
@@ -88,8 +86,8 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let env = [("FUX_PANE", "%2")];
     let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.lines().next()),
-        (0, Some(format!("%3 {READING}").as_str())),
+        (out.status, out.stdout.split_whitespace().next()),
+        (0, Some("%3")),
         "{}",
         out.stderr
     );
@@ -198,7 +196,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "{}",
         idle.stderr
     );
-    // The sleep never settles: `0 timeout` answers at once.
     server.ok(&[
         "str",
         "%1",
@@ -209,8 +206,6 @@ fn send_keys_signal_and_buffers() -> Outcome {
         "str",
         "Enter",
         "key",
-        "0",
-        "timeout",
         "send-keys",
     ])?;
     eventually("sleep in the foreground", || {
@@ -257,41 +252,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         separator.stderr
     );
-    // A text wait on a program reading its terminal ends at once: the text
-    // cannot come before more input. Where fux is not told so (not Linux),
-    // it is waited for to the limit.
-    let reading = server.fux(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
-        "never-shown",
-        "wait-text",
-        "2",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(reading.status, CANNOT_COME, "{}", reading.stderr);
-    assert!(
-        reading.stdout.starts_with("%1 reading\n") || !PROBED,
-        "{}",
-        reading.stdout
-    );
-    // On one that sleeps, it waits until its time is up.
+    // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "opts",
-        "str",
-        "sleep 30",
-        "command",
-        "0",
-        "timeout",
-        "run",
-        "str",
-        "never-shown",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
+        "opts", "str", "sleep 30", "command", "run", "1", "timeout", "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -299,37 +262,20 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "{}",
         timed_out.stderr
     );
-    // A run whose program exits before the text: its pane's answer on
-    // stdout, its last lines with it, and why on one line of stderr; what
-    // the words before it left is printed first.
-    let exited = server.fux(&[
-        "str",
-        "before",
-        "opts",
-        "str",
-        "sh -c 'echo ONE; echo TWO; exit 5'",
-        "command",
-        "str",
-        "NEVER",
-        "wait-text",
-        "run",
-    ])?;
-    assert_eq!(exited.status, 3, "{}", exited.stderr);
+    // What the words before a failing wait left is printed first, then its
+    // pane's answer, and why on one line of stderr.
+    let failed = server.fux(&["str", "before", "%1", "1", "timeout", "wait"])?;
+    assert_eq!(failed.status, 124, "{}", failed.stderr);
     assert!(
-        exited.stdout.starts_with("before\n%") && exited.stdout.ends_with(" exited 5\nONE\nTWO\n"),
+        failed.stdout.starts_with("before\n%1 ") && failed.stdout.ends_with(" timeout\n"),
         "{}",
-        exited.stdout
+        failed.stdout
     );
-    assert_eq!(exited.stderr.lines().count(), 1, "{}", exited.stderr);
+    assert_eq!(failed.stderr.lines().count(), 1, "{}", failed.stderr);
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
     assert_eq!(left, "3\na b\n%1\n@1\n");
-    let outcome = server.ok(&["str", "%1", "pane", "wait", "json"])?;
-    assert!(
-        outcome.starts_with(&format!(r#"{{"pane":"%1","state":"{READING}""#)),
-        "{outcome}"
-    );
     let record = server.ok(&["str", "%1", "pane", "info", "json"])?;
     assert!(record.starts_with(r#"{"id":"%1","name":"sh""#), "{record}");
     assert_eq!(
@@ -340,7 +286,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // tab starts a shell, and waits on nothing.
     for unused in [
         &["str", "top", "program"][..],
-        &["str", "x", "wait-text"][..],
+        &["str", "0.1.0.0.0", "changed"][..],
     ] {
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
@@ -513,125 +459,6 @@ fn ls_json_list_keys_and_help() -> Outcome {
     Ok(())
 }
 
-/// A shell setup that writes during its startup and then discards pending
-/// input (as some line editors and plugins do) must not lose a typed
-/// command: fux types it only once the output has gone quiet. The stand-in
-/// startup is one Python process -- so no process start opens a gap in its
-/// output -- that prints a line every 5 ms for about 200 ms and flushes the
-/// terminal's pending input after the tenth line, some 50 ms in; then sh
-/// starts.
-///
-/// That tests something only if the stand-in's first line comes before
-/// fux's deadline and its lines up to the flush come within fux's quiet
-/// time of each other. A slow machine cannot always manage it (under
-/// emulated amd64 its gaps were 50 to 85 ms), and then fux types in a gap,
-/// as designed; so the stand-in reports its timing, and an attempt that
-/// missed the premise is run again, up to ten times. If it never holds, the
-/// machine is too slow for the test to say anything about fux, and it says
-/// so and passes: a failure here always means a lost command.
-#[test]
-fn a_typed_command_survives_a_startup_that_writes_then_discards_input() -> Outcome {
-    let mut missed = Vec::new();
-    for _ in 0..10 {
-        match typed_command_after_a_noisy_startup()? {
-            Ok(()) => return Ok(()),
-            Err(why) => missed.push(why),
-        }
-    }
-    eprintln!(
-        "not tested: in ten attempts the stand-in startup never wrote fast enough: {missed:?}"
-    );
-    Ok(())
-}
-
-/// One attempt: `Err` inside if the premise did not hold, and nothing was
-/// tested.
-fn typed_command_after_a_noisy_startup() -> Result<Result<(), String>, String> {
-    let dir = fuxix::file::scratch().map_err(e)?;
-    let script = dir.join(format!("fux-noisy-startup-{}.py", std::process::id()));
-    let timing = dir.join(format!("fux-noisy-timing-{}", std::process::id()));
-    let _ = std::fs::remove_file(&timing);
-    std::fs::write(
-        &script,
-        format!(
-            "import termios, time\n\
-             first = time.time()\n\
-             last = time.monotonic()\n\
-             gap = 0.0\n\
-             for i in range(40):\n\
-             \x20   print('starting-%d' % i, flush=True)\n\
-             \x20   now = time.monotonic()\n\
-             \x20   if i <= 10:\n\
-             \x20       gap = max(gap, now - last)\n\
-             \x20   last = now\n\
-             \x20   time.sleep(0.005)\n\
-             \x20   if i == 10:\n\
-             \x20       termios.tcflush(0, termios.TCIFLUSH)\n\
-             open('{}', 'w').write('%f %f' % (first, gap))\n",
-            timing.display()
-        ),
-    )
-    .map_err(e)?;
-    let shell = format!(
-        "str shell str '/bin/sh -c \"python3 {}; exec /bin/sh\"' set",
-        script.display()
-    );
-    let server = Server::start(&shell)?;
-    let split_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(e)?
-        .as_secs_f64();
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "horizontal",
-        "str",
-        "echo typed-after-quiet",
-        "typed",
-        "split",
-    ])?;
-    // The command ran: its output is on a line of its own, or after a
-    // prompt drawn before it; which, the premise does not decide.
-    let ran = |screen: &str| {
-        screen
-            .lines()
-            .any(|l| l.ends_with("typed-after-quiet") && !l.contains("echo"))
-    };
-    let result = eventually("the typed command's output", || {
-        Ok(ran(&server.ok(&["str", "%2", "pane", "screen"])?))
-    });
-    let screen = server.ok(&["str", "%2", "pane", "screen"])?;
-    let _ = std::fs::remove_file(&script);
-    let measured = std::fs::read_to_string(&timing).unwrap_or_default();
-    let _ = std::fs::remove_file(&timing);
-    let mut words = measured.split_whitespace().map(str::parse::<f64>);
-    let (Some(Ok(first)), Some(Ok(gap))) = (words.next(), words.next()) else {
-        return Err(format!(
-            "the stand-in reported no timing; %2 shows:\n{screen}"
-        ));
-    };
-    // With a margin: the deadline counts from a little before the split.
-    let late = first - split_at;
-    let deadline = fux::session::TYPE_WAIT.as_secs_f64() * 0.8;
-    let quiet = fux::pane::QUIET.as_secs_f64() * 0.8;
-    if late > deadline || gap > quiet {
-        return Ok(Err(format!(
-            "first line {:.0} ms after the split, largest gap {:.0} ms",
-            late * 1000.0,
-            gap * 1000.0
-        )));
-    }
-    if result.is_err() {
-        return Err(format!("the typed command was lost; %2 shows:\n{screen}"));
-    }
-    assert!(
-        screen.contains("starting-39"),
-        "the startup ran whole: {screen}"
-    );
-    Ok(Ok(()))
-}
-
 /// A caller in a directory whose name is not UTF-8 starts what it runs
 /// there: the path's bytes reach the server as they are, not made text.
 /// Linux only: macOS's file systems refuse a name that is not UTF-8.
@@ -672,34 +499,5 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
-    Ok(())
-}
-
-/// A wait's own status (124 here: still busy at the limit) is its answer's:
-/// the run exits with it while the answer is left, as itself, as its JSON,
-/// in a list, or the first of several; an answer dropped takes it away.
-#[test]
-fn an_answers_status_goes_where_the_answer_goes() -> Outcome {
-    let server = Server::start("")?;
-    let ticking = "while :; do date +%s%N; sleep 0.05; done";
-    let started = server.ok(&[
-        "opts", "str", "sh", "program", "str", "-c", "arg", "str", ticking, "arg", "0", "timeout",
-        "run",
-    ])?;
-    let pane = started.split_whitespace().next().unwrap_or_default();
-    let busy = ["str", pane, "pane", "1", "timeout", "wait"];
-    let status = |before: &[&str], after: &[&str]| -> Result<i32, String> {
-        Ok(server.fux(&[before, &busy[..], after].concat())?.status)
-    };
-    assert_eq!(status(&[], &[])?, 124, "left");
-    assert_eq!(status(&[], &["json"])?, 124, "its JSON");
-    assert_eq!(status(&["list"], &["end"])?, 124, "in a list");
-    assert_eq!(
-        status(&["list"], &["end", "json"])?,
-        124,
-        "the JSON of a list"
-    );
-    assert_eq!(status(&["str", "a"], &["str", "b"])?, 124, "of several");
-    assert_eq!(status(&[], &["drop", "str", "ok"])?, 0, "dropped");
     Ok(())
 }

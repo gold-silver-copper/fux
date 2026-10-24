@@ -9,8 +9,8 @@
 //! the same workloads, each linked against its own fux, fux-vt and fuxix
 //! (one binary cannot link two copies of a crate of one version). The
 //! working tree's side is the working tree as it is, changes and untracked
-//! files included. A path of another length moves the counts (by 1% on
-//! `ready/probe`); one recipe for both keeps an A/A run, `--against HEAD`
+//! files included. A path of another length moves the counts (by up to
+//! 1%); one recipe for both keeps an A/A run, `--against HEAD`
 //! on a clean tree, at no difference.
 //!
 //! Each workload runs as a child process of its own, counted (`count`),

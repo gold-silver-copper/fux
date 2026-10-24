@@ -6,7 +6,7 @@
 //! call's work held to the frozen ceiling U (4.4); a second parser fed a
 //! byte at a time, its row versions checked after every byte while it
 //! holds few enough rows; and between the outputs the host's calls:
-//! resizes, history budgets, prints taken, palettes, nonces, pictures
+//! resizes, history budgets, palettes, pictures
 //! listed and encoded, the picture budget, windows read. fux-vt's
 //! invariant checker runs after every operation, on both, and the two must
 //! agree.
@@ -15,17 +15,14 @@
 //! - `h0`, `h1`: 1 + 2 × h rows and columns;
 //! - `h2`: the history budget, `BUDGETS[h2 % 5]`;
 //! - `h3`, `h4`: bit i of `h3 | h4 << 8` turns `Feature::ALL[i]` on;
-//!   `h4 & 0x40` an identity, `h4 & 0x80` recording prints;
+//!   `h4 & 0x40` an identity;
 //! - `h5`: the host's cell for pictures (`cell`), which draw sixel.
 //!
 //! Operations, by their first byte:
 //! - `ff r c`: resize to 1 + 2r by 1 + 2c;
 //! - `fe b`: history's budget to `BUDGETS[b % 5]`;
-//! - `fd`: clear history; `fc`: a tick, newer than every row; `fb`: take
-//!   the prints, held to their caps; `fa b`: record prints or not;
+//! - `fd`: clear history;
 //! - `f9 k`: the host's palette, entry k % 16 known;
-//! - `f8 b`: the mark nonces, none or both;
-//! - `f7`: a line submitted;
 //! - `f6`: the host reads: the pictures, each encoded whole and in part,
 //!   held to `encode`'s bound (B08), both screens' rows, the colours, how
 //!   many rows went;
@@ -40,8 +37,7 @@ use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size, Work};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
-    Record, Rows, features_reached, marks_sound, pick, prints_bounded, reached, until_stops,
-    versions_follow,
+    Record, Rows, features_reached, marks_sound, pick, reached, until_stops, versions_follow,
 };
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
@@ -219,7 +215,6 @@ fn host_reads(p: &Parser) {
     for number in 10..=19 {
         let _ = screen.dynamic_color(number);
     }
-    let _ = screen.let_go();
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -242,9 +237,7 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut whole) = Parser::with_options(first, budget.unwrap_or(0), options) else {
         return;
     };
-    whole.record_prints(f1 & 0x80 != 0);
     whole.set_host_graphics(graphics(cell));
-    reached("call record_prints");
     reached("call set_host_graphics");
     features_reached(&whole);
     let split = whole.clone();
@@ -288,22 +281,6 @@ fuzz_target!(|data: &[u8]| {
                 reached("call clear_history");
                 run.both().into_iter().for_each(Parser::clear_history);
             }
-            // A tick is newer than all processing took so far. The two
-            // parsers' ticks differ: each call begins a version, and they
-            // are fed in calls of their own sizes.
-            0xfc => {
-                reached("call tick");
-                for p in run.both() {
-                    let tick = p.tick();
-                    assert!(p.screen().rows().all(|row| row.version() < tick));
-                }
-            }
-            0xfb => run.both().into_iter().for_each(prints_bounded),
-            0xfa => {
-                reached("call record_prints");
-                let on = arg() & 1 != 0;
-                run.both().into_iter().for_each(|p| p.record_prints(on));
-            }
             0xf9 => {
                 reached("call set_host_palette");
                 let k = arg();
@@ -314,18 +291,6 @@ fuzz_target!(|data: &[u8]| {
                 run.both()
                     .into_iter()
                     .for_each(|p| p.set_host_palette(palette));
-            }
-            0xf8 => {
-                reached("call require_mark_nonce");
-                let on = arg() & 1 != 0;
-                let (nonce, nested) = (on.then_some(&b"n1"[..]), on.then_some(&b"n2"[..]));
-                run.both()
-                    .into_iter()
-                    .for_each(|p| p.require_mark_nonce(nonce, nested));
-            }
-            0xf7 => {
-                reached("call note_submit");
-                run.both().into_iter().for_each(Parser::note_submit);
             }
             0xf6 => {
                 reached("call host_reads");

@@ -98,7 +98,7 @@ the server; words that read files are not run). After every line:
 
 **`session`**: clients typing into a whole `Session` with no processes
 while fuxth programs arrive from the side. Each client reads its keys as
-its client does: by the screen it has open (`screens::Screen`: a menu,
+its client does: by the screen it has open (`screens::Screen`: a
 chooser, prompt, confirmation or copy mode), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
 actions, and runs its programs in-process as itself (a screen one opens,

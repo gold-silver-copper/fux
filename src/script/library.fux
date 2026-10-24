@@ -5,7 +5,7 @@
 define type text send-keys end
 # pane name -- answer : press a key in a pane: Enter, C-c, Up; answers as send-keys does
 define press key send-keys end
-# pane text -- answer : in a shell: type a line and press Enter; answers once the shell reads again, `· done STATUS`, with the command's output
+# pane text -- answer : in a shell: type a line and press Enter; answers as send-keys does
 define line text str Enter key send-keys end
 # pane -- capture : the pane's screen as it is now
 define screen capture end

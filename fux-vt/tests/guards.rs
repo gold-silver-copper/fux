@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use fux_vt::keys::decode::{Decoder, Input};
 use fux_vt::{
-    Attributes, CLUSTER_CAPACITY, CellRef, Cells, Feature, Graphics, Options, PRINT_RUNS, Parser,
-    RowId, Size, Stop, URI_LIMIT,
+    Attributes, CLUSTER_CAPACITY, CellRef, Cells, Feature, Graphics, Options, Parser, Size, Stop,
+    URI_LIMIT,
 };
 
 #[path = "corpus/lines.rs"]
@@ -21,115 +21,9 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Deaf;
 impl fux_vt::Sink for Deaf {}
 
-/// `count` prints of `width` bytes on a 24×80 screen, each at its own
-/// spot a column apart from the next, so that each is a run of its own:
-/// the spots row by row, then again, `a`s and `b`s by turns so that each
-/// changes its cells; then `last` at the next spot.
-fn spots(count: usize, width: usize, last: &str) -> Vec<u8> {
-    let step = width.saturating_add(1);
-    let per_row = 80usize.checked_div(step).unwrap_or(1);
-    let screen = per_row.saturating_mul(24);
-    let at = |i: usize| {
-        let spot = i.checked_rem(screen).unwrap_or(0);
-        let row = spot.checked_div(per_row).unwrap_or(0).saturating_add(1);
-        let col = (spot.checked_rem(per_row).unwrap_or(0))
-            .saturating_mul(step)
-            .saturating_add(1);
-        format!("\x1b[{row};{col}H")
-    };
-    let mut input = Vec::new();
-    for i in 0..count {
-        let round = i.checked_div(screen).unwrap_or(0);
-        let letter = if round.is_multiple_of(2) { "a" } else { "b" };
-        input.extend_from_slice(at(i).as_bytes());
-        input.extend_from_slice(times(letter, width).as_bytes());
-    }
-    input.extend_from_slice(at(count).as_bytes());
-    input.extend_from_slice(last.as_bytes());
-    input
-}
-
 /// `text` `n` times over.
 fn times(text: &str, n: usize) -> String {
     std::iter::repeat_n(text, n).collect()
-}
-
-/// The text bytes `prints` holds.
-fn text_bytes(prints: &fux_vt::Prints) -> usize {
-    prints.iter().map(|p| p.text.len()).sum()
-}
-
-/// B10, `Prints::over_cap`'s text `>` (lib.rs, `>=`): text that
-/// ends exactly at the cap is kept, not lost.
-#[test]
-fn prints_keep_text_that_ends_exactly_at_the_cap() -> Result {
-    let mut p = Parser::new(Size::new(41, 100)?, 0)?;
-    p.record_prints(true);
-    let mut input = Vec::new();
-    for letter in ["a", "b", "c", "d"] {
-        input.extend_from_slice(b"\x1b[H");
-        input.extend_from_slice(times(letter, 41 * 100).as_bytes());
-    }
-    p.process(&input)?;
-    let prints = p.take_prints();
-    assert_eq!(prints.cap(), 4 * 41 * 100);
-    assert!(!prints.lost());
-    assert_eq!(
-        (prints.iter().count(), text_bytes(&prints)),
-        (4 * 41, 16_400)
-    );
-    Ok(())
-}
-
-/// B10, `Prints::over_cap`'s runs `>` (lib.rs, `>=`): the run
-/// that makes `PRINT_RUNS` is kept, though the text must grow for it.
-#[test]
-fn prints_keep_the_last_run_under_the_cap_when_their_text_grows() -> Result {
-    let mut p = Parser::new(Size::new(24, 80)?, 0)?;
-    p.record_prints(true);
-    p.process(&spots(PRINT_RUNS - 1, 2, "xxx"))?;
-    let prints = p.take_prints();
-    assert!(!prints.lost());
-    assert_eq!(
-        (prints.iter().count(), text_bytes(&prints)),
-        (PRINT_RUNS, 2 * (PRINT_RUNS - 1) + 3)
-    );
-    Ok(())
-}
-
-/// B10, `Prints::add`'s `runs.len() != runs.capacity()` (lib.rs,
-/// `==`): a run past `PRINT_RUNS` is lost, though its text has room.
-#[test]
-fn prints_lose_a_run_past_the_cap_though_their_text_has_room() -> Result {
-    let mut p = Parser::new(Size::new(24, 80)?, 0)?;
-    p.record_prints(true);
-    p.process(&spots(PRINT_RUNS, 3, "xxx"))?;
-    #[cfg(feature = "checks")]
-    {
-        let report = p.check();
-        assert!(report.faults_of("prints.cap").next().is_none(), "{report}");
-    }
-    let prints = p.take_prints();
-    assert!(prints.lost());
-    assert_eq!(
-        (prints.iter().count(), text_bytes(&prints)),
-        (PRINT_RUNS, 3 * PRINT_RUNS)
-    );
-    Ok(())
-}
-
-/// B10, `Prints::heap` (lib.rs, with 0 and with 1): it is the
-/// room its text and runs took, and none before anything is printed.
-#[test]
-fn prints_heap_is_the_room_of_their_text_and_runs() -> Result {
-    let mut p = Parser::new(Size::new(2, 10)?, 0)?;
-    p.record_prints(true);
-    p.process(b"hello")?;
-    let prints = p.take_prints();
-    let run = size_of::<(RowId, Range<u16>, Range<usize>)>();
-    assert_eq!(prints.heap(), 256 + 16 * run);
-    assert_eq!(p.take_prints().heap(), 0);
-    Ok(())
 }
 
 /// B35, the work budget (budget.rs): a call stops once it has spent half
@@ -924,19 +818,6 @@ fn links_fill_their_bound_exactly_then_stall_for_256() -> Result {
 /// `bytes` `n` times over.
 fn times_bytes(bytes: &[u8], n: usize) -> Vec<u8> {
     std::iter::repeat_n(bytes, n).flatten().copied().collect()
-}
-
-/// B29, `Screen::after_prompt` (shell.rs, with None): a late `C` with no line submitted starts the output on the row after its prompt's line, not at the cursor.
-#[test]
-fn a_late_start_follows_its_prompt_s_line() -> Result {
-    let marks = Options::new().with(Feature::PromptMarks);
-    let mut p = Parser::with_options(Size::new(8, 20)?, 0, marks)?;
-    p.process(b"\x1b]133;A\x07$ oops\r\nnot found\r\n")?;
-    p.process(b"\x1b]133;C;late\x07\x1b]133;D;127\x07")?;
-    let (start, _) = p.screen().commands().last_output.ok_or("no output")?;
-    let row = p.screen().window().row(1).map(|r| r.id());
-    assert_eq!((Some(start.row), start.col), (row, 0));
-    Ok(())
 }
 
 /// B33 and B34, `Screen::repeat`'s `per_row` filter (screen.rs, `>` to `>=`): REP of a glyph wider than the screen makes no copy and spends none of the call's budget.

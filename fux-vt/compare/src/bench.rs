@@ -20,12 +20,11 @@
 //! Each run gives four tables, never ranked together: equal budget (10,000
 //! rows asked, the rows each engine held read back) and equal retention (no
 //! history, read back as 0, or the cell is marked and not ranked), each in
-//! process and out of process apart. fux-vt is also run with print recording
-//! on, as fux runs it (`fux-vt+prints`). After the timer each cell records
-//! the contract (rows held, reply bytes, prints recorded) and the time of one
+//! process and out of process apart. After the timer each cell records
+//! the contract (rows held, reply bytes) and the time of one
 //! read (`snapshot(0)`), a feed-plus-read figure for engines that defer work.
 //! Every heading and the JSON carry the fairness record: the input's
-//! SHA-256, the chunk size, the setup, reflow and recording, that no read is
+//! SHA-256, the chunk size, the setup, reflow, that no read is
 //! timed, in or out of process, the CPU set and the repeats.
 //!
 //! `NAME@N` is workload NAME fed N bytes a call instead of [`CHUNK`]
@@ -404,8 +403,6 @@ struct Measured {
     read: Duration,
     rows_held: Option<usize>,
     reply_bytes: usize,
-    /// fux-vt with print recording: the runs it recorded.
-    prints: Option<usize>,
 }
 
 fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Measured, String>> {
@@ -435,7 +432,6 @@ fn measure(kind: &Kind, load: &Load, retention: Retention) -> Option<Result<Meas
             read,
             rows_held: engine.history_len(),
             reply_bytes: engine.replies()?.len(),
-            prints: None,
         })
     }))
 }
@@ -452,56 +448,6 @@ fn median(mut runs: Vec<Option<Result<Measured, String>>>) -> Option<Result<Meas
     runs.sort_by_key(|r| r.as_ref().and_then(|m| m.as_ref().ok()).map(|m| m.feed));
     let middle = runs.len() / 2;
     runs.into_iter().nth(middle).flatten()
-}
-
-/// fux-vt as fux runs it, recording what is printed (`record_prints`) and
-/// taking the record after each chunk, as a pane does after each read.
-fn measure_prints(load: &Load, retention: Retention) -> Result<Measured, String> {
-    let size = crate::vt_size(load.rows, load.cols)?;
-    let rows = match retention {
-        Retention::Budget => 10_000usize,
-        Retention::None => 0,
-    };
-    // As the adapter sizes it.
-    let history = crate::engines::fux_vt::history_bytes(rows, load.cols);
-    {
-        let mut parser =
-            fux_vt::Parser::with_options(size, history, crate::engines::fux_vt::options(true))
-                .map_err(|e| format!("fux-vt: {e}"))?;
-        parser.record_prints(true);
-        let mut recorded = 0usize;
-        let started = Instant::now();
-        for (size, part) in load.parts() {
-            if let Some((rows, cols)) = size {
-                parser
-                    .resize(crate::vt_size(rows, cols)?)
-                    .map_err(|e| format!("fux-vt: {e}"))?;
-            }
-            let mut rest = part;
-            while !rest.is_empty() {
-                let (now, later) = rest
-                    .split_at_checked(load.chunk.min(rest.len()))
-                    .unwrap_or((rest, &[]));
-                parser
-                    .process_with_replies(now, |r| {
-                        std::hint::black_box(r);
-                    })
-                    .map_err(|e| format!("fux-vt: {e}"))?;
-                let prints = parser.take_prints();
-                recorded = recorded.saturating_add(std::hint::black_box(prints).iter().count());
-                rest = later;
-            }
-        }
-        let feed = started.elapsed();
-        Ok(Measured {
-            fed: load.bytes.len(),
-            feed,
-            read: Duration::ZERO,
-            rows_held: Some(parser.screen().history_len()),
-            reply_bytes: 0,
-            prints: Some(recorded),
-        })
-    }
 }
 
 /// The programs an input's SHA-256 is asked of, in turn.
@@ -567,21 +513,6 @@ pub fn cpu_set() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// A table's columns: fux-vt with print recording, then each engine.
-enum Column<'a> {
-    Prints,
-    Engine(&'a Kind),
-}
-
-impl Column<'_> {
-    fn name(&self) -> &'static str {
-        match self {
-            Column::Prints => "fux-vt+prints",
-            Column::Engine(k) => k.name,
-        }
-    }
-}
-
 /// Times fux-vt and `engines` on the named workloads (see [`chosen`]),
 /// each `mb` MiB, made one at a time, and prints MB/s in four tables:
 /// equal budget and equal retention, each in process and out of process
@@ -619,28 +550,18 @@ pub fn run_to(
             "chunk_bytes": load.chunk,
         }));
         for ((retention, in_process), out) in tables.iter().zip(&mut results) {
-            let mut columns: Vec<Column> = Vec::new();
-            if *in_process {
-                columns.push(Column::Prints);
-            }
-            columns.extend(
-                kinds
-                    .iter()
-                    .filter(|k| k.in_process == *in_process)
-                    .map(|k| Column::Engine(k)),
-            );
+            let columns: Vec<&Kind> = (kinds.iter().copied())
+                .filter(|k| k.in_process == *in_process)
+                .collect();
             // Rounds, each taking every column in turn.
             let mut runs: Vec<Vec<_>> = columns.iter().map(|_| Vec::new()).collect();
             for _ in 0..RUNS {
-                for (c, column_runs) in columns.iter().zip(&mut runs) {
-                    column_runs.push(match c {
-                        Column::Prints => Some(measure_prints(&load, *retention)),
-                        Column::Engine(k) => measure(k, &load, *retention),
-                    });
+                for (k, column_runs) in columns.iter().zip(&mut runs) {
+                    column_runs.push(measure(k, &load, *retention));
                 }
             }
             let cells: Cells = (columns.iter().zip(runs))
-                .map(|(c, column_runs)| (c.name().to_owned(), median(column_runs)))
+                .map(|(k, column_runs)| (k.name.to_owned(), median(column_runs)))
                 .collect();
             out.push((name.clone(), cells));
         }
@@ -679,8 +600,7 @@ fn report(
         println!(
             "\n{} ({}), {place}: MB/s, the median of {RUNS} rounds taking the engines in turn, the timer around the feed alone \
              (no read timed); {CHUNK}-byte chunks (NAME@N: N); {mb} MiB per workload; {ROWS}x{COLS} \
-             (recordings at their size); fux-vt reflow on, print recording off but in \
-             fux-vt+prints; CPUs {cpus}; ! = the contract failed (not ranked)",
+             (recordings at their size); fux-vt reflow on; CPUs {cpus}; ! = the contract failed (not ranked)",
             retention.name(),
             retention.about()
         );
@@ -716,7 +636,6 @@ fn report(
                                 "feed_and_read_mb_per_s": total / m.feed.saturating_add(m.read).as_secs_f64().max(1e-9) / 1e6,
                                 "rows_held": m.rows_held,
                                 "reply_bytes": m.reply_bytes,
-                                "prints_recorded": m.prints,
                                 "contract_failed": kept,
                             }),
                         );
@@ -759,7 +678,6 @@ fn report(
                 "mb": mb,
                 "read_timed": false,
                 "reflow": "fux-vt on; the others as they are",
-                "print_recording": "off, but fux-vt+prints",
                 "cpus": cpus,
                 "repeats": RUNS,
                 "statistic": "the median feed of the rounds (repeats), each taking every engine in turn",
@@ -820,7 +738,6 @@ mod tests {
                 read: std::time::Duration::ZERO,
                 rows_held: None,
                 reply_bytes: 0,
-                prints: None,
             }))
         };
         let feed =
@@ -995,11 +912,10 @@ mod tests {
             read: std::time::Duration::ZERO,
             rows_held: Some(0),
             reply_bytes: 0,
-            prints: None,
         };
         let report = |cell: Option<Result<super::Measured, String>>| {
             let cells = vec![
-                ("fux-vt+prints".to_owned(), Some(Ok(measured()))),
+                ("xterm".to_owned(), Some(Ok(measured()))),
                 ("fux-vt".to_owned(), cell),
             ];
             super::report(
@@ -1014,29 +930,6 @@ mod tests {
         assert!(!report(Some(Err("x".into())))?);
         assert!(report(Some(Ok(measured())))?);
         assert!(report(None)?);
-        Ok(())
-    }
-
-    /// fux-vt+prints keeps the history fux-vt's adapter keeps under equal
-    /// budget: 20,000 full lines on 10 rows of 10, the same rows held.
-    #[test]
-    fn fux_vt_and_prints_keep_one_history_budget() -> Result<(), String> {
-        let mut line = vec![b'x'; 10];
-        line.extend_from_slice(b"\r\n");
-        let load = super::Load {
-            name: "lines".into(),
-            about: String::new(),
-            rows: 10,
-            cols: 10,
-            bytes: super::repeated(&line, 20_000 * line.len()),
-            resizes: Vec::new(),
-            chunk: super::CHUNK,
-        };
-        let prints = super::measure_prints(&load, Retention::Budget)?.rows_held;
-        let adapter = super::measure(&SUBJECT, &load, Retention::Budget)
-            .ok_or("no setup")??
-            .rows_held;
-        assert_eq!(prints, adapter);
         Ok(())
     }
 }

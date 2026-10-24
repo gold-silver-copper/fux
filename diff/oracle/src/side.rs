@@ -228,6 +228,7 @@ macro_rules! side {
                             data: data.to_vec(),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
+                        vt::Event::CommandEnded(status) => Heard::CommandEnded(status),
                     });
                 }
                 fn unhandled(&mut self, sequence: vt::Unhandled<'_>) {
@@ -297,12 +298,11 @@ macro_rules! side {
                     self.parser.resize(size).map_err(error)
                 }
 
-                fn host(&mut self, call: Call) -> String {
+                fn host(&mut self, call: Call) {
                     let p = &mut self.parser;
                     match call {
                         Call::HistoryBytes(n) => p.set_history_bytes(n),
                         Call::ClearHistory => p.clear_history(),
-                        Call::Tick => return p.tick().to_string(),
                         Call::Palette(n) => {
                             let mut palette = [None; 16];
                             if let Some(entry) = palette.get_mut(usize::from(n % 16)) {
@@ -314,19 +314,7 @@ macro_rules! side {
                             cell: Some((w, h)),
                             sixel: true,
                         }),
-                        Call::Nonce(on) => {
-                            p.require_mark_nonce(on.then_some(b"n1"), on.then_some(b"n2"))
-                        }
-                        Call::Submit => p.note_submit(),
-                        Call::Record(on) => p.record_prints(on),
-                        Call::Prints => {
-                            let prints = p.take_prints();
-                            return (prints.iter())
-                                .map(|r| format!("{} {:?} {:?}\n", number(r.row), r.cols, r.text))
-                                .collect();
-                        }
                     }
-                    String::new()
                 }
 
                 fn state(&self) -> State {
@@ -381,7 +369,6 @@ macro_rules! side {
                                 .map(|r| (number(r.id()), r.wrapped(), cells_hash(r)))
                                 .collect()
                         },
-                        let_go: s.let_go(),
                     }
                 }
 
@@ -475,10 +462,6 @@ macro_rules! side {
                             changed: s.changed_since(mark),
                             full_refresh: s.full_refresh_since(mark),
                             dirty: s.dirty_rows_since(mark).map(|r| number(r.id())).collect(),
-                            dirty_live: s
-                                .dirty_live_rows_since(mark)
-                                .map(|(y, r)| (y, number(r.id())))
-                                .collect(),
                         })
                         .collect()
                 }

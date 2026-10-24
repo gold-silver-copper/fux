@@ -170,17 +170,6 @@ pub(crate) struct Chars<'a> {
     taken: usize,
 }
 
-impl<'a> Chars<'a> {
-    #[inline]
-    pub(crate) fn taken(&self) -> usize {
-        self.taken
-    }
-    pub(crate) fn text(&self, range: std::ops::Range<usize>) -> &'a str {
-        let bytes = self.bytes.get(range).unwrap_or_default();
-        str::from_utf8(bytes).unwrap_or_default()
-    }
-}
-
 impl Iterator for Chars<'_> {
     type Item = char;
     #[inline]
@@ -578,8 +567,8 @@ impl Phase {
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
-/// enough for the longest mark, `133;D;-2147483648;nonce=` and a 32-byte
-/// nonce.
+/// enough for any mark's command and the options fux-vt reads of it,
+/// `133;D;-2147483648` the longest.
 const OSC_PREFIX: usize = 64;
 
 /// The most bytes of a DECRQSS request kept: xterm's longest are two
@@ -809,6 +798,9 @@ pub enum Event<'a> {
         /// Whether the query ended with BEL rather than ST.
         bel: bool,
     },
+    /// A shell command ended (OSC 133 `D`, or `N`, ending one that ran),
+    /// with the status the shell gave, if any.
+    CommandEnded(Option<i32>),
 }
 
 /// A complete sequence fux-vt parsed but does not implement, so a host can
@@ -1033,36 +1025,6 @@ impl Parser {
     /// Drops the scrollback, as `CSI 3 J` does; the screen stays.
     pub fn clear_history(&mut self) {
         self.screen.clear_history();
-    }
-    /// A new [`Screen::version`], for something the host records between
-    /// pieces of output.
-    pub fn tick(&mut self) -> u64 {
-        self.screen.begin();
-        self.screen.version()
-    }
-    /// Starts recording what is printed, or stops and forgets it
-    /// ([`Parser::take_prints`]).
-    pub fn record_prints(&mut self, on: bool) {
-        self.screen.record_prints(on);
-    }
-    /// Each run of text printed since the last call, while recording.
-    pub fn take_prints(&mut self) -> crate::Prints {
-        self.screen.take_prints()
-    }
-    /// Makes shell marks (OSC 133) count only if they carry `nonce=NONCE`
-    /// among their options; `None`, every one. A mark without it was
-    /// printed by a program, not the shell, and is ignored. One carrying
-    /// `nonce=NESTED` is from a program the shell runs (a remote shell,
-    /// relayed): it counts while the shell's command runs, until the
-    /// shell's next mark.
-    pub fn require_mark_nonce(&mut self, nonce: Option<&[u8]>, nested: Option<&[u8]>) {
-        self.screen.require_mark_nonce(nonce, nested);
-    }
-    /// Notes that the host submitted a line with the cursor where it is:
-    /// a late `C` (`133;C;late`, a line the shell could not run) starts
-    /// the output on the row after that line.
-    pub fn note_submit(&mut self) {
-        self.screen.note_submit();
     }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15 (`None`: unknown). With `Feature::Palette`, a program's query
@@ -1993,7 +1955,13 @@ impl Parser {
         let (command, rest) = crate::split_semicolon(payload).unwrap_or((payload, &[]));
         match command {
             b"133" if self.options.has(Feature::PromptMarks) => {
-                return self.screen.prompt_osc(rest);
+                let finished = self.screen.commands().finished;
+                let marked = self.screen.prompt_osc(rest);
+                let commands = self.screen.commands();
+                if commands.finished != finished && self.options.has(Feature::Events) {
+                    sink.event(Event::CommandEnded(commands.last_status));
+                }
+                return marked;
             }
             // A link too long to keep is no link.
             b"8" if self.options.has(Feature::Hyperlinks) => {
@@ -2104,7 +2072,6 @@ mod faults {
     #[test]
     fn every_check_is_reported() -> Result<(), Error> {
         let mut parser = parser()?;
-        parser.record_prints(true);
         parser.process(b"hello\r\n\x1bPq#1~~\x1b\\")?;
         let report = parser.check();
         let every = [
@@ -2138,12 +2105,9 @@ mod faults {
             "screen.ids",
             "screen.structural",
             "screen.tabs",
-            "screen.nest",
             "pictures.count",
             "pictures.bytes",
             "pictures.shown",
-            "prints.runs",
-            "prints.cap",
         ];
         assert_eq!(report.ran(), every.as_slice(), "{report}");
         assert!(report.is_clean(), "{report}");

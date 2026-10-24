@@ -338,12 +338,8 @@ fn run<A: Side, B: Side>(case: &Case) -> Result<Count, Difference> {
                 )?;
             }
             Step::Host(call) => {
-                same(
-                    at,
-                    "what the host's call gave",
-                    &a.host(*call),
-                    &b.host(*call),
-                )?;
+                a.host(*call);
+                b.host(*call);
             }
         }
         count.steps = count.steps.saturating_add(1);
@@ -628,11 +624,10 @@ mod tests {
             history_bytes: 64,
             setup: Setup::pane(),
             steps: vec![
-                Step::Host(Call::Record(true)),
                 Step::Output(b"printed".to_vec()),
-                Step::Host(Call::Prints),
+                Step::Host(Call::Palette(7)),
                 Step::Host(Call::HistoryBytes(1024)),
-                Step::Host(Call::Tick),
+                Step::Host(Call::ClearHistory),
             ],
         };
         assert_eq!(Case::from_text(&case.to_text())?, case);

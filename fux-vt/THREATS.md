@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the per-call ceiling (4), guard mutants (5) and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B45, and B34a) and by section number.
+B45 but B10 and B29, which are gone, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.
@@ -51,9 +51,8 @@ Each host call has its own bound per call: `resize` (B37), `row_by_id`
 and `index_of` (B40), `pictures()` (B09), `sixel::encode` (B08),
 `Picture::new` (B07), `Cells::new` and `Cells::resize` (B39),
 `FrameScan::end` (B19), `ByteQueue::push_with` (B41). The host promises
-its own call rate, that `push_with`'s closure only adds (B41 makes a
-broken promise harmless), and that it takes `Prints` before the next
-feed if it wants every print (else `lost()`, B10).
+its own call rate, and that `push_with`'s closure only adds (B41 makes a
+broken promise harmless).
 
 Objects the host retains are its memory, not the parser's budget:
 - an `Arc<Picture>` outlives its eviction (B06); fux keeps each client's
@@ -62,18 +61,13 @@ Objects the host retains are its memory, not the parser's budget:
   and shares pictures and the style table until either side adds a
   style; a clone taken mid-picture copies the picture being drawn
   (≤ 33.75 MiB);
-- a `Prints` taken is at most its cap (171,072 B at the defaults);
 - events and replies go to the `Sink` synchronously; fux-vt queues none;
 - the key decoder's `out` grows at most one `Input` a byte (B26).
 
-The mark nonce. With `require_mark_nonce(shell, nested)`, fux gives the
-nested nonce (`FUX_MARK_NONCE`) to every program a marked shell runs.
-Its holder can, while a command the shell marked runs, end that command
-early with a status of its choice, set `full_screen` (which keeps the
-pane busy until a `D` mark or the time limit), set the shell's command
-aside, and reach the late-`133;C` scan (B29). The shell's next mark
-brings its command back, so nothing a nested mark does outlives it. It
-costs no memory or work beyond a 16-hex-digit string.
+Shell marks (OSC 133). Every mark in the output counts, whichever
+program sent it: any program can end the command running, with a status
+of its choice, or start one. A mark costs a fixed amount of work and no
+memory.
 
 ### 1.3 What happens when an allocation fails
 
@@ -88,7 +82,6 @@ refusal happened in it.
 | The alternate screen | The primary stays shown, and the mode reads reset |
 | RIS or a clear, with no room for new grids | History goes, then the grids are blanked in place |
 | The sixel decoder's growth | The picture keeps what it has, as at the budget (B03) |
-| `Prints` growth | `lost()` is set (B10) |
 | The ring or a map shrinking | It keeps its room until the next trim (B17) |
 | A prompt mark's or a picture's line feed | The parser's state is set first, so it is never stuck in the string |
 
@@ -108,9 +101,7 @@ away; infallible allocation is no safety proof.
 | Evict | The oldest, or the hidden first, goes | B01, B02, B11, B15, B17, B27 |
 | Drop to its end | A string past its limit is read to its end and dropped, alike however split | B20, B21, B23, B25 |
 | Refuse | `Err` or `None`, and nothing changes | B07, B37, B38, B39 |
-| Flag loss | Recording stops, and a flag says so | B10 |
 | Skip work that changes nothing | Copies that can't change the result are skipped | B33, B34, B34a |
-| Fall back | A search past its cap answers with the cursor's row | B29 |
 
 ## 2 The bounds
 
@@ -127,8 +118,7 @@ Conventions for every row:
   row's bound (from section 3), each counter it names against c × bytes
   (4.2), a lower bound on each of them (4.3), and the ceiling (4.4). At
   the end, the invariant checker is clean (section 6).
-- Features: every `Feature` on and `record_prints(true)`, unless the
-  row says otherwise. Screen: the defaults, unless the row says.
+- Features: every `Feature` on, unless the row says otherwise. Screen: the defaults, unless the row says.
 - Seeds: every row's reproducer is a frozen seed in `tests/seeds.rs`
   (written to `fuzz/seeds/`), replayed by
   `every_seed_reaches_its_limit` to check it reaches its limit.
@@ -151,14 +141,13 @@ B26 and B41 bound host-side objects or host calls.
 | B07 | `Picture::new` (host call) | `None` unless `rgba.len()` = w × h × 4 with no overflow and both sides ≤ 4096 | `None` | `u32::MAX` square with no pixels | `b07` |
 | B08 | `sixel::encode` (host call) | Output ≤ 12 B a crop pixel + 6 B a colour a band + colour definitions; work ≤ 3 `pixels` a crop pixel. fux caches encodings per client, ≤ 16 MiB (`SIXEL_BYTES`) | — | A 2000×1000 256-colour checkerboard | `b08` |
 | B09 | `Screen::pictures()` (host call) | `rows` ≤ 128 × (⌊log2(history rows + 1)⌋ + 1 + R) + 64 + the rows its placements cover, a call | — | 8 MiB of empty history, 64 pictures; 64 pictures 4,096 pixels tall | `b09` |
-| B10 | `Prints` | Text ≤ max(4 × N, 16 KiB), runs ≤ `PRINT_RUNS` = 4,096; heap ≤ 171,072 B at the defaults | Nothing more is recorded until `take_prints`; `lost()` is true. A resize while it holds something sets `lost()` | `X ESC[65535b` with no take | `b10`; `prints_keep_text_drawn_over_up_to_their_cap`, `guards.rs` `prints_*` |
 | B11 | The style table, in bytes | Its room past the screen's share (S(2N): 1,146,880 B a grid at 50×200) counts in history's bytes; a successor grid or a cloned parser's copy is charged at once | History's oldest rows go | 150,000 distinct direct backgrounds, 1 MiB of history | `b11`; `a_style_table_past_the_screens_share_takes_history_room` |
 | B12 | Style lookups | Expected O(1) probes: std's keyed hash of both words; ≤ 64 styles share a place (`SPREAD`, checked) | — | A family of 8 Ki to 32 Ki styles that hashed alike unkeyed | `b12` |
 | B13 | The style sweep | `styles` ≤ 7 per input byte, amortized: a sweep after keeping L styles comes after max(floor − L, L) new ones, floor = max(4,096, N ÷ 8) | — | 20,000 new backgrounds on one cell over 700 full rows | `b13`; `deccara_maps_each_of_three_styles` |
 | B14 | Hyperlinks held | ≤ `LINK_BYTES` = 4 MiB a grid of real heap (strings, `Arc` headers, the id map's buckets, both tables while it grows); URI ≤ 2,083 B, id ≤ 250 B | A link that doesn't fit after a sweep prints unlinked; after a failed sweep the next 256 are refused untried (`STALL`) | 2,000 links of 2,083-byte URIs; 60,000 1-byte links with distinct ids | `b14` |
 | B15 | Link runs | A screen row ≤ 256 runs × 32 B at 200 columns; a history row's runs shrink as it enters and count in history's bytes | History's oldest rows go | Two links alternating cell by cell, 1 MiB of history | `b15`; `a_row_with_one_link_holds_no_memory_for_it` |
 | B16 | The link sweep | `links` ≤ 256 per input byte, amortized; its transient is the links kept, 16 B a run, nothing per history row | — | 4 MiB held, then refused opens; the same over 400,000 empty rows | `b16` |
-| B17 | History, in bytes | `History::bytes()` counts capacities (ring, blocks, text, maps, side stores, link runs, styles), trimmed to ≤ the budget; a map gives back room past 4 × its length + 64; heap ≤ 1.1 × H + 64 KiB | The oldest rows go; `let_go` advances | Rows of 2,049 cells; 349,525 empty rows, then full ones | `b17`; `guards.rs` `history_*` |
+| B17 | History, in bytes | `History::bytes()` counts capacities (ring, blocks, text, maps, side stores, link runs, styles), trimmed to ≤ the budget; a map gives back room past 4 × its length + 64; heap ≤ 1.1 × H + 64 KiB | The oldest rows go | Rows of 2,049 cells; 349,525 empty rows, then full ones | `b17`; `guards.rs` `history_*` |
 | B18 | Line feeds into history | `cells` ≤ C + 3 and `rows` ≤ 2 per line feed, amortized | — | 100,000 `\n` after full rows | `b18` |
 | B19 | The frame scan | `scanned` ≤ 2 × the bytes held + 16 a call | — (fux cuts a frame at 2 MiB or 1 s) | BSU, then `ESC [` + 64 Ki digits in pieces; a long DECRST | `b19`; the fuzz targets' frame-end agreement (`common.rs`) |
 | B20 | The OSC buffer | Room ≤ `OSC_PAYLOAD_LIMIT` + 1 = 65,537 B (64 B with only `PromptMarks`, else 0) | A longer string is read to its end, with no event | OSC 52 of 64 KiB + 1 | `b20`; `the_osc_buffer_takes_the_room_a_string_needs_up_to_16_kib` |
@@ -170,7 +159,6 @@ B26 and B41 bound host-side objects or host calls.
 | B26 | The key decoder's output (host side) | ≤ one `Input` per input byte | — | 64 KiB of single keys | `b26` |
 | B27 | The kitty keyboard stack | ≤ 32 entries a screen | The oldest goes | 33 × `CSI > 1 u` | `b27` |
 | B28 | Replies | ≤ 16 reply bytes per input byte; each `Reply` ≤ 64 B | — | 585 × DECRQSS `m` with every rendition; each request's longest answer | `b28` |
-| B29 | Prompt-mark scans | `rows` ≤ 9 per input byte (the late-`133;C` scan looks on the screen alone) | A `133;C` past the screen's rows marks from the cursor's row | 400,000 `\n`, then 290 × `ESC]133;C;late BEL` | `b29`; `a_late_start_past_the_screen_starts_at_the_cursor` |
 | B30 | Cluster text | A cluster ≤ 128 B (`CLUSTER_CAPACITY`); a row's long text ≤ 32C + 128, short ≤ 17C; `text` ≤ 256 a byte | Cut at 128 B; a row with no room drops what would join | `e` + 64 × U+0301 | `b30`; `a_long_cluster_that_ends_at_the_limit_does_not_compact` |
 | B31 | A zero-width character after a full row | `text` ≤ 257 a byte | Dropped | 1,000 × U+200B after a full 1×200 row | `b31` |
 | B32 | Glyph width | Every glyph ≤ 2 columns; U+17D8 is 1 | — | `XYZW\r` U+17D8 on 1×10 | `b32`; `every_character_is_as_wide_as_the_width_rule_says` |
@@ -206,14 +194,13 @@ One parser, every term a capacity:
 | History, with its text, links, maps and styles | 1.1 × H + 64 KiB (B17) | 9,293,004 |
 | History's free row-id spans, both grids | 2 × 256 × 80 (B40) | 40,960 |
 | The parser's buffers | OSC 65,537 + the decoder + DECRQSS | ≈ 67,000 |
-| `Prints` | max(4N, 16 KiB) + 4,096 × 32 (B10) | 171,072 |
 | Pictures, the decoder and its growth inside | P (B01) | 100,663,296 |
 | Small fixed state | tab stops, palette, kitty stacks | ≈ 6,000 |
 
-- Steady: 123,911,700 B = 118.17 MiB (22.17 MiB without pictures).
-- While processing, with the largest transient (3.2): 128,525,434 B =
-  122.57 MiB.
-- With a resize: 136,602,304 B = 130.27 MiB, the peak engine heap per
+- Steady: 123,740,628 B = 118.01 MiB (22.01 MiB without pictures).
+- While processing, with the largest transient (3.2): 128,354,362 B =
+  122.41 MiB.
+- With a resize: 136,431,232 B = 130.11 MiB, the peak engine heap per
   parser at fux's defaults.
 
 ### 3.2 Transient peaks
@@ -270,14 +257,13 @@ differenced with `Work::since`. The counters come from one table
 | `scanned` | Bytes `FrameScan::end` examines |
 | `cells` | Grid cells written, cleared, moved or read, and REP copies tried or skipped |
 | `slots` | Row slots moved |
-| `rows` | History rows pushed, popped, read or searched; rows walked by resize, reflow, lookups, `pictures()` and the mark scans |
+| `rows` | History rows pushed, popped, read or searched; rows walked by resize, reflow, lookups and `pictures()` |
 | `text` | Row text bytes copied, compacted, cloned or rescanned |
 | `pixels` | Sixel pixels painted or filled, and growth's copied or zeroed bytes ÷ 4 |
 | `styles` | Cells visited by style sweeps |
 | `inserts` | New styles put in a table |
 | `lookups` | Style-table finds by hash |
 | `links` | Runs, rows, id entries and sort steps of the link sweep |
-| `prints` | Bytes recorded into `Prints` |
 | `keys` | Bytes the key decoder scans or copies |
 | `sums` | Cells DECRQCRA's checksum reads |
 | `spans` | Rows a scroll inside left and right margins copies a span of |
@@ -293,14 +279,12 @@ stated). Per call holds for each call; amortized over any run of calls.
 | Line feed into history | `cells`, `rows` | C + 3, 2 | amortized | B18 |
 | Sixel decode | `pixels` | 4,096 (+ 2 × `MAX_PIXELS` a picture for growth) | per call | B03, B04 |
 | Sixel placement | `cells` | 2,291 / 7,636 landscape, 4,349 / 14,487 portrait | per call | B05 |
-| `Prints` | `prints` | ≥ text printed, ≤ the cap | per call | B10 |
 | Style sweep | `styles` | 7 | amortized | B13 |
 | Link sweep | `links` | 256 | amortized | B16 |
 | The frame scan | `scanned` | 2, + 16 a call | per call | B19 |
 | APC, PM, SOS, ignored DCS | `bytes` | 1 | per call | B21 |
 | Paste and key decoding | `keys` | 2, + 258 a read (516 while an answer is held) | per call | B23, B24 |
 | Replies | reply bytes | 16 | per call | B28 |
-| Prompt marks | `rows` | 9 | per call | B29 |
 | Cluster join | `text` | 256 | per call | B30 |
 | Zero-width after a full row | `text` | 257 | per call | B31 |
 | ASCII REP | `cells` | 14,564 | per call | B33 |
@@ -318,10 +302,10 @@ also asserts that each counter it names counted at least what it knows
 was done (`Probe::at_least`): `bytes` ≥ the bytes parsed (every probe);
 `cells` ≥ REP copies shown, a rectangle's area, a placement's cells, a
 margin scroll's span; `slots` ≥ the rows a region scroll moved; `rows` ≥
-rows pushed into history, ≥ 1 a lookup or a late mark; `text` ≥ cluster
+rows pushed into history, ≥ 1 a lookup; `text` ≥ cluster
 bytes joined; `pixels` ≥ the painted area; `styles` ≥ the cells a forced
 sweep read; `inserts` and `lookups` ≥ the distinct styles fed; `links`
-≥ the links at a sweep; `prints` ≥ the text printed below the cap;
+≥ the links at a sweep;
 `scanned` ≥ the bytes held; `keys` ≥ the bytes fed to the decoder;
 reply bytes ≥ what was asked.
 
@@ -336,9 +320,9 @@ later than it did when weights were nanoseconds:
 |---|---|---|---|---|---|---|---|---|
 | 1 | 1 | 1 | 3 | 4 | 1 | 1 | 1 | 20 |
 
-| `lookups` | `links` | `prints` | `keys` | `sums` | `spans` | `edits` |
-|---|---|---|---|---|---|---|
-| 10 | 4 | 1 | 1 | 9 | 81 | 8 |
+| `lookups` | `links` | `keys` | `sums` | `spans` | `edits` |
+|---|---|---|---|---|---|
+| 10 | 4 | 1 | 9 | 81 | 8 |
 
 The work budget. A few bytes can ask for work in proportion to the
 screen or to history, and fux reads every pane on one thread, so that
@@ -420,7 +404,6 @@ the tests check instead.
 - **4** A UTF-8 partial holds fewer bytes than its lead byte announces.
 - **5** `FrameScan` resumes inside the bytes held, in a reachable state.
 - **6** `refused()` never decreases. (Not checked yet.)
-- **6a** A command is set aside for nested marks only with both nonces.
 - **7** A grid's `order` is a permutation of its slots.
 - **8** One record, text and link list per slot.
 - **9** Every cell past a row's `used` is blank.
@@ -447,7 +430,6 @@ the tests check instead.
   each map for ≤ 4 × its length + 64.
 - **21a** History is charged the style table's room past the screen's
   share.
-- **22** `let_go` never decreases. (Not checked.)
 - **23** `held` covers the live links' cost, and `held` ≤ `LINK_BYTES`.
 - **24** Each row's link runs lie inside its width, sorted and apart;
   every link with an id is in the id map; URIs ≤ 2,083 B, ids ≤ 250 B.
@@ -459,7 +441,7 @@ the tests check instead.
   each setter's tests cover it.)
 - **28** After any operation, every screen position whose row id, cells,
   wrap, links or prompt mark changed is reported by
-  `dirty_live_rows_since`, `dirty_rows_since` or `full_refresh_since`,
+  `dirty_rows_since` or `full_refresh_since`,
   and `changed_since` is true; `set_prompt` gives its row a new version,
   so prompt marks count. (Tests: the fuzz targets' `common.rs`.)
 - **28a** `wrapped` on history's newest row continues into screen row 0,
@@ -472,9 +454,6 @@ the tests check instead.
 - **32** A shown picture's cells hold `PLACEHOLDER`, inside its area, on
   its screen (but rows cropped off a top that keeps no history); its
   rows still exist.
-- **33** `Prints`' heap ≤ its cap; once `lost()`, no run is added.
-- **34** Each run's text lies inside the text, in order, and its
-  columns inside the width it was printed at.
 - **35** The key decoder holds ≤ 258 B, a paste's room ≤ limit + 5;
   split and whole input decode alike (tests).
 - **36** Kitty stacks ≤ 32 entries; tab stops kept for no more columns

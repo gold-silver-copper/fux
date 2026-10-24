@@ -49,11 +49,12 @@ usage: fux                 attach, starting a server if none runs
 Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
-takes (options, keys, a wait, what to read) goes on the pane before it
-(`%2 str y text send-keys`, `%2 str ready wait-text wait`, `%2 all-history
-capture`); only run, new-tab and new-workspace start from opts (`opts str
-'make test' command run`). An action answers once its pane settles (30s at
-most: SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
+takes (options, keys, a version, what to read) goes on the pane before it
+(`%2 str y text send-keys`, `%2 str 0.57.0.3.0 changed wait`, `%2
+all-history capture`); only run, new-tab and new-workspace start from opts
+(`opts str 'make test' command run`). An action answers at once, with its
+pane's version before it acted; a wait waits for the version to differ,
+30s at most (SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help-agents`; one word:
 `fux help WORD`.
 
@@ -169,36 +170,32 @@ pub fn explain(name: &str) -> Option<String> {
 
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of;
-/// and whether it waits, taking a wait's words too: the `Waiting` words
-/// that go on the pane, and `marks` for the screen it prints.
+/// and whether it takes a wait's words too: the `Waiting` words that go on
+/// the pane.
 pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
     (
         "run",
         "name size cwd env command program arg in log-to id",
-        true,
+        false,
     ),
     (
         "split",
         "horizontal vertical cwd env command program arg typed id",
-        true,
+        false,
     ),
     ("new-tab", "name size cwd env typed in id", false),
     ("new-workspace", "name size cwd env typed id", false),
-    ("respawn", "kill-first env command program arg", true),
+    ("respawn", "kill-first env command program arg", false),
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
-         rows cols timeout",
+         rows cols",
         false,
     ),
     ("wait", "", true),
-    (
-        "send-keys",
-        "text key paste paste-file bytes pause times",
-        true,
-    ),
-    ("send-mouse", "mouse", true),
-    ("signal", "", true),
+    ("send-keys", "text key paste paste-file bytes times", false),
+    ("send-mouse", "mouse", false),
+    ("signal", "", false),
 ];
 
 /// The options `name` takes, if it takes any: its own, then a wait's.
@@ -206,8 +203,7 @@ pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> 
     let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
     let waiting = (WORDS.iter())
         .filter(|w| *waits && w.group == "Waiting" && w.effect.starts_with("x "))
-        .map(|w| w.name)
-        .chain(waits.then_some("marks"));
+        .map(|w| w.name);
     Some(takes.split_whitespace().chain(waiting))
 }
 
@@ -224,13 +220,12 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",
-        "wait" => "fux %3 wait",
-        "help-agents-on" => "fux str waits help-agents-on",
-        "wait-text" => "fux %3 str ready wait-text 30 timeout wait",
-        "wait-done" => "fux %3 str 'build ok' wait-text wait-done wait",
-        "timeout" => "fux %3 0 timeout str 'make' line",
+        "wait" => "fux %3 str 0.57.0.3.0 changed 60 timeout wait",
+        "help-agents-on" => "fux str recipes help-agents-on",
+        "changed" => "fux %3 str 0.57.0.3.0 changed wait",
+        "timeout" => "fux %3 300 timeout wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
-        "bytes" | "pause" => "fux %3 str c3 bytes 50 pause str a9 bytes send-keys",
+        "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",

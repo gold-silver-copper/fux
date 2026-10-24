@@ -45,7 +45,7 @@ tree, a socket and a render loop.
 | Save and load layouts | No. |
 | Mouse | **Passed through only.** Reporting is on only while the focused pane's program asks for it and nothing of fux's has the keys; fux has no mouse actions of its own. |
 | Selecting and copying | A keyboard **copy/select mode**: a movable cursor over the pane and its history. |
-| Menus | The navigable command column, tab and workspace choosers, and pane/tab/workspace action menus, all keyboard-driven. |
+| Menus | The navigable command column, tab and workspace choosers, and the pane actions under `a`, all keyboard-driven. |
 | A pane's program | **Always the user's shell.** A command given with `-- CMD` is typed into that shell, as if the user had typed it; when it ends, the prompt is back. A pane closes only when its shell exits. |
 | Configuration | A file of fux commands. Zero dependencies. |
 | Clipboard | OSC 52 writes **on by default** (`set clipboard off` disables). Nothing ever reads the clipboard. |
@@ -277,7 +277,7 @@ Each attached client has its own view:
   fux-vt row ID so that new output does not move what a scrolled-back client
   is reading. Leaving copy mode returns to the live screen, so this is the
   only scroll position a view keeps;
-- its mode: normal, command column, chooser, action menu, prompt, confirm, or
+- its mode: normal, command column, chooser, prompt, confirm, or
   copy/select (with its cursor and selection);
 - its last sent frame, used for diffing.
 
@@ -398,12 +398,9 @@ and private to the client that opened them:
 - **Choosers:** a tab chooser and a workspace chooser, listing each item with
   its panes and the current one marked. Enter selects; `r` renames; `x` closes
   (with confirmation).
-- **Action menus** for the focused pane, the current tab and the current
-  workspace:
-  - they hold what has no default key (terminate, reorder, swap, move to an
-    existing or new tab or workspace, rename, close);
-  - a menu acts on the item it was opened for, even if focus changes;
-  - a disappeared item is never retargeted.
+- **Pane actions** are ordinary bindings under `a` (rename, close,
+  terminate, swap, move to an existing or new tab or workspace, reorder
+  under `a m`); the column lists them like any other key.
 - **The command prompt** (`:`): type any fux command, with the same grammar as
   the CLI and the config file. Its output or error shows as a notice.
 - **Prompts and confirmations:** a one-line editor (rename) and y/n
@@ -537,8 +534,8 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux rename -t TARGET NAME` | Rename a pane, tab or workspace |
 | `fux move-pane -t %N --to @N\|+N\|new-tab\|new-workspace`, `fux move-pane -t %N -L\|-R\|-U\|-D` | Move a pane (to a workspace: its first tab; with a direction: beside that neighbour, as `S-arrows` do) |
 | `fux swap-pane -t %A %B`, `fux swap-pane -t %A -L\|-R\|-U\|-D` | Swap two panes, anywhere |
-| `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | Move one place in order (for the action menus) |
-| `fux terminate [-t %N]` | SIGTERM to the pane's foreground process group, never its shell (the pane menu's "terminate") |
+| `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | Move one place in order (`a m h`/`a m l`, `t m`, `w m`) |
+| `fux terminate [-t %N]` | SIGTERM to the pane's foreground process group, never its shell (now `signal`; `a k`) |
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
@@ -550,10 +547,10 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux list-keys` | The current bindings, as config lines |
 
 Some commands act on a client's screen rather than on shared state:
-`command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
+`command-column`, `choose-tab`, `choose-workspace`,
 `command-prompt`, `copy-mode`, `rename-prompt`, `confirm-close`, `zoom`,
 `select-tab`, `select-pane`, `select-workspace`, and
-`choose-pane` (the pane menu's "swap with…"). From a binding or the command prompt, they act on
+`choose-pane` (`a s`, "swap with…"). From a binding or the command prompt, they act on
 the client that pressed the key. From the command line they need `-c CLIENT`
 (`fux ls` lists clients). Without it they fail with a message naming the
 flag.

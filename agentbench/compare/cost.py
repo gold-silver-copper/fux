@@ -8,6 +8,10 @@ than once), restarts (respawn, or kill then run again of a named pane), sleeps,
 seconds, tokens.
 
   cost.py RUN_DIR...            -> one JSON line per run
+
+The call logs it reads are of the runs bench-161 recorded, through the fux
+of that time (its wait words, statuses 3 and 7); today's fux has one wait,
+`wait`, which WAIT counts too.
 """
 import json, os, re, sys
 

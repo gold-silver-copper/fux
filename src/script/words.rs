@@ -1,12 +1,12 @@
 //! fux's words: each a name, what it does to the stack, in the names of
 //! the kinds it takes and gives (`KINDS`, `NAMES`), and a line of help;
 //! and what each does, run by the program's [`Host`].
-use super::{Answer, Ask, Bound, Fux, Host, Local, On, Opts, Said, Then, Waits};
+use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Then};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Until, Usage, Wait,
-    Wheel, WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Usage, Wait, Wheel,
+    WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId, Wanted};
@@ -70,6 +70,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
+    ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("json", "json string", "JSON"),
@@ -81,7 +82,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
 ];
 pub const STRINGS: &str =
     "name dir key path line id file field setting socket way action code keys word hex";
-pub const INTEGERS: &str = "cols rows secs n row col lines from to cells ms";
+pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 /// Every word of fux's, under its heading, in help's order.
 #[rustfmt::skip]
@@ -99,11 +100,11 @@ pub const WORDS: &[Word] = &[
     word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
     word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it"),
     word("Starting", "cwd", "x dir -- x", "where it starts"),
-    word("Starting", "env", "x key text -- x", "a variable for it"),
+    word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
-    word("Starting", "typed", "x line -- x", "a command line typed into its new shell"),
+    word("Starting", "typed", "x line -- x", "a command line typed into its new shell, at once: its terminal echoes it above the first prompt too"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
@@ -116,25 +117,20 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "wait-text", "x text -- x", "wait until text shows anew, not on the line typed"),
-    word("Waiting", "wait-gone", "x text -- x", "wait until text is no longer shown; after run or respawn, once it has been"),
-    word("Waiting", "wait-exit", "x -- x", "wait until the program exits"),
-    word("Waiting", "wait-bell", "x -- x", "wait until the program rings or notifies"),
-    word("Waiting", "wait-done", "x -- x", "wait until the shell command running ends, as long as it runs (no timeout but one given); with a text, it fails if the command ends first (5)"),
-    word("Waiting", "timeout", "x secs -- x", "how long to wait at most, else the server's wait-seconds (30); 0 answers at once: %2 0 timeout str ls line"),
-    word("Waiting", "wait", "place -- answer", "wait for the pane to settle (after input to a still program, until still 2s: a spinner's work done), or as the wait words on it say; a tab or workspace: each pane"),
+    word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE.ENDED, as an action or `str version get` gives it), not from now"),
+    word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
+    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", "x text -- x", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
     word("Input", "paste-file", "x file -- x", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
     word("Input", "bytes", "x hex -- x", "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character"),
-    word("Input", "pause", "x ms -- x", "between two inputs, ms milliseconds (1 to 10000), the one after written then whatever the program did: str c3 bytes 50 pause str a9 bytes"),
     word("Input", "times", "x n -- x", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", "subject -- answer", "send the mouse event on it"),
-    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground; answers once it exits or settles"),
+    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground"),
     // Reading
     word("Reading", "capture", "subject -- capture", "the screen, as the words on the pane say"),
     word("Reading", "history", "x lines -- x", "capture: lines of history first"),
@@ -142,16 +138,16 @@ pub const WORDS: &[Word] = &[
     word("Reading", "wrapped", "x -- x", "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed"),
     word("Reading", "full", "x -- x", "capture: every row and cell, untrimmed"),
     word("Reading", "styles", "x -- x", "capture: colours and attributes"),
-    word("Reading", "marks", "x -- x", "highlighted text as ⟦this⟧: in a capture, or the screen a wait prints"),
+    word("Reading", "marks", "x -- x", "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧"),
     word("Reading", "main-screen", "x -- x", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", "x -- x", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
+    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
-    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: exited, revision, cwd"),
-    word("Reading", "json", "value -- json", "value as JSON: an answer, or a list holding one, stays an answer, with its status"),
+    word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd"),
+    word("Reading", "json", "value -- json", "value as JSON (an answer as its JSON); a failed wait stops the program before json runs"),
     word("Reading", "events", "--", "what happens, a line each, as it happens"),
     word("Reading", "events-json", "--", "what happens, as JSON lines"),
     word("Reading", "events-of", "handle --", "what happens in a pane, tab or workspace"),
@@ -198,7 +194,6 @@ pub const WORDS: &[Word] = &[
     word("Clients", "choose-tab-for", "client pane --", "a list of tabs to move the pane to"),
     word("Clients", "choose-workspace-for", "client pane --", "a list of workspaces to move the pane to"),
     word("Clients", "choose-pane", "client pane --", "a list of panes to swap the pane with"),
-    word("Clients", "menu", "client handle --", "actions for a pane, tab or workspace"),
     word("Clients", "rename-prompt", "client handle --", "a prompt for its new name"),
     word("Clients", "confirm-close", "client handle --", "close it, once confirmed"),
     word("Clients", "zoom", "client --", "zoom the focused pane, or restore"),
@@ -215,10 +210,10 @@ pub const WORDS: &[Word] = &[
     word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", "setting text --", "shell history-bytes wait-seconds journal-bytes journal-total clipboard buffers bell titles shell-marks update-environment"),
+    word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
     word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", "socket --", "close a grant's socket"),
-    word("Server", "version", "-- text", "this fux's version"),
+    word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
     // Config
     word("Config", "prefix", "key --", "this client's prefix (config)"),
     word("Config", "bind", "keys code --", "keys after the prefix run fuxth (config)"),
@@ -234,7 +229,7 @@ pub const WORDS: &[Word] = &[
     // Help
     word("Help", "help", "--", "the words, under their headings"),
     word("Help", "help-agents", "--", "how to drive programs from a script or an agent: the first screen, enough for most work"),
-    word("Help", "help-agents-on", "word --", "one topic of that guide at length (answers keys waits read shells programs servers), or all of it"),
+    word("Help", "help-agents-on", "word --", "one topic of that guide at length (recipes keys read shells programs servers), or all of it"),
     word("Help", "help-json", "--", "what json gives"),
     word("Help", "explain", "word --", "one word at length"),
     word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),
@@ -323,15 +318,17 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items().iter().map(json_of).collect()),
-        // An answer of several panes, a line of JSON each, as an array.
+        // An answer, a line of JSON a pane: one pane's as its object; one
+        // of several panes (a tab's or workspace's wait), as an array,
+        // however many answered.
         Value::App(Fux::Answer(answer)) => match &answer.json {
             Some(json) => {
                 let mut objects: Vec<Json<'static>> = (json.lines())
                     .filter(|line| !line.trim().is_empty())
                     .map(|line| Json::Raw(line.to_owned().into()))
                     .collect();
-                match objects.len() {
-                    1 => objects.pop().unwrap_or(Json::Null),
+                match (answer.said, objects.as_mut_slice()) {
+                    (said, [one]) if said != Said::Several => std::mem::replace(one, Json::Null),
                     _ => Json::Array(objects),
                 }
             }
@@ -455,6 +452,29 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
     target(value).map(On::Target)
 }
 
+/// What a wait or an action on `target` answers: a pane's, its pane; a
+/// tab's or workspace's, no pane, however many panes it has or answered
+/// (name it again to act on it again), and as JSON an array.
+fn answer_of(target: AnyRef) -> Then {
+    match target {
+        AnyRef::Pane(_) => Then::Outcome,
+        AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Several),
+    }
+}
+
+/// The version an action's answer, or a wait's, holds: its pane's from
+/// before what it did. A wait on it waits from there, so nothing that came
+/// between is missed.
+fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
+    let Value::App(Fux::Answer(a)) = value else {
+        return None;
+    };
+    let Said::Action(_) = a.said else {
+        return None;
+    };
+    a.text.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// The options or request `value` is, `word` given it: options stay
 /// options; what else it goes on (a pane, tab, workspace or client, an
 /// action's answer) becomes a request on that.
@@ -470,6 +490,7 @@ fn modifying(word: &'static str, value: Value<Fux>) -> Result<Box<Opts>, Failure
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             Box::new(Opts {
                 on: Some(on),
+                held: held(&other),
                 ..Opts::default()
             })
         }
@@ -513,21 +534,21 @@ fn modify(
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
         "styles" => built.view.styles = true,
-        "marks" => waits.marks = true,
+        "marks" => built.view.marks = true,
         "timeout" => waits.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
-        "wait-exit" => waits.until.push(Until::Exit),
-        "wait-bell" => waits.until.push(Until::Bell),
-        "wait-done" => waits.until.push(Until::Done),
+        "changed" => {
+            let text = string(&next()?)?;
+            let bad = || {
+                fail(
+                    Code::BadValue,
+                    format!("{text:?} is no version: STARTS.SCREEN.BELLS.DONE.ENDED"),
+                )
+            };
+            waits.since = Some(text.parse().map_err(|()| bad())?);
+        }
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
-        "pause" => {
-            let ms: u64 = within(&next()?, 1..=crate::command::PAUSE_MOST_MS)?;
-            if built.inputs.is_empty() {
-                return Err(fail(Code::NoKeys, PAUSE));
-            }
-            built.inputs.push(Input::Pause(Duration::from_millis(ms)));
-        }
         "command" => {
             let line = string(&next()?)?;
             let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
@@ -565,7 +586,16 @@ fn modify(
             }
         }
         "env" => {
-            let (key, value) = (string(&next()?)?, text(&next()?)?);
+            let (key, value) = (string(&next()?)?, next()?);
+            // A pane, tab or workspace as fux writes it (`%3`).
+            let value = match (target(&value), text(&value)) {
+                (Ok(handle), _) => handle.to_string(),
+                (Err(_), Ok(text)) => text,
+                (Err(_), Err(_)) => {
+                    let what = "a string, a number, a boolean, or a pane, tab or workspace";
+                    return Err(wrong(what, &value));
+                }
+            };
             built
                 .env
                 .push(key, value)
@@ -592,19 +622,6 @@ fn modify(
                 "rows" => built.view.rows = Some((from, to)),
                 _ => built.view.cols = Some((from, to)),
             }
-        }
-        "wait-text" | "wait-gone" => {
-            let t = text(&next()?)?;
-            let bare = t.trim_start_matches('^').trim_end_matches('$').trim();
-            // A tab is a blank, as a wait compares: blanks as one.
-            if bare.is_empty() || t.contains(['\n', '\r']) {
-                let why = "a text of one line, not empty (^ and $ alone hold nothing)";
-                return Err(fail(Code::BadValue, why));
-            }
-            waits.until.push(match name {
-                "wait-text" => Until::Text(t),
-                _ => Until::Gone(t),
-            });
         }
         "key" => {
             let word = string(&next()?)?;
@@ -662,6 +679,7 @@ fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::List(_)
         | Value::App(_)) => Opts {
             on: Some(on(&other)?),
+            held: held(&other),
             ..Opts::default()
         },
     };
@@ -738,10 +756,6 @@ pub(super) fn takers(option: &str) -> String {
     crate::words::listed(if on.is_empty() { &words } else { &on }, "or")
 }
 
-/// Where a pause goes, for one that is not between two inputs.
-const PAUSE: &str =
-    "a pause goes between two inputs: %2 str 1b bytes 50 pause str [A text send-keys";
-
 /// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
 /// between bytes ignored).
 fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
@@ -780,7 +794,6 @@ fn sent(inputs: &[Input]) -> usize {
             Input::Text(text) | Input::Paste(text) => text.len(),
             Input::Key(key) => key.to_string().len(),
             Input::Bytes(bytes) => bytes.len(),
-            Input::Pause(_) => 0,
         })
         .fold(0usize, usize::saturating_add)
         .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5))
@@ -798,38 +811,6 @@ fn fits(typed: usize) -> Result<(), Failure> {
             ),
         )),
         false => Ok(()),
-    }
-}
-
-/// The wait an action makes: what it names; or, from a command line
-/// (`settle`) or given any wait word (`timeout` alone), for each pane to
-/// settle.
-fn wait(waits: &Waits, settle: bool) -> Option<Wait> {
-    let named = *waits != Waits::default();
-    (named || settle).then(|| waited(waits))
-}
-
-/// `command`, then `wait` if there is one.
-fn followed(command: Command, wait: Option<Wait>) -> Request {
-    match wait {
-        Some(wait) => Request::Then(command, Box::new(wait)),
-        None => Request::Do(command),
-    }
-}
-
-/// A wait for what `waits` names, else for the pane to settle, said with
-/// what came.
-fn waited(waits: &Waits) -> Wait {
-    let settles = waits.until.is_empty();
-    Wait {
-        until: if settles {
-            vec![Until::Settled]
-        } else {
-            waits.until.clone()
-        },
-        timeout: waits.timeout,
-        print: settles,
-        marks: waits.marks,
     }
 }
 
@@ -887,7 +868,6 @@ const SCREENS: &[(&str, Opens)] = &[
     ("choose-tab-for", Opens::Pane(|p| Open::ChooseTab(Some(p)))),
     ("choose-workspace-for", Opens::Pane(|p| Open::ChooseWorkspace(Some(p)))),
     ("choose-pane", Opens::Pane(Open::ChoosePane)),
-    ("menu", Opens::Target(Open::Menu)),
     ("rename-prompt", Opens::Target(Open::Rename)),
     ("confirm-close", Opens::Target(Open::Confirm)),
 ];
@@ -1006,7 +986,6 @@ impl fuxth::Host for Host<'_> {
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
             "run" | "new-tab" | "new-workspace" => {
                 let built = finished(name, next()?)?;
-                let typed: Vec<String> = built.typed.into_iter().collect();
                 let command = match name {
                     "run" => {
                         if built.argv.is_empty() {
@@ -1025,13 +1004,12 @@ impl fuxth::Host for Host<'_> {
                             log: built.log,
                             ids: built.ids,
                         };
-                        let run = followed(run, wait(&built.waits, self.settle));
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
                     "new-tab" => Command::NewTab {
                         target: built.place,
                         name: built.name,
-                        cmd: typed,
+                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1039,7 +1017,7 @@ impl fuxth::Host for Host<'_> {
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
-                        cmd: typed,
+                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1058,24 +1036,19 @@ impl fuxth::Host for Host<'_> {
                 else {
                     return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
                 };
-                let (run, cmd) = match (built.argv.is_empty(), built.typed) {
-                    (true, typed) => (false, typed.into_iter().collect()),
-                    (false, None) => (true, built.argv),
-                    (false, Some(_)) => {
-                        let why = "takes no typed with a program: a line is typed into the shell the program replaces";
-                        return Err(fail(Lang::Unused, why));
-                    }
-                };
+                if !built.argv.is_empty() && built.typed.is_some() {
+                    let why = "takes no typed with a program: a line is typed into the shell the program replaces";
+                    return Err(fail(Lang::Unused, why));
+                }
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
-                    cmd,
+                    argv: built.argv,
+                    typed: built.typed,
                     cwd: built.cwd,
                     env: built.env,
-                    run,
                     id,
                 };
-                let split = followed(split, wait(&built.waits, self.settle));
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
             "respawn" => {
@@ -1086,7 +1059,6 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     argv: built.argv,
                 };
-                let respawn = followed(respawn, wait(&built.waits, self.settle));
                 later(ask(respawn, Then::Handle(Kind::Pane)))
             }
             // ----------------------------------------------------- waiting
@@ -1098,10 +1070,12 @@ impl fuxth::Host for Host<'_> {
                         "takes a pane, tab or workspace, not a client",
                     ));
                 };
-                // With a wait's time either way: on a tab or workspace, for
-                // each of its panes.
-                let wait = Request::Wait(target, waited(&built.waits));
-                later(ask(wait, Then::Outcome))
+                // On a tab or workspace, in each of its panes.
+                let wait = Wait {
+                    since: built.waits.since.or(built.held),
+                    timeout: built.waits.timeout,
+                };
+                later(ask(Request::Wait(target, wait), answer_of(target)))
             }
             // ------------------------------------------------------- input
             "send-keys" => {
@@ -1112,9 +1086,6 @@ impl fuxth::Host for Host<'_> {
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
-                if matches!(built.inputs.last(), Some(Input::Pause(_))) {
-                    return Err(fail(Code::NoKeys, PAUSE));
-                }
                 fits(sent(&built.inputs))?;
                 let target = match on {
                     On::Target(target) => target,
@@ -1122,17 +1093,10 @@ impl fuxth::Host for Host<'_> {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
                         // here.
-                        if built.waits != Waits::default() {
+                        if built.inputs.iter().any(|i| matches!(i, Input::Bytes(_))) {
                             return Err(fail(
                                 Lang::Unused,
-                                "to a client takes no wait: wait on the pane after (PANE … wait)",
-                            ));
-                        }
-                        let raw = |i: &Input| matches!(i, Input::Bytes(_) | Input::Pause(_));
-                        if built.inputs.iter().any(raw) {
-                            return Err(fail(
-                                Lang::Unused,
-                                "to a client takes keys, text and pastes: bytes and pause go to a pane",
+                                "to a client takes keys, text and pastes: bytes go to a pane",
                             ));
                         }
                         let keys = ClientAction::Keys(built.inputs);
@@ -1140,16 +1104,16 @@ impl fuxth::Host for Host<'_> {
                             client: Some(c),
                             action: keys,
                         };
-                        // Its answer, empty, as send-keys to a pane leaves one.
+                        // Its answer, empty: the client's keys go to the pane
+                        // it chooses, so there is no one version to answer.
                         return later(ask(typed, Then::Outcome));
                     }
                 };
-                let then = wait(&built.waits, self.settle);
                 let keys = Command::SendKeys {
                     target,
                     inputs: built.inputs,
                 };
-                later(ask(followed(keys, then), Then::Outcome))
+                later(ask(keys, answer_of(target)))
             }
             "send-mouse" => {
                 let (p, built) = request_pane(name, next()?)?;
@@ -1159,41 +1123,28 @@ impl fuxth::Host for Host<'_> {
                         "needs a mouse event: %2 str click 3 10 mouse send-mouse",
                     ));
                 };
-                let then = wait(&built.waits, self.settle);
                 let mouse = Command::SendMouse {
                     target: p,
                     mouse,
                     row,
                     col,
                 };
-                later(ask(followed(mouse, then), Then::Outcome))
+                later(ask(mouse, Then::Outcome))
             }
             "signal" => {
-                let (p, built) = request_pane(name, next()?)?;
+                let (p, _) = request_pane(name, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
-                // From a command line: answers once the program exited or settled.
-                let then = wait(&built.waits, self.settle);
-                let signal = followed(Command::Signal { target: p, signal }, then);
+                let signal = Command::Signal { target: p, signal };
                 later(ask(signal, Then::Outcome))
             }
             // ----------------------------------------------------- reading
             "capture" => {
                 let (p, built) = request_pane(name, next()?)?;
-                // From a command line, or given a timeout, read once the pane
-                // settles.
-                let (history, timeout) = (built.history, built.waits.timeout);
-                let view = crate::command::CaptureView {
-                    marks: built.waits.marks,
-                    ..built.view
-                };
-                let capture = match self.settle || timeout.is_some() {
-                    true => Request::Capture(p, history, view, timeout),
-                    false => Request::Do(Command::CapturePane {
-                        target: p,
-                        history,
-                        view,
-                    }),
+                let capture = Command::CapturePane {
+                    target: p,
+                    history: built.history,
+                    view: built.view,
                 };
                 later(ask(capture, Then::Answer(Said::Capture)))
             }
@@ -1215,22 +1166,11 @@ impl fuxth::Host for Host<'_> {
                     Lang::Unused,
                     "converts a value: it goes after what acts on the pane (%2 capture json)",
                 )),
-                // An answer, or a list holding one with a status: still an
-                // answer, of JSON, its status with it.
                 other @ (Value::Int(_)
                 | Value::Bool(_)
                 | Value::Str(_)
                 | Value::List(_)
-                | Value::App(_)) => {
-                    let text = json_of(&other).render();
-                    match super::code(std::slice::from_ref(&other)) {
-                        Some(code) => {
-                            let json = Some(text.clone());
-                            now(out, Answer::value(text, json, Said::Json, Some(code)))
-                        }
-                        None => now(out, Value::str(text)),
-                    }
-                }
+                | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
             "events" | "events-json" | "events-of" | "events-of-json" => {
                 let target = match name.starts_with("events-of") {
@@ -1706,23 +1646,6 @@ mod tests {
         assert_eq!(made, Ok(()));
     }
 
-    /// A wait and an action's wait leave how long to the server
-    /// (`wait-seconds`), unless they say: one deadline for both.
-    #[test]
-    fn waits_leave_their_limit_to_the_server() {
-        let settle = waited(&Waits::default());
-        assert_eq!((settle.until, settle.timeout), (vec![Until::Settled], None));
-        let action = wait(&Waits::default(), true).map(|w| w.timeout);
-        assert_eq!(action, Some(None));
-        let said = Waits {
-            timeout: Some(Duration::from_secs(5)),
-            ..Waits::default()
-        };
-        assert_eq!(waited(&said).timeout, Some(Duration::from_secs(5)));
-    }
-
-    /// An answer in a list is its object; one of several panes, an array of
-    /// theirs: JSON either way.
     #[test]
     fn an_answer_of_several_panes_is_an_array() {
         let answer = |json: &str| {
@@ -1730,11 +1653,11 @@ mod tests {
                 text: String::new(),
                 json: Some(json.to_owned()),
                 said: super::super::Said::Several,
-                code: None,
             }))))
             .render()
         };
-        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "{\"pane\":\"%1\"}");
+        // However many answered: one is an array too.
+        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "[{\"pane\":\"%1\"}]");
         assert_eq!(
             answer("{\"pane\":\"%1\"}\n{\"pane\":\"%2\"}\n"),
             "[{\"pane\":\"%1\"},{\"pane\":\"%2\"}]"

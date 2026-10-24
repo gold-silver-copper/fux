@@ -48,77 +48,23 @@ fn at(call: &'static str) -> impl FnOnce(Errno) -> Error {
 /// nonblocking, else once 60 ticks pass), and the master reads nothing
 /// more once no slave is open (`ptcread`). The last close would otherwise
 /// be anyone's: this process's copies as it starts a program that has
-/// already printed and exited, or a probe that opens the slave only to
-/// ask (`O_NONBLOCK`), which also wakes the program blocked reading it
-/// (every open there calls `ttymodem`, which wakes the terminal's
-/// readers). Held, the slave is closed last with the master, after its
-/// output was read, and asked what it holds with no open
-/// ([`Master::keys_unread`]). Its end is told by the program's exit, not
-/// by the master's hangup, which never comes while the slave is held.
+/// already printed and exited. Held, the slave is closed last with the
+/// master, after its output was read. Its end is told by the program's
+/// exit, not by the master's hangup, which never comes while the slave is
+/// held.
 #[derive(Debug)]
-pub struct Master(OwnedFd, PathBuf, #[cfg(target_os = "macos")] OwnedFd);
+pub struct Master(
+    OwnedFd,
+    #[cfg(target_os = "macos")]
+    #[expect(dead_code, reason = "held open, never read: see above")]
+    OwnedFd,
+);
 
 /// A PTY's slave, not yet given to the program that runs on it
 /// ([`Slave::spawn`]). It is close-on-exec, and not this process's
 /// controlling terminal.
 #[derive(Debug)]
 pub struct Slave(OwnedFd);
-
-impl Master {
-    /// The path of its slave (`/dev/pts/N`), as programs on it see their
-    /// terminal.
-    pub fn slave_path(&self) -> &Path {
-        &self.1
-    }
-
-    /// Whether output its program wrote waits to be read from it, as a
-    /// poll that does not wait says. Not `FIONREAD`: on Linux a write to
-    /// the slave reaches the master's count only once a kernel worker has
-    /// moved it on (`flush_to_ldisc`), which a poll or a read waits for and
-    /// `FIONREAD` does not; on macOS `FIONREAD` on a master counts the keys
-    /// its program has yet to read instead (xnu's `ttnread`).
-    pub fn output_unread(&self) -> bool {
-        readable(&self.0)
-    }
-
-    /// Whether keys wait in the terminal for its program to read.
-    pub fn keys_unread(&self) -> bool {
-        self.keys_waiting() > 0
-    }
-
-    /// How many bytes of keys wait in the terminal for its program to read
-    /// (at least 1 while a poll of the slave says it is readable). On Linux
-    /// the slave is opened to ask (so that its program's end still closes
-    /// it), and polled first: a poll moves on what the master's writes left
-    /// on their way (`flush_to_ldisc`, as for `output_unread`), which
-    /// `FIONREAD` alone misses; `FIONREAD` then counts what a poll of a
-    /// read waiting for more keys (`VMIN`) does not. On macOS the held
-    /// slave's `FIONREAD` counts them.
-    pub fn keys_waiting(&self) -> usize {
-        #[cfg(target_os = "macos")]
-        let slave = Ok::<_, Errno>(self.2.as_fd());
-        #[cfg(not(target_os = "macos"))]
-        let opened = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-            .open(&self.1);
-        #[cfg(not(target_os = "macos"))]
-        let slave = opened.as_ref().map(AsFd::as_fd);
-        slave.map_or(0, |slave| {
-            let polled = usize::from(readable(slave));
-            crate::io::unread(slave).unwrap_or(0).max(polled)
-        })
-    }
-}
-
-/// Whether `fd` is readable, as a poll that does not wait says.
-fn readable(fd: impl AsFd) -> bool {
-    use crate::poll::{Events, PollFd, poll};
-    let fd = fd.as_fd();
-    let mut fds = [PollFd::new(&fd, Events::IN)];
-    poll(&mut fds, Some(std::time::Duration::ZERO)).is_ok_and(|n| n > 0)
-        && fds.iter().any(|fd| fd.revents().intersects(Events::IN))
-}
 
 impl AsFd for Master {
     fn as_fd(&self) -> BorrowedFd<'_> {
@@ -248,14 +194,13 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
     #[cfg(target_os = "macos")]
     let master = Master(
         master,
-        name,
         slave
             .try_clone()
             .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
             .map_err(at("holding the PTY slave"))?,
     );
     #[cfg(not(target_os = "macos"))]
-    let master = Master(master, name);
+    let master = Master(master);
     Ok((master, Slave(slave)))
 }
 
@@ -527,24 +472,6 @@ mod tests {
             .map_err(|e| e.to_string())?;
         assert_eq!(crate::io::read(&master, &mut buffer), Ok(3));
         assert_eq!(buffer.get(..3), Some(&b"out"[..]));
-        Ok(())
-    }
-
-    /// Keys written to the master are counted at once, though on Linux they
-    /// have yet to be moved on to the slave; read, they are not.
-    #[test]
-    fn keys_in_transit_are_waiting() -> std::result::Result<(), String> {
-        let (master, slave) = open(size()).map_err(|e| e.to_string())?;
-        let mut modes = terminal::attributes(&slave).map_err(|e| e.to_string())?;
-        modes.make_raw();
-        terminal::set_attributes(&slave, &modes).map_err(|e| e.to_string())?;
-        for _ in 0..100 {
-            assert!(!master.keys_unread());
-            assert_eq!(crate::io::write(&master, b"keys"), Ok(4));
-            assert_eq!(master.keys_waiting(), 4);
-            let mut buffer = [0u8; 8];
-            assert_eq!(crate::io::read(&slave, &mut buffer), Ok(4));
-        }
         Ok(())
     }
 

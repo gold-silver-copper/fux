@@ -7,11 +7,11 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// A probe's kept setup, as `probe.rs` writes it: rows, columns, history,
-/// prints and the features' places in `Feature::ALL`.
+/// A probe's kept setup, as `probe.rs` writes it: rows, columns, history
+/// and the features' places in `Feature::ALL`.
 fn parser(setup: &str) -> Result<fux_vt::Parser, String> {
     let words: Vec<&str> = setup.split_whitespace().collect();
-    let [rows, cols, history, prints, rest @ ..] = words.as_slice() else {
+    let [rows, cols, history, rest @ ..] = words.as_slice() else {
         return Err(format!("not a probe's setup: {setup:?}"));
     };
     let number = |w: &str| w.parse::<usize>().map_err(|e| format!("{w:?}: {e}"));
@@ -28,10 +28,7 @@ fn parser(setup: &str) -> Result<fux_vt::Parser, String> {
     }
     let options: fux_vt::Options = features.into_iter().collect();
     let size = fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())?;
-    let mut parser =
-        fux_vt::Parser::with_options(size, number(history)?, options).map_err(|e| e.to_string())?;
-    parser.record_prints(*prints == "true");
-    Ok(parser)
+    fux_vt::Parser::with_options(size, number(history)?, options).map_err(|e| e.to_string())
 }
 
 /// The longest call over `input`, fed to a parser of `setup`: each of its
@@ -109,17 +106,17 @@ mod tests {
     /// input is fed and timed; a setup that is not one is refused.
     #[test]
     fn a_kept_probe_is_fed_again_as_it_was_set_up() -> Result<(), String> {
-        let parser = super::parser("50 200 8388608 true 0,1,2\n")?;
+        let parser = super::parser("50 200 8388608 0,1,2\n")?;
         assert_eq!(
             parser.screen().size(),
             fux_vt::Size::new(50, 200).map_err(|e| e.to_string())?
         );
         let mut input = 10_000u64.to_le_bytes().to_vec();
         input.extend([b'x'; 10_000]);
-        assert!(super::longest("4 10 0 false", &input)? > std::time::Duration::ZERO);
-        assert!(super::longest("4 10 0 false", input.get(..100).unwrap_or_default()).is_err());
+        assert!(super::longest("4 10 0", &input)? > std::time::Duration::ZERO);
+        assert!(super::longest("4 10 0", input.get(..100).unwrap_or_default()).is_err());
         assert!(super::parser("50 200").is_err());
-        assert!(super::parser("50 200 0 true 9999").is_err());
+        assert!(super::parser("50 200 0 9999").is_err());
         Ok(())
     }
 }

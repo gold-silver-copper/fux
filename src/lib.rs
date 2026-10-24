@@ -6,14 +6,12 @@ pub use fux_vt::keys;
 pub use fux_vt::keys::{decode, encode};
 pub mod act;
 pub mod capture;
-pub mod classify;
 pub mod client;
 pub mod code;
 pub mod command;
 pub mod config;
 pub mod copy;
 pub mod door;
-pub mod echo;
 pub mod events;
 pub mod help;
 pub mod id;
@@ -22,13 +20,11 @@ pub mod json;
 pub mod keymap;
 pub mod layout;
 pub mod log;
-pub mod marks;
 pub mod outer;
 pub mod overlay;
 pub mod pane;
 pub mod process;
 pub mod protocol;
-pub mod ready;
 pub mod render;
 pub mod screens;
 pub mod script;
@@ -125,7 +121,7 @@ pub fn main() -> ExitCode {
     }
     let mut stdout = std::io::stdout();
     let status = match args.and_then(|args| script::main(&args, &mut stdout)) {
-        Ok(status) => status,
+        Ok(()) => 0,
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");
