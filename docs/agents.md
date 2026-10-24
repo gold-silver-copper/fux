@@ -26,6 +26,7 @@ change means done is yours to say (recipes below).
 ```sh
 fux opts str web name 100 30 size str ./app program str --fast arg run  # start: %2 0.1.0.0
 fux %2 str y text str Enter key send-keys      # keys: %2 0.57.0.3, its version before them
+fux %2 str 'a long prompt' paste send-keys     # a paste, bracketed if the program asked
 fux %2 str 0.57.0.3 changed wait               # until it differs: %2 0.61.0.3 screen
 fux %2 wait                                    # until it differs from now's
 fux %2 str 0.61.0.3 changed 600 timeout wait   # 600s at most (else 30, the server's wait-seconds)

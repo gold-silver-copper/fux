@@ -14,6 +14,15 @@ def run(bin_, e, *args):
     return subprocess.run([bin_, *args], env=e, capture_output=True, text=True, timeout=120)
 
 
+def until_text(bin_, e, answer, text, secs=30):
+    """From an action's answer (`%2 VERSION`), waits for each change until
+    the pane's history holds `text`: the pane."""
+    pane, version = answer.split()[:2]
+    while text not in run(bin_, e, pane, "all-history", "capture").stdout:
+        version = run(bin_, e, pane, "str", version, "changed", str(secs), "timeout", "wait").stdout.split()[1]
+    return pane
+
+
 def rss(pid):
     for line in open(f"/proc/{pid}/status"):
         if line.startswith("VmRSS:"):
@@ -46,10 +55,9 @@ def measure(bin_):
     pid = server()
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg",
-                  "str", "59999 ", "wait-text", "120", "timeout", "run")
+    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "run")
     first = started.stdout[:60] + started.stderr[:200]
-    pane = started.stdout.split()[0]
+    pane = until_text(bin_, e, started.stdout, "59999 ", 120)
     kept = run(bin_, e, pane, "opts", "all-history", "capture").stdout.count("\n")
     time.sleep(1)
     full = rss(pid)

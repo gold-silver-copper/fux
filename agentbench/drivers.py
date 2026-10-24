@@ -340,43 +340,21 @@ class Driver:
 # ---------------------------------------------------------------------- fux
 
 
-class _Later:
-    """A pane fux starts when the driver knows what to wait for after: the
-    action that makes it waits, so its id comes from that answer."""
-
-    def __init__(self, driver):
-        self.driver, self.id = driver, None
-
-    def __str__(self):
-        if self.id is None:
-            self.driver.flush()
-        return self.id
-
-    __repr__ = __str__
-
-    def __eq__(self, other):
-        return str(self) == str(other)
-
-    def __hash__(self):
-        return hash(str(self))
-
-
 class Fux(Driver):
     """fux, driven with fuxth: each call one program, `str` before each
-    text. An action answers at once and a wait is a word you say, armed on
-    the action it follows: so the driver holds an action (start, keys, a
-    click, a split, a respawn) until it knows whether a wait comes next, and
-    sends both in one call (`%2 str ok: wait-text str quit text str Enter key
-    send-keys`). Anything else sends a held action first, alone."""
+    text. Every action answers its pane and the pane's version from just
+    before it acted (`%2 0.57.0.3`); the one wait, `str V changed wait`,
+    returns once the version differs from V or the program ended. What
+    "done" means is the driver's to judge, as `fux help-agents` says: read
+    the screen after each change, the version held always from before."""
     name = "fux"
 
     def __init__(self, work, env, binary):
         super().__init__(work, env)
         self.bin = binary
         self.server = None
-        # The held action: (pane it acts on, or the _Later it makes; words
-        # before its wait; the word that acts).
-        self.pending = None
+        # Each pane's version from just before the last action on it.
+        self.versions = {}
 
     def fux(self, *words, check=True, timeout=120):
         return self.run([self.bin, *words], check=check, timeout=timeout)
@@ -394,7 +372,6 @@ class Fux(Driver):
             time.sleep(0.02)
 
     def stop(self):
-        self.flush()
         self.fux("force-kill-server", check=False)
         if self.server:
             try:
@@ -402,44 +379,9 @@ class Fux(Driver):
             except subprocess.TimeoutExpired:
                 self.server.kill()
 
-    # ------------------------------------------------- held actions
-
-    def hold(self, pane, words, act, makes=False):
-        """Holds an action on a pane, or one that `makes` it. Keys held are
-        not joined with the next keys: written together, a program may read
-        them as a paste, or Escape and the next key as one key."""
-        self.flush()
-        self.pending = (pane, words if makes else self.pane(pane) + words, act)
-
-    def act(self, cond, timeout, after=()):
-        """Sends the held action with the wait words `cond`: its output."""
-        pane, words, act = self.pending
-        self.pending = None
-        out = self.fux(*words, *cond, str(timeout), "timeout", act, *after,
-                       check=False, timeout=timeout + 10)
-        if isinstance(pane, _Later):
-            if not out.stdout.strip():
-                raise RuntimeError(f"fux {act}: {out.returncode}: {out.stderr.strip()[:300]}")
-            first = out.stdout.split()[0]
-            pane.id = json.loads(out.stdout)["pane"] if first.startswith("{") else first
-        return out
-
-    def flush(self):
-        """Sends the held action alone: it answers at once."""
-        if not self.pending:
-            return
-        pane, words, act = self.pending
-        self.pending = None
-        out = self.fux(*words, act)
-        if isinstance(pane, _Later):
-            pane.id = out.stdout.split()[0]
-
-    def held_for(self, pane):
-        """Whether the held action is on this pane (or makes it)."""
-        return self.pending is not None and self.pending[0] is pane
-
-    def pane(self, pane):
-        return ["str", str(pane), "pane"]
+    @staticmethod
+    def pane(pane):
+        return ["str", pane, "pane"]
 
     @staticmethod
     def keyed(keys):
@@ -455,157 +397,132 @@ class Fux(Driver):
                 words += ["str", k, "text"]
         return words
 
-    @staticmethod
-    def checked(out):
-        """A wait's output, or why it failed: the program exited first (3),
-        its pane closed (4), the time ran out (124), or a mistake (1)."""
-        if out.returncode == 0:
-            return out.stdout
-        why = out.stderr.strip() or out.stdout.strip()
-        if out.returncode in (3, 4):
-            raise Exited(why)
+    def act(self, *words):
+        """An action: its pane, whose version from before it is kept."""
+        pane, version = self.fux(*words).stdout.split()[:2]
+        self.versions[pane] = version
+        return pane
+
+    # ------------------------------------------------- waiting
+
+    def changed(self, pane, version, timeout):
+        """One wait for the pane's version to differ from `version`: the
+        answer's words (`%2 0.61.0.3 screen`, `… exited 3`), or None when
+        nothing changed in time (124)."""
+        out = self.fux(*self.pane(pane), "str", version, "changed", str(max(1, int(timeout))),
+                       "timeout", "wait", check=False, timeout=timeout + 10)
         if out.returncode == 124:
-            raise Timeout(why)
-        raise RuntimeError(f"fux: {out.returncode}: {why[:300]}")
+            return None
+        if out.returncode == 4:
+            raise Exited(out.stderr.strip())
+        if out.returncode != 0:
+            raise RuntimeError(f"fux wait: {out.returncode}: {out.stderr.strip()[:300]}")
+        return out.stdout.split()
 
-    def wait(self, pane, *cond, timeout=10, after=()):
-        """Waits for any of `cond`: armed on the action held for the pane,
-        else from now."""
-        if self.held_for(pane):
-            return self.checked(self.act(cond, timeout, after))
-        self.flush()
-        out = self.fux(*self.pane(pane), *cond, str(timeout), "timeout", "wait", *after,
-                       check=False, timeout=timeout + 10)
-        return self.checked(out)
+    def since(self, pane):
+        """The version to wait from: the last action's, else now's."""
+        if pane not in self.versions:
+            self.versions[pane] = self.fux(*self.pane(pane), "str", "version", "get").stdout.strip()
+        return self.versions[pane]
 
-    def wait_or_shown(self, pane, cond, shown, timeout=10, history=False):
-        """A wait for what may have come before it: `shown(screen)`, read
-        first unless an action is held to arm the wait on, and read again
-        if the wait fails, for what came between the read and the wait."""
-        if not self.held_for(pane):
-            found = shown(self.screen(pane, history))
-            if found:
-                return found
-        try:
-            return self.wait(pane, *cond, timeout=timeout)
-        except (Exited, Timeout):
-            found = shown(self.screen(pane, history))
-            if found:
-                return found
-            raise
-
-    # ------------------------------------------------- the API
-
-    def spawn(self, argv, size=None, name=None):
-        words = ["opts"]
-        if name:
-            words += ["str", name, "name"]
-        if size:
-            words += [str(size[0]), str(size[1]), "size"]
-        words += ["str", argv[0], "program"]
-        for a in argv[1:]:
-            words += ["str", a, "arg"]
-        p = _Later(self)
-        self.hold(p, words, "run", makes=True)
-        return p
-
-    def shell(self, size=None):
-        return self.spawn(["bash"], size=size)
-
-    def keys(self, pane, *keys):
-        self.hold(pane, self.keyed(keys), "send-keys")
-
-    def text(self, pane, text):
-        self.hold(pane, ["str", text, "text"], "send-keys")
-
-    def paste(self, pane, text):
-        self.hold(pane, ["str", text, "paste"], "send-keys")
-
-    def raw(self, pane, data):
-        self.text(pane, data)
-
-    def mouse(self, pane, button, row, col):
-        kind = {0: "click", 64: "wheel-up", 65: "wheel-down"}[button]
-        self.hold(pane, ["str", kind, str(row), str(col), "mouse"], "send-mouse")
-
-    def screen(self, pane, history=False):
-        self.flush()
-        return self.fux(*self.pane(pane), *(["all-history"] if history else []), "capture").stdout
-
-    def ansi(self, pane):
-        self.flush()
-        return self.fux(*self.pane(pane), "styles", "capture").stdout
-
-    def state(self, pane):
-        self.flush()
-        return json.loads(self.fux(*self.pane(pane), "capture", "json").stdout)
-
-    def exit_status(self, pane):
-        s = self.state(pane)
-        if s["exited"] is not None:
-            return s["exited"]
-        return 128 + s["signal"] if s.get("signal") else None
+    def until(self, pane, test, timeout=10):
+        """Waits until `test()` gives a value, asked again after each change
+        to the pane; the program's end ends it (Exited) unless what came
+        before the end passes."""
+        end = time.time() + timeout
+        version = self.since(pane)
+        while True:
+            value = test()
+            if value:
+                return value
+            left = end - time.time()
+            if left <= 0:
+                raise Timeout(f"{pane} unchanged at {version}")
+            answer = self.changed(pane, version, left)
+            if answer is None:
+                continue
+            version = self.versions[pane] = answer[1]
+            if "exited" in answer or "killed" in answer:
+                value = test()
+                if value:
+                    return value
+                raise Exited(" ".join(answer))
 
     def wait_text(self, pane, text, timeout=10):
-        return self.wait_or_shown(pane, ["str", text, "wait-text"], lambda s: text in s, timeout)
+        return self.until(pane, lambda: text in self.screen(pane), timeout)
 
     def wait_history(self, pane, text, timeout=10):
-        return self.wait_or_shown(pane, ["str", text, "wait-text"], lambda s: text in s, timeout,
-                                  history=True)
+        return self.until(pane, lambda: text in self.screen(pane, history=True), timeout)
 
     def wait_gone(self, pane, text, timeout=10):
-        """No word waits for a text to go: each change the program writes,
-        then the screen read again."""
-        end = time.time() + timeout
-        while text in self.screen(pane):
-            left = int(end - time.time())
-            if left < 1:
-                raise Timeout(f"{text!r} still shown")
-            try:
-                self.wait(pane, "wait-change", timeout=1)
-            except Timeout:
-                pass
-        return True
+        return self.until(pane, lambda: text not in self.screen(pane), timeout)
+
+    def wait_more(self, pane, text, before, timeout=10):
+        """Until the history holds `text` more times than `before`: the
+        reply's, not what was there before the input."""
+        return self.until(pane, lambda: self.screen(pane, history=True).count(text) > before, timeout)
 
     def wait_idle(self, pane, ms=300, timeout=10):
-        """It writes nothing for a while (a second at least: fux counts
-        whole seconds), or it exits."""
+        """No change for a while (a second at least: fux counts whole
+        seconds), or the program ended."""
         quiet = max(1, -(-ms // 1000))
-        return self.wait(pane, "wait-exit", str(quiet), "wait-quiet", timeout=timeout)
+        end = time.time() + timeout
+        version = self.since(pane)
+        while time.time() < end:
+            answer = self.changed(pane, version, quiet)
+            if answer is None or "exited" in answer or "killed" in answer:
+                return True
+            version = self.versions[pane] = answer[1]
+        raise Timeout(f"{pane} never quiet for {quiet}s")
 
     def wait_exit(self, pane, timeout=10):
         """The program's status: `exited`, or 128 and the signal that killed it."""
-        s = json.loads(self.wait(pane, "wait-exit", timeout=timeout, after=["json"]))
-        return s["exited"] if s.get("exited") is not None else 128 + s["signal"]
+        end = time.time() + timeout
+        version = self.since(pane)
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                raise Timeout(f"{pane} still running")
+            answer = self.changed(pane, version, left)
+            if answer is None:
+                continue
+            version = self.versions[pane] = answer[1]
+            if "exited" in answer or "killed" in answer:
+                return self.exit_status(pane)
 
     def wait_bell(self, pane, timeout=10):
-        return self.wait(pane, "wait-bell", timeout=timeout)
+        """The version's third count grows."""
+        rung = int(self.since(pane).split(".")[2])
+        return self.until(pane, lambda: int(self.since_now(pane).split(".")[2]) > rung, timeout)
+
+    def since_now(self, pane):
+        return self.fux(*self.pane(pane), "str", "version", "get").stdout.strip()
 
     def send_and_wait_text(self, pane, keys, text, timeout=10):
-        self.hold(pane, self.keyed(keys), "send-keys")
-        return self.wait(pane, "str", text, "wait-text", timeout=timeout)
+        before = self.screen(pane, history=True).count(text)
+        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+        return self.wait_more(pane, text, before, timeout)
 
     def send_wait(self, pane, keys, *until, timeout=20):
-        """Sends keys and waits, the wait armed on them; the screen after.
+        """Sends keys and waits from their version; the screen after.
         `until` is old-style: `--wait-idle MS`, `--wait-text T`, `--wait-exit`."""
-        cond = []
-        it = iter(until)
-        for flag in it:
-            if flag == "--wait-idle":
-                cond += [str(max(1, -(-int(next(it)) // 1000))), "wait-quiet"]
-            elif flag == "--wait-text":
-                cond += ["str", next(it), "wait-text"]
-            elif flag == "--wait-exit":
-                cond += ["wait-exit"]
-        self.hold(pane, self.keyed(keys), "send-keys")
-        self.wait(pane, *cond, timeout=timeout)
+        flags = dict(zip(until[::2], until[1::2])) if "--wait-exit" not in until else {"--wait-exit": None}
+        if "--wait-text" in flags:
+            self.send_and_wait_text(pane, keys, flags["--wait-text"], timeout)
+        else:
+            self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+            if "--wait-exit" in flags:
+                self.wait_exit(pane, timeout)
+            else:
+                self.wait_idle(pane, int(flags.get("--wait-idle", 300)), timeout)
         return self.screen(pane)
 
     def click_and_wait(self, pane, row, col, text, timeout=10):
-        """Clicks, and waits for the text the click brings: the line it is
-        on, the answer's second line."""
+        """Clicks, and waits for the text the click brings: the line it is on."""
+        before = self.screen(pane, history=True).count(text)
         self.mouse(pane, 0, row, col)
-        return self.wait(pane, "str", text, "wait-text", timeout=timeout).partition("\n")[2].strip()
+        self.wait_more(pane, text, before, timeout)
+        return [l for l in self.screen(pane).split("\n") if text in l][-1].strip()
 
     def run_command(self, pane, cmd, timeout=15):
         """A shell command, waited for as `fux help-agents` says to without
@@ -614,16 +531,14 @@ class Fux(Driver):
         output is what the history holds between its two markers."""
         self.commands += 1
         n = self.commands
-        # The status goes before the end's marker: written once it is found.
-        self.hold(pane, ["str", f"echo __BE''GIN{n}; {cmd}; echo $? __DO''NE{n}", "text",
-                         "str", "Enter", "key"], "send-keys")
-        out = self.wait(pane, "str", f"__DONE{n}", "wait-text", timeout=timeout)
-        done = re.compile(rf"(\d+) __DONE{n}$")
-        status = done.search(out.split("\n")[1].rstrip()).group(1)
+        done = re.compile(rf"^(\d+) __DONE{n}$", re.M)
+        self.act(*self.pane(pane), "str", f"echo __BE''GIN{n}; {cmd}; echo $? __DO''NE{n}", "text",
+                 "str", "Enter", "key", "send-keys")
+        self.until(pane, lambda: done.search(self.screen(pane, history=True)), timeout)
         rows = [l.rstrip() for l in self.screen(pane, history=True).split("\n")]
-        end = max(i for i, l in enumerate(rows) if done.search(l))
+        end = max(i for i, l in enumerate(rows) if done.match(l))
         begin = max(i for i, l in enumerate(rows[:end]) if l == f"__BEGIN{n}")
-        return "\n".join(rows[begin + 1:end]), status
+        return "\n".join(rows[begin + 1:end]), done.match(rows[end]).group(1)
 
     def wait_first_exit(self, panes, timeout=15):
         """The name of the first of several panes whose program exits."""
@@ -637,48 +552,77 @@ class Fux(Driver):
 
     def wait_any_text(self, pane, texts, timeout=15):
         """Which of several texts the pane shows first."""
-        cond = [w for t in texts for w in ("str", t, "wait-text")]
-        shown = lambda s: next((t for t in texts if t in s), None)
-        if not self.held_for(pane):
-            found = shown(self.screen(pane))
-            if found:
-                return found
-        try:
-            return json.loads(self.wait(pane, *cond, timeout=timeout, after=["json"]))["text"]
-        except (Exited, Timeout):
-            found = shown(self.screen(pane))
-            if found:
-                return found
-            raise
+        return self.until(pane, lambda: next((t for t in texts if t in self.screen(pane)), None), timeout)
+
+    # ------------------------------------------------- the rest
+
+    def spawn(self, argv, size=None, name=None):
+        words = ["opts"]
+        if name:
+            words += ["str", name, "name"]
+        if size:
+            words += [str(size[0]), str(size[1]), "size"]
+        words += ["str", argv[0], "program"]
+        for a in argv[1:]:
+            words += ["str", a, "arg"]
+        return self.act(*words, "run")
+
+    def shell(self, size=None):
+        return self.spawn(["bash"], size=size)
+
+    def keys(self, pane, *keys):
+        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+
+    def text(self, pane, text):
+        self.act(*self.pane(pane), "str", text, "text", "send-keys")
+
+    def paste(self, pane, text):
+        self.act(*self.pane(pane), "str", text, "paste", "send-keys")
+
+    def raw(self, pane, data):
+        self.text(pane, data)
+
+    def mouse(self, pane, button, row, col):
+        kind = {0: "click", 64: "wheel-up", 65: "wheel-down"}[button]
+        self.act(*self.pane(pane), "str", kind, str(row), str(col), "mouse", "send-mouse")
+
+    def screen(self, pane, history=False):
+        return self.fux(*self.pane(pane), *(["all-history"] if history else []), "capture").stdout
+
+    def ansi(self, pane):
+        return self.fux(*self.pane(pane), "styles", "capture").stdout
+
+    def state(self, pane):
+        return json.loads(self.fux(*self.pane(pane), "capture", "json").stdout)
+
+    def exit_status(self, pane):
+        s = self.state(pane)
+        if s["exited"] is not None:
+            return s["exited"]
+        return 128 + s["signal"] if s.get("signal") else None
 
     def cursor_hidden(self, pane):
         return not self.state(pane)["cursor_visible"]
 
     def main_screen(self, pane):
-        self.flush()
         return self.fux(*self.pane(pane), "main-screen", "all-history", "capture").stdout
 
     def respawn(self, pane):
-        self.hold(pane, [], "respawn")
+        self.act(*self.pane(pane), "respawn")
 
     def resize(self, pane, cols, rows):
-        self.flush()
         self.fux(*self.pane(pane), "tab", str(cols), str(rows), "resize")
 
     def resize_pct(self, pane, pct):
-        self.flush()
         self.fux(*self.pane(pane), str(pct), "percent", "resize-x")
 
     def split(self, pane, argv):
         words = [*self.pane(pane), "horizontal", "str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
-        q = _Later(self)
-        self.hold(q, words, "split", makes=True)
-        return q
+        return self.act(*words, "split")
 
     def kill(self, pane):
-        self.flush()
         self.fux(*self.pane(pane), "kill")
 
     def size_of(self, pane):
@@ -686,17 +630,14 @@ class Fux(Driver):
         return s["cols"], s["rows"]
 
     def find(self, name):
-        self.flush()
         return self.fux("str", name, "pane").stdout.strip()
 
     def find_title(self, title):
-        self.flush()
         # Every pane `run` starts is in workspace agent.
         tabs = json.loads(self.fux("str", "agent", "workspace", "str", "tabs", "get").stdout)
         return next(p["id"] for t in tabs for p in t["panes"] if p["title"] == title)
 
     def attach_argv(self):
-        self.flush()
         return [self.bin]
 
 

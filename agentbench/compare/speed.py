@@ -29,26 +29,36 @@ def run(bin_, e, *args):
     return subprocess.run([bin_, *args], env=e, capture_output=True, text=True, timeout=120)
 
 
+def until_text(bin_, e, answer, text, secs=30):
+    """From an action's answer (`%2 VERSION`), waits for each change until
+    the pane's history holds `text`: the pane."""
+    pane, version = answer.split()[:2]
+    while text not in run(bin_, e, pane, "all-history", "capture").stdout:
+        version = run(bin_, e, pane, "str", version, "changed", str(secs), "timeout", "wait").stdout.split()[1]
+    return pane
+
+
 def jobs(bin_, tag):
     e = env(tag)
     out = {}
     out["start"] = ms(lambda: run(bin_, e, "start"))
     out["ls (round trip)"] = ms(lambda: run(bin_, e, "ls"))
-    pane = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
-               "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout.split()[0]
-    out["wait for a text (0.2s program)"] = ms(lambda: run(bin_, e, pane, "opts", "str", "READY", "wait-text", "wait"))
+    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
+                  "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout
+    pane = started.split()[0]
+    out["wait for a text (0.2s program)"] = ms(lambda: until_text(bin_, e, started, "READY"))
     out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "opts", "capture"))
     out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "capture", "json"))
     def fan():
         for i in range(30):
-            run(bin_, e, "opts", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c", "arg",
-                "str", f"echo up-{i}; exec cat", "arg", "str", f"up-{i}", "wait-text", "run")
+            until_text(bin_, e, run(bin_, e, "opts", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c",
+                                    "arg", "str", f"echo up-{i}; exec cat", "arg", "run").stdout, f"up-{i}")
     out["30 panes started, each waited for its text"] = ms(fan)
     command = "echo 'the quick brown fox jumps over 42'"  # 40 characters
     assert len(command) == 40
     sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split()[0]
     out["40-char command + Enter, marked bash"] = ms(lambda: run(bin_, e, sh, "keys", "str", command, "text", "str", "Enter", "key", "send-keys"))
-    py = run(bin_, e, "opts", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "str", ">>>", "wait-text", "run").stdout.split()[0]
+    py = until_text(bin_, e, run(bin_, e, "opts", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "run").stdout, ">>>")
     line = "x = 'the quick brown fox jumps over 42'"
     line = line + " " * (40 - len(line))
     out["40-char line + Enter, python REPL (raw)"] = ms(lambda: run(bin_, e, py, "keys", "str", line, "text", "str", "Enter", "key", "send-keys"))
