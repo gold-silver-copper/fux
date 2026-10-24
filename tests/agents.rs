@@ -86,7 +86,9 @@ fn later_hook(shell: &str) -> &'static str {
     match shell {
         "bash" => "after() { echo \"hook saw $?\"; }\nPROMPT_COMMAND=after\n",
         "zsh" => "after() { echo \"hook saw $?\" }\nprecmd_functions=(after)\n",
-        _ => "function after --on-event fish_postexec; echo \"hook saw $status\"; end\n",
+        // At its prompt: fish runs its handlers of one event in no order
+        // it promises, and the marks end a command at fish_postexec.
+        _ => "function after --on-event fish_prompt; echo \"hook saw $status\"; end\n",
     }
 }
 
@@ -296,22 +298,26 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
         assert_eq!(output, "one\n");
         server.shows(pane, "hook saw 1")?;
-        // An empty line, a comment and a syntax error run nothing: the
-        // next command is the one that ends. Interactive zsh, unless told
-        // otherwise, runs `#` as a command.
+        // An empty line and a syntax error run nothing: the next command
+        // is the one that ends. A comment runs nothing in bash; interactive
+        // zsh runs `#` as a command (unless interactive_comments), and fish
+        // marks a comment line as a command.
         let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
-        let nothings: &[&str] = match pane {
-            "zsh" => &["", ")"],
-            _ => &["", "# nothing", ")"],
-        };
-        for nothing in nothings {
+        let mut ended = Vec::new();
+        for nothing in ["", "# nothing", ")"] {
             let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
             line_done(&server, pane, "echo two")?;
             let after = done(&server.version(pane)?);
-            let said = format!("{pane}: {nothing:?} ended a command");
-            assert_eq!(after, before.map(|d| d.saturating_add(1)), "{said}");
+            if after != before.map(|d| d.saturating_add(1)) {
+                ended.push(nothing);
+            }
         }
+        let comment: &[&str] = match pane {
+            "zsh" | "fish" => &["# nothing"],
+            _ => &[],
+        };
+        assert_eq!(ended, comment, "{pane}: the lines that ended a command");
         assert_eq!(status(pane)?, "0\n");
         Ok(())
     };
