@@ -770,13 +770,22 @@ impl Pane {
     }
 
     /// Where it stands now (`Version`).
-    pub fn version(&self) -> crate::command::Version {
-        crate::command::Version {
+    pub fn counts(&self) -> crate::command::Counts {
+        crate::command::Counts {
             starts: self.starts,
             screen: self.screen().version(),
             bells: self.alerts.rung,
             done: self.screen().commands().finished,
-            ended: u64::from(self.process.exit_status().is_some()),
+            ended: self.process.exit_status().is_some(),
+        }
+    }
+
+    /// Its version in the server run `run`.
+    pub fn version(&self, run: crate::command::Run) -> crate::command::Version {
+        crate::command::Version {
+            pane: self.id,
+            counts: self.counts(),
+            run,
         }
     }
 

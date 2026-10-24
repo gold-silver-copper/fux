@@ -31,9 +31,10 @@ fn named(rt: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Result<Ou
     })
 }
 
-/// The pane an answer names: `run` answers `%N STATE` and what came.
+/// The pane an answer names: an action answers its version,
+/// `%N:COUNTS:RUN`.
 fn first_word(answer: &str) -> &str {
-    answer.split_whitespace().next().unwrap_or_default()
+    answer.split(':').next().unwrap_or_default().trim()
 }
 
 fn private(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -250,8 +251,8 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "send-keys",
     ])?;
     for (pane, line) in [a, b].into_iter().zip(both.lines()) {
-        let since = line.strip_prefix(&format!("{pane} ")).ok_or(both.clone())?;
-        server.until(pane, since, |c| c.contains("\nboth-42"))?;
+        assert!(line.starts_with(&format!("{pane}:")), "{both}");
+        server.until(pane, line, |c| c.contains("\nboth-42"))?;
     }
     Ok(())
 }

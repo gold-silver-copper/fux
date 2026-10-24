@@ -173,7 +173,7 @@ impl Made {
         ];
         Reply {
             ids,
-            ..acted([(self.pane, version)])
+            ..acted([version])
         }
     }
 }
@@ -412,8 +412,9 @@ pub struct Session {
     /// The running fux, a started pane's `FUX`, if it can be had.
     exe: Option<PathBuf>,
     /// Which run of a server this is: its panes' `FUX_SERVER`, by which a
-    /// command from a pane tells whether the pane is this server's.
-    pub server_id: String,
+    /// command from a pane tells whether the pane is this server's, and
+    /// every version's, by which a wait tells its own.
+    pub run: command::Run,
     pub outbox: Vec<Outgoing>,
     /// Closed panes' programs: a pane respawned twice in its grace has two.
     pub dying: Vec<Dying>,
@@ -564,7 +565,10 @@ impl Reach<'_> {
     fn request(&self, request: &Request) -> Result<(), Error> {
         match request {
             Request::Do(command) => self.command(command),
-            Request::Wait(target, _) => self.any(target),
+            Request::Wait(wait) => match wait.since {
+                command::Since::Now(target) => self.any(&target),
+                command::Since::Version(version) => self.pane(version.pane),
+            },
             Request::Events(target, _) => target.as_ref().map_or(Ok(()), |t| self.any(t)),
             Request::Grant(..) | Request::Revoke(_) => self.refuse("another grant"),
         }
@@ -668,22 +672,22 @@ fn bad_value(usage: command::Usage) -> Error {
 }
 
 /// The answer of an action on `panes` (keys, a mouse event, a signal, a
-/// program started): each pane it went to and its version before it
-/// acted, or as it starts, a line each (`%2 0.57.0.3.0`), and as JSON; what
-/// a wait for its effect waits to differ from.
-fn acted(panes: impl IntoIterator<Item = (PaneId, command::Version)>) -> Reply {
+/// program started): each pane's version before it acted, or as it
+/// starts, a line each (`%2:0.57.0.3.0:RUN`), and as JSON; what a wait for
+/// its effect waits to differ from.
+fn acted(versions: impl IntoIterator<Item = command::Version>) -> Reply {
     let mut reply = Reply::default();
-    for (pane, version) in panes {
+    for version in versions {
         let fields = vec![
-            ("pane", Json::str(pane.to_string())),
+            ("pane", Json::str(version.pane.to_string())),
             ("version", Json::str(version.to_string())),
             ("status", Json::int(0)),
         ];
-        reply.text.push_str(&format!("{pane} {version}\n"));
+        reply.text.push_str(&format!("{version}\n"));
         reply
             .json
             .push_str(&format!("{}\n", Json::Object(fields).render()));
-        reply.ids.push(AnyRef::Pane(pane));
+        reply.versions.push(version);
     }
     reply
 }
@@ -713,12 +717,7 @@ fn failure(error: Error, origin: &Origin) -> Reply {
 }
 
 impl Session {
-    pub fn new(config: Config, socket: PathBuf, launch: bool) -> Self {
-        // The process and the moment it started: no two runs share both.
-        let since = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        let server_id = format!("{}-{since:x}", std::process::id());
+    pub fn new(config: Config, socket: PathBuf, launch: bool, run: command::Run) -> Self {
         Self {
             workspaces: Vec::new(),
             panes: BTreeMap::new(),
@@ -727,7 +726,7 @@ impl Session {
             buffers: VecDeque::new(),
             launch: launch.then_some(socket),
             exe: std::env::current_exe().ok(),
-            server_id,
+            run,
             outbox: Vec::new(),
             dying: Vec::new(),
             last_colours: crate::outer::Colours::default(),
@@ -886,7 +885,7 @@ impl Session {
         let mut vars = vec![
             ("FUX_PANE", id.to_string().into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
-            ("FUX_SERVER", self.server_id.clone().into()),
+            ("FUX_SERVER", self.run.to_string().into()),
         ];
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
         vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
@@ -1126,6 +1125,11 @@ impl Session {
         if let Ok(id) = text.parse() {
             return self.stands_for(id, text, kind);
         }
+        // A version names its pane: one of this server run's.
+        if let Ok(version) = text.parse::<command::Version>() {
+            self.counts_since(version)?;
+            return self.stands_for(AnyRef::Pane(version.pane), text, kind);
+        }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id)),
             Kind::Pane => {
@@ -1196,19 +1200,17 @@ impl Session {
     fn send_keys(&mut self, target: AnyRef, inputs: &[Input]) -> Result<Reply, Error> {
         // Every pane must take them, or none is sent them: each one's are
         // made and fit first.
-        let mut each = Vec::new();
+        let (run, mut each) = (self.run, Vec::new());
         for id in self.panes_of(target)? {
             let pane = self.live_pane_mut(id)?;
             let bytes = bytes(pane, inputs);
             pane.input.fits(bytes.len())?;
-            each.push((id, pane.version(), bytes));
+            each.push((pane.version(run), bytes));
         }
-        for (id, _, bytes) in &each {
-            self.pane_mut(*id)?.input.push(bytes)?;
+        for (version, bytes) in &each {
+            self.pane_mut(version.pane)?.input.push(bytes)?;
         }
-        Ok(acted(
-            each.into_iter().map(|(id, version, _)| (id, version)),
-        ))
+        Ok(acted(each.into_iter().map(|(version, _)| version)))
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
@@ -2052,9 +2054,9 @@ impl Session {
             None => request,
         };
         let now = Instant::now();
-        let (target, wait) = match request {
+        let wait = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
-            Request::Wait(target, wait) => (target, wait),
+            Request::Wait(wait) => wait,
             Request::Events(target, json) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
                 return Ok(Begun::Events(Box::new(crate::events::Subscription {
@@ -2066,43 +2068,49 @@ impl Session {
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
             Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
-        let panes = (self.panes_of(target)?.into_iter())
-            .map(|id| self.pane(id))
-            .collect::<Result<Vec<_>, _>>()?;
+        let watches = match wait.since {
+            command::Since::Now(target) => (self.panes_of(target)?.into_iter())
+                .map(|id| Ok((id, self.pane(id)?.counts())))
+                .collect::<Result<Vec<_>, Error>>()?,
+            command::Since::Version(since) => vec![(since.pane, self.counts_since(since)?)],
+        };
         // A wait on no pane would only time out.
-        if panes.is_empty() {
+        if watches.is_empty() {
             return Err(fail(Code::NoPane, "it holds no pane to wait on"));
         }
-        // A version is one pane's.
-        if wait.since.is_some() && panes.len() != 1 {
-            let why = "a version is one pane's: on a tab or workspace, wait from now";
-            return Err(fail(Code::Usage, why));
-        }
-        // A count above the pane's, of the same program (every count grows
-        // while it runs) or a later one: the version is another pane's, or
-        // made up.
-        if let (Some(since), [pane]) = (wait.since, panes.as_slice())
-            && let now = pane.version()
-            && (since.starts > now.starts
-                || since.starts == now.starts
-                    && (since.screen > now.screen
-                        || since.bells > now.bells
-                        || since.done > now.done
-                        || since.ended > now.ended))
-        {
-            let why = format!(
-                "{since} is no version of {}: from another pane, or before a server restart?",
-                pane.id
-            );
-            return Err(fail(Code::BadValue, why));
-        }
         let limit = wait.timeout.unwrap_or(self.config.wait);
-        let waiting = Waiting::new(&panes, wait.since, now, limit);
+        let waiting = Waiting::new(watches, self.run, now, limit);
         // Its answer, if it has one already; else the wait.
         Ok(match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
         })
+    }
+
+    /// The counts a wait from `since` waits to differ from: its own, if it
+    /// is a version of this server run's that its pane has had. A pane of
+    /// this run that is gone closed, as ids are never given twice in one
+    /// run, and the wait says so.
+    fn counts_since(&self, since: command::Version) -> Result<command::Counts, Error> {
+        if since.run != self.run {
+            let why = format!(
+                "{since} is from another server run ({}), not this one ({}): a server since stopped or restored, or another socket's",
+                since.run, self.run
+            );
+            return Err(fail(Code::BadValue, why));
+        }
+        // Within one program every count only grows.
+        if let Some(pane) = self.panes.get(&since.pane)
+            && !pane.counts().had(since.counts)
+        {
+            let why = format!(
+                "{since}: {} never had these counts; it is at {}",
+                since.pane,
+                pane.counts()
+            );
+            return Err(fail(Code::BadValue, why));
+        }
+        Ok(since.counts)
     }
 
     /// A request from a granted socket, if it may run: with no target, one
@@ -2188,7 +2196,7 @@ impl Session {
                 };
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
-                Ok(made.reply(self.pane(made.pane)?.version()))
+                Ok(made.reply(self.pane(made.pane)?.version(self.run)))
             }
             Command::NewTab {
                 target,
@@ -2221,7 +2229,7 @@ impl Session {
                     pane: None,
                 };
                 self.follow(here, made.ws, Some(at));
-                Ok(made.reply(self.pane(made.pane)?.version()))
+                Ok(made.reply(self.pane(made.pane)?.version(self.run)))
             }
             Command::Run {
                 workspace,
@@ -2267,7 +2275,7 @@ impl Session {
                 if let Some(pane) = self.panes.get_mut(&made.pane) {
                     pane.log = log;
                 }
-                Ok(made.reply(self.pane(made.pane)?.version()))
+                Ok(made.reply(self.pane(made.pane)?.version(self.run)))
             }
             &Command::Respawn {
                 target,
@@ -2276,7 +2284,7 @@ impl Session {
                 ref argv,
             } => {
                 self.respawn(target, kill, env.as_slice(), argv, &starting)?;
-                Ok(acted([(target, self.pane(target)?.version())]))
+                Ok(acted([self.pane(target)?.version(self.run)]))
             }
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
@@ -2336,10 +2344,10 @@ impl Session {
             }
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
-                let version = self.pane(target)?.version();
+                let version = self.pane(target)?.version(self.run);
                 fuxix::process::kill_group(group, signal)
                     .map_err(|e| fail(Code::Signal, format!("sending the signal: {e}")))?;
-                Ok(acted([(target, version)]))
+                Ok(acted([version]))
             }
             &Command::Kill { target } => self.kill(target, origin),
             Command::Rename { target, name } => {
@@ -2381,7 +2389,7 @@ impl Session {
                     return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
                 }
                 let copying = self.copying(pane.id);
-                let (text, form) = crate::capture::pane(pane, history, view, copying);
+                let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
                 Ok(Reply {
                     json: form,
                     ..text.into()
@@ -2565,6 +2573,7 @@ impl Session {
     ) -> Result<Reply, Error> {
         use fux_vt::MouseProtocolMode as Asked;
         use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
+        let run = self.run;
         let p = self.live_pane_mut(target)?;
         let size = p.size();
         if row >= size.rows() || col >= size.cols() {
@@ -2635,10 +2644,10 @@ impl Session {
             };
             return Err(fail(Code::Mouse, message));
         }
-        let version = p.version();
+        let version = p.version(run);
         p.input.push(report)?;
         p.mouse_held = held;
-        Ok(acted([(target, version)]))
+        Ok(acted([version]))
     }
 
     /// `split`: a new pane beside `target`, along `axis`, running `start`
@@ -2691,7 +2700,7 @@ impl Session {
             view.zoom = false;
         }
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let version = self.pane(new)?.version();
+        let version = self.pane(new)?.version(self.run);
         Ok(Made { ws, tab, pane: new }.reply(version))
     }
 
@@ -3091,7 +3100,7 @@ impl Session {
                 }),
             ),
         ];
-        fields.extend(crate::capture::state(p, now, self.copying(p.id)));
+        fields.extend(crate::capture::state(p, self.run, now, self.copying(p.id)));
         fields
     }
 
@@ -3131,7 +3140,8 @@ impl Session {
             // change: not the rest of its state (its foreground program's
             // name, argv and cwd).
             (AnyRef::Pane(id), Some("version")) => {
-                (self.panes.get(&id)).map(|p| vec![("version", Json::str(p.version().to_string()))])
+                let version = |p: &Pane| p.version(self.run).to_string();
+                (self.panes.get(&id)).map(|p| vec![("version", Json::str(version(p)))])
             }
             (AnyRef::Pane(id), _) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
             (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now)),
@@ -3453,7 +3463,8 @@ pub(crate) mod testing {
             shell: crate::config::Shell::parse("/bin/sh").map_err(|e| e.1)?,
             ..config
         };
-        let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false);
+        let run = crate::command::Run::now().ok_or("no clock")?;
+        let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         session.start().map_err(|e| e.to_string())?;
         session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         Ok(session)
@@ -4283,11 +4294,10 @@ mod tests {
         run(&mut s, "str %1 pane horizontal split")?;
         let origin = Origin::Cli(Caller::default());
         let wait = |target| {
-            let wait = command::Wait {
-                since: None,
+            Request::Wait(command::Wait {
+                since: command::Since::Now(target),
                 timeout: None,
-            };
-            Request::Wait(target, wait)
+            })
         };
         let ws = s.workspaces.first().map(|w| w.id).ok_or("a workspace")?;
         let Begun::Waiting(waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin) else {
@@ -4297,7 +4307,7 @@ mod tests {
         s.output(PaneId::of(2), b"E");
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
         assert!(
-            answer.text.starts_with("%2 ") && !answer.text.contains("%1"),
+            answer.text.starts_with("%2:") && !answer.text.contains("%1"),
             "{}",
             answer.text
         );
@@ -4307,6 +4317,67 @@ mod tests {
         run(&mut s, "str %1 pane kill")?;
         let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
         assert_eq!(answer.end.code(), Some(Code::Closed), "{}", answer.text);
+        Ok(())
+    }
+
+    /// A version names its pane and its server run: a wait from it waits
+    /// in that pane, one from another run is refused, as is one its pane
+    /// never had, and one of a pane since closed answers `closed`. A
+    /// pane part way through a frame at the limit has changed: its answer
+    /// waits for the frame, never says it is unchanged.
+    #[test]
+    fn a_version_names_its_pane_and_its_server_run() -> Result<(), Box<dyn std::error::Error>> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "str %1 pane horizontal split")?;
+        let failed = |s: &mut Session, code: &str| output(s, code).err().unwrap_or_default();
+        let of = |s: &Session, pane| s.pane(PaneId::of(pane)).map(|p| p.version(s.run));
+        let (one, two) = (of(&s, 1)?, of(&s, 2)?);
+        s.output(PaneId::of(2), b"E");
+        // From %2's version, though asked nowhere else: %2's change.
+        let answer = output(&mut s, &format!("str {two} changed 0 timeout wait"))?;
+        assert!(
+            answer.starts_with("%2:") && answer.ends_with(" screen\n"),
+            "{answer}"
+        );
+        let answer = failed(&mut s, &format!("str {one} changed 0 timeout wait"));
+        assert!(answer.contains("timeout"), "{answer}");
+        let other = command::Version {
+            run: "1-0".parse().map_err(|()| "a run")?,
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {other} changed wait"));
+        assert!(refused.contains("from another server run"), "{refused}");
+        let never = command::Version {
+            counts: command::Counts {
+                bells: 9,
+                ..one.counts
+            },
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {never} changed wait"));
+        assert!(refused.contains("never had these counts"), "{refused}");
+        run(&mut s, "%2 kill")?;
+        let closed = failed(&mut s, &format!("str {two} changed wait"));
+        assert!(closed.starts_with("closed: "), "{closed}");
+        // A frame part read at the limit.
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(crate::pane::tests::spends_the_budget(23, 80));
+        frame.extend_from_slice(b"DONE\x1b[?2026l");
+        let since = of(&s, 1)?;
+        s.output(PaneId::of(1), &frame);
+        let wait = Request::Wait(command::Wait {
+            since: command::Since::Version(since),
+            timeout: Some(Duration::ZERO),
+        });
+        let Begun::Waiting(waiting) = s.begin(wait, &Origin::Cli(Caller::default())) else {
+            return Err("a wait mid-frame answered at once".into());
+        };
+        while s.pane(PaneId::of(1))?.mid_frame() {
+            assert!(waiting.answer(&s, waiting.due()).is_none());
+            s.fire(Timer::Unread(PaneId::of(1)));
+        }
+        let answer = waiting.answer(&s, waiting.due()).ok_or("no answer")?;
+        assert!(answer.text.ends_with(" screen\n"), "{}", answer.text);
         Ok(())
     }
 
@@ -4320,10 +4391,11 @@ mod tests {
         assert!(run(&mut s, "opts str main name new-workspace").is_err());
         assert_eq!(
             output(&mut s, "opts str workspace-3 name new-workspace")?,
-            "%2 0.1.0.0.0\n"
+            format!("%2:0.1.0.0.0:{}\n", s.run)
         );
         // +3 would be workspace-3, which is taken.
-        assert_eq!(output(&mut s, "opts new-workspace")?, "%3 0.1.0.0.0\n");
+        let third = format!("%3:0.1.0.0.0:{}\n", s.run);
+        assert_eq!(output(&mut s, "opts new-workspace")?, third);
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace
@@ -4674,7 +4746,7 @@ mod tests {
         assert!(missing.contains("No such file"), "{missing}");
         let split = failed(&mut s, "str 'two\nlines' fail");
         assert!(split.ends_with(r"two\nlines"), "{split}");
-        let version = failed(&mut s, "%1 str 1.2.3 changed wait");
+        let version = failed(&mut s, "str 1.2.3 changed wait");
         assert!(version.contains("is no version"), "{version}");
         Ok(())
     }

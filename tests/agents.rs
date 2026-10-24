@@ -11,7 +11,8 @@ use support::*;
 
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
-    out.split_whitespace().next().unwrap_or_default().to_owned()
+    let first = out.split_whitespace().next().unwrap_or_default();
+    first.split(':').next().unwrap_or_default().to_owned()
 }
 
 /// `argv` as options words: its program, then each argument.
@@ -49,13 +50,11 @@ fn typed<'a>(pane: &'a str, line: &'a str) -> Vec<&'a str> {
     ]
 }
 
-/// The version an action's answer gives, from before it acted.
+/// The version an action's answer gives, from before it acted: its
+/// first word.
 fn version(answer: &str) -> String {
-    answer
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .to_owned()
+    let first = answer.split_whitespace().next();
+    first.unwrap_or_default().to_owned()
 }
 
 /// Waits from the version an action answered (`answer`) until its pane
@@ -110,7 +109,7 @@ fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
 /// `DONE`, grows.
 fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
     let since = version(&server.ok(&typed(pane, line))?);
-    let done = |v: &str| v.split('.').nth(3).and_then(|d| d.parse::<u64>().ok());
+    let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
     let (before, deadline) = (done(&since), after(PATIENCE));
     let mut at = since;
     while done(&at) <= before {
@@ -133,9 +132,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     // Waited on from its start, it has exited: answered at once; from now,
     // nothing changes.
     let since = version(&started);
-    let from_start = [
-        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
-    ];
+    let from_start = ["str", &since, "changed", "wait", "json"];
     let json = server.ok(&from_start)?;
     assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
     let now = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
@@ -168,7 +165,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     server.ok(&["str", &pane, "pane", "str", "KILL", "signal"])?;
     server.exits(&pane)?;
     let since = version(&started);
-    let waited = ["str", &pane, "pane", "str", &since, "changed", "wait"];
+    let waited = ["str", &since, "changed", "wait"];
     let text = server.ok(&waited)?;
     assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
     let json = server.ok(&[&waited[..], &["json"]].concat())?;
@@ -197,17 +194,16 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
         began.elapsed()
     );
     let since = version(&sent);
-    assert_eq!(sent, format!("{pane} {since}\n"));
+    assert_eq!(sent, format!("{since}\n"));
+    assert!(since.starts_with(&format!("{pane}:")), "{since}");
     // Asked once the program answered: met at once, from the version held.
     server.until(&pane, &since, |c| c.contains("got"))?;
-    let changed = server.ok(&["str", &pane, "pane", "str", &since, "changed", "wait"])?;
+    let changed = server.ok(&["str", &since, "changed", "wait"])?;
     assert!(
-        changed.starts_with(&format!("{pane} ")) && changed.ends_with(" screen\n"),
+        changed.starts_with(&format!("{pane}:")) && changed.ends_with(" screen\n"),
         "{changed}"
     );
-    let json = server.ok(&[
-        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
-    ])?;
+    let json = server.ok(&["str", &since, "changed", "wait", "json"])?;
     assert!(
         json.contains(r#""changed":["screen"],"status":0"#),
         "{json}"
@@ -215,12 +211,17 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let still = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
     assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
-    let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
+    let bad = server.fux(&["str", "0.1.2.0.0", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
-    // A version with a count above this pane's (a program started more
-    // often, or more output read) is another pane's, or made up.
-    for other in ["3.0.0.0.0", "0.99999.0.0.0"] {
-        let other = server.fux(&["str", &pane, "pane", "str", other, "changed", "wait"])?;
+    // Counts this pane never had (a program started more often, or more
+    // output read), or another server run's, are refused.
+    let server_run = since.rsplit(':').next().unwrap_or_default();
+    for other in [
+        format!("{pane}:3.0.0.0.0:{server_run}"),
+        format!("{pane}:0.99999.0.0.0:{server_run}"),
+        format!("{pane}:0.1.0.0.0:1-0"),
+    ] {
+        let other = server.fux(&["str", &other, "changed", "wait"])?;
         let refused = other.stderr.starts_with("fux: bad_value: ");
         assert!(refused, "{}", other.stderr);
     }
@@ -246,20 +247,18 @@ fn bells_and_respawns_change_the_version() -> Outcome {
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let mut at = version(&server.ok(&typed(&pane, ""))?);
     loop {
-        let waited = [
-            "str", &pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
-        ];
+        let waited = ["str", &at, "changed", "10", "timeout", "wait"];
         let out = server.ok(&waited)?;
         if out.contains(" bell") {
             break;
         }
         at = version(&out);
     }
-    assert_eq!(server.version(&pane)?.split('.').nth(2), Some("1"));
+    assert_eq!(count(&server.version(&pane)?, 2), Some("1"));
     let at = server.version(&pane)?;
     let respawned = server.ok(&["str", &pane, "pane", "kill-first", "respawn"])?;
-    assert!(version(&respawned).starts_with("1."), "{respawned}");
-    let answer = server.ok(&["str", &pane, "pane", "str", &at, "changed", "wait"])?;
+    assert_eq!(count(&respawned, 0), Some("1"), "{respawned}");
+    let answer = server.ok(&["str", &at, "changed", "wait"])?;
     assert!(answer.contains(" respawned"), "{answer}");
     Ok(())
 }
@@ -323,7 +322,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     let echoed = server.ok(&typed(&id(&plain), "echo un''marked"))?;
     shows_after(&server, &echoed, "unmarked")?;
     let done = server.version(&id(&plain))?;
-    assert_eq!(done.split('.').nth(3), Some("0"), "{done}");
+    assert_eq!(count(&done, 3), Some("0"), "{done}");
     Ok(())
 }
 
@@ -406,7 +405,8 @@ fn sizes_are_set_as_asked() -> Outcome {
         "tab",
     ])?;
     let (left, tab) = made.trim().split_once('\n').ok_or("a pane and its tab")?;
-    let left = left.split_whitespace().next().ok_or("a pane")?;
+    let left = id(left);
+    let left = left.as_str();
     let size = |pane: &str| -> Result<String, String> {
         let ls = server.ok(&["ls"])?;
         let line = ls
@@ -601,7 +601,7 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "respawn",
     ];
     let again = server.ok(&again)?;
-    assert!(again.starts_with(&format!("{pane} 1.")), "{again}");
+    assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
     shows_after(&server, &again, "full b")?;
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
@@ -725,10 +725,9 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 }
 
 /// A wait on a workspace waits on each of its panes, and answers a line for
-/// each: here none changed, so each timed out, the whole 124. A version is
-/// one pane's, so a wait on several takes none. (`session`'s tests begin a
-/// wait before what it waits for: the answer of the pane that changed, and
-/// of one that closed.)
+/// each: here none changed, so each timed out, the whole 124. (`session`'s
+/// tests begin a wait before what it waits for: the answer of the pane
+/// that changed, and of one that closed.)
 #[test]
 fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
@@ -740,34 +739,18 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
         let line = timed
             .stdout
             .lines()
-            .find(|l| l.starts_with(&format!("{pane} ")));
+            .find(|l| l.starts_with(&format!("{pane}:")));
         assert!(
             line.is_some_and(|l| l.ends_with(" timeout")),
             "{}",
             timed.stdout
         );
     }
-    let since = server.version(&one)?;
-    let given = server.fux(&["str", "g", "workspace", "str", &since, "changed", "wait"])?;
-    assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
-    // A tab of one pane takes its pane's version.
-    let before = version(&server.ok(&typed(&one, "x"))?);
-    let on_tab = [
-        "str", &one, "pane", "tab", "str", &before, "changed", "wait",
-    ];
-    let answer = server.ok(&on_tab)?;
-    assert!(answer.starts_with(&format!("{one} ")), "{answer}");
-    // A tab's answer is no pane, though one pane answered: not waited on
-    // again, and an array as JSON.
-    let again = server.fux(&[&on_tab[..], &["wait"]].concat())?;
-    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
-    let json = server.ok(&[&on_tab[..], &["json"]].concat())?;
-    assert!(
-        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
-        "{json}"
-    );
-    // So is a tab's action's.
+    // A tab's action's answer holds no one pane's version, though it has
+    // one pane: not waited on, and an array as JSON.
     let keys = ["str", &one, "pane", "tab", "str", "y", "text", "send-keys"];
+    let again = server.fux(&[&keys[..], &["wait"]].concat())?;
+    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
     let json = server.ok(&[&keys[..], &["json"]].concat())?;
     assert!(
         json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
@@ -787,9 +770,7 @@ fn an_answer_is_its_pane() -> Outcome {
     let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
     assert_eq!(server.ok(&sent.concat())?.trim(), "sh");
     server.shows(&pane, "%13 fake")?;
-    let waited = [
-        "str", &pane, "pane", "str", &since, "changed", "wait", "str", "name", "get",
-    ];
+    let waited = ["str", &since, "changed", "wait", "str", "name", "get"];
     assert_eq!(server.ok(&waited)?.trim(), "sh");
     Ok(())
 }
@@ -913,8 +894,9 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let on = ["str", &pane, "pane"];
     let opts = ["opts"];
     let cat = ["str", "cat", "program"];
+    let since = server.version(&pane)?;
     for (before, unused, word) in [
-        (&on[..], &["str", "0.1.0.0.0", "changed"][..], "capture"),
+        (&[][..], &["str", &since, "changed"][..], "capture"),
         (&on, &["5", "timeout"], "capture"),
         (&on, &["100", "40", "size"], "capture"),
         (&on, &["str", "x", "name"], "wait"),
@@ -971,7 +953,7 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
     assert_eq!(out.status, 124, "{}", out.stderr);
-    assert!(out.stdout.starts_with(&format!("{pane} ")) && out.stdout.ends_with(" timeout\n"));
+    assert!(out.stdout.starts_with(&format!("{pane}:")) && out.stdout.ends_with(" timeout\n"));
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: timeout: "), "{}", out.stderr);
     // The same when the wait is a defined word's last step.
@@ -1017,7 +999,7 @@ fn respawn_keeps_a_rename() -> Outcome {
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
     server.exits(&pane)?;
-    let answer = server.ok(&["str", &pane, "pane", "str", &ended, "changed", "wait"])?;
+    let answer = server.ok(&["str", &ended, "changed", "wait"])?;
     assert!(answer.ends_with(" respawned exited 0\n"), "{answer}");
     Ok(())
 }

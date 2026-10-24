@@ -804,10 +804,16 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
     }
     let stops = crate::SignalPipe::new(&crate::STOPS).map_err(Error::Setup)?;
     // Settings come from clients (`set`), each running its config.
+    let run = crate::command::Run::now().ok_or_else(|| {
+        Error::Setup(std::io::Error::other(
+            "the system clock is before 1970 or past 2554: this run cannot be told from another",
+        ))
+    })?;
     let mut session = Session::new(
         crate::config::Config::default(),
         socket.path().to_owned(),
         true,
+        run,
     );
     let mut saved = Saved::of(socket);
     let restoring = match &mut saved {
@@ -1662,7 +1668,7 @@ impl Server {
         // this one) is not the caller's here.
         let within = match server {
             None => Within::Unsaid,
-            Some(s) if s == session.server_id => Within::This,
+            Some(s) if s.parse() == Ok(session.run) => Within::This,
             Some(_) => Within::Other,
         };
         let cwd = Some(cwd).filter(|p| p.is_dir());

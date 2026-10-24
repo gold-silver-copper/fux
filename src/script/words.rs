@@ -5,8 +5,8 @@ use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Then};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Source, SwapWith, Usage, Wait, Wheel,
-    WsRef,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, Usage, Wait,
+    Wheel, WsRef,
 };
 use crate::help;
 use crate::id::{ClientId, PaneId, Wanted};
@@ -81,7 +81,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
 pub const STRINGS: &str =
-    "name dir key path line id file field setting socket way action code keys word hex";
+    "name dir key path line id file field setting socket way action code keys word hex version";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 /// Every word of fux's, under its heading, in help's order.
@@ -117,7 +117,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE.ENDED, as an action or `str version get` gives it), not from now"),
+    word("Waiting", "changed", "version -- request", "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
     word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins"),
     // Input
@@ -328,7 +328,7 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
                     .map(|line| Json::Raw(line.to_owned().into()))
                     .collect();
                 match (answer.said, objects.as_mut_slice()) {
-                    (said, [one]) if said != Said::Several => std::mem::replace(one, Json::Null),
+                    (said, [one]) if said != Said::Panes => std::mem::replace(one, Json::Null),
                     _ => Json::Array(objects),
                 }
             }
@@ -443,11 +443,14 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
     Err(fail(Lang::Unused, instead))
 }
 
-/// What a request is on: a pane, tab or workspace (an action's answer is
-/// its pane), or a client.
+/// What a request is on: a pane, tab or workspace, a client, or the
+/// version an action's or wait's answer holds, of its pane.
 fn on(value: &Value<Fux>) -> Result<On, Failure> {
     if let Value::App(Fux::Client(c)) = value {
         return Ok(On::Client(*c));
+    }
+    if let Some(version) = held(value) {
+        return Ok(On::Version(version));
     }
     target(value).map(On::Target)
 }
@@ -458,7 +461,7 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
 fn answer_of(target: AnyRef) -> Then {
     match target {
         AnyRef::Pane(_) => Then::Outcome,
-        AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Several),
+        AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Panes),
     }
 }
 
@@ -466,13 +469,18 @@ fn answer_of(target: AnyRef) -> Then {
 /// before what it did. A wait on it waits from there, so nothing that came
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
-    let Value::App(Fux::Answer(a)) = value else {
-        return None;
-    };
-    let Said::Action(_) = a.said else {
-        return None;
-    };
-    a.text.split_whitespace().nth(1)?.parse().ok()
+    match value {
+        Value::App(Fux::Answer(answer)) => match answer.said {
+            Said::Action(version) => Some(version),
+            Said::Capture
+            | Said::Listing
+            | Said::Panes
+            | Said::Json
+            | Said::Status
+            | Said::Servers => None,
+        },
+        Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
+    }
 }
 
 /// The options or request `value` is, `word` given it: options stay
@@ -490,7 +498,6 @@ fn modifying(word: &'static str, value: Value<Fux>) -> Result<Box<Opts>, Failure
                 .map_err(|_| wrong("a pane, tab, workspace or client, or options", &other))?;
             Box::new(Opts {
                 on: Some(on),
-                held: held(&other),
                 ..Opts::default()
             })
         }
@@ -518,7 +525,6 @@ fn modify(
     built: &mut Opts,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
 ) -> Result<(), Failure> {
-    let waits = &mut built.waits;
     match name {
         "name" => built.name = Some(string(&next()?)?),
         "cwd" => built.cwd = Some(string(&next()?)?.into()),
@@ -535,17 +541,7 @@ fn modify(
         "full" => built.view.full = true,
         "styles" => built.view.styles = true,
         "marks" => built.view.marks = true,
-        "timeout" => waits.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
-        "changed" => {
-            let text = string(&next()?)?;
-            let bad = || {
-                fail(
-                    Code::BadValue,
-                    format!("{text:?} is no version: STARTS.SCREEN.BELLS.DONE.ENDED"),
-                )
-            };
-            waits.since = Some(text.parse().map_err(|()| bad())?);
-        }
+        "timeout" => built.timeout = Some(Duration::from_secs(within(&next()?, COUNT)?)),
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
@@ -679,7 +675,6 @@ fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         | Value::List(_)
         | Value::App(_)) => Opts {
             on: Some(on(&other)?),
-            held: held(&other),
             ..Opts::default()
         },
     };
@@ -698,6 +693,7 @@ fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
 fn request_pane(word: &str, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
     match request(word, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
+        (On::Version(version), built) => Ok((version.pane, built)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
             Lang::Type,
             "takes a pane (from pane, run or split), or a request on one",
@@ -816,7 +812,7 @@ fn fits(typed: usize) -> Result<(), Failure> {
 
 fn ask(request: impl Into<Request>, then: Then) -> Ask {
     Ask::Server {
-        request: request.into(),
+        request: Box::new(request.into()),
         client: None,
         then,
     }
@@ -834,7 +830,7 @@ fn local(local: Local) -> Result<Done<Ask>, Failure> {
 
 fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
     Ask::Server {
-        request: command.into(),
+        request: Box::new(command.into()),
         client: Some(client),
         then,
     }
@@ -984,6 +980,21 @@ impl fuxth::Host for Host<'_> {
             }
             // ---------------------------------------------------- starting
             "opts" => now(out, Value::App(Fux::Opts(Box::default()))),
+            "changed" => {
+                let text = string(&next()?)?;
+                let Ok(version) = text.parse() else {
+                    let why = format!(
+                        "{text:?} is no version: PANE:STARTS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
+                    );
+                    return Err(fail(Code::BadValue, why));
+                };
+                let built = Opts {
+                    on: Some(On::Version(version)),
+                    given: vec!["changed"],
+                    ..Opts::default()
+                };
+                now(out, Value::App(Fux::Opts(Box::new(built))))
+            }
             "run" | "new-tab" | "new-workspace" => {
                 let built = finished(name, next()?)?;
                 let command = match name {
@@ -1064,18 +1075,20 @@ impl fuxth::Host for Host<'_> {
             // ----------------------------------------------------- waiting
             "wait" => {
                 let (on, built) = request(name, next()?)?;
-                let On::Target(target) = on else {
-                    return Err(fail(
-                        Lang::Type,
-                        "takes a pane, tab or workspace, not a client",
-                    ));
-                };
                 // On a tab or workspace, in each of its panes.
-                let wait = Wait {
-                    since: built.waits.since.or(built.held),
-                    timeout: built.waits.timeout,
+                let (since, then) = match on {
+                    On::Version(version) => (Since::Version(version), Then::Outcome),
+                    On::Target(target) => (Since::Now(target), answer_of(target)),
+                    On::Client(_) => {
+                        let why = "takes a pane, tab or workspace, not a client";
+                        return Err(fail(Lang::Type, why));
+                    }
                 };
-                later(ask(Request::Wait(target, wait), answer_of(target)))
+                let wait = Wait {
+                    since,
+                    timeout: built.timeout,
+                };
+                later(ask(Request::Wait(wait), then))
             }
             // ------------------------------------------------------- input
             "send-keys" => {
@@ -1089,6 +1102,7 @@ impl fuxth::Host for Host<'_> {
                 fits(sent(&built.inputs))?;
                 let target = match on {
                     On::Target(target) => target,
+                    On::Version(version) => AnyRef::Pane(version.pane),
                     On::Client(c) => {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
@@ -1652,7 +1666,7 @@ mod tests {
             json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
                 text: String::new(),
                 json: Some(json.to_owned()),
-                said: super::super::Said::Several,
+                said: super::super::Said::Panes,
             }))))
             .render()
         };

@@ -135,7 +135,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
     let answer = server.ok(&["str", &pane, "pane", "str", "TERM", "signal"])?;
-    assert!(answer.starts_with(&format!("{pane} ")), "{answer}");
+    assert!(answer.starts_with(&format!("{pane}:")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");

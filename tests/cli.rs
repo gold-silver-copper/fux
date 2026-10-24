@@ -28,7 +28,7 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         "typed",
         "split",
     ])?;
-    assert!(pane.starts_with("%2 "), "{pane}");
+    assert!(pane.starts_with("%2:"), "{pane}");
     shows(&server, "%2", "[a b]")?;
     shows(&server, "%2", "[it's]")?;
     shows(&server, "%2", "[$HOME]")?;
@@ -86,7 +86,7 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let env = [("FUX_PANE", "%2")];
     let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.split_whitespace().next()),
+        (out.status, out.stdout.split(':').next()),
         (0, Some("%3")),
         "{}",
         out.stderr
@@ -267,7 +267,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     let failed = server.fux(&["str", "before", "%1", "1", "timeout", "wait"])?;
     assert_eq!(failed.status, 124, "{}", failed.stderr);
     assert!(
-        failed.stdout.starts_with("before\n%1 ") && failed.stdout.ends_with(" timeout\n"),
+        failed.stdout.starts_with("before\n%1:") && failed.stdout.ends_with(" timeout\n"),
         "{}",
         failed.stdout
     );
@@ -284,10 +284,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // An option a word would leave unused is refused, not ignored: a new
     // tab starts a shell, and waits on nothing.
-    for unused in [
-        &["str", "top", "program"][..],
-        &["str", "0.1.0.0.0", "changed"][..],
-    ] {
+    {
+        let unused = &["str", "top", "program"][..];
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
         assert!(

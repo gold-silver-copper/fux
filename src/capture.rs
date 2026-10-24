@@ -1,7 +1,7 @@
 //! What `capture` and `capture-client` print: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state if asked.
-use crate::command::{CaptureView, Source};
+use crate::command::{CaptureView, Run, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
@@ -18,7 +18,13 @@ type Read = (String, String);
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
 /// that says a client is in copy mode on it.
-pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: bool) -> Read {
+pub fn pane(
+    pane: &Pane,
+    run: Run,
+    history: Option<usize>,
+    view: CaptureView,
+    copy_mode: bool,
+) -> Read {
     let screen = pane.screen();
     let in_rows = |i: &usize| {
         (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
@@ -104,7 +110,7 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: b
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let mut state = state(pane, Instant::now(), copy_mode);
+    let mut state = state(pane, run, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::int)));
@@ -221,7 +227,12 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input.
-pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json<'static>)> {
+pub fn state(
+    pane: &Pane,
+    run: Run,
+    now: Instant,
+    copy_mode: bool,
+) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
     // What runs in the foreground: a job the shell started, else the
     // program itself.
@@ -242,7 +253,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     };
     let paused = pane.paused();
     vec![
-        ("version", Json::str(pane.version().to_string())),
+        ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
         // Its program closed its terminal and runs on: nothing reads keys
@@ -486,7 +497,14 @@ mod tests {
             let size = fux_vt::Size::new(3, 5)?;
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(&pane, None, join, false).0)
+            Ok(super::pane(
+                &pane,
+                crate::command::Run::now().ok_or("a clock")?,
+                None,
+                join,
+                false,
+            )
+            .0)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -513,7 +531,14 @@ mod tests {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -530,12 +555,26 @@ mod tests {
         let size = fux_vt::Size::new(3, 20)?;
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text, "hello\n");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text, "step 1\n");
         Ok(())
     }

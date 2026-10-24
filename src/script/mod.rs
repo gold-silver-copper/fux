@@ -90,14 +90,6 @@ impl AppValue for Fux {
     }
 }
 
-/// What a wait waits for, as words give it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Waits {
-    /// The version it waits to differ from (`changed`).
-    pub since: Option<Version>,
-    pub timeout: Option<Duration>,
-}
-
 /// Options, keys, waits and a mouse event, as words give them, and what
 /// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -114,10 +106,8 @@ pub struct Opts {
     pub ids: crate::id::Wanted,
     pub log: Option<String>,
     pub kill: bool,
-    pub waits: Waits,
-    /// The version an action's answer (or a wait's) held, which the request
-    /// was made from: what `wait` waits from, unless `changed` says.
-    pub held: Option<crate::command::Version>,
+    /// How long a wait waits at most.
+    pub timeout: Option<Duration>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
@@ -133,6 +123,9 @@ pub struct Opts {
 pub enum On {
     Target(AnyRef),
     Client(ClientId),
+    /// A version's pane (`changed`, or an action's or wait's answer): a
+    /// wait on it waits from that version.
+    Version(Version),
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
@@ -149,10 +142,13 @@ pub struct Answer {
 pub enum Said {
     Capture,
     Listing,
-    /// An action's answer of one pane: a word that wants a pane takes it.
-    Action(PaneId),
-    /// An action's answer of several panes, or of none.
-    Several,
+    /// An action's or wait's answer of one pane, which holds its
+    /// version: a word that wants a pane takes it, and a wait waits from
+    /// that version.
+    Action(Version),
+    /// An answer that holds no one pane's version: a tab's or workspace's
+    /// panes', or a closed pane's.
+    Panes,
     /// JSON that is no one value of fuxth's.
     Json,
     Status,
@@ -165,7 +161,7 @@ impl Said {
         match self {
             Said::Capture => "capture",
             Said::Listing | Said::Status | Said::Servers => "listing",
-            Said::Action(_) | Said::Several => "answer",
+            Said::Action(_) | Said::Panes => "answer",
             Said::Json => "json",
         }
     }
@@ -176,7 +172,7 @@ impl Said {
             Said::Capture => "a capture",
             Said::Listing => "a listing",
             Said::Action(_) => "an action's answer",
-            Said::Several => "an answer of several panes",
+            Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
             Said::Json => "a JSON value",
             Said::Status => "a status",
             Said::Servers => "a listing of servers",
@@ -186,10 +182,10 @@ impl Said {
     /// The pane it is of.
     pub fn pane(self) -> Option<PaneId> {
         match self {
-            Said::Action(pane) => Some(pane),
+            Said::Action(version) => Some(version.pane),
             Said::Capture
             | Said::Listing
-            | Said::Several
+            | Said::Panes
             | Said::Json
             | Said::Status
             | Said::Servers => None,
@@ -210,7 +206,7 @@ pub enum Ask {
     /// A request, as the client `client` (or the caller), and what to make
     /// of its reply.
     Server {
-        request: Request,
+        request: Box<Request>,
         client: Option<ClientId>,
         then: Then,
     },
@@ -714,7 +710,13 @@ pub fn run_capped(
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
                 let reply = asks
-                    .ask(&Asked { request, context }, host.out)
+                    .ask(
+                        &Asked {
+                            request: *request,
+                            context,
+                        },
+                        host.out,
+                    )
                     .map_err(|f| placed(machine, f))?;
                 match &reply.end {
                     // A failure that answered too (a wait's): its answer is
@@ -813,27 +815,20 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
     let reply = succeeded(reply)?;
     let text = reply.text.trim_end_matches('\n').to_owned();
     let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
-    // An action's answer is its pane's, when the reply names one pane alone
-    // (a wait on a tab's panes answers each): never read from what the
-    // program wrote.
-    let mut panes = reply.ids.iter().filter_map(|id| match id {
-        AnyRef::Pane(p) => Some(*p),
-        AnyRef::Tab(_) | AnyRef::Workspace(_) => None,
-    });
-    let pane = match (panes.next(), panes.next()) {
-        (Some(pane), None) => Some(pane),
-        (Some(_), Some(_)) | (None, _) => None,
+    // An action's answer is its pane's, when the reply holds one pane's
+    // version alone (a wait on a tab's panes answers each).
+    let version = match reply.versions.as_slice() {
+        [one] => Some(*one),
+        _ => None,
     };
     let action = |text: String, json: Option<String>| {
-        Answer::value(text, json, pane.map_or(Said::Several, Said::Action))
+        Answer::value(text, json, version.map_or(Said::Panes, Said::Action))
     };
     Ok(match then {
         Then::Nothing => Vec::new(),
+        // A pane an action started: its answer, which is its pane too.
+        Then::Handle(Kind::Pane) if version.is_some() => vec![action(text, json)],
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
-            // A pane an action waited on: its answer, which is its pane too.
-            Some(AnyRef::Pane(p)) if json.is_some() && pane == Some(*p) => {
-                vec![action(text, json)]
-            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed::new(

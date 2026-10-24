@@ -137,7 +137,9 @@ pub fn explain(name: &str) -> Option<String> {
         if let Some(usage) = crate::script::usage(name) {
             out.push_str(&format!("\n{usage}\n"));
         }
-        if let Some(takes) = options(name) {
+        if let Some(mut takes) = options(name).map(Iterator::peekable)
+            && takes.peek().is_some()
+        {
             // What they go on: options, for what makes its own pane.
             let on = match name {
                 "run" | "new-tab" | "new-workspace" => "opts",
@@ -169,42 +171,31 @@ pub fn explain(name: &str) -> Option<String> {
 }
 
 /// The words that build what a word takes, its options or its input: the
-/// words each uses, which `explain` prints and the word refuses others of;
-/// and whether it takes a wait's words too: the `Waiting` words that go on
-/// the pane.
-pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
-    (
-        "run",
-        "name size cwd env command program arg in log-to id",
-        false,
-    ),
+/// words each uses, which `explain` prints and the word refuses others of.
+pub(crate) const OPTIONS: [(&str, &str); 10] = [
+    ("run", "name size cwd env command program arg in log-to id"),
     (
         "split",
         "horizontal vertical cwd env command program arg typed id",
-        false,
     ),
-    ("new-tab", "name size cwd env typed in id", false),
-    ("new-workspace", "name size cwd env typed id", false),
-    ("respawn", "kill-first env command program arg", false),
+    ("new-tab", "name size cwd env typed in id"),
+    ("new-workspace", "name size cwd env typed id"),
+    ("respawn", "kill-first env command program arg"),
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
          rows cols",
-        false,
     ),
-    ("wait", "", true),
-    ("send-keys", "text key paste paste-file bytes times", false),
-    ("send-mouse", "mouse", false),
-    ("signal", "", false),
+    ("wait", "changed timeout"),
+    ("send-keys", "text key paste paste-file bytes times"),
+    ("send-mouse", "mouse"),
+    ("signal", ""),
 ];
 
-/// The options `name` takes, if it takes any: its own, then a wait's.
+/// The options `name` takes, if it takes any.
 pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> {
-    let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
-    let waiting = (WORDS.iter())
-        .filter(|w| *waits && w.group == "Waiting" && w.effect.starts_with("x "))
-        .map(|w| w.name);
-    Some(takes.split_whitespace().chain(waiting))
+    let (_, takes) = OPTIONS.iter().find(|(word, _)| *word == name)?;
+    Some(takes.split_whitespace())
 }
 
 /// An example of a word in use, as a command line.

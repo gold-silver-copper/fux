@@ -19,7 +19,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 15;
+pub const PROTOCOL: u32 = 16;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -359,13 +359,15 @@ wire! {
 wire! {
     /// The server's answer to a request: how it ended; what it says as text,
     /// and as JSON where it has a JSON form; the panes, tabs or workspaces it
-    /// made or found; a field's value.
+    /// made or found; the version of each pane an action or wait answers; a
+    /// field's value.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Reply {
         pub end: End,
         pub text: String,
         pub json: String,
         pub ids: Vec<AnyRef>,
+        pub versions: Vec<crate::command::Version>,
         pub value: Option<Scalar>,
     }
 }

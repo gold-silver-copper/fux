@@ -283,6 +283,7 @@ text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
+text_wire!(crate::command::Version, "version");
 
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant once (as fux-vt's
