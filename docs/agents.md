@@ -88,9 +88,9 @@ never missed. `fux … | cut -d' ' -f2` takes the version from an answer.
   on): the version's last count grows as one ends.
 
   ```sh
-  V=$(fux %3 str 'make test' line | cut -d' ' -f2)
-  until [ "$(fux %3 str version get | cut -d. -f4)" -gt "${V##*.}" ]; do
-    fux %3 str "$V" changed 600 timeout wait >/dev/null || break
+  V=$(fux %3 str 'make test' line | cut -d' ' -f2); D=${V##*.}
+  while [ "${V##*.}" -le "$D" ]; do
+    V=$(fux %3 str "$V" changed 600 timeout wait | cut -d' ' -f2) || break
   done
   fux %3 str last_status get; fux %3 last-output capture
   ```
@@ -101,9 +101,9 @@ never missed. `fux … | cut -d' ' -f2` takes the version from an answer.
 - **A program's exit:**
 
   ```sh
-  V=$(fux opts str 'cargo test' command run | cut -d' ' -f2); P=%2
-  until fux $P str "$V" changed 600 timeout wait | grep -qE 'exited|killed'; do
-    V=$(fux $P str version get)
+  read P V < <(fux opts str 'cargo test' command run)
+  until out=$(fux $P str "$V" changed 600 timeout wait) && grep -qE 'exited|killed' <<<"$out"; do
+    V=$(cut -d' ' -f2 <<<"$out")
   done
   fux $P str exited get
   ```
