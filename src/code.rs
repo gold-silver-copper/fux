@@ -99,7 +99,7 @@ codes! {
     NoBuffer "no_buffer",
     /// Nothing to act on was named, and the caller has none.
     NoTarget "no_target",
-    /// `FUX_PANE` is another server's pane.
+    /// `FUX_PANE` is another server's pane, or comes with no `FUX_SERVER` to say whose.
     StrayPane "stray_pane",
     /// A field `get` names that the object has not.
     NoField "no_field",

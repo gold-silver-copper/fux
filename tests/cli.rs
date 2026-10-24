@@ -20,8 +20,17 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let out = server.fux(&["here", "horizontal", "split"])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.starts_with("fux: no_target: "), "{}", out.stderr);
-    // FUX_PANE is the caller's pane, and its tab and workspace.
-    let env = [("FUX_PANE", "%2")];
+    // FUX_PANE, of the server FUX_SERVER says, is the caller's pane, and
+    // its tab and workspace; with no FUX_SERVER, no one's.
+    let alone = server.fux_env(&["here", "kill"], &[("FUX_PANE", "%2")])?;
+    assert!(
+        alone.stderr.starts_with("fux: stray_pane: "),
+        "{}",
+        alone.stderr
+    );
+    let version = server.version("%1")?;
+    let run = version.rsplit(':').next().unwrap_or_default();
+    let env = [("FUX_PANE", "%2"), ("FUX_SERVER", run)];
     let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
         (out.status, out.stdout.split(':').next()),

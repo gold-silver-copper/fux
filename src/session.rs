@@ -109,7 +109,8 @@ pub enum Came {
 /// `FUX_SERVER` says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Within {
-    /// None said: a pane it gives is taken as this server's.
+    /// None said: a pane it gives is no one's fux can tell, so it is
+    /// none.
     #[default]
     Unsaid,
     /// This server: it runs in one of its panes, whether or not it gave it.
@@ -123,8 +124,8 @@ impl Caller {
     /// Its pane, if it gave one of this server's.
     fn pane(&self) -> Option<PaneId> {
         match self.within {
-            Within::Unsaid | Within::This => self.gave,
-            Within::Other => None,
+            Within::This => self.gave,
+            Within::Unsaid | Within::Other => None,
         }
     }
 }
@@ -691,22 +692,26 @@ fn acted(versions: impl IntoIterator<Item = command::Version>) -> Reply {
 /// A command that failed, told with its code (its status: 1, 4 or 124).
 fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
-    // caller whose `FUX_PANE` is another server's pane: why it got none.
+    // caller whose `FUX_PANE` is another server's pane, or no server's it
+    // says: why it got none.
     let error = match (error, origin) {
         (
             Error::NoPaneGiven | Error::NoWorkspaceGiven,
             Origin::Cli(Caller {
                 gave: Some(pane),
-                within: Within::Other,
+                within: within @ (Within::Other | Within::Unsaid),
                 ..
             }),
-        ) => fail(
-            Code::StrayPane,
-            format!(
-                "FUX_PANE {pane} is a pane of another fux server, not of this one, so it is not \
-                 acted on; name the pane"
-            ),
-        ),
+        ) => {
+            let whose = match within {
+                Within::Unsaid => "comes with no FUX_SERVER to say whose pane it is",
+                Within::This | Within::Other => "is a pane of another fux server, not of this one",
+            };
+            fail(
+                Code::StrayPane,
+                format!("FUX_PANE {pane} {whose}, so it is not acted on; name the pane"),
+            )
+        }
         (error, _) => error,
     };
     Reply::failed(error.code(), error.to_string())
@@ -4705,7 +4710,10 @@ mod tests {
         assert!(upper.contains("(use: S upper"), "{upper}");
         // A wait's limit is a day at most: its deadline a time there is.
         let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
-        assert!(long.starts_with("range: ") && long.contains("at most 86400 s"), "{long}");
+        assert!(
+            long.starts_with("range: ") && long.contains("at most 86400 s"),
+            "{long}"
+        );
         // A capture where text is taken: `string` makes it text.
         let text = failed(&mut s, "%1 capture lines");
         assert!(text.contains("`string` makes it text"), "{text}");
