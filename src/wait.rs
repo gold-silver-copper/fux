@@ -179,13 +179,13 @@ fn timed_out(id: PaneId, since: Counts, run: Run, limit: Duration) -> Reply {
 }
 
 /// A pane's answer, said two ways: as text, a line of what it says,
-/// which names the pane; as JSON, the pane, `fields`, the status and the
-/// code of one that is not 0.
+/// which names the pane; as JSON, the pane, `fields` and the status (a
+/// failed one's is never shown: its failure ends the program, or a `try`
+/// drops it).
 fn said(id: PaneId, line: String, fields: Vec<(&'static str, Json<'static>)>, end: End) -> Reply {
     let pane = ("pane", Json::str(id.to_string()));
     let mut fields: Vec<_> = std::iter::once(pane).chain(fields).collect();
     fields.push(("status", Json::int(end.status())));
-    fields.extend(end.code().map(|code| ("code", Json::str(code.name()))));
     Reply {
         end,
         text: format!("{line}\n"),

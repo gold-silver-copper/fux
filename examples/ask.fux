@@ -11,7 +11,7 @@ define until-shows
   P str version get
   begin
     P capture dup string T contains
-    if swap drop string true else drop P swap changed wait string str ' ' split-on 1 at false then
+    if swap drop string true else drop changed wait string words first false then
   until
 end
 

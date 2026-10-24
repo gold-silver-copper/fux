@@ -39,7 +39,8 @@ pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
 pub fn overview() -> String {
-    let mut out = String::from(
+    let wait = crate::config::WAIT.as_secs();
+    let mut out = format!(
         "\
 usage: fux                 attach, starting a server if none runs
        fux WORD...         run the words, a fuxth program (or all in one argument)
@@ -49,14 +50,15 @@ usage: fux                 attach, starting a server if none runs
 Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
-takes (options, keys, a version, what to read) goes on the pane before it
-(`%2 str y text send-keys`, `%2 str 0.57.0.3.0 changed wait`, `%2
-all-history capture`); only run, new-tab and new-workspace start from opts
-(`opts str 'make test' command run`). An action answers at once, with its
-pane's version before it acted; a wait waits for the version to differ,
-30s at most (SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
-Driving programs from a script or an agent: `fux help-agents`; one word:
-`fux help WORD`.
+takes (options, keys, what to read) goes on the pane before it (`%2 str y
+text send-keys`, `%2 all-history capture`); only run, new-tab and
+new-workspace start from opts (`opts str 'make test' command run`). An
+action answers at once, with its pane's version from before it acted, one
+word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until
+its version differs from V, {wait}s at most unless `SECS timeout` says
+(the server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on
+stderr. Driving programs from a script or an agent: `fux help-agents`; one
+word: `fux help WORD`.
 ",
     );
     // The language's parsing words and core, as fuxth says them: a block's

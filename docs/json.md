@@ -19,13 +19,13 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
-| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow while one program runs (`respawn` starts all but the first afresh; a server restart all of them): its program's starts, its screen's revision (one more for each piece of output read, each resize to another size, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
+| `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
 | `program` | what runs in its foreground, `null` if unknown |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
-| `exited` | the status its program exited with (a pane `run` started), else `null` |
+| `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null` |
-| `idle_ms` | how long since its program last wrote (or started) |
+| `idle_ms` | how long since fux last read output from its program (or it started) |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
 | `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
@@ -86,42 +86,41 @@ palette numbers or `"#rrggbb"`.
 
 `run`, `split`, `new-tab`, `new-workspace` and `respawn` leave an answer
 (below), which is also the new pane: a word that wants a pane takes it as
-one. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
+one, and `wait` waits from its version. `json` of a pane, tab or workspace is its id as a string, `"%4"`,
 and `X info json` all of it.
 
 ## Answers and waits
 
-`json` of an action's answer (`send-keys`, `send-mouse`, `signal`,
-`run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
-`{"pane":"%3","version":"0.57.0.3.0","status":0}`: its pane's version from
+`json` of an action's answer (`send-keys`, `paste-buffer`, `send-mouse`,
+`signal`, `run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
+`{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":0}`: its pane's version from
 just before it acted, or as a new pane starts: one object for an action
 or wait on a pane, an array for one on a tab or workspace, however many
 panes it has or answered.
 
 A `wait` answers each pane whose version differs from the one it waited
-from (its program's end too), or that closed:
+from (its program's end too):
 
 ```json
-{"pane":"%3","version":"0.61.1.4.0","changed":["screen","bell","done"],"status":0}
-{"pane":"%4","version":"0.12.0.0.1","changed":["screen"],"exited":5,"status":0}
-{"pane":"%5","version":"0.9.0.0.1","changed":[],"signal":15,"status":0}
-{"pane":"%2","version":"1.3.0.0.0","changed":["respawned"],"status":0}
-{"pane":"%2","version":"0.61.0.3.0","status":124,"code":"timeout"}
-{"pane":"%3","status":4,"code":"closed"}
+{"pane":"%3","version":"%3:0.61.1.4.0:RUN","changed":["screen","bell","done"],"status":0}
+{"pane":"%4","version":"%4:0.12.0.0.1:RUN","changed":["screen"],"exited":5,"status":0}
+{"pane":"%5","version":"%5:0.9.0.0.1:RUN","changed":[],"signal":15,"status":0}
+{"pane":"%2","version":"%2:1.3.0.0.0:RUN","changed":["respawned"],"status":0}
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts start
 afresh). `exited` is the program's status if it ended since, `signal` the
 signal that killed it; a wait from a version that already holds its end
-waits for something else. `code` names a status that is not 0.
+waits for something else.
 
-`status` is the exit status. A wait that fails (124, 4) ends the program
-with that status and says why on stderr, one line, `fux: CODE: MESSAGE`;
-its answer is printed first, as text. Nothing after the wait runs, `json`
-either. The answers of the words before it are printed first too. A wait
-on a tab's or a workspace's panes answers a line for each that changed,
-the first failing status naming the whole.
+A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
+ends the program with that status and says why on stderr, one line, `fux:
+CODE: MESSAGE`, its answer printed first, as text, after the answers of the
+words before it; nothing after it runs, `json` either. Caught by `try`,
+its answer is dropped with the rest of the body's values. A wait on a
+tab's or a workspace's panes answers a line for each that changed, the
+first failing status naming the whole.
 
 ## `events-json`, `X events-of-json`
 
@@ -174,11 +173,10 @@ help try`); a code no running word gives is refused before it runs.
 ## `status json`, `servers json`
 
 ```json
-{"running":true,"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":15,
- "server_version":"0.35.0","server_protocol":15,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":16,
+ "server_version":"0.35.0","server_protocol":16,"compatible":true}
 [{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.35.0","compatible":true}]
 ```
 
-With no server, `status` gives `running`, `socket`, `version` and `protocol`
-alone, and `"left":true` when its socket is left from a server that
-stopped.
+With no server, `status` fails (`no_server`), saying the socket and whether
+a server that stopped left it there.

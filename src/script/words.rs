@@ -103,7 +103,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
-    word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
+    word("Starting", "command", "x line -- x", "the program and its arguments, one line split into words as a shell splits them (quotes, backslashes); no shell runs it, so ; | && and > are words: for those, str sh program str -c arg str LINE arg"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
@@ -117,7 +117,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "respawn", "subject -- answer", "start again in its pane the program run started"),
     // Waiting
     word("Waiting", "changed", "version -- request", "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now"),
-    word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
+    word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds"),
     word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
