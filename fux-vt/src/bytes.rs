@@ -53,9 +53,14 @@ impl ByteQueue {
     pub fn push_with<T>(&mut self, write: impl FnOnce(&mut Vec<u8>) -> T) -> T {
         self.compact();
         let wrote = write(&mut self.bytes);
-        // `taken` stays within a buffer the closure cut short.
-        self.taken = self.taken.min(self.bytes.len());
+        self.clamp_taken();
         wrote
+    }
+    /// Keeps `taken` within a buffer `push_with`'s closure cut short.
+    fn clamp_taken(&mut self) {
+        if self.taken > self.bytes.len() {
+            self.taken = self.bytes.len();
+        }
     }
     /// Reclaims the space taken once it is at least as large as what is
     /// left, so each byte is copied at most once on average.

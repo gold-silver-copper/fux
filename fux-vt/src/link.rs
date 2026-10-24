@@ -523,9 +523,13 @@ impl Links {
     /// Whether making room may be tried now: after a failure, only once in
     /// [`STALL`] links.
     pub(crate) fn may_make_room(&mut self) -> bool {
-        let left = self.stalled.checked_sub(1);
-        self.stalled = left.unwrap_or(0);
-        left.is_none()
+        match self.stalled.checked_sub(1) {
+            Some(left) => {
+                self.stalled = left;
+                false
+            }
+            None => true,
+        }
     }
     /// Making room failed: refuse the next links without trying.
     pub(crate) fn stall(&mut self) {
