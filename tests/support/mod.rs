@@ -239,7 +239,7 @@ impl Server {
         Ok(out.stdout)
     }
 
-    /// The version of `pane` (`PANE:STARTS.SCREEN.BELLS.DONE.ENDED:RUN`).
+    /// The version of `pane` (`PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self
             .ok(&["str", pane, "pane", "str", "version", "get"])?
@@ -1003,7 +1003,7 @@ pub fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
     })
 }
 
-/// The `n`th of a version's counts, from 0 (`STARTS`), as it is written.
+/// The `n`th of a version's counts, from 0 (`RESPAWNS`), as it is written.
 pub fn count(version: &str, n: usize) -> Option<&str> {
     version.split(':').nth(1)?.split('.').nth(n)
 }

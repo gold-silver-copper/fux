@@ -466,7 +466,7 @@ pub struct Pane {
     /// How many times its program was started again (`respawn`), each on a
     /// screen of its own: a wait from the program before answers
     /// `respawned`.
-    pub starts: u64,
+    pub respawns: u64,
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
@@ -509,7 +509,7 @@ impl Pane {
             copied: None,
             wrote_at: Instant::now(),
             record: log::Log::default(),
-            starts: 0,
+            respawns: 0,
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
@@ -768,7 +768,7 @@ impl Pane {
     /// Where it stands now (`Version`).
     pub fn counts(&self) -> crate::command::Counts {
         crate::command::Counts {
-            starts: self.starts,
+            respawns: self.respawns,
             screen: self.screen().revision(),
             bells: self.alerts.rung,
             done: self.screen().commands().finished,
@@ -811,7 +811,7 @@ impl Pane {
             Runs::Program(_) | Runs::Shell => self.name.clone(),
         };
         let runs = Runs::Program(launch);
-        // A new program, its own pane, its counts afresh but `starts`. Kept
+        // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are what the session has yet to take from the old one (a bell, a
         // copy), its colours and log.
         let mut started = Pane::new(self.id, name, runs, self.size(), history)?;
@@ -819,7 +819,8 @@ impl Pane {
         started.bell = self.bell;
         started.copied = self.copied.take();
         started.log = self.log.take();
-        started.starts = self.starts.wrapping_add(1);
+        // 2^64 respawns are never reached: the count never stands still.
+        started.respawns = self.respawns.saturating_add(1);
         started.process = process;
         Ok(std::mem::replace(self, started).process)
     }

@@ -1001,7 +1001,7 @@ impl fuxth::Host for Host<'_> {
                 let text = string(&next()?)?;
                 let Ok(version) = text.parse() else {
                     let why = format!(
-                        "{text:?} is no version: PANE:STARTS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
+                        "{text:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
                     );
                     return Err(fail(Code::BadValue, why));
                 };

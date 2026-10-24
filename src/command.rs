@@ -301,16 +301,16 @@ impl std::str::FromStr for Run {
 }
 
 /// What only grows while one program runs in a pane (a respawn starts all
-/// but `starts` afresh): its program's starts (`respawn`), its screen's
+/// but `respawns` afresh): how often its program was respawned, its screen's
 /// revision (fux-vt's: the bytes of output read, plus one for each resize
 /// to another size and each change to its history: cleared, or
 /// `history-bytes` set; the same however the output was cut into reads),
 /// bells and notifications rung, shell commands ended (OSC 133 `D`), and
 /// whether its program ended. Written
-/// `STARTS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
+/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    pub starts: u64,
+    pub respawns: u64,
     pub screen: u64,
     pub bells: u64,
     pub done: u64,
@@ -321,8 +321,8 @@ impl Counts {
     /// Whether a pane now at `self` can ever have been at `then`: an
     /// earlier program's, or this one's with no count above its own now.
     pub fn had(self, then: Counts) -> bool {
-        then.starts < self.starts
-            || then.starts == self.starts
+        then.respawns < self.respawns
+            || then.respawns == self.respawns
                 && then.screen <= self.screen
                 && then.bells <= self.bells
                 && then.done <= self.done
@@ -333,24 +333,24 @@ impl Counts {
 impl std::fmt::Display for Counts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Counts {
-            starts,
+            respawns,
             screen,
             bells,
             done,
             ended,
         } = self;
-        write!(f, "{starts}.{screen}.{bells}.{done}.{}", u8::from(*ended))
+        write!(f, "{respawns}.{screen}.{bells}.{done}.{}", u8::from(*ended))
     }
 }
 
-/// `STARTS.SCREEN.BELLS.DONE.ENDED`, as counts are written.
+/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, as counts are written.
 impl std::str::FromStr for Counts {
     type Err = ();
     fn from_str(text: &str) -> Result<Counts, ()> {
         let mut parts = text.split('.');
         let mut next = || parts.next().and_then(digits).ok_or(());
         let counts = Counts {
-            starts: next()?,
+            respawns: next()?,
             screen: next()?,
             bells: next()?,
             done: next()?,

@@ -34,7 +34,7 @@ struct Seen {
     ws: WsId,
     tab: TabId,
     ended: Option<Ended>,
-    starts: u64,
+    respawns: u64,
     last: Seq,
 }
 
@@ -56,7 +56,7 @@ impl Snapshot {
                             ws: ws.id,
                             tab: tab.id,
                             ended: pane.process.exit_status(),
-                            starts: pane.starts,
+                            respawns: pane.respawns,
                             last: pane.record.last(),
                         },
                     );
@@ -277,7 +277,7 @@ pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> 
                 if (was.ws, was.tab) != (now.ws, now.tab) {
                     events.push(at(What::Moved));
                 }
-                match now.starts == was.starts {
+                match now.respawns == was.respawns {
                     true => from = was.last,
                     false => events.push(at(What::Respawned)),
                 }

@@ -1,5 +1,5 @@
 //! `wait`: a command line that answers once a pane's counts (`Counts`:
-//! its program's starts, its screen's revision, bells rung, shell commands
+//! its program's respawns, its screen's revision, bells rung, shell commands
 //! ended, its program's end) differ from those of the version the caller
 //! holds, the pane closes, or the time is up. The caller holds a version
 //! from before what it waits for (the one an action answers, from before
@@ -117,7 +117,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     }
     // A program started again is a new one: what its counts are now says
     // nothing of the last one's.
-    let changed: Vec<&str> = match now.starts == since.starts {
+    let changed: Vec<&str> = match now.respawns == since.respawns {
         false => vec!["respawned"],
         true => [
             (now.screen != since.screen, "screen"),
@@ -130,7 +130,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     };
     // Its end, if it ended since: a program started since is a new one,
     // whose end is news.
-    let new = now.starts != since.starts || now.ended != since.ended;
+    let new = now.respawns != since.respawns || now.ended != since.ended;
     let ended = (pane.process.exit_status()).filter(|_| new);
     let ended_said = ended.map(crate::process::told);
     let version = pane.version(run);
@@ -228,7 +228,7 @@ mod tests {
         let version = Version {
             pane: PaneId::of(2),
             counts: Counts {
-                starts: 1,
+                respawns: 1,
                 screen: 57,
                 bells: 0,
                 done: 3,

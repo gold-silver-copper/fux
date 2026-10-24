@@ -300,7 +300,7 @@ impl Frame {
             if own_colours(screen) {
                 return None;
             }
-            panes.push((*id, pane.starts, *rect, screen.size().into()));
+            panes.push((*id, pane.respawns, *rect, screen.size().into()));
         }
         Some(Frame {
             rows: view.rows,
