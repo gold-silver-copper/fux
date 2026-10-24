@@ -1100,24 +1100,16 @@ fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
     let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait"]].concat())?;
     assert_eq!(out.status, 4, "{}{}", out.stdout, out.stderr);
     assert!(out.stderr.starts_with("fux: closed: "), "{}", out.stderr);
-    let sleeper = id(&server.ok(&run(&[], &["sleep", "30"]))?);
-    let waits = std::process::Command::new(FUX)
-        .args(["str", &sleeper, "pane", "str", "NEVER", "wait-text", "wait"])
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .output();
-    let restart = || server.ok(&["str", &sleeper, "pane", "kill-first", "respawn"]);
-    let (waited, restarted) = std::thread::scope(|s| {
-        let waited = s.spawn(|| waits);
-        // Time for the wait to be armed before the program is started again.
-        std::thread::sleep(Duration::from_secs(2));
-        (waited.join(), restart())
-    });
-    restarted?;
-    let waited = waited.map_err(|_| "the wait panicked")?.map_err(e)?;
-    let stderr = String::from_utf8_lossy(&waited.stderr);
-    assert_eq!(waited.status.code(), Some(3), "{stderr}");
-    assert!(stderr.starts_with("fux: exited: "), "{stderr}");
+    // A program that, a moment after it starts, has its pane started
+    // again (once): the wait `run` armed on it ends so.
+    let again = format!(
+        "[ -n \"$AGAIN\" ] || {{ sleep 1; '{FUX}' str \"$FUX_PANE\" pane str AGAIN str 1 env \
+         kill-first respawn; }}; sleep 30"
+    );
+    let words = run(&["str", "NEVER", "wait-text"], &["sh", "-c", &again]);
+    let waited = server.fux(&words)?;
+    assert_eq!(waited.status, 3, "{}{}", waited.stdout, waited.stderr);
+    assert!(waited.stderr.contains("started again"), "{}", waited.stderr);
     Ok(())
 }
 
