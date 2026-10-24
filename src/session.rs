@@ -759,12 +759,8 @@ impl Session {
 
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
-        let new = NewPane {
-            start: Start::Shell(&[]),
-            cwd: &home(),
-            starting: &Starting::default(),
-            size: default_size(),
-        };
+        let (cwd, starting) = (home(), Starting::default());
+        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, default_size());
         self.create_workspace(Some(MAIN.into()), None, Fit::Clients, new)
             .map(drop)
     }
@@ -775,10 +771,7 @@ impl Session {
         self.workspaces.iter().find(|w| w.id == id)
     }
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
-        self.workspaces
-            .iter()
-            .flat_map(Workspace::tabs)
-            .find(|t| t.id == id)
+        (self.workspaces.iter().flat_map(Workspace::tabs)).find(|t| t.id == id)
     }
     /// A tab's layout, unless it is empty.
     pub fn root(&self, tab: TabId) -> Option<&Tree> {
@@ -1125,17 +1118,10 @@ impl Session {
                     Err(fail(code, format!("no {} named {text:?}", kind.name())))
                 }
                 many => {
-                    let each: Vec<String> = (many.iter())
-                        .map(|t| format!("{} {}", t.id, joined(panes_of(t), " ")))
-                        .collect();
-                    Err(fail(
-                        Code::NoTarget,
-                        format!(
-                            "{text:?} names {} tabs ({}): use an id",
-                            many.len(),
-                            each.join(", ")
-                        ),
-                    ))
+                    let each = |t: &&Tab| format!("{} {}", t.id, joined(panes_of(t), " "));
+                    let (n, each) = (many.len(), joined(many.iter().map(each), ", "));
+                    let why = format!("{text:?} names {n} tabs ({each}): use an id");
+                    Err(fail(Code::NoTarget, why))
                 }
             }
         };
@@ -1346,13 +1332,13 @@ impl Session {
             Some(dir) => self.cwd_for(here, None).join(dir),
             None => self.cwd_for(here, near),
         };
-        match cwd.is_dir() {
-            true => Ok(cwd),
-            false => Err(fail(
-                Code::NotADirectory,
-                format!("{} is not a directory", cwd.display()),
-            )),
+        if cwd.is_dir() {
+            return Ok(cwd);
         }
+        Err(fail(
+            Code::NotADirectory,
+            format!("{} is not a directory", cwd.display()),
+        ))
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -1605,10 +1591,7 @@ impl Session {
     fn reference_area(&self, tab: TabId, here: Here) -> Rect {
         let own = here.client().and_then(|c| self.views.get(&c));
         let shows = |v: &&View| self.shows(v.id, tab);
-        match own
-            .filter(shows)
-            .or_else(|| self.views.values().find(shows))
-        {
+        match (own.filter(shows)).or_else(|| self.views.values().find(shows)) {
             Some(view) => Self::pane_area(view),
             None => self.tab_area(self.tab(tab).map_or(Fit::Clients, Tab::fit), here),
         }
@@ -1630,24 +1613,19 @@ impl Session {
     pub fn settle(&mut self) {
         // Out of the session while they are repaired, which reads no view.
         let mut views = std::mem::take(&mut self.views);
-        let ended: Vec<(ClientId, ScreenKind)> = (views.values_mut())
-            .filter_map(|view| self.repair(view).map(|kind| (view.id, kind)))
+        let ended: Vec<Outgoing> = (views.values_mut())
+            .filter_map(|view| Some(Outgoing::To(view.id, ToAttached::Ended(self.repair(view)?))))
             .collect();
         self.views = views;
-        for (client, kind) in ended {
-            self.outbox
-                .push(Outgoing::To(client, ToAttached::Ended(kind)));
-        }
+        self.outbox.extend(ended);
         self.size_panes();
         self.hold_copies();
         self.pane_tabs.clear();
-        for ws in &self.workspaces {
-            for tab in ws.tabs() {
-                if let Some(root) = tab.root() {
-                    root.for_each_pane(&mut |pane| {
-                        self.pane_tabs.insert(pane, tab.id);
-                    });
-                }
+        for tab in (self.workspaces.iter()).flat_map(Workspace::tabs) {
+            if let Some(root) = tab.root() {
+                root.for_each_pane(&mut |pane| {
+                    self.pane_tabs.insert(pane, tab.id);
+                });
             }
         }
         self.edited = true;
@@ -1851,12 +1829,8 @@ impl Session {
     }
 
     fn after_close(&mut self) {
-        if self.panes.is_empty()
-            && !self
-                .outbox
-                .iter()
-                .any(|o| matches!(o, Outgoing::Shutdown { .. }))
-        {
+        let shutting = (self.outbox.iter()).any(|o| matches!(o, Outgoing::Shutdown { .. }));
+        if self.panes.is_empty() && !shutting {
             self.outbox.push(Outgoing::Shutdown {
                 reason: "the last pane closed".into(),
                 keep: false,
@@ -2701,12 +2675,10 @@ impl Session {
             }
         }
         may_go.extend(holders.into_iter().flatten());
-        let gone: Vec<AnyRef> = (may_go.into_iter())
-            .filter(|it| self.there(*it).is_err())
-            .collect();
+        may_go.retain(|it| self.there(*it).is_err());
         // A close from the command line prints `closed` and the ids gone.
         Ok(match origin {
-            Origin::Cli(_) => format!("closed {}\n", joined(&gone, " ")).into(),
+            Origin::Cli(_) => format!("closed {}\n", joined(&may_go, " ")).into(),
             Origin::Client(_) => Reply::default(),
         })
     }
@@ -3005,17 +2977,9 @@ impl Session {
             if only.is_none_or(|o| o == AnyRef::Workspace(ws.id)) {
                 out.push_str(&format!("{} {}\n", ws.id, ws.name));
             }
-            for tab in ws
-                .tabs()
-                .iter()
-                .filter(|t| self.takes_in(only, ws.id, t.id))
-            {
-                out.push_str(&format!(
-                    "  {} {}{}\n",
-                    tab.id,
-                    tab.name,
-                    if tab.root().is_none() { " (empty)" } else { "" }
-                ));
+            for tab in (ws.tabs().iter()).filter(|t| self.takes_in(only, ws.id, t.id)) {
+                let empty = if tab.root().is_none() { " (empty)" } else { "" };
+                out.push_str(&format!("  {} {}{empty}\n", tab.id, tab.name));
                 let Some(root) = tab.root() else { continue };
                 root.for_each_pane(&mut |pane| {
                     if !listed_pane(pane) {
@@ -3061,18 +3025,14 @@ impl Session {
 
     /// A pane's state, as `ls json` has it.
     fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
+        let pid = |c: &Child| Json::Number(i64::from(c.leader.pid().as_raw()));
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
             ("name", Json::str(p.name.as_str())),
             ("title", Json::str(p.title.as_str())),
             ("rows", Json::Number(i64::from(p.size().rows()))),
             ("cols", Json::Number(i64::from(p.size().cols()))),
-            (
-                "pid",
-                p.process.child().map_or(Json::Null, |c| {
-                    Json::Number(i64::from(c.leader.pid().as_raw()))
-                }),
-            ),
+            ("pid", p.process.child().map_or(Json::Null, pid)),
         ];
         fields.extend(crate::capture::state(p, self.run, now, self.copying(p.id)));
         fields
@@ -3093,10 +3053,7 @@ impl Session {
 
     /// A workspace, its tabs and their panes, as `ls json` has them.
     fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Fields<'a> {
-        let tabs = ws
-            .tabs()
-            .iter()
-            .map(|t| Json::Object(self.tab_json(t, now)));
+        let tabs = (ws.tabs().iter()).map(|t| Json::Object(self.tab_json(t, now)));
         vec![
             ("id", Json::str(ws.id.to_string())),
             ("name", Json::str(ws.name.as_str())),
