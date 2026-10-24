@@ -445,7 +445,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.13.0"
+version = "0.14.0"
 
 [[package]]
 name = "fux-vt-compare"
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "libc",
 ]
@@ -1718,7 +1718,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

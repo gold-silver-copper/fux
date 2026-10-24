@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.13.0"
+version = "0.14.0"
 
 [[package]]
 name = "fux-walk"
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "libc",
 ]
