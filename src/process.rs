@@ -127,10 +127,7 @@ impl Leader {
         // leaves those it meant to (`nohup job & exit`).
         let session = if self.1 { self.session() } else { Vec::new() };
         self.signal(session, Signal::Kill);
-        match reaped(self.0) {
-            true => Ok(()),
-            false => Err(self.0),
-        }
+        reaped(self.0).then_some(()).ok_or(self.0)
     }
 }
 

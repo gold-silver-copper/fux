@@ -347,7 +347,7 @@ impl std::str::FromStr for Counts {
     type Err = ();
     fn from_str(text: &str) -> Result<Counts, ()> {
         let mut parts = text.split('.');
-        let mut next = || parts.next().and_then(digits).ok_or(());
+        let mut next = || parts.next().and_then(crate::id::number::<u64>).ok_or(());
         let counts = Counts {
             respawns: next()?,
             screen: next()?,
@@ -359,17 +359,8 @@ impl std::str::FromStr for Counts {
                 _ => return Err(()),
             },
         };
-        match parts.next() {
-            None => Ok(counts),
-            Some(_) => Err(()),
-        }
+        parts.next().is_none().then_some(counts).ok_or(())
     }
-}
-
-/// Digits only, no sign or space, as a count is written.
-fn digits(text: &str) -> Option<u64> {
-    let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    digits.then(|| text.parse().ok()).flatten()
 }
 
 /// Where a pane stands: which server run, which pane, and its counts.
@@ -400,10 +391,8 @@ impl std::str::FromStr for Version {
             run: parts.next().ok_or(())?.parse()?,
         };
         // One spelling only: `%2:0.057…` is no version's.
-        match parts.next().is_none() && version.to_string() == text {
-            true => Ok(version),
-            false => Err(()),
-        }
+        let one = parts.next().is_none() && version.to_string() == text;
+        one.then_some(version).ok_or(())
     }
 }
 
@@ -688,17 +677,6 @@ wire! {
         Workspaces,
         /// The other panes of this one's tab.
         Panes(pane: PaneId),
-    }
-}
-
-impl ClientAction {
-    /// The action on the client it comes from, as a key, a chooser or the
-    /// prompt runs it.
-    pub fn here(self) -> Command {
-        Command::Client {
-            client: None,
-            action: self,
-        }
     }
 }
 

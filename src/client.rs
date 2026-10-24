@@ -772,7 +772,7 @@ fn run_job(
     };
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
-        let mut machine = script::compile_in(keymap.config.as_ref(), &tokens)?;
+        let mut machine = script::compiled(keymap.config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,

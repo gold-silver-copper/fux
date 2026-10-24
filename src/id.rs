@@ -57,7 +57,7 @@ id!(
 );
 
 /// Digits only: no sign, no space.
-pub(crate) fn number(text: &str) -> Option<u32> {
+pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }

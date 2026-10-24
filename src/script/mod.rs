@@ -177,10 +177,11 @@ impl Said {
         }
     }
 
-    /// The pane it is of.
-    pub fn pane(self) -> Option<PaneId> {
+    /// The version an action's answer holds: its pane's from before what
+    /// it did.
+    pub fn version(self) -> Option<crate::command::Version> {
         match self {
-            Said::Action(version) => Some(version.pane),
+            Said::Action(version) => Some(version),
             Said::Capture
             | Said::Listing
             | Said::Panes
@@ -403,16 +404,12 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
 
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compile_in(None, tokens)
+    compiled(None, tokens).map_err(Failed::from)
 }
 
 /// Compiles `tokens` after the library and, for a key's or the prompt's
-/// program, its client's config's definitions (`config`).
-pub fn compile_in(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compiled(config, tokens).map_err(Failed::from)
-}
-
-/// `compile_in`, its mistake as fuxth says it.
+/// program, its client's config's definitions (`config`); its mistake as
+/// fuxth says it.
 pub(crate) fn compiled(
     config: Option<&Config>,
     tokens: &[Token],
@@ -669,20 +666,12 @@ impl Asks for AsClient<'_> {
     }
 }
 
-/// Runs `machine` to its end, asking `asks` what its words ask. Its stack
-/// at the end.
-pub fn run(
-    machine: &mut Machine<Fux>,
-    host: &mut Host<'_>,
-    asks: &mut dyn Asks,
-) -> Result<Vec<Value<Fux>>, Failed> {
-    run_capped(machine, host, asks, None, None)
-}
-
 /// The steps a run takes between looks at its budget.
 const SLICE: u64 = 100_000;
 
-/// `run`, failing once it has taken more than `steps` steps, if given.
+/// Runs `machine` to its end, asking `asks` what its words ask; its stack
+/// at the end. It fails once it has taken more than `steps` steps, if
+/// given, or once `stop` is.
 pub fn run_capped(
     machine: &mut Machine<Fux>,
     host: &mut Host<'_>,

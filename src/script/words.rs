@@ -403,13 +403,10 @@ fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::S
 
 /// The pane a value is: a pane, or an action's answer of one.
 fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
-    if let Value::App(Fux::Answer(answer)) = value {
-        return answer.said.pane();
+    if let Value::App(Fux::Pane(p)) = value {
+        return Some(*p);
     }
-    let Value::App(Fux::Pane(p)) = value else {
-        return None;
-    };
-    Some(*p)
+    held(value).map(|version| version.pane)
 }
 
 fn pane(value: &Value<Fux>) -> Result<PaneId, Failure> {
@@ -487,15 +484,7 @@ fn answer_of(target: AnyRef) -> Then {
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer)) => match answer.said {
-            Said::Action(version) => Some(version),
-            Said::Capture
-            | Said::Listing
-            | Said::Panes
-            | Said::Json
-            | Said::Status
-            | Said::Servers => None,
-        },
+        Value::App(Fux::Answer(answer)) => answer.said.version(),
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
 }
@@ -792,10 +781,7 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
         };
         bytes.extend(u8::try_from(high.saturating_mul(16).saturating_add(low)).ok());
     }
-    match bytes.is_empty() {
-        true => Err(bad()),
-        false => Ok(bytes),
-    }
+    (!bytes.is_empty()).then_some(bytes).ok_or_else(bad)
 }
 
 /// The most input one send-keys sends: a request holds it whole.
@@ -856,15 +842,12 @@ fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
     }
 }
 
-fn act(client: ClientId, action: ClientAction) -> Ask {
-    ask_as(
-        client,
-        Command::Client {
-            client: Some(client),
-            action,
-        },
-        Then::Nothing,
-    )
+fn act(client: ClientId, action: ClientAction, then: Then) -> Ask {
+    let command = Command::Client {
+        client: Some(client),
+        action,
+    };
+    ask_as(client, command, then)
 }
 
 /// How a screen's word makes its screen from what follows the client.
@@ -941,7 +924,7 @@ impl fuxth::Host for Host<'_> {
             };
             return match self.context.client == Some(c) {
                 true => local(Local::Open(open)),
-                false => later(act(c, ClientAction::Run(open.code()))),
+                false => later(act(c, ClientAction::Run(open.code()), Then::Nothing)),
             };
         }
         match name {
@@ -1382,12 +1365,16 @@ impl fuxth::Host for Host<'_> {
                     ("last", PanePick::Last),
                 ];
                 let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
-                later(act(c, ClientAction::SelectPane(pick)))
+                later(act(c, ClientAction::SelectPane(pick), Then::Nothing))
             }
             "focus-pane" => {
                 let c = client(&next()?)?;
                 let p = pane(&next()?)?;
-                later(act(c, ClientAction::SelectPane(PanePick::Id(p))))
+                later(act(
+                    c,
+                    ClientAction::SelectPane(PanePick::Id(p)),
+                    Then::Nothing,
+                ))
             }
             "show-tab" => {
                 let c = client(&next()?)?;
@@ -1395,12 +1382,20 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Tab(tab)) = &t else {
                     return Err(wrong("a tab", &t));
                 };
-                later(act(c, ClientAction::SelectTab(Pick::Id(*tab))))
+                later(act(
+                    c,
+                    ClientAction::SelectTab(Pick::Id(*tab)),
+                    Then::Nothing,
+                ))
             }
             "show-workspace" => {
                 let c = client(&next()?)?;
                 let w = workspace(&next()?)?;
-                later(act(c, ClientAction::SelectWorkspace(Pick::Id(w))))
+                later(act(
+                    c,
+                    ClientAction::SelectWorkspace(Pick::Id(w)),
+                    Then::Nothing,
+                ))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
             | "detach" => {
@@ -1415,18 +1410,11 @@ impl fuxth::Host for Host<'_> {
                     "next-tab" | "previous-tab" => ClientAction::SelectTab(Pick::Step(step)),
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),
                 };
-                later(act(c, action))
+                later(act(c, action, Then::Nothing))
             }
             "capture-client" => {
                 let c = client(&next()?)?;
-                later(ask_as(
-                    c,
-                    Command::Client {
-                        client: Some(c),
-                        action: ClientAction::Capture,
-                    },
-                    Then::Answer(Said::Capture),
-                ))
+                later(act(c, ClientAction::Capture, Then::Answer(Said::Capture)))
             }
             // ------------------------------------------------------ server
             "server" => local(Local::Server(crate::socket::Choice::Name(
