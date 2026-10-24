@@ -278,23 +278,17 @@ impl std::fmt::Display for Run {
     }
 }
 
-/// `PID-SINCE`, as a run is written: digits, then hex digits.
+/// `PID-SINCE`, as a run is written: digits, then lowercase hex digits.
 impl std::str::FromStr for Run {
     type Err = ();
     fn from_str(text: &str) -> Result<Run, ()> {
         let (pid, since) = text.split_once('-').ok_or(())?;
-        let hex = !since.is_empty()
-            && since
-                .bytes()
-                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
         let run = Run {
-            pid: crate::id::number(pid).ok_or(())?,
-            since: hex
-                .then(|| u64::from_str_radix(since, 16).ok())
-                .flatten()
-                .ok_or(())?,
+            pid: pid.parse().map_err(drop)?,
+            since: u64::from_str_radix(since, 16).map_err(drop)?,
         };
-        // One spelling only: no leading zeros.
+        // One spelling only, as `Display` writes it: no sign, no leading
+        // zeros, no capitals.
         (run.to_string() == text).then_some(run).ok_or(())
     }
 }
