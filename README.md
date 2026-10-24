@@ -135,7 +135,9 @@ A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
 also takes a tab's name (`run`'s tabs are named after their program), `tab`
 and `workspace` a pane, the tab or workspace it is in. Inside a pane,
-`here` is that pane (`FUX_PANE`). In a key's program or the prompt's, `me`
+`here` is that pane (`FUX_PANE`); a pane also gets `FUX_SOCKET`, its
+server's socket, and `FUX`, the fux running it, for a script that may not
+find `fux` on PATH. In a key's program or the prompt's, `me`
 is the client whose key it is, and `me focused` its focused pane.
 
 ### Which server
@@ -373,12 +375,13 @@ str g str 'me focused vertical str lazygit program split drop' bind
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 # C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id; after a failure, Enter closes it
+# gives the program the pane's id, `$FUX` is fux even off PATH; after a
+# failure, Enter closes it
 define edit-history
   me focused vertical
   str FUX_TARGET me focused env
   str sh program str -c arg
-  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
+  str 'f=$(mktemp) && "$FUX" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "$FUX" here kill' arg
   split drop
 end
 str y str edit-history bind  str 'edit history' label  str Panes group

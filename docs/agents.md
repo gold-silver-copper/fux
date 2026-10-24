@@ -155,14 +155,15 @@ quiet() {
   prompt's text), or for quiet.
 - **A pane's history in your editor:** `f=$(mktemp) && fux %N all-history
   capture > "$f" && $EDITOR "$f"`. On a key, in `config.fux` (`env` gives
-  the program the pane's id):
+  the program the pane's id; every pane gets `FUX`, the fux running it, as
+  it gets `FUX_PANE` and `FUX_SOCKET`, so no `fux` on PATH is needed):
 
   ```sh
   define edit-history
     me focused vertical
     str FUX_TARGET me focused env
     str sh program str -c arg
-    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
+    str 'f=$(mktemp) && "$FUX" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "$FUX" here kill' arg
     split drop
   end
   str y str edit-history bind  str 'edit history' label  str Panes group
