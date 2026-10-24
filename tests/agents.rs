@@ -297,9 +297,14 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         assert_eq!(output, "one\n");
         server.shows(pane, "hook saw 1")?;
         // An empty line, a comment and a syntax error run nothing: the
-        // next command is the one that ends.
+        // next command is the one that ends. Interactive zsh, unless told
+        // otherwise, runs `#` as a command.
         let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
-        for nothing in ["", "# nothing", ")"] {
+        let nothings: &[&str] = match pane {
+            "zsh" => &["", ")"],
+            _ => &["", "# nothing", ")"],
+        };
+        for nothing in nothings {
             let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
             line_done(&server, pane, "echo two")?;
