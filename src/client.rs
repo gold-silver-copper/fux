@@ -432,6 +432,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
+    let see_log = |what: String| Error::Failed(format!("{what}; see {}", log.display()));
     loop {
         if answers(socket) {
             // Dropping a `Child` neither waits for nor kills it.
@@ -444,16 +445,10 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
             if answers(socket) {
                 return Ok(());
             }
-            let log = log.display();
-            return Err(Error::Failed(format!(
-                "the server exited ({status}); see {log}"
-            )));
+            return Err(see_log(format!("the server exited ({status})")));
         }
         if Instant::now() > deadline {
-            let log = log.display();
-            return Err(Error::Failed(format!(
-                "the server did not start within 2 s; see {log}"
-            )));
+            return Err(see_log("the server did not start within 2 s".to_owned()));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -982,11 +977,8 @@ fn attached(
                     }
                     let keymap = attaching.keymap.clone();
                     keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
-                    if let Some(problem) = &attaching.problem {
-                        acts.push(Act::Notice {
-                            text: problem.clone(),
-                            error: true,
-                        });
+                    if let Some(text) = attaching.problem.clone() {
+                        acts.push(Act::Notice { text, error: true });
                     }
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),

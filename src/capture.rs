@@ -160,19 +160,15 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
     // screen's top if the start was cleared.
+    let left = CommandMark { col: 0, ..start };
     let (first, start) = match screen.row_index(start.row) {
         // An ended command's end left of its start on one row (its last
         // write a `\r`): the row up to the end. A running one's cursor may
         // go back so too, its row then whole.
-        Some(first) if first == last && ended && start.col > end.col => {
-            (first, CommandMark { col: 0, ..start })
-        }
+        Some(first) if first == last && ended && start.col > end.col => (first, left),
         Some(first) if first <= last => (first, start),
-        Some(_) => (
-            screen.history_len().min(last),
-            CommandMark { col: 0, ..start },
-        ),
-        None => (0, CommandMark { col: 0, ..start }),
+        Some(_) => (screen.history_len().min(last), left),
+        None => (0, left),
     };
     let rows: Vec<Row<'_>> = screen
         .rows()
@@ -237,7 +233,7 @@ pub fn state(
     });
     let program = foreground.and_then(fuxix::process::name);
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
-    let commands = screen.commands();
+    let last_status = screen.commands().last_status;
     let argv = match (&pane.runs, job) {
         (_, Ok(Some(job))) => fuxix::process::argv(job),
         (Runs::Program(launch), Ok(None)) => Some(launch.argv.clone()),
@@ -250,28 +246,27 @@ pub fn state(
         None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
+    let hung_up = matches!(pane.process, Process::HungUp(_));
+    let mouse = screen.mouse_protocol_mode();
+    let bracketed_paste = screen.mode(Mode::BracketedPaste);
+    let pictures = Json::Array(screen.pictures().map(picture).collect());
+    let notification = pane.alerts.last.clone();
     vec![
         ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
-        (
-            "hung_up",
-            Json::Bool(matches!(pane.process, Process::HungUp(_))),
-        ),
+        ("hung_up", Json::Bool(hung_up)),
         ("exited", exited),
         ("signal", signal),
         ("idle_ms", Json::int(idle)),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
-        (
-            "mouse",
-            Json::Bool(screen.mouse_protocol_mode() != MouseProtocolMode::None),
-        ),
+        ("mouse", Json::Bool(mouse != MouseProtocolMode::None)),
         // What it asked for: whether a move without a button is reported.
         (
             "mouse_mode",
-            match screen.mouse_protocol_mode() {
+            match mouse {
                 MouseProtocolMode::None => Json::Null,
                 MouseProtocolMode::Press => Json::str("press"),
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
@@ -280,27 +275,15 @@ pub fn state(
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },
         ),
-        (
-            "bracketed_paste",
-            Json::Bool(screen.mode(Mode::BracketedPaste)),
-        ),
-        (
-            "pictures",
-            Json::Array(screen.pictures().map(picture).collect()),
-        ),
+        ("bracketed_paste", Json::Bool(bracketed_paste)),
+        ("pictures", pictures),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
-        (
-            "last_status",
-            commands.last_status.map_or(Json::Null, Json::int),
-        ),
+        ("last_status", last_status.map_or(Json::Null, Json::int)),
         ("bells", Json::int(pane.alerts.rung)),
-        (
-            "notification",
-            pane.alerts.last.clone().map_or(Json::Null, Json::str),
-        ),
+        ("notification", notification.map_or(Json::Null, Json::str)),
         (
             "cwd",
             foreground

@@ -41,14 +41,10 @@ pub struct Grid {
 impl Clone for Grid {
     fn clone(&self) -> Grid {
         Grid {
-            rows: self.rows,
-            cols: self.cols,
             cells: self.cells.clone(),
             links: self.links.clone(),
-            cursor: self.cursor,
-            modes: self.modes,
-            underline_styles: self.underline_styles,
             memo: None,
+            ..*self
         }
     }
 }
@@ -973,13 +969,8 @@ pub fn compose_held(
         let hint = "empty tab: split it or close it";
         let y = area.h() / 2;
         let x = area.w().saturating_sub(width(hint)) / 2;
-        grid.text(
-            y,
-            x,
-            hint,
-            Attributes::new(Color::Idx(244), Color::Default),
-            area.w(),
-        );
+        let dim = Attributes::new(Color::Idx(244), Color::Default);
+        grid.text(y, x, hint, dim, area.w());
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose
@@ -1190,13 +1181,8 @@ fn prompt_line(before: &str, after: &str, room: u16) -> String {
     if start > 0 {
         out.push('…');
     }
-    out.extend(
-        chars
-            .get(start..end)
-            .unwrap_or_default()
-            .iter()
-            .map(|(c, _)| *c),
-    );
+    let shown = chars.get(start..end).unwrap_or_default();
+    out.extend(shown.iter().map(|(c, _)| *c));
     if end < chars.len() {
         out.push('…');
     }
@@ -1373,13 +1359,8 @@ fn bar(
         }
     } else if let Some(ws) = session.shown_workspace(view.id) {
         let name = format!(" {} ", ws.name);
-        x = grid.text(
-            y,
-            x,
-            &fit(&name, left_limit),
-            base.with_bold(true),
-            left_limit,
-        );
+        let bold = base.with_bold(true);
+        x = grid.text(y, x, &fit(&name, left_limit), bold, left_limit);
         let current = ws.tab_of(view.id).map(|t| t.id);
         for tab in ws.tabs() {
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
@@ -1446,15 +1427,9 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     for (line, (text, attrs)) in panel.lines().zip(lines.iter().skip(skip)) {
         grid.fill(line, *attrs);
         // Exact: the panel is at least a cell wide, inside the screen.
-        let text_x = line.x().saturating_add(1);
+        let (x, end) = (line.x().saturating_add(1), line.right().saturating_sub(1));
         let text = fit(text, line.w().saturating_sub(2));
-        grid.text(
-            line.y(),
-            text_x,
-            &text,
-            *attrs,
-            line.right().saturating_sub(1),
-        );
+        grid.text(line.y(), x, &text, *attrs, end);
     }
 }
 
