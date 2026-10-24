@@ -135,10 +135,9 @@ A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
 also takes a tab's name (`run`'s tabs are named after their program), `tab`
 and `workspace` a pane, the tab or workspace it is in. Inside a pane,
-`here` is that pane (`FUX_PANE`); a pane also gets `FUX_SOCKET`, its
-server's socket, and `FUX`, the fux its server runs, for a script that may
-not find `fux` on PATH. In a key's program or the prompt's, `me` is the
-client whose key it is, and `me focused` its focused pane.
+`here` is that pane (`FUX_PANE`, below). In a key's program or the
+prompt's, `me` is the client whose key it is, and `me focused` its focused
+pane.
 
 ### Which server
 
@@ -326,10 +325,26 @@ spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
 taken too, and a name refused is told the closest one. `fux key-names`
 prints them all.
 
-**Inside a pane**, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
-`TERM_PROGRAM_VERSION` is fux's version. XTVERSION (`CSI > q`) answers
-`fux` and its version, secondary device attributes (`CSI > c`) the
-version, and primary ones (`CSI c`) a VT220-class terminal.
+**Inside a pane**, a program's environment holds:
+
+| Variable | Value |
+| --- | --- |
+| `TERM` | `xterm-256color` |
+| `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
+| `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
+| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it; a grant's socket if the pane was started through one, so what runs there stays within the grant |
+| `FUX_SERVER` | which run of which server the pane is of. A fux command from a pane of another server, or of an earlier run of this one, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
+| `FUX` | the fux executable the server runs: what a key's program or a script in a pane runs, as `"$FUX"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
+
+The rest is the server's own environment, as it was when the server
+started, but for the names in `update-environment`, which a new pane takes
+from whoever starts it, and what a program's `env` sets, which comes last.
+`opts str NAME str VALUE env str PROGRAM program run` sets one for one
+program.
+
+XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
+attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
+VT220-class terminal.
 
 ### JSON
 
@@ -375,8 +390,8 @@ str g str 'me focused vertical str lazygit program split drop' bind
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 # C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id, `$FUX` is fux even off PATH; after a
-# failure, Enter closes it
+# gives the program the pane's id, and `"$FUX"` runs fux even when it is
+# not on PATH; after a failure, Enter closes it
 define edit-history
   me focused vertical
   str FUX_TARGET me focused env

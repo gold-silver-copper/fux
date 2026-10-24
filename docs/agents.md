@@ -155,9 +155,8 @@ quiet() {
   prompt's text), or for quiet.
 - **A pane's history in your editor:** `f=$(mktemp) && fux %N all-history
   capture > "$f" && $EDITOR "$f"`. On a key, in `config.fux` (`env` gives
-  the program the pane's id; every pane gets `FUX`, the fux its server
-  runs, as it gets `FUX_PANE` and `FUX_SOCKET`, so no `fux` on PATH is
-  needed):
+  the program the pane's id; `"$FUX"`, the fux the server runs, works
+  where `fux` is not on PATH):
 
   ```sh
   define edit-history
@@ -276,7 +275,11 @@ failure that stopped it.
 
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
   first chooses another server; `start` starts one, `status` says whether
-  one answers. Inside a person's pane, `here` is that pane. A person can
+  one answers. Inside a person's pane, `here` is that pane. Every pane
+  has `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket), `FUX_SERVER`
+  (which run of the server: from a pane of another, a command has no
+  `here`, `stray_pane`) and `FUX` (the fux the server runs, for a script that may
+  not find `fux` on PATH). A person can
   give you `str agent str PATH grant`: a socket that reaches workspace
   `agent` alone. `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.

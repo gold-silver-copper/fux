@@ -513,6 +513,9 @@ status, and a failure's code and message.
 
 Every pane gets `FUX_PANE=%N` and `FUX_SOCKET` in its environment. So a
 command run inside a pane targets that pane without flags, like `TMUX_PANE`.
+Corrected since: a pane also gets `FUX_SERVER`, which run of which server
+it is of, so a command from a pane of another has no `here` there, and
+`FUX`, the server's executable; README.md lists them.
 `-t` targets explicitly:
 
 - a pane: `%N`;
