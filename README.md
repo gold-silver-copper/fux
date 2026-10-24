@@ -337,12 +337,11 @@ prints them all.
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"$FUX"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
 The rest is the server's own environment, as it was when the server
-started. A name in `update-environment` a pane takes instead from whoever
-starts it, over the table too: one they have is set, one they lack unset
-(fux's own, `FUX` and the `FUX_` ones, then keep the table's); a starter
-that sends no environment, such as a client with no terminal, gives none.
-Last, what a program's `env` sets overrides everything: `opts str NAME str
-VALUE env str PROGRAM program run`.
+started. Two things override it and the table alike: the names in
+`update-environment`, which a pane takes from whoever starts it (a name
+they lack is unset, but `FUX` and the `FUX_` names then keep the table's
+value), and, last, what a program's `env` sets: `opts str NAME str VALUE
+env str PROGRAM program run`.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -398,7 +397,7 @@ define edit-history
   me focused vertical
   str FUX_TARGET me focused env
   str sh program str -c arg
-  str 'f=$(mktemp) && "$FUX" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "$FUX" here kill' arg
+  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
   split drop
 end
 str y str edit-history bind  str 'edit history' label  str Panes group
@@ -413,7 +412,7 @@ str y str edit-history bind  str 'edit history' label  str Panes group
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
+| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX` and the `FUX_` names | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use

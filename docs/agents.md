@@ -163,7 +163,7 @@ quiet() {
     me focused vertical
     str FUX_TARGET me focused env
     str sh program str -c arg
-    str 'f=$(mktemp) && "$FUX" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "$FUX" here kill' arg
+    str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
     split drop
   end
   str y str edit-history bind  str 'edit history' label  str Panes group
