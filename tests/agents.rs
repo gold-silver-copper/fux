@@ -298,13 +298,19 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
         assert_eq!(output, "one\n");
         server.shows(pane, "hook saw 1")?;
-        // An empty line and a syntax error run nothing: the next command
-        // is the one that ends. A comment runs nothing in bash; interactive
+        // An empty line and a syntax error (in bash and zsh) run nothing:
+        // the next command is the one that ends. A comment runs nothing in bash; interactive
         // zsh runs `#` as a command (unless interactive_comments), and fish
         // marks a comment line as a command.
         let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
         let mut ended = Vec::new();
-        for nothing in ["", "# nothing", ")"] {
+        // fish, given `)`, does not end the command typed after it as the
+        // others do: its syntax errors are left unsaid.
+        let lines: &[&str] = match pane {
+            "fish" => &["", "# nothing"],
+            _ => &["", "# nothing", ")"],
+        };
+        for &nothing in lines {
             let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
             line_done(&server, pane, "echo two")?;

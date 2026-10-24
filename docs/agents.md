@@ -106,10 +106,11 @@ as integers: `A counts 3 at` is its `DONE`.
 - **A shell command's end, with marks** (`shells` says how to turn them
   on): its version's `DONE` grows as one ends. Type the line at a prompt:
   a command still running ends first, and counts. A line that runs nothing
-  (an empty line, a syntax error, a comment) ends no command, so `DONE`
+  (an empty line, a comment, a syntax error) ends no command, so `DONE`
   stays: for such a line, wait for the prompt's text instead. (A comment
   line ends a command in fish, which marks it, and in zsh, which runs `#`
-  as a command unless `setopt interactive_comments`.)
+  as a command unless `setopt interactive_comments`; a syntax error is
+  tested in bash and zsh alone.)
 
   ```fux
   %3 str 'make test' line let A
@@ -212,10 +213,11 @@ its pane's version (`recipes`), gives `last_status`, lets `last-output`
 read a command's output alone and copy mode's `[` and `]` jump between
 prompts. fux reads marks from any program that sends them. Without marks
 the count stays, and `last-output` says there are none. A `D` with no `C`
-before it ends nothing: a line that runs nothing (an empty line, a
-syntax error; a comment in bash) runs no command, so it sends no `C`, and
-`DONE` and `last_status` stay. fish marks a comment line as a command, and
-zsh runs `#` as one unless `setopt interactive_comments`. To send them, in your own startup files:
+before it ends nothing: a line that runs nothing (an empty line; a
+syntax error in bash and zsh; a comment in bash) runs no command, so it
+sends no `C`, and `DONE` and `last_status` stay. fish marks a comment line
+as a command, and zsh runs `#` as one unless `setopt
+interactive_comments`. To send them, in your own startup files:
 
 ```bash
 # bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0), ~/.bashrc
