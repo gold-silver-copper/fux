@@ -266,7 +266,7 @@ A grid stores a cell in 8 bytes (`compact.rs`):
 Readers never see a stored cell: `Screen::cell`, `Window::cell`,
 `Row::cell` and `Row::cells` return `CellRef`s, which carry the cluster's
 text and the style's attributes. A host that stores screen contents uses
-`Cells` (`row.cells().collect::<Cells>()`, `Cells::set`), which stores
+`Cells` (`Cells::try_from_iter(row.cells())`, `Cells::set`), which stores
 cells as rows do, with each cell's attributes beside it in place of a
 style, so it keeps and cuts text as a row does. A host makes a cell to
 store with `CellRef::new` or `CellRef::wide_continuation`. `Cells` holds
@@ -408,8 +408,9 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   history), and reads, copies and clears each cell about three times; a
   refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
-  `Cells::new` and `Cells::resize` refuse more with `Error::Capacity`,
-  and so does a lack of memory, the cells left as they were.
+  `Cells::new`, `Cells::resize` and `Cells::try_from_iter` refuse more
+  with `Error::Capacity`, and so does a lack of memory, the cells left
+  as they were.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
   order rows came, so `Screen::pictures` reads at most the screen's rows

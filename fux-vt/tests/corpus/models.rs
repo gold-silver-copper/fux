@@ -477,6 +477,5 @@ pub fn check(cells: &Cells, model: &[Model]) {
         assert_eq!(got.as_ref(), Some(m), "cell {i} of {model:?}");
     }
     assert!(cells.text_len() <= Cells::text_limit(cells.len()));
-    let copy: Cells = cells.iter().collect();
-    assert!(copy == *cells);
+    assert!(Cells::try_from_iter(cells.iter()).is_ok_and(|copy| copy == *cells));
 }

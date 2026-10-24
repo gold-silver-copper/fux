@@ -49,10 +49,11 @@ set the OSC limit (B20).
 
 Each host call has its own bound per call: `resize` (B37), `row_by_id`
 and `index_of` (B40), `pictures()` (B09), `sixel::encode` (B08),
-`Picture::new` (B07), `Cells::new` and `Cells::resize` (B39),
-`FrameScan::end` (B19), `ByteQueue::push_with` (B41). The host promises
-its own call rate, and that `push_with`'s closure only adds (B41 makes a
-broken promise harmless).
+`Picture::new` (B07), `Cells::new`, `Cells::resize` and
+`Cells::try_from_iter` (B39), `FrameScan::end` (B19),
+`ByteQueue::push_with` (B41). The host promises its own call rate, and
+that `push_with`'s closure only adds (B41 makes a broken promise
+harmless).
 
 Objects the host retains are its memory, not the parser's budget:
 - an `Arc<Picture>` outlives its eviction (B06); fux keeps each client's
@@ -169,7 +170,7 @@ B26 and B41 bound host-side objects or host calls.
 | B36 | Scrolls inside a region | `slots` ≤ 2 × region rows and `cells` ≤ region cells a sequence, the count clamped to the region; ≤ N ÷ 4 cells and 2R ÷ 3 slots a byte | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
 | B37 | `resize` and reflow (host call) | Heap ≤ steady + another history term; `rows`, `cells` ≤ 3 × (history cells + screen cells + history rows) a call | A rejected resize changes nothing, synchronized output included | Full history, 200 → 199 → 200 columns; 65535×65535 | `b37`; `a_rejected_resize_leaves_synchronized_output_on` |
 | B38 | The screen's size | Rows × columns ≤ `MAX_CELLS` = 67,108,864; history ≤ `MAX_ROWS` rows | `Err(Capacity)`, nothing changed | 65535×65535 | `b38` |
-| B39 | `Cells::new` and `Cells::resize` | Length ≤ `MAX_CELLS` | `Err(Capacity)`, the cells unchanged | `Cells::new(usize::MAX)` | `b39`; `cells_at_the_most_are_made` |
+| B39 | `Cells::new`, `Cells::resize` and `Cells::try_from_iter` | Length ≤ `MAX_CELLS` | `Err(Capacity)`, the cells unchanged | `Cells::new(usize::MAX)` | `b39`; `cells_at_the_most_are_made` |
 | B40 | Row lookups by id (host call) | `rows` ≤ R + ⌊log2(history rows + 1)⌋ + 1 a call; the index's first 256 spans are free (20 KiB a grid), each past costs 80 B of history's budget | `None` for a row that is gone | 8 MiB of empty history; `x ESC[L CR LF` repeated | `b40`; `row_lookup.rs` |
 | B41 | `ByteQueue::push_with` (host call) | After the closure, what was taken ≤ the buffer's length | — | A closure that clears the vector, then a push | `b41` |
 | B42 | Small fixed state | Tab stops a byte a column; the palette about 1.3 KB; kitty stacks 32 entries | — | HTS at every column | `b42` |

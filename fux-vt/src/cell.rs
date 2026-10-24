@@ -795,29 +795,35 @@ impl Cells {
         }
         Ok(())
     }
+    /// A copy of `cells`, their text with them (`Cells::try_from_iter(row.
+    /// cells())`). `Error::Capacity` past `MAX_CELLS` or with no memory,
+    /// as [`Cells::new`].
+    pub fn try_from_iter<'a>(cells: impl IntoIterator<Item = CellRef<'a>>) -> Result<Self, Error> {
+        // All the cells first, so the text is stored within the budget of
+        // the whole run, as it was where it came from.
+        let cells = cells.into_iter();
+        if cells.size_hint().0 > crate::grid::MAX_CELLS {
+            return Err(Error::Capacity);
+        }
+        let mut read: Vec<CellRef<'a>> = Vec::new();
+        for cell in cells {
+            if read.len() >= crate::grid::MAX_CELLS {
+                return Err(Error::Capacity);
+            }
+            read.try_reserve(1).map_err(|_| Error::Capacity)?;
+            read.push(cell);
+        }
+        let mut copy = Self::new(read.len())?;
+        for (at, cell) in read.into_iter().enumerate() {
+            copy.set(at, cell);
+        }
+        Ok(copy)
+    }
     fn line(&mut self) -> Line<'_, Stored> {
         Line {
             cells: &mut self.cells,
             text: &mut self.text,
         }
-    }
-}
-
-/// A copy of the cells, their text with them: `row.cells().collect()`.
-impl<'a> FromIterator<CellRef<'a>> for Cells {
-    fn from_iter<I: IntoIterator<Item = CellRef<'a>>>(cells: I) -> Self {
-        // All the cells first, so the text is stored within the budget of
-        // the whole run, as it was where it came from.
-        let cells: Vec<CellRef<'a>> = cells.into_iter().collect();
-        // As many as there are: they are in memory already.
-        let mut copy = Cells {
-            cells: vec![Stored::default(); cells.len()],
-            text: Text::default(),
-        };
-        for (at, cell) in cells.into_iter().enumerate() {
-            copy.set(at, cell);
-        }
-        copy
     }
 }
 

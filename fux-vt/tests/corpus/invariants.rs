@@ -36,9 +36,8 @@ pub fn check(p: &Parser) {
             row.len()
         );
         // Copied cell by cell, with their text, the row is the same.
-        let copy: Cells = row.cells().collect();
         assert!(
-            copy.iter().eq(row.cells()),
+            Cells::try_from_iter(row.cells()).is_ok_and(|copy| copy.iter().eq(row.cells())),
             "row {offset} copies differently"
         );
         for (i, cell) in row.cells().enumerate() {

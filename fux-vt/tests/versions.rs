@@ -83,17 +83,13 @@ fn piece(r: &mut Rng) -> String {
 }
 
 /// Every retained row by identity: its version, wrap flag and cells.
-fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
-    parser
-        .screen()
-        .rows()
-        .map(|row| {
-            (
-                row.id(),
-                (row.version(), row.wrapped(), row.cells().collect()),
-            )
-        })
-        .collect()
+fn retained(parser: &Parser) -> Result<HashMap<RowId, (u64, bool, Cells)>> {
+    let rows = parser.screen().rows();
+    rows.map(|row| {
+        let cells = Cells::try_from_iter(row.cells())?;
+        Ok((row.id(), (row.version(), row.wrapped(), cells)))
+    })
+    .collect()
 }
 
 /// The SGR that sets `attributes`' underline style, kitty's `4:n`.
@@ -214,10 +210,10 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
                 let pieces = if r.below(3) == 0 { 1 } else { 1 + r.below(6) };
                 (0..pieces).map(|_| piece(&mut r)).collect()
             };
-            let before = retained(&parser);
+            let before = retained(&parser)?;
             let mark = parser.screen().mark();
             parser.process(bytes.as_bytes())?;
-            let after = retained(&parser);
+            let after = retained(&parser)?;
             let screen = parser.screen();
             let dirty: Vec<RowId> = screen.dirty_rows_since(mark).map(|r| r.id()).collect();
             let full = screen.full_refresh_since(mark);

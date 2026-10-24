@@ -1768,6 +1768,14 @@ pub fn b39(scale: Scale, _: usize) -> Found {
             Ok(other) => return Err(format!("resize to {len} gave {other:?}")),
             Err(_) => return Err(format!("resize to {len} panics")),
         }
+        let cells = std::iter::repeat_n(fux_vt::CellRef::default(), len);
+        let copied =
+            std::panic::catch_unwind(|| fux_vt::Cells::try_from_iter(cells).map(|c| c.len()));
+        match copied {
+            Ok(Err(fux_vt::Error::Capacity)) => {}
+            Ok(other) => return Err(format!("try_from_iter of {len} gave {other:?}")),
+            Err(_) => return Err(format!("try_from_iter of {len} panics")),
+        }
     }
     let most = if scale == Scale::Hundred {
         MAX_CELLS
@@ -1775,7 +1783,8 @@ pub fn b39(scale: Scale, _: usize) -> Found {
         1 << 10
     };
     let made = fux_vt::Cells::new(most).map_err(|e| e.to_string())?;
-    (made.len() == most)
+    let copied = fux_vt::Cells::try_from_iter(made.iter()).map_err(|e| e.to_string())?;
+    (made.len() == most && copied.len() == most)
         .then_some(())
         .ok_or(format!("Cells::new({most}) made {}", made.len()))
 }

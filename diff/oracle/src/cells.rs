@@ -52,7 +52,7 @@ pub enum Edit {
     },
     /// `set` from a cell of the run as it was.
     Copy { i: usize, from: usize },
-    /// The run collected from its own cells (`FromIterator`), compared
+    /// The run collected from its own cells (`Cells::try_from_iter`), compared
     /// with itself (`PartialEq`), and taking its place.
     Collect,
 }
