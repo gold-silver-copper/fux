@@ -51,7 +51,7 @@ impl Waiting {
     /// Its answer, if it has one at `now`: a line for each pane that
     /// changed, exited or closed, the first failing status naming the
     /// whole; at its limit, each pane as it stands.
-    pub fn answer(&mut self, session: &Session, now: Instant) -> Option<Reply> {
+    pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
         let told: Vec<Reply> = (self.watches.iter())
             .filter_map(|(id, since)| told(*id, session.panes.get(id), *since))
             .collect();

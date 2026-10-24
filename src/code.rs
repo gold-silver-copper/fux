@@ -101,7 +101,8 @@ codes! {
     /// A command used wrongly.
     Usage "usage",
     // What a command meets.
-    /// A program that exited, which takes no input.
+    /// A program that exited, closed its terminal, or is paused since a
+    /// restart: nothing takes input there.
     NotRunning "not_running",
     /// A program still running, which a respawn would not end.
     StillRunning "still_running",

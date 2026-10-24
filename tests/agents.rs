@@ -217,6 +217,14 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
     let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
+    // A version of a program started more often than this pane's is
+    // another pane's, or made up.
+    let other = server.fux(&["str", &pane, "pane", "str", "3.0.0.0.0", "changed", "wait"])?;
+    assert!(
+        other.stderr.starts_with("fux: bad_value: "),
+        "{}",
+        other.stderr
+    );
     // In one program, a wait on the action's answer waits from the version
     // it holds, a timeout given between them too: asked again once the
     // change surely came, it answers at once, where one from now would
@@ -1078,4 +1086,19 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         assert!(stdout.ends_with(said), "{script}\n{stdout}{stderr}");
     }
     Ok(())
+}
+
+/// Keys to a program that closed its terminal but runs on are refused, as
+/// to one that exited: nothing reads them. Linux says it closed it (the
+/// terminal hangs up); macOS, where fux holds the terminal open, does not.
+#[cfg(target_os = "linux")]
+#[test]
+fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
+    let server = Server::start("")?;
+    let closes = "exec >/dev/null 2>&1 <&-; sleep 30";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", closes]))?);
+    eventually("the keys refused", || {
+        let keys = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
+        Ok(keys.stderr.starts_with("fux: not_running: "))
+    })
 }

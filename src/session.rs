@@ -1207,6 +1207,11 @@ impl Session {
             let why = format!("{id}: its program closed its terminal: nothing reads input there");
             return Err(fail(Code::NotRunning, why));
         }
+        if pane.paused() {
+            let why =
+                format!("{id}: paused since the server restarted: respawn starts its program");
+            return Err(fail(Code::NotRunning, why));
+        }
         match pane.process.exit_status() {
             Some(status) => Err(ended(pane.id, status)),
             None => Ok(pane),
@@ -2066,13 +2071,21 @@ impl Session {
             let why = "a version is one pane's: on a tab or workspace, wait from now";
             return Err(fail(Code::Usage, why));
         }
+        // Its program started fewer times than the version says: the
+        // version is another pane's, or made up.
+        if let (Some(since), [pane]) = (wait.since, panes.as_slice())
+            && since.starts > pane.version().starts
+        {
+            let why = format!("{since} is no version of {}: from another pane?", pane.id);
+            return Err(fail(Code::BadValue, why));
+        }
         let limit = wait.timeout.unwrap_or(self.config.wait);
         let waiting = Waiting::new(&panes, wait.since, now, limit);
         Ok(self.wait_on(waiting, now))
     }
 
     /// A wait's answer, if it has one already; else the wait.
-    fn wait_on(&self, mut waiting: Waiting, now: Instant) -> Begun {
+    fn wait_on(&self, waiting: Waiting, now: Instant) -> Begun {
         match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
@@ -3100,10 +3113,16 @@ impl Session {
     /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let mut fields = match target {
-            AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
-            AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
-            AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
+        let mut fields = match (target, get) {
+            // A pane's version alone, which the recipes read after every
+            // change: not the rest of its state (its foreground program's
+            // name, argv and cwd).
+            (AnyRef::Pane(id), Some("version")) => {
+                (self.panes.get(&id)).map(|p| vec![("version", Json::str(p.version().to_string()))])
+            }
+            (AnyRef::Pane(id), _) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
+            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now)),
+            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now)),
         }
         .unwrap_or_default();
         let Some(field) = get else {
@@ -3455,7 +3474,7 @@ pub(crate) mod testing {
             };
             let outcome = match session.begin(asked.request.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
-                super::Begun::Waiting(mut waiting) => {
+                super::Begun::Waiting(waiting) => {
                     let later = crate::after(std::time::Instant::now(), waiting.limit);
                     waiting.answer(session, later).unwrap_or_default()
                 }
@@ -4259,7 +4278,7 @@ mod tests {
             Request::Wait(target, wait)
         };
         let ws = s.workspaces.first().map(|w| w.id).ok_or("a workspace")?;
-        let Begun::Waiting(mut waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin) else {
+        let Begun::Waiting(waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());
         };
         assert!(waiting.answer(&s, Instant::now()).is_none());
@@ -4270,8 +4289,7 @@ mod tests {
             "{}",
             answer.text
         );
-        let Begun::Waiting(mut waiting) = s.begin(wait(AnyRef::Pane(PaneId::of(1))), &origin)
-        else {
+        let Begun::Waiting(waiting) = s.begin(wait(AnyRef::Pane(PaneId::of(1))), &origin) else {
             return Err("the pane's wait answered at once".into());
         };
         run(&mut s, "str %1 pane kill")?;

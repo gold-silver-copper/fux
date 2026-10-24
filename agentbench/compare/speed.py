@@ -51,10 +51,12 @@ def jobs(bin_, tag):
     out = {}
     out["start"] = ms(lambda: run(bin_, e, "start"))
     out["ls (round trip)"] = ms(lambda: run(bin_, e, "ls"))
-    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
-                  "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout
-    pane = started.split()[0]
-    out["wait for a text (0.2s program)"] = ms(lambda: until_text(bin_, e, started, "READY"))
+    start = lambda: run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
+                        "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout
+    panes = []
+    # Started and waited for in one measure: the start is part of the work.
+    out["start and wait for a text (0.2s program)"] = ms(lambda: panes.append(until_text(bin_, e, start(), "READY")))
+    pane = panes[0]
     out["capture of a quiet pane"] = ms(lambda: run(bin_, e, pane, "opts", "capture"))
     out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "opts", "all-history", "capture", "json"))
     def fan():

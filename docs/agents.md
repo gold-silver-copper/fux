@@ -175,8 +175,9 @@ quiet() {
 - They are written together, in order, as the program's terminal takes
   them. A program that tells a lone Escape from a key's sequence by time
   may read `Escape` and the key after it as one key: send them in two
-  `send-keys`. Keys sent to a program that exited are refused
-  (`not_running`).
+  `send-keys`. Keys sent to a program that exited, that closed its
+  terminal (where the system says so: Linux), or that is paused since a
+  restart are refused (`not_running`).
 - **Mouse:** `%2 str click ROW COL mouse send-mouse` (also `right`,
   `middle`, `press`, `release`, `wheel-up`, `wheel-down`, `move`), cells
   from 0 as `wrapped capture` counts them; on a double-width row, click at

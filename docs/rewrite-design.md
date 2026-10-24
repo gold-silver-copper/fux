@@ -535,7 +535,7 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux move-pane -t %N --to @N\|+N\|new-tab\|new-workspace`, `fux move-pane -t %N -L\|-R\|-U\|-D` | Move a pane (to a workspace: its first tab; with a direction: beside that neighbour, as `S-arrows` do) |
 | `fux swap-pane -t %A %B`, `fux swap-pane -t %A -L\|-R\|-U\|-D` | Swap two panes, anywhere |
 | `fux reorder pane\|tab\|workspace [-t TARGET] --next\|--previous` | Move one place in order (`a m h`/`a m l`, `t m`, `w m`) |
-| `fux terminate [-t %N]` | SIGTERM to the pane's foreground process group, never its shell (the pane menu's "terminate") |
+| `fux terminate [-t %N]` | SIGTERM to the pane's foreground process group, never its shell (now `signal`; `a k`) |
 | `fux resize-pane -t %N -L\|-R\|-U\|-D [N]` | Adjust weights |
 | `fux send-keys -t %N [-l] KEYS…` | Keys (`C-c`, `Enter`, …) or literal text |
 | `fux capture-pane -t %N [-S -N] [--json]` | Screen text, optionally with history |
