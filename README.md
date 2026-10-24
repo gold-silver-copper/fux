@@ -60,7 +60,8 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its v
   of its program's starts, its screen's revisions (output read, resizes,
   history cleared or resized), bells rung and shell commands ended (OSC
   133 marks), and 1 once its program ended; they only grow while one
-  program runs (`respawn` starts all but the first afresh). An action (`run`,
+  program runs (`respawn` starts all but the first afresh, a server
+  restart all of them). An action (`run`,
   `send-keys`, `signal` …) acts at once and answers its pane and its
   version from just before it acted. `PANE str V changed wait` waits until
   the version differs from V or the pane closes, and answers what changed:

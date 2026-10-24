@@ -528,17 +528,20 @@ class Fux(Driver):
         """A shell command, waited for as `fux help-agents` says to without
         marks: a text only its end shows, quoted so the typed line does not
         hold it; numbered, so an earlier command's does not count. Its
-        output is what the history holds between its two markers."""
+        output is what the history holds between its two markers; the end's
+        `=` keeps its status apart from output with no last newline."""
         self.commands += 1
         n = self.commands
-        done = re.compile(rf"^(\d+) __DONE{n}$", re.M)
-        self.act(*self.pane(pane), "str", f"echo __BE''GIN{n}; {cmd}; echo $? __DO''NE{n}", "text",
+        done = re.compile(rf"=(\d+) __DONE{n}$", re.M)
+        self.act(*self.pane(pane), "str", f"echo __BE''GIN{n}; {cmd}; echo =$? __DO''NE{n}", "text",
                  "str", "Enter", "key", "send-keys")
         self.until(pane, lambda: done.search(self.screen(pane, history=True)), timeout)
         rows = [l.rstrip() for l in self.screen(pane, history=True).split("\n")]
-        end = max(i for i, l in enumerate(rows) if done.match(l))
+        end = max(i for i, l in enumerate(rows) if done.search(l))
         begin = max(i for i, l in enumerate(rows[:end]) if l == f"__BEGIN{n}")
-        return "\n".join(rows[begin + 1:end]), done.match(rows[end]).group(1)
+        found = done.search(rows[end])
+        last = [rows[end][:found.start()]] if found.start() else []
+        return "\n".join(rows[begin + 1:end] + last), found.group(1)
 
     def wait_first_exit(self, panes, timeout=15):
         """The name of the first of several panes whose program exits."""

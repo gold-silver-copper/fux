@@ -245,6 +245,12 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         ("version", Json::str(pane.version().to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
+        // Its program closed its terminal and runs on: nothing reads keys
+        // there (the terminal hung up; Linux says so).
+        (
+            "hung_up",
+            Json::Bool(matches!(pane.process, crate::pane::Process::HungUp(_))),
+        ),
         ("exited", exited),
         ("signal", signal),
         ("idle_ms", Json::int(idle)),

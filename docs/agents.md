@@ -15,11 +15,12 @@ shell (`str 'CMD' typed` types a line into it).
 
 **Every pane has a version, and a wait waits for it to change.** A version
 (`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows
-while one program runs (`respawn` starts all but the first afresh): its
-program's starts (`respawn`), its screen's revision (one more for each
-piece of output read, each resize, each change to its history: cleared,
-or `history-bytes` set), bells and notifications rung, shell commands
-ended (OSC 133 marks), and 1 once its program ended. Every action
+while one program runs (`respawn` starts all but the first afresh, a
+server restart all of them): its program's starts (`respawn`), its
+screen's revision (one more for each piece of output read, each resize to
+another size, each change to its history: cleared, or `history-bytes`
+set), bells and notifications rung, shell commands ended (OSC 133 marks),
+and 1 once its program ended. Every action
 (`run`, `send-keys`, `send-mouse`, `signal`, `split`, `new-tab`,
 `new-workspace`, `respawn`) acts at once and prints its pane and the
 version from just before it acted (a new pane's, or a respawned one's, as
@@ -85,13 +86,13 @@ wait_for() {
   until "$@"; do
     [ "$s" = 0 ] || return "$s"
     [ "$SECONDS" -lt "$end" ] || return 124
-    step $((end - SECONDS)); s=$?
+    s=0; step $((end - SECONDS)) || s=$?
   done
 }
 quiet() {
   local end=$((SECONDS + $1)) s
   while [ $((end - SECONDS)) -ge "$2" ]; do
-    step "$2"; s=$?
+    s=0; step "$2" || s=$?
     case $s in 0) ;; 124) return 0 ;; *) return "$s" ;; esac
   done
   return 124
@@ -121,7 +122,8 @@ quiet() {
   quiet 600 5 && fux "$P" all-history capture
   ```
 - **A shell command's end, with marks** (`shells` says how to turn them
-  on): the version's fourth count, `DONE`, grows as one ends.
+  on): the version's fourth count, `DONE`, grows as one ends. Type the
+  line at a prompt: a command still running ends first, and counts.
 
   ```sh
   read -r P V < <(fux %3 str 'make test' line); D=$(cut -d. -f4 <<<"$V")

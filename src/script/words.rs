@@ -1063,8 +1063,13 @@ impl fuxth::Host for Host<'_> {
                     since: built.waits.since.or(built.held),
                     timeout: built.waits.timeout,
                 };
-                let wait = Request::Wait(target, wait);
-                later(ask(wait, Then::Outcome))
+                // A tab's or workspace's answer is no pane, whichever of its
+                // panes changed: name it again to wait on it again.
+                let then = match target {
+                    AnyRef::Pane(_) => Then::Outcome,
+                    AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Several),
+                };
+                later(ask(Request::Wait(target, wait), then))
             }
             // ------------------------------------------------------- input
             "send-keys" => {

@@ -1088,8 +1088,9 @@ fn the_docs_recipes_run_as_written() -> Outcome {
 }
 
 /// Keys to a program that closed its terminal but runs on are refused, as
-/// to one that exited: nothing reads them. Linux says it closed it (the
-/// terminal hangs up); macOS, where fux holds the terminal open, does not.
+/// to one that exited: nothing reads them, and `hung_up` says so. Linux
+/// says it closed it (the terminal hangs up); macOS, where fux holds the
+/// terminal open, does not.
 #[cfg(target_os = "linux")]
 #[test]
 fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
@@ -1099,5 +1100,8 @@ fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     eventually("the keys refused", || {
         let keys = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
         Ok(keys.stderr.starts_with("fux: not_running: "))
-    })
+    })?;
+    let hung_up = server.ok(&["str", &pane, "pane", "str", "hung_up", "get"])?;
+    assert_eq!(hung_up, "true\n");
+    Ok(())
 }
