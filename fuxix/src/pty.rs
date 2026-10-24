@@ -153,8 +153,8 @@ fn missing_interpreter(command: &Command, program: &OsStr) -> Option<String> {
 /// Opens a PTY of `size`: its master and its slave.
 ///
 /// macOS, when PTYs are allocated and freed quickly, by any processes, has
-/// two races this works around (`docs/apple-feedback-ptmx-eredriveopen.md` in
-/// the fux repository has the details and reproducers):
+/// two races this works around (the report for Apple, with the details and
+/// reproducers, is linked from fuxix's README):
 /// - Concurrent opens of `/dev/ptmx` can be handed the same PTY number, and
 ///   the kernel retries the loser only ten times, sleeping up to 100 ms
 ///   between tries, before it returns its own internal code, `EREDRIVEOPEN`
