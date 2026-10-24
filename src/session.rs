@@ -189,6 +189,17 @@ struct NewPane<'a> {
     size: Size,
 }
 
+impl<'a> NewPane<'a> {
+    fn new(start: Start<'a>, cwd: &'a Path, starting: &'a Starting, size: Size) -> Self {
+        Self {
+            start,
+            cwd,
+            starting,
+            size,
+        }
+    }
+}
+
 /// What a command that names nothing acts on, found once from its origin.
 #[derive(Clone, Copy)]
 enum Here<'a> {
@@ -1708,13 +1719,6 @@ impl Session {
         Some(kind)
     }
 
-    /// The settings changed: every pane keeps the history they say.
-    fn configured(&mut self) {
-        for pane in self.panes.values_mut() {
-            pane.parser.set_history_bytes(self.config.history_bytes);
-        }
-    }
-
     /// A PTY is the smallest rectangle any client shows it in. A tab no
     /// client shows whose layout changed is laid out on what its fit says,
     /// as commands resizing it are; otherwise its panes keep their size, so
@@ -1763,9 +1767,7 @@ impl Session {
     }
 
     pub fn touch(&mut self) {
-        for view in self.views.values_mut() {
-            view.dirty = true;
-        }
+        self.views.values_mut().for_each(|view| view.dirty = true);
     }
 
     // ------------------------------------------------------------- closing
@@ -2181,12 +2183,7 @@ impl Session {
             } => {
                 let (cwd, fit, size) =
                     self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
-                let new = NewPane {
-                    start: Start::Shell(env.as_slice()),
-                    cwd: &cwd,
-                    starting: &starting,
-                    size,
-                };
+                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
                 Ok(made.reply(self.pane(made.pane)?.version(self.run)))
@@ -2204,12 +2201,7 @@ impl Session {
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane {
-                    start: Start::Shell(env.as_slice()),
-                    cwd: &cwd,
-                    starting: &starting,
-                    size,
-                };
+                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
                 let made = self.create_tab(target.as_ref(), here, None, fit, new)?;
@@ -2242,12 +2234,7 @@ impl Session {
                 }
                 // Named after its program, if that makes a name.
                 let derived = Some(pane::named(argv)).filter(|n| check_name(n).is_ok());
-                let new = NewPane {
-                    start: Start::Program(argv, env.as_slice()),
-                    cwd: &dir,
-                    starting: &starting,
-                    size,
-                };
+                let new = NewPane::new(Start::Program(argv, env.as_slice()), &dir, &starting, size);
                 let workspace = (workspace.clone()).unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
                 // Opened before the program starts, and emptied after: a run
                 // refused leaves the file as it was.
@@ -2397,7 +2384,9 @@ impl Session {
                 self.config
                     .set(option, value)
                     .map_err(|crate::config::Refused(code, why)| fail(code, why))?;
-                self.configured();
+                // Every pane keeps the history they say.
+                let history = self.config.history_bytes;
+                (self.panes.values_mut()).for_each(|p| p.parser.set_history_bytes(history));
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => {
@@ -2415,13 +2404,8 @@ impl Session {
                         .collect();
                     format!("{i}: {} bytes: {preview}\n", text.len())
                 };
-                Ok(self
-                    .buffers
-                    .iter()
-                    .enumerate()
-                    .map(line)
-                    .collect::<String>()
-                    .into())
+                let list: String = self.buffers.iter().enumerate().map(line).collect();
+                Ok(list.into())
             }
             &Command::ShowBuffer { index } => (self.buffers.get(index).cloned())
                 .map(Reply::from)
@@ -2671,12 +2655,7 @@ impl Session {
         // nothing can then leave running.
         let size = self.split_size(target, axis, here)?;
         let mut ids = self.ids;
-        let new = NewPane {
-            start,
-            cwd: &cwd,
-            starting: &starting,
-            size,
-        };
+        let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
         let tab = tab_of(&mut self.workspaces, target)?;
         self.ids = ids;
@@ -2725,7 +2704,11 @@ impl Session {
         let gone: Vec<AnyRef> = (may_go.into_iter())
             .filter(|it| self.there(*it).is_err())
             .collect();
-        Ok(closed(origin, &gone).into())
+        // A close from the command line prints `closed` and the ids gone.
+        Ok(match origin {
+            Origin::Cli(_) => format!("closed {}\n", joined(&gone, " ")).into(),
+            Origin::Client(_) => Reply::default(),
+        })
     }
 
     /// `resize-pane`: a border of pane `pane` moved, or the pane made a
@@ -3318,14 +3301,6 @@ fn unread(process: &Process) -> Vec<u8> {
     left
 }
 
-/// What a close from the command line prints: `closed` and the ids gone.
-fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
-    match origin {
-        Origin::Cli(_) => format!("closed {}\n", joined(ids, " ")),
-        Origin::Client(_) => String::new(),
-    }
-}
-
 /// What a new pane starts.
 #[derive(Clone, Copy)]
 enum Start<'a> {
@@ -3552,7 +3527,7 @@ pub(crate) mod testing {
             context,
             opened: None,
         };
-        let ended = crate::script::run(&mut machine, &mut host, &mut asks);
+        let ended = crate::script::run_capped(&mut machine, &mut host, &mut asks, None, None);
         let opened = asks.opened;
         session.test_keymap = keymap;
         if let (Some(client), Some(screen)) = (client, opened) {
@@ -3629,7 +3604,10 @@ pub(crate) mod testing {
                 out: &mut dyn std::io::Write,
             ) -> Result<Reply, crate::script::Failed> {
                 let recorded = match &asked.request {
-                    Request::Do(Command::Client { action, .. }) => action.clone().here(),
+                    Request::Do(Command::Client { action, .. }) => Command::Client {
+                        client: None,
+                        action: action.clone(),
+                    },
                     Request::Do(Command::Resolve { .. })
                     | Request::Wait(..)
                     | Request::Events(..)
@@ -3650,7 +3628,8 @@ pub(crate) mod testing {
         };
         let mut host = crate::script::Host::new(context, None, &mut out);
         let mut recorder = Recorder(InProcess(s), Vec::new());
-        crate::script::run(&mut machine, &mut host, &mut recorder).map_err(|e| e.to_string())?;
+        crate::script::run_capped(&mut machine, &mut host, &mut recorder, None, None)
+            .map_err(|e| e.to_string())?;
         Ok(recorder.1)
     }
 
