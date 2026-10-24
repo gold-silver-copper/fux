@@ -13,11 +13,12 @@ define screen capture end
 define shell opts str agent in new-tab end
 # version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended
 define counts string words first str : split-on 1 at str . split-on let parts list parts each number end end end
-# subject secs -- subject : wait from it (a pane from now, an answer from its version) until nothing changes there for secs seconds: the answer of the last change, else it
+# subject secs -- : wait from it (a pane from now, an answer or str V changed from its version) until nothing changes there for secs seconds
 define quiet
   let secs
   begin
     let since
     str timeout try since secs timeout wait false catch 2drop since true end
   until
+  drop
 end

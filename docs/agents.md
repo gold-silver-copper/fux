@@ -80,12 +80,12 @@ when its check holds; to bound the whole of it, run it under the shell's
 as integers: `A counts 3 at` is its `DONE`.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
-  `quiet` waits until nothing changes for N seconds, and leaves the answer
-  of the last change. A spinner or clock on the screen is a change, so then
-  wait for a text.
+  `quiet` waits until nothing changes for N seconds (from a pane, an
+  answer, or `str "$A" changed`). A spinner or clock on the screen is a
+  change, so then wait for a text.
 
   ```fux
-  %2 str 'fix the test' paste str Enter key send-keys 5 quiet drop
+  %2 str 'fix the test' paste str Enter key send-keys 5 quiet
   %2 all-history capture
   ```
 - **A text the reply writes:** count it before, act, and wait until there
