@@ -1109,7 +1109,8 @@ fn a_wait_whose_pane_closes_or_restarts_says_so() -> Outcome {
     let restart = || server.ok(&["str", &sleeper, "pane", "kill-first", "respawn"]);
     let (waited, restarted) = std::thread::scope(|s| {
         let waited = s.spawn(|| waits);
-        std::thread::sleep(Duration::from_millis(300));
+        // Time for the wait to be armed before the program is started again.
+        std::thread::sleep(Duration::from_secs(2));
         (waited.join(), restart())
     });
     restarted?;

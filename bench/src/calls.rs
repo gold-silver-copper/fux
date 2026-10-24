@@ -106,17 +106,17 @@ mod tests {
     /// input is fed and timed; a setup that is not one is refused.
     #[test]
     fn a_kept_probe_is_fed_again_as_it_was_set_up() -> Result<(), String> {
-        let parser = super::parser("50 200 8388608 true 0,1,2\n")?;
+        let parser = super::parser("50 200 8388608 0,1,2\n")?;
         assert_eq!(
             parser.screen().size(),
             fux_vt::Size::new(50, 200).map_err(|e| e.to_string())?
         );
         let mut input = 10_000u64.to_le_bytes().to_vec();
         input.extend([b'x'; 10_000]);
-        assert!(super::longest("4 10 0 false", &input)? > std::time::Duration::ZERO);
-        assert!(super::longest("4 10 0 false", input.get(..100).unwrap_or_default()).is_err());
+        assert!(super::longest("4 10 0", &input)? > std::time::Duration::ZERO);
+        assert!(super::longest("4 10 0", input.get(..100).unwrap_or_default()).is_err());
         assert!(super::parser("50 200").is_err());
-        assert!(super::parser("50 200 0 true 9999").is_err());
+        assert!(super::parser("50 200 0 9999").is_err());
         Ok(())
     }
 }
