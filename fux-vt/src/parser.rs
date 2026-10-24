@@ -1189,20 +1189,14 @@ impl Parser {
         let mut remaining = bytes;
         while let Some((&byte, tail)) = remaining.split_first() {
             let ground = matches!(self.state, State::Ground);
-            // A refusal costs what was refused, and the rest is read
-            // (`kept`, THREATS.md 1.3, B44).
+            // A refusal degrades what it was for, and the rest is read
+            // (`count_degrades`, THREATS.md 1.3, B44).
             let framed = if ground && (0x20..=0x7e).contains(&byte) {
                 let length = printable(remaining);
                 let (run, rest) = remaining
                     .split_at_checked(length)
                     .unwrap_or((remaining, &[]));
-                let taken = match self.screen.ascii(run) {
-                    Ok(taken) => taken,
-                    Err(_) => {
-                        self.refuse();
-                        length
-                    }
-                };
+                let taken = self.screen.ascii(run);
                 remaining = rest;
                 // A wrap scrolled inside margins past the budget.
                 if UNTIL_STOP && self.screen.stopped {
@@ -1218,15 +1212,11 @@ impl Parser {
             } else if ground && byte < 0x20 && byte != 0x1b {
                 // CR LF, which ends most lines, as one.
                 let fed = if let [b'\r', b'\n', after @ ..] = remaining {
-                    if self.screen.carriage_return_line_feed().is_err() {
-                        self.refuse();
-                    }
+                    self.screen.carriage_return_line_feed();
                     remaining = after;
                     true
                 } else {
-                    if self.control(byte, sink).is_err() {
-                        self.refuse();
-                    }
+                    self.control(byte, sink);
                     remaining = tail;
                     matches!(byte, 0x0a..=0x0c)
                 };
@@ -1334,29 +1324,6 @@ impl Parser {
             }
         };
     }
-    /// What `done` gave, or, if it was refused room (`Error::Capacity`),
-    /// nothing, counted in [`Parser::refused`]: the rest of the input is
-    /// read (THREATS.md 1.3, B44).
-    #[inline]
-    fn kept<T: Default>(&mut self, done: Result<T, Error>) -> T {
-        match done {
-            Ok(done) => done,
-            Err(_) => {
-                self.refuse();
-                T::default()
-            }
-        }
-    }
-    #[cold]
-    #[inline(never)]
-    fn refuse(&mut self) {
-        self.refuse_many(1);
-    }
-    #[cold]
-    #[inline(never)]
-    fn refuse_many(&mut self, count: u64) {
-        self.refused = self.refused.saturating_add(count);
-    }
     /// `over`, only where a sequence or string ended (`sequence`, and the
     /// parser back in ground) or a line feed was carried out (`fed`): where
     /// the work a few bytes can multiply is done (`budget.rs`). A rule of
@@ -1383,8 +1350,7 @@ impl Parser {
     #[cold]
     #[inline(never)]
     pub(super) fn resume<const UNTIL_STOP: bool>(&mut self) -> bool {
-        let resumed = self.screen.resume_repeat();
-        self.kept(resumed);
+        self.screen.resume_repeat();
         let stopped = std::mem::take(&mut self.screen.stopped);
         UNTIL_STOP && stopped && self.over::<true>().is_some()
     }
@@ -1397,10 +1363,7 @@ impl Parser {
     /// byte-by-byte path.
     fn text(&mut self, bytes: &[u8]) -> Option<usize> {
         let mut chars = Chars { bytes, taken: 0 };
-        let refused = self.screen.text(&mut chars);
-        if refused > 0 {
-            self.refuse_many(refused);
-        }
+        self.screen.text(&mut chars);
         (chars.taken > 0).then_some(chars.taken)
     }
     /// The string a DCS with final byte `byte` and intermediates `read`
@@ -1480,7 +1443,6 @@ impl Parser {
                         .end(len, u16::try_from(value).unwrap_or(u16::MAX));
                     self.state = State::Ground;
                     let framed = self.csi_dispatch(marker.as_slice(), byte, sink);
-                    let framed = self.kept(framed);
                     self.screen.forget_repeat();
                     return (next, framed);
                 }
@@ -1574,29 +1536,23 @@ impl Parser {
         self.osc.reserve_exact(room.saturating_sub(self.osc.len()));
     }
 
-    fn ground(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+    fn ground(&mut self, byte: u8, sink: &mut impl Sink) {
         match byte {
             0x1b => self.state = State::Escape(Intermediates::default()),
             0x00..=0x1f | 0x7f => {
-                self.control(byte, sink)?;
+                self.control(byte, sink);
                 self.screen.forget_repeat();
             }
-            0x20..=0x7e => self.screen.print(char::from(byte))?,
+            0x20..=0x7e => self.screen.print(char::from(byte)),
             0xc2..=0xf4 => self.state = State::Utf8(Bytes::of(byte)),
             // A byte that starts no UTF-8 sequence, a continuation byte
             // alone among them: U+FFFD (Unicode 3.9; C10). xterm reads a
             // continuation byte alone as Latin-1.
-            _ => self.screen.print(char::REPLACEMENT_CHARACTER)?,
+            _ => self.screen.print(char::REPLACEMENT_CHARACTER),
         }
-        Ok(())
     }
 
-    fn continuation(
-        &mut self,
-        read: Bytes<4>,
-        byte: u8,
-        sink: &mut impl Sink,
-    ) -> Result<(), Error> {
+    fn continuation(&mut self, read: Bytes<4>, byte: u8, sink: &mut impl Sink) {
         let [first, ..] = read.bytes;
         // Only a lead byte begins a character's bytes (`ground`).
         let (need, low, high) = lead(first).unwrap_or((1, 0xff, 0));
@@ -1611,22 +1567,20 @@ impl Parser {
             Some(read) if usize::from(read.len) < need => self.state = State::Utf8(read),
             Some(read) => {
                 if let Some((c, _)) = decode(read.as_slice()) {
-                    self.screen.print(c)?;
+                    self.screen.print(c);
                 }
             }
             // An invalid sequence: what came of it is one U+FFFD (Unicode
             // 17, 3.9, "U+FFFD Substitution of Maximal Subparts"), as in
             // xterm. Then this byte is read again; it can be ESC.
             None => {
-                let printed = self.screen.print(char::REPLACEMENT_CHARACTER);
-                self.kept(printed);
-                self.ground(byte, sink)?;
+                self.screen.print(char::REPLACEMENT_CHARACTER);
+                self.ground(byte, sink);
             }
         }
-        Ok(())
     }
 
-    fn control(&mut self, byte: u8, sink: &mut impl Sink) -> Result<(), Error> {
+    fn control(&mut self, byte: u8, sink: &mut impl Sink) {
         if byte == 7 && self.options.has(Feature::Events) {
             sink.event(Event::Bell);
         }
@@ -1637,8 +1591,7 @@ impl Parser {
     #[cold]
     #[inline(never)]
     fn bell(&mut self, sink: &mut impl Sink) {
-        let done = self.control(0x07, sink);
-        self.kept(done);
+        self.control(0x07, sink);
     }
 
     /// CAN or SUB, `byte`, in `state`, any but ground: what is in progress
@@ -1661,8 +1614,7 @@ impl Parser {
         self.sixel = None;
         self.termcap = false;
         if byte == 0x1a && !matches!(state, State::Sixel) {
-            let done = self.screen.substitute();
-            self.kept(done);
+            self.screen.substitute();
         }
         self.screen.forget_repeat();
     }
@@ -1671,13 +1623,11 @@ impl Parser {
     fn byte(&mut self, byte: u8, sink: &mut impl Sink) -> Option<Stop> {
         let state = self.state;
         if matches!(state, State::Ground) {
-            let done = self.ground(byte, sink);
-            self.kept(done);
+            self.ground(byte, sink);
             return None;
         }
         if let State::Utf8(read) = state {
-            let done = self.continuation(read, byte, sink);
-            self.kept(done);
+            self.continuation(read, byte, sink);
             return None;
         }
         // Anywhere transitions: CAN/SUB cancel, ESC starts a new sequence.
@@ -1688,13 +1638,10 @@ impl Parser {
         }
         if byte == 0x1b {
             // The ESC begins a sequence whatever carrying out the string
-            // does: a refusal there leaves no string open.
+            // does.
             self.state = State::Escape(Intermediates::default());
             match state {
-                State::Osc { whole } => {
-                    let done = self.dispatch_osc(whole, false, sink);
-                    self.kept(done);
-                }
+                State::Osc { whole } => self.dispatch_osc(whole, false, sink),
                 State::Request(request) => self.dispatch_request(request, sink),
                 // ctlseqs, XTGETTCAP: "DCS 0 + r ST for invalid requests";
                 // fux-vt knows no capability names.
@@ -1707,8 +1654,7 @@ impl Parser {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
                     if let Some(picture) = picture {
-                        let placed = self.screen.place_picture(picture);
-                        self.kept(placed);
+                        self.screen.place_picture(picture);
                     }
                 }
                 State::Ground
@@ -1728,8 +1674,7 @@ impl Parser {
             State::Osc { whole } => match byte {
                 0x07 => {
                     self.state = State::Ground;
-                    let done = self.dispatch_osc(whole, true, sink);
-                    self.kept(done);
+                    self.dispatch_osc(whole, true, sink);
                 }
                 _ if !whole || !in_command_string(byte) => return None,
                 _ if self.osc.len() < self.osc_limit => {
@@ -1769,10 +1714,7 @@ impl Parser {
                 return None;
             }
             State::Escape(read) => match byte {
-                0x00..=0x1f => {
-                    let done = self.control(byte, sink);
-                    self.kept(done);
-                }
+                0x00..=0x1f => self.control(byte, sink),
                 0x20..=0x2f => {
                     self.state = read.push(byte).map_or(State::EscapeIgnore, State::Escape);
                 }
@@ -1792,38 +1734,27 @@ impl Parser {
                     ([], b'X' | b'^' | b'_') => self.state = State::IgnoreString,
                     (intermediates, _) => {
                         self.state = State::Ground;
-                        let done = self.escape_dispatch(intermediates, byte, sink);
-                        framed = self.kept(done);
+                        framed = self.escape_dispatch(intermediates, byte, sink);
                     }
                 },
                 _ => {}
             },
             State::EscapeIgnore => match byte {
-                0x00..=0x1f => {
-                    let done = self.control(byte, sink);
-                    self.kept(done);
-                }
+                0x00..=0x1f => self.control(byte, sink),
                 0x30..=0x7e => self.state = State::Ground,
                 _ => {}
             },
             State::Csi(phase) => match phase.next(byte, &mut self.params) {
                 Next::Phase(phase) => self.state = State::Csi(phase),
                 Next::Ignore => self.state = State::CsiIgnore,
-                Next::Control => {
-                    let done = self.control(byte, sink);
-                    self.kept(done);
-                }
+                Next::Control => self.control(byte, sink),
                 Next::Final(read) => {
                     self.state = State::Ground;
-                    let done = self.csi_dispatch(read.as_slice(), byte, sink);
-                    framed = self.kept(done);
+                    framed = self.csi_dispatch(read.as_slice(), byte, sink);
                 }
             },
             State::CsiIgnore => match byte {
-                0x00..=0x1f => {
-                    let done = self.control(byte, sink);
-                    self.kept(done);
-                }
+                0x00..=0x1f => self.control(byte, sink),
                 0x40..=0x7e => self.state = State::Ground,
                 _ => {}
             },
@@ -1848,8 +1779,7 @@ impl Parser {
     #[inline(never)]
     fn resumed<const UNTIL_STOP: bool>(&mut self, sink: &mut impl Sink) -> bool {
         if let Some((read, len, byte)) = self.screen.held_csi() {
-            let done = self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
-            self.kept(done);
+            self.csi_dispatch(read.get(..len).unwrap_or_default(), byte, sink);
             self.screen.forget_repeat();
         }
         self.screen.repeating() && self.resume::<UNTIL_STOP>()
@@ -1861,25 +1791,20 @@ impl Parser {
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Stop>, Error> {
+    ) -> Option<Stop> {
         let framing = self.screen.mode(Mode::SynchronizedOutput);
         // DECID (ctlseqs: "Obsolete form of CSI c"): answered as DA1 is.
         if intermediates.is_empty() && byte == b'Z' {
             let reply = self.screen.primary_attributes(&self.options);
             sink.reply(reply.as_bytes());
-        } else {
-            // A refusal loses only what it was for: a RIS still ends the
-            // frame it resets.
-            let done = self.screen.escape(intermediates, byte);
-            if !self.kept(done.map(Some)).unwrap_or(true) {
-                sink.unhandled(Unhandled::Escape {
-                    intermediates,
-                    action: byte,
-                });
-            }
+        } else if !self.screen.escape(intermediates, byte) {
+            sink.unhandled(Unhandled::Escape {
+                intermediates,
+                action: byte,
+            });
         }
         let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
-        Ok(ended.then_some(Stop::Ended))
+        ended.then_some(Stop::Ended)
     }
 
     /// Carries out a CSI sequence; whether it began or ended a frame, or,
@@ -1890,7 +1815,7 @@ impl Parser {
         intermediates: &[u8],
         byte: u8,
         sink: &mut impl Sink,
-    ) -> Result<Option<Stop>, Error> {
+    ) -> Option<Stop> {
         let (begun, framing) = (
             self.screen.frames_begun(),
             self.screen.mode(Mode::SynchronizedOutput),
@@ -1904,11 +1829,11 @@ impl Parser {
             let ended = framing && !self.screen.mode(Mode::SynchronizedOutput);
             ended.then_some(Stop::Ended)
         };
-        match self.kept(dispatch.map(Some)).unwrap_or(Dispatch::Done) {
+        match dispatch {
             Dispatch::Done => {}
             Dispatch::Held => {
                 self.screen.hold(intermediates, byte);
-                return Ok(Some(Stop::Budget));
+                return Some(Stop::Budget);
             }
             Dispatch::Reply(reply) => sink.reply(reply.as_bytes()),
             Dispatch::Unhandled => {
@@ -1926,7 +1851,7 @@ impl Parser {
                 }
             }
         }
-        Ok(framed)
+        framed
     }
 
     /// Carries out the completed OSC string, cut short unless `whole`,
@@ -1934,12 +1859,11 @@ impl Parser {
     /// and closes any link. Out of line, so `byte` stays small enough to
     /// inline into the parser's loop.
     #[inline(never)]
-    fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) -> Result<(), Error> {
+    fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) {
         let payload = std::mem::take(&mut self.osc);
-        let result = self.osc_command(&payload, whole, bel, sink);
+        self.osc_command(&payload, whole, bel, sink);
         self.osc = payload;
         self.osc.clear();
-        result
     }
 
     /// Answers the DECRQSS whose string just ended.
@@ -1960,28 +1884,22 @@ impl Parser {
         sink.reply(&reply);
     }
 
-    fn osc_command(
-        &mut self,
-        payload: &[u8],
-        whole: bool,
-        bel: bool,
-        sink: &mut impl Sink,
-    ) -> Result<(), Error> {
+    fn osc_command(&mut self, payload: &[u8], whole: bool, bel: bool, sink: &mut impl Sink) {
         let (command, rest) = crate::split_semicolon(payload).unwrap_or((payload, &[]));
         match command {
             b"133" if self.options.has(Feature::PromptMarks) => {
                 let finished = self.screen.commands().finished;
-                let marked = self.screen.prompt_osc(rest);
+                self.screen.prompt_osc(rest);
                 let commands = self.screen.commands();
                 if commands.finished != finished && self.options.has(Feature::Events) {
                     sink.event(Event::CommandEnded(commands.last_status));
                 }
-                return marked;
+                return;
             }
             // A link too long to keep is no link.
             b"8" if self.options.has(Feature::Hyperlinks) => {
                 self.screen.hyperlink_osc(if whole { rest } else { &[] });
-                return Ok(());
+                return;
             }
             _ => {}
         }
@@ -1996,10 +1914,10 @@ impl Parser {
                 sink,
             )
         {
-            return Ok(());
+            return;
         }
         if !self.options.has(Feature::Events) || !whole {
-            return Ok(());
+            return;
         }
         match command {
             b"0" => {
@@ -2037,7 +1955,6 @@ impl Parser {
                 }
             }
         }
-        Ok(())
     }
 }
 

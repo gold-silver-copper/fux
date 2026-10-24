@@ -5,7 +5,6 @@
 //! takes the cells, and the picture, along.
 
 use super::Screen;
-use crate::Error;
 use crate::RowId;
 use crate::sixel::Picture;
 use std::sync::Arc;
@@ -122,7 +121,7 @@ impl Screen {
     /// it covers goes, and so does one this screen no longer shows (text
     /// or an erase over it, its rows gone from history), whose pixels
     /// nothing can show again.
-    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> Result<(), Error> {
+    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) {
         if self.pictures.is_empty() {
             // Nothing to follow: its rows are followed from here.
             self.primary
@@ -160,7 +159,7 @@ impl Screen {
         // printed"), as the line a glyph printed there would end at.
         let across = cols.min(self.grid().line_end().saturating_sub(col));
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
-            return Ok(());
+            return;
         };
         // Each row's cells take the placeholder as a fill, not as text: no
         // pen, mode, cluster or print reaches them (DEC STD 070-9, 11.1).
@@ -192,7 +191,7 @@ impl Screen {
                 let at_bottom = g.lr() && g.cursor.row() == g.lines.last();
                 lifted |= at_bottom;
                 stacked |= at_bottom && !g.in_columns();
-                self.linefeed()?;
+                self.linefeed();
             }
             self.grid_mut().set_col(col);
             self.grid_mut().cursor.pending_wrap = false;
@@ -232,7 +231,7 @@ impl Screen {
                     let row = last.and_then(|last| self.grid().live_row(last));
                     bottom = row.map_or(bottom, |row| row.id());
                 }
-                self.linefeed()?;
+                self.linefeed();
             }
             self.grid_mut().set_col(col);
         }
@@ -252,7 +251,7 @@ impl Screen {
         };
         let alternate = self.alternate_active;
         let Some(top) = top else {
-            return Ok(());
+            return;
         };
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
@@ -305,7 +304,6 @@ impl Screen {
             let Some(victim) = self.victim() else { break };
             self.pictures.remove(victim);
         }
-        Ok(())
     }
 
     /// The bytes of pixels the screen's pictures hold, on either grid.
@@ -663,7 +661,7 @@ fn overlaps(
 #[cfg(all(test, feature = "checks"))]
 mod faults {
     use super::*;
-    use crate::Size;
+    use crate::{Error, Size};
 
     /// A placement of one pixel, its bytes in room for `room`.
     fn placed(id: u64, room: usize, top: RowId) -> Option<Placement> {

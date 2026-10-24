@@ -1147,12 +1147,12 @@ impl Screen {
     /// `A` that first ends the command running, as a `D` with no status.
     /// `C` and `D` mark a command (`command_mark`), `P` a prompt where it
     /// is; the rest change nothing. Every mark counts, whoever sent it.
-    pub(crate) fn prompt_osc(&mut self, payload: &[u8]) -> Result<(), Error> {
+    pub(crate) fn prompt_osc(&mut self, payload: &[u8]) {
         let mut parts = payload.split(|b| *b == b';');
         let command = parts.next().unwrap_or_default();
         if matches!(command, b"C" | b"D") {
             self.command_mark(command, parts.next());
-            return Ok(());
+            return;
         }
         // P (explicit start of prompt) of the primary kind, `k=i` or none,
         // marks where it is without a fresh line: shells send it in A's
@@ -1162,10 +1162,10 @@ impl Screen {
             if kind.is_none_or(|k| k == b"i") {
                 self.prompted();
             }
-            return Ok(());
+            return;
         }
         if !matches!(command, b"A" | b"N" | b"L") {
-            return Ok(());
+            return;
         }
         // N "may first implicitly terminate a previous command".
         if command == b"N" {
@@ -1173,13 +1173,12 @@ impl Screen {
         }
         // CR, then IND, as Ghostty does it.
         if self.grid().cursor.col() != 0 {
-            self.control(b'\r')?;
-            self.linefeed()?;
+            self.control(b'\r');
+            self.linefeed();
         }
         if command != b"L" {
             self.prompted();
         }
-        Ok(())
     }
     /// Whether row `row` of the screen is soft-wrapped: its line goes on in
     /// the next row.
@@ -1355,7 +1354,7 @@ impl Screen {
     /// with left and right margins only while the cursor is between them,
     /// and outside them the cursor stays at the margin, as DEC STD 070
     /// (5.4.3) and xterm's `xtermIndex` have it.
-    fn linefeed(&mut self) -> Result<(), Error> {
+    fn linefeed(&mut self) {
         self.grid_mut().cursor.pending_wrap = false;
         let g = self.grid();
         if g.cursor.row() == g.lines.last() {
@@ -1363,19 +1362,18 @@ impl Screen {
                 if g.in_columns() {
                     self.scroll_columns(g.lines, 1, Scroll::Up { history: true });
                 }
-                return Ok(());
+                return;
             }
             self.scroll_rows(g.lines, 1, Scroll::Up { history: true });
         } else {
             let g = self.grid_mut();
             g.set_row(g.cursor.row().saturating_add(1));
         }
-        Ok(())
     }
     /// A line feed and a carriage return, NEL's and LNM's. With left and
     /// right margins the line feed goes first, as the column says whether
     /// it scrolls (xterm's `CASE_NEL`).
-    fn new_line(&mut self) -> Result<(), Error> {
+    fn new_line(&mut self) {
         let g = self.grid_mut();
         if g.lr() {
             return self.new_line_in_margins();
@@ -1386,13 +1384,12 @@ impl Screen {
     /// `new_line` with left and right margins: the line feed, then the
     /// carriage to the left margin.
     #[inline(never)]
-    fn new_line_in_margins(&mut self) -> Result<(), Error> {
-        self.linefeed()?;
+    fn new_line_in_margins(&mut self) {
+        self.linefeed();
         self.grid_mut().carriage_return();
-        Ok(())
     }
     /// RI: up a line, scrolling at the top margin, as `linefeed` goes down.
-    fn reverse_index(&mut self) -> Result<(), Error> {
+    fn reverse_index(&mut self) {
         self.grid_mut().cursor.pending_wrap = false;
         let g = self.grid();
         if g.cursor.row() == g.lines.first() {
@@ -1403,7 +1400,6 @@ impl Screen {
             let g = self.grid_mut();
             g.set_row(g.cursor.row().saturating_sub(1));
         }
-        Ok(())
     }
     /// Moves the cursor to where a glyph `width` wide goes: on to the next
     /// line with autowrap on (DEC STD 070, Appendix D.6.1), or back to the
@@ -1411,7 +1407,7 @@ impl Screen {
     /// line after it, or none for a glyph not printed (a wide one with
     /// autowrap off, as xterm drops it).
     #[inline]
-    fn wrap_for(&mut self, width: u16) -> Result<Option<u16>, Error> {
+    fn wrap_for(&mut self, width: u16) -> Option<u16> {
         let g = self.grid();
         let end = g.line_end();
         // The last column a glyph this wide can start in.
@@ -1421,7 +1417,7 @@ impl Screen {
         // A pending wrap is carried out wherever it waits, even where a
         // reset right margin was, as xterm and Ghostty do.
         if !g.cursor.pending_wrap && g.cursor.col() <= room {
-            return Ok(Some(end));
+            return Some(end);
         }
         self.wrap(end, room, width)
     }
@@ -1430,26 +1426,26 @@ impl Screen {
     /// pending wrap is carried out first, as xterm does.
     #[cold]
     #[inline(never)]
-    fn too_wide(&mut self, end: u16, width: u16) -> Result<Option<u16>, Error> {
+    fn too_wide(&mut self, end: u16, width: u16) -> Option<u16> {
         let g = self.grid();
         if width <= g.row_end(g.cursor.row()) {
-            return Ok(Some(end));
+            return Some(end);
         }
         if g.cursor.pending_wrap && self.mode(Mode::Autowrap) {
-            self.wrap(end, 0, width)?;
+            self.wrap(end, 0, width);
         }
-        Ok(None)
+        None
     }
     /// `wrap_for` where the glyph does not fit: the cursor goes to the next
     /// line, or back to `room`, the last column the glyph fits in.
     #[inline(never)]
-    fn wrap(&mut self, end: u16, room: u16, width: u16) -> Result<Option<u16>, Error> {
+    fn wrap(&mut self, end: u16, room: u16, width: u16) -> Option<u16> {
         let g = self.grid();
         let wrap = self.mode(Mode::Autowrap);
         // xterm writes a wide glyph over none before it, unless it fits:
         // the flag a glyph left at an old right margin is no wrap.
         if !wrap && width > 1 && g.cursor.col() > room {
-            return Ok(None);
+            return None;
         }
         if !wrap {
             // A wrap left pending where a right margin was overwrites
@@ -1457,7 +1453,7 @@ impl Screen {
             let g = self.grid_mut();
             g.set_col(g.cursor.col().min(room));
             g.cursor.pending_wrap = false;
-            return Ok(Some(end));
+            return Some(end);
         }
         let row = g.cursor.row();
         // Without margins or a halved row: wrap onto the next row, or
@@ -1470,12 +1466,12 @@ impl Screen {
                 g.cursor.pending_wrap = false;
                 g.set_col(0);
                 g.set_row(row.saturating_add(1));
-                return Ok(Some(end));
+                return Some(end);
             }
             g.wrap_onto(row, true, version);
             g.set_col(0);
-            self.linefeed()?;
-            return Ok(Some(end));
+            self.linefeed();
+            return Some(end);
         }
         // The row is soft-wrapped, whatever its last column holds, unless
         // the line feed leaves the cursor on it (the last row below the
@@ -1489,30 +1485,29 @@ impl Screen {
         self.with_grid(|g, _, v| g.wrap_onto(row, wrapped, v));
         // With margins, the line feed goes from the column the glyph did
         // not fit in (xterm's `WrapLine`).
-        self.new_line()?;
+        self.new_line();
         let g = self.grid();
         if !g.narrow() {
-            return Ok(Some(end));
+            return Some(end);
         }
         // The line it wrapped onto may be halved to less than the glyph:
         // it is not printed there (`too_wide`).
         let end = g.line_end();
-        Ok((width <= end || width <= g.row_end(g.cursor.row())).then_some(end))
+        (width <= end || width <= g.row_end(g.cursor.row())).then_some(end)
     }
 
     /// SUB (DEC STD 070, p. 5-132): the error character (U+2426), printed
     /// in no character set: a single shift waits on.
     #[cold]
     #[inline(never)]
-    pub(crate) fn substitute(&mut self) -> Result<(), Error> {
+    pub(crate) fn substitute(&mut self) {
         let single = self.charsets.single;
-        self.print('\u{2426}')?;
+        self.print('\u{2426}');
         self.charsets.single = single;
-        Ok(())
     }
 
     #[inline(never)]
-    pub(crate) fn print(&mut self, raw: char) -> Result<(), Error> {
+    pub(crate) fn print(&mut self, raw: char) {
         let c = if self.charsets.graphics() {
             self.charsets.map(raw)
         } else {
@@ -1523,11 +1518,11 @@ impl Screen {
 
     /// `print` of `c`, already in the character set's mapping, whose
     /// properties are `properties`.
-    fn print_as(&mut self, c: char, properties: Properties) -> Result<(), Error> {
+    fn print_as(&mut self, c: char, properties: Properties) {
         // A control character (C0, DEL or C1, the only ones of no width)
         // is not printed.
         let Some(width) = properties.width().and_then(|w| u16::try_from(w).ok()) else {
-            return Ok(());
+            return;
         };
         // Nor where it fits nowhere, but for a pending wrap, which xterm
         // still carries out. REP still repeats it.
@@ -1535,11 +1530,11 @@ impl Screen {
             self.repeat = Some(c);
             if self.grid().cursor.pending_wrap && self.mode(Mode::Autowrap) {
                 let end = self.grid().line_end();
-                self.wrap(end, 0, width)?;
+                self.wrap(end, 0, width);
             }
-            return Ok(());
+            return;
         }
-        if self.extend_cluster(c, properties)? {
+        if self.extend_cluster(c, properties) {
             // A Prepend character of no width joins nothing after it
             // (README): what follows is segmented afresh.
             if width == 0
@@ -1548,7 +1543,7 @@ impl Screen {
             {
                 printed.cluster = Cluster::ended();
             }
-            return Ok(());
+            return;
         }
         if width == 0 {
             if let Some((row, col)) = self.before_cursor() {
@@ -1586,12 +1581,12 @@ impl Screen {
                     });
                 }
             }
-            return Ok(());
+            return;
         }
         // What REP repeats: the last glyph printed, not a mark.
         self.repeat = Some(c);
-        let Some(end) = self.wrap_for(width)? else {
-            return Ok(());
+        let Some(end) = self.wrap_for(width) else {
+            return;
         };
         work!(cells, width);
         if self.mode(Mode::Insert) {
@@ -1612,24 +1607,19 @@ impl Screen {
             self.link_cells(row, at..at.saturating_add(usize::from(width)), true);
         }
         self.last_print = Some(Printed::of((row, col), properties));
-        Ok(())
     }
 
-    /// Prints the characters `chars` yields, as `print` prints each, and
-    /// says how many of them were refused (`print`'s errors). A glyph one
-    /// or two columns wide that joins no cluster and fits before the line's
-    /// end without a wrap is written straight into its row (`run`);
-    /// anything else, and every character under IRM, takes `print`. The
-    /// first takes `print` too, which spends a single shift.
-    pub(crate) fn text(&mut self, chars: &mut Chars<'_>) -> u64 {
-        let mut refused = 0u64;
+    /// Prints the characters `chars` yields, as `print` prints each. A
+    /// glyph one or two columns wide that joins no cluster and fits before
+    /// the line's end without a wrap is written straight into its row
+    /// (`run`); anything else, and every character under IRM, takes
+    /// `print`. The first takes `print` too, which spends a single shift.
+    pub(crate) fn text(&mut self, chars: &mut Chars<'_>) {
         let general = self.mode(Mode::Insert);
         let Some(first) = chars.next() else {
-            return refused;
+            return;
         };
-        if self.print(first).is_err() {
-            refused = refused.saturating_add(1);
-        }
+        self.print(first);
         while !self.stopped
             && let Some(next) = chars.next()
         {
@@ -1641,11 +1631,8 @@ impl Screen {
                     None => continue,
                 }
             }
-            if self.print_as(c, properties).is_err() {
-                refused = refused.saturating_add(1);
-            }
+            self.print_as(c, properties);
         }
-        refused
     }
 
     /// `text`'s run: writes `first` and the glyphs `chars` yields after it,
@@ -1782,18 +1769,18 @@ impl Screen {
     /// moved as a wide glyph (`relocate`). A zero-width mark joins the cell
     /// before the cursor, even after a cursor move. Whether `c` was taken:
     /// joined, or dropped because the cluster is full.
-    fn extend_cluster(&mut self, c: char, properties: Properties) -> Result<bool, Error> {
+    fn extend_cluster(&mut self, c: char, properties: Properties) -> bool {
         let anchor = match self.last_print {
             Some(printed) => printed,
             None if properties.width() == Some(0) => match self.mark_anchor() {
                 Some(printed) => printed,
-                None => return Ok(false),
+                None => return false,
             },
-            None => return Ok(false),
+            None => return false,
         };
         let mut cluster = anchor.cluster;
         if !cluster.push_properties(properties) {
-            return Ok(false);
+            return false;
         }
         self.join(c, properties, Printed { cluster, ..anchor })
     }
@@ -1812,7 +1799,7 @@ impl Screen {
 
     /// `extend_cluster` once `c` continues `anchor`'s cluster: joins it, if
     /// the cursor is just past the anchor's cell on its row.
-    fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> Result<bool, Error> {
+    fn join(&mut self, c: char, properties: Properties, anchor: Printed) -> bool {
         let g = self.grid();
         let (row, col) = (g.cursor.row(), g.next_column());
         let Printed {
@@ -1821,7 +1808,7 @@ impl Screen {
             kept: known,
         } = anchor;
         let Some(cell) = g.stored(anchor_row, anchor_col) else {
-            return Ok(false);
+            return false;
         };
         let narrow = !cell.is_wide();
         let next = anchor_col.checked_add(if narrow { 1 } else { 2 });
@@ -1830,7 +1817,7 @@ impl Screen {
             || !cell.has_contents()
             || cell.is_wide_continuation()
         {
-            return Ok(false);
+            return false;
         }
         let at = usize::from(anchor_col);
         let cursor = usize::from(col);
@@ -1875,7 +1862,7 @@ impl Screen {
                 self.widen(row, at, cursor);
                 Some((anchor_row, anchor_col))
             }
-            (true, false) => self.relocate(row, anchor_col)?,
+            (true, false) => self.relocate(row, anchor_col),
             (false, _) => Some((anchor_row, anchor_col)),
         };
         let known = match (kept, still_one) {
@@ -1888,7 +1875,7 @@ impl Screen {
             cluster,
             kept: known,
         });
-        Ok(true)
+        true
     }
 
     /// Moves the cluster in cell `at` of `row`, the line's last, grown two
@@ -1907,18 +1894,16 @@ impl Screen {
     /// (`Row::ends_in_spacer`).
     #[cold]
     #[inline(never)]
-    fn relocate(&mut self, row: u16, at: u16) -> Result<Option<(u16, u16)>, Error> {
+    fn relocate(&mut self, row: u16, at: u16) -> Option<(u16, u16)> {
         let g = self.grid();
         let (Some(&cell), Some(text)) = (g.stored(row, at), g.cell(row, at)) else {
-            return Ok(None);
+            return None;
         };
         let text = text.contents().to_owned();
         let link = (g.live_row(row))
             .and_then(|r| r.link(usize::from(at)))
             .cloned();
-        let Some(mut glyph) = cell.holding(b" ") else {
-            return Ok(None);
-        };
+        let mut glyph = cell.holding(b" ")?;
         glyph.widen();
         let links = self.links_seen;
         self.with_grid(|g, _, v| {
@@ -1930,9 +1915,7 @@ impl Screen {
                 g.set_link(row, at..at.saturating_add(1), None, v);
             }
         });
-        let Some(end) = self.wrap_for(2)? else {
-            return Ok(None);
-        };
+        let end = self.wrap_for(2)?;
         work!(cells, 2);
         if self.mode(Mode::Insert) {
             let blank = self.blank_style();
@@ -1951,7 +1934,7 @@ impl Screen {
             }
             g.advance_within(col.saturating_add(2), end);
         });
-        Ok(Some((row, col)))
+        Some((row, col))
     }
 
     /// Widens cell `at` of `row` over the cell under the cursor, which
@@ -2010,9 +1993,9 @@ impl Screen {
     /// Copies past those that fill every row they can reach, on the screen
     /// and in history, change nothing, and whole rows' worth of them are
     /// skipped (`copies_needed`).
-    fn repeat(&mut self, count: u16) -> Result<(), Error> {
+    fn repeat(&mut self, count: u16) {
         let Some(c) = self.repeat else {
-            return Ok(());
+            return;
         };
         let count = self.copies_needed(c, usize::from(count));
         // The copies skipped cost nothing (THREATS.md B33); each made is
@@ -2067,12 +2050,11 @@ impl Screen {
 
     /// The copies a REP stopped at the budget left, made first by the
     /// call after it.
-    pub(crate) fn resume_repeat(&mut self) -> Result<(), Error> {
+    pub(crate) fn resume_repeat(&mut self) {
         match self.left.take() {
             Some(Left::Copies(c, count)) => self.copies(c, count),
             other => {
                 self.left = other;
-                Ok(())
             }
         }
     }
@@ -2128,7 +2110,7 @@ impl Screen {
     /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
     /// inside margins past the budget, the copies left kept for the next
     /// call.
-    fn copies(&mut self, c: char, mut count: usize) -> Result<(), Error> {
+    fn copies(&mut self, c: char, mut count: usize) {
         let stop = |screen: &mut Self, count: usize| {
             if count > 0 {
                 screen.left = Some(Left::Copies(c, count));
@@ -2142,23 +2124,23 @@ impl Screen {
             while count > 0 {
                 if self.stopped {
                     stop(self, count);
-                    return Ok(());
+                    return;
                 }
                 let n = count.min(RUN);
-                let taken = self.ascii(run.get(..n).unwrap_or_default())?;
+                let taken = self.ascii(run.get(..n).unwrap_or_default());
                 if taken == 0 && !self.stopped {
                     break;
                 }
                 count = count.saturating_sub(taken);
             }
-            return Ok(());
+            return;
         }
         let properties = Properties::of(c);
         let insert = self.mode(Mode::Insert);
         while count > 0 {
             if self.stopped {
                 stop(self, count);
-                return Ok(());
+                return;
             }
             // In insert mode each copy moves what is there, as `print` does.
             let filled = match insert {
@@ -2168,7 +2150,7 @@ impl Screen {
             count = match filled.checked_sub(1) {
                 Some(_) => count.saturating_sub(filled),
                 None => {
-                    self.print_as(c, properties)?;
+                    self.print_as(c, properties);
                     count.saturating_sub(1)
                 }
             };
@@ -2178,47 +2160,46 @@ impl Screen {
                 break;
             }
         }
-        Ok(())
     }
 
     /// Prints a run of ASCII straight into cells, wrapping at the right
     /// margin itself (`wrap_for`).
-    pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> Result<usize, Error> {
+    pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> usize {
         let all = bytes.len();
         // Character sets and insert mode take `print`, a glyph at a time.
         if self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
-                    return Ok(i);
+                    return i;
                 }
-                self.print(char::from(byte))?;
+                self.print(char::from(byte));
             }
-            return Ok(all);
+            return all;
         }
         // The first joins a Prepend character printed last (UAX #29, GB9b).
         if self.last_print.is_some_and(|p| p.cluster.prepended())
             && let Some((&first, tail)) = bytes.split_first()
         {
-            self.print(char::from(first))?;
+            self.print(char::from(first));
             bytes = tail;
         }
         let taken = |bytes: &[u8]| all.saturating_sub(bytes.len());
         while let Some((&first, tail)) = bytes.split_first() {
             if self.stopped {
-                return Ok(taken(bytes));
+                return taken(bytes);
             }
-            let Some(line) = self.wrap_for(1)? else {
-                return Ok(all);
+            let Some(line) = self.wrap_for(1) else {
+                return all;
             };
             // A wrap that scrolled past the budget: the glyph it was for is
             // written, and the rest left for the parser.
             if self.stopped {
-                self.print(char::from(first))?;
-                return Ok(taken(tail));
+                self.print(char::from(first));
+                return taken(tail);
             }
             let (row, col) = self.grid().cursor.at();
             let Some(room) = line.checked_sub(col).filter(|r| *r > 0) else {
-                return Ok(all);
+                return all;
             };
             // A run too long for a u16 still stops at the margin.
             let count = u16::try_from(bytes.len()).map_or(room, |n| n.min(room));
@@ -2238,12 +2219,12 @@ impl Screen {
             }
             bytes = bytes.get(run.len()..).unwrap_or_default();
         }
-        Ok(all)
+        all
     }
 
     /// CR then LF, as `control` carries out the one and then the other:
     /// the pair that ends most lines, in one call.
-    pub(crate) fn carriage_return_line_feed(&mut self) -> Result<(), Error> {
+    pub(crate) fn carriage_return_line_feed(&mut self) {
         self.break_cluster();
         let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
@@ -2255,14 +2236,14 @@ impl Screen {
         }
     }
 
-    pub(crate) fn control(&mut self, byte: u8) -> Result<(), Error> {
+    pub(crate) fn control(&mut self, byte: u8) {
         if (8..=13).contains(&byte) {
             self.break_cluster();
         }
         if byte == 8 && self.reverse_wraps() {
             let pending = self.grid().cursor.pending_wrap;
             self.cursor_back(1, pending);
-            return Ok(());
+            return;
         }
         let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
@@ -2273,17 +2254,16 @@ impl Screen {
         }
         match byte {
             8 => g.backward(1),
-            9 => self.forward_tab(1)?,
-            10..=12 if new_line => self.new_line()?,
-            10..=12 => self.linefeed()?,
+            9 => self.forward_tab(1),
+            10..=12 if new_line => self.new_line(),
+            10..=12 => self.linefeed(),
             13 => g.carriage_return(),
             // SO puts G1 in GL, SI G0.
             14 => self.charsets.gl = Set::G1,
             15 => self.charsets.gl = Set::G0,
-            0x1a => self.substitute()?,
+            0x1a => self.substitute(),
             _ => {}
         }
-        Ok(())
     }
     /// Moves the cursor `count` tab stops forward or back. Forward stops at
     /// the right margin, but from right of it or from a line outside the
@@ -2319,22 +2299,20 @@ impl Screen {
     /// HT and CHT: `tab` forward, after the wrap mode 41 carries out
     /// (`more_fix`).
     #[inline(never)]
-    fn forward_tab(&mut self, count: u16) -> Result<(), Error> {
+    fn forward_tab(&mut self, count: u16) {
         if self.mode(Mode::MoreFix) && self.grid().cursor.pending_wrap {
-            self.more_fix()?;
+            self.more_fix();
         }
         self.tab(count, true);
-        Ok(())
     }
     /// `tab`'s wrap carried out with mode 41, with autowrap on.
     #[cold]
     #[inline(never)]
-    fn more_fix(&mut self) -> Result<(), Error> {
+    fn more_fix(&mut self) {
         if self.mode(Mode::Autowrap) {
-            self.linefeed()?;
+            self.linefeed();
             self.grid_mut().set_col(0);
         }
-        Ok(())
     }
     /// Whether BS and CUB wrap back: reverse wraparound, either kind, with
     /// DECAWM, as xterm has it.
@@ -2425,7 +2403,7 @@ impl Screen {
         self.protect = saved.protect;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
-    pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> Result<bool, Error> {
+    pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> bool {
         // SCS (DEC STD 070, SCS): ESC ( F designates G0, ESC ) F G1, ESC * F
         // G2 and ESC + F G3; F `0` is DEC Special Graphics, `<` (the
         // user-preferred supplemental set) and `% 5` DEC Supplemental, and
@@ -2438,17 +2416,17 @@ impl Screen {
             [b'(' | b')' | b'*' | b'+', _] => self.charsets.scs(intermediates, byte),
             b"#" if byte == b'8' => {
                 self.alignment();
-                return Ok(true);
+                return true;
             }
-            b"#" => return Ok(self.set_line_rendition(byte)),
+            b"#" => return self.set_line_rendition(byte),
             // S7C1T and S8C1T (DEC STD 070, 1.7.2): replies stay 7-bit, as
             // UTF-8 has no C1 bytes (ECMA-35, 15.4).
-            b" " if matches!(byte, b'F' | b'G') => return Ok(true),
+            b" " if matches!(byte, b'F' | b'G') => return true,
             [] => {}
-            _ => return Ok(false),
+            _ => return false,
         }
         if !intermediates.is_empty() {
-            return Ok(true);
+            return true;
         }
         if matches!(byte, b'6' | b'7' | b'8' | b'9' | b'D' | b'E' | b'M' | b'c') {
             self.break_cluster();
@@ -2468,8 +2446,8 @@ impl Screen {
             b'~' | b'}' | b'|' => {}
             b'=' => self.modes.set(Mode::ApplicationKeypad, true),
             b'>' => self.modes.set(Mode::ApplicationKeypad, false),
-            b'D' => self.linefeed()?,
-            b'E' => self.new_line()?,
+            b'D' => self.linefeed(),
+            b'E' => self.new_line(),
             // SPA and EPA (ECMA-48 8.3.140, 8.3.49): a guarded area, which
             // ED, EL and ECH leave.
             b'V' | b'W' => {
@@ -2483,7 +2461,7 @@ impl Screen {
                 let col = self.grid().cursor.col();
                 self.terminal.tabs.set(col, true);
             }
-            b'M' => self.reverse_index()?,
+            b'M' => self.reverse_index(),
             // RIS: it resets synchronized output too, which
             // `parser::FrameScan::ends` restates.
             b'c' => {
@@ -2529,9 +2507,9 @@ impl Screen {
             }
             // ST (ECMA-48 8.3.143) is done too: it ended the string before
             // it, which the parser has dispatched, or ends nothing.
-            _ => return Ok(byte == b'\\'),
+            _ => return byte == b'\\',
         }
-        Ok(true)
+        true
     }
 
     /// DECSWL (`ESC # 5`), DECDWL (`ESC # 6`) and DECDHL (`ESC # 3`, `ESC #
@@ -3064,7 +3042,7 @@ impl Screen {
         private: bool,
         on: Option<bool>,
         options: &Options,
-    ) -> Result<Dispatch, Error> {
+    ) -> Dispatch {
         let (mut handled, mut report) = (private, false);
         for group in p.groups() {
             let [n] = group else { continue };
@@ -3083,22 +3061,17 @@ impl Screen {
                 Err(_) => crate::degraded(),
             }
         }
-        Ok(match (handled, report) {
+        match (handled, report) {
             (_, true) => Dispatch::Reply(self.size_report()),
             (true, false) => Dispatch::Done,
             (false, false) => Dispatch::Unhandled,
-        })
+        }
     }
 
     /// XTSAVE (`CSI ? Pm s`, with `save`): each mode saved as it is; and
     /// XTRESTORE (`CSI ? Pm r`): each set as it was saved.
     #[inline(never)]
-    fn save_or_restore_modes(
-        &mut self,
-        p: &Parameters,
-        save: bool,
-        options: &Options,
-    ) -> Result<Dispatch, Error> {
+    fn save_or_restore_modes(&mut self, p: &Parameters, save: bool, options: &Options) -> Dispatch {
         if !save {
             return self.set_modes(p, true, None, options);
         }
@@ -3109,7 +3082,7 @@ impl Screen {
                 self.saved_modes.set(mode, self.mode(mode));
             }
         }
-        Ok(Dispatch::Done)
+        Dispatch::Done
     }
 
     /// Sets or resets `mode`; whether a size report is due (setting
@@ -3368,16 +3341,16 @@ impl Screen {
         intermediates: &[u8],
         byte: u8,
         options: &Options,
-    ) -> Result<Dispatch, Error> {
+    ) -> Dispatch {
         let private = intermediates == b"?";
         // A sequence with an intermediate; of the private ones only the
         // kitty flags' and XTQMODKEYS's queries, not the modes.
         if !intermediates.is_empty() && (!private || matches!(byte, b'u' | b'm')) {
             if let Some(dispatch) = self.csi_intermediate(p, intermediates, byte, options) {
-                return Ok(dispatch);
+                return dispatch;
             }
             if !private {
-                return Ok(Dispatch::Unhandled);
+                return Dispatch::Unhandled;
             }
         }
         if matches!(byte, b'h' | b'l') {
@@ -3415,7 +3388,7 @@ impl Screen {
             return self.save_or_restore_modes(p, byte == b's', options);
         }
         if private && !matches!(byte, b'J' | b'K') {
-            return Ok(Dispatch::Unhandled);
+            return Dispatch::Unhandled;
         }
         let n = p.first(0, 1);
         let (row, col) = self.grid().cursor.at();
@@ -3498,7 +3471,7 @@ impl Screen {
             b'J' | b'K' => {
                 // ED is screen-wide: it may be left for the next call.
                 if byte == b'J' && self.holds_back() {
-                    return Ok(Dispatch::Held);
+                    return Dispatch::Held;
                 }
                 let mut known = false;
                 for group in p.groups() {
@@ -3527,14 +3500,14 @@ impl Screen {
                     }
                 }
                 if !known {
-                    return Ok(Dispatch::Unhandled);
+                    return Dispatch::Unhandled;
                 }
             }
             // IL and DL, ignored outside the margins, leave the cursor at
             // the left margin (DEC STD 070, IL and DL, note 2).
             b'L' | b'M' => {
                 if self.holds_back() {
-                    return Ok(Dispatch::Held);
+                    return Dispatch::Held;
                 }
                 let g = self.grid_mut();
                 if let Some(region) = g.lines.starting_at(row)
@@ -3554,7 +3527,7 @@ impl Screen {
             b'T' if p.groups().nth(4).is_some() => {}
             b'S' | b'T' => {
                 if self.holds_back() {
-                    return Ok(Dispatch::Held);
+                    return Dispatch::Held;
                 }
                 let lines = self.grid().lines;
                 let direction = match byte {
@@ -3582,9 +3555,9 @@ impl Screen {
                 self.sgr(p);
                 self.pen_changed();
             }
-            b'b' => self.repeat(n)?,
+            b'b' => self.repeat(n),
             // CHT (ECMA-48 8.3.10): HT n times.
-            b'I' => self.forward_tab(n)?,
+            b'I' => self.forward_tab(n),
             // CBT (ECMA-48 8.3.7): back n tab stops.
             b'Z' => self.tab(n, false),
             // TBC (ECMA-48 8.3.154; DEC STD 070, p. 5-66): each parameter
@@ -3604,20 +3577,20 @@ impl Screen {
                 }
             }
             b'n' => match p.first(0, 0) {
-                5 => return Ok(Dispatch::Reply(reply!("\x1b[0n"))),
+                5 => return Dispatch::Reply(reply!("\x1b[0n")),
                 6 => {
                     let (row, col) = self.reported_cursor();
                     let reply = reply!("\x1b[{row};{col}R");
-                    return Ok(Dispatch::Reply(reply));
+                    return Dispatch::Reply(reply);
                 }
-                _ => return Ok(Dispatch::Unhandled),
+                _ => return Dispatch::Unhandled,
             },
             b'c' if p.first(0, 0) == 0 => {
-                return Ok(Dispatch::Reply(self.primary_attributes(options)));
+                return Dispatch::Reply(self.primary_attributes(options));
             }
-            _ => return Ok(Dispatch::Unhandled),
+            _ => return Dispatch::Unhandled,
         }
-        Ok(Dispatch::Done)
+        Dispatch::Done
     }
 
     /// The CSI sequences `csi` leaves unhandled, the parser asks here then
@@ -3962,7 +3935,7 @@ mod faults {
     fn screen() -> Result<Screen, Error> {
         let size = Size::new(3, 6).map_err(|_| Error::Capacity)?;
         let mut screen = Screen::new(size, 1 << 12)?;
-        let _ = screen.ascii(b"hello")?;
+        screen.ascii(b"hello");
         Ok(screen)
     }
 
