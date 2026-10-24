@@ -20,7 +20,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
-| `program` | what runs in its foreground, `null` if unknown |
+| `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
