@@ -870,7 +870,7 @@ impl Session {
     /// `FUX_SOCKET`, a grant's socket if its starter came by one,
     /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
     /// had), given its starter's variables, and not those its starter had
-    /// not, unless `env` sets them.
+    /// not (but for the server's own above), unless `env` sets them.
     fn spawn(
         &self,
         id: PaneId,

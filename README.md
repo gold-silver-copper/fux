@@ -339,8 +339,9 @@ prints them all.
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
 `update-environment`, which a pane takes from whoever starts it (a name
-they lack is unset, but `FUX` and the `FUX_` names then keep the table's
-value), and, last, what a program's `env` sets: `opts str NAME str VALUE
+they lack is unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`
+then keep the table's value; a starter with no environment at all, as
+`env -i` leaves one, changes none), and, last, what a program's `env` sets: `opts str NAME str VALUE
 env str PROGRAM program run`.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
@@ -391,8 +392,8 @@ str g str 'me focused vertical str lazygit program split drop' bind
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 # C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id, and `"$FUX"` runs fux even when it is
-# not on PATH; after a failure, Enter closes it
+# gives the program the pane's id, and `"${FUX:-fux}"` is the server's fux,
+# on PATH or not; after a failure, Enter closes it
 define edit-history
   me focused vertical
   str FUX_TARGET me focused env
@@ -412,7 +413,7 @@ str y str edit-history bind  str 'edit history' label  str Panes group
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX` and the `FUX_` names | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
+| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use
