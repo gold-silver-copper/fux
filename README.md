@@ -339,10 +339,10 @@ prints them all.
 The rest is the server's own environment, as it was when the server
 started. A name in `update-environment` a pane takes instead from whoever
 starts it, over the table too: one they have is set, one they lack unset
-(the `FUX_` ones then keep the table's); a starter that sends no
-environment, such as a client with no terminal, gives none. Last, what a
-program's `env` sets overrides everything: `opts str NAME str VALUE env str
-PROGRAM program run`.
+(fux's own, `FUX` and the `FUX_` ones, then keep the table's); a starter
+that sends no environment, such as a client with no terminal, gives none.
+Last, what a program's `env` sets overrides everything: `opts str NAME str
+VALUE env str PROGRAM program run`.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
