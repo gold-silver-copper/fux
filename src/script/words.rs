@@ -104,7 +104,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
-    word("Starting", "typed", "x line -- x", "a command line typed into its new shell"),
+    word("Starting", "typed", "x line -- x", "a command line typed into its new shell, at once: its terminal echoes it above the first prompt too"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
@@ -119,7 +119,7 @@ pub const WORDS: &[Word] = &[
     // Waiting
     word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE.ENDED, as an action or `str version get` gives it), not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
-    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of its panes"),
+    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
@@ -327,10 +327,9 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
                     .filter(|line| !line.trim().is_empty())
                     .map(|line| Json::Raw(line.to_owned().into()))
                     .collect();
-                match (answer.said, objects.pop()) {
-                    (Said::Several, last) => Json::Array(objects.into_iter().chain(last).collect()),
-                    (_, Some(one)) if objects.is_empty() => one,
-                    (_, last) => Json::Array(objects.into_iter().chain(last).collect()),
+                match (answer.said, objects.as_mut_slice()) {
+                    (said, [one]) if said != Said::Several => std::mem::replace(one, Json::Null),
+                    _ => Json::Array(objects),
                 }
             }
             None => Json::str(answer.text.clone()),

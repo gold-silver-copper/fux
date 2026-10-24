@@ -115,7 +115,8 @@ quiet() {
   read -r P V < <(fux "$P" str Enter key send-keys)
   wait_for 600 more && echo answered
   ```
-- **Quiet for N seconds** (an agent's TUI done, or asking you something):
+- **Quiet for N seconds** (an agent's TUI done, or asking you something;
+  a program that ends meanwhile answers 2, not quiet):
   a spinner or clock on the screen is a change, so then wait for a text.
 
   ```sh
@@ -226,7 +227,7 @@ autoload -Uz add-zsh-hook
 mark_start() { print -n '\e]133;C\a' }
 mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
 add-zsh-hook preexec mark_start
-add-zsh-hook precmd mark_end
+precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's
 # fish, ~/.config/fish/config.fish
 function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
 function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end

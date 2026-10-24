@@ -73,7 +73,7 @@ const ZSH_MARKS: &str = r#"autoload -Uz add-zsh-hook
 mark_start() { print -n '\e]133;C\a' }
 mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
 add-zsh-hook preexec mark_start
-add-zsh-hook precmd mark_end"#;
+precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's"#;
 
 /// The marks the README shows for fish.
 const FISH_MARKS: &str = r#"function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end

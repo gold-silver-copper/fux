@@ -27,7 +27,7 @@ pub struct Waiting {
     watches: Vec<(PaneId, Version)>,
     deadline: Instant,
     /// How long it waits at most: its own timeout, else the server's.
-    pub(crate) limit: Duration,
+    limit: Duration,
 }
 
 impl Waiting {
@@ -96,7 +96,10 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Version) -> Option<Reply> {
         return Some(said(id, "closed".to_owned(), Vec::new(), end));
     };
     let now = pane.version();
-    if now == since {
+    // Part way through a frame (synchronized output, the rest of it already
+    // read and kept for the next turn): its screen is one the program never
+    // meant shown, so a wait answers once the frame is whole.
+    if now == since || pane.mid_frame() {
         return None;
     }
     // A program started again is a new one: what its counts are now says
@@ -169,6 +172,29 @@ fn said(id: PaneId, line: String, fields: Vec<(&'static str, Json<'static>)>, en
 #[cfg(test)]
 mod tests {
     use crate::command::Version;
+    use crate::id::PaneId;
+    use crate::pane::{Pane, Runs};
+
+    /// A wait answers no change part way through a frame, and the frame's
+    /// whole screen once it is read.
+    #[test]
+    fn a_wait_answers_a_frame_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(50, 200)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        let since = pane.version();
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(crate::pane::tests::spends_the_budget(50, 200));
+        frame.extend_from_slice(b"DONE\x1b[?2026l");
+        pane.output(&frame);
+        assert!(pane.mid_frame());
+        assert!(super::told(pane.id, Some(&pane), since).is_none());
+        while pane.mid_frame() {
+            pane.read_unread();
+        }
+        let told = super::told(pane.id, Some(&pane), since).ok_or("no answer")?;
+        assert!(told.text.ends_with(" screen\n"), "{}", told.text);
+        Ok(())
+    }
 
     /// A version is written and read back as `STARTS.SCREEN.BELLS.DONE.ENDED`.
     #[test]

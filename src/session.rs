@@ -2092,15 +2092,11 @@ impl Session {
         }
         let limit = wait.timeout.unwrap_or(self.config.wait);
         let waiting = Waiting::new(&panes, wait.since, now, limit);
-        Ok(self.wait_on(waiting, now))
-    }
-
-    /// A wait's answer, if it has one already; else the wait.
-    fn wait_on(&self, waiting: Waiting, now: Instant) -> Begun {
-        match waiting.answer(self, now) {
+        // Its answer, if it has one already; else the wait.
+        Ok(match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
-        }
+        })
     }
 
     /// A request from a granted socket, if it may run: with no target, one
@@ -3486,8 +3482,7 @@ pub(crate) mod testing {
             let outcome = match session.begin(asked.request.clone(), &origin) {
                 super::Begun::Done(outcome) => outcome,
                 super::Begun::Waiting(waiting) => {
-                    let later = crate::after(std::time::Instant::now(), waiting.limit);
-                    waiting.answer(session, later).unwrap_or_default()
+                    waiting.answer(session, waiting.due()).unwrap_or_default()
                 }
                 super::Begun::Events(_) => {
                     let _ = writeln!(out, "events stream from a real server only");

@@ -828,7 +828,7 @@ impl Pane {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use fux_vt::Mode;
 
@@ -936,7 +936,7 @@ mod tests {
     /// `rows` by `cols`, whatever fux-vt's weights: DECALN fills every
     /// cell and ED clears them all, the pair repeated twice as often as
     /// the fewest that a parser call stops at its budget in.
-    fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
+    pub(crate) fn spends_the_budget(rows: u16, cols: u16) -> Vec<u8> {
         struct Discard;
         impl fux_vt::Sink for Discard {}
         let output = |n| -> Vec<u8> {
