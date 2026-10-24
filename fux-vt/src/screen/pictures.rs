@@ -350,12 +350,19 @@ impl Screen {
     /// alone is past it.
     pub(crate) fn set_picture_bytes(&mut self, bytes: usize, drawing: usize) -> bool {
         self.picture_budget = bytes;
+        let kept = self.pictures.len();
         // The one being drawn past it alone goes (the parser's), and the
         // pictures kept still fit the budget without it.
-        self.make_room(drawing, true) || {
+        let fits = self.make_room(drawing, true) || {
             let _ = self.make_room(0, true);
             false
+        };
+        // A picture let go changed what the screen shows: so do its counts.
+        if self.pictures.len() != kept {
+            self.version = self.version.saturating_add(1);
+            self.revise(1);
         }
+        fits
     }
 
     /// The pictures the screen shows: those of the screen in use whose

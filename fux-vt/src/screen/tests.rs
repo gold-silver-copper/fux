@@ -440,8 +440,13 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
     p.process(&one)?;
     p.process(b"\x1b[1;30H")?;
     p.process(&one)?;
+    let revision = p.screen().revision();
     p.set_picture_bytes(48_000);
     assert_eq!(shown(&p), [2], "one fits");
+    assert!(
+        p.screen().revision() > revision,
+        "a picture let go is a change"
+    );
     let mut unfinished = picture(100, 120);
     unfinished.truncate(unfinished.len().saturating_sub(2));
     p.process(b"\x1b[10;1H")?;
