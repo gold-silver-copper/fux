@@ -2017,13 +2017,18 @@ impl Session {
     /// runs at once.
     pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         // A size a saved session asks for that cannot be had here is left
-        // as it comes, so one does not keep the rest from coming back.
+        // as it comes, so one does not keep the rest from coming back; the
+        // server's log says which.
         if let Request::Do(command @ Command::ResizePane { .. }) = &request
             && self.starting_for(origin).restoring
         {
             let outcome = self.run_command(command, origin);
             return Begun::Done(match outcome.end {
-                End::Failed { .. } => Reply::default(),
+                End::Failed { message, .. } => {
+                    let said = format!("fux server: restoring, left as it came: {message}\n");
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
+                    Reply::default()
+                }
                 End::Done => outcome,
             });
         }
