@@ -5,7 +5,7 @@ resolver = "3"
 
 [package]
 name = "fux"
-version = "0.34.0"
+version = "0.35.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -17,9 +17,9 @@ categories = ["command-line-utilities"]
 include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/LICENSE"]
 
 [dependencies]
-fux-vt = { path = "fux-vt", version = "0.13.0" }
+fux-vt = { path = "fux-vt", version = "0.14.0" }
 signal-hook = "0.4"
-fuxix = { path = "fuxix", version = "0.6.3" }
+fuxix = { path = "fuxix", version = "0.7.0" }
 fuxth = { path = "fuxth", version = "0.6.0" }
 
 # The tests' sandbox (tests/support/sandbox.rs): a seccomp filter such as

@@ -56,10 +56,10 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.34.0"
+version = "0.35.0"
 dependencies = [
- "fux-vt 0.13.0",
- "fuxix 0.6.3",
+ "fux-vt 0.14.0",
+ "fuxix 0.7.0",
  "fuxth 0.6.0",
  "signal-hook",
 ]
@@ -69,11 +69,11 @@ name = "fux-diff"
 version = "0.0.0"
 dependencies = [
  "fux 0.33.1",
- "fux 0.34.0",
+ "fux 0.35.0",
  "fux-vt 0.12.1",
- "fux-vt 0.13.0",
+ "fux-vt 0.14.0",
  "fuxix 0.6.2",
- "fuxix 0.6.3",
+ "fuxix 0.7.0",
 ]
 
 [[package]]
@@ -92,13 +92,13 @@ checksum = "73a663fa645368669cd918f8ccb75b161697a9b74cf3a87e19b8488cb7024ca7"
 
 [[package]]
 name = "fux-vt"
-version = "0.13.0"
+version = "0.14.0"
 
 [[package]]
 name = "fux-vt-oracle"
 version = "0.0.0"
 dependencies = [
- "fux-vt 0.13.0",
+ "fux-vt 0.14.0",
  "fux-vt 0.4.0",
  "serde_json",
 ]
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "libc",
 ]
