@@ -37,8 +37,7 @@ use fux_vt::{Feature, Graphics, Identity, Options, Parser, Rgb, Size, Work};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
-    Record, Rows, features_reached, marks_sound, pick, reached, until_stops,
-    versions_follow,
+    Record, Rows, features_reached, marks_sound, pick, reached, until_stops, versions_follow,
 };
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
