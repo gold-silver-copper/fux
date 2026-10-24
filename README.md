@@ -135,8 +135,9 @@ A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
 also takes a tab's name (`run`'s tabs are named after their program), `tab`
 and `workspace` a pane, the tab or workspace it is in. Inside a pane,
-`here` is that pane (`FUX_PANE`). In a key's program or the prompt's, `me`
-is the client whose key it is, and `me focused` its focused pane.
+`here` is that pane (`FUX_PANE`, below). In a key's program or the
+prompt's, `me` is the client whose key it is, and `me focused` its focused
+pane.
 
 ### Which server
 
@@ -324,10 +325,29 @@ spellings (`Backspace`, `Esc`, `Return`, `Del`, `Ins`, `PgUp`, `PgDn`) are
 taken too, and a name refused is told the closest one. `fux key-names`
 prints them all.
 
-**Inside a pane**, `TERM` is `xterm-256color`, `TERM_PROGRAM` is `fux` and
-`TERM_PROGRAM_VERSION` is fux's version. XTVERSION (`CSI > q`) answers
-`fux` and its version, secondary device attributes (`CSI > c`) the
-version, and primary ones (`CSI c`) a VT220-class terminal.
+**Inside a pane**, a program's environment holds:
+
+| Variable | Value |
+| --- | --- |
+| `TERM` | `xterm-256color` |
+| `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
+| `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
+| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it; a grant's socket if the pane was started through one, so what runs there stays within the grant |
+| `FUX_SERVER` | which run of which server the pane is of. A fux command from a pane of another server, or of an earlier run of this one, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
+| `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
+
+The rest is the server's own environment, as it was when the server
+started. Two things override it and the table alike: the names in
+`update-environment`, which a pane takes from whoever starts it, and, last,
+what a program's `env` sets (`opts str NAME str VALUE env str PROGRAM
+program run`). A name in `update-environment` that the starter lacks is
+unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
+table's value. A starter with no environment at all, as `env -i` leaves
+one, changes none.
+
+XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
+attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
+VT220-class terminal.
 
 ### JSON
 
@@ -373,12 +393,13 @@ str g str 'me focused vertical str lazygit program split drop' bind
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 # C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id; after a failure, Enter closes it
+# gives the program the pane's id, and `"${FUX:-fux}"` is the server's fux,
+# on PATH or not; after a failure, Enter closes it
 define edit-history
   me focused vertical
   str FUX_TARGET me focused env
   str sh program str -c arg
-  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
+  str 'f=$(mktemp) && "${FUX:-fux}" "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; "${FUX:-fux}" here kill' arg
   split drop
 end
 str y str edit-history bind  str 'edit history' label  str Panes group
@@ -393,7 +414,7 @@ str y str edit-history bind  str 'edit history' label  str Panes group
 | `buffers` | paste buffers kept, 1 to 1000 | 16 |
 | `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
 | `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
+| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use

@@ -1040,6 +1040,20 @@ fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     Ok(())
 }
 
+/// A pane's `FUX` is the fux running it, so a key's program reaches fux
+/// with no `fux` on PATH.
+#[test]
+fn a_pane_gets_the_fux_running_it() -> Outcome {
+    let server = Server::start("")?;
+    let before = ["str", "WANT", "str", fux(), "env"];
+    let script = "PATH=/nonexistent; \"$FUX\" here capture >/dev/null && [ \"$FUX\" -ef \"$WANT\" ] && echo same";
+    let pane = id(&server.ok(&run(&before, &["/bin/sh", "-c", script]))?);
+    server.exits(&pane)?;
+    let capture = server.ok(&["str", &pane, "pane", "capture"])?;
+    assert_eq!(capture, "same\n");
+    Ok(())
+}
+
 /// The code block of `docs/agents.md` after `after`: as written, its
 /// indent taken off.
 fn recipe(after: &str) -> Result<String, String> {

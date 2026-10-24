@@ -2,10 +2,11 @@
 # 411 on a private Xvfb display, each stopped by the caller's EXIT trap
 # (`trap stop EXIT`), whatever happens.
 #
-# FUX names the fux binary (default: the release build in CARGO_TARGET_DIR,
-# else target/). Its server is private: FUX_SOCKET, FUX_PANE, FUX_SERVER
-# and TERM_PROGRAM unset, a fresh 0700 XDG_RUNTIME_DIR under $work, and an
-# explicit FUX_SOCKET there; it is stopped with its own force-kill-server.
+# FUX_BIN names the fux binary (default: the release build in
+# CARGO_TARGET_DIR, else target/); not FUX, which every fux pane has. Its
+# server is private: FUX_SOCKET, FUX_PANE, FUX_SERVER and TERM_PROGRAM
+# unset, a fresh 0700 XDG_RUNTIME_DIR under $work, and an explicit
+# FUX_SOCKET there; it is stopped with its own force-kill-server.
 # Xvfb and every xterm are stopped by their PIDs alone.
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -14,7 +15,7 @@ case ${TMPDIR:?set TMPDIR, off /tmp} in
   /tmp | /tmp/*) echo "release: TMPDIR is under /tmp; set it elsewhere" >&2; exit 2 ;;
 esac
 work=$(mktemp -d "$TMPDIR/fux-release.XXXXXX")
-fux_bin=${FUX:-${CARGO_TARGET_DIR:-$repo/target}/release/fux}
+fux_bin=${FUX_BIN:-${CARGO_TARGET_DIR:-$repo/target}/release/fux}
 xvfb_pid=
 fux_started=
 
@@ -31,7 +32,7 @@ stop() {
 
 # A private fux server, started.
 fux_server() {
-  [[ -x $fux_bin ]] || { echo "release: no fux at $fux_bin (set FUX)" >&2; return 2; }
+  [[ -x $fux_bin ]] || { echo "release: no fux at $fux_bin (set FUX_BIN)" >&2; return 2; }
   unset FUX_SOCKET FUX_PANE FUX_SERVER TERM_PROGRAM
   export XDG_RUNTIME_DIR=$work/run
   mkdir -m 700 "$XDG_RUNTIME_DIR"

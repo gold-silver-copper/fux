@@ -68,7 +68,8 @@ settings! {
     titles "titles": bool = false, on;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
-    /// which may have started long ago. One the starter has not is unset.
+    /// which may have started long ago. One the starter has not is unset,
+    /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
     update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec(), names;
 }
 

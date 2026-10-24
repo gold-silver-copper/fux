@@ -409,6 +409,8 @@ pub struct Session {
     /// The socket a started pane is told to reach its server by, if panes
     /// start real processes; tests of the state alone start none.
     launch: Option<PathBuf>,
+    /// The running fux, a started pane's `FUX`, if it can be had.
+    exe: Option<PathBuf>,
     /// Which run of a server this is: its panes' `FUX_SERVER`, by which a
     /// command from a pane tells whether the pane is this server's.
     pub server_id: String,
@@ -724,6 +726,7 @@ impl Session {
             config,
             buffers: VecDeque::new(),
             launch: launch.then_some(socket),
+            exe: std::env::current_exe().ok(),
             server_id,
             outbox: Vec::new(),
             dying: Vec::new(),
@@ -864,9 +867,10 @@ impl Session {
 
     /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`,
     /// if panes start real processes: told of its server (`FUX_PANE`,
-    /// `FUX_SOCKET`, a grant's socket if its starter came by one, and
-    /// `FUX_SERVER`), given its starter's variables, and not those its
-    /// starter had not, unless `env` sets them.
+    /// `FUX_SOCKET`, a grant's socket if its starter came by one,
+    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
+    /// had), given its starter's variables, and not those its starter had
+    /// not (but for the server's own above), unless `env` sets them.
     fn spawn(
         &self,
         id: PaneId,
@@ -884,11 +888,13 @@ impl Session {
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
             ("FUX_SERVER", self.server_id.clone().into()),
         ];
+        vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
         vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
-        let unset: Vec<String> = (fresh.unset.iter())
-            .filter(|name| !env.iter().any(|(k, _)| k == *name))
-            .cloned()
+        // No `FUX` to give: not one the server was started with either.
+        let unset: Vec<String> = (fresh.unset.iter().cloned())
+            .chain(self.exe.is_none().then(|| "FUX".to_owned()))
+            .filter(|name| !env.iter().any(|(k, _)| k == name))
             .collect();
         let child = process::spawn(argv, &launch.cwd, (&vars, &unset), size)
             .map_err(|m| fail(Code::Start, m))?;

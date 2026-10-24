@@ -161,7 +161,9 @@ A pane owns:
 - a `fux_vt::Parser`;
 - a child process: the configured shell (`set shell`), always, started
   with the slave as stdio, `TERM=xterm-256color`, `FUX_PANE=%N` and
-  `FUX_SOCKET`. Between fork and exec, a `pre_exec` hook in fuxix
+  `FUX_SOCKET` (corrected since: `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`,
+  `FUX_SERVER` and `FUX` too, as README.md lists). Between fork and exec,
+  a `pre_exec` hook in fuxix
   (`process::lead_session`, its `unsafe` there) calls `setsid` and takes the
   slave as its controlling terminal; std's spawn clears the signal mask, and `exec` restores SIGPIPE and
   the handlers signal-hook installed. A test checks that a pane's program starts
@@ -513,6 +515,9 @@ status, and a failure's code and message.
 
 Every pane gets `FUX_PANE=%N` and `FUX_SOCKET` in its environment. So a
 command run inside a pane targets that pane without flags, like `TMUX_PANE`.
+Corrected since: a pane also gets `FUX_SERVER`, which run of which server
+it is of, so a command from a pane of another has no `here` there, and
+`FUX`, the server's executable if it can name it; README.md lists them.
 `-t` targets explicitly:
 
 - a pane: `%N`;
