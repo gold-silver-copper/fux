@@ -86,7 +86,7 @@ impl Kinds {
 }
 
 /// What the stack is known to be at a step.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct State {
     /// The top values' kinds, deepest first.
     top: Vec<Kinds>,
@@ -151,18 +151,6 @@ enum End {
     Diverges,
     /// Every way stops at `fail`: a call to it is as `fail` is.
     Stops,
-}
-
-impl End {
-    /// The stack where it returns; or, if it never does, how a run goes on
-    /// past a call to it.
-    fn exit(&self) -> Result<&State, Flow> {
-        match self {
-            End::Returns(exit) => Ok(exit),
-            End::Diverges => Err(Flow::Diverge),
-            End::Stops => Err(Flow::Stop),
-        }
-    }
 }
 
 impl Summary {
@@ -232,15 +220,8 @@ enum Flow {
 impl State {
     fn start(bounded: bool) -> Self {
         Self {
-            top: Vec::new(),
-            lo: 0,
-            hi: 0,
-            used: 0,
-            reached: 0,
             bounded,
-            outer: Vec::new(),
-            iters: Vec::new(),
-            names: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -253,7 +234,7 @@ impl State {
 
     /// The depth, from `lo` to `hi`, where it is known.
     fn depth(&self) -> (i64, i64) {
-        let top = len(&self.top);
+        let top = count(self.top.len());
         (self.lo.saturating_add(top), self.hi.saturating_add(top))
     }
 
@@ -309,7 +290,7 @@ impl State {
     /// Forgets the top values' kinds, and adds from `lo` to `hi` values of
     /// any kind.
     fn forget(&mut self, lo: i64, hi: i64) {
-        let top = len(&self.top);
+        let top = count(self.top.len());
         self.top.clear();
         self.lo = self.lo.saturating_add(top).saturating_add(lo);
         self.hi = self.hi.saturating_add(top).saturating_add(hi);
@@ -319,7 +300,7 @@ impl State {
     /// What either way may be.
     fn join(&self, other: &Self) -> Self {
         let kept = self.top.len().min(other.top.len());
-        let rest = |s: &Self| len(&s.top).saturating_sub(count(kept));
+        let rest = |s: &Self| count(s.top.len()).saturating_sub(count(kept));
         let top = self.top.iter().rev().zip(other.top.iter().rev());
         let mut top: Vec<Kinds> = top.take(kept).map(|(a, b)| a.union(*b)).collect();
         top.reverse();
@@ -349,9 +330,7 @@ impl State {
         inner.iters = self.iters.clone();
         inner.names = self.names.clone();
         inner.outer = take(&mut self.outer);
-        inner
-            .outer
-            .push((floor, std::mem::replace(self, State::start(true))));
+        inner.outer.push((floor, take(self)));
         *self = inner;
     }
 
@@ -370,7 +349,7 @@ impl State {
     fn widen(&self, mut joined: Self) -> Self {
         let (lo, hi) = self.depth();
         let (new_lo, new_hi) = joined.depth();
-        let top = len(&joined.top);
+        let top = count(joined.top.len());
         if new_lo < lo {
             joined.lo = BIG.saturating_neg().saturating_sub(top);
         }
@@ -380,10 +359,6 @@ impl State {
         joined.settle();
         joined
     }
-}
-
-fn len(top: &[Kinds]) -> i64 {
-    count(top.len())
 }
 
 /// `n` as a depth: past `BIG`, unbounded.
@@ -789,9 +764,7 @@ impl<'a, A> Unit<'a, A> {
                     state.forget(below, below);
                     ANY
                 };
-                for kinds in taken {
-                    state.push(kinds);
-                }
+                taken.into_iter().for_each(|kinds| state.push(kinds));
                 state.push(copy);
             }
             Op::RollN(n) => {
@@ -807,9 +780,7 @@ impl<'a, A> Unit<'a, A> {
                         (ANY, taken.as_slice())
                     }
                 };
-                for kinds in stay {
-                    state.push(*kinds);
-                }
+                stay.iter().for_each(|kinds| state.push(*kinds));
                 state.push(moved);
             }
             Op::App(id) => {
@@ -844,9 +815,11 @@ impl<'a, A> Unit<'a, A> {
                 };
                 let (before, _) = state.depth();
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
-                let exit = match summary.end.exit() {
-                    Ok(exit) => exit,
-                    Err(flow) => return Ok(flow),
+                // A call that never returns goes on as the definition does.
+                let exit = match &summary.end {
+                    End::Returns(exit) => exit,
+                    End::Diverges => return Ok(Flow::Diverge),
+                    End::Stops => return Ok(Flow::Stop),
                 };
                 // A way that went deeper than every way surely does may
                 // have replaced the caller's values down to there: what was
@@ -861,9 +834,7 @@ impl<'a, A> Unit<'a, A> {
                 if lo != 0 || hi != 0 {
                     state.forget(lo, hi);
                 }
-                for kinds in &exit.top {
-                    state.push(*kinds);
-                }
+                exit.top.iter().for_each(|kinds| state.push(*kinds));
             }
             // Each is gone through in `block`.
             Op::Jump(_) | Op::EachNext(_) | Op::Try(..) => {}
@@ -873,19 +844,12 @@ impl<'a, A> Unit<'a, A> {
                 name(&mut state.names, *slot, kinds);
             }
             Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
-            Op::GetGlobal(slot) => {
-                let kinds = if self.own.is_none() {
-                    named(&state.names, *slot)
-                } else {
-                    ANY
-                };
-                state.push(kinds);
-            }
+            Op::GetGlobal(slot) if self.own.is_none() => state.push(named(&state.names, *slot)),
+            Op::GetGlobal(_) => state.push(ANY),
             Op::Mark => state.enter(Floor::List),
             Op::Gather => {
-                let mut outer = state.leave();
-                outer.push(LIST);
-                *state = outer;
+                *state = state.leave();
+                state.push(LIST);
             }
             // The body went through: what it left is on the stack it began
             // from.
@@ -894,9 +858,7 @@ impl<'a, A> Unit<'a, A> {
                 if state.lo != 0 || state.hi != 0 {
                     outer.forget(state.lo, state.hi);
                 }
-                for kinds in &state.top {
-                    outer.push(*kinds);
-                }
+                state.top.iter().for_each(|kinds| outer.push(*kinds));
                 *state = outer;
             }
             Op::EachStart => {
