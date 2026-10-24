@@ -136,9 +136,9 @@ A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 also takes a tab's name (`run`'s tabs are named after their program), `tab`
 and `workspace` a pane, the tab or workspace it is in. Inside a pane,
 `here` is that pane (`FUX_PANE`); a pane also gets `FUX_SOCKET`, its
-server's socket, and `FUX`, the fux running it, for a script that may not
-find `fux` on PATH. In a key's program or the prompt's, `me`
-is the client whose key it is, and `me focused` its focused pane.
+server's socket, and `FUX`, the fux its server runs, for a script that may
+not find `fux` on PATH. In a key's program or the prompt's, `me` is the
+client whose key it is, and `me focused` its focused pane.
 
 ### Which server
 

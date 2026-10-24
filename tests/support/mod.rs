@@ -156,6 +156,7 @@ impl Server {
                 .env("XDG_STATE_HOME", dir.join("state"))
                 .env_remove("FUX_PANE")
                 .env_remove("FUX_SERVER")
+                .env_remove("FUX")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(log)
