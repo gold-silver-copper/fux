@@ -9,9 +9,10 @@ what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 `FUX_SOCKET`'s; `fux start` starts one if none runs. **The word that acts
 comes last:** what it takes (keys, a version, what to read) goes on the
-pane before it, and `json` after it. Only `run`, `new-tab` and `new-workspace`
-start from `opts`, and only `run` takes a program: the other two start a
-shell (`str 'CMD' typed` types a line into it).
+pane before it, and `json` after it. Only `run`, `new-tab` and
+`new-workspace` start from `opts`; of the three, only `run` takes a
+program (as `split` does): the other two start a shell (`str 'CMD' typed`
+types a line into it).
 
 **Every pane has a version, and a wait waits for it to change.** A version
 (`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows
@@ -109,7 +110,7 @@ quiet() {
 
   ```sh
   read -r P V < <(fux %2 str 'What is 6 times 7? Digits only.' paste send-keys)
-  n=$(fux "$P" all-history capture | grep -c 42)
+  n=$(fux "$P" all-history capture | grep -c 42 || :)  # grep -c fails on 0
   more() { [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ]; }
   read -r P V < <(fux "$P" str Enter key send-keys)
   wait_for 600 more && echo answered

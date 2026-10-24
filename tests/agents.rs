@@ -757,6 +757,15 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     ];
     let answer = server.ok(&on_tab)?;
     assert!(answer.starts_with(&format!("{one} ")), "{answer}");
+    // A tab's answer is no pane, though one pane answered: not waited on
+    // again, and an array as JSON.
+    let again = server.fux(&[&on_tab[..], &["wait"]].concat())?;
+    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
+    let json = server.ok(&[&on_tab[..], &["json"]].concat())?;
+    assert!(
+        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
+        "{json}"
+    );
     Ok(())
 }
 
@@ -1072,8 +1081,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     ];
     for (recipe, said) in recipes {
         let script = format!("{step}{recipe}");
+        // With `set -e`, as scripts often are: a recipe must not stop on a
+        // status it expects.
         let out = std::process::Command::new("bash")
-            .args(["-c", &script])
+            .args(["-e", "-c", &script])
             .env("PATH", &path)
             .env("FUX_SOCKET", &server.socket)
             .env("XDG_CONFIG_HOME", server.dir.join("config"))

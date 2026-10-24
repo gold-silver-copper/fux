@@ -1772,7 +1772,11 @@ impl Server {
         }
         if ended {
             self.reap();
-            if let Some(pane) = self.session.panes.get_mut(&id) {
+            // Hung up, unless its exit is being told (the rest of its
+            // output still to read): then it exited, and did not hang up.
+            if let Some(pane) = self.session.panes.get_mut(&id)
+                && pane.exiting.is_none()
+            {
                 pane.process.stop_reading();
             }
         }

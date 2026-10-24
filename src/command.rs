@@ -255,7 +255,8 @@ wire! {
     /// (fux-vt's: bumped by each piece of output it reads, each resize to
     /// another size and each change to its history: cleared, or
     /// `history-bytes` set), bells and notifications rung, shell commands
-    /// ended (OSC 133 `D`), and whether its program ended (1). Written `STARTS.SCREEN.BELLS.DONE.ENDED`.
+    /// ended (OSC 133 `D`), and whether its program ended (1). Written
+    /// `STARTS.SCREEN.BELLS.DONE.ENDED`.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Version {
         pub starts: u64,

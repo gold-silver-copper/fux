@@ -57,7 +57,7 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its v
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE.ENDED`: counts
-  of its program's starts, its screen's revisions (output read, resizes,
+  of its program's starts, its screen's revisions (output read, resizes to another size,
   history cleared or resized), bells rung and shell commands ended (OSC
   133 marks), and 1 once its program ended; they only grow while one
   program runs (`respawn` starts all but the first afresh, a server

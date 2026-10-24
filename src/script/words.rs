@@ -100,7 +100,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
     word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it"),
     word("Starting", "cwd", "x dir -- x", "where it starts"),
-    word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3)"),
+    word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
@@ -318,15 +318,18 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items().iter().map(json_of).collect()),
-        // An answer of several panes, a line of JSON each, as an array.
+        // An answer, a line of JSON a pane: one pane's as its object; one
+        // of several panes (a tab's or workspace's wait), as an array,
+        // however many answered.
         Value::App(Fux::Answer(answer)) => match &answer.json {
             Some(json) => {
                 let mut objects: Vec<Json<'static>> = (json.lines())
                     .filter(|line| !line.trim().is_empty())
                     .map(|line| Json::Raw(line.to_owned().into()))
                     .collect();
-                match objects.len() {
-                    1 => objects.pop().unwrap_or(Json::Null),
+                match (answer.said, objects.len()) {
+                    (Said::Several, _) => Json::Array(objects),
+                    (_, 1) => objects.pop().unwrap_or(Json::Null),
                     _ => Json::Array(objects),
                 }
             }
@@ -1650,7 +1653,8 @@ mod tests {
             }))))
             .render()
         };
-        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "{\"pane\":\"%1\"}");
+        // However many answered: one is an array too.
+        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "[{\"pane\":\"%1\"}]");
         assert_eq!(
             answer("{\"pane\":\"%1\"}\n{\"pane\":\"%2\"}\n"),
             "[{\"pane\":\"%1\"},{\"pane\":\"%2\"}]"

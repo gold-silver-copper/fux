@@ -4,7 +4,7 @@
 use crate::command::{CaptureView, Source};
 use crate::id::ClientId;
 use crate::json::Json;
-use crate::pane::{Pane, Runs};
+use crate::pane::{Pane, Process, Runs};
 use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
 use std::time::Instant;
 
@@ -249,7 +249,7 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         // there (the terminal hung up; Linux says so).
         (
             "hung_up",
-            Json::Bool(matches!(pane.process, crate::pane::Process::HungUp(_))),
+            Json::Bool(matches!(pane.process, Process::HungUp(_))),
         ),
         ("exited", exited),
         ("signal", signal),
