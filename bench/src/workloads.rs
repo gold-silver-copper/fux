@@ -784,7 +784,8 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         history_bytes: HISTORY,
         ..fux::config::Config::default()
     };
-    let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
+    let mut s =
+        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     s.start().map_err(|e| e.to_string())?;
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, 41, 120, None)
@@ -859,7 +860,8 @@ fn paint(
         history_bytes: HISTORY,
         ..fux::config::Config::default()
     };
-    let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
+    let mut s =
+        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     s.start().map_err(|e| e.to_string())?;
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
@@ -876,7 +878,6 @@ fn paint(
             axis: fux::layout::Axis::Horizontal,
             target: *s.panes.keys().next().ok_or("no pane")?,
             argv: Vec::new(),
-            typed: None,
             cwd: None,
             env: fux::command::Env::default(),
             id: None,
@@ -1058,14 +1059,14 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
         history_bytes: HISTORY,
         ..fux::config::Config::default()
     };
-    let mut s = fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false);
+    let mut s =
+        fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
     s.start().map_err(|e| e.to_string())?;
     for _ in 1..panes {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
             target: *s.panes.keys().next().ok_or("no pane")?,
             argv: Vec::new(),
-            typed: None,
             cwd: None,
             env: fux::command::Env::default(),
             id: None,
@@ -1084,13 +1085,20 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
 /// run's count steady (one alone spread over 1% from run to run).
 const WAITS: usize = 8;
 
+/// This process's server run, as a session of its own is made with.
+fn server_run() -> Result<fux::command::Run, String> {
+    fux::command::Run::now().ok_or_else(|| "the clock is before 1970".to_owned())
+}
+
 fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, String> {
     let mut s = session(4)?;
     let panes: Vec<_> = s.panes.keys().copied().collect();
     let now = std::time::Instant::now();
     let arm = |s: &fux::session::Session| {
-        let shown: Vec<&fux::pane::Pane> = panes.iter().filter_map(|p| s.panes.get(p)).collect();
-        fux::wait::Waiting::new(&shown, None, now, std::time::Duration::from_secs(3600))
+        let watches = (panes.iter())
+            .filter_map(|p| Some((*p, s.panes.get(p)?.counts())))
+            .collect();
+        fux::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
     let bytes = repeated(&all, total);
