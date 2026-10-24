@@ -45,15 +45,9 @@ impl Grid {
         // Blank lines below the cursor go before any line scrolls into
         // history, but only those of the screen's own lines past the new
         // height: a resize never brings a history row back.
-        let drop = layout
-            .trailing_blank
-            .min(
-                layout
-                    .rows
-                    .saturating_sub(layout.screen_line)
-                    .saturating_sub(screen),
-            )
-            .min(layout.rows.saturating_sub(cursor_row.saturating_add(1)));
+        let beyond = (layout.rows.saturating_sub(layout.screen_line)).saturating_sub(screen);
+        let below = layout.rows.saturating_sub(cursor_row.saturating_add(1));
+        let drop = layout.trailing_blank.min(beyond).min(below);
         let total = layout.rows.saturating_sub(drop);
         let live_top = total.saturating_sub(screen).min(cursor_row);
         let end = total.min(live_top.checked_add(screen).ok_or(Error::Capacity)?);
@@ -65,15 +59,11 @@ impl Grid {
                 Mark::Text(row, col) => (row, col, col >= usize::from(cols)),
                 Mark::Blank(row, col) => (row, col, false),
             };
+            let row = u16::try_from(row.saturating_sub(live_top)).unwrap_or(u16::MAX);
+            let col = u16::try_from(col).unwrap_or(u16::MAX);
             Cursor {
                 pending_wrap,
-                ..cursor.placed(
-                    (
-                        u16::try_from(row.saturating_sub(live_top)).unwrap_or(u16::MAX),
-                        u16::try_from(col).unwrap_or(u16::MAX),
-                    ),
-                    size,
-                )
+                ..cursor.placed((row, col), size)
             }
         };
         let mut replacement = Self {
@@ -314,13 +304,8 @@ impl Grid {
     fn end_row(&self, line: &mut Run, pass: &mut Pass<'_, impl Reflow>) -> Result<(), Error> {
         let id = self.id_at(line.next, line.end);
         line.next = line.next.saturating_add(1);
-        pass.target.row(
-            pass.out.rows,
-            line.used,
-            (true, LineRendition::Single),
-            id,
-            line.prompt,
-        )?;
+        let wrapped = (true, LineRendition::Single);
+        (pass.target).row(pass.out.rows, line.used, wrapped, id, line.prompt)?;
         pass.out.rows = pass.out.rows.saturating_add(1);
         line.used = 0;
         line.prompt = false;
@@ -362,13 +347,8 @@ impl Grid {
             return (false, width, 0);
         };
         let cells = self.slice(slot);
-        let text = cells
-            .get(..usize::from(m.used).min(cells.len()))
-            .unwrap_or_default()
-            .iter()
-            .rposition(|c| !c.is_blank(0))
-            .map_or(0, |last| last.saturating_add(1));
-        (m.continues(), width, text)
+        let used = cells.get(..usize::from(m.used)).unwrap_or(cells);
+        (m.continues(), width, trimmed(used).len())
     }
 }
 
@@ -563,9 +543,7 @@ impl Reflow for Fill<'_> {
         // from its `used` mark.
         let used = u16::try_from(used).map_or(cols, |used| used.min(cols));
         // Past the mark, every cell is blank: no half of a wide glyph.
-        if let Some(cells) = self.cells.get_mut(..usize::from(used)) {
-            repair_wide(cells);
-        }
+        repair_wide(self.cells.get_mut(..usize::from(used)).unwrap_or_default());
         let text = std::mem::take(&mut self.text);
         let links = self.links.take();
         let written = std::mem::take(&mut self.written);
@@ -575,9 +553,10 @@ impl Reflow for Fill<'_> {
         let cells = (self.cells.as_slice(), written);
         (self.grid).keep_row(meta, cells, (Some(text), links), history)?;
         work!(cells, written);
-        if let Some(cells) = self.cells.get_mut(..written) {
-            cells.fill(BLANK);
-        }
+        self.cells
+            .get_mut(..written)
+            .unwrap_or_default()
+            .fill(BLANK);
         Ok(())
     }
 }

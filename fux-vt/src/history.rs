@@ -161,11 +161,7 @@ impl Kept {
     }
     fn set(&mut self, flag: u8, on: bool) {
         let bit = u64::from(flag) << 60;
-        if on {
-            self.place |= bit;
-        } else {
-            self.place &= !bit;
-        }
+        self.place = (self.place & !bit) | if on { bit } else { 0 };
     }
     pub(crate) fn wrapped(&self) -> bool {
         self.flags() & WRAPPED != 0
@@ -472,10 +468,7 @@ impl History {
     /// Takes in `old`'s rows, trimming as it fills; fails only when out
     /// of memory.
     pub(crate) fn take(&mut self, old: &Self) -> Result<(), Error> {
-        for index in 0..old.len() {
-            let Some(found) = old.get(index) else {
-                continue;
-            };
+        for found in (0..old.len()).filter_map(|index| old.get(index)) {
             let kept = found.kept;
             self.push(Arriving {
                 id: kept.id,
@@ -970,10 +963,7 @@ impl History {
         {
             kept.set(LINKED, false);
             kept.version = version;
-            if let Some(links) = self.linked.remove(number) {
-                self.runs = self.runs.saturating_sub(links.heap());
-            }
-            self.maps_changed();
+            self.forget(number, LINKED);
         }
     }
 

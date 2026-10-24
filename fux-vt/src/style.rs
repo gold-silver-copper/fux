@@ -198,12 +198,8 @@ impl Styles {
         // Room for twice the styles kept, as many as the next sweep lets in
         // past the floor: a map with more is made anew, as one cleared
         // keeps its buckets, and its bytes count (B11).
-        let room = used
-            .iter()
-            .filter(|used| **used)
-            .count()
-            .saturating_mul(2)
-            .max(FLOOR);
+        let kept = used.iter().filter(|used| **used).count();
+        let room = kept.saturating_mul(2).max(FLOOR);
         if self.places.capacity() > room {
             self.places = HashMap::with_capacity_and_hasher(room, Keyed);
         } else {

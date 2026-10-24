@@ -1128,10 +1128,7 @@ impl Grid {
                 // The glyph's second half is in the last column.
                 clears_edge |= reach == usize::from(last);
             }
-            if let Some(run) = cells
-                .get_mut(first..reach)
-                .and_then(|run| run.get_mut(differs..))
-            {
+            if let Some(run) = cells.get_mut(first.saturating_add(differs)..reach) {
                 run.fill(blank);
             }
         }
@@ -1546,9 +1543,7 @@ impl Grid {
         if used > 0 {
             let cells = self.slice_mut(slot);
             let used = used.min(cells.len());
-            if let Some(cells) = cells.get_mut(..used) {
-                cells.fill(BLANK);
-            }
+            cells.get_mut(..used).unwrap_or_default().fill(BLANK);
         }
         if let Some(text) = self.texts.get_mut(slot) {
             text.empty();
@@ -1959,11 +1954,7 @@ impl Grid {
             };
             // A row cut or padded to a new width no longer continues.
             let wrapped = old.is_some_and(|r| r.wrapped()) && (is_history || same_width);
-            let row_version = if is_history {
-                old.map_or(version, |r| r.version)
-            } else {
-                version
-            };
+            let row_version = old.filter(|_| is_history).map_or(version, |r| r.version);
             let mut meta = Meta::new(id, row_version, wrapped, width)
                 .with_rendition(old.map_or(LineRendition::Single, |r| r.rendition()));
             meta.set(PROMPT, old.is_some_and(|r| r.starts_prompt()));
@@ -2116,12 +2107,8 @@ impl Grid {
     /// Sets the left and right margins.
     pub fn set_columns(&mut self, columns: Span) {
         self.columns = columns;
-        self.narrow = (self.narrow & !LR)
-            | if columns != self.size.columns() {
-                LR
-            } else {
-                0
-            };
+        let full = columns == self.size.columns();
+        self.narrow = (self.narrow & !LR) | if full { 0 } else { LR };
     }
     /// The margins at the screen's edges, as resets put them.
     pub fn reset_margins(&mut self) {
@@ -2447,9 +2434,7 @@ fn shift<T: Copy>(cells: &mut [T], col: usize, count: usize, insert: bool, blank
         tail.rotate_left(count);
         tail.len().saturating_sub(count)..tail.len()
     };
-    if let Some(run) = tail.get_mut(fill) {
-        run.fill(blank);
-    }
+    tail.get_mut(fill).unwrap_or_default().fill(blank);
 }
 
 /// If cell `at` is the second half of a wide glyph, blanks it and the
@@ -2639,10 +2624,7 @@ impl Grid {
                 continue;
             }
             let end = usize::from(self.row_end(row));
-            let cells = self
-                .slot(row)
-                .map(|slot| self.slice(slot))
-                .unwrap_or_default();
+            let cells = self.live_cells(row);
             let held = (cells.iter().enumerate().skip(end))
                 .find(|(_, c)| c.has_contents() || c.is_wide() || c.is_wide_continuation());
             if let Some((col, _)) = held {

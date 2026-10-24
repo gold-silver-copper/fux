@@ -550,11 +550,9 @@ impl<'a> Window<'a> {
             return None;
         }
         let cell = self.row(row)?.cell(usize::from(col))?;
-        if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols()) {
-            None
-        } else {
-            Some(cell)
-        }
+        // A wide glyph's second half past the last column is clipped.
+        let clipped = cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols());
+        (!clipped).then_some(cell)
     }
     /// Whether row `row` of the window is soft-wrapped.
     pub fn row_wrapped(&self, row: u16) -> bool {
