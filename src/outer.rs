@@ -68,8 +68,12 @@ pub const QUERIES: &[u8] = concat!(
     "\x1b[16t\x1b[?u\x1b[c"
 )
 .as_bytes();
-/// Pushes disambiguate and alternate keys (see the module documentation).
-pub const KITTY_PUSH: &[u8] = b"\x1b[>5u";
+/// Pushes disambiguate and alternate keys (see the module documentation),
+/// and asks the flags again: their answer, disambiguate set, is the
+/// terminal's word that it sends Escape as `CSI 27 u`, which the decoder
+/// then never waits out ("Detection of support": set the flags, then
+/// query).
+pub const KITTY_PUSH: &[u8] = b"\x1b[>5u\x1b[?u";
 /// Asked again after the terminal reports that its scheme changed: a theme
 /// that changes changes the palette too.
 pub const COLOUR_QUERIES: &[u8] = concat!(colours!(), "\x1b[c").as_bytes();

@@ -103,6 +103,10 @@ pub(crate) const NUM_LOCK_BIT: u8 = 128;
 /// read; the rest mean nothing.
 pub(crate) const KITTY_FLAGS: u8 = 0b1_1111;
 
+/// Disambiguate escape codes (1): Escape, and keys with Ctrl or Alt, sent
+/// as `CSI … u`.
+pub(crate) const DISAMBIGUATE: u8 = 1;
+
 /// The flags of those a screen keeps and reports: all but report event
 /// types (2), as fux sends no repeats or releases. The spec's "Detection of
 /// support": "applications can detect such implementations by first

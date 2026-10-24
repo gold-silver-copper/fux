@@ -49,8 +49,8 @@ use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{
-    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, KITTY_FLAGS, Key, KeyPress, Keystroke,
-    Kitty, Modifiers, SHIFT_BIT,
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, DISAMBIGUATE, Direction, Function, KITTY_FLAGS, Key,
+    KeyPress, Keystroke, Kitty, Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
 use std::num::NonZeroU8;
@@ -162,6 +162,10 @@ pub struct Decoder {
     /// Rounds of questions asked of the terminal whose last answer, DA1's,
     /// has not come.
     expecting: Option<Expecting>,
+    /// The terminal said its kitty flags hold disambiguate: it sends
+    /// Escape as `CSI 27 u`, so a bare ESC is a sequence begun, and waits
+    /// for the rest of it however long it takes, never taken for Escape.
+    escape_said: bool,
 }
 
 impl Default for Decoder {
@@ -395,6 +399,7 @@ impl Decoder {
             state: State::Idle,
             paste_limit: limit,
             expecting: None,
+            escape_said: false,
         }
     }
 
@@ -416,7 +421,8 @@ impl Decoder {
     /// as marked, or `REPLY_DELAY` if what waits is an answer or a character
     /// begun, or a bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
     /// expected; `PASTE_DELAY` after a paste's last bytes; none while it is
-    /// not waiting.
+    /// not waiting, nor for a key begun once the terminal said it sends
+    /// Escape as a sequence of its own.
     pub fn deadline(&self) -> Option<Instant> {
         let (since, wait) = match &self.state {
             State::Pending { held, since } => {
@@ -429,7 +435,11 @@ impl Decoder {
                         held.starts_with(b"\x1b]") || held.starts_with(b"\x1b[?") || dcs_begun(held)
                     }
                 };
-                (since, if reply { REPLY_DELAY } else { ESCAPE_DELAY })
+                match (reply, self.escape_said) {
+                    (true, _) => (since, REPLY_DELAY),
+                    (false, false) => (since, ESCAPE_DELAY),
+                    (false, true) => return None,
+                }
             }
             State::Dropping { since, .. } => (since, REPLY_DELAY),
             State::Paste { since, .. } => (since, PASTE_DELAY),
@@ -462,7 +472,12 @@ impl Decoder {
     /// Decodes `bytes`, appending what they complete to `out`; an incomplete
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let from = out.len();
         self.feed(bytes, false, out);
+        let disambiguates = |input: &Input| matches!(input, Input::Reply(Reply::KittyFlags(flags)) if flags & DISAMBIGUATE != 0);
+        self.escape_said |= out
+            .get(from..)
+            .is_some_and(|new| new.iter().any(disambiguates));
     }
 
     /// The deadline passed (`deadline`: an Escape's, an answer's, or a
@@ -1846,6 +1861,28 @@ mod tests {
                 key("x")
             ]
         );
+    }
+
+    /// Once the terminal says its flags hold disambiguate, it sends Escape
+    /// as `CSI 27 u`: a bare ESC is a sequence begun, which waits for its
+    /// rest with no deadline, however late it comes. Flags without it say
+    /// nothing of Escape.
+    #[test]
+    fn an_escape_the_terminal_sends_as_csi_u_is_never_waited_out() {
+        let t0 = Instant::now();
+        let waits = |flags: &[u8]| {
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            d.bytes(flags, &mut out);
+            d.bytes(b"\x1b", &mut out);
+            d.mark(t0);
+            let due = d.deadline();
+            d.bytes(b"[27u", &mut out);
+            let escape = matches!(out.pop(), Some(Input::Key(k)) if k.press.key == Key::Escape);
+            (due, escape)
+        };
+        assert_eq!(waits(b"\x1b[?0u"), (Some(t0 + ESCAPE_DELAY), true));
+        assert_eq!(waits(b"\x1b[?5u"), (None, true));
     }
 
     /// An answer cut short waits `REPLY_DELAY`, not `ESCAPE_DELAY`, for the
