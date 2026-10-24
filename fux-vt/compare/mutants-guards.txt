@@ -408,7 +408,7 @@ fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec:
 fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec::leak(vec![1])) @ let (mut text, too_long) = match pasted {
 
 # B24
-fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ self.feed(bytes, false, out);
+fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ let from = out.len();
 fux-vt/src/keys/decode.rs: replace + with - @ const HELD: usize = DCS_LIMIT + 2;
 fux-vt/src/keys/decode.rs: replace + with * @ const HELD: usize = DCS_LIMIT + 2;
 

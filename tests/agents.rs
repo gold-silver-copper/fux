@@ -299,15 +299,14 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         // An empty line, a comment and a syntax error run nothing: the
         // next command is the one that ends.
         let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
-        let before = done(&server.version(pane)?);
         for nothing in ["", "# nothing", ")"] {
+            let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
+            line_done(&server, pane, "echo two")?;
+            let after = done(&server.version(pane)?);
+            let said = format!("{pane}: {nothing:?} ended a command");
+            assert_eq!(after, before.map(|d| d.saturating_add(1)), "{said}");
         }
-        line_done(&server, pane, "echo two")?;
-        assert_eq!(
-            done(&server.version(pane)?),
-            before.map(|d| d.saturating_add(1))
-        );
         assert_eq!(status(pane)?, "0\n");
         Ok(())
     };
