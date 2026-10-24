@@ -46,7 +46,9 @@ impl Rng {
 }
 
 /// The words both know beyond the standard library: `ask` (n -- n*10), the
-/// host's, answered later, as a server's answer is; `maybe` (n -- [n]),
+/// host's, answered later, as a server's answer is (past an integer, with
+/// the failure `overflow`; given no integer, it fails at once,
+/// `not_a_number`); `maybe` (n -- [n]),
 /// which gives n back only if it is above 0, defined in fuxth (`MAYBE`),
 /// as no host word gives a count known only as it runs.
 pub const HOST_WORDS: [&str; 2] = ["ask", "maybe"];
@@ -97,6 +99,7 @@ impl Host for Toy {
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     let _ = words.add("ask", "any -- integer");
+    let _ = words.code("not_a_number");
     words
 }
 
@@ -200,7 +203,12 @@ pub fn fuxth(text: &str, budget: u64) -> Ended {
                         return failed(e);
                     }
                 }
-                None => return Ended::Failed("overflow".to_owned(), 0),
+                None => {
+                    let failure = Failure::new(fuxth::Code::Overflow, "past an integer");
+                    if let Err(e) = machine.raise(failure) {
+                        return failed(e);
+                    }
+                }
             },
             Err(e) => return failed(e),
         }
@@ -235,6 +243,9 @@ pub struct Naive {
     /// The lines of the calls under way, the outermost first: a failure
     /// leaves them as they were when it happened.
     calls: Vec<u32>,
+    /// The lines of failures a `try` caught, and of the calls they were
+    /// inside.
+    caught: Vec<u32>,
 }
 
 /// A definition: its name and body; what each name meant where it was
@@ -252,7 +263,8 @@ struct Def {
 pub struct Trace {
     pub reached: HashSet<u32>,
     finished: HashSet<u32>,
-    /// The line it failed at, and the lines of the calls it was inside.
+    /// The lines it failed at, a `try` catching it or not, and the lines of
+    /// the calls it was inside.
     failing: Vec<u32>,
 }
 
@@ -338,6 +350,7 @@ impl Naive {
             reached: HashSet::new(),
             finished: HashSet::new(),
             calls: Vec::new(),
+            caught: Vec::new(),
         }
     }
 
@@ -375,6 +388,7 @@ impl Naive {
             .and_then(|()| source(&mut naive, &program));
         let mut failing = std::mem::take(&mut naive.calls);
         failing.extend(ran.as_ref().err().map(|(_, line)| *line));
+        failing.append(&mut naive.caught);
         let ended = match ran {
             Ok(()) => Ended::Left(naive.printed.clone(), naive.stack.clone()),
             Err((code, _)) if code == "steps" => Ended::Endless,
@@ -432,11 +446,12 @@ impl Naive {
     }
 
     /// Where the block opened at `from` closes: `close` at its own depth,
-    /// counting every opener of that close (`define`, `list` and `each`
-    /// for `end`); and an `else` at its own depth, for `if`.
+    /// counting every opener of that close (`define`, `list`, `each` and
+    /// `try` for `end`); and an `else` at its own depth, for `if`, or a
+    /// `catch`, for `try`.
     fn matching(tokens: &[Token], from: usize, open: &str, close: &str) -> (usize, Option<usize>) {
         let openers: &[&str] = if close == "end" {
-            &["define", "list", "each"]
+            &["define", "list", "each", "try"]
         } else {
             &[open]
         };
@@ -457,7 +472,7 @@ impl Naive {
                 if depth == 0 {
                     return (i, middle);
                 }
-            } else if text == "else" && depth == 1 && open == "if" {
+            } else if depth == 1 && matches!((text, open), ("else", "if") | ("catch", "try")) {
                 middle = Some(i);
             }
         }
@@ -550,6 +565,33 @@ impl Naive {
                     }
                     items.reverse();
                     self.push(V::List(items))?;
+                    i = end.saturating_add(1);
+                }
+                // The codes are the string `str` pushed just before.
+                "try" => {
+                    let (end, catch) = Naive::matching(tokens, i, "try", "end");
+                    let catch = catch.unwrap_or(end);
+                    let codes = self.pop(at)?.text();
+                    let body = tokens.get(i.saturating_add(1)..catch).unwrap_or_default();
+                    let handler = tokens.get(catch.saturating_add(1)..end).unwrap_or_default();
+                    let (from, calls) = (self.stack.len(), self.calls.len());
+                    self.floors.push(from);
+                    let ran = self.exec(body);
+                    self.floors.pop();
+                    match ran {
+                        Err((code, line)) if codes.split(' ').any(|c| c == code) => {
+                            self.caught
+                                .extend(self.calls.get(calls..).unwrap_or_default());
+                            self.caught.push(line);
+                            self.calls.truncate(calls);
+                            self.stack.truncate(from);
+                            // No message: the programs drop it unread.
+                            self.push(V::Str("message".to_owned()))?;
+                            self.push(V::Str(code))?;
+                            self.exec(handler)?;
+                        }
+                        ran => ran?,
+                    }
                     i = end.saturating_add(1);
                 }
                 "each" => {
@@ -820,7 +862,7 @@ impl Naive {
                 Err(err("fail", at))
             }
             "ask" => match self.pop(at)? {
-                V::Int(n) => self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", 0))?)),
+                V::Int(n) => self.push(V::Int(n.checked_mul(10).ok_or(err("overflow", at))?)),
                 V::Bool(_) | V::Str(_) | V::List(_) => Err(err("not_a_number", at)),
             },
             _ => Err(err("unknown_word", at)),
@@ -857,6 +899,18 @@ const LIBRARY_WORDS: [&str; 28] = [
     "dup", "swap", "over", "rot", "true", "false", "nip", "-rot", "2dup", "2drop", "negate", "abs",
     "min", "max", "ne", "le", "ge", "gt", "not", "mod", "reverse", "sort", "upper", "sum", "first",
     "last", "glue", "cat",
+];
+
+/// What a generated `try` catches. Not the limits, which each run meets
+/// in its own place (a call in last place takes no room in fuxth).
+const TRY_CODES: [&str; 7] = [
+    "fail",
+    "type",
+    "stack_underflow",
+    "div_by_zero range",
+    "overflow not_a_number",
+    "fail type stack_underflow div_by_zero range overflow not_a_number",
+    "unset",
 ];
 
 const CORE_WORDS: [&str; 18] = [
@@ -942,6 +996,9 @@ impl<'a> Gen<'a> {
     }
 
     fn item(&mut self, depth: usize) {
+        if depth < 3 && self.rng.chance(4) {
+            return self.try_block(depth);
+        }
         let roll = self.rng.below(100);
         let words = self.words.clone();
         let names = self.names.clone();
@@ -1025,6 +1082,29 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// A `try` of codes its body may raise or never does: its body starts
+    /// with values, as it starts with none, and ends now and then with a
+    /// step that fails as it runs. Its handler drops the message, which
+    /// the naive run does not make.
+    fn try_block(&mut self, depth: usize) {
+        let codes = self.rng.pick(&TRY_CODES);
+        self.put(&["str", &format!("'{codes}'"), "try"]);
+        for _ in 0..self.rng.below(3) {
+            let n = self.rng.pick(&LITERALS);
+            self.put(&[n]);
+        }
+        self.seq(4, depth.saturating_add(1));
+        if self.rng.chance(40) {
+            let failing = self
+                .rng
+                .pick(&["str x fail", "1 0 div", "str x ask", "-1 char"]);
+            self.put(&failing.split(' ').collect::<Vec<_>>());
+        }
+        self.put(&["catch", "nip"]);
+        self.seq(3, depth.saturating_add(1));
+        self.put(&["end"]);
+    }
+
     /// A program that mostly runs: each word chosen to fit the values its
     /// model of the stack says are there (i integer, b boolean, s string,
     /// l list), branches and loop bodies leaving the depth they found.
@@ -1078,7 +1158,7 @@ impl<'a> Gen<'a> {
         for _ in 0..len {
             let above = stack.len().saturating_sub(floor);
             let top = |n: usize| stack.iter().rev().take(n).copied().collect::<String>();
-            let roll = self.rng.below(110);
+            let roll = self.rng.below(114);
             let w: &str = match roll {
                 0..=17 => {
                     stack.push('i');
@@ -1233,6 +1313,22 @@ impl<'a> Gen<'a> {
                     }
                     stack.pop();
                     "drop"
+                }
+                108..=113 if depth < 3 => {
+                    // A try whose body leaves nothing, as its handler does.
+                    let codes = self.rng.pick(&TRY_CODES);
+                    self.out.push("str".into());
+                    self.out.push(format!("'{codes}'"));
+                    self.out.push("try".into());
+                    let mut inner = Vec::new();
+                    let n = self.rng.below(6);
+                    self.typed(&mut inner, 0, n, depth.saturating_add(1));
+                    self.back_to(&mut inner, 0);
+                    if self.rng.chance(50) {
+                        self.out
+                            .extend(["1", "0", "div", "drop"].map(str::to_owned));
+                    }
+                    "catch drop drop end"
                 }
                 105..=107 if depth == 0 && above >= 1 => {
                     // A name for the top value, read straight back.
