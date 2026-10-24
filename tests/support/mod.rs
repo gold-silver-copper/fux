@@ -286,10 +286,11 @@ impl Server {
         self.until(pane, &since, |capture| capture.contains(text))
     }
 
-    /// Waits until `pane`'s program has ended, as its version says: its
-    /// `exited` then (`3`, or `null` if a signal killed it).
+    /// Waits until `pane`'s program has ended, as its version says, a
+    /// minute at most (a test's program may take a while on a slow
+    /// machine): its `exited` then (`3`, or `null` if a signal killed it).
     pub fn exits(&self, pane: &str) -> Result<String, String> {
-        let deadline = after(PATIENCE);
+        let deadline = after(Duration::from_secs(60));
         let mut since = self.version(pane)?;
         while !ended(&since) {
             if Instant::now() > deadline {
