@@ -259,19 +259,13 @@ pub fn knock(socket: &Path) -> io::Result<Link> {
             ));
         }
         let mut byte = [0u8; 1];
-        match (&down).read(&mut byte) {
-            Ok(1) => {
+        match (&down).read(&mut byte)? {
+            1 => {
                 fuxix::io::set_nonblocking(&down, false)?;
                 fuxix::io::set_nonblocking(&up, false)?;
-                Ok(Link {
-                    file: down,
-                    up: Some(up),
-                    timeout: None,
-                    stop: None,
-                })
+                Ok(Link::new(down, Some(up)))
             }
-            Ok(_) => Err(io::Error::other("the server closed the door")),
-            Err(e) => Err(e),
+            _ => Err(io::Error::other("the server closed the door")),
         }
     })();
     remove(&paths);
@@ -294,13 +288,17 @@ pub struct Link {
 }
 
 impl Link {
-    pub fn socket(socket: UnixStream) -> Link {
+    fn new(file: File, up: Option<File>) -> Link {
         Link {
-            file: File::from(OwnedFd::from(socket)),
-            up: None,
+            file,
+            up,
             timeout: None,
             stop: None,
         }
+    }
+
+    pub fn socket(socket: UnixStream) -> Link {
+        Link::new(File::from(OwnedFd::from(socket)), None)
     }
 
     /// How long a read waits for something to come; `None`, for ever.

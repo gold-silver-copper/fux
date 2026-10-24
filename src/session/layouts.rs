@@ -26,10 +26,7 @@ impl Session {
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
             for tab in ws.tabs() {
-                if !self.takes_in(only, ws.id, tab.id) {
-                    continue;
-                }
-                if tab.root().is_none() {
+                if !self.takes_in(only, ws.id, tab.id) || tab.root().is_none() {
                     continue;
                 }
                 self.dump_tab(ws, tab, whole, opens, ids, &mut out);

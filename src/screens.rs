@@ -346,10 +346,7 @@ impl Screen {
             LineAct::Edit(edit) => {
                 prompt.line.edit(&edit);
                 *self = Self::Prompt(prompt);
-                self.panel()
-                    .map(|p| Effect::Send(Act::Show(p)))
-                    .into_iter()
-                    .collect()
+                Vec::from_iter(self.panel().map(|p| Effect::Send(Act::Show(p))))
             }
         }
     }
@@ -380,9 +377,7 @@ impl Screen {
         if act.as_ref().is_none_or(|(_, ends)| !ends) {
             *self = Self::Copy(None);
         }
-        act.map(|(act, _)| Effect::Send(Act::Copy(act)))
-            .into_iter()
-            .collect()
+        Vec::from_iter(act.map(|(act, _)| Effect::Send(Act::Copy(act))))
     }
 
     fn copy_search(&mut self, (seek, mut line): (Seek, Line<1024>), act: LineAct) -> Vec<Effect> {

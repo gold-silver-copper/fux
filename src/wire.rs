@@ -59,10 +59,7 @@ impl<'a> Reader<'a> {
     /// The whole value: no bytes may follow.
     pub fn whole<T: Wire>(mut self) -> Result<T, Error> {
         let value = T::get(&mut self)?;
-        match self.0.is_empty() {
-            true => Ok(value),
-            false => Err(Error::Trailing),
-        }
+        self.0.is_empty().then_some(value).ok_or(Error::Trailing)
     }
 }
 
@@ -134,8 +131,7 @@ fn put_list<T: Wire>(items: &[T], out: &mut Vec<u8>) {
 
 impl Wire for String {
     fn put(&self, out: &mut Vec<u8>) {
-        u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
-        out.extend_from_slice(self.as_bytes());
+        put_list(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;

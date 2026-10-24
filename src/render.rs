@@ -1256,11 +1256,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             b if b == LEFT | RIGHT | UP => "┴",
             _ => "┼",
         };
-        let color = if focused.is_some_and(|r| r.near(y, x)) {
-            Color::Idx(2)
+        let color = Color::Idx(if focused.is_some_and(|r| r.near(y, x)) {
+            2
         } else {
-            Color::Idx(240)
-        };
+            240
+        });
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
         grid.put(
@@ -1320,13 +1320,10 @@ fn bar(
     let copy_bar =
         copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
     let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
+        let colour = Color::Idx(if notice.error { 9 } else { 11 });
         Some((
             notice.text.as_str().into(),
-            if notice.error {
-                Attributes::new(Color::Idx(9), GRAY_BG)
-            } else {
-                Attributes::new(Color::Idx(11), GRAY_BG)
-            },
+            Attributes::new(colour, GRAY_BG),
         ))
     } else if let Some(copy) = &copy_bar {
         Some((copy.position.as_str().into(), base))

@@ -690,7 +690,7 @@ impl Saved {
     /// Saves the layout as it is, if it changed and no restore is under
     /// way.
     fn save(&mut self, session: &Session) {
-        if self.restoring() {
+        if self.restore.is_some() {
             self.pending = true;
             return;
         }
@@ -725,11 +725,6 @@ impl Saved {
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temporary, &self.path)
-    }
-
-    /// Whether a restore is under way.
-    fn restoring(&self) -> bool {
-        self.restore.is_some()
     }
 }
 
@@ -1635,7 +1630,7 @@ impl Server {
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
     fn request(&mut self, index: usize, request: crate::command::Request, context: Context) {
-        let restore_runs = self.saved.as_ref().is_some_and(Saved::restoring);
+        let restore_runs = self.saved.as_ref().is_some_and(|s| s.restore.is_some());
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
