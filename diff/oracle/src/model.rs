@@ -186,6 +186,7 @@ pub enum Heard {
         number: u8,
         bel: bool,
     },
+    CommandEnded(Option<i32>),
     Csi {
         params: Vec<Vec<u16>>,
         intermediates: Vec<u8>,
@@ -335,8 +336,6 @@ pub struct State {
     /// of their cells, as `Screen::main_rows` or `alternate_rows` gives
     /// them.
     pub inactive: Vec<(u64, bool, u64)>,
-    /// `Screen::let_go`: the newest version of a history row let go.
-    pub let_go: u64,
 }
 
 /// A picture shown: its number, top row, first column, columns, rows,
@@ -351,21 +350,11 @@ pub enum Call {
     HistoryBytes(usize),
     /// `Parser::clear_history`.
     ClearHistory,
-    /// `Parser::tick`.
-    Tick,
     /// `Parser::set_host_palette`, entry `n % 16` known (a colour made of
     /// `n`), the rest not.
     Palette(u8),
     /// `Parser::set_host_graphics`: a cell of this many pixels, sixel drawn.
     Graphics(u16, u16),
-    /// `Parser::require_mark_nonce`: both nonces, or none.
-    Nonce(bool),
-    /// `Parser::note_submit`.
-    Submit,
-    /// `Parser::record_prints`.
-    Record(bool),
-    /// `Parser::take_prints`, what it gives compared.
-    Prints,
 }
 
 impl Call {
@@ -374,13 +363,8 @@ impl Call {
         match self {
             Call::HistoryBytes(n) => format!("history_bytes {n}"),
             Call::ClearHistory => "clear_history".into(),
-            Call::Tick => "tick".into(),
             Call::Palette(n) => format!("palette {n}"),
             Call::Graphics(w, h) => format!("graphics {w} {h}"),
-            Call::Nonce(on) => format!("nonce {}", u8::from(on)),
-            Call::Submit => "submit".into(),
-            Call::Record(on) => format!("record {}", u8::from(on)),
-            Call::Prints => "prints".into(),
         }
     }
 
@@ -392,16 +376,11 @@ impl Call {
         Some(match name {
             "history_bytes" => Call::HistoryBytes(number()?),
             "clear_history" => Call::ClearHistory,
-            "tick" => Call::Tick,
             "palette" => Call::Palette(u8::try_from(number()?).ok()?),
             "graphics" => Call::Graphics(
                 u16::try_from(number()?).ok()?,
                 u16::try_from(number()?).ok()?,
             ),
-            "nonce" => Call::Nonce(number()? != 0),
-            "submit" => Call::Submit,
-            "record" => Call::Record(number()? != 0),
-            "prints" => Call::Prints,
             _ => return None,
         })
     }
@@ -414,8 +393,6 @@ pub struct Marked {
     pub full_refresh: bool,
     /// The identities of the rows `dirty_rows_since` gives.
     pub dirty: Vec<u64>,
-    /// The places and identities `dirty_live_rows_since` gives.
-    pub dirty_live: Vec<(u16, u64)>,
 }
 
 /// A row looked up by its identity: how many rows up into history a window

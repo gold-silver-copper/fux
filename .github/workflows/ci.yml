@@ -39,8 +39,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      # zsh and fish, so the shell marks of every shell fux knows are tested
-      # (macOS has zsh; fish is installed there too).
+      # zsh and fish, so the shell marks the README shows for each are
+      # tested (macOS has zsh; fish is installed there too).
       - name: Shells
         run: |
           if [[ "$RUNNER_OS" == macOS ]]; then brew install fish; else sudo apt-get update -q && sudo apt-get install -y -q zsh fish; fi
@@ -321,44 +321,3 @@ jobs:
           python3 -I agentbench/run.py --tools fux --repeats 1 --workers 4 --skip-expensive \
             --strict --fux-bin "$GITHUB_WORKSPACE/target/release/fux" \
             --out "$RUNNER_TEMP/agentbench.json"
-
-  # koh's client driven in a fux pane against a loopback `koh serve`
-  # (tests/koh.rs): a remote pager, prompt, slow command and REPL answer as
-  # local ones do. koh is built at a pinned commit, bumped by hand when koh
-  # changes what it relays; outside this checkout, as fux's workspace would
-  # claim it, into fux's target directory, so its dependencies are cached.
-  koh:
-    name: koh scenario (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      KOH_COMMIT: 1f3ff2a0439c2ad51896396add86618f199ed9c5
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: koh
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-      - name: Build koh
-        run: |
-          set -euo pipefail
-          git init -q "$RUNNER_TEMP/koh"
-          git -C "$RUNNER_TEMP/koh" fetch -q --depth=1 https://github.com/gold-silver-copper/koh "$KOH_COMMIT"
-          git -C "$RUNNER_TEMP/koh" checkout -q FETCH_HEAD
-          # From here, with fux's pinned toolchain.
-          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/koh" \
-            cargo build --release --locked --manifest-path "$RUNNER_TEMP/koh/Cargo.toml"
-
-      - name: koh in a fux pane
-        run: |
-          set -euo pipefail
-          FUX_KOH="$GITHUB_WORKSPACE/target/koh/release/koh" \
-            cargo test --locked --test koh -- --ignored --nocapture

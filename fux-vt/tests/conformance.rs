@@ -595,25 +595,15 @@ fn rep_repeats_the_preceding_graphic_character() -> Result {
     Ok(())
 }
 
-/// REP's copies of a glyph write what printing it again writes, and a
-/// host that records prints is told of the same cells: over blanks, over
-/// the same glyph, and over wide glyphs either half of which a copy lands
+/// REP's copies of a glyph write what printing it again writes: over
+/// blanks, over the same glyph, and over wide glyphs either half of which a copy lands
 /// on, wrapping and scrolling.
 #[test]
 fn rep_writes_what_printing_again_writes() -> Result {
-    fn fed(bytes: &[u8]) -> Result<(Parser, Vec<(String, u16)>)> {
+    fn fed(bytes: &[u8]) -> Result<Parser> {
         let mut parser = Parser::new(Size::new(3, 7)?, 1 << 10)?;
-        parser.record_prints(true);
         parser.process(bytes)?;
-        let mut cells: Vec<_> = (parser.take_prints().iter())
-            .flat_map(|p| {
-                let row = format!("{:?}", p.row);
-                (p.cols.0..p.cols.1).map(move |col| (row.clone(), col))
-            })
-            .collect();
-        cells.sort();
-        cells.dedup();
-        Ok((parser, cells))
+        Ok(parser)
     }
     for before in [
         "",
@@ -641,8 +631,8 @@ fn rep_writes_what_printing_again_writes() -> Result {
                         fed(format!("{start}{copies}").as_bytes())?
                     };
                     let case = format!("{start:?} REP {count}");
-                    assert_eq!(lines(&rep.0), lines(&again.0), "{case}");
-                    let (a, b) = (rep.0.screen(), again.0.screen());
+                    assert_eq!(lines(&rep), lines(&again), "{case}");
+                    let (a, b) = (rep.screen(), again.screen());
                     assert_eq!(a.cursor_position(), b.cursor_position(), "{case}");
                     assert_eq!(a.pending_wrap(), b.pending_wrap(), "{case}");
                     // The screen's rows: history keeps what its budget lets,
@@ -656,11 +646,6 @@ fn rep_writes_what_printing_again_writes() -> Result {
                             .collect()
                     };
                     assert_eq!(shown(a), shown(b), "{case}: the cells differ");
-                    // Prints, while no copy is skipped: those skipped would
-                    // have been printed on rows scrolled away.
-                    if count <= 7 {
-                        assert_eq!(rep.1, again.1, "{case}: the prints differ");
-                    }
                 }
             }
         }
@@ -1286,16 +1271,19 @@ fn a_tab_from_right_of_the_margin_or_outside_the_region_goes_on() -> Result {
 
 /// ED 3 (`CSI 3 J`; ctlseqs, "Erase Saved Lines") and
 /// `Parser::clear_history` drop the saved lines, which are the main
-/// screen's: on the alternate screen too, which has none of its own.
+/// screen's: on the alternate screen too, which has none of its own. Either
+/// is a new version, which every reader reads again.
 #[test]
 fn erasing_saved_lines_on_the_alternate_screen_drops_the_main_screens() -> Result {
     for clear in [&b"\x1b[3J"[..], b""] {
         let mut p = Parser::new(Size::new(2, 5)?, 1 << 16)?;
         p.process(b"a\r\nb\r\nc\r\nd\x1b[?1049h")?;
+        let mark = p.screen().mark();
         p.process(clear)?;
         if clear.is_empty() {
             p.clear_history();
         }
+        assert!(p.screen().full_refresh_since(mark), "{clear:?}");
         p.process(b"\x1b[?1049l")?;
         assert_eq!(p.screen().history_len(), 0, "{clear:?}");
         assert_eq!(lines(&p), ["c", "d"], "{clear:?}");

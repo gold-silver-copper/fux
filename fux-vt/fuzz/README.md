@@ -33,7 +33,7 @@ table lookups) that edge coverage misses.
 | Target | Input | Checked against |
 | --- | --- | --- |
 | `terminal` | Raw bytes: a header, then operations (below) | The fast target: whole, byte-at-a-time and chunked processing agree, fux-vt's invariant checker and row versions after every operation |
-| `deep` | Raw bytes: six header bytes, then operations (`fuzz_targets/deep.rs` lists them) | Large state: up to 511 by 511 cells, 8 MiB of history, every `Feature`, sixel drawn in a host cell the input chooses, up to 1 MiB of output a run in 4 KiB reads by `process_until_stop`, each call within the frozen ceiling of work (`THREATS.md` 4.4); every host call (resize, history budgets, prints, palette, nonces, pictures listed and encoded within `encode`'s bound, the picture budget, windows); a byte-at-a-time copy with row versions checked after every byte while it holds at most 2,048 rows and until they have hashed 2^27 cells; the checker after every operation |
+| `deep` | Raw bytes: six header bytes, then operations (`fuzz_targets/deep.rs` lists them) | Large state: up to 511 by 511 cells, 8 MiB of history, every `Feature`, sixel drawn in a host cell the input chooses, up to 1 MiB of output a run in 4 KiB reads by `process_until_stop`, each call within the frozen ceiling of work (`THREATS.md` 4.4); every host call (resize, history budgets, palette, pictures listed and encoded within `encode`'s bound, the picture budget, windows); a byte-at-a-time copy with row versions checked after every byte while it holds at most 2,048 rows and until they have hashed 2^27 cells; the checker after every operation |
 | `graphemes` | Structured (`arbitrary`): lines of characters from `tests/corpus/graphemes.rs` or any scalar value, SGR between them, piece sizes, a width to reflow to | Every row holds the cells `tests/corpus/models.rs` makes of its line (UAX #29 by unicode-segmentation, widths by unicode-width), the cursor after the last; again after reflowing narrower and back |
 | `cells` | Structured: a run's length and edits of every kind to `Cells` | The plain list of cells in `tests/corpus/models.rs`; the text budget; exact copies |
 | `keys` | One byte choosing a piece size (0 for the stream whole), then a terminal's input bytes, into `keys::decode::Decoder`, the Escape deadline passing only at the end | The same inputs whole, in pieces and byte by byte; no paste longer than `PASTE_LIMIT` chars (the limit counts bytes, and invalid UTF-8 becomes U+FFFD) |
@@ -72,8 +72,7 @@ Then operations:
 Each piece of output is processed whole, a byte at a time, and in chunks
 of 2 to 17 bytes the output chooses, the chunks by `process_until_stop`
 given again after each stop, as fux's pane reads, with each frame's end
-found by `FrameScan` where the parser ends it. Prints are recorded, and
-held within their caps. All three must agree on every cell,
+found by `FrameScan` where the parser ends it. All three must agree on every cell,
 style, wrap, cursor, history row, reply, event and mode. After each step:
 fux-vt's invariant checker (`Parser::check`), row identities unique, wide
 glyphs whole, clusters and row text within their bounds, rows copy into
@@ -122,7 +121,7 @@ target), on every test run.
 
 What the `terminal` and `deep` targets reach, each `Feature` on and each
 host call made (`process_until_stop`, `FrameScan`, `set_history_bytes`,
-`record_prints`, `resize`, `full_refresh_since`, window text, and deep's
+`resize`, `full_refresh_since`, window text, and deep's
 others), on their corpus and frozen seeds: `fux-vt/fuzz/reach.sh` builds
 them with the `reach` feature, replays every input, and fails naming each
 input that fails its checks and anything not reached.

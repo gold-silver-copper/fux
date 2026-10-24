@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Server memory with a full 50,000-line history: a pane fills its history
 with 60,000 lines of 80 characters, then the server's resident set is read.
-Also after an input, as an agent's wait keeps what was printed since.
 
   mem.py BIN...
 """
 import os, shutil, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fuxwait import run, until_text  # noqa: E402
+
 D = os.path.join(os.environ.get("BENCH_DIR", os.path.expanduser("~/.cache/fux-bench")), "C", "mwork")
-
-
-def run(bin_, e, *args):
-    return subprocess.run([bin_, *args], env=e, capture_output=True, text=True, timeout=120)
 
 
 def rss(pid):
@@ -46,10 +44,9 @@ def measure(bin_):
     pid = server()
     base = rss(pid)
     fill = "python3 -c \"import sys\nfor i in range(60000): sys.stdout.write('%05d ' % i + 'x' * 73 + '\\n')\"; read x"
-    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "120", "timeout", "run")
-    first = started.stdout[:60] + started.stderr[:200]
-    pane = started.stdout.split()[0]
-    kept = run(bin_, e, pane, "opts", "all-history", "capture").stdout.count("\n")
+    started = run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg", "str", fill, "arg", "run")
+    pane = until_text(bin_, e, started.stdout, "59999 ", 120)
+    kept = run(bin_, e, pane, "all-history", "capture").stdout.count("\n")
     time.sleep(1)
     full = rss(pid)
     print(f"  {os.path.basename(bin_)}: {kept} lines kept")

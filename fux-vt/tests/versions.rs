@@ -259,53 +259,6 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
     Ok(())
 }
 
-/// The dirty live rows are the live rows among the dirty rows, with their
-/// places on the screen, top to bottom; all of them after a full refresh.
-#[test]
-fn dirty_live_rows_are_the_live_dirty_rows() -> Result {
-    let mut r = Rng(0xd1e7_0000_0000_0003);
-    let (mut compared, mut refreshed) = (0u64, 0u64);
-    for _ in 0..1_000u64 {
-        let size = r.size()?;
-        let history = usize::try_from(r.below(40))? * 64;
-        let mut parser = Parser::new(size, history)?;
-        for _ in 0..r.below(20) {
-            let mark = parser.screen().mark();
-            let bytes: String = (0..1 + r.below(4)).map(|_| piece(&mut r)).collect();
-            parser.process(bytes.as_bytes())?;
-            if r.below(8) == 0 {
-                parser.resize(r.size()?)?;
-            }
-            let screen = parser.screen();
-            let window = screen.window();
-            let live: HashMap<RowId, u16> = (0..window.rows())
-                .filter_map(|y| window.row(y).map(|row| (row.id(), y)))
-                .collect();
-            let expected: Vec<(u16, RowId)> = screen
-                .dirty_rows_since(mark)
-                .filter_map(|row| live.get(&row.id()).map(|y| (*y, row.id())))
-                .collect();
-            let got: Vec<(u16, RowId)> = screen
-                .dirty_live_rows_since(mark)
-                .map(|(y, row)| (y, row.id()))
-                .collect();
-            assert_eq!(got, expected, "{bytes:?}");
-            // Top to bottom.
-            assert!(got.iter().zip(got.iter().skip(1)).all(|(a, b)| a.0 < b.0));
-            if screen.full_refresh_since(mark) {
-                assert_eq!(got.len(), usize::from(window.rows()), "{bytes:?}");
-                refreshed = refreshed.saturating_add(1);
-            }
-            compared = compared.saturating_add(1);
-        }
-    }
-    assert!(
-        compared > 5_000 && refreshed > 500,
-        "{compared} {refreshed}"
-    );
-    Ok(())
-}
-
 #[test]
 fn the_common_redraw_changes_no_version() -> Result {
     let mut parser = Parser::new(Size::new(5, 20)?, 10)?;

@@ -293,8 +293,6 @@ pub(crate) struct History {
     charged: usize,
     /// The budget less what is charged.
     room: usize,
-    /// The newest version of a row let go past the budget.
-    pub(crate) let_go: u64,
     /// The next row's number when the screen's pictures were last followed
     /// into history (`Screen::track_pictures`).
     followed: Noted,
@@ -331,7 +329,6 @@ impl Clone for History {
             budget: self.budget,
             charged: self.charged,
             room: self.room,
-            let_go: self.let_go,
             followed: self.followed.clone(),
         };
         copy.recount();
@@ -451,8 +448,6 @@ impl History {
     /// numbering.
     pub(crate) fn clear(&mut self) {
         let mut fresh = Self::new(self.budget);
-        let versions = self.rows.iter().map(|kept| kept.version);
-        fresh.let_go = versions.fold(self.let_go, u64::max);
         fresh.first_row = self.numbers().1;
         fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
@@ -462,7 +457,7 @@ impl History {
     /// it, numbers kept.
     pub(crate) fn set_budget(&mut self, budget: usize) {
         let mut fresh = Self::new(budget);
-        (fresh.first_row, fresh.let_go) = (self.first_row, self.let_go);
+        fresh.first_row = self.first_row;
         fresh.followed = self.followed.clone();
         fresh.charge(self.charged);
         if fresh.take(self).is_ok() {
@@ -751,13 +746,12 @@ impl History {
     fn pop_run(&mut self) {
         let first_block = self.first_block;
         let first_end = self.older.front().map(Vec::len);
-        let (mut n, mut let_go, mut cells, mut leave) = (0usize, self.let_go, 0usize, None);
+        let (mut n, mut cells, mut leave) = (0usize, 0usize, None);
         for kept in self.rows.front_run() {
             if kept.flags() & (TEXT | LINKED) != 0 {
                 break;
             }
             n = n.saturating_add(1);
-            let_go = let_go.max(kept.version);
             cells = cells.saturating_add(kept.len());
             // A row with no cells is in no block; its block number is stale.
             if kept.len() == 0 {
@@ -780,7 +774,6 @@ impl History {
         self.first_row = self
             .first_row
             .wrapping_add(u64::try_from(n).unwrap_or(u64::MAX));
-        self.let_go = let_go;
         self.cells = self.cells.saturating_sub(cells);
         if !self.renditions.is_empty() || !self.ended.is_empty() {
             self.drop_renditions();
@@ -803,7 +796,6 @@ impl History {
         work!(rows, 1);
         let number = self.first_row;
         self.first_row = self.first_row.wrapping_add(1);
-        self.let_go = self.let_go.max(gone.version);
         self.cells = self.cells.saturating_sub(gone.len());
         if gone.flags() & (TEXT | LINKED) != 0 {
             self.forget(number, gone.flags());

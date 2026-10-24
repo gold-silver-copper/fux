@@ -23,40 +23,6 @@ pub mod sandbox;
 
 pub type Outcome = Result<(), String>;
 
-/// Whether fux is told what a pane's program is blocked in (Linux).
-/// Elsewhere a screen quiet for 300ms is taken as settled, a guess, and
-/// said so (`settled`): a program reading its terminal is not told from
-/// one asleep or polling, keys that drew nothing are not said to, and a
-/// text that cannot come is waited for to the limit.
-pub const PROBED: bool = cfg!(target_os = "linux");
-/// The state of a program that reads its terminal, waiting for keys.
-pub const READING: &str = if PROBED { "reading" } else { "settled" };
-/// The state after keys a program read and drew nothing for.
-pub const UNCHANGED: &str = if PROBED {
-    "reading · no change"
-} else {
-    "settled"
-};
-/// The state of a program asleep, or still at work, once quiet.
-pub const ASLEEP: &str = if PROBED { "busy" } else { "settled" };
-
-/// The state line of pane `pane`'s program asleep, or still at work, once
-/// quiet: busy, with how to wait on; at a limit of `secs`, said not to
-/// have failed (`0 timeout` has none).
-pub fn asleep(pane: &str, secs: u64) -> String {
-    let at = match secs {
-        0 => String::new(),
-        secs => format!("still at work at the {secs}s limit, not failed: "),
-    };
-    match PROBED {
-        true => format!("busy · {at}`{pane} wait` waits for it to settle"),
-        false => ASLEEP.to_owned(),
-    }
-}
-/// The status of a text wait on a program that reads its terminal, the
-/// text not come: told at once (7), else at the wait's limit (124).
-pub const CANNOT_COME: i32 = if PROBED { 7 } else { 124 };
-
 /// A size a frame carries: never zero.
 pub fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
     fux_vt::Size::new(rows, cols).map_err(|_| "a size of zero".to_owned())
@@ -269,6 +235,82 @@ impl Server {
             ));
         }
         Ok(out.stdout)
+    }
+
+    /// The version of `pane` (`STARTS.SCREEN.BELLS.DONE.ENDED`).
+    pub fn version(&self, pane: &str) -> Result<String, String> {
+        Ok(self
+            .ok(&["str", pane, "pane", "str", "version", "get"])?
+            .trim()
+            .to_owned())
+    }
+
+    /// Waits, as `docs/agents.md`'s recipes do, from version `since` until
+    /// `done` holds of `pane`'s whole capture; its capture then. Fails if
+    /// its program ends first, or after `PATIENCE`.
+    pub fn until(
+        &self,
+        pane: &str,
+        since: &str,
+        done: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        let deadline = after(PATIENCE);
+        let mut since = since.to_owned();
+        loop {
+            let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
+            if done(&capture) {
+                return Ok(capture);
+            }
+            if ended(&since) {
+                return Err(format!("{pane} ended first, at {since}: {capture}"));
+            }
+            since = self.changed(pane, &since, deadline)?;
+        }
+    }
+
+    /// Waits from `since` until `pane`'s version differs, by `deadline`: the
+    /// new version. Unchanged in one wait (124), it waits again.
+    pub fn changed(&self, pane: &str, since: &str, deadline: Instant) -> Result<String, String> {
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+            if left == 0 {
+                return Err(format!("{pane} unchanged at {since}"));
+            }
+            let left = left.to_string();
+            let waited = [
+                "str", pane, "pane", "str", since, "changed", &left, "timeout", "wait",
+            ];
+            let out = self.fux(&waited)?;
+            match out.status {
+                0 => {
+                    let words = out.stdout.split_whitespace();
+                    return Ok(words.into_iter().nth(1).unwrap_or_default().to_owned());
+                }
+                124 => continue,
+                _ => return Err(format!("{pane}: {}", out.stderr)),
+            }
+        }
+    }
+
+    /// Waits, from now, until `pane`'s capture holds `text`; its capture.
+    pub fn shows(&self, pane: &str, text: &str) -> Result<String, String> {
+        let since = self.version(pane)?;
+        self.until(pane, &since, |capture| capture.contains(text))
+    }
+
+    /// Waits until `pane`'s program has ended, as its version says, a
+    /// minute at most (a test's program may take a while on a slow
+    /// machine): its `exited` then (`3`, or `null` if a signal killed it).
+    pub fn exits(&self, pane: &str) -> Result<String, String> {
+        let deadline = after(Duration::from_secs(60));
+        let mut since = self.version(pane)?;
+        while !ended(&since) {
+            since = self.changed(pane, &since, deadline)?;
+        }
+        Ok(self
+            .ok(&["str", pane, "pane", "str", "exited", "get"])?
+            .trim()
+            .to_owned())
     }
 
     pub fn attach(&self, rows: u16, cols: u16) -> Result<Client, String> {
@@ -959,4 +1001,9 @@ pub fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
         client.pump()?;
         Ok(painted(client).matches(what).count() >= count)
     })
+}
+
+/// Whether `version` says its program ended (`ENDED`, its last count, 1).
+pub fn ended(version: &str) -> bool {
+    version.rsplit('.').next() == Some("1")
 }

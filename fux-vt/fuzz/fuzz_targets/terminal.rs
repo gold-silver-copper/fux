@@ -9,8 +9,7 @@ use fux_vt::{Feature, Identity, Options, Parser, Size};
 use libfuzzer_sys::fuzz_target;
 mod common;
 use common::{
-    Record, Rows, features_reached, marks_sound, pick, prints_bounded, reached, until_stops,
-    versions_follow,
+    Record, Rows, features_reached, marks_sound, pick, reached, until_stops, versions_follow,
 };
 #[path = "../../tests/corpus/graphemes.rs"]
 mod graphemes;
@@ -76,9 +75,6 @@ fuzz_target!(|data: &[u8]| {
     let Ok(mut whole) = Parser::with_options(first, budget, options) else {
         return;
     };
-    // What a program prints is recorded, as fux records it.
-    whole.record_prints(true);
-    reached("call record_prints");
     features_reached(&whole);
     let mut split = whole.clone();
     // A third copy is fed each piece of output cut at sizes from 2 to 17,
@@ -215,8 +211,5 @@ fuzz_target!(|data: &[u8]| {
         invariants::check(&whole);
         invariants::same_feed(&whole, &split);
         invariants::same_feed(&whole, &chunked);
-        for p in [&mut whole, &mut split, &mut chunked] {
-            prints_bounded(p);
-        }
     }
 });

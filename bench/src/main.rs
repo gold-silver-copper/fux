@@ -304,7 +304,7 @@ fn row(name: &str, cpu: std::time::Duration, units: usize) -> String {
     format!("{name:<26} {:>10.2} {mbs:>10}", secs * 1e3)
 }
 
-/// A workload fed no bytes (keys encoded, a probe) prints no MB/s, where
+/// A workload fed no bytes (keys encoded) prints no MB/s, where
 /// its units would be read as bytes; one fed bytes prints its MB/s.
 #[cfg(test)]
 #[test]
@@ -317,7 +317,6 @@ fn a_workload_fed_no_bytes_prints_no_mb_per_s() {
             .map(str::to_owned)
     };
     assert_eq!(mbs("encode/legacy").as_deref(), Some("-"));
-    assert_eq!(mbs("ready/probe").as_deref(), Some("-"));
     assert_eq!(mbs("vt/ascii").as_deref(), Some("2.0"));
     assert_eq!(mbs("pane/ascii").as_deref(), Some("2.0"));
 }

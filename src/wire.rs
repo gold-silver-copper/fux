@@ -517,10 +517,10 @@ mod tests {
         let split = Command::Split {
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
-            cmd: Vec::new(),
+            argv: Vec::new(),
+            typed: None,
             cwd: Some(dir.clone()),
             env: Env::default(),
-            run: false,
             id: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();

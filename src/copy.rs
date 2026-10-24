@@ -340,8 +340,10 @@ fn fold(c: char, ignore_case: bool) -> char {
     } else if c.is_ascii() {
         c.to_ascii_lowercase()
     } else {
-        // As a wait folds it: a final ς is σ.
-        crate::wait::fold(c).next().unwrap_or(c)
+        // A final ς is σ, as a word's last Σ lowers to ς only where the
+        // word is seen whole.
+        let lower = c.to_lowercase().next().unwrap_or(c);
+        if lower == 'ς' { 'σ' } else { lower }
     }
 }
 

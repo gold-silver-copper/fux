@@ -1,5 +1,5 @@
-//! Milestone 7: the command column, the choosers, action menus, the `:`
-//! prompt, rename and confirmations.
+//! Milestone 7: the command column, the choosers, the pane actions layer,
+//! the `:` prompt, rename and confirmations.
 mod support;
 use support::*;
 
@@ -73,10 +73,10 @@ fn the_column_runs_the_selected_command_and_explains_unavailable_ones() -> Outco
         .split("\x1b[0;2")
         .any(|chunk| chunk.contains("next pane"));
     assert!(dimmed, "next pane is dimmed with only one pane");
-    // Enter on it: `next pane` is the 12th entry (after 7 pane bindings
+    // Enter on it: `next pane` is the 11th entry (after 6 pane bindings
     // and 4 directions of focus).
     client.keys("\x1b[H")?;
-    client.keys(&std::iter::repeat_n(DOWN, 11).collect::<String>())?;
+    client.keys(&std::iter::repeat_n(DOWN, 10).collect::<String>())?;
     client.keys("\r")?;
     bar_has(&mut client, "only one pane")?;
     // And by its key, straight from the column.
@@ -122,42 +122,23 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     Ok(())
 }
 
+/// The pane actions are a layer of bindings: `a n` moves the focused pane
+/// to a new tab, and a binding a config adds under `a` is listed there
+/// beside the defaults.
 #[test]
-fn menus_act_on_the_item_they_were_opened_for() -> Outcome {
-    let server = Server::start("")?;
+fn pane_actions_are_bindings_a_config_extends() -> Outcome {
+    let server =
+        Server::start("str 'a g' str 'me focused str hello notify' bind  str greet label")?;
     let mut client = server.attach(30, 100)?;
     client.wait_for("$")?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%2", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}a"))?;
-    client.wait_for("pane %2 sh")?;
     client.wait_for("move to a new tab")?;
-    // Focus moves to %1; the menu still acts on %2.
-    server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
-    // `move to a new tab` is the sixth entry.
-    for _ in 0..5 {
-        client.keys(DOWN)?;
-    }
-    client.keys("\r")?;
+    client.wait_for("greet")?;
+    client.keys("n")?;
     pumped(&mut client, "%2 in a new tab", || {
         Ok(server.ok(&["ls"])?.contains("@2 tab-2\n    %2"))
-    })?;
-    // A menu whose item disappears closes, saying so, and runs nothing.
-    client.keys(&format!("{PREFIX}a"))?;
-    client.wait_for("pane %2")?;
-    server.ok(&["str", "%2", "pane", "kill"])?;
-    bar_has(&mut client, "%2 is gone")?;
-    // Tab and workspace menus.
-    client.keys(&format!("{PREFIX}ta"))?;
-    client.wait_for("tab @1 main")?;
-    // Escape and a prefix within the Escape delay would read as M-C-b.
-    client.keys("\x1b")?;
-    client.wait("the tab menu closed", |t| !t.contains("tab @1 main"))?;
-    client.keys(&format!("{PREFIX}wa"))?;
-    client.wait_for("workspace +1 main")?;
-    client.keys(&format!("{DOWN}{DOWN}\r"))?;
-    pumped(&mut client, "a new workspace", || {
-        Ok(server.ok(&["ls"])?.contains("+2 workspace-2"))
     })?;
     Ok(())
 }
@@ -223,14 +204,9 @@ fn choosers_select_rename_and_close() -> Outcome {
     })?;
     client.keys(&format!("{DOWN}\r"))?;
     bar_has(&mut client, "elsewhere")?;
-    // The move choosers from the pane menu move the pane there.
+    // The move chooser of the pane actions moves the pane there.
     server.ok(&["str", "%4", "pane", "horizontal", "split"])?;
-    client.keys(&format!("{PREFIX}a"))?;
-    client.wait_for("move to workspace")?;
-    for _ in 0..6 {
-        client.keys(DOWN)?;
-    }
-    client.keys("\r")?;
+    client.keys(&format!("{PREFIX}aw"))?;
     client.wait_for("move %5 to workspace")?;
     // The chooser starts on the current workspace; +1 is above it.
     client.keys(&format!("{UP}\r"))?;
@@ -289,7 +265,7 @@ fn rename_prompts_start_from_the_current_name() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.wait_for("$")?;
-    // Renaming a pane has no key of its own (the pane menu offers it).
+    // Asked from the command line, as `a r` asks it.
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "rename-prompt"])?;
     client.wait_for("rename pane %1")?;
     client.wait_for("sh▏")?;
@@ -313,8 +289,8 @@ fn detaching_with_an_overlay_open_is_safe() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.wait_for("$")?;
-    client.keys(&format!("{PREFIX}a"))?;
-    client.wait_for("pane %1")?;
+    client.keys(&format!("{PREFIX}tg"))?;
+    client.wait_for("* @1")?;
     server.ok(&["str", "c1", "client", "detach"])?;
     assert_eq!(client.wait_exit()?, "detached");
     let mut other = server.attach(20, 100)?;

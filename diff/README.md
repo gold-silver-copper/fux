@@ -137,11 +137,9 @@ public API (`oracle/src/side.rs`) after every step:
   options reported, the 256 palette entries and the dynamic colours as the
   program set them, the pictures shown (number, place, size and a sample
   of their pixels), the live rows of the screen not in use (identity, wrap
-  and their cells hashed), and `let_go`.
+  and their cells hashed).
 - **The host's calls,** as steps between outputs (`Step::Host`): history
-  budgets, `clear_history`, `tick` (its count compared), the host's
-  palette and graphics, the mark nonces, `note_submit`, recording prints
-  and what `take_prints` gives.
+  budgets, `clear_history`, and the host's palette and graphics.
 - **Every retained row:** identity and version, soft wrap, prompt mark,
   length, `text_len`, `has_links`; each cell's text, width, attributes,
   colours and link, through every getter.

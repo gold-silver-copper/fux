@@ -5,14 +5,9 @@ use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
-use crate::log::Unit;
 use crate::wire::wire;
 use std::path::PathBuf;
 use std::time::Duration;
-
-/// The longest one `pause` may be, in milliseconds, and so the longest
-/// pause before a piece of input, pauses in a row added up.
-pub const PAUSE_MOST_MS: i64 = 10_000;
 
 wire! {
     /// A workspace named on the command line: `+N` or its name.
@@ -209,9 +204,6 @@ wire! {
         Paste(text: String),
         /// Bytes as they are: part of a key's sequence or of a character.
         Bytes(bytes: Vec<u8>),
-        /// A pause between two inputs: the one after it is written this long
-        /// after the one before, whatever the program did meanwhile.
-        Pause(gap: Duration),
     }
 }
 
@@ -257,41 +249,66 @@ wire! {
 }
 
 wire! {
-    /// What `wait` waits for.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Until {
-        /// The text appears: on the screen, or in a line written since the wait
-        /// began that has scrolled into history.
-        Text(text: String),
-        /// The text is no longer on the screen.
-        Gone(text: String),
-        /// The program exits.
-        Exit,
-        /// The program rings the bell or sends a desktop notification.
-        Bell,
-        /// The pane settles: its program reads its terminal, waits quiet on
-        /// something else, or exits (`crate::ready`); for a bare `wait`, still
-        /// 2s too after input that found it still. What an action waits for
-        /// when it names nothing.
-        Settled,
-        /// The shell command marked running ends (its `D`): the wait lasts as
-        /// long as it runs, unless it is given a time limit.
-        Done,
+    /// Where a pane stands, as counts that only grow while one program
+    /// runs (a respawn starts all but `starts` afresh, a server restart all
+    /// of them): its program's starts (`respawn`), its screen's revision
+    /// (fux-vt's: bumped by each piece of output it reads, each resize to
+    /// another size and each change to its history: cleared, or
+    /// `history-bytes` set), bells and notifications rung, shell commands
+    /// ended (OSC 133 `D`), and whether its program ended (1). Written
+    /// `STARTS.SCREEN.BELLS.DONE.ENDED`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Version {
+        pub starts: u64,
+        pub screen: u64,
+        pub bells: u64,
+        pub done: u64,
+        pub ended: u64,
+    }
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Version {
+            starts,
+            screen,
+            bells,
+            done,
+            ended,
+        } = self;
+        write!(f, "{starts}.{screen}.{bells}.{done}.{ended}")
+    }
+}
+
+/// `STARTS.SCREEN.BELLS.DONE.ENDED`, as a version is written.
+impl std::str::FromStr for Version {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Version, ()> {
+        let mut parts = text.split('.').map(|n| n.parse::<u64>().map_err(drop));
+        let mut next = || parts.next().ok_or(())?;
+        let version = Version {
+            starts: next()?,
+            screen: next()?,
+            bells: next()?,
+            done: next()?,
+            ended: next()?,
+        };
+        match parts.next() {
+            None => Ok(version),
+            Some(_) => Err(()),
+        }
     }
 }
 
 wire! {
-    /// A wait: for any of its conditions, in each of its panes, how long at
-    /// most, and how it is told.
+    /// A wait: until the version of any of its panes differs from `since`
+    /// (else from theirs as it begins) or its pane closes; how long at
+    /// most.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
-        pub until: Vec<Until>,
+        pub since: Option<Version>,
         /// How long at most; if unsaid, the server's `wait-seconds`.
         pub timeout: Option<Duration>,
-        /// What came since it began, or the screen, as the wait ends.
-        pub print: bool,
-        /// What it prints with reverse video marked, as `capture`'s `marks`.
-        pub marks: bool,
     }
 }
 
@@ -374,7 +391,8 @@ wire! {
         },
         NewWorkspace {
             name: Option<String>,
-            cmd: Vec<String>,
+            /// A command line typed into its new shell.
+            typed: Option<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
@@ -385,7 +403,7 @@ wire! {
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
-            cmd: Vec<String>,
+            typed: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
@@ -394,13 +412,13 @@ wire! {
         Split {
             axis: Axis,
             target: PaneId,
-            cmd: Vec<String>,
+            /// A program started in place of a shell, as `run` starts one,
+            /// if given.
+            argv: Vec<String>,
+            typed: Option<String>,
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
-            /// `cmd` is the program, started in place of a shell, as `run`
-            /// starts one.
-            run: bool,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
         },
@@ -517,7 +535,7 @@ wire! {
             target: PaneId,
         },
         /// A command on one client's screen: the client named (`str c1 client`), or the one
-        /// whose key, menu or prompt ran it.
+        /// whose key, chooser or prompt ran it.
         Client {
             client: Option<ClientId>,
             action: ClientAction,
@@ -537,7 +555,7 @@ wire! {
         /// and which is the client's current one.
         Choices(choices: Choices),
         /// fuxth for the client to run as its own: what opens one of its
-        /// screens (a menu, the prompt, copy mode), asked from elsewhere.
+        /// screens (a chooser, the prompt, copy mode), asked from elsewhere.
         Run(code: String),
         /// Keys as typed at its terminal: its bindings, overlays and prompts
         /// take them as a person's keys.
@@ -562,7 +580,7 @@ wire! {
 }
 
 impl ClientAction {
-    /// The action on the client it comes from, as a key, a menu or the
+    /// The action on the client it comes from, as a key, a chooser or the
     /// prompt runs it.
     pub fn here(self) -> Command {
         Command::Client {
@@ -709,53 +727,6 @@ impl Command {
             },
         }
     }
-
-    /// When a wait it then does is armed (`Request::Then`), if it does one.
-    pub fn armed(&self) -> Option<Armed> {
-        use Command as C;
-        match self {
-            C::SendKeys { target, .. } => Some(Armed::Before(*target)),
-            C::SendMouse { target, .. } | C::Signal { target, .. } => {
-                Some(Armed::Before(AnyRef::Pane(*target)))
-            }
-            C::Run { .. } | C::Split { .. } | C::Respawn { .. } => Some(Armed::Started),
-            C::Ls { .. }
-            | C::KillServer { .. }
-            | C::NewWorkspace { .. }
-            | C::NewTab { .. }
-            | C::Notify { .. }
-            | C::Resize(_)
-            | C::Kill { .. }
-            | C::Rename { .. }
-            | C::MovePane { .. }
-            | C::SwapPane { .. }
-            | C::ResizePane { .. }
-            | C::DumpLayout { .. }
-            | C::Log { .. }
-            | C::ClearHistory { .. }
-            | C::CapturePane { .. }
-            | C::Reorder { .. }
-            | C::Set { .. }
-            | C::Resolve { .. }
-            | C::ListBuffers
-            | C::ShowBuffer { .. }
-            | C::PasteBuffer { .. }
-            | C::Client { .. } => None,
-        }
-    }
-}
-
-/// When the wait a command then does is armed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Armed {
-    /// From just before it acts, in these panes: the wait is made once it
-    /// has acted, counting from its input (`Pane::since`), so what its
-    /// input or signal brings is what the wait sees (send-keys,
-    /// send-mouse, signal).
-    Before(AnyRef),
-    /// Once it has started its pane's program, on that pane, before the
-    /// server reads what the program writes (run, split, respawn).
-    Started,
 }
 
 wire! {
@@ -765,20 +736,9 @@ wire! {
     pub enum Request {
         /// A command, at once.
         Do(command: Command),
-        /// A command, then a wait, armed as the command's `armed` says.
-        Then(command: Command, wait: Box<Wait>),
         /// A wait in the pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(target: AnyRef, wait: Wait),
-        /// A capture of the pane (its history and view) read once it
-        /// settles, waiting this long at most (if unsaid, the server's
-        /// `wait-seconds`), and said with its state.
-        Capture(
-            target: PaneId,
-            history: Option<usize>,
-            view: CaptureView,
-            timeout: Option<Duration>
-        ),
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),
@@ -800,28 +760,10 @@ impl Request {
     /// What it reaches.
     pub fn reaches(&self) -> Reaches<'_> {
         match self {
-            Self::Do(command) | Self::Then(command, _) => command.reaches(),
-            Self::Wait(..) | Self::Capture(..) => Reaches::Reads,
+            Self::Do(command) => command.reaches(),
+            Self::Wait(..) => Reaches::Reads,
             Self::Events(..) => Reaches::Streams,
             Self::Grant(..) | Self::Revoke(_) => Reaches::Server,
         }
-    }
-}
-
-/// What a key is to a program reading it (`crate::log::Unit`): an edit
-/// of the line typed (a character, BSpace, Delete, Tab, the cursor keys,
-/// and the line editor's control keys that move or delete), else a key
-/// that does something (Enter, Escape, a control or function key).
-pub fn unit(key: KeyPress) -> Unit {
-    use fux_vt::keys::{Key, Modifiers};
-    match (key.key, key.mods) {
-        (Key::Char(_), Modifiers::NONE | Modifiers::SHIFT)
-        | (Key::Char('a' | 'b' | 'e' | 'f' | 'h' | 'k' | 'u' | 'w' | 'y'), Modifiers::CTRL)
-        | (Key::Char('b' | 'd' | 'f'), Modifiers::ALT)
-        | (
-            Key::Backspace | Key::Delete | Key::Tab | Key::Arrow(_) | Key::Home | Key::End,
-            Modifiers::NONE,
-        ) => Unit::Edit,
-        _ => Unit::Submit,
     }
 }

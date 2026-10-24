@@ -10,10 +10,10 @@ dir=fux-vt/fuzz
 cargo +nightly fuzz build --fuzz-dir "$dir" -O --sanitizer none --features reach
 host=$(rustc +nightly -vV | sed -n 's/^host: //p')
 bin="${CARGO_TARGET_DIR:-$dir/target}/$host/release"
-calls="process_until_stop FrameScan set_history_bytes record_prints resize full_refresh_since Window::text take_prints"
+calls="process_until_stop FrameScan set_history_bytes resize full_refresh_since Window::text"
 declare -A need=(
   [terminal]="$calls"
-  [deep]="$calls set_host_graphics clear_history tick set_host_palette require_mark_nonce note_submit set_picture_bytes host_reads"
+  [deep]="$calls set_host_graphics clear_history set_host_palette set_picture_bytes host_reads"
 )
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT

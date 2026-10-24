@@ -43,7 +43,7 @@ macro_rules! counters {
 }
 
 /// How many counters there are.
-const COUNTERS: usize = 16;
+const COUNTERS: usize = 15;
 
 counters! {
     /// Input bytes examined by the parser's loop and its bulk scans.
@@ -72,8 +72,6 @@ counters! {
     lookups,
     /// Runs, rows, `ids` entries and sort steps of the link sweep.
     links,
-    /// Bytes recorded into [`crate::Prints`].
-    prints,
     /// Bytes the key decoder scans, and the bytes it copies.
     keys,
     /// Cells DECRQCRA's checksum reads, each decoded with its attributes:

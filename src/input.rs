@@ -120,7 +120,7 @@ impl Session {
     /// Types into the client's focused pane what `write` makes for its
     /// screen: a key or a paste, as its program asked. Refused already, and
     /// said so: nothing more goes in, nor is said again, so a client typing
-    /// into a program that has stopped reading costs nothing per key.
+    /// into a pane whose input queue is full costs nothing per key.
     fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
         let Some(pane) = self.focused(client) else {
             return;
@@ -730,9 +730,10 @@ mod tests {
             assert_eq!(state(&mut typed, c)?, state(&mut ran, d)?, "{keys}");
         }
         // Refused as the session stands: no pane that way, no copy to
-        // paste, nothing before the first tab or workspace.
+        // paste, nothing before the first tab or workspace, nothing but a
+        // shell to signal.
         refused.sort();
-        assert_eq!(refused, ["k", "l", "mk", "ml", "p", "tmh", "wmh"]);
+        assert_eq!(refused, ["ak", "k", "l", "mk", "ml", "p", "tmh", "wmh"]);
         Ok(())
     }
 
@@ -745,7 +746,7 @@ mod tests {
         state(&mut s, c)
     }
 
-    /// Menus, choosers and confirmations are built by the client from what
+    /// Choosers and confirmations are built by the client from what
     /// the server says (`Open::build`): each entry's fuxth does what the
     /// words for it do.
     #[test]
@@ -753,43 +754,8 @@ mod tests {
         let (mut s, c) = busy()?;
         for (open, programs) in [
             (
-                "me str %2 pane menu",
-                &[
-                    "me str %2 pane rename-prompt",
-                    "me str %2 pane confirm-close",
-                    "str %2 pane str TERM signal",
-                    "me str %2 pane choose-pane",
-                    "me str %2 pane choose-tab-for",
-                    "str %2 pane str new-tab move-to",
-                    "me str %2 pane choose-workspace-for",
-                    "str %2 pane str new-workspace move-to",
-                    "str %2 pane str previous reorder",
-                    "str %2 pane str next reorder",
-                ][..],
-            ),
-            (
-                "me str @1 tab menu",
-                &[
-                    "me str @1 tab rename-prompt",
-                    "me str @1 tab confirm-close",
-                    "opts str +1 workspace in new-tab",
-                    "str @1 tab str previous reorder",
-                    "str @1 tab str next reorder",
-                ],
-            ),
-            (
-                "me str main workspace menu",
-                &[
-                    "me str +1 workspace rename-prompt",
-                    "me str +1 workspace confirm-close",
-                    "opts new-workspace",
-                    "str +1 workspace str previous reorder",
-                    "str +1 workspace str next reorder",
-                ],
-            ),
-            (
                 "me choose-tab",
-                &["me str @1 tab show-tab", "me str @2 tab show-tab"],
+                &["me str @1 tab show-tab", "me str @2 tab show-tab"][..],
             ),
             (
                 "me str %2 pane choose-tab-for",
@@ -971,14 +937,14 @@ mod tests {
         Ok(())
     }
 
-    /// A menu about a pane that closes closes too, on the server and the
+    /// A chooser about a pane that closes closes too, on the server and the
     /// client, saying why: its entries never act on another pane.
     #[test]
     fn a_list_whose_item_disappears_closes_and_never_retargets() -> Outcome {
         let (mut s, c) = session()?;
         run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "str c1 client str %2 pane focus-pane")?;
-        s.input(c, b"\x02a");
+        s.input(c, b"\x02as");
         assert!(mode(&s, c).starts_with("list "), "{}", mode(&s, c));
         run(&mut s, "str %2 pane kill")?;
         assert_eq!(mode(&s, c), "normal");

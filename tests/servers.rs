@@ -87,7 +87,7 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
-    let refused = server.ok(&[
+    let sent = server.ok(&[
         "str",
         sh,
         "pane",
@@ -99,7 +99,8 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
         "key",
         "send-keys",
     ])?;
-    assert!(refused.contains("status=1"), "{refused}");
+    let since = sent.split_whitespace().nth(1).unwrap_or_default();
+    server.until(sh, since, |c| c.contains("status=1"))?;
     assert!(
         server.ok(&["ls"])?.contains("+1 main"),
         "the server still runs"
@@ -221,8 +222,8 @@ fn events_tell_what_happens() -> Outcome {
     Ok(())
 }
 
-/// Keys sent to a tab reach each of its panes, and each answers once its
-/// shell reads again, with the command's status.
+/// Keys sent to a tab reach each of its panes, and a wait on them waits in
+/// each.
 #[test]
 fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let server = Server::start("")?;
@@ -233,7 +234,8 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let a = first_word(&a);
     let b = server.ok(&[&["str", a, "pane", "horizontal"][..], &bash, &["split"]].concat())?;
     let b = first_word(&b);
-    server.ok(&["str", b, "pane", "wait"])?;
+    // Each pane takes them, answering its version before them, and writes
+    // the command's output.
     let both = server.ok(&[
         "str",
         a,
@@ -247,30 +249,9 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
         "key",
         "send-keys",
     ])?;
-    // Where nothing says a shell reads (macOS), a quiet screen is taken
-    // as settled, the command maybe still running: wait for its output in
-    // each pane instead.
-    if !PROBED {
-        let tab = [
-            "str",
-            a,
-            "pane",
-            "tab",
-            "str",
-            "both-42",
-            "wait-text",
-            "wait",
-        ];
-        server.ok(&tab)?;
-        return Ok(());
-    }
-    // Each pane's answer: its state line, then the echo and the output.
-    for pane in [a, b] {
-        let part = both
-            .split_once(&format!("{pane} {READING} · done 0\n"))
-            .map(|(_, rest)| rest)
-            .ok_or_else(|| format!("no answer from {pane}: {both}"))?;
-        assert!(part.contains("\nboth-42\n"), "{pane}: {both}");
+    for (pane, line) in [a, b].into_iter().zip(both.lines()) {
+        let since = line.strip_prefix(&format!("{pane} ")).ok_or(both.clone())?;
+        server.until(pane, since, |c| c.contains("\nboth-42"))?;
     }
     Ok(())
 }
@@ -298,9 +279,6 @@ fn a_grant_reaches_one_workspace() -> Outcome {
         "str",
         "echo inside; sleep 60",
         "arg",
-        "str",
-        "inside",
-        "wait-text",
         "run",
     ])?;
     assert_eq!(job.status, 0, "{}", job.stderr);
@@ -485,12 +463,10 @@ fn a_crashed_server_comes_back() -> Outcome {
         "str",
         "echo up; sleep 60",
         "arg",
-        "str",
-        "up",
-        "wait-text",
         "run",
     ])?;
     let app = first_word(&app);
+    server.shows(app, "up")?;
     let shell = server.ok(&["str", app, "pane", "horizontal", "split"])?;
     let shell = first_word(&shell);
     server.ok(&["str", app, "pane", "70", "resize-x"])?;
@@ -548,6 +524,15 @@ fn a_crashed_server_comes_back() -> Outcome {
     );
     let paused = ["str", app, "pane", "str", "paused", "get"];
     assert_eq!(server.ok(&paused)?, "true\n");
+    // Paused, it takes no keys and no signal: nothing runs there.
+    for refused in [
+        &["str", "x", "text", "send-keys"][..],
+        &["str", "TERM", "signal"],
+    ] {
+        let refused = server.fux(&[&["str", app, "pane"][..], refused].concat())?;
+        let said = refused.stderr.starts_with("fux: not_running: ");
+        assert!(said, "{}", refused.stderr);
+    }
     // Its name is taken by what came back, which the refusal says.
     let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "command", "run"])?;
     assert!(
@@ -555,7 +540,7 @@ fn a_crashed_server_comes_back() -> Outcome {
         "{}",
         taken.stderr
     );
-    server.ok(&["str", app, "pane", "str", "up", "wait-text", "respawn"])?;
+    server.ok(&["str", app, "pane", "respawn"])?;
     assert_eq!(server.ok(&paused)?, "false\n");
     server.ok(&["force-kill-server"])?;
     eventually("the layout forgotten", || {
@@ -575,7 +560,7 @@ fn a_crashed_server_comes_back() -> Outcome {
 fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     let server = Server::start("")?;
     let run = [
-        "opts", "str", "late", "name", "str", "sleep 60", "command", "0", "timeout", "run",
+        "opts", "str", "late", "name", "str", "sleep 60", "command", "run",
     ];
     let late = server.ok(&run)?;
     let late = first_word(&late);
@@ -610,7 +595,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     let pane = server.ok(&["opts", "str", "build", "name", "new-workspace"])?;
     let worker = server.ok(&[
         "str",
-        pane.trim(),
+        first_word(&pane),
         "pane",
         "vertical",
         "str",
@@ -622,8 +607,6 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "str",
         "echo built; sleep 60",
         "arg",
-        "0",
-        "timeout",
         "split",
     ])?;
     server.ok(&[
@@ -646,12 +629,15 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
         "{ls}\nfrom\n{dump}"
     );
     let (made, _) = server.newest_pane()?;
-    server.ok(&["str", &made, "pane", "str", "built", "wait-text", "wait"])?;
+    eventually("the worker's output", || {
+        Ok(server
+            .ok(&["str", &made, "pane", "capture"])?
+            .contains("built"))
+    })?;
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
     server.ok(&[
-        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "0",
-        "timeout", "run",
+        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "run",
     ])?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
@@ -672,15 +658,14 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.ok(&[
-        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "0",
-        "timeout", "run",
+        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "run",
     ])?;
     let dump = source.ok(&["dump"])?;
     let server = Server::start("")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
     server.ok(&[&file.to_string_lossy()])?;
-    let named = server.ok(&["str", "tab-2", "pane", "0", "timeout", "wait"])?;
+    let named = server.ok(&["str", "tab-2", "pane"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(&format!("{} sleep ", first_word(&named))),
@@ -695,7 +680,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "opts", "str", "moved", "in", "str", "sleep 60", "command", "0", "timeout", "run",
+        "opts", "str", "moved", "in", "str", "sleep 60", "command", "run",
     ])?;
     server.ok(&[
         "str",
@@ -745,10 +730,7 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
         "arg",
         "run",
     ])?;
-    assert!(
-        answer.contains(READING) && answer.contains("through-the-door"),
-        "{answer}"
-    );
+    server.shows(first_word(&answer), "through-the-door")?;
     Ok(())
 }
 
@@ -833,7 +815,7 @@ fn serving(socket: &std::path::Path) -> Option<i32> {
 
 /// A client in a sandbox that refuses sockets (Codex's: `connect`, `bind`,
 /// `send` and `setsockopt` denied) reaches a server outside it through the
-/// door: its requests, an action's settled answer, a capture, `status`, a
+/// door: its requests, an action's answer, a capture, `status`, a
 /// grant's door, and `kill-server`. A socket with no door beside it, such
 /// as an older server's, is a clear error, not a wait.
 #[cfg(target_os = "linux")]
@@ -875,10 +857,8 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
             "key",
             "send-keys",
         ])?;
-        assert!(
-            keys.contains(READING) && keys.contains("\ndoor-42\n"),
-            "{keys}"
-        );
+        let since = keys.split_whitespace().nth(1).unwrap_or_default();
+        server.until(sh, since, |c| c.contains("\ndoor-42"))?;
         let capture = server.ok(&["str", sh, "pane", "capture", "json"])?;
         assert!(
             capture.starts_with('{') && capture.contains("door-42"),
@@ -974,7 +954,17 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
             "arg",
             "run",
         ])?;
-        assert!(answer.stdout.contains("door-only"), "{}", answer.stderr);
+        let pane = answer
+            .stdout
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        eventually("its output", || {
+            Ok(t(&["str", &pane, "pane", "capture"])?
+                .stdout
+                .contains("door-only"))
+        })?;
         signal(pid, fuxix::process::Signal::Kill);
         eventually("the server gone", || Ok(!alive(pid)))?;
         let status = t(&["status"])?;
@@ -1013,11 +1003,13 @@ fn a_sandboxed_request_ends_with_its_server() -> Outcome {
     };
     assert_eq!(t(&["start"])?.status, 0);
     let pid = serving(&socket).ok_or("the server's pid")?;
-    let crash = "import os, signal, time\nos.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n";
+    let crash = "import os, signal, time\ntime.sleep(1)\nos.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n";
     let checked = sandboxed(|| {
         let mut client = Command::new(FUX)
             .args(["str", "t", "server", "opts", "str", "python3", "program"])
-            .args(["str", "-c", "arg", "str", crash, "arg", "run"])
+            .args([
+                "str", "-c", "arg", "str", crash, "arg", "run", "30", "timeout", "wait",
+            ])
             .env("XDG_RUNTIME_DIR", &rt)
             .env("XDG_STATE_HOME", rt.join("state"))
             .env_remove("FUX_SOCKET")
@@ -1128,7 +1120,7 @@ fn a_socket_served_by_another_uid_is_refused() -> Outcome {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
-    let server = Server::start("str j str 'me focused str never-comes wait-text wait drop' bind")?;
+    let server = Server::start("str j str 'me focused 600 timeout wait drop' bind")?;
     let mut terminal = support::sandbox::sandboxed(|| Terminal::attach(&server, 12, 50, &[]))?;
     assert!(support::sandbox::filtered(terminal.child.id()));
     terminal.wait_for("%1 sh")?;
@@ -1137,7 +1129,7 @@ fn a_sandboxed_client_attaches_through_the_door() -> Outcome {
     terminal.resize(15, 70)?;
     terminal.type_bytes(b"stty size\r")?;
     terminal.wait_for("14 70")?;
-    // A wait for a text that never comes, on a busy pane, stopped.
+    // A wait on a pane that does not change, stopped.
     terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
     terminal.wait_for("sleeping")?;
     terminal.type_bytes(b"\x02j")?;

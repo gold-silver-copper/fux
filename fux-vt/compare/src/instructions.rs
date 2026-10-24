@@ -330,7 +330,7 @@ pub fn run(
              rounds, each run less its round's baseline (making the bytes and the engine), no \
              read counted; \
              {mb} MiB per workload, {CHUNK}-byte chunks (NAME@N: N), {ROWS}x{COLS} (recordings at their \
-             size); fux-vt reflow on, print recording off; counted by {} on CPUs {cpus} \
+             size); fux-vt reflow on; counted by {} on CPUs {cpus} \
              (the counter's own set is in the JSON)\n{:<34}",
             retention.name(),
             retention.about(),
@@ -439,7 +439,6 @@ pub fn run(
                 "chunk_bytes": CHUNK,
                 "read_counted": false,
                 "reflow": "fux-vt on; the others as they are",
-                "print_recording": "off",
                 "in_process": true,
                 "cpus": cpus,
                 "repeats": repeats.max(1),

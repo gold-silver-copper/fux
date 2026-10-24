@@ -38,7 +38,7 @@ fn ascii_run_path_equals_scalar_dispatch_around_grapheme_clusters() -> Result<()
 /// a glyph's printing: margins, origin mode, double-width rows, wide
 /// glyphs overwritten at either half or whole, a pending wrap, autowrap off,
 /// protection, both screens, insert mode, an open link, a Prepend left by
-/// the call before, recorded prints, DEC Special Graphics, and glyphs
+/// the call before, DEC Special Graphics, and glyphs
 /// already there between ones that change.
 #[test]
 fn the_text_run_path_equals_scalar_dispatch_in_context() -> Result<(), Error> {
@@ -67,17 +67,16 @@ fn the_text_run_path_equals_scalar_dispatch_in_context() -> Result<(), Error> {
     let long = format!("{text}{text}\u{301}{text}");
     for (n, context) in contexts.iter().enumerate() {
         let inputs = [long.as_str(), "ЖШ界", "Ж界", "ЖШШШ"];
-        for (input, record) in inputs.iter().flat_map(|i| [(i, false), (i, true)]) {
+        for input in inputs {
             let every = Feature::ALL.into_iter().collect::<Options>();
             let mut fast = Parser::with_options(Size::of(4, 12), 8, every)?;
-            fast.record_prints(record);
             let mut slow = fast.clone();
             for piece in [context.as_bytes(), input.as_bytes()] {
                 fast.process(piece)?;
                 scalar(&mut slow, piece, false, &mut Log::default())?;
             }
             let difference = first_difference(&format!("{fast:?}"), &format!("{slow:?}"));
-            assert_eq!(difference, None, "context {n}, {input}, recording {record}");
+            assert_eq!(difference, None, "context {n}, {input}");
         }
     }
     Ok(())
@@ -514,8 +513,6 @@ fn equal_to_the_general_path(cases: std::ops::Range<u64>, long: bool) -> Result<
         let rows = u16::try_from(r.below(6)).unwrap_or(0).saturating_add(1);
         let cols = u16::try_from(r.below(12)).unwrap_or(0).saturating_add(1);
         let mut fast = Parser::with_options(Size::of(rows, cols), r.below(8), options(&mut r))?;
-        // Recording prints, which the fast paths do as the general one.
-        fast.record_prints(r.chance(50));
         let mut slow = fast.clone();
         let fragments = r.below(80).saturating_add(1);
         let input = sequences(&mut r, fragments, long);

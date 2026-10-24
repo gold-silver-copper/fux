@@ -33,6 +33,7 @@ impl Sink for Record {
                 format!("color:{number}:{}", if bel { "bel" } else { "st" })
             }
             Event::Notification(_) => "unknown".to_owned(),
+            Event::CommandEnded(status) => format!("ended:{status:?}"),
         });
     }
 }

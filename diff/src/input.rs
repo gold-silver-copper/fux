@@ -2,9 +2,8 @@
 //! to the same keys, pastes and focus changes, piece by piece, with the same
 //! Escape deadline and the same inputs when it passes; every key encodes to
 //! the same bytes for a pane, in either cursor mode, and every paste alike,
-//! bracketed or not; a command line held for a new shell is due at the
-//! same moment; and a pane's input queue takes, refuses and gives back the
-//! same bytes under the same pushes and reads.
+//! bracketed or not; and a pane's input queue takes, refuses and gives
+//! back the same bytes under the same pushes and reads.
 use crate::rng::Rng;
 use crate::{Outcome, bump, same, times};
 
@@ -90,16 +89,16 @@ fn key(r: &mut Rng) -> String {
 }
 
 /// `$name` decodes and encodes with `$fux`; `$key_bytes` encodes a press
-/// in a cursor mode, `$shown` shows a decoded input, and `$due` times a held
-/// line, all as each version takes them: the current fux's keys carry what
+/// in a cursor mode, and `$shown` shows a decoded input, each as each
+/// version takes them: the current fux's keys carry what
 /// a kitty-protocol terminal said beyond the press, and its encoder the
 /// pane's key mode. `stack!(cur, fux, |press, application, out| ..., |input|
-/// ..., |deadline, last_output| ...)` expands to `mod cur`: `Decoding`
+/// ...)` expands to `mod cur`: `Decoding`
 /// (each piece's inputs, shown, and the decoder's deadline), `key` (a
-/// named key's bytes in both cursor modes), `paste`, `due` and `Queue`
-/// (an input queue's held lines), all over the crate `fux`.
+/// named key's bytes in both cursor modes), `paste` and `Queue` (an
+/// input queue), all over the crate `fux`.
 macro_rules! stack {
-    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr, $due:expr) => {
+    ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr) => {
         mod $name {
             use std::time::Instant;
             use $fux::decode::Decoder;
@@ -161,16 +160,6 @@ macro_rules! stack {
                 (plain, bracketed)
             }
 
-            /// When a held command line is typed, after `start`.
-            pub fn due(
-                start: Instant,
-                deadline: Instant,
-                last_output: Option<Instant>,
-            ) -> Option<std::time::Duration> {
-                let due: fn(Instant, Option<Instant>) -> Option<Instant> = $due;
-                due(deadline, last_output)?.checked_duration_since(start)
-            }
-
             #[derive(Default)]
             pub struct Queue(InputQueue);
 
@@ -225,12 +214,6 @@ stack!(
             return format!("Key({:?})", stroke.press);
         }
         format!("{input:?}")
-    },
-    |deadline, last_output| {
-        let typed = baseline::pane::Typed::new(Vec::new(), deadline)?;
-        let mut queue = baseline::pane::InputQueue::from(typed);
-        last_output.into_iter().for_each(|at| queue.heard(|| at));
-        queue.due_at()
     }
 );
 stack!(
@@ -254,12 +237,6 @@ stack!(
             return format!("Key({:?})", stroke.press);
         }
         format!("{input:?}")
-    },
-    |deadline, last_output| {
-        let typed = fux::pane::Typed::new(Vec::new(), deadline)?;
-        let mut queue = fux::pane::InputQueue::from(typed);
-        last_output.into_iter().for_each(|at| queue.heard(|| at));
-        queue.due_at()
     }
 );
 
@@ -329,26 +306,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         )?;
         bump(&mut pastes);
     }
-    let mut held = 0u64;
-    let start = std::time::Instant::now();
-    let later = |r: &mut Rng| {
-        let wait = match r.below(4) {
-            0 => std::time::Duration::from_secs(u64::MAX / 2),
-            1 => std::time::Duration::ZERO,
-            _ => std::time::Duration::from_millis(u64::try_from(r.below(200)).unwrap_or(0)),
-        };
-        start.checked_add(wait)
-    };
-    for case in 0..times(20_000, scale) {
-        let deadline = later(r).unwrap_or(start);
-        let last_output = if r.chance(33) { None } else { later(r) };
-        same(
-            &format!("held line {case}: deadline {deadline:?} last output {last_output:?}"),
-            base::due(start, deadline, last_output),
-            cur::due(start, deadline, last_output),
-        )?;
-        bump(&mut held);
-    }
     let mut ops = 0u64;
     for case in 0..times(500, scale) {
         let (mut a, mut b) = (base::Queue::default(), cur::Queue::default());
@@ -381,6 +338,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         }
     }
     Ok(format!(
-        "{streams} input streams ({timeouts} Escape timeouts), {keys} keys, {pastes} pastes, {held} held command lines, {ops} queue operations"
+        "{streams} input streams ({timeouts} Escape timeouts), {keys} keys, {pastes} pastes, {ops} queue operations"
     ))
 }

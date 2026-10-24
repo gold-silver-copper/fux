@@ -585,7 +585,6 @@ fn mb_per_s(dir: &Path, info: Option<&Value>) -> Vec<Ranked> {
                 .fold(FLOOR_MIN_PERCENT, f64::max);
             let figures: Vec<(String, f64)> = engines
                 .into_iter()
-                .filter(|(e, _)| !e.starts_with("fux-vt+"))
                 .filter_map(|(e, mut v)| Some((e.to_owned(), median(&mut v)?)))
                 .collect();
             rank(
@@ -993,8 +992,7 @@ mod tests {
         for (engine, fux, theirs) in [("ghostty", 100.0, 104.0), ("alacritty", 110.0, 50.0)] {
             let doc = json!({"kind": "fux-vt-compare bench", "tables": [{"retention": "equal-retention",
                 "in_process": true, "workloads": [{"name": "unicode", "engines": {
-                    "fux-vt": {"mb_per_s": fux}, engine: {"mb_per_s": theirs},
-                    "fux-vt+prints": {"mb_per_s": 1.0}}}]}]});
+                    "fux-vt": {"mb_per_s": fux}, engine: {"mb_per_s": theirs}}}]}]});
             let check = format!("bench-mbs-{engine}-synth");
             std::fs::write(dir.join(format!("{check}.json")), doc.to_string())
                 .map_err(|e| e.to_string())?;

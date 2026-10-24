@@ -48,8 +48,8 @@ const PAINT: Duration = Duration::from_millis(16);
 /// `PAINT`. A program's output in a few bursts, as a screen redrawn is,
 /// shows when it ends; a flood, never quiet so long, keeps to `PAINT`.
 const QUIET: Duration = Duration::from_millis(1);
-/// A pane's read shorter than this, an echo's or a prompt's, is taken for
-/// all it had: the next is left to the poll.
+/// A pane's read shorter than this is taken for all its terminal had: the
+/// next is left to the poll.
 const SHORT_READ: usize = 512;
 /// Output read from one pane per tick, so one busy pane cannot starve others.
 const PANE_READ: usize = 64 * 1024;
@@ -1755,9 +1755,9 @@ impl Server {
                     // Past PANE_READ by at most one buffer, when the loop ends.
                     total = total.saturating_add(n);
                     self.session.output(id, buffer.get(..n).unwrap_or_default());
-                    // A little, as an echo or a prompt is: that was all,
-                    // and the poll says when there is more, without a read
-                    // to find none. A flood's reads are larger, and go on.
+                    // A short read: that was all, and the poll says when
+                    // there is more, without a read to find none. Full
+                    // reads go on.
                     if n < SHORT_READ {
                         break false;
                     }
@@ -1772,7 +1772,11 @@ impl Server {
         }
         if ended {
             self.reap();
-            if let Some(pane) = self.session.panes.get_mut(&id) {
+            // Hung up, unless its exit is being told (the rest of its
+            // output still to read): then it exited, and did not hang up.
+            if let Some(pane) = self.session.panes.get_mut(&id)
+                && pane.exiting.is_none()
+            {
                 pane.process.stop_reading();
             }
         }

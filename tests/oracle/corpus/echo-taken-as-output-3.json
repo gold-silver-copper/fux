@@ -1,1 +1,0 @@
-{"chunk":2,"class":"echo-taken-as-output","cols":46,"mode":"ptk","rows":37,"seed":8267065864959118,"steps":[{"keys":[["text","ticker IN0001"],["key","Enter"]],"probe":{"bell":false,"secs":3,"text":"OUT0001"}},{"keys":[["text","IN0002x"],["key","Left"]],"probe":{"bell":false,"secs":2,"text":"IN0002"}}]}

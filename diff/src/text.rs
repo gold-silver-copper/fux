@@ -1,6 +1,5 @@
 //! Text, in the baseline and the current fux: lines split into the same
-//! words or errors, words quote alike, command lines for a shell
-//! are the same with and without fish; key names read and print alike;
+//! words or errors, words quote alike; key names read and print alike;
 //! JSON strings and base64 are written the same. Config files are no longer
 //! compared: the baseline's grammar is gone, and a config is a fuxth
 //! program its clients run.
@@ -22,10 +21,8 @@ macro_rules! stack {
                 let split = words::split(line).map_err(|e| e.to_string());
                 let argv = split.clone().unwrap_or_default();
                 format!(
-                    "{split:?} {:?} {:?} {:?}",
-                    argv.iter().map(|w| words::quote(w)).collect::<Vec<_>>(),
-                    words::shell_line(&argv, false).map_err(|e| e.to_string()),
-                    words::shell_line(&argv, true).map_err(|e| e.to_string())
+                    "{split:?} {:?}",
+                    argv.iter().map(|w| words::quote(w)).collect::<Vec<_>>()
                 )
             }
 

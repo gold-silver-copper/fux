@@ -1,36 +1,17 @@
 //! Driving programs from the command line, as a script or an agent does:
 //! `run` starts one out of every client's way and keeps its pane once it
-//! exits; every action settles and answers with what the program does and
-//! what came; `wait` answers when a pane shows something, settles or exits;
-//! `send-keys` and `send-mouse` send what a person would, sizes are set,
-//! and a headless client stands in for a terminal.
+//! exits; an action acts at once and answers its pane's version from
+//! before it acted; a wait answers once that version differs (its
+//! program's end too) or the pane closes; `send-keys` and `send-mouse` send what a
+//! person would, sizes are set, and a headless client stands in for a
+//! terminal.
 mod support;
+use std::time::{Duration, Instant};
 use support::*;
 
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
     out.split_whitespace().next().unwrap_or_default().to_owned()
-}
-
-/// An answer's first line: the pane and what its program does.
-fn head(out: &str) -> &str {
-    out.lines().next().unwrap_or_default()
-}
-
-/// What an answer shows after its first line.
-fn body(out: &str) -> &str {
-    out.split_once('\n').map_or("", |(_, rest)| rest)
-}
-
-/// What a met wait answers after its state line, which names the pane,
-/// says its state (any: its program goes on) and ends with what met it
-/// (`%2 busy · met "READY"`): the line the text came on, then the screen if
-/// asked. A first line that says no `met` keeps the whole answer.
-fn met(out: &str) -> &str {
-    match head(out).contains(" · met ") {
-        true => body(out),
-        false => out,
-    }
 }
 
 /// `argv` as options words: its program, then each argument.
@@ -52,70 +33,128 @@ fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
     [&["opts"][..], before, &program(argv), &["run"]].concat()
 }
 
+/// `send-keys` to `pane` typing `line`, then Enter.
+fn typed<'a>(pane: &'a str, line: &'a str) -> Vec<&'a str> {
+    vec![
+        "str",
+        pane,
+        "pane",
+        "str",
+        line,
+        "text",
+        "str",
+        "Enter",
+        "key",
+        "send-keys",
+    ]
+}
+
+/// The version an action's answer gives, from before it acted.
+fn version(answer: &str) -> String {
+    answer
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Waits from the version an action answered (`answer`) until its pane
+/// shows `text`: its capture then.
+fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, String> {
+    server.until(&id(answer), &version(answer), |c| c.contains(text))
+}
+
+/// The marks the README shows for bash, which a bash pane here sends.
+const BASH_MARKS: &str = r#"PS0='\e]133;C\a'
+PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}"#;
+
+/// The marks the README shows for zsh.
+const ZSH_MARKS: &str = r#"autoload -Uz add-zsh-hook
+mark_start() { print -n '\e]133;C\a' }
+mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
+add-zsh-hook preexec mark_start
+precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's"#;
+
+/// The marks the README shows for fish.
+const FISH_MARKS: &str = r#"function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
+function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
+function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end"#;
+
+/// Whether the `bash` here is 4.4 or later, which has `PS0`, as the
+/// README's marks need (macOS's own is 3.2).
+fn bash_has_ps0() -> Result<bool, String> {
+    let version = std::process::Command::new("bash")
+        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
+        .output()
+        .map_err(e)?;
+    let version: u32 = String::from_utf8_lossy(&version.stdout)
+        .trim()
+        .parse()
+        .map_err(e)?;
+    Ok(version >= 404)
+}
+
+/// A bash pane named `name` that marks its commands as the README says.
+fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
+    let rc = server.dir.join(format!("{name}.bashrc"));
+    std::fs::write(&rc, format!("PS1='$ '\n{BASH_MARKS}\n")).map_err(e)?;
+    let rc = rc.to_string_lossy().into_owned();
+    let argv = ["bash", "--noprofile", "--rcfile", &rc, "-i"];
+    let made = server.ok(&run(&["str", name, "name"], &argv))?;
+    server.until(name, &version(&made), |c| c.ends_with("$\n"))?;
+    Ok(())
+}
+
+/// Types `line` into shell pane `pane` and waits, as the docs' recipe
+/// does, until a shell command ends there: the version's fourth count,
+/// `DONE`, grows.
+fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
+    let since = version(&server.ok(&typed(pane, line))?);
+    let done = |v: &str| v.split('.').nth(3).and_then(|d| d.parse::<u64>().ok());
+    let (before, deadline) = (done(&since), after(PATIENCE));
+    let mut at = since;
+    while done(&at) <= before {
+        at = server.changed(pane, &at, deadline)?;
+    }
+    Ok(())
+}
+
 /// A program `run` starts keeps its pane once it exits: its last screen,
-/// and its status, which `wait-exit` and `ls` report; one that cannot
-/// start is refused. It takes no more input. The program starts at its
-/// `size`, in the `agent` workspace, which no client is moved to.
+/// and its status, which a wait and `ls` report (a signal's too); one that
+/// cannot start is refused. It takes no more input. The program starts at
+/// its `size`, in the `agent` workspace, which no client is moved to.
 #[test]
 fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     let server = Server::start("")?;
     let script = "stty size; echo started; exit 3";
     let started = server.ok(&run(&["40", "10", "size"], &["sh", "-c", script]))?;
     let pane = id(&started);
-    assert_eq!(
-        started,
-        format!("{pane} exited 3\n10 40\nstarted\n"),
-        "run answers once it settles: here, once it exits"
-    );
-    // A met wait for the exit is 0: the program's status is its state's.
-    // Asked again, it answers in full again: no answer leans on another.
-    let ended = server.fux(&["str", &pane, "pane", "wait-exit", "wait"])?;
-    assert_eq!(
-        (ended.status, ended.stdout.as_str()),
-        (0, started.as_str()),
-        "the same answer as run's"
-    );
-    let json = server.ok(&["str", &pane, "pane", "wait-exit", "wait", "json"])?;
-    assert!(
-        json.starts_with(&format!(
-            r#"{{"pane":"{pane}","state":"exited 3","status":0,"#
-        )),
-        "{json}"
-    );
-    assert_eq!(
-        server.ok(&["str", &pane, "pane", "str", "exited", "get"])?,
-        "3\n"
-    );
+    assert_eq!(server.exits(&pane)?, "3");
+    // Waited on from its start, it has exited: answered at once; from now,
+    // nothing changes.
+    let since = version(&started);
+    let from_start = [
+        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
+    ];
+    let json = server.ok(&from_start)?;
+    assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
+    let now = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
+    assert_eq!(now.status, 124, "{}", now.stdout);
     let screen = server.ok(&["str", &pane, "pane", "capture"])?;
     assert_eq!(
-        screen,
-        format!("{pane} exited 3\n10 40\nstarted\n"),
+        screen, "10 40\nstarted\n",
         "trimmed, and sized from the start"
     );
     let ls = server.ok(&["ls"])?;
     assert!(ls.contains("+2 agent"), "{ls}");
     assert!(ls.contains(&format!("{pane} sh 40x10 exited 3")), "{ls}");
     let refused = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
-    // A failure, 1, named apart from a wait's program that exited first.
     assert_eq!(refused.status, 1);
     assert!(
         refused.stderr.starts_with("fux: not_running: ") && refused.stderr.contains("exited 3"),
         "{}",
         refused.stderr
     );
-    // Keys sent on after the one that ended it went nowhere, which is said
-    // (where the terminal still holds them as its program exits: Linux).
-    let one = "stty raw -echo; dd bs=1 count=1 2>/dev/null >/dev/null; echo bye";
-    let one = id(&server.ok(&run(&[], &["sh", "-c", one]))?);
-    let keys = ["str", &one, "pane", "str", "C-q", "key", "2", "times"];
-    let lost = server.ok(&[&keys[..], &["str", "ab", "text", "send-keys"]].concat())?;
-    let said = r#" · it exited before reading C-q, "ab", which went nowhere"#;
-    let said = if PROBED { said } else { "" };
-    assert!(
-        head(&lost).starts_with(&format!("{one} exited 0{said}")),
-        "{lost}"
-    );
-    // A program that cannot start is refused, saying why.
     let missing = server.fux(&run(&[], &["/no/such/program"]))?;
     assert_eq!(missing.status, 1);
     assert!(
@@ -123,78 +162,226 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
         "{}",
         missing.stderr
     );
+    // One a signal ends is said to be killed by it.
+    let started = server.ok(&run(&[], &["sleep", "30"]))?;
+    let pane = id(&started);
+    server.ok(&["str", &pane, "pane", "str", "KILL", "signal"])?;
+    server.exits(&pane)?;
+    let since = version(&started);
+    let waited = ["str", &pane, "pane", "str", &since, "changed", "wait"];
+    let text = server.ok(&waited)?;
+    assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
+    let json = server.ok(&[&waited[..], &["json"]].concat())?;
+    assert!(json.contains(r#""signal":9,"status":0"#), "{json}");
     Ok(())
 }
 
-/// `wait` answers as soon as the screen shows its text or stops showing
-/// it; on its own, with no text, once the pane settles; on timeout it
-/// fails, saying so. A text that cannot come, the program reading its
-/// terminal without it, ends the wait at once (status 7) with the screen.
-/// `send-keys` answers with what the keys brought, their echo included.
+/// An action acts at once and answers its pane's version from just before
+/// it acted; a wait from that version answers once the version differs,
+/// with what changed, however late it is asked: nothing between is
+/// missed. A wait from now on a pane that does not change times out (124).
 #[test]
-fn wait_answers_as_the_pane_shows_or_settles() -> Outcome {
+fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let server = Server::start("")?;
-    let script =
-        r#"echo one; sleep 0.5; echo two; sleep 0.2; while read l; do echo "got $l"; done"#;
-    let pane = id(&server.ok(&run(&["0", "timeout"], &["sh", "-c", script]))?);
-    let p = ["str", pane.as_str(), "pane"];
-    // Met before its limit, the line it is on.
-    let two =
-        server.ok(&[&p[..], &["str", "two", "wait-text", "5", "timeout", "wait"]].concat())?;
-    assert_eq!(met(&two), "two\n");
-    let gone = server.ok(&[&p[..], &["str", "never shown", "wait-gone", "wait"]].concat())?;
-    // Met at once: the pane's state as it is, and what came.
-    assert!(gone.starts_with(&format!("{pane} ")), "{gone}");
-    assert_eq!(body(&gone), "one\ntwo\n");
-    let quiet = server.ok(&[&p[..], &["wait"]].concat())?;
-    assert_eq!(
-        quiet,
-        format!("{pane} {READING}\none\ntwo\n"),
-        "what came since it started: no keys went in"
+    let started = server.ok(&run(
+        &[],
+        &["sh", "-c", "echo ready; read x; echo got; sleep 30"],
+    ))?;
+    let pane = id(&started);
+    server.until(&pane, &version(&started), |c| c.contains("ready"))?;
+    let began = Instant::now();
+    let sent = server.ok(&typed(&pane, "x"))?;
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        began.elapsed()
     );
-    // Where fux is not told the program reads (not Linux), the text is
-    // waited for to the limit, wait-seconds (30s).
-    if PROBED {
-        let never = server.fux(&[&p[..], &["str", "never", "wait-text", "wait"]].concat())?;
-        assert_eq!(
-            (never.status, never.stdout.as_str()),
-            (7, format!("{pane} reading\none\ntwo\n").as_str()),
-            "{}",
-            never.stderr
-        );
+    let since = version(&sent);
+    assert_eq!(sent, format!("{pane} {since}\n"));
+    // Asked once the program answered: met at once, from the version held.
+    server.until(&pane, &since, |c| c.contains("got"))?;
+    let changed = server.ok(&["str", &pane, "pane", "str", &since, "changed", "wait"])?;
+    assert!(
+        changed.starts_with(&format!("{pane} ")) && changed.ends_with(" screen\n"),
+        "{changed}"
+    );
+    let json = server.ok(&[
+        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
+    ])?;
+    assert!(
+        json.contains(r#""changed":["screen"],"status":0"#),
+        "{json}"
+    );
+    let still = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
+    assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
+    assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
+    let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
+    assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
+    // A version with a count above this pane's (a program started more
+    // often, or more output read) is another pane's, or made up.
+    for other in ["3.0.0.0.0", "0.99999.0.0.0"] {
+        let other = server.fux(&["str", &pane, "pane", "str", other, "changed", "wait"])?;
+        let refused = other.stderr.starts_with("fux: bad_value: ");
+        assert!(refused, "{}", other.stderr);
     }
-    let echoed = server.ok(&[
+    // In one program, a wait on the action's answer waits from the version
+    // it holds, a timeout given between them too: asked again once the
+    // change surely came, it answers at once, where one from now would
+    // time out.
+    let echoes = id(&server.ok(&run(&[], &["sh", "-c", "read x; sleep 30"]))?);
+    let twice = [
+        "dup", "5", "timeout", "wait", "drop", "1", "timeout", "wait",
+    ];
+    let answer = server.ok(&[&typed(&echoes, "x")[..], &twice].concat())?;
+    assert!(answer.ends_with(" screen\n"), "{answer}");
+    Ok(())
+}
+
+/// A version counts bells and notifications rung, and a wait says one
+/// rang; a program started again is said so, its counts afresh.
+#[test]
+fn bells_and_respawns_change_the_version() -> Outcome {
+    let server = Server::start("")?;
+    let script = r"read x; printf '\a'; exec cat";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let mut at = version(&server.ok(&typed(&pane, ""))?);
+    loop {
+        let waited = [
+            "str", &pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
+        ];
+        let out = server.ok(&waited)?;
+        if out.contains(" bell") {
+            break;
+        }
+        at = version(&out);
+    }
+    assert_eq!(server.version(&pane)?.split('.').nth(2), Some("1"));
+    let at = server.version(&pane)?;
+    let respawned = server.ok(&["str", &pane, "pane", "kill-first", "respawn"])?;
+    assert!(version(&respawned).starts_with("1."), "{respawned}");
+    let answer = server.ok(&["str", &pane, "pane", "str", &at, "changed", "wait"])?;
+    assert!(answer.contains(" respawned"), "{answer}");
+    Ok(())
+}
+
+/// A shell's OSC 133 marks count the commands that end in its pane's
+/// version, `last_status` says how the last ended and `last-output` reads
+/// its output alone; where no command was marked, `last-output` says so
+/// and the count stays. The marks are the README's, for each shell here.
+#[test]
+fn shell_marks_count_commands_and_give_their_output() -> Outcome {
+    let readme = include_str!("../README.md");
+    for marks in [BASH_MARKS, ZSH_MARKS, FISH_MARKS] {
+        assert!(readme.contains(marks), "the README shows {marks}");
+    }
+    let server = Server::start("")?;
+    let bash = bash_has_ps0()?;
+    if bash {
+        marked_bash(&server, "b")?;
+    }
+    let status = |pane: &str| server.ok(&["str", pane, "pane", "str", "last_status", "get"]);
+    let check = |pane: &str| -> Outcome {
+        line_done(&server, pane, "echo one; false")?;
+        assert_eq!(status(pane)?, "1\n");
+        let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
+        assert_eq!(output, "one\n");
+        line_done(&server, pane, "echo two")?;
+        assert_eq!(status(pane)?, "0\n");
+        Ok(())
+    };
+    if bash {
+        check("b")?;
+    }
+    // A shell the tests may have: its marks as the README has them, each
+    // read from its own startup file, where the README puts them.
+    let shells = [
+        ("zsh", ZSH_MARKS, "ZDOTDIR", ".zshrc"),
+        ("fish", FISH_MARKS, "XDG_CONFIG_HOME", "fish/config.fish"),
+    ];
+    for (shell, marks, home, rc) in shells {
+        if std::env::var_os("FUX_TEST_SHELLS").is_none() {
+            break;
+        }
+        let dir = server.dir.join(shell);
+        let rc = dir.join(rc);
+        std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
+        std::fs::write(&rc, format!("{marks}\n")).map_err(e)?;
+        let dir = dir.to_string_lossy().into_owned();
+        let words = [
+            "opts", "str", shell, "name", "str", home, "str", &dir, "env",
+        ];
+        server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
+        check(shell)?;
+    }
+    let plain = server.ok(&run(&[], &["sh"]))?;
+    let refused = server.fux(&["str", &id(&plain), "pane", "last-output", "capture"])?;
+    assert!(
+        refused.stderr.starts_with("fux: no_marks: "),
+        "{}",
+        refused.stderr
+    );
+    let echoed = server.ok(&typed(&id(&plain), "echo un''marked"))?;
+    shows_after(&server, &echoed, "unmarked")?;
+    let done = server.version(&id(&plain))?;
+    assert_eq!(done.split('.').nth(3), Some("0"), "{done}");
+    Ok(())
+}
+
+/// Keys reach the program as they are sent, in order: a paste bracketed
+/// as it asked, a count repeating only the key before it, bytes as they
+/// are, a click encoded as it asked. The program says all it has read so
+/// far after each read: its terminal may split what one action sent.
+#[test]
+fn input_reaches_the_program_as_sent() -> Outcome {
+    const READS: &str = r#"
+import os, sys, tty
+tty.setraw(0)
+os.write(1, b"\x1b[?2004h\x1b[?1000h\x1b[?1006hready\r\n")
+seen = b""
+while not seen.endswith(b"q"):
+    seen += os.read(0, 256)
+    os.write(1, ("seen " + seen.hex() + "\r\n").encode())
+"#;
+    let server = Server::start("")?;
+    let path = server.dir.join("reads.py");
+    std::fs::write(&path, READS).map_err(e)?;
+    let script = path.to_string_lossy().into_owned();
+    let started = server.ok(&run(&[], &["python3", "-I", &script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "ready")?;
+    // All the program read so far, as it said it.
+    let seen = std::cell::RefCell::new(String::new());
+    let sent = |keys: &[&str], read: &str| -> Outcome {
+        seen.borrow_mut().push_str(read);
+        let said = format!("seen {}\n", seen.borrow());
+        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
+        shows_after(&server, &server.ok(&send.concat())?, &said)?;
+        Ok(())
+    };
+    sent(&["str", "Escape", "key"], "1b")?;
+    sent(&["str", "hi", "text", "str", "Enter", "key"], "68690d")?;
+    sent(&["str", "a b", "paste"], "1b5b3230307e6120621b5b3230317e")?;
+    sent(&["str", "c3a9", "bytes"], "c3a9")?;
+    sent(
+        &["str", "BSpace", "key", "3", "times", "str", "x", "text"],
+        "7f7f7f78",
+    )?;
+    let click = ["str", "click", "2", "4", "mouse"];
+    seen.borrow_mut()
+        .push_str("1b5b3c303b353b334d1b5b3c303b353b336d");
+    let said = format!("seen {}\n", seen.borrow());
+    let clicked = [&["str", pane.as_str(), "pane"][..], &click, &["send-mouse"]];
+    shows_after(&server, &server.ok(&clicked.concat())?, &said)?;
+    server.ok(&[
         "str",
-        &pane,
+        pane.as_str(),
         "pane",
         "str",
-        "hello",
+        "q",
         "text",
-        "str",
-        "Enter",
-        "key",
         "send-keys",
     ])?;
-    assert_eq!(echoed, format!("{pane} {READING}\nhello\ngot hello\n"));
-    // A program at work: the wait runs out, and says so.
-    let busy = id(&server.ok(&run(&["0", "timeout"], &["sleep", "60"]))?);
-    let late = server.fux(&[
-        "str",
-        &busy,
-        "pane",
-        "str",
-        "never",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(late.status, 124, "a timeout is told from a failure");
-    assert!(
-        late.stderr.contains("timed out after 1s"),
-        "{}",
-        late.stderr
-    );
+    assert_eq!(server.exits(&pane)?, "0");
     Ok(())
 }
 
@@ -219,6 +406,7 @@ fn sizes_are_set_as_asked() -> Outcome {
         "tab",
     ])?;
     let (left, tab) = made.trim().split_once('\n').ok_or("a pane and its tab")?;
+    let left = left.split_whitespace().next().ok_or("a pane")?;
     let size = |pane: &str| -> Result<String, String> {
         let ls = server.ok(&["ls"])?;
         let line = ls
@@ -254,88 +442,6 @@ fn sizes_are_set_as_asked() -> Outcome {
     Ok(())
 }
 
-/// Reads what a pane's program is sent, one read per line in hex, in raw
-/// mode with bracketed paste and SGR mouse reports on, until `q`.
-const READS: &str = r#"
-import os, sys, tty
-tty.setraw(0)
-os.write(1, b"\x1b[?2004h\x1b[?1000h\x1b[?1006hready\r\n")
-while True:
-    got = os.read(0, 256)
-    os.write(1, (got.hex() + "\r\n").encode())
-    if got.endswith(b"q"):
-        break
-"#;
-
-/// Keys reach the program as a person would send them: a lone Escape read
-/// alone, not as Alt with what follows; typed text apart from the Enter
-/// after it; a paste bracketed; a count repeating only the key before it;
-/// a click encoded as the program asked. Each answers with what it brought.
-#[test]
-fn input_reaches_the_program_as_a_person_sends_it() -> Outcome {
-    let server = Server::start("")?;
-    let path = server.dir.join("reads.py");
-    std::fs::write(&path, READS).map_err(e)?;
-    let script = path.to_string_lossy().into_owned();
-    let pane = id(&server.ok(&run(
-        &["str", "ready", "wait-text"],
-        &["python3", "-I", &script],
-    ))?);
-    // What the program read, one read per line.
-    let read = |answer: &str| body(answer).lines().collect::<Vec<_>>().join(" ");
-    let sent = |keys: &[&str]| -> Result<String, String> {
-        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
-        let answer = server.ok(&send.concat())?;
-        assert!(answer.starts_with(&format!("{pane} {READING}")), "{answer}");
-        Ok(read(&answer))
-    };
-    assert_eq!(
-        sent(&["str", "Escape", "key", "str", "Escape", "key"])?,
-        "1b 1b"
-    );
-    assert_eq!(
-        sent(&["str", "hi", "text", "str", "Enter", "key"])?,
-        "6869 0d"
-    );
-    assert_eq!(
-        sent(&["str", "a b", "paste"])?,
-        "1b5b3230307e6120621b5b3230317e"
-    );
-    // Bytes as they are, in pieces a pause apart: half a character, then
-    // the rest, each read alone, the second written once the pause is up.
-    let began = std::time::Instant::now();
-    assert_eq!(
-        sent(&["str", "c3", "bytes", "300", "pause", "str", "a9", "bytes"])?,
-        "c3 a9"
-    );
-    assert!(began.elapsed() >= std::time::Duration::from_millis(300));
-    let repeated = sent(&["str", "BSpace", "key", "3", "times", "str", "x", "text"])?;
-    assert_eq!(repeated.replace(' ', ""), "7f7f7f78", "x once");
-    let menu = sent(&["str", "Down", "key", "2", "times", "str", "Enter", "key"])?;
-    assert_eq!(menu.replace(' ', ""), "1b5b421b5b420d", "Down Down Enter");
-    let clicked = server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "click",
-        "2",
-        "4",
-        "mouse",
-        "send-mouse",
-    ])?;
-    assert_eq!(read(&clicked), "1b5b3c303b353b334d1b5b3c303b353b336d");
-    server.ok(&["str", &pane, "pane", "str", "q", "text", "send-keys"])?;
-    assert_eq!(
-        server
-            .ok(&["str", &pane, "pane", "wait-exit", "wait"])?
-            .lines()
-            .next(),
-        Some(format!("{pane} exited 0").as_str())
-    );
-    Ok(())
-}
-
 /// A headless client stands in for a terminal of a size set from the
 /// command line: it prints its id, shows what it is sent, and goes on a
 /// signal. A terminal's client sets its own size.
@@ -358,13 +464,10 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     assert!(server.ok(&["ls"])?.contains("client c1 50x10"));
     server.ok(&["str", "c1", "client", "60", "12", "resize-client"])?;
     assert!(server.ok(&["ls"])?.contains("client c1 60x12"));
-    eventually("a paint", || {
-        Ok(server
-            .ok(&["str", "c1", "client", "capture-client"])?
-            .contains("main"))
-    })?;
+    let capture = ["str", "c1", "client", "capture-client"];
+    eventually("a paint", || Ok(server.ok(&capture)?.contains("main")))?;
     // Keys typed at it are a person's: the prefix and `c` open copy mode.
-    server.ok(&[
+    let keys = [
         "str",
         "c1",
         "client",
@@ -375,12 +478,9 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         "c",
         "text",
         "send-keys",
-    ])?;
-    eventually("copy mode", || {
-        Ok(server
-            .ok(&["str", "c1", "client", "capture-client"])?
-            .contains("COPY"))
-    })?;
+    ];
+    server.ok(&keys)?;
+    eventually("copy mode", || Ok(server.ok(&capture)?.contains("COPY")))?;
     server.ok(&[
         "str",
         "c1",
@@ -389,7 +489,6 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
         "q",
         "text",
         "send-keys",
-        // It leaves its answer, as send-keys to a pane does.
         "drop",
     ])?;
     let mut terminal = server.attach(10, 40)?;
@@ -437,28 +536,13 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
     // picture's last row (DEC STD 070, 11.3; xterm "requires only a single
     // newline"), so a line goes first lest the text cover it.
     let asked = r"printf '\033[c'; read -r _; printf '\033P9q#1;2;100;0;0!20~-!20~\033\\'; echo; echo drawn";
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
-        asked,
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ])?;
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "str",
+    shows_after(
+        &server,
+        &server.ok(&typed("%1", asked))?,
         "62;4;6;21;22;28c",
-        "wait-text",
-        "wait",
-    ])?;
-    server.ok(&["str", "%1", "pane", "str", "Enter", "key", "send-keys"])?;
+    )?;
+    let enter = ["str", "%1", "pane", "str", "Enter", "key", "send-keys"];
+    shows_after(&server, &server.ok(&enter)?, "drawn")?;
     eventually("the picture sent", || {
         client.pump()?;
         Ok(painted(&client, b"\x1bP0;1;0q\"1;1;20;12"))
@@ -468,437 +552,6 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
         json.contains(r#""col":0,"rows":1,"cropped":0,"cols":2,"width":20,"height":12}]"#),
         "{json}"
     );
-    Ok(())
-}
-
-/// Every action answers once the program settles, with what it does:
-/// `reading` when it waits for keys, and `· no change` when the keys drew
-/// nothing; `busy` when it is still at work at the limit (status 124), or
-/// when asked with `0 timeout` (at once, status 0). A wait on its own
-/// counts what came since the last input: what came before cannot come
-/// again, and a program reading its terminal without it ends it (status 7).
-#[test]
-fn answers_say_what_the_program_does() -> Outcome {
-    let server = Server::start("")?;
-    let script = "stty -echo; echo ready; read x; echo later; exec sleep 60";
-    let started = server.ok(&run(&[], &["sh", "-c", script]))?;
-    let pane = id(&started);
-    assert_eq!(started, format!("{pane} {READING}\nready\n"));
-    let keys = |keys: &[&str]| {
-        server.fux(&[&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]].concat())
-    };
-    let unseen = keys(&["str", "x", "text"])?;
-    assert_eq!(unseen.stdout, format!("{pane} {UNCHANGED}\n"));
-    let p = ["str", pane.as_str(), "pane"];
-    // Not told it reads (not Linux), fux waits for the text to the limit.
-    if PROBED {
-        let before = server.fux(&[&p[..], &["str", "ready", "wait-text", "wait"]].concat())?;
-        assert_eq!(
-            (before.status, before.stdout.as_str()),
-            (7, format!("{pane} reading\nready\n").as_str()),
-            "it came before the keys"
-        );
-    }
-    // Asleep: busy at the limit; elsewhere, quiet, taken as settled.
-    let at_work = keys(&["str", "Enter", "key", "1", "timeout"])?;
-    assert_eq!(
-        (at_work.status, at_work.stdout.as_str()),
-        (
-            if PROBED { 124 } else { 0 },
-            format!("{pane} {}\nlater\n", asleep(&pane, 1)).as_str()
-        )
-    );
-    let since = server.ok(&[&p[..], &["str", "later", "wait-text", "wait"]].concat())?;
-    assert_eq!(met(&since), "later\n", "it came after the keys");
-    let now = server.fux(&[&p[..], &["0", "timeout", "wait"]].concat())?;
-    // Not told it sleeps (not Linux), it is at work on the keys till still 2s.
-    let busy = format!("busy · `{pane} wait` waits for it to settle");
-    let said = [asleep(&pane, 0), busy].map(|state| format!("{pane} {state}\nlater\n"));
-    assert!(
-        now.status == 0 && said.contains(&now.stdout),
-        "what came since the keys: {}",
-        now.stdout
-    );
-    assert_eq!(
-        server.ok(&["str", &pane, "pane", "str", "state", "get"])?,
-        format!("{ASLEEP}\n")
-    );
-    Ok(())
-}
-
-/// A shell's OSC 133 marks tell when a command ends and how (the answer's
-/// `· done S`), and which output was its; a bell or a desktop notification
-/// is a pane asking for a person, which `wait-bell` hears and the JSON
-/// counts.
-#[test]
-fn shell_marks_and_bells_are_heard() -> Outcome {
-    let server = Server::start("")?;
-    let script = r"read go; printf '\033]133;C\007'; echo out1; echo out2; printf '\033]133;D;7\007'; echo prompt; read go; printf '\a\033]9;tests passed\007'; read go; printf '\a'; exec cat";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
-    let enter = ["str", pane.as_str(), "pane", "str", "Enter", "key"];
-    let done = server.ok(&[&enter[..], &["send-keys"]].concat())?;
-    assert_eq!(head(&done), format!("{pane} {READING} · done 7"));
-    assert!(body(&done).contains("out1\nout2\nprompt\n"), "{done}");
-    assert_eq!(last_output(&server, &pane)?, "out1\nout2\n");
-    // A bell then a notification in one write: the wait met the bell,
-    // and says that alert, not the pane's last.
-    let rung = server.ok(&[&enter[..], &["wait-bell", "send-keys", "json"]].concat())?;
-    assert!(rung.contains(r#""notification":null"#), "{rung}");
-    let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    for field in [
-        r#""command_running":false"#,
-        r#""last_status":7"#,
-        r#""notification":"tests passed""#,
-        r#""bells":2"#,
-    ] {
-        assert!(json.contains(field), "{field} in {json}");
-    }
-    // A plain bell that meets a later wait is said as one.
-    let bell = server.ok(&[&enter[..], &["wait-bell", "send-keys", "json"]].concat())?;
-    assert!(bell.contains(r#""notification":null"#), "{bell}");
-    Ok(())
-}
-
-/// A full-screen program that relays a shell's marks, as `koh connect`
-/// does (on the main screen, given `main` after the FIFO, as ssh does):
-/// it takes a line at its prompt, marks the command, and answers `slow`
-/// with what comes down the FIFO it is given; `hang` prints `hanging`
-/// first, as a remote program waiting for input shows its screen, and
-/// ends with status 4; `full` takes the full screen first, as a remote
-/// pager does, and ends with status 5; `forge` answers with marks that
-/// carry no nonce or the wrong one, and anything else with `hi` and
-/// status 1. Its marks carry `FUX_MARK_NONCE` if it was given one. Like
-/// `koh connect`, it reports what the remote program does (`OSC 133 ; S`):
-/// `less` reports `reading` after its `C`, as a remote pager would, and
-/// `unsigned` the same with no nonce, and `early` before it draws, each
-/// ending with status 6 once the
-/// FIFO answers, taking keys meanwhile while it polls the terminal and
-/// FIFO with a time limit; `busy` reports `busy` and waits on both with no
-/// limit, which fux's own probe takes as reading, and ends with status 7.
-const RELAY: &str = r#"
-import os, select, sys, time
-nonce = os.environ.get("FUX_MARK_NONCE")
-out = sys.stdout
-def mark(m, signed=True):
-    out.write("\x1b]133;" + m + (";nonce=" + nonce if nonce and signed else "") + "\x07")
-def held(limit):
-    while True:
-        ready, _, _ = select.select([0, far], [], [], limit)
-        if far in ready:
-            return os.read(far, 100).decode()
-        if 0 in ready:
-            os.read(0, 100)
-def prompt():
-    mark("A"); out.write("r$ "); out.flush()
-far = os.open(sys.argv[1], os.O_RDWR) if len(sys.argv) > 1 else None
-main = sys.argv[2:] == ["main"]
-out.write("" if main else "\x1b[?1049h"); prompt()
-while True:
-    line = sys.stdin.readline().strip()
-    if line == "exit":
-        break
-    if line == "forge":
-        out.write("\x1b]133;C\x07\x1b]133;D;5\x07\x1b]133;C;nonce=0\x07\x1b]133;D;6;nonce=0\x07")
-        prompt()
-        continue
-    mark("C"); out.flush()
-    if line == "slow":
-        out.write(os.read(far, 100).decode()); mark("D;3")
-    elif line == "hang":
-        out.write("hanging\n"); out.flush()
-        out.write(os.read(far, 100).decode()); mark("D;4")
-    elif line in ("less", "unsigned"):
-        out.write("pager\n"); mark("S;activity=reading", line == "less"); out.flush()
-        out.write(held(0.2)); mark("D;6")
-    elif line == "early":
-        time.sleep(0.1); mark("S;activity=reading"); out.flush()
-        time.sleep(0.03); out.write("pager drawn\n"); out.flush()
-        out.write(held(0.2)); mark("D;6")
-    elif line == "busy":
-        mark("S;activity=busy"); out.flush()
-        out.write(held(None)); mark("D;7")
-    elif line == "full":
-        out.write("\x1b[?1049hfull\n"); out.flush()
-        out.write("\x1b[?1049l" + os.read(far, 100).decode()); mark("D;5")
-    else:
-        out.write("hi\n"); mark("D;1")
-    prompt()
-out.write("" if main else "\x1b[?1049l"); out.flush()
-"#;
-
-/// `RELAY` written into `server`'s directory, and a FIFO for it: their
-/// paths.
-fn relay(server: &Server) -> Result<(String, std::path::PathBuf), String> {
-    let relay = server.dir.join("relay.py");
-    std::fs::write(&relay, RELAY).map_err(e)?;
-    let fifo = server.dir.join("far");
-    let made = std::process::Command::new("mkfifo").arg(&fifo).status();
-    assert!(made.is_ok_and(|s| s.success()), "mkfifo");
-    Ok((relay.to_string_lossy().into_owned(), fifo))
-}
-
-/// Ends the command `RELAY` waits on down `fifo` in `pane`: a wait after
-/// hears how it ended (`done S`), and what came.
-fn back(server: &Server, fifo: &std::path::Path, pane: &str) -> Result<String, String> {
-    std::fs::write(fifo, "back\n").map_err(e)?;
-    server.ok(&["str", pane, "pane", "wait"])
-}
-
-/// A full-screen program that marks its own commands (a remote shell's,
-/// relayed, as `koh connect` does) has the action that typed one wait for
-/// its end, as a shell's command is, though it waits on something else
-/// meanwhile (the network, here a FIFO), or reports it busy while fux's
-/// own probe finds it reading: at the limit `line` is still busy. A report
-/// of `reading` (`OSC 133 ; S`) after the command's `C` ends the wait at
-/// once, once what was drawn ahead of it is in: `reading · command
-/// running`. Keys sent after it, or into a command that waits on the
-/// network, settle once quiet and say it runs; a wait after hears it end.
-#[test]
-fn a_command_a_full_screen_program_marks_is_waited_for() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let server = Server::start("")?;
-    let (relay, fifo) = relay(&server)?;
-    let far = fifo.to_string_lossy().into_owned();
-    let pane = id(&server.ok(&run(&[], &["python3", &relay, &far]))?);
-    let p = ["str", pane.as_str(), "pane"];
-    for (command, status) in [("slow", "done 3"), ("busy", "done 7")] {
-        let held = server.fux(&[&p[..], &["2", "timeout", "str", command, "line"]].concat())?;
-        assert_eq!(held.status, 124, "{command}: {}", held.stdout);
-        assert_eq!(done(&held.stdout), None, "{}", held.stdout);
-        let ended = back(&server, &fifo, &pane)?;
-        assert_eq!(done(&ended), Some(status), "{ended}");
-        assert!(ended.contains("back\n"), "{ended}");
-    }
-    // A report that overtakes what the program drew before it (a relay
-    // holds output a moment) answers once that is in too.
-    let drawn = line(&server, &pane, "early")?;
-    assert_eq!(head(&drawn), format!("{pane} reading · command running"));
-    assert!(body(&drawn).contains("pager drawn\n"), "{drawn}");
-    assert_eq!(done(&back(&server, &fifo, &pane)?), Some("done 6"));
-    let shown = line(&server, &pane, "less")?;
-    assert_eq!(head(&shown), format!("{pane} reading · command running"));
-    assert!(body(&shown).contains("pager\n"), "{shown}");
-    let keys = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
-    assert_eq!(head(&keys), format!("{pane} waiting · command running"));
-    assert_eq!(done(&back(&server, &fifo, &pane)?), Some("done 6"));
-    // The line is the terminal's until Enter: `x` waits there, unread.
-    server.ok(&[&p[..], &["str", "C-u", "key", "0", "timeout", "send-keys"]].concat())?;
-    server.ok(&typed(&pane, "hang", &["str", "hanging", "wait-text"]))?;
-    let keys = server.ok(&[&p[..], &["str", "x", "type"]].concat())?;
-    assert_eq!(head(&keys), format!("{pane} waiting · command running"));
-    assert_eq!(done(&back(&server, &fifo, &pane)?), Some("done 4"));
-    Ok(())
-}
-
-/// A relay that runs a shell that marks no commands (`koh connect --
-/// sh`), as a shell fux does not mark: a line it reads again after
-/// answers `reading` (from the relay's report) and says no status can
-/// come; where no shell is in front (a program the shell runs, a relay's
-/// that is none) that is not said. One it owes a report for, its program
-/// gone, closing its link a while as it polls its terminal (koh's client),
-/// is waited for to its end: `exited 0`, not `waiting`.
-#[test]
-fn a_relay_whose_program_ended_is_waited_for_to_its_end() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let relay = r#"
-import select, sys
-def prompt():
-    sys.stdout.write("r$ \x1b]133;S;activity=reading\x07"); sys.stdout.flush()
-prompt()
-while sys.stdin.readline().strip() != "exit":
-    prompt()
-for _ in range(20):
-    select.select([0], [], [], 0.1)
-"#;
-    let server = Server::start("")?;
-    // So too a shell fux does not mark, run as a program.
-    let sh = id(&server.ok(&run(&[], &["sh"]))?);
-    let read = line(&server, &sh, "true")?;
-    assert!(
-        head(&read).ends_with(" · no status: nothing here marks its commands"),
-        "{read}"
-    );
-    // A line a program it runs reads is no command.
-    line(&server, &sh, "cat")?;
-    let read = line(&server, &sh, "x")?;
-    assert_eq!(head(&read), format!("{sh} reading"), "{read}");
-    let other = id(&server.ok(&run(&[], &["python3", "-c", relay]))?);
-    let read = line(&server, &other, "true")?;
-    assert_eq!(head(&read), format!("{other} reading"), "{read}");
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", relay, "--", "sh"]))?);
-    let read = line(&server, &pane, "true")?;
-    assert_eq!(
-        head(&read),
-        format!("{pane} reading · no status: nothing here marks its commands")
-    );
-    let ended = line(&server, &pane, "exit")?;
-    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
-    Ok(())
-}
-
-/// A relay's full-screen program that reads its last keys at once and ends
-/// without reading again (an editor's save and quit) says so as it goes
-/// (`S;activity=ended`, as koh does once every key reached it): the answer
-/// says nothing of keys gone nowhere, and shows the last full screen it
-/// drew, not the main screen from before it, which its end uncovered.
-#[test]
-fn keys_a_relays_program_read_as_it_ended_reached_it() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let relay = r#"
-import os, sys, time, tty
-nonce = os.environ.get("FUX_MARK_NONCE")
-def mark(m):
-    os.write(1, ("\x1b]133;" + m + (";nonce=" + nonce if nonce else "") + "\x07").encode())
-tty.setraw(0); os.write(1, b"before\r\n\x1b[?1049h\x1b[Hed> "); mark("S;activity=reading")
-time.sleep(0.3); got = os.read(0, 100)
-open(sys.argv[1], "wb").write(got)
-mark("S;activity=ended"); os.write(1, b"\x1b[?1049l")
-"#;
-    let server = Server::start("")?;
-    let saved = server.dir.join("saved");
-    let to = saved.to_string_lossy().into_owned();
-    let pane = id(&server.ok(&run(
-        &["str", "ed>", "wait-text"],
-        &["python3", "-c", relay, &to],
-    ))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "hi",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        ":wq",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "send-keys",
-    ];
-    let quit = server.ok(&keys)?;
-    assert_eq!(head(&quit), format!("{pane} exited 0"), "{quit}");
-    assert_eq!(body(&quit), "ed>\n", "{quit}");
-    assert_eq!(std::fs::read(&saved).map_err(e)?, b"hi\r:wq\r");
-    Ok(())
-}
-
-/// A program that reads its terminal before it prints anything, as ssh
-/// and `koh connect` do while they connect, is not taken to have settled
-/// with nothing shown: `run` answers once it prints.
-#[test]
-fn run_answers_once_a_program_reading_from_its_start_prints() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let server = Server::start("")?;
-    let connect = r#"
-import os, select, sys, time
-r, w = os.pipe()
-if os.fork() == 0:
-    os.setsid(); time.sleep(0.4); os.write(w, b"x"); os._exit(0)
-select.select([0, r], [], [])
-print("connected", flush=True)
-sys.stdin.readline()
-"#;
-    let started = server.ok(&run(&[], &["python3", "-c", connect]))?;
-    assert_eq!(body(&started), "connected\n", "{started}");
-    Ok(())
-}
-
-/// A full-screen program that scrolls as a shell does (a relayed shell,
-/// `koh connect`'s or mosh's, drawn on the alternate screen) answers from
-/// the line typed on, as a shell on the main screen does, not with the
-/// whole screen again; one whose rows above changed otherwise answers its
-/// whole screen.
-#[test]
-fn a_full_screen_shell_answers_from_the_line_typed_on() -> Outcome {
-    let server = Server::start("")?;
-    let relay = r#"
-import sys
-out = sys.stdout
-out.write("\x1b[?1049hfirst\nsecond\nr$ "); out.flush()
-while True:
-    line = sys.stdin.readline().strip()
-    if line == "menu":
-        out.write("\x1b[H\x1b[2Jpicked\nr$ ")
-    else:
-        out.write("out-" + line + "\nr$ ")
-    out.flush()
-"#;
-    let pane = id(&server.ok(&run(&["40", "6", "size"], &["python3", "-c", relay]))?);
-    for word in ["a", "b", "c", "d"] {
-        let answer = line(&server, &pane, word)?;
-        assert_eq!(
-            body(&answer),
-            format!("r$ {word}\nout-{word}\nr$\n"),
-            "{answer}"
-        );
-    }
-    let menu = line(&server, &pane, "menu")?;
-    assert_eq!(body(&menu), "picked\nr$\n", "{menu}");
-    Ok(())
-}
-
-/// A program typed into a marked shell is given the pane's nested nonce
-/// (`FUX_MARK_NONCE`): its marks and reports that carry it count while its
-/// command runs, so `line` typed into it answers `done` and `last-output`
-/// its output; those with no nonce or a wrong one are none, and the
-/// shell's own end still ends the command that started it. One relayed on
-/// the main screen (ssh's) has keys into a command that runs on settle
-/// once quiet, and a command that takes the full screen once it began (a
-/// remote pager) answered once quiet, not at its end.
-#[test]
-fn a_nested_programs_marks_count_in_a_shell_pane() -> Outcome {
-    let server = Server::start("")?;
-    let (relay, fifo) = relay(&server)?;
-    let far = fifo.to_string_lossy().into_owned();
-    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    let started = line(&server, "sh", &format!("python3 '{relay}' '{far}'"))?;
-    assert_eq!(done(&started), None, "{started}");
-    let answer = line(&server, "sh", "echo")?;
-    assert_eq!(done(&answer), Some("done 1"), "{answer}");
-    assert_eq!(last_output(&server, "sh")?, "hi\n");
-    let forged = line(&server, "sh", "forge")?;
-    assert_eq!(done(&forged), None, "{forged}");
-    if PROBED {
-        let shown = line(&server, "sh", "less")?;
-        assert!(
-            head(&shown).ends_with(" reading · command running"),
-            "{shown}"
-        );
-        assert_eq!(done(&back(&server, &fifo, "sh")?), Some("done 6"));
-        let held = server.fux(&[
-            "str", "sh", "pane", "2", "timeout", "str", "unsigned", "line",
-        ])?;
-        assert_eq!(held.status, 124, "{}", held.stdout);
-        assert!(head(&held.stdout).contains(" busy"), "{}", held.stdout);
-        assert_eq!(done(&back(&server, &fifo, "sh")?), Some("done 6"));
-    }
-    assert_eq!(done(&line(&server, "sh", "exit")?), Some("done 0"));
-    if !PROBED {
-        return Ok(());
-    }
-    let started = line(&server, "sh", &format!("python3 '{relay}' '{far}' main"))?;
-    let pane = id(&started);
-    assert_eq!(head(&started), format!("{pane} {READING}"));
-    let shown = line(&server, "sh", "full")?;
-    assert_eq!(head(&shown), format!("{pane} waiting · command running"));
-    assert!(body(&shown).contains("full\n"), "{shown}");
-    assert_eq!(done(&back(&server, &fifo, "sh")?), Some("done 5"));
-    server.ok(&typed("sh", "hang", &["str", "hanging", "wait-text"]))?;
-    let keys = server.ok(&["str", "sh", "pane", "str", "x", "type"])?;
-    assert_eq!(head(&keys), format!("{pane} waiting · command running"));
-    assert_eq!(done(&back(&server, &fifo, "sh")?), Some("done 4"));
     Ok(())
 }
 
@@ -916,36 +569,19 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "str", "job", "name", "str", "V", "str", "a", "env", "str", &log_arg, "log-to", "40", "10",
         "size",
     ];
-    let pane = id(&server.ok(&run(&before, &["sh", "-c", script]))?);
-    server.ok(&["str", "job", "pane", "str", "full a", "wait-text", "wait"])?;
-    server.ok(&run(
-        &["str", "other", "name"],
-        &["sh", "-c", "printf 'R> '; exec cat"],
-    ))?;
-    let prompt = [
-        "str",
-        "other",
-        "pane",
-        "str",
-        "R> ",
-        "wait-text",
-        "5",
-        "timeout",
-        "wait",
-    ];
-    assert!(
-        server.ok(&prompt)?.ends_with("R>\n"),
-        "a prompt's blank is the line's end"
-    );
-    let main = server.ok(&[
+    let started = server.ok(&run(&before, &["sh", "-c", script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "full a")?;
+    let main = [
         "str",
         &pane,
         "pane",
         "main-screen",
         "all-history",
         "capture",
-    ])?;
-    assert!(body(&main).starts_with("before\n1\n"), "{main}");
+    ];
+    let main = server.ok(&main)?;
+    assert!(main.starts_with("before\n1\n"), "{main}");
     assert!(main.contains("\n500\n"), "{main}");
     let refused = server.fux(&["str", &pane, "pane", "str", "Entr", "key", "send-keys"])?;
     assert_eq!(refused.status, 1);
@@ -962,30 +598,17 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "str",
         "b",
         "env",
-        "str",
-        "full b",
-        "wait-text",
         "respawn",
     ];
     let again = server.ok(&again)?;
-    assert_eq!(id(&again), pane, "its pane, then the line waited for");
-    assert_eq!(
-        met(&again),
-        "full b\n",
-        "its pane, then the line waited for"
-    );
-    let empty = server.fux(&["str", &pane, "pane", "str", "", "wait-text", "wait"])?;
-    assert_eq!(
-        empty.status, 1,
-        "an empty text is refused: {}",
-        empty.stderr
-    );
+    assert!(again.starts_with(&format!("{pane} 1.")), "{again}");
+    shows_after(&server, &again, "full b")?;
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
-    server.ok(&["str", &pane, "pane", "str", "done", "notify"])?;
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
-    let menu = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", menu]))?);
+    let menu = id(&server.ok(&run(&[], &["sh", "-c", menu]))?);
+    server.exits(&menu)?;
     assert!(
         !server
             .ok(&["str", &menu, "pane", "capture"])?
@@ -993,374 +616,14 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     );
     assert_eq!(
         server.ok(&["str", &menu, "pane", "alt-screen", "capture"])?,
-        format!("{menu} exited 0\npicked beta\n")
+        "picked beta\n"
     );
-    Ok(())
-}
-
-/// `send-keys` to `pane` typing `line`, then Enter, and `wait` (words).
-fn typed<'a>(pane: &'a str, line: &'a str, wait: &[&'a str]) -> Vec<&'a str> {
-    [
-        &[
-            "str", pane, "pane", "str", line, "text", "str", "Enter", "key",
-        ][..],
-        wait,
-        &["send-keys"],
-    ]
-    .concat()
-}
-
-/// The last shell command's output in `pane`.
-fn last_output(server: &Server, pane: &str) -> Result<String, String> {
-    let capture = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
-    Ok(body(&capture).to_owned())
-}
-
-/// How the shell command an answer saw end ended: `done S`.
-fn done(answer: &str) -> Option<&str> {
-    head(answer)
-        .split(" · ")
-        .find(|said| said.starts_with("done"))
-}
-
-/// `line` in `pane`: `text` typed, then Enter; the answer once the shell
-/// settles, its first line saying how the command ended.
-fn line(server: &Server, pane: &str, text: &str) -> Result<String, String> {
-    server.ok(&["str", pane, "pane", "str", text, "line"])
-}
-
-/// The shells fux starts mark their commands with no setup, after the
-/// user's own startup, whose prompt and `PROMPT_COMMAND` behave as before:
-/// the hook (an array, as some system files make it) sees the command's
-/// `PIPESTATUS` and `$?`, and one set in the running shell replaces it,
-/// the marks kept. A wait after typed keys does not take their echo for
-/// the output; and `set shell-marks off` leaves shells as they are.
-#[test]
-fn shells_mark_their_commands_with_no_setup() -> Outcome {
-    let server = Server::start("")?;
-    let home = server.dir.join("home");
-    std::fs::create_dir_all(&home).map_err(e)?;
-    let rc = "PS1='mine> '\nPROMPT_COMMAND=('echo \"[saw ${PIPESTATUS[*]} $?]\"')\n";
-    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
-    let home_dir = home.to_string_lossy().into_owned();
-    let start = [
-        "str",
-        "sh",
-        "name",
-        "str",
-        "HOME",
-        "str",
-        &home_dir,
-        "env",
-        "str",
-        "mine>",
-        "wait-text",
-    ];
-    server.ok(&run(&start, &["bash"]))?;
-    assert_eq!(done(&line(&server, "sh", "false")?), Some("done 1"));
-    let echo = "echo RESULT=$((6*7))";
-    assert_eq!(
-        met(&server.ok(&typed("sh", echo, &["str", "RESULT=", "wait-text"]))?),
-        "RESULT=42\n",
-        "not the typed line"
-    );
-    server.ok(&["str", "sh", "pane", "str", "[saw 0 0]", "wait-text", "wait"])?;
-    assert_eq!(last_output(&server, "sh")?, "RESULT=42\n");
-    let screen = server.ok(&["str", "sh", "pane", "capture"])?;
-    assert!(
-        screen.contains("[saw 1 1]") && screen.contains("mine> "),
-        "{screen}"
-    );
-    let piped = line(&server, "sh", "false | (exit 7)")?;
-    assert!(piped.contains("[saw 1 7 7]"), "{piped}");
-    line(&server, "sh", "PROMPT_COMMAND='echo NEW-HOOK'")?;
-    let after = line(&server, "sh", "(exit 3)")?;
-    assert_eq!(done(&after), Some("done 3"), "{after}");
-    assert!(
-        after.contains("NEW-HOOK") && !after.contains("[saw"),
-        "{after}"
-    );
-    // zsh and fish, where there are (CI, with FUX_TEST_SHELLS, insists).
-    let has = |shell: &str| -> Result<bool, String> {
-        let here = std::process::Command::new(shell)
-            .args(["-c", "true"])
-            .status()
-            .is_ok_and(|s| s.success());
-        if !here && std::env::var_os("FUX_TEST_SHELLS").is_some() {
-            return Err(format!("{shell} is not installed"));
-        }
-        Ok(here)
-    };
-    if has("zsh")? {
-        let zdot = server.dir.join("zdot");
-        std::fs::create_dir_all(&zdot).map_err(e)?;
-        std::fs::write(zdot.join(".zshrc"), "PROMPT='zed> '\n").map_err(e)?;
-        // Read through fux's shim; it also spares Ubuntu's global compinit.
-        std::fs::write(zdot.join(".zshenv"), "skip_global_compinit=1\n").map_err(e)?;
-        let zdot = zdot.to_string_lossy().into_owned();
-        let start = [
-            "str",
-            "z",
-            "name",
-            "str",
-            "ZDOTDIR",
-            "str",
-            &zdot,
-            "env",
-            "str",
-            "zed>",
-            "wait-text",
-        ];
-        server.ok(&run(&start, &["zsh"]))?;
-        assert_eq!(done(&line(&server, "z", "(exit 3)")?), Some("done 3"));
-    }
-    // bash without its startup files, as agents start it, is marked too.
-    server.ok(&run(&["str", "bare", "name"], &["bash", "--norc", "-i"]))?;
-    // `true` first: bash before 4.4 (macOS's) marks from a trap, which a
-    // subshell alone does not set off.
-    assert_eq!(
-        done(&line(&server, "bare", "true; (exit 4)")?),
-        Some("done 4")
-    );
-    // fish, its prompt from its own config, marked by an event handler.
-    if has("fish")? {
-        let xdg = server.dir.join("xdg");
-        std::fs::create_dir_all(xdg.join("fish")).map_err(e)?;
-        let prompt = "function fish_prompt; echo -n 'fsh> '; end\n";
-        std::fs::write(xdg.join("fish").join("config.fish"), prompt).map_err(e)?;
-        let xdg = xdg.to_string_lossy().into_owned();
-        let start = [
-            "str",
-            "f",
-            "name",
-            "str",
-            "XDG_CONFIG_HOME",
-            "str",
-            &xdg,
-            "env",
-            "str",
-            "fsh>",
-            "wait-text",
-        ];
-        server.ok(&run(&start, &["fish"]))?;
-        assert_eq!(done(&line(&server, "f", "sh -c 'exit 6'")?), Some("done 6"));
-        line(&server, "f", "echo fish-$status")?;
-        assert_eq!(last_output(&server, "f")?, "fish-6\n");
-    }
-    let off = Server::start("str shell-marks str off set")?;
-    let start = [
-        "str",
-        "sh",
-        "name",
-        "str",
-        "HOME",
-        "str",
-        &home_dir,
-        "env",
-        "str",
-        "mine>",
-        "wait-text",
-    ];
-    off.ok(&run(&start, &["bash"]))?;
-    let unmarked = line(&off, "sh", "true")?;
-    assert_eq!(done(&unmarked), None, "{unmarked}");
-    Ok(())
-}
-
-const CLICKS: &str = r#"
-import os, tty
-tty.setraw(0)
-os.write(1, b"\x1b[?1000h\x1b[?1006hready\r\n")
-clicks = 0
-while True:
-    data = os.read(0, 64)
-    if not data or data == b"q":
-        break
-    clicks += 1
-    if clicks == 1:
-        os.write(1, b"clicked once\r\n")
-"#;
-
-/// Every action can be confirmed: a click waits as keys do, and says when
-/// it changed nothing; a selection shows in plain text; a signal reaches a
-/// program that ignores hangups, and answers once it settles, or how it
-/// ended, though the pane was quiet a while; a wait that ends unmet says
-/// what the pane is doing; a program that exits first fails a `run`'s
-/// wait, printing its pane; a full-screen program's answer is its whole
-/// screen.
-#[test]
-fn actions_are_confirmed_and_screens_read_plainly() -> Outcome {
-    let server = Server::start("")?;
-    let path = server.dir.join("clicks.py");
-    std::fs::write(&path, CLICKS).map_err(e)?;
-    let script = path.to_string_lossy().into_owned();
-    server.ok(&run(
-        &["str", "dialog", "name", "str", "ready", "wait-text"],
-        &["python3", "-I", &script],
-    ))?;
-    let click = ["str", "dialog", "pane", "str", "click", "0", "0", "mouse"];
-    let answered =
-        server.ok(&[&click[..], &["str", "clicked", "wait-text", "send-mouse"]].concat())?;
-    assert_eq!(met(&answered), "clicked once\n");
-    let ignored = server.ok(&[&click[..], &["send-mouse"]].concat())?;
-    assert!(ignored.ends_with(&format!("{UNCHANGED}\n")), "{ignored}");
-    // A selection in reverse video, marked in plain text.
-    let menu = r"printf 'alpha\n\033[7mbeta\033[0m\ngamma\n'; exec cat";
-    let menu_pane = id(&server.ok(&run(
-        &["str", "menu", "name", "str", "gamma", "wait-text"],
-        &["sh", "-c", menu],
-    ))?);
-    let marked = server.ok(&["str", &menu_pane, "pane", "marks", "capture"])?;
-    assert_eq!(body(&marked), "alpha\n⟦beta⟧\ngamma\n");
-    // A program that ignores TERM and hangups: a timeout says what it is
-    // doing, and KILL's answer says it ended it.
-    let stubborn = "trap '' TERM HUP INT; echo still here; read x";
-    server.ok(&run(
-        &["str", "stub", "name", "str", "here", "wait-text"],
-        &["sh", "-c", stubborn],
-    ))?;
-    let ignored = server.ok(&["str", "stub", "pane", "str", "TERM", "signal"])?;
-    assert!(ignored.ends_with(&format!("{UNCHANGED}\n")), "{ignored}");
-    let term = server.fux(&["str", "stub", "pane", "wait-exit", "1", "timeout", "wait"])?;
-    assert_eq!(term.status, 124);
-    assert!(term.stderr.contains("unchanged for"), "{}", term.stderr);
-    assert_eq!(body(&term.stdout), "still here\n", "its last line");
-    let kill = server.ok(&["str", "stub", "pane", "str", "KILL", "signal"])?;
-    assert_eq!(kill, "%4 killed by SIGKILL\n");
-    // A program that exits first: its pane and last words come with its
-    // answer, why on stderr.
-    let crash = server.fux(&run(
-        &["str", "READY", "wait-text"],
-        &["sh", "-c", "echo 'fatal: no config'; exit 2"],
-    ))?;
-    assert_eq!(crash.status, 3);
-    let pane = id(&crash.stdout);
-    assert_eq!(
-        crash.stdout,
-        format!("{pane} exited 2\nfatal: no config\n"),
-        "{}",
-        crash.stderr
-    );
-    assert!(
-        crash.stderr.starts_with("fux: exited: "),
-        "{}",
-        crash.stderr
-    );
-    // A tab closed by its name.
-    server.ok(&["str", "dialog", "tab", "kill"])?;
-    assert!(!server.ok(&["ls"])?.contains("dialog"));
-    // A split where it is asked, a line typed as it is.
-    let sub = server.dir.join("sub");
-    std::fs::create_dir_all(&sub).map_err(e)?;
-    let sub_arg = sub.to_string_lossy().into_owned();
-    let new = id(&server.ok(&[
-        "str",
-        &menu_pane,
-        "pane",
-        "horizontal",
-        "str",
-        &sub_arg,
-        "cwd",
-        "str",
-        "pwd && echo split-$((1+1))",
-        "typed",
-        "split",
-    ])?);
-    server.ok(&["str", &new, "pane", "str", "split-2", "wait-text", "wait"])?;
-    let screen = server.ok(&["str", &new, "pane", "capture"])?;
-    assert!(body(&screen).contains(&sub_arg), "{screen}");
-    // A name a pane is found by is one tab's only: a second is refused,
-    // saying why.
-    let again = server.fux(&run(&["str", "menu", "name"], &["cat"]))?;
-    assert_eq!(again.status, 1);
-    assert!(
-        again.stderr.contains("already") && again.stderr.contains(&menu_pane),
-        "{}",
-        again.stderr
-    );
-    // A line printed just before a program takes the full screen is seen,
-    // and a full-screen program answers with its whole screen.
-    let behind = r"echo 'error: disk full'; printf '\033[?1049hFULL SCREEN'; exec cat";
-    server.ok(&run(
-        &["str", "disk full", "wait-text"],
-        &["sh", "-c", behind],
-    ))?;
-    let full = server.ok(&run(&[], &["sh", "-c", behind]))?;
-    assert!(
-        body(&full).contains("FULL SCREEN") && !full.contains("disk full"),
-        "{full}"
-    );
-    Ok(())
-}
-
-/// Text that comes again after a clear, or after a Space key, is new; a
-/// respawn ends a wait on the program before.
-#[test]
-fn waits_hold_up_under_stress() -> Outcome {
-    let server = Server::start("")?;
-    let failed = server.fux(&run(
-        &["str", "a", "name", "wait-exit"],
-        &["sh", "-c", "echo FAIL-A; exit 1"],
-    ))?;
-    assert_eq!(
-        (failed.status, failed.stdout.lines().next()),
-        (0, Some("%2 exited 1")),
-        "met: the program's status is its state's"
-    );
-    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    line(&server, "sh", "clear; echo READY")?;
-    // Cleared and printed again, other text: new, on the same row.
-    assert_eq!(
-        met(&server.ok(&typed(
-            "sh",
-            "clear; echo READY 2",
-            &["str", "READY", "wait-text"]
-        ))?),
-        "READY 2\n"
-    );
-    let spaced = [
-        "str",
-        "sh",
-        "pane",
-        "str",
-        "echo",
-        "text",
-        "str",
-        "Space",
-        "key",
-        "str",
-        "done42",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "done42",
-        "wait-text",
-        "send-keys",
-    ];
-    assert_eq!(met(&server.ok(&spaced)?), "done42\n");
-    server.ok(&run(
-        &["str", "r", "name", "0", "timeout"],
-        &["sleep", "60"],
-    ))?;
-    let waiting = std::process::Command::new(FUX)
-        .args(["str", "r", "pane", "wait-exit", "10", "timeout", "wait"])
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(e)?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    server.ok(&["str", "r", "pane", "kill-first", "0", "timeout", "respawn"])?;
-    let ended = waiting.wait_with_output().map_err(e)?;
-    assert_eq!(ended.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&ended.stderr).contains("respawn"));
     Ok(())
 }
 
 /// A name that reads as an id, or one taken, is refused; a tab's name finds
-/// it; a click outside the pane is refused; a shell is not signalled.
+/// it; a click outside the pane is refused; a shell pane's shell is not
+/// signalled.
 #[test]
 fn names_clicks_and_signals_are_checked() -> Outcome {
     let server = Server::start("")?;
@@ -1369,13 +632,8 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
         1
     );
-    assert_eq!(
-        server
-            .fux(&["opts", "str", "ed", "name", "new-tab"])?
-            .status,
-        1,
-        "a name taken"
-    );
+    let taken = server.fux(&["opts", "str", "ed", "name", "new-tab"])?;
+    assert_eq!(taken.status, 1, "a name taken");
     // A common spelling is a key's name too; a typo is told the closest.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
@@ -1390,21 +648,13 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "resized by its tab's name"
     );
     let clicks = "printf '\\033[?1000h\\033[?1006hready'; exec cat";
-    server.ok(&run(
-        &[
-            "str",
-            "m",
-            "name",
-            "20",
-            "5",
-            "size",
-            "str",
-            "ready",
-            "wait-text",
-        ],
-        &["sh", "-c", clicks],
-    ))?;
-    let outside = server.fux(&[
+    let before = ["str", "m", "name", "20", "5", "size"];
+    shows_after(
+        &server,
+        &server.ok(&run(&before, &["sh", "-c", clicks]))?,
+        "ready",
+    )?;
+    let outside = [
         "str",
         "m",
         "pane",
@@ -1414,449 +664,19 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         "0",
         "mouse",
         "send-mouse",
-    ])?;
+    ];
+    let outside = server.fux(&outside)?;
     assert!(
         outside.stderr.starts_with("fux: mouse: "),
         "{}",
         outside.stderr
     );
-    server.ok(&run(&["str", "shell", "name"], &["bash", "--norc", "-i"]))?;
-    let signalled = server.fux(&["str", "shell", "pane", "str", "HUP", "signal"])?;
+    let signalled = server.fux(&["str", "%1", "pane", "str", "HUP", "signal"])?;
     assert!(
         signalled.stderr.starts_with("fux: only_shell: "),
         "{}",
         signalled.stderr
     );
-    Ok(())
-}
-
-/// A selection drawn with a background, and one around wide glyphs, is
-/// marked whole; `clear`'s scrollback erase empties the history; a line
-/// bash cannot parse still ends; and an rc file's `set -u` or exported
-/// PROMPT_COMMAND does not break the marks.
-#[test]
-fn screens_and_shells_hold_up_under_stress() -> Outcome {
-    let server = Server::start("")?;
-    let menu = r"printf 'alpha\n\033[48;5;236mbeta\033[0m\n\033[7m 日本 \033[0m\n'; exec cat";
-    server.ok(&run(
-        &["str", "menu", "name", "str", "beta", "wait-text"],
-        &["sh", "-c", menu],
-    ))?;
-    let marked = server.ok(&["str", "menu", "pane", "marks", "capture"])?;
-    assert_eq!(body(&marked), "alpha\n⟦beta⟧\n⟦ 日本 ⟧\n");
-    // In SGR too, the marks outside what is highlighted.
-    let styled = ["str", "menu", "pane", "marks", "styles", "capture"];
-    let styled = server.ok(&styled)?;
-    let beta = body(&styled).lines().nth(1).unwrap_or_default();
-    assert!(
-        beta.starts_with("⟦\x1b[") && beta.ends_with("\x1b[0m⟧") && beta.contains("beta"),
-        "{beta:?}"
-    );
-    let flood = r"seq 50; printf '\033[H\033[2J\033[3Jnew'; exec cat";
-    server.ok(&run(
-        &[
-            "str",
-            "clear",
-            "name",
-            "20",
-            "5",
-            "size",
-            "str",
-            "new",
-            "wait-text",
-        ],
-        &["sh", "-c", flood],
-    ))?;
-    let history = server.ok(&["str", "clear", "pane", "all-history", "capture"])?;
-    assert_eq!(body(&history), "new\n");
-    let home = server.dir.join("home");
-    std::fs::create_dir_all(&home).map_err(e)?;
-    let rc = "set -u\nexport PROMPT_COMMAND='echo own'\n";
-    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
-    let home = home.to_string_lossy().into_owned();
-    server.ok(&run(
-        &["str", "b", "name", "str", "HOME", "str", &home, "env"],
-        &["bash"],
-    ))?;
-    // bash could not parse it: 2, or 258 before bash 4.
-    let status = line(&server, "b", "if then fi")?;
-    assert!(
-        [Some("done 2"), Some("done 258")].contains(&done(&status)),
-        "{status}"
-    );
-    line(&server, "b", "bash --norc -c 'echo $PROMPT_COMMAND'")?;
-    let output = last_output(&server, "b")?;
-    assert!(
-        !output.contains("__fux"),
-        "fux's PROMPT_COMMAND is not inherited: {output}"
-    );
-    Ok(())
-}
-
-/// A bash that reads no file of its own (`--norc`) keeps `PIPESTATUS`, marks
-/// its first command too, and shows its own prompt with no function of
-/// fux's left. Under `set -x` fux's hook at each prompt traces nothing: a
-/// command's output holds its own trace alone.
-#[test]
-fn a_bare_bash_keeps_its_pipestatus_and_prompt() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(
-        &["str", "n", "name", "str", "PS1", "str", "mine> ", "env"],
-        &["bash", "--norc", "-i"],
-    ))?;
-    line(&server, "n", "false | true; echo \"<${PIPESTATUS[*]}>\"")?;
-    assert_eq!(last_output(&server, "n")?, "<1 0>\n");
-    line(&server, "n", "echo \"[$(declare -F | grep fux)]\"")?;
-    assert_eq!(last_output(&server, "n")?, "[]\n");
-    let screen = server.ok(&["str", "n", "pane", "capture"])?;
-    assert!(
-        screen.contains("mine> ") && !screen.contains("PROMPT_COMMAND"),
-        "{screen}"
-    );
-    // Before bash 4.4 the marks' own DEBUG trap is traced.
-    if old_bash()? {
-        return Ok(());
-    }
-    line(&server, "n", "set -x; false | true")?;
-    line(&server, "n", "echo hi")?;
-    assert_eq!(last_output(&server, "n")?, "+ echo hi\nhi\n");
-    let screen = server.ok(&["str", "n", "pane", "capture"])?;
-    assert!(!screen.contains("++"), "{screen}");
-    Ok(())
-}
-
-/// Whether the `bash` panes run is older than 4.4 (macOS's 3.2).
-fn old_bash() -> Result<bool, String> {
-    let version = std::process::Command::new("bash")
-        .args(["-c", "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))"])
-        .output()
-        .map_err(e)?;
-    let version: u32 = String::from_utf8_lossy(&version.stdout)
-        .trim()
-        .parse()
-        .map_err(e)?;
-    Ok(version < 404)
-}
-
-/// The marks set off none of the user's traps: a DEBUG trap sees one
-/// command of fux's startup, then only the command typed, an ERR trap
-/// counts a failure once; a readonly PS1 is left alone.
-#[test]
-fn bash_marks_leave_the_users_traps_and_hooks_alone() -> Outcome {
-    let server = Server::start("")?;
-    let home = server.dir.join("home");
-    std::fs::create_dir_all(&home).map_err(e)?;
-    let rc = "PS1='mine> '\nE=0\ntrap 'E=$((E+1))' ERR\n\
-              trap 'printf \"DBG %s\\n\" \"$BASH_COMMAND\"' DEBUG\n";
-    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
-    let home = home.to_string_lossy().into_owned();
-    server.ok(&run(
-        &["str", "t", "name", "str", "HOME", "str", &home, "env"],
-        &["bash"],
-    ))?;
-    // Of fux's startup the DEBUG trap sees one command: the call that sets
-    // the marks; before bash 4.4 (macOS's 3.2) also the line after it that
-    // sets fux's trap, as nothing a function sets outlasts its call there.
-    let first = server.ok(&["str", "t", "pane", "capture"])?;
-    let fuxs = [
-        "fux",
-        "BASH_VERSINFO",
-        "PS0",
-        "PS1",
-        "PROMPT_COMMAND",
-        "export",
-    ];
-    let seen: Vec<&str> = (first.lines())
-        .filter(|l| l.starts_with("DBG") && fuxs.iter().any(|f| l.contains(f)))
-        .collect();
-    let (call, trap) = seen.split_first().ok_or(first.clone())?;
-    assert_eq!(*call, "DBG __fux_marks", "{first}");
-    assert_eq!(trap.len(), usize::from(old_bash()?), "{first}");
-    assert!(
-        trap.iter().all(|l| l.starts_with("DBG trap -- ")),
-        "{first}"
-    );
-    line(&server, "t", "echo hi")?;
-    assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
-    assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
-    line(&server, "t", "echo E=$E")?;
-    assert_eq!(last_output(&server, "t")?, "DBG echo E=$E\nE=1\n");
-    line(&server, "t", "unset PROMPT_COMMAND")?;
-    // `true` first: with PS1's marks alone, bash before 4.4 starts a
-    // command from its trap, which a subshell alone does not set off.
-    assert_eq!(done(&line(&server, "t", "true; (exit 5)")?), Some("done 5"));
-    // A readonly PS1 is left as it is, with no complaint, and the marks
-    // come from PROMPT_COMMAND.
-    let ro = server.dir.join("ro");
-    std::fs::create_dir_all(&ro).map_err(e)?;
-    std::fs::write(ro.join(".bashrc"), "readonly PS1='ro> '\n").map_err(e)?;
-    let ro = ro.to_string_lossy().into_owned();
-    server.ok(&run(
-        &["str", "ro", "name", "str", "HOME", "str", &ro, "env"],
-        &["bash"],
-    ))?;
-    assert_eq!(done(&line(&server, "ro", "(exit 2)")?), Some("done 2"));
-    let screen = server.ok(&["str", "ro", "pane", "capture"])?;
-    assert!(
-        screen.contains("ro> ") && !screen.contains("readonly"),
-        "{screen}"
-    );
-    Ok(())
-}
-
-/// Ctrl-C ends a command, with fewer command ends than lines; a command
-/// still at work at the limit answers `busy`, naming `wait-done`; a command
-/// typed while another runs answers for its own end; `clear` starts a
-/// command's output again; a split or resize that would hide a pane is
-/// refused; a short typed line is its echo only as a word of its own.
-#[test]
-fn the_rechecks_hold() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    // Elsewhere than Linux, quiet, it is taken as settled.
-    let at_work = server.fux(&typed("sh", "sleep 30", &["1", "timeout"]))?;
-    // A marked command at work: busy, naming `wait-done`, which waits as
-    // long as it runs.
-    let (status, state) = match PROBED {
-        true => (124, " busy · "),
-        false => (0, " settled · command running"),
-    };
-    assert_eq!(at_work.status, status, "{}", at_work.stderr);
-    let said = head(&at_work.stdout);
-    assert!(said.contains(state), "{}", at_work.stdout);
-    assert!(!PROBED || said.contains("wait-done"), "{}", at_work.stdout);
-    let stopped = server.ok(&["str", "sh", "pane", "str", "C-c", "key", "send-keys"])?;
-    assert_eq!(done(&stopped), Some("done 130"), "{stopped}");
-    // Each command's end is its own: the next answers for the next.
-    assert_eq!(done(&line(&server, "sh", "(exit 3)")?), Some("done 3"));
-    assert_eq!(done(&line(&server, "sh", "true")?), Some("done 0"));
-    line(&server, "sh", "clear; printf 'a\\nb\\n'")?;
-    assert_eq!(last_output(&server, "sh")?, "a\nb\n");
-    let small = id(&server.ok(&run(
-        &["str", "small", "name", "10", "5", "size", "0", "timeout"],
-        &["sleep", "60"],
-    ))?);
-    let split = [
-        &["str", small.as_str(), "pane", "vertical", "0", "timeout"][..],
-        &program(&["sleep", "60"]),
-        &["0", "timeout", "split"],
-    ]
-    .concat();
-    server.ok(&split)?;
-    let full = server.fux(&split)?;
-    assert!(full.stderr.starts_with("fux: size: "), "{}", full.stderr);
-    let tiny = server.fux(&["str", "small", "tab", "10", "2", "resize"])?;
-    assert!(tiny.stderr.starts_with("fux: size: "), "{}", tiny.stderr);
-    // Typed `a` is not echoed by the `a` in `answer: A`.
-    let ask = r#"read l; echo "answer: $(echo $l | tr a-z A-Z)"; exec cat"#;
-    server.ok(&run(&["str", "ask", "name"], &["sh", "-c", ask]))?;
-    assert_eq!(
-        met(&server.ok(&typed(
-            "ask",
-            "a",
-            &["str", "answer:", "wait-text", "5", "timeout"]
-        ))?),
-        "answer: A\n"
-    );
-    Ok(())
-}
-
-/// A prompt waited for after typing a command is the next one, drawn once
-/// the command ends, not the line the command was typed on: what a program
-/// writes just before it reads its terminal is seen before it is taken to
-/// be reading without it.
-#[test]
-fn a_prompt_waited_for_is_the_next_one() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(
-        &["str", "sh", "name", "str", "PS1", "str", "mine> ", "env"],
-        &["bash", "--norc", "-i"],
-    ))?;
-    let prompt = server.ok(&typed("sh", "sleep 0.5", &["str", "mine>", "wait-text"]))?;
-    assert_eq!(met(&prompt), "mine>\n");
-    assert_eq!(done(&prompt), Some("done 0"), "not the echo's: {prompt}");
-    Ok(())
-}
-
-/// A line a program writes over the echo of the keys, on their row, is its
-/// output.
-#[test]
-fn output_written_over_the_echo_is_output() -> Outcome {
-    let server = Server::start("")?;
-    let over =
-        "stty -onlcr; echo 'WATCH READY'; read l; printf '\\r\\033[2KPARKED t-1\\r\\n'; exec cat";
-    server.ok(&run(
-        &["str", "o", "name", "str", "WATCH READY", "wait-text"],
-        &["sh", "-c", over],
-    ))?;
-    let parked = server.ok(&typed("o", "park t-1", &["str", "PARKED", "wait-text"]))?;
-    assert_eq!(met(&parked), "PARKED t-1\n");
-    Ok(())
-}
-
-/// Settling a workspace settles each of its panes; `split` and `respawn`
-/// answer as `run` does, a respawned program's wait counting from its own
-/// start; a met text answers the first line that held it.
-#[test]
-fn every_pane_and_every_start_is_waited_for() -> Outcome {
-    let server = Server::start("")?;
-    for s in ["0.1", "1"] {
-        let late = format!("sleep {s}; echo done-{s}; exec cat");
-        server.ok(&run(&["0", "timeout"], &["sh", "-c", &late]))?;
-    }
-    let all = server.ok(&["str", "agent", "workspace", "wait"])?;
-    assert!(all.contains("done-0.1") && all.contains("done-1"), "{all}");
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", "read x; echo got"]))?);
-    server.ok(&typed(&pane, "hi", &[]))?;
-    let again = "echo 'value 7'; echo 'value>'; exec cat";
-    let respawned = server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        again,
-        "arg",
-        "str",
-        "value",
-        "wait-text",
-        "respawn",
-    ])?;
-    assert_eq!(id(&respawned), pane);
-    assert_eq!(met(&respawned), "value 7\n");
-    let split = server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "sleep 0.3; echo SPLIT; exec cat",
-        "arg",
-        "split",
-    ])?;
-    // Not told the program sleeps (not Linux), fux takes 300ms of quiet as
-    // settled, which the sleep outlasts: there a wait for its text follows.
-    if PROBED {
-        assert!(split.ends_with(" reading\nSPLIT\n"), "{split}");
-    } else {
-        let pane = id(&split);
-        let wait = ["str", &pane, "pane", "str", "SPLIT", "wait-text", "wait"];
-        let met = server.ok(&wait)?;
-        let (state, rest) = met.split_once('\n').unwrap_or_default();
-        assert!(state.starts_with(&format!("{pane} ")), "{met}");
-        assert!(
-            state.ends_with(" · met \"SPLIT\"") && rest == "SPLIT\n",
-            "{met}"
-        );
-    }
-    Ok(())
-}
-
-/// What came is said from the topmost row that changed: a menu redrawn in
-/// place above the row the keys were typed on, or one on the main screen
-/// that marks its choice by colour alone (its rows read as they did); a
-/// form redrawn below the cursor's unchanged row; the rows below a line
-/// deleted (CSI M), though they keep their text.
-#[test]
-fn what_came_starts_at_the_topmost_row_that_changed() -> Outcome {
-    let server = Server::start("")?;
-    let menu = "printf '> one\\n  two\\nchoose: '; read -r x; \
-                printf '\\033[2A\\r  one\\033[K\\n> two\\033[K\\nchoose: \\033[K'; exec cat";
-    let highlight = r"import os, tty
-tty.setraw(0)
-sel = 0
-def draw():
-    os.write(1, b'\x1b[H')
-    for i, label in enumerate(['Alpha', 'Beta', 'Gamma']):
-        style = '\x1b[7m' if i == sel else ''
-        os.write(1, ('\x1b[2K' + style + label + '\x1b[0m\r\n').encode())
-    os.write(1, b'\x1b[2KINPUT: arrows')
-os.write(1, b'\x1b[2J')
-draw()
-while True:
-    if os.read(0, 3) == b'\x1b[B':
-        sel += 1
-    draw()
-";
-    let form = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                w('MAIN FORM\\r\\nVALUE: A\\r\\nSubmit with Enter\\r\\nFOOTER\\x1b[2;9H')\n\
-                sys.stdout.flush(); sys.stdin.read(1)\n\
-                w('\\x1b[3;1H\\x1b[2KSUBMITTED: A\\x1b[2;9H'); sys.stdout.flush()\n\
-                sys.stdin.read(1)\n";
-    let delete = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                  w('\\x1b[H\\x1b[2JTITLE\\r\\nROW1\\r\\nROW2\\r\\nROW3'); sys.stdout.flush()\n\
-                  sys.stdin.read(1); w('\\x1b[2;1H\\x1b[M'); sys.stdout.flush()\n\
-                  sys.stdin.read(1)\n";
-    let cases: [(&str, [&str; 3], &[&str], &str); 4] = [
-        (
-            "choose:",
-            ["sh", "-c", menu],
-            &["str", "j", "text", "str", "Enter", "key", "send-keys"],
-            "  one\n> two\n",
-        ),
-        (
-            "INPUT:",
-            ["python3", "-c", highlight],
-            &["str", "Down", "key", "send-keys"],
-            "Alpha\nBeta\nGamma\nINPUT: arrows\n",
-        ),
-        (
-            "FOOTER",
-            ["python3", "-c", form],
-            &["str", "Enter", "press"],
-            "SUBMITTED: A\nFOOTER\n",
-        ),
-        (
-            "ROW3",
-            ["python3", "-c", delete],
-            &["str", "x", "type"],
-            "ROW2\nROW3\n",
-        ),
-    ];
-    for (drawn, program, keys, came) in cases {
-        // Drawn first: where nothing says it reads (macOS), a slow start is
-        // otherwise taken as settled before the screen is.
-        let size = ["40", "10", "size", "str", drawn, "wait-text"];
-        let pane = id(&server.ok(&run(&size, &program))?);
-        let answer = server.ok(&[&["str", pane.as_str(), "pane"][..], keys].concat())?;
-        assert!(body(&answer).starts_with(came), "{answer}");
-    }
-    Ok(())
-}
-
-/// A wait of its own after a separate input knows that input's echo: it
-/// answers the program's line, not the typed command that holds the text.
-#[test]
-fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    let start = [
-        "str",
-        "sh",
-        "pane",
-        "str",
-        "sleep 0.5; echo READY",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "0",
-        "timeout",
-        "send-keys",
-    ];
-    server.ok(&start)?;
-    let ready = server.ok(&["str", "sh", "pane", "str", "READY", "wait-text", "wait"])?;
-    assert_eq!(met(&ready), "READY\n");
     Ok(())
 }
 
@@ -1866,11 +686,11 @@ fn a_later_wait_skips_the_last_inputs_echo() -> Outcome {
 fn a_row_range_takes_joined_lines_whole() -> Outcome {
     let server = Server::start("")?;
     let long = "echo aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc; echo next; exec cat";
-    let pane = id(&server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?);
+    let started = server.ok(&run(&["20", "6", "size"], &["sh", "-c", long]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "next")?;
     let line = server.ok(&["str", &pane, "pane", "1", "1", "rows", "capture"])?;
-    assert_eq!(body(&line), "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
-    // A plain capture joins a wrapped line as `wait` and `run` print it, a
-    // path or a word whole; `wrapped` keeps the screen's rows.
+    assert_eq!(line, "aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\n");
     let plain = server.ok(&["str", &pane, "pane", "capture"])?;
     assert!(
         plain.contains("aaaaaaaaaaaaaaaaaaaaBBBBBBBBBBBBBBBBBBBBcc\nnext"),
@@ -1882,599 +702,95 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
         "{rows}"
     );
     // A column range cuts a wide glyph to a blank, a column a cell.
-    let wide = id(&server.ok(&run(
-        &["20", "6", "size"],
-        &["sh", "-c", "printf 'A界BC              Z'; exec cat"],
-    ))?);
+    let wide = "printf 'A界BC              Z'; exec cat";
+    let wide = server.ok(&run(&["20", "6", "size"], &["sh", "-c", wide]))?;
+    shows_after(&server, &wide, "Z")?;
+    let wide = id(&wide);
     let cut = |first: &str, last: &str| {
-        let opts = [
+        server.ok(&[
             "str", &wide, "pane", "0", "0", "rows", first, last, "cols", "capture",
-        ];
-        server.ok(&opts).map(|c| body(&c).to_owned())
+        ])
     };
     assert_eq!(cut("2", "4")?, " BC\n");
     assert_eq!(cut("0", "1")?, "A\n");
     assert_eq!(cut("19", "19")?, "Z\n");
-    // The cursor is the screen's: on the empty row after the last line.
+    // The cursor is the screen's: on the empty row after the last line;
+    // and every row kept was read.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""cursor":[4,0],"#), "{json}");
-    Ok(())
-}
-
-/// A chain prints its last word's answer alone: a program that ended
-/// before `run` settled still has its exit and its output there.
-#[test]
-fn a_chain_ends_with_the_whole_answer() -> Outcome {
-    let server = Server::start("")?;
-    let words = [
-        &run(&[], &["sh", "-c", "echo BYE"])[..],
-        &["wait-exit", "wait"],
-    ]
-    .concat();
-    let ended = server.ok(&words)?;
-    let pane = id(&ended);
-    assert_eq!(ended, format!("{pane} exited 0\nBYE\n"));
-    Ok(())
-}
-
-/// A capture with `styles` keeps blanks at a line's end that are painted,
-/// in JSON's lines and runs as in its text; plain lines trim them. The
-/// cursor is the screen's row and column in JSON as in answers.
-#[test]
-fn captures_and_answers_agree_on_the_screen() -> Outcome {
-    let server = Server::start("")?;
-    let painted = id(&server.ok(&run(
-        &[],
-        &[
-            "sh",
-            "-c",
-            "printf '\\033[48;2;55;55;55mab     \\033[0m'; exec cat",
-        ],
-    ))?);
-    let styled = server.ok(&["str", &painted, "pane", "styles", "capture", "json"])?;
-    assert!(styled.contains(r#""lines":["ab     "]"#), "{styled}");
     assert!(
-        styled.contains(r##""styles":[[{"col":0,"len":7,"bg":"#373737"}]]"##),
-        "{styled}"
-    );
-    let plain = server.ok(&["str", &painted, "pane", "capture", "json"])?;
-    assert!(plain.contains(r#""lines":["ab"]"#), "{plain}");
-    let wraps = id(&server.ok(&run(
-        &["10", "4", "size"],
-        &["sh", "-c", "printf abcdefghijklmno; exec cat"],
-    ))?);
-    let json = server.ok(&["str", &wraps, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""cursor":[1,5],"#), "{json}");
-    Ok(())
-}
-
-/// The key after a lone Escape waits until the program has taken the
-/// Escape alone (here after 120ms), so it is not read as Alt and that key,
-/// or a second at most; a program that leaves its full screen and exits
-/// answers with that screen.
-#[test]
-fn escape_alone_and_full_screens() -> Outcome {
-    let server = Server::start("")?;
-    let esc = "import os, select, tty\n\
-               tty.setraw(0); os.write(1, b'ready\\r\\n')\n\
-               while True:\n\
-               \x20   b = os.read(0, 1)\n\
-               \x20   if b == b'\\x1b':\n\
-               \x20       alt = select.select([0], [], [], 0.12)[0]\n\
-               \x20       os.write(1, b'ALT\\r\\n' if alt else b'ESC alone\\r\\n')\n\
-               \x20       if alt: os.read(0, 1)\n\
-               \x20   elif b == b'\\x13': os.write(1, b'CTRL-S\\r\\n'); break\n";
-    let pane = id(&server.ok(&run(
-        &["str", "ready", "wait-text"],
-        &["python3", "-c", esc],
-    ))?);
-    let keys = server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "Escape",
-        "key",
-        "str",
-        "C-s",
-        "key",
-        "send-keys",
-    ])?;
-    assert!(keys.contains("ESC alone\nCTRL-S\n"), "{keys}");
-    // One that only polls for keys never waits for them with no limit: the
-    // key after the Escape goes in once the Escape's second is up.
-    let polls = "import os, select, tty\n\
-                 tty.setraw(0); os.write(1, b'ready\\r\\n')\n\
-                 while True:\n\
-                 \x20   if select.select([0], [], [], 0.05)[0] and os.read(0, 1) == b'x':\n\
-                 \x20       os.write(1, b'GOT X\\r\\n')\n";
-    let polling = id(&server.ok(&run(
-        &["str", "ready", "wait-text"],
-        &["python3", "-c", polls],
-    ))?);
-    let got = server.ok(&[
-        "str",
-        &polling,
-        "pane",
-        "str",
-        "Escape",
-        "key",
-        "str",
-        "x",
-        "text",
-        "str",
-        "GOT X",
-        "wait-text",
-        "send-keys",
-    ])?;
-    assert!(got.ends_with("GOT X\n"), "{got}");
-    let full = "printf '\\033[?1049hEDIT> '; read x; echo saved; sleep 0.2; printf '\\033[?1049l'";
-    let editor = id(&server.ok(&run(&["str", "EDIT>", "wait-text"], &["sh", "-c", full]))?);
-    // Waited to its exit: where a quiet screen is taken as settled (not
-    // Linux), the 0.2s before it would answer first.
-    let saved = server.ok(&typed(&editor, "q", &["wait-exit"]))?;
-    assert!(
-        saved.starts_with(&format!("{editor} exited 0\n")) && saved.contains("saved"),
-        "{saved}"
+        json.contains(r#""cursor":[4,0],"#) && json.contains(r#""above":0"#),
+        "{json}"
     );
     Ok(())
 }
 
-/// A program that tells a lone Escape from a key's sequence on a timer fux
-/// cannot see (an alarm, 250ms), drawing only once it runs out, has its
-/// Escape answered by what it drew then, not taken as having drawn nothing;
-/// the key after it waits for that too, not read with it as Alt.
+/// A wait on a workspace waits on each of its panes, and answers a line for
+/// each: here none changed, so each timed out, the whole 124. A version is
+/// one pane's, so a wait on several takes none. (`session`'s tests begin a
+/// wait before what it waits for: the answer of the pane that changed, and
+/// of one that closed.)
 #[test]
-fn an_escape_is_given_the_time_a_program_waits_for_more() -> Outcome {
+fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
-    let modes = "import os, signal, tty\n\
-                 tty.setraw(0); mode = ['normal']\n\
-                 def draw(): os.write(1, ('\\x1b[H\\x1b[2Jmode: ' + mode[0] + '\\r\\n').encode())\n\
-                 def alone(*_): mode[0] = 'normal'; draw()\n\
-                 signal.signal(signal.SIGALRM, alone); draw()\n\
-                 while True:\n\
-                 \x20   try: b = os.read(0, 64)\n\
-                 \x20   except InterruptedError: continue\n\
-                 \x20   if b == b'\\x1b': signal.setitimer(signal.ITIMER_REAL, 0.25); continue\n\
-                 \x20   signal.setitimer(signal.ITIMER_REAL, 0)\n\
-                 \x20   mode[0] = 'insert' if b == b'i' else 'read ' + b.hex(); draw()\n";
-    let pane = id(&server.ok(&run(
-        &["str", "mode:", "wait-text"],
-        &["python3", "-c", modes],
-    ))?);
-    let keys = |keys: &[&str]| {
-        let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
-        server.ok(&send.concat())
-    };
-    assert!(keys(&["str", "i", "text"])?.ends_with("mode: insert\n"));
-    let escape = keys(&["str", "Escape", "key"])?;
-    assert_eq!(escape, format!("{pane} {READING}\nmode: normal\n"));
-    let then = keys(&[
-        "str", "i", "text", "str", "Escape", "key", "str", "x", "text",
-    ])?;
-    assert!(then.ends_with("mode: read 78\n"), "{then}");
-    Ok(())
-}
-
-/// A remote client that reports nothing of what it runs (here a stand-in
-/// named `ssh`, watching its terminal in a select, as ssh does beside its
-/// socket while its command runs there) is no program waiting for keys:
-/// once quiet it is `waiting`, and a text wait runs to its limit, never
-/// told it cannot come (7).
-#[test]
-fn a_remote_client_is_not_taken_for_its_remote_program() -> Outcome {
-    use std::os::unix::fs::PermissionsExt;
-    let server = Server::start("")?;
-    let ssh = server.dir.join("ssh");
-    let watch = "import select, sys; select.select([sys.stdin], [], [])";
-    std::fs::write(
-        &ssh,
-        format!("#!/bin/sh\necho connected\nexec python3 -c '{watch}'\n"),
-    )
-    .map_err(e)?;
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).map_err(e)?;
-    let ssh = ssh.to_string_lossy().into_owned();
-    let started = server.ok(&run(&[], &[&ssh, "bench", "make"]))?;
-    let pane = id(&started);
-    if PROBED {
-        assert_eq!(head(&started), format!("{pane} waiting"));
-    }
-    let built = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "built",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(built.status, 124, "{}", built.stderr);
-    Ok(())
-}
-
-/// A wait with a condition on a workspace waits on each pane, as a bare
-/// one settles each: met once every pane meets it, a line of each.
-#[test]
-fn a_condition_on_a_workspace_is_met_in_each_pane() -> Outcome {
-    let server = Server::start("")?;
-    let mut panes = Vec::new();
-    for pause in ["0", "0.5", "1"] {
-        let start = ["str", "g", "in", "0", "timeout"];
-        let made = server.ok(&run(
-            &start,
-            &["sh", "-c", &format!("sleep {pause}; echo E")],
-        ))?;
-        panes.push(id(&made));
-    }
-    let words = ["str", "g", "workspace", "wait-exit", "wait"];
-    let exited = server.ok(&words)?;
-    for pane in &panes {
-        assert!(exited.contains(&format!("{pane} exited 0\n")), "{exited}");
-    }
-    Ok(())
-}
-
-/// A pane that may go on alone (`waiting`: a pause that polls for keys)
-/// is waited on by a later `wait` until something comes: its prompt here.
-#[test]
-fn a_later_wait_outlasts_a_pause() -> Outcome {
-    let server = Server::start("")?;
-    let pause = "import select, sys, time, tty\n\
-                 tty.setcbreak(0); print('loading', flush=True); end = time.time() + 2.5\n\
-                 while time.time() < end:\n\
-                 \x20   if select.select([0], [], [], 0.1)[0]: sys.exit('early input')\n\
-                 print('PROMPT>', flush=True); sys.stdin.read(1)\n";
-    let started = server.ok(&run(&[], &["python3", "-c", pause]))?;
-    let pane = id(&started);
-    let waiting = if PROBED { "waiting" } else { "settled" };
-    assert!(
-        started.starts_with(&format!("{pane} {waiting}")),
-        "{started}"
-    );
-    let later = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert_eq!(later, format!("{pane} {READING}\nloading\nPROMPT>\n"));
-    Ok(())
-}
-
-/// A text wait sees every line written since it began, however fast they
-/// pass: past history's budget between two looks, or off the alternate
-/// screen, which keeps none. An answer whose start was let go says so.
-#[test]
-fn a_wait_misses_no_line_however_fast_it_passes() -> Outcome {
-    let server = Server::start("str history-bytes 2000 set")?;
-    let flood = "import os; os.write(1, b'FIRST_READY\\n' + b'filler\\n' * 5000); input()";
-    let first = server.fux(&run(
-        &["str", "FIRST_READY", "wait-text"],
-        &["python3", "-c", flood],
-    ))?;
-    assert_eq!(first.status, 0, "{}{}", first.stdout, first.stderr);
-    assert_eq!(body(&first.stdout), "FIRST_READY\n");
-    let full = "printf '\\033[?1049h'; echo START SCROLLED MATCH; seq 100; read x";
-    let scrolled = server.ok(&run(
-        &["40", "10", "size", "str", "SCROLLED MATCH", "wait-text"],
-        &["sh", "-c", full],
-    ))?;
-    assert_eq!(body(&scrolled), "START SCROLLED MATCH\n");
-    // Lines that scroll off between two looks, after some already had.
-    let later = "import os, time\nos.write(1, b'\\x1b[?1049h' + b'x\\n' * 30); time.sleep(1)\n\
-                 os.write(1, b'LATE MATCH\\n' + b'y\\n' * 30); input()\n";
-    let late = server.ok(&run(
-        &["40", "10", "size", "str", "LATE MATCH", "wait-text"],
-        &["python3", "-c", later],
-    ))?;
-    assert_eq!(body(&late), "LATE MATCH\n");
-    let long = server.ok(&run(&[], &["sh", "-c", "seq 100; read x"]))?;
-    assert!(
-        body(&long).starts_with("… earlier lines not kept") && long.ends_with("\n100\n"),
-        "{long}"
-    );
-    Ok(())
-}
-
-/// A later wait counts what came since the last input, a click or a bell
-/// included, or since the program started: an old line is not new to it,
-/// a bell rung since is.
-#[test]
-fn a_later_wait_counts_from_any_input() -> Outcome {
-    let server = Server::start("")?;
-    let mouse = "import os, tty\n\
-                 tty.setraw(0); os.write(1, b'\\x1b[?1000h\\x1b[?1006hOLD43\\r\\n')\n\
-                 while True: os.read(0, 64); os.write(1, b'EVENT43\\r\\n')\n";
-    let pane = id(&server.ok(&run(
-        &["str", "OLD43", "wait-text"],
-        &["python3", "-c", mouse],
-    ))?);
-    server.ok(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "click",
-        "0",
-        "0",
-        "mouse",
-        "send-mouse",
-    ])?;
-    let later = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert!(
-        later.contains("EVENT43") && !later.contains("OLD43"),
-        "{later}"
-    );
-    let old = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "OLD43",
-        "wait-text",
-        "2",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(old.status, CANNOT_COME, "{}{}", old.stdout, old.stderr);
-    let bells = "printf '\\a'; echo rang; read x; printf '\\aDONE\\n'; exec cat";
-    let rang = id(&server.ok(&run(&[], &["sh", "-c", bells]))?);
-    let bell = ["str", &rang, "pane", "wait-bell", "2", "timeout", "wait"];
-    assert_eq!(server.fux(&bell)?.status, 0, "a bell since the start");
-    server.ok(&typed(&rang, "x", &["str", "DONE", "wait-text"]))?;
-    assert_eq!(server.fux(&bell)?.status, 0, "a bell since the input");
-    Ok(())
-}
-
-/// What came is what a program wrote since the input: the main screen it
-/// left its full screen for, with nothing printed after, and nothing when
-/// the keys only moved the cursor.
-#[test]
-fn an_answer_holds_only_what_came() -> Outcome {
-    let server = Server::start("")?;
-    // Left with nothing printed after, nor drawn for the keys: the screen
-    // as it is, not the full screen it left (1047's, kept, too).
-    for mode in ["1049", "1047"] {
-        let menu = format!(
-            "stty -echo; echo MAIN-{mode}; printf '\\033[?{mode}hMENU> '; read x; \
-             printf '\\033[?{mode}l'; exec cat"
-        );
-        let pane = id(&server.ok(&run(
-            &["40", "10", "size", "str", "MENU>", "wait-text"],
-            &["sh", "-c", &menu],
-        ))?);
-        let left = server.ok(&typed(&pane, "q", &[]))?;
+    let one = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
+    let two = id(&server.ok(&run(&["str", "g", "in"], &["sleep", "30"]))?);
+    let timed = server.fux(&["str", "g", "workspace", "1", "timeout", "wait"])?;
+    assert_eq!(timed.status, 124, "{}", timed.stderr);
+    for pane in [&one, &two] {
+        let line = timed
+            .stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("{pane} ")));
         assert!(
-            left.contains(&format!("MAIN-{mode}")) && !left.contains("MENU"),
-            "{left}"
+            line.is_some_and(|l| l.ends_with(" timeout")),
+            "{}",
+            timed.stdout
         );
-        let alt = server.ok(&["str", &pane, "pane", "alt-screen", "capture"])?;
-        assert!(alt.contains("MENU>"), "{alt}");
     }
-    let quiet = id(&server.ok(&run(&[], &["sh", "-c", "echo BEFORE-INPUT; read x"]))?);
-    let keys = ["str", &quiet, "pane", "str", "Enter", "key", "send-keys"];
-    assert_eq!(server.ok(&keys)?, format!("{quiet} exited 0\n"));
-    Ok(())
-}
-
-/// What came around a full screen: on a main screen filled to its last
-/// row, every line from the input on; after the keys went in on a full
-/// screen the program left, what it printed after, else the full screen it
-/// drew since; a text that cannot come shows the screen, or the last full
-/// screen while the screen is blank; and a bare wait with nothing new says
-/// nothing came.
-#[test]
-fn answers_around_a_full_screen_say_what_came() -> Outcome {
-    let server = Server::start("")?;
-    let small = ["40", "5", "size"];
-    let echo = "import sys\nfor i in range(10): print(i)\n\
-                while True: print('got ' + input('> '), flush=True)\n";
-    let full = id(&server.ok(&run(&small, &["python3", "-c", echo]))?);
-    let got = server.ok(&typed(&full, "a", &[]))?;
-    assert_eq!(body(&got), "> a\ngot a\n>\n", "{got}");
-    let printed = "import sys\nw = sys.stdout.write\nprint('before', flush=True)\n\
-                   w('\\x1b[?1049hMENU\\r\\n'); sys.stdout.flush(); input()\n\
-                   w('\\x1b[?1049l'); print('SAVED', flush=True); input()\n";
-    let pane = id(&server.ok(&run(
-        &["str", "MENU", "wait-text"],
-        &["python3", "-c", printed],
-    ))?);
-    let after = server.ok(&typed(&pane, "y", &[]))?;
-    assert_eq!(body(&after), "SAVED\n", "{after}");
-    let drawn = "import sys\nw = sys.stdout.write\nprint('before', flush=True)\n\
-                 w('\\x1b[?1049hMENU\\r\\n'); sys.stdout.flush(); input()\n\
-                 w('SAVED\\x1b[?1049l'); sys.stdout.flush(); input()\n";
-    let pane = id(&server.ok(&run(
-        &["str", "MENU", "wait-text"],
-        &["python3", "-c", drawn],
-    ))?);
-    let last = server.ok(&typed(&pane, "y", &[]))?;
-    assert!(last.contains("SAVED") && last.contains("MENU"), "{last}");
-    let blank = r"printf '\033[?1049hMENU\033[?1049l'; read x";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", blank]))?);
-    let p = ["str", pane.as_str(), "pane"];
-    let nothing = server.ok(&[&p[..], &["wait"]].concat())?;
-    assert_eq!(nothing, format!("{pane} {READING}\n"));
-    let never = server.fux(
-        &[
-            &p[..],
-            &["str", "NEVER", "wait-text", "2", "timeout", "wait"],
-        ]
-        .concat(),
-    )?;
-    assert_eq!(never.status, CANNOT_COME, "{}", never.stderr);
-    // Status 7 answers with the screen; a time limit (not Linux) says why on
-    // stderr alone.
-    if PROBED {
-        assert!(never.stdout.contains("MENU"), "{}", never.stdout);
-    }
-    Ok(())
-}
-
-/// `run`'s answer names its pane once, a state answer too. A wait on a
-/// tab, settling or not, or an action on it, answers of each pane, a line
-/// each, with the first failing status and each one's reason.
-#[test]
-fn answers_name_the_pane_once_and_the_busy_one() -> Outcome {
-    let server = Server::start("")?;
-    let stopped = server.fux(&run(
-        &["str", "READY", "wait-text", "3", "timeout"],
-        &["sh", "-c", "echo hi; read x"],
-    ))?;
-    assert_eq!(stopped.status, CANNOT_COME, "{}", stopped.stderr);
-    let pane = id(&stopped.stdout);
-    assert_eq!(head(&stopped.stdout), format!("{pane} {READING}"));
-    let reader = id(&server.ok(&run(&[], &["sh", "-c", "echo R; read x"]))?);
-    let busy = id(&server.ok(&[
-        "str",
-        &reader,
-        "pane",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "echo B; exec sleep 30",
-        "arg",
-        "0",
-        "timeout",
-        "split",
-    ])?);
-    let out = server.fux(&[
-        "str",
-        &reader,
-        "pane",
-        "tab",
-        "str",
-        "NEVER",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    // Each answers: the reader cannot get the text (where fux is told it
-    // reads), the one at work runs out of time; the reader's is first.
-    let first = if PROBED { CANNOT_COME } else { 124 };
-    assert_eq!(out.status, first, "{}", out.stderr);
+    let since = server.version(&one)?;
+    let given = server.fux(&["str", "g", "workspace", "str", &since, "changed", "wait"])?;
+    assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
+    // A tab of one pane takes its pane's version.
+    let before = version(&server.ok(&typed(&one, "x"))?);
+    let on_tab = [
+        "str", &one, "pane", "tab", "str", &before, "changed", "wait",
+    ];
+    let answer = server.ok(&on_tab)?;
+    assert!(answer.starts_with(&format!("{one} ")), "{answer}");
+    // A tab's answer is no pane, though one pane answered: not waited on
+    // again, and an array as JSON.
+    let again = server.fux(&[&on_tab[..], &["wait"]].concat())?;
+    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
+    let json = server.ok(&[&on_tab[..], &["json"]].concat())?;
     assert!(
-        out.stderr.contains(&format!("{busy}: timed out")),
-        "{}",
-        out.stderr
+        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
+        "{json}"
     );
-    let tab = ["str", reader.as_str(), "pane", "tab"];
-    let settle = [&tab[..], &["1", "timeout", "wait"]].concat();
-    let each = server.fux(&settle)?;
-    assert_eq!(each.status, if PROBED { 124 } else { 0 }, "{}", each.stdout);
-    let heads: Vec<String> = each.stdout.lines().map(id).collect();
+    // So is a tab's action's.
+    let keys = ["str", &one, "pane", "tab", "str", "y", "text", "send-keys"];
+    let json = server.ok(&[&keys[..], &["json"]].concat())?;
     assert!(
-        heads.contains(&reader) && heads.contains(&busy),
-        "{}",
-        each.stdout
-    );
-    let json = server.fux(&[&settle[..], &["json"]].concat())?.stdout;
-    assert_eq!(json.matches("\"pane\":").count(), 2, "{json}");
-    assert!(json.starts_with('['), "{json}");
-    // Keys to both: one reads them and the text cannot come; the other,
-    // asleep, runs out of time, its reason on stderr (no hint: no line
-    // reads as it did with the text in it).
-    let keys = [
-        &tab[..],
-        &[
-            "str",
-            "y",
-            "text",
-            "str",
-            "NEVER",
-            "wait-text",
-            "1",
-            "timeout",
-            "send-keys",
-        ],
-    ]
-    .concat();
-    let both = server.fux(&keys)?;
-    assert_eq!(both.status, CANNOT_COME, "{}", both.stdout);
-    // The first failing status names it: the reader's.
-    let code = if PROBED { "stopped" } else { "timeout" };
-    assert!(
-        both.stderr.starts_with(&format!("fux: {code}: ")),
-        "{}",
-        both.stderr
-    );
-    assert!(
-        both.stderr.contains(&format!("{busy}: timed out")),
-        "{}",
-        both.stderr
-    );
-    // Its last line is its answer's.
-    let mut lines = both.stdout.lines();
-    let busy_head = lines.find(|l| l.starts_with(&format!("{busy} ")));
-    assert!(
-        busy_head.is_some() && lines.next() == Some("y"),
-        "{}",
-        both.stdout
-    );
-    // None at work at the limit: the one still running is named, not the
-    // one that exited before it.
-    let ended = id(&server.ok(&run(&["wait-exit"], &["true"]))?);
-    let still = id(&server.ok(&[
-        "str", &ended, "pane", "str", "cat", "program", "0", "timeout", "split",
-    ])?);
-    let bell = server.fux(&[
-        "str",
-        &ended,
-        "pane",
-        "tab",
-        "wait-bell",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    assert!(
-        bell.stderr.contains(&format!("{still}: timed out")),
-        "{}",
-        bell.stderr
+        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
+        "{json}"
     );
     Ok(())
 }
 
-/// A met text wait's answer is its pane: a word that wants a pane takes it,
-/// never a pane named by what the program wrote (a line `%13 fake`). What
-/// `cat` writes back is output, though it reads as what was typed.
+/// An action's answer, and a wait's, is its pane: a word that wants a pane
+/// takes it, never a pane named by what the program wrote (`%13 fake`).
 #[test]
-fn a_met_waits_answer_is_its_pane() -> Outcome {
+fn an_answer_is_its_pane() -> Outcome {
     let server = Server::start("")?;
-    let fake = "read x; echo '%13 fake'; exec cat";
-    let pane = id(&server.ok(&run(&[], &["sh", "-c", fake]))?);
-    let met = [
-        &typed(&pane, "go", &["str", "fake", "wait-text"])[..],
-        &["str", "name", "get"],
+    let script = "read x; echo '%13 fake'; exec cat";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
+    let since = server.version(&pane)?;
+    let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
+    assert_eq!(server.ok(&sent.concat())?.trim(), "sh");
+    server.shows(&pane, "%13 fake")?;
+    let waited = [
+        "str", &pane, "pane", "str", &since, "changed", "wait", "str", "name", "get",
     ];
-    assert_eq!(server.ok(&met.concat())?.trim(), "sh");
-    let wait = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "fake",
-        "wait-text",
-        "wait",
-        "str",
-        "name",
-        "get",
-    ];
-    assert_eq!(server.ok(&wait)?.trim(), "sh");
-    let captured = [&wait[..8], &["capture"]].concat();
-    let screen = server.ok(&captured)?;
-    assert!(screen.starts_with(&format!("{pane} ")), "{screen}");
-    let cat = id(&server.ok(&run(&[], &["cat"]))?);
-    let back = [
-        &typed(&cat, "hi", &["str", "hi", "wait-text"])[..],
-        &["str", "x", "line"],
-    ];
-    assert_eq!(
-        server.ok(&back.concat())?,
-        format!("{cat} {READING}\nx\nx\n")
-    );
+    assert_eq!(server.ok(&waited)?.trim(), "sh");
     Ok(())
 }
 
@@ -2496,13 +812,9 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
         "str",
         &path,
         "paste-file",
-        "str",
-        "921600",
-        "wait-text",
         "send-keys",
     ];
-    let pasted = server.fux(&paste)?;
-    assert_eq!(pasted.status, 0, "{}{}", pasted.stdout, pasted.stderr);
+    shows_after(&server, &server.ok(&paste)?, "921600")?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
     let many = [
         "str",
@@ -2531,173 +843,15 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     Ok(())
 }
 
-/// Keys that type nothing: a command recalled (Up, Enter) shows whole on
-/// the prompt's row, its echo, not new text; a key the program answers on
-/// the prompt's row, what it writes there is new.
-#[test]
-fn keys_that_type_nothing_leave_the_prompts_row_to_the_program() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    server.ok(&["str", &shell, "pane", "str", "echo RECALLED-ONE", "line"])?;
-    let recalled = server.ok(&[
-        "str",
-        &shell,
-        "pane",
-        "str",
-        "Up",
-        "key",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "RECALLED",
-        "wait-text",
-        "send-keys",
-    ])?;
-    assert_eq!(recalled.lines().last(), Some("RECALLED-ONE"), "{recalled}");
-    let answer = "import sys, tty\ntty.setraw(0)\nprint('> ', end='', flush=True)\n\
-                  sys.stdin.read(1); print('ANSWERED', end='', flush=True); sys.stdin.read(1)\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", answer]))?);
-    let key = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "Escape",
-        "key",
-        "str",
-        "ANSWERED",
-        "wait-text",
-        "send-keys",
-    ])?;
-    assert_eq!(key.status, 0, "{}{}", key.stdout, key.stderr);
-    Ok(())
-}
-
-/// Typed text with no Enter is its echo too, on every row it spans, and
-/// the prompt already there is no new text: a wait for it is never met by
-/// the keys (7: the program reads), only by what the program writes.
-#[test]
-fn keys_with_no_enter_are_their_echo() -> Outcome {
-    let server = Server::start("")?;
-    let prompt = "import sys\nprint('PROMPT> ', end='', flush=True)\n\
-                  for line in sys.stdin: print('ACCEPTED ' + line.strip(), flush=True)\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", prompt]))?);
-    let keys = |text: &str, wanted: &str| -> Result<Output, String> {
-        server.fux(&[
-            "str",
-            &pane,
-            "pane",
-            "str",
-            text,
-            "text",
-            "str",
-            wanted,
-            "wait-text",
-            "2",
-            "timeout",
-            "send-keys",
-        ])
-    };
-    assert_eq!(keys("X", "PROMPT")?.status, CANNOT_COME);
-    let two = keys("\nCOMPLETE\nPARTIAL", "PARTIAL")?;
-    assert_eq!(two.status, CANNOT_COME, "{}", two.stdout);
-    let accepted = keys("\n", "ACCEPTED PARTIAL")?;
-    assert_eq!(accepted.status, 0, "{}", accepted.stdout);
-    // Enter alone, after the text: a program that writes over the typed
-    // row writes output there.
-    let over = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\nw('> '); sys.stdout.flush()\n\
-                while True:\n c = sys.stdin.read(1)\n w('\\rWORKING\\x1b[K' if c == '\\r' else c)\n \
-                sys.stdout.flush()\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", over]))?);
-    server.ok(&["str", &pane, "pane", "str", "slow", "type"])?;
-    let enter = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "WORKING",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ];
-    assert_eq!(met(&server.ok(&enter)?), "WORKING\n");
-    Ok(())
-}
-
-/// A later text wait reads the lines let go past history's budget since
-/// the input too, as the pane kept them; past what it keeps, it says they
-/// were let go: the text may have come unseen.
-#[test]
-fn a_wait_says_when_lines_were_let_go_unread() -> Outcome {
-    let server = Server::start("str history-bytes 2000 set  str journal-bytes 1048576 set")?;
-    let wait = |pane: &str, text: &str| {
-        let args = [
-            "str",
-            pane,
-            "pane",
-            "str",
-            text,
-            "wait-text",
-            "3",
-            "timeout",
-            "wait",
-        ];
-        server.fux(&args)
-    };
-    let kept = id(&server.ok(&run(&[], &["sh", "-c", "echo GONE_LINE; seq 200; read x"]))?);
-    let found = wait(&kept, "GONE_LINE")?;
-    assert_eq!(
-        (found.status, met(&found.stdout)),
-        (0, "GONE_LINE\n"),
-        "{}",
-        found.stderr
-    );
-    // Past what the pane's journal keeps (`journal-bytes`, 1 MiB here).
-    let flood = "import sys; w = sys.stdout.write\nw('LOST_LINE\\n')\n\
-                 w(('filler ' * 10 + '\\n') * 20000)\nw('END\\n'); sys.stdout.flush(); input()";
-    let lost = id(&server.ok(&run(
-        &["str", "END", "wait-text"],
-        &["python3", "-c", flood],
-    ))?);
-    let out = wait(&lost, "LOST_LINE")?;
-    assert_eq!(out.status, CANNOT_COME, "{}", out.stderr);
-    // Told at once, the answer is the screen; at the limit, the error.
-    let (said, why) = match PROBED {
-        true => (&out.stdout, "more came than the pane's journal keeps"),
-        false => (&out.stderr, "may have come unseen"),
-    };
-    assert!(said.contains(why), "{}{}", out.stdout, out.stderr);
-    Ok(())
-}
-
-/// JSON answers carry the state line's notes: a shell command's end, keys
-/// read that drew nothing.
-#[test]
-fn json_answers_carry_the_state_notes() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(&["str", "sh", "name"], &["bash", "--norc", "-i"]))?;
-    let done = server.ok(&["str", "sh", "pane", "str", "(exit 4)", "line", "json"])?;
-    assert!(done.contains("\"done\":4"), "{done}");
-    let silent = "import sys, tty\ntty.setraw(0)\nprint('ready', end='', flush=True)\n\
-                  while True: sys.stdin.read(1)\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", silent]))?);
-    let quiet = server.ok(&["str", &pane, "pane", "str", "x", "type", "json"])?;
-    assert_eq!(quiet.contains("\"no_change\":true"), PROBED, "{quiet}");
-    Ok(())
-}
-
 /// `json` on a saved capture converts what was captured: never a later
 /// read of the pane, which may have moved on or closed.
 #[test]
 fn json_of_a_saved_capture_is_that_capture() -> Outcome {
     let server = Server::start("")?;
     let script = "echo BEFORE; read x; echo LA\"\"TER; read y";
-    let pane = id(&server.ok(&run(&["str", "BEFORE", "wait-text"], &["sh", "-c", script]))?);
+    let started = server.ok(&run(&[], &["sh", "-c", script]))?;
+    let pane = id(&started);
+    shows_after(&server, &started, "BEFORE")?;
     let json = server.ok(&[
         "str",
         &pane,
@@ -2712,9 +866,6 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
         "str",
         "Enter",
         "key",
-        "str",
-        "LATER",
-        "wait-text",
         "send-keys",
         "drop",
         "P",
@@ -2763,7 +914,8 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let opts = ["opts"];
     let cat = ["str", "cat", "program"];
     for (before, unused, word) in [
-        (&on[..], &["str", "x", "wait-text"][..], "capture"),
+        (&on[..], &["str", "0.1.0.0.0", "changed"][..], "capture"),
+        (&on, &["5", "timeout"], "capture"),
         (&on, &["100", "40", "size"], "capture"),
         (&on, &["str", "x", "name"], "wait"),
         (&on, &["10", "history"], "wait"),
@@ -2775,6 +927,7 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["str", "%99", "id"], "respawn"),
         (&on, &["vertical"], "respawn"),
         (&opts, &["str", "nowhere", "in"], "new-workspace"),
+        (&opts, &["5", "timeout"], "new-tab"),
     ] {
         let refused = server.fux(&[before, unused, &[word]].concat())?;
         assert_eq!(refused.status, 1, "{unused:?} {word}: {}", refused.stdout);
@@ -2809,1194 +962,164 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     Ok(())
 }
 
-/// A failed wait answers what it saw as text, whatever follows it, and
-/// says why on one line of stderr; nothing after it runs.
+/// A failed wait answers as text, whatever follows it, and says why on
+/// one line of stderr; nothing after it runs.
 #[test]
 fn a_failed_wait_answers_as_text() -> Outcome {
     let server = Server::start("")?;
-    // Its program's own status, 2, is in its state, the met exit 0.
-    let started = server.fux(&run(&["wait-exit"], &["sh", "-c", "echo LAST; exit 2"]))?;
-    let pane = id(&started.stdout);
+    let pane = id(&server.ok(&run(&[], &["sleep", "30"]))?);
     let p = ["str", pane.as_str(), "pane"];
-    let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait", "json"]].concat())?;
-    assert_eq!(out.status, 3, "{}", out.stderr);
-    // Its exit, and its last output, as run told it.
-    let answer = format!("{pane} exited 2\nLAST");
-    assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
+    let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
+    assert_eq!(out.status, 124, "{}", out.stderr);
+    assert!(out.stdout.starts_with(&format!("{pane} ")) && out.stdout.ends_with(" timeout\n"));
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
-    assert!(out.stderr.starts_with("fux: exited: "), "{}", out.stderr);
+    assert!(out.stderr.starts_with("fux: timeout: "), "{}", out.stderr);
     // The same when the wait is a defined word's last step.
-    let wait = [
-        &["define", "w"],
-        &p[..],
-        &["str", "NEVER", "wait-text", "wait", "end"],
-    ];
-    let out = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
-    assert_eq!(out.stdout.trim_end(), answer, "{}", out.stderr);
+    let wait = [&["define", "w"], &p[..], &["1", "timeout", "wait", "end"]];
+    let again = server.fux(&[&wait.concat()[..], &["w", "json"]].concat())?;
+    assert_eq!(again.status, 124, "{}", again.stderr);
+    assert!(again.stdout.ends_with(" timeout\n"), "{}", again.stdout);
     Ok(())
 }
 
-/// A wait whose pane closes under it (its shell exited) fails so, with
-/// status 4 and the code `closed`.
+/// While a command runs, its output so far is the last output; a
+/// full-screen one's is its screen, the cursor where it is on it.
 #[test]
-fn a_wait_whose_pane_closes_says_so() -> Outcome {
-    let server = Server::start("")?;
-    let typed = ["opts", "str", "sleep 2; exit", "typed", "str", "w", "in"];
-    let pane = id(&server.ok(&[&typed[..], &["new-tab"]].concat())?);
-    let p = ["str", pane.as_str(), "pane"];
-    let out = server.fux(&[&p[..], &["str", "NEVER", "wait-text", "wait"]].concat())?;
-    assert_eq!(out.status, 4, "{}{}", out.stdout, out.stderr);
-    assert!(out.stderr.starts_with("fux: closed: "), "{}", out.stderr);
-    Ok(())
-}
-
-/// A later text wait does not take a line a full-screen program redrew the
-/// same since the input for new: it answers the line that came after.
-#[test]
-fn a_later_wait_skips_a_line_redrawn_the_same() -> Outcome {
-    let server = Server::start("")?;
-    let editor = "import sys, time, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                  w('\\x1b[?1049h')\n\
-                  draw = lambda: (w('\\x1b[H\\x1b[2JF5 preview\\r\\nbody'), sys.stdout.flush())\n\
-                  draw(); sys.stdin.read(1); draw(); time.sleep(0.5)\n\
-                  w('\\r\\nPREVIEW VALID'); sys.stdout.flush(); sys.stdin.read(1)\n";
-    let pane = id(&server.ok(&run(
-        &["str", "body", "wait-text"],
-        &["python3", "-c", editor],
-    ))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "x",
-        "text",
-        "0",
-        "timeout",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    let wait = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "PREVIEW",
-        "wait-text",
-        "5",
-        "timeout",
-        "wait",
-    ];
-    assert_eq!(met(&server.ok(&wait)?), "PREVIEW VALID\n");
-    Ok(())
-}
-
-/// The prompt on the row the keys went in on was there before them: a
-/// program that echoes nothing and writes on that row after does not make
-/// the prompt new, for the keys' own wait or a later one; the text written
-/// after it on that row is new.
-#[test]
-fn the_prompt_on_the_typed_row_is_never_new() -> Outcome {
-    let server = Server::start("")?;
-    let quiet = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                 w('READY prompt> '); sys.stdout.flush(); sys.stdin.read(1)\n\
-                 w(' other output'); sys.stdout.flush(); sys.stdin.read(1)\n\
-                 w(' READY suffix'); sys.stdout.flush(); sys.stdin.read(1)\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", quiet]))?);
-    let wait = |words: &[&str]| -> Result<Output, String> {
-        server.fux(&[&["str", &pane, "pane"][..], words].concat())
-    };
-    let keys = wait(&[
-        "str",
-        "x",
-        "text",
-        "str",
-        "READY",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ])?;
-    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
-    let later = wait(&["str", "READY", "wait-text", "1", "timeout", "wait"])?;
-    assert_eq!(
-        later.status, CANNOT_COME,
-        "{}{}",
-        later.stdout, later.stderr
-    );
-    let after = wait(&[
-        "str",
-        "y",
-        "text",
-        "str",
-        "READY",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ])?;
-    assert_eq!(after.status, 0, "{}{}", after.stdout, after.stderr);
-    assert!(after.stdout.ends_with("READY suffix\n"), "{}", after.stdout);
-    Ok(())
-}
-
-/// A prompt wider than the pane wraps from the rows above the keys': it is
-/// still no new text, for the keys' wait, with Enter or not, or a later
-/// one.
-#[test]
-fn a_wrapped_prompt_is_never_new() -> Outcome {
-    let server = Server::start("")?;
-    let prompt = "print('PROMPT READY READY>', end='', flush=True)\n\
-                  while True:\n input(); print('RESULT OK', flush=True)\n";
-    let pane = id(&server.ok(&run(&["12", "8", "size"], &["python3", "-c", prompt]))?);
-    let keys = |input: &[&str]| -> Result<Output, String> {
-        let wait = ["str", "READY", "wait-text", "2", "timeout", "send-keys"];
-        server.fux(&[&["str", &pane, "pane"][..], input, &wait].concat())
-    };
-    let typed = keys(&["str", "abc", "text"])?;
-    assert_eq!(typed.status, CANNOT_COME, "{}", typed.stdout);
-    let enter = keys(&["str", "Enter", "key"])?;
-    assert_eq!(enter.status, CANNOT_COME, "{}", enter.stdout);
-    // Status 7 answers with the screen; a time limit (not Linux) answers on
-    // stderr alone.
-    if PROBED {
-        assert!(enter.stdout.contains("RESULT OK"), "{}", enter.stdout);
-    }
-    let later = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "READY",
-        "wait-text",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(later.status, CANNOT_COME, "{}", later.stdout);
-    Ok(())
-}
-
-/// After a line taller than the screen, an answer starts at the line typed:
-/// the screen's top row, which goes on that line, did not change.
-#[test]
-fn an_answer_after_a_line_taller_than_the_screen_is_what_came() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(
-        &["40", "10", "size", "str", "PS1", "str", "QA> ", "env"],
-        &["bash", "--norc", "-i"],
-    ))?);
-    let a: String = std::iter::repeat_n('a', 1000).collect();
-    let long = format!("v='{a}'");
-    line(&server, &shell, &long)?;
-    let next = line(&server, &shell, "printf 'NEXT\\n'")?;
-    assert!(
-        body(&next).starts_with("QA> printf 'NEXT\\n'\nNEXT\n"),
-        "{next}"
-    );
-    Ok(())
-}
-
-/// A scroll that cuts a wrapped line, pushing its first row into history,
-/// moves no line under it: an answer starts at the line typed.
-#[test]
-fn a_wrapped_line_cut_by_a_scroll_moves_no_line() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(
-        &["20", "8", "size", "str", "PS1", "str", "QA> ", "env"],
-        &["bash", "--norc", "-i"],
-    ))?);
-    line(
-        &server,
-        &shell,
-        "a(){ printf '%s\\n' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ M1 M2 M3 M4; }; \
-         b(){ printf 'FR''ESH\\n'; }; clear",
-    )?;
-    // The prompt ends on the last row, the wrapped line from the second.
-    line(&server, &shell, "a")?;
-    let next = line(&server, &shell, "b")?;
-    assert!(body(&next).starts_with("QA> b\nFRESH\n"), "{next}");
-    Ok(())
-}
-
-/// A program that takes the alternate screen lets no line go: a text wait
-/// on it does not say lines were let go.
-#[test]
-fn the_alternate_screen_lets_no_line_go() -> Outcome {
-    let server = Server::start("")?;
-    let full = "import sys, tty\ntty.setraw(0)\n\
-                sys.stdout.write('\\x1b[?1049hMENU'); sys.stdout.flush(); sys.stdin.read(1)\n";
-    let out = server.fux(&run(
-        &[
-            "40",
-            "10",
-            "size",
-            "str",
-            "READY",
-            "wait-text",
-            "2",
-            "timeout",
-        ],
-        &["python3", "-c", full],
-    ))?;
-    assert_eq!(out.status, CANNOT_COME, "{}{}", out.stdout, out.stderr);
-    let said = format!("{}{}", out.stdout, out.stderr);
-    assert!(!said.contains("not kept"), "{said}");
-    assert!(!said.contains("let go"), "{said}");
-    Ok(())
-}
-
-/// What was typed is taken as a terminal shows it after its line editing:
-/// a character, a word or the line taken back, a Tab a blank, a control
-/// character as `^A`, a line edited in a later send-keys than the one that
-/// typed it. Its echo holds no text that only the keys had, and text typed
-/// and then erased is in no output.
-#[test]
-fn line_editing_is_in_the_echo() -> Outcome {
-    let server = Server::start("")?;
-    let lines = "import sys\nprint('Prompt> ', end='', flush=True)\n\
-                 for line in sys.stdin: pass\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", lines]))?);
-    let typed = |input: &[&str]| -> Result<i32, String> {
-        let words = [
-            &["str", &pane, "pane"][..],
-            input,
-            &[
-                "str",
-                "Enter",
-                "key",
-                "str",
-                "TOKEN",
-                "wait-text",
-                "1",
-                "timeout",
-                "send-keys",
-            ],
-        ]
-        .concat();
-        Ok(server.fux(&words)?.status)
-    };
-    let texts = [
-        "TOKEX\x7fN",
-        "hello\tTOKEN",
-        "hello\x15TOKEN",
-        "a b\x17TOKEN",
-        "hello\x01 TOKEN",
-        "TOKEN\x15",
-    ];
-    for text in texts {
-        assert_eq!(typed(&["str", text, "text"])?, CANNOT_COME, "{text:?}");
-    }
-    for key in ["Tab", "C-u", "C-w", "BSpace"] {
-        let input = [
-            "str", "hello", "text", "str", key, "key", "str", "TOKEN", "text",
-        ];
-        assert_eq!(typed(&input)?, CANNOT_COME, "{key}");
-    }
-    server.ok(&["str", &pane, "pane", "str", "TOKENX", "text", "send-keys"])?;
-    assert_eq!(typed(&["str", "BSpace", "key"])?, CANNOT_COME);
-    Ok(())
-}
-
-/// A text a program `run` just started never showed has not gone, and a
-/// text shown stays: on a program reading its terminal neither can change
-/// before you type, so `wait-gone` ends at once (status 7) with the screen;
-/// where fux is not told the program reads (not Linux), at the limit, which
-/// says what the pane does.
-#[test]
-fn a_new_programs_text_goes_once_shown() -> Outcome {
-    let server = Server::start("")?;
-    let out = server.fux(&run(
-        &["str", "ABSENT", "wait-gone", "2", "timeout"],
-        &["sh", "-c", "echo ready; read x"],
-    ))?;
-    assert_eq!(out.status, CANNOT_COME, "{}{}", out.stdout, out.stderr);
-    let pane = id(&out.stdout);
-    if PROBED {
-        assert_eq!(out.stdout, format!("{pane} {READING}\nready\n"));
-    } else {
-        assert_eq!(
-            head(&out.stdout),
-            format!("{pane} {READING}"),
-            "{}",
-            out.stderr
-        );
-    }
-    let shown = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "ready",
-        "wait-gone",
-        "1",
-        "timeout",
-        "wait",
-    ])?;
-    assert_eq!(
-        shown.status, CANNOT_COME,
-        "{}{}",
-        shown.stdout, shown.stderr
-    );
-    Ok(())
-}
-
-/// A home whose `.bashrc` holds `rc`, for a bash started with it.
-fn bash_home(server: &Server, name: &str, rc: &str) -> Result<String, String> {
-    let home = server.dir.join(name);
-    std::fs::create_dir_all(&home).map_err(e)?;
-    std::fs::write(home.join(".bashrc"), rc).map_err(e)?;
-    Ok(home.to_string_lossy().into_owned())
-}
-
-/// With `set -T`, functions inherit the user's DEBUG trap: fux's setup
-/// still marks the shell, and the trap's output shows none of it but the
-/// call, nor anything of fux's at a prompt.
-#[test]
-fn bash_marks_hold_under_a_traced_debug_trap() -> Outcome {
-    // Before bash 4.4 (macOS's 3.2) fux's marks need a DEBUG trap of their
-    // own.
-    if old_bash()? {
+fn last_output_is_the_running_command_s_so_far() -> Outcome {
+    if !bash_has_ps0()? {
         return Ok(());
     }
     let server = Server::start("")?;
-    let rc = "set -T\ntrap 'printf \"DBG %s\\n\" \"$BASH_COMMAND\"' DEBUG\n";
-    let home = bash_home(&server, "home", rc)?;
-    server.ok(&run(
-        &["str", "t", "name", "str", "HOME", "str", &home, "env"],
-        &["bash"],
-    ))?;
-    assert_eq!(done(&line(&server, "t", "false")?), Some("done 1"));
-    line(&server, "t", "echo hi")?;
-    assert_eq!(last_output(&server, "t")?, "DBG echo hi\nhi\n");
-    let screen = server.ok(&["str", "t", "pane", "capture"])?;
-    let fuxs: Vec<&str> = (screen.lines())
-        .filter(|l| l.starts_with("DBG") && l.contains("fux"))
-        .collect();
-    assert!(fuxs.iter().all(|l| *l == "DBG __fux_marks"), "{screen}");
-    Ok(())
-}
-
-/// The last output of a full-screen command is its screen: the cursor is
-/// said where it is on it. (With `main-screen` too it is refused: a capture
-/// reads one screen.)
-#[test]
-fn a_full_screen_last_output_keeps_its_cursor() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&["20", "6", "size"], &["bash", "--norc", "-i"]))?);
+    marked_bash(&server, "r")?;
+    line_done(&server, "r", "echo BEFORE")?;
+    let asks = server.ok(&typed("r", "echo CURRENT; read -r answer"))?;
+    shows_after(&server, &asks, "\nCURRENT\n")?;
+    let output = server.ok(&["str", "r", "pane", "last-output", "capture"])?;
+    assert_eq!(output, "CURRENT\n");
+    line_done(&server, "r", "")?;
     let draw = "printf 'before\\n\\033[?1049h\\033[Habc\\ndef\\nxy%s\\033[2;2H' z; read x";
-    server.ok(&typed(&shell, draw, &["str", "xyz", "wait-text"]))?;
-    let json = server.ok(&["str", &shell, "pane", "last-output", "capture", "json"])?;
+    shows_after(&server, &server.ok(&typed("r", draw))?, "xyz")?;
+    let json = server.ok(&["str", "r", "pane", "last-output", "capture", "json"])?;
     assert!(json.contains("\"cursor\":[1,1]"), "{json}");
     Ok(())
 }
 
-/// While a command runs, its output so far is the last output, not the
-/// command's before.
-#[test]
-fn last_output_of_a_running_command_is_its_output_so_far() -> Outcome {
-    let server = Server::start("")?;
-    server.ok(&run(&["str", "r", "name"], &["bash", "--norc", "-i"]))?;
-    line(&server, "r", "echo BEFORE")?;
-    let asks = "echo CURRENT; read -r answer";
-    server.ok(&typed("r", asks, &["str", "^CURRENT", "wait-text"]))?;
-    assert_eq!(last_output(&server, "r")?, "CURRENT\n");
-    Ok(())
-}
-
-/// A pane renamed keeps its name when its program is started again.
+/// A pane renamed keeps its name when its program is started again. A wait
+/// from the ended program's version tells the new one's end too.
 #[test]
 fn respawn_keeps_a_rename() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 0"]))?);
+    server.exits(&pane)?;
+    let ended = server.version(&pane)?;
     server.ok(&["str", &pane, "pane", "str", "keepme", "rename"])?;
     server.ok(&["str", &pane, "pane", "respawn"])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
+    server.exits(&pane)?;
+    let answer = server.ok(&["str", &pane, "pane", "str", &ended, "changed", "wait"])?;
+    assert!(answer.ends_with(" respawned exited 0\n"), "{answer}");
     Ok(())
 }
 
-/// A program that echoes nothing and replies with the word typed, in
-/// capitals, wrote it: the echo keeps its case.
+/// `env` gives a program a pane, tab or workspace as fux writes it, so a
+/// key's program can act on the pane it came from.
 #[test]
-fn a_reply_that_starts_with_the_word_typed_is_output() -> Outcome {
+fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     let server = Server::start("")?;
-    let reply = "import os, tty, time\ntty.setraw(0); os.write(1, b'command: snapshot\\r\\n')\n\
-                 os.read(0, 9); time.sleep(0.3); os.write(1, b'SNAPSHOT ticket=S-1\\r\\n')\n\
-                 os.read(0, 1)\n";
-    let pane = id(&server.ok(&run(
-        &["str", "command:", "wait-text"],
-        &["python3", "-c", reply],
-    ))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "snapshot",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "SNAPSHOT ticket=",
-        "wait-text",
-        "send-keys",
+    let named = id(&server.ok(&run(&["str", "ed", "name"], &["sleep", "30"]))?);
+    let before = [
+        "str", "P", "%1", "env", "str", "T", "@1", "env", "str", "W", "+1", "env", "str", "N",
+        "str", "ed", "pane", "env",
     ];
-    let answer = server.ok(&keys)?;
-    assert!(answer.contains("SNAPSHOT ticket=S-1"), "{answer}");
+    let script = "echo \"$P $T $W $N\"";
+    let pane = id(&server.ok(&run(&before, &["sh", "-c", script]))?);
+    server.exits(&pane)?;
+    let capture = server.ok(&["str", &pane, "pane", "capture"])?;
+    assert_eq!(capture, format!("%1 @1 +1 {named}\n"));
     Ok(())
 }
 
-/// The keys' row cleared and drawn again with another prompt still shows
-/// their echo, not output.
-#[test]
-fn a_typed_row_drawn_with_another_prompt_is_echo() -> Outcome {
-    let server = Server::start("")?;
-    let redraw = "import os, tty\ntty.setraw(0); os.write(1, b'Input> ')\n\
-                  s = os.read(0, 6); os.write(1, s)\n\
-                  os.write(1, b'\\r\\x1b[2KChanged> ' + s); os.read(0, 1)\n";
-    let pane = id(&server.ok(&run(
-        &["str", "Input>", "wait-text"],
-        &["python3", "-c", redraw],
-    ))?);
-    let keys = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "SECRET",
-        "text",
-        "str",
-        "SECRET",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ])?;
-    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
-    Ok(())
+/// The code block of `docs/agents.md` after `after`: as written, its
+/// indent taken off.
+fn recipe(after: &str) -> Result<String, String> {
+    let docs = include_str!("../docs/agents.md");
+    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
+    let (_, block) = from.split_once("```sh\n").ok_or("no block")?;
+    let (block, _) = block.split_once("```").ok_or("no end")?;
+    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
+    Ok(lines.map(|l| format!("{l}\n")).collect())
 }
 
-/// Keys typed before a shell draws its first prompt are echoed twice, by
-/// the terminal and then by the shell after its prompt: neither is output.
-/// A shell fux marks says so, Enter or not. One it did not set up (started
-/// by another program, over ssh) says nothing: its line drawn again reads
-/// as output that repeats the keys would, and only while it still edits
-/// the line (no Enter) is it known for the echo, by the terminal taking
-/// keys raw, where fux is told what the shell is blocked in (Linux, where
-/// fux marks `bash --norc` too).
+/// The docs' recipes run as written, under bash, with their helpers: a
+/// reply's text, a program's exit, a command's end that comes with its
+/// program's, and quiet.
 #[test]
-fn keys_typed_before_a_prompt_are_echo_twice() -> Outcome {
+fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
-    let home = bash_home(&server, "slow", "sleep 0.5\n")?;
-    let slow = ["str", "HOME", "str", &home, "env", "0", "timeout"];
-    let unmarked = "import os\n\
-              env = dict(os.environ, PS1='PROMPT> ', PROMPT_COMMAND='sleep 0.3')\n\
-              os.execvpe('bash', ['bash', '--noprofile', '--norc', '-i'], env)\n";
-    let vars = [
-        "str",
-        "PS1",
-        "str",
-        "PROMPT> ",
-        "env",
-        "str",
-        "PROMPT_COMMAND",
+    let step = recipe("## recipes: Waiting for what you need")?;
+    let answers = "read q; sleep 1; echo the answer is 42; sleep 30";
+    let asks = id(&server.ok(&run(&[], &["sh", "-c", answers]))?);
+    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
+    let exit =
+        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    // A command's end, marked, that comes with its program's own.
+    let marked = r#"opts str sh program str -c arg str 'sleep 1; printf "\033]133;C\007hi\n\033]133;D;5\007"' arg run"#;
+    let ended = recipe("- **A shell command's end, with marks**")?
+        .replace("%3 str 'make test' line", marked);
+    let bin = std::path::Path::new(fux())
+        .parent()
+        .ok_or("fux's directory")?;
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let talks = "read x; echo one; sleep 0.3; echo two; sleep 30";
+    let talks = id(&server.ok(&run(&[], &["sh", "-c", talks]))?);
+    let quiet = recipe("- **Quiet for N seconds**")?
+        .replace("%2", &talks)
+        .replace("quiet 600 5", "quiet 600 1");
+    let recipes = [
+        (text, "answered\n"),
+        (exit, "3\n"),
+        (ended, "5\nhi\n"),
+        (quiet, "two\n"),
     ];
-    let vars = [&vars[..], &["str", "sleep 0.3", "env", "0", "timeout"]].concat();
-    let wait = ["str", "TYPED_AHEAD", "wait-text", "3", "timeout"];
-    // Without marks, keys typed ahead are told by what the shell is blocked
-    // in, which only Linux says; and fux marks `bash --norc` only there.
-    let cases: [(&[&str], &[&str], bool, bool); 3] = [
-        (&slow, &["bash"], true, true),
-        (
-            &["0", "timeout"],
-            &["python3", "-c", unmarked],
-            false,
-            PROBED,
-        ),
-        (&vars, &["bash", "--norc", "-i"], false, PROBED),
-    ];
-    for (options, program, enter, here) in cases {
-        if !here {
-            continue;
-        }
-        let shell = id(&server.ok(&run(options, program))?);
-        let line = ["str", &shell, "pane", "str", ": TYPED_AHEAD", "text"];
-        let end: &[&str] = if enter { &["str", "Enter", "key"] } else { &[] };
-        let ahead = server.fux(&[&line[..], end, &wait, &["send-keys"]].concat())?;
-        assert_eq!(
-            ahead.status, CANNOT_COME,
-            "{program:?} Enter {enter}: {}{}",
-            ahead.stdout, ahead.stderr
-        );
+    for (recipe, said) in recipes {
+        let script = format!("{step}{recipe}");
+        // With `set -e`, as scripts often are: a recipe must not stop on a
+        // status it expects.
+        let out = std::process::Command::new("bash")
+            .args(["-e", "-c", &script])
+            .env("PATH", &path)
+            .env("FUX_SOCKET", &server.socket)
+            .env("XDG_CONFIG_HOME", server.dir.join("config"))
+            .env_remove("FUX_PANE")
+            .output()
+            .map_err(e)?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stdout.ends_with(said), "{script}\n{stdout}{stderr}");
     }
     Ok(())
 }
 
-/// A line typed that is taller than the screen, wrapped from history onto
-/// it, is read whole: its echo is no output.
+/// Keys to a program that closed its terminal but runs on are refused, as
+/// to one that exited: nothing reads them, and `hung_up` says so. Linux
+/// says it closed it (the terminal hangs up); macOS, where fux holds the
+/// terminal open, does not.
+#[cfg(target_os = "linux")]
 #[test]
-fn a_typed_line_taller_than_the_screen_is_echo() -> Outcome {
+fn keys_to_a_program_that_closed_its_terminal_are_refused() -> Outcome {
     let server = Server::start("")?;
-    let read = "import sys\nsys.stdout.write('Prompt> '); sys.stdout.flush(); sys.stdin.readline()\n\
-                sys.stdout.write('Next> '); sys.stdout.flush(); sys.stdin.readline()\n";
-    let pane = id(&server.ok(&run(
-        &["16", "12", "size", "str", "Prompt>", "wait-text"],
-        &["python3", "-c", read],
-    ))?);
-    let long: String = std::iter::repeat_n("padding ", 45)
-        .chain(["TOKEN"])
-        .collect();
-    let wait = ["str", "TOKEN", "wait-text", "3", "timeout"];
-    let keys = server.fux(&typed(&pane, &long, &wait))?;
-    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
-    Ok(())
-}
-
-/// A line a line editor (readline) edits with the cursor keys, in the
-/// send-keys that typed it or a later one, is the echo of the line as
-/// edited, for the keys' own wait and a later one: a wait for the text it
-/// comes to cannot be met.
-#[test]
-fn a_line_edited_with_cursor_keys_is_echo() -> Outcome {
-    let server = Server::start("")?;
-    let read = "read -e -p 'Prompt> ' v; echo \"VALUE=$v\"; read x";
-    let pane = id(&server.ok(&run(
-        &["str", "Prompt>", "wait-text"],
-        &["bash", "--norc", "-c", read],
-    ))?);
-    let p = ["str", pane.as_str(), "pane"];
-    let needle = ["str", "NEEDLE", "wait-text", "2", "timeout"];
-    let typed = [
-        "str",
-        "NEEzzzDLE",
-        "text",
-        "str",
-        "Left",
-        "key",
-        "3",
-        "times",
-    ];
-    server.ok(&[&p[..], &typed, &["send-keys"]].concat())?;
-    let erase = ["str", "BSpace", "key", "3", "times"];
-    let keys = server.fux(&[&p[..], &erase, &needle, &["send-keys"]].concat())?;
-    assert_eq!(keys.status, CANNOT_COME, "{}", keys.stdout);
-    let later = server.fux(&[&p[..], &needle, &["wait"]].concat())?;
-    assert_eq!(later.status, CANNOT_COME, "{}", later.stdout);
-    let again = [
-        "str", "C-u", "key", "str", "NEEDXE", "text", "str", "Left", "key", "2", "times", "str",
-        "DC", "key", "str", "L", "text",
-    ];
-    let keys = server.fux(&[&p[..], &again, &needle, &["send-keys"]].concat())?;
-    assert_eq!(keys.status, CANNOT_COME, "{}", keys.stdout);
-    Ok(())
-}
-
-/// Keys typed while a shell command runs are echoed on a prompt's row only:
-/// a row the command writes that ends with them is its output.
-#[test]
-fn output_that_ends_with_keys_typed_ahead_is_output() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    // Long enough that the keys go in while it runs (`docs/agents.md`: keys
-    // typed as a command ends may have their echo come after its output).
-    let script = "printf 'BEG''IN\\n'; sleep 2; printf '\\nYou said: NEE''DLE\\n'";
-    server.ok(&typed(&shell, script, &["str", "^BEGIN", "wait-text"]))?;
-    let keys = [
-        "str",
-        &shell,
-        "pane",
-        "str",
-        "NEEDLE",
-        "text",
-        "str",
-        "NEEDLE",
-        "wait-text",
-        "5",
-        "timeout",
-        "send-keys",
-    ];
-    let said = server.fux(&keys)?;
-    assert_eq!(said.status, 0, "{}{}", said.stdout, said.stderr);
-    assert!(said.stdout.contains("You said: NEEDLE"), "{}", said.stdout);
-    Ok(())
-}
-
-/// A program that reads lines and asked for bracketed paste has the
-/// paste's marks echoed by the terminal (`^[[200~`): they are its echo.
-#[test]
-fn a_paste_echoed_with_its_marks_is_echo() -> Outcome {
-    let server = Server::start("")?;
-    let read = "import os, sys\nos.write(1, b'\\x1b[?2004hPrompt> ')\n\
-                sys.stdin.readline(); sys.stdin.read()\n";
-    let pane = id(&server.ok(&run(
-        &["str", "Prompt>", "wait-text"],
-        &["python3", "-c", read],
-    ))?);
-    let keys = server.fux(&[
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "NEEDLE",
-        "paste",
-        "str",
-        "NEEDLE",
-        "wait-text",
-        "3",
-        "timeout",
-        "send-keys",
-    ])?;
-    assert_eq!(keys.status, CANNOT_COME, "{}{}", keys.stdout, keys.stderr);
-    Ok(())
-}
-
-/// Of several conditions, the first to come answers, in whatever order
-/// they were given: a text printed before the program exited, or before a
-/// bell; a bell rung before the text, in one write too; a text gone before
-/// another came. A wait that begins after them all orders them by where
-/// they came: a text on a line as the bell rang before it, the line written
-/// on after; of two texts on one line, the one further left; of a text
-/// written over by another, the first.
-#[test]
-fn the_condition_met_first_answers() -> Outcome {
-    let server = Server::start("")?;
-    let exits = id(&server
-        .fux(&run(
-            &["wait-exit"],
-            &["sh", "-c", "echo READY; sleep 0.2; exit 5"],
-        ))?
-        .stdout);
-    let wait = |pane: &str, conditions: &[&str], json: bool| -> Result<Output, String> {
-        let json: &[&str] = if json { &["json"] } else { &[] };
-        let words = [&["str", pane, "pane"][..], conditions, &["wait"], json].concat();
-        server.fux(&words)
-    };
-    let text = wait(&exits, &["wait-exit", "str", "READY", "wait-text"], false)?;
-    assert_eq!((text.status, met(&text.stdout)), (0, "READY\n"));
-    let script = "echo READY; sleep 0.2; printf '\\a'; sleep 0.2; echo DONE; read x";
-    let rings = id(&server.ok(&run(&["str", "DONE", "wait-text"], &["sh", "-c", script]))?);
-    let text = wait(&rings, &["wait-bell", "str", "READY", "wait-text"], false)?;
-    assert_eq!((text.status, met(&text.stdout)), (0, "READY\n"));
-    let bell = wait(&rings, &["str", "DONE", "wait-text", "wait-bell"], false)?;
-    assert_eq!((bell.status, met(&bell.stdout)), (0, ""));
-    assert!(
-        head(&bell.stdout).ends_with(" · met bell"),
-        "{}",
-        bell.stdout
-    );
-    let code = "import os, sys\nos.write(1, b'\\aSECOND-TEXT\\n'); sys.stdin.read()\n";
-    let both = ["str", "SECOND-TEXT", "wait-text", "wait-bell"];
-    let rang = server.ok(&[&run(&both, &["python3", "-c", code])[..], &["json"]].concat())?;
-    assert!(rang.contains(r#""met":"bell""#), "{rang}");
-    // BUSY went before LATER came: the text gone answers, with the pane's
-    // state, where a text met would say `met`.
-    let swap = "import sys, time\nw = sys.stdout.write\nw('BUSY'); sys.stdout.flush(); time.sleep(0.3)\n\
-                w('\\r\\x1b[K'); sys.stdout.flush(); time.sleep(0.3)\n\
-                w('LATER\\r\\n'); sys.stdout.flush(); input()\n";
-    let busy = id(&server.ok(&run(
-        &["str", "LATER", "wait-text"],
-        &["python3", "-c", swap],
-    ))?);
-    let gone = ["str", "LATER", "wait-text", "str", "BUSY", "wait-gone"];
-    let out = wait(&busy, &gone, true)?;
-    assert!(
-        out.status == 0 && out.stdout.contains("\"state\"") && !out.stdout.contains("\"met\""),
-        "{}{}",
-        out.stdout,
-        out.stderr
-    );
-    let script = "printf FIRST; sleep 0.2; printf '\\a'; sleep 0.2; echo ' SECOND'; read x";
-    let shared = id(&server.ok(&run(&["str", "SECOND", "wait-text"], &["sh", "-c", script]))?);
-    let text = wait(&shared, &["wait-bell", "str", "FIRST", "wait-text"], true)?;
-    assert!(text.stdout.contains(r#""met":"text""#), "{}", text.stdout);
-    let two = ["str", "SECOND", "wait-text", "str", "FIRST", "wait-text"];
-    let first = wait(&shared, &two, true)?;
-    assert!(
-        first.stdout.contains(r#""text":"FIRST""#),
-        "{}",
-        first.stdout
-    );
-    let over = "import sys, time\nw = sys.stdout.write\nw('FIRST'); sys.stdout.flush(); time.sleep(0.3)\n\
-                w('\\rSECOND\\r\\n'); sys.stdout.flush(); input()\n";
-    let over = id(&server.ok(&run(
-        &["str", "SECOND", "wait-text"],
-        &["python3", "-c", over],
-    ))?);
-    let first = wait(&over, &two, false)?;
-    assert_eq!(
-        met(&first.stdout).trim_end(),
-        "FIRST",
-        "the text that came first"
-    );
-    Ok(())
-}
-
-/// Keys typed while an earlier command still runs (typed ahead) are the
-/// terminal's echo, then the shell's as it reads them: a wait for a text
-/// they hold answers what the command prints, once it runs, never the typed
-/// line.
-#[test]
-fn keys_typed_while_a_command_runs_are_echo() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    server.ok(&typed(&shell, "sleep 2", &["0", "timeout"]))?;
-    let done = server.ok(&typed(&shell, "echo DONE", &["str", "DONE", "wait-text"]))?;
-    assert_eq!(met(&done), "DONE\n");
-    Ok(())
-}
-
-/// A command's output is its rows whole, what it wrote right of where it
-/// left the cursor too. A command bash cannot parse, over several lines,
-/// never runs, yet ends: its last output is the complaint alone, not the
-/// continuation prompts and the lines typed at them.
-#[test]
-fn a_command_bash_cannot_parse_over_lines_outputs_its_complaint() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    line(&server, &shell, "printf 'ABCDE\\rXY'")?;
-    assert_eq!(last_output(&server, &shell)?, "XYCDE\n");
-    server.ok(&typed(&shell, "for i in 1 2", &["0", "timeout"]))?;
-    server.ok(&typed(&shell, "do echo $i", &["0", "timeout"]))?;
-    // 2, or 258 before bash 4.
-    let status = line(&server, &shell, "done)")?;
-    assert!(
-        [Some("done 2"), Some("done 258")].contains(&done(&status)),
-        "{status}"
-    );
-    let error = last_output(&server, &shell)?;
-    assert!(
-        error.contains("syntax error") && !error.contains("> ") && !error.contains("echo"),
-        "{error}"
-    );
-    Ok(())
-}
-
-/// A text a fresh program shows and takes away in one burst (drawn over)
-/// has shown, so `wait-gone` is met; and `^` holds a text to a line's
-/// start, not to where a run of output starts after a tab.
-#[test]
-fn a_text_shown_and_gone_in_a_burst_has_gone_and_anchors_hold_to_lines() -> Outcome {
-    let server = Server::start("")?;
-    let burst = "import sys; sys.stdout.write('READY\\rxxxxx'); sys.stdout.flush(); input()";
-    let gone = server.fux(&run(
-        &["str", "READY", "wait-gone", "5", "timeout"],
-        &["python3", "-c", burst],
-    ))?;
-    assert_eq!(gone.status, 0, "{}{}", gone.stdout, gone.stderr);
-    let tab = id(&server.ok(&run(
-        &["str", "END", "wait-text"],
-        &["sh", "-c", "printf 'FIRST\\tSECOND END\\n'; read x"],
-    ))?);
-    let anchored = [
-        "str",
-        &tab,
-        "pane",
-        "str",
-        "^SECOND",
-        "wait-text",
-        "2",
-        "timeout",
-        "wait",
-    ];
-    assert_eq!(server.fux(&anchored)?.status, CANNOT_COME);
-    Ok(())
-}
-
-/// A line editor that draws the line again, the same, as Enter takes it
-/// brings nothing new: a wait sent with the keys for the text typed cannot
-/// be met by it.
-#[test]
-fn a_line_drawn_again_the_same_on_enter_is_no_output() -> Outcome {
-    let server = Server::start("")?;
-    let editor = "import os, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'> ')\n\
-                  while True:\n    c = os.read(0, 1).decode()\n\
-                  \x20   if c in '\\r\\n':\n        os.write(1, ('\\r\\x1b[K> ' + line + '\\r\\n').encode()); line = ''; os.write(1, b'> '); continue\n\
-                  \x20   line += c; os.write(1, ('\\r\\x1b[K> ' + line).encode())\n";
-    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", editor]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "NEEDLE",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "NEEDLE",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-    ];
-    assert_eq!(server.fux(&keys)?.status, CANNOT_COME);
-    Ok(())
-}
-
-/// A shell command that ended after its own action answered is still said
-/// done by a later wait, which counts from the last input.
-#[test]
-fn a_later_wait_says_a_command_ended_since_the_input() -> Outcome {
-    let server = Server::start("")?;
-    let shell = id(&server.ok(&run(&[], &["bash", "--norc", "-i"]))?);
-    assert_eq!(done(&line(&server, &shell, "true")?), Some("done 0"));
-    let keys = [
-        "str",
-        &shell,
-        "pane",
-        "str",
-        "sleep 0.3; (exit 6)",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "0",
-        "timeout",
-        "send-keys",
-    ];
-    server.fux(&keys)?;
-    eventually("the command's end", || {
-        let json = server.ok(&["str", &shell, "pane", "capture", "json"])?;
-        Ok(json.contains(r#""last_status":6"#))
+    let closes = "exec >/dev/null 2>&1 <&-; sleep 30";
+    let pane = id(&server.ok(&run(&[], &["sh", "-c", closes]))?);
+    eventually("the keys refused", || {
+        let keys = server.fux(&["str", &pane, "pane", "str", "x", "text", "send-keys"])?;
+        Ok(keys.stderr.starts_with("fux: not_running: "))
     })?;
-    let later = server.ok(&["str", &shell, "pane", "wait"])?;
-    assert_eq!(done(&later), Some("done 6"), "{later}");
-    Ok(())
-}
-
-/// A resize after the input brings nothing new; a later wait's answer
-/// starts where the input's reply does, not at the screen's top.
-#[test]
-fn a_resize_since_the_input_brings_nothing_new() -> Outcome {
-    let server = Server::start("")?;
-    let echo = "echo OLDLINE; while read l; do echo GOT$l; done";
-    let pane = id(&server.ok(&run(&["str", "OLDLINE", "wait-text"], &["sh", "-c", echo]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "abc",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "GOTabc",
-        "wait-text",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    server.ok(&[
-        "str", &pane, "pane", "str", "sleep", "program", "str", "30", "arg", "0", "timeout",
-        "split",
-    ])?;
-    let later = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert!(
-        !later.contains("OLDLINE") && later.contains("GOTabc"),
-        "{later}"
-    );
-    Ok(())
-}
-
-/// A screen erased and drawn again as it was is no change, and one drawn
-/// again with a row changed is answered from that row.
-#[test]
-fn a_screen_drawn_again_as_it_was_is_no_change() -> Outcome {
-    let server = Server::start("")?;
-    let menu = "import sys, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                def draw(v): w('\\x1b[H\\x1b[2JMAIN MENU\\r\\n' + v); sys.stdout.flush()\n\
-                draw('old value')\n\
-                while True:\n    draw('new value' if sys.stdin.read(1) == 'b' else 'old value')\n";
-    let pane = id(&server.ok(&run(
-        &["str", "old value", "wait-text"],
-        &["python3", "-c", menu],
-    ))?);
-    let same = server.ok(&["str", &pane, "pane", "str", "a", "type"])?;
-    // Said where fux is told the program reads (`no change` is that).
-    let said = if PROBED { " · no change" } else { "" };
-    assert_eq!(head(&same), format!("{pane} {READING}{said}"), "{same}");
-    assert_eq!(body(&same), "", "{same}");
-    let changed = server.ok(&["str", &pane, "pane", "str", "b", "type"])?;
-    assert_eq!(body(&changed), "new value\n", "{changed}");
-    Ok(())
-}
-
-/// A word a line wraps onto the next row starts no word there: a wait for
-/// it from a word's or a line's start is not met.
-#[test]
-fn a_word_wrapped_onto_a_row_starts_no_word_there() -> Outcome {
-    let server = Server::start("")?;
-    let wrap = "import sys, tty\ntty.setraw(0)\nsys.stdout.write('> '); sys.stdout.flush()\n\
-                sys.stdin.read(1); sys.stdout.write('\\r\\nxxxxxxxxxxxxREADY'); sys.stdout.flush()\n\
-                sys.stdin.read(1)\n";
-    let size = ["12", "5", "size", "str", ">", "wait-text"];
-    let pane = id(&server.ok(&run(&size, &["python3", "-c", wrap]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "k",
-        "text",
-        "str",
-        "READY",
-        "wait-text",
-        "2",
-        "timeout",
-        "send-keys",
-        "json",
-    ];
-    let out = server.fux(&keys)?;
-    let not_met = if PROBED { CANNOT_COME } else { 124 };
-    assert_eq!(out.status, not_met, "{}{}", out.stdout, out.stderr);
-    Ok(())
-}
-
-/// A full-screen program's keys go in at full speed, its screen being all
-/// output: one read takes every key an action sends.
-#[test]
-fn a_full_screen_program_takes_an_actions_keys_at_once() -> Outcome {
-    let server = Server::start("")?;
-    let once = "import os, sys, time, tty\ntty.setraw(0)\nw = sys.stdout.write\n\
-                w('\\x1b[?1049hREADY'); sys.stdout.flush(); time.sleep(0.5)\n\
-                w('\\r\\nGOT ' + repr(os.read(0, 100))); sys.stdout.flush(); os.read(0, 1)\n";
-    let pane = id(&server.ok(&run(
-        &["str", "READY", "wait-text"],
-        &["python3", "-c", once],
-    ))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "abc",
-        "text",
-        "str",
-        "Home",
-        "key",
-        "str",
-        "End",
-        "key",
-        "str",
-        "GOT",
-        "wait-text",
-        "send-keys",
-    ];
-    let got = server.ok(&keys)?;
-    assert!(got.contains("GOT b'abc\\x1b[H\\x1b[F'"), "{got}");
-    Ok(())
-}
-
-/// A wait sent with keys answers once all of them went in, though the reply
-/// to the first meets it before the program takes the rest.
-#[test]
-fn a_keys_wait_answers_once_every_key_went_in() -> Outcome {
-    let server = Server::start("")?;
-    let raw = "import os, time, tty\ntty.setraw(0)\nos.write(1, b'> ')\n\
-               os.read(0, 1); os.write(1, b'\\r\\nRX'); time.sleep(0.6)\n\
-               os.read(0, 1); os.write(1, b'\\r\\nSECOND'); os.read(0, 1)\n";
-    let pane = id(&server.ok(&run(&["str", ">", "wait-text"], &["python3", "-c", raw]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "a",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "RX",
-        "wait-text",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    // Enter went in once the program read again, after its sleep, and its
-    // reply came: where fux is told it reads (macOS says a sleep and a read
-    // alike).
-    let screen = server.ok(&["str", &pane, "pane", "capture"])?;
-    assert!(!PROBED || screen.contains("SECOND"), "{screen}");
-    Ok(())
-}
-
-/// `run`'s answer holds all a program printed, lines scrolled into history
-/// too, as no snapshot of the screen came before them.
-#[test]
-fn a_runs_answer_holds_what_scrolled_away() -> Outcome {
-    let server = Server::start("")?;
-    let burst = "for i in $(seq 0 59); do echo BURST_$i; done; read x";
-    let out = server.ok(&run(
-        &["str", "BURST_59", "wait-text"],
-        &["sh", "-c", burst],
-    ))?;
-    let later = server.ok(&["str", &id(&out), "pane", "wait"])?;
-    assert!(
-        later.contains("BURST_0\n") && later.contains("BURST_59"),
-        "{later}"
-    );
-    Ok(())
-}
-
-/// A line editor that draws its whole line again, prompt and all, at each
-/// key: the prompt it draws again where it stood is no news; a wait for it
-/// is met by the next prompt, after the reply.
-#[test]
-fn a_prompt_drawn_again_with_the_typed_line_is_no_news() -> Outcome {
-    let server = Server::start("")?;
-    let desk = "import os, time, tty\ntty.setraw(0)\nline = ''\nos.write(1, b'desk> ')\n\
-                while True:\n    c = os.read(0, 1).decode()\n\
-                \x20   if c in '\\r\\n':\n        os.write(1, b'\\r\\n'); time.sleep(0.5)\n\
-                \x20       os.write(1, ('OK ' + line + '\\r\\ndesk> ').encode()); line = ''; continue\n\
-                \x20   line += c; os.write(1, ('\\r\\x1b[Kdesk> ' + line).encode())\n";
-    let pane = id(&server.ok(&run(
-        &["str", "desk>", "wait-text"],
-        &["python3", "-c", desk],
-    ))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "inspect",
-        "text",
-        "str",
-        "Enter",
-        "key",
-        "str",
-        "desk>",
-        "wait-text",
-        "send-keys",
-    ];
-    server.ok(&keys)?;
-    let screen = server.ok(&["str", &pane, "pane", "capture"])?;
-    assert!(screen.contains("OK inspect"), "the reply came: {screen}");
-    Ok(())
-}
-
-/// A program with a thread reading its terminal beside one that goes on
-/// alone (asleep, or on a timer through a futex: Python's `Event.wait`) is
-/// `waiting`, not busy, and a text wait on it runs to its limit, never 7.
-#[test]
-fn a_thread_beside_a_reader_that_goes_on_alone_waits() -> Outcome {
-    if !PROBED {
-        return Ok(());
-    }
-    let server = Server::start("")?;
-    let asleep = "import os, time, threading\n\
-                  threading.Thread(target=lambda: os.read(0, 100), daemon=True).start()\n\
-                  print('READY', flush=True); time.sleep(60)\n";
-    let ticker = "import threading\nstop = threading.Event()\n\
-                  def tick():\n    while not stop.wait(0.1): pass\n\
-                  threading.Thread(target=tick, daemon=True).start()\nprint('READY', flush=True)\ninput()\n";
-    for program in [asleep, ticker] {
-        let pane = id(&server.ok(&run(
-            &["str", "READY", "wait-text"],
-            &["python3", "-c", program],
-        ))?);
-        let p = ["str", pane.as_str(), "pane"];
-        let settled = server.fux(&[&p[..], &["3", "timeout", "wait"]].concat())?;
-        assert_eq!(settled.status, 0, "{}{}", settled.stdout, settled.stderr);
-        assert!(
-            settled.stdout.starts_with(&format!("{pane} waiting")),
-            "{}",
-            settled.stdout
-        );
-        let never = ["str", "NEVER", "wait-text", "2", "timeout", "wait"];
-        let out = server.fux(&[&p[..], &never].concat())?;
-        assert_eq!(out.status, 124, "{}{}", out.stdout, out.stderr);
-    }
-    Ok(())
-}
-
-/// A wide character before a run on its row takes two cells and is one
-/// character: the run is still found where it went, and a wait for its text
-/// at the line's end is met.
-#[test]
-fn a_run_after_a_wide_character_is_found_where_it_went() -> Outcome {
-    let server = Server::start("")?;
-    let wide = "import os, tty\ntty.setraw(0)\nos.write(1, '界 '.encode())\nos.read(0, 1)\n\
-                os.write(1, b'READY')\nos.read(0, 1)\n";
-    let pane = id(&server.ok(&run(&["str", "界", "wait-text"], &["python3", "-c", wide]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "k",
-        "text",
-        "str",
-        "READY$",
-        "wait-text",
-        "3",
-        "timeout",
-        "send-keys",
-    ];
-    let out = server.fux(&keys)?;
-    assert_eq!(out.status, 0, "{}{}", out.stdout, out.stderr);
-    Ok(())
-}
-
-/// A wait met on a long line wrapped over many rows answers the whole line,
-/// not the rows read around the text to find it.
-#[test]
-fn a_met_wait_answers_the_whole_wrapped_line() -> Outcome {
-    let server = Server::start("")?;
-    let long = "import os, tty\ntty.setraw(0)\nos.write(1, b'> ')\nos.read(0, 1)\n\
-                os.write(1, b'\\r\\nCALIBRATION ' + b'x' * 250 + b' LANE=TAIL\\r\\n')\nos.read(0, 1)\n";
-    let size = ["80", "24", "size", "str", ">", "wait-text"];
-    let pane = id(&server.ok(&run(&size, &["python3", "-c", long]))?);
-    let keys = [
-        "str",
-        &pane,
-        "pane",
-        "str",
-        "k",
-        "text",
-        "str",
-        "CALIBRATION",
-        "wait-text",
-        "send-keys",
-    ];
-    let out = server.ok(&keys)?;
-    assert!(out.contains("LANE=TAIL"), "{out}");
-    Ok(())
-}
-
-/// A selection an action's keys highlighted anew (reverse video) is said on its
-/// state line, where it is; one that stays is not said again.
-#[test]
-fn an_answer_says_what_its_keys_highlighted() -> Outcome {
-    let server = Server::start("")?;
-    let code = "import sys\nfor l in sys.stdin:\n\
-                \x20   if l.startswith('h'): print('\\x1b[7mSEL\\x1b[m rest', flush=True)\n\
-                \x20   else: print('plain', flush=True)\n";
-    let pane = id(&server.ok(&run(&[], &["python3", "-c", code]))?);
-    let lit = server.ok(&typed(&pane, "h", &[]))?;
-    assert_eq!(
-        head(&lit),
-        format!("{pane} {READING} · highlight 1,0-2 \"SEL\""),
-        "{lit}"
-    );
-    let again = server.ok(&typed(&pane, "c", &[]))?;
-    assert_eq!(head(&again), format!("{pane} {READING}"), "{again}");
-    Ok(())
-}
-
-/// A program that exited ended the command its marks said ran: its pane
-/// says `exited`, never a command running too.
-#[test]
-fn an_exited_program_runs_no_command() -> Outcome {
-    let server = Server::start("")?;
-    let marked = "printf '\\033]133;A\\007$ \\033]133;C\\007'; sleep 0.3; echo bye";
-    let pane = id(&server.ok(&run(&["wait-exit"], &["sh", "-c", marked]))?);
-    let ended = server.ok(&["str", &pane, "pane", "wait"])?;
-    assert_eq!(head(&ended), format!("{pane} exited 0"), "{ended}");
-    let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
-    assert!(json.contains(r#""command_running":false"#), "{json}");
+    let hung_up = server.ok(&["str", &pane, "pane", "str", "hung_up", "get"])?;
+    assert_eq!(hung_up, "true\n");
     Ok(())
 }

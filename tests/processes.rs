@@ -10,8 +10,7 @@ use support::*;
 const GONE_WITHIN: Duration = Duration::from_secs(3);
 
 /// Types a line whose program keeps running, in the foreground, once the
-/// pane's shell shows a prompt: a sleeping program never settles, so the
-/// keys answer at once (`0 timeout`).
+/// pane's shell shows a prompt.
 fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
         Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
@@ -26,8 +25,6 @@ fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
         "str",
         "Enter",
         "key",
-        "0",
-        "timeout",
         "send-keys",
     ])?;
     Ok(())
@@ -137,9 +134,8 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     )?;
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
-    // It answers once the program ended and the shell reads again.
     let answer = server.ok(&["str", &pane, "pane", "str", "TERM", "signal"])?;
-    assert!(answer.starts_with(&format!("{pane} {READING}")), "{answer}");
+    assert!(answer.starts_with(&format!("{pane} ")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
@@ -254,9 +250,8 @@ fn zombies_of(pid: u32) -> Result<Vec<String>, String> {
 }
 
 /// A program a pane's program started and left (a double fork) becomes the
-/// server's child, not init's (Linux): it is still seen reading the pane's
-/// terminal, not guessed from a quiet screen, and once it exits the server
-/// reaps it, leaving no zombie.
+/// server's child, not init's (Linux): once it exits the server reaps it,
+/// leaving no zombie.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
@@ -268,7 +263,7 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
     let answer = server.ok(&[
         "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "str", &fifo,
-        "arg", "str", &pidfile, "arg", "0", "timeout", "run",
+        "arg", "str", &pidfile, "arg", "run",
     ])?;
     let pane = answer
         .split_whitespace()
@@ -277,16 +272,17 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
         .to_owned();
     let orphan = pid_in(std::path::Path::new(&*pidfile))?;
     let _reap = Reap(vec![orphan]);
-    // Seen only if the server adopted it: the probe walks its own tree.
-    eventually("the pane reading", || {
-        Ok(server
-            .ok(&["str", &pane, "pane", "str", "state", "get"])?
-            .trim()
-            == "reading")
-    })?;
     // End of input: cat exits, and the server, its parent, reaps it.
-    server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
     let gone = fuxix::process::Pid::from_raw(orphan).ok_or("a pid")?;
+    eventually("the orphan adopted", || {
+        let stat = std::fs::read_to_string(format!("/proc/{orphan}/stat")).map_err(e)?;
+        let parent = stat
+            .rsplit(')')
+            .next()
+            .and_then(|r| r.split_whitespace().nth(1));
+        Ok(parent == server.pid().map(|p| p.to_string()).as_deref())
+    })?;
+    server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
     eventually("the orphan reaped", || Ok(!fuxix::process::exists(gone)))
 }
 

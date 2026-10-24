@@ -221,11 +221,11 @@ mod tests {
             "no pane %99",
             "only one pane",
             "nothing selected: v, s or x starts a selection",
-            "the pane's program is not reading its input; nothing more is queued until it does",
+            "the pane's input queue is full; nothing more is queued until its terminal takes some",
             "C-b t q is not bound",
             "config: bad_binding: /w/config/fux/config.fux:3: bind: unknown_word: binding:1: nonsense: no such word",
             "unknown_word: prompt:1: nonsense: no such word",
-            "the pane's program is not reading its in…",
+            "the pane's input queue is full; nothing…",
         ] {
             assert!(notices.known(known), "{known}");
         }
