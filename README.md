@@ -334,13 +334,14 @@ prints them all.
 | `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
 | `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it; a grant's socket if the pane was started through one, so what runs there stays within the grant |
 | `FUX_SERVER` | which run of which server the pane is of. A fux command from a pane of another server, or of an earlier run of this one, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
-| `FUX` | the fux executable the server runs: what a key's program or a script in a pane runs, as `"$FUX"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
+| `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"$FUX"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
 The rest is the server's own environment, as it was when the server
-started, but for the names in `update-environment`, which a new pane takes
-from whoever starts it, and what a program's `env` sets, which comes last.
-`opts str NAME str VALUE env str PROGRAM program run` sets one for one
-program.
+started. Over all of it, the table's too, come the names in
+`update-environment`, which a pane takes from whoever starts it (one they
+lack is unset; from a starter that sends no environment, such as a client
+with no terminal, none), and last what a program's `env` sets: `opts str
+NAME str VALUE env str PROGRAM program run`.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
