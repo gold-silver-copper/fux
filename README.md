@@ -338,11 +338,12 @@ prints them all.
 
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
-`update-environment`, which a pane takes from whoever starts it (a name
-they lack is unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`
-then keep the table's value; a starter with no environment at all, as
-`env -i` leaves one, changes none), and, last, what a program's `env` sets: `opts str NAME str VALUE
-env str PROGRAM program run`.
+`update-environment`, which a pane takes from whoever starts it, and, last,
+what a program's `env` sets (`opts str NAME str VALUE env str PROGRAM
+program run`). A name in `update-environment` that the starter lacks is
+unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
+table's value. A starter with no environment at all, as `env -i` leaves
+one, changes none.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
