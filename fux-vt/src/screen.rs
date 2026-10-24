@@ -202,6 +202,16 @@ impl Set {
     fn bit(self) -> u8 {
         1 << self as u8
     }
+    /// The set an SCS's first intermediate names: `(` G0, `)` G1, `*` G2
+    /// and `+` G3.
+    fn of(intermediates: &[u8]) -> Self {
+        match intermediates.first() {
+            Some(b')') => Set::G1,
+            Some(b'*') => Set::G2,
+            Some(b'+') => Set::G3,
+            _ => Set::G0,
+        }
+    }
 }
 
 /// What SCS designates a set as.
@@ -250,9 +260,6 @@ impl Charsets {
             single: None,
         }
     }
-}
-
-impl Charsets {
     /// Whether text needs mapping: a single shift waits, or GL's set is
     /// not ASCII.
     fn graphics(self) -> bool {
@@ -279,13 +286,7 @@ impl Charsets {
             (Some(b'%'), b'5') => Designated::Supplemental,
             _ => Designated::Ascii,
         };
-        let set = match intermediates.first() {
-            Some(b')') => Set::G1,
-            Some(b'*') => Set::G2,
-            Some(b'+') => Set::G3,
-            _ => Set::G0,
-        };
-        self.designate(set, kind);
+        self.designate(Set::of(intermediates), kind);
     }
     fn designate(&mut self, set: Set, kind: Designated) {
         let bits = match kind {
@@ -437,11 +438,9 @@ impl TabStops {
         }
     }
     fn set(&mut self, col: u16, stop: bool) {
-        let col = usize::from(col);
-        while self.stops.len() <= col {
-            let at = self.stops.len();
-            self.stops.push(self.beyond && at.is_multiple_of(8));
-        }
+        let (col, beyond) = (usize::from(col), self.beyond);
+        let made = self.stops.len()..=col;
+        (self.stops).extend(made.map(|at| beyond && at.is_multiple_of(8)));
         if let Some(slot) = self.stops.get_mut(col) {
             *slot = stop;
         }
@@ -457,26 +456,19 @@ impl TabStops {
         if self.stops.is_empty() && self.beyond {
             return (col / 8).saturating_add(1).saturating_mul(8).min(last);
         }
-        let mut at = col;
-        while at < last {
-            at = at.saturating_add(1);
-            if self.is_stop(at) {
-                return at;
-            }
-        }
-        last
+        let after = col.saturating_add(1)..=last;
+        after
+            .into_iter()
+            .find(|&at| self.is_stop(at))
+            .unwrap_or(last)
     }
     /// The last stop before `col` from `first` on, or `first`, the first
     /// column the cursor may go back to.
     fn previous(&self, col: u16, first: u16) -> u16 {
-        let mut at = col;
-        while at > first {
-            at = at.saturating_sub(1);
-            if self.is_stop(at) {
-                return at;
-            }
-        }
-        first
+        (first..col)
+            .rev()
+            .find(|&at| self.is_stop(at))
+            .unwrap_or(first)
     }
 }
 
@@ -2051,11 +2043,9 @@ impl Screen {
     /// The copies a REP stopped at the budget left, made first by the
     /// call after it.
     pub(crate) fn resume_repeat(&mut self) {
-        match self.left.take() {
-            Some(Left::Copies(c, count)) => self.copies(c, count),
-            other => {
-                self.left = other;
-            }
+        if let Some(Left::Copies(c, count)) = self.left {
+            self.left = None;
+            self.copies(c, count);
         }
     }
 
@@ -2098,13 +2088,11 @@ impl Screen {
     /// The CSI a call left, taken: its intermediates, how many, and its
     /// final byte.
     pub(crate) fn held_csi(&mut self) -> Option<([u8; 2], usize, u8)> {
-        match self.left.take() {
-            Some(Left::Csi(read, len, byte)) => Some((read, len, byte)),
-            other => {
-                self.left = other;
-                None
-            }
-        }
+        let Some(Left::Csi(read, len, byte)) = self.left else {
+            return None;
+        };
+        self.left = None;
+        Some((read, len, byte))
     }
 
     /// Prints `count` copies of `c`, REP's, stopping where a wrap scrolled
@@ -2409,10 +2397,10 @@ impl Screen {
         // user-preferred supplemental set) and `% 5` DEC Supplemental, and
         // any other set is ASCII here.
         match intermediates {
-            b"(" => self.charsets.designate(Set::G0, Designated::of(byte)),
-            b")" => self.charsets.designate(Set::G1, Designated::of(byte)),
-            b"*" => self.charsets.designate(Set::G2, Designated::of(byte)),
-            b"+" => self.charsets.designate(Set::G3, Designated::of(byte)),
+            [b'(' | b')' | b'*' | b'+'] => {
+                self.charsets
+                    .designate(Set::of(intermediates), Designated::of(byte));
+            }
             [b'(' | b')' | b'*' | b'+', _] => self.charsets.scs(intermediates, byte),
             b"#" if byte == b'8' => {
                 self.alignment();
@@ -3359,26 +3347,7 @@ impl Screen {
         // Every sequence that moves the cursor or edits a row.
         if matches!(
             byte,
-            b'A'..=b'H'
-                | b'J'
-                | b'K'
-                | b'L'
-                | b'M'
-                | b'P'
-                | b'S'
-                | b'T'
-                | b'X'
-                | b'@'
-                | b'I'
-                | b'Z'
-                | b'`'
-                | b'a'
-                | b'd'
-                | b'e'
-                | b'f'
-                | b'r'
-                | b's'
-                | b'u'
+            b'@'..=b'M' | b'P' | b'S' | b'T' | b'X' | b'Z' | b'`' | b'a' | b'd'..=b'f' | b'r' | b's' | b'u'
         ) {
             self.break_cluster();
         }
