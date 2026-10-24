@@ -57,12 +57,38 @@ pane's version before it acted; a wait waits for the version to differ,
 30s at most (SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help-agents`; one word:
 `fux help WORD`.
-
-The language: str WORD, define NAME … end, X let NAME, if … else … then,
-begin … until, list … end, SEQ each … end; the core's words drop pick roll
-add sub mul div lt eq len at slice concat push put code char kind string
-print fail; and the libraries below, written in fuxth. Mistakes every run
-would make are refused before anything runs.
+",
+    );
+    // The language's parsing words and core, as fuxth says them: a block's
+    // words once, never broken across lines.
+    let mut shapes: Vec<String> = Vec::new();
+    for (shape, _) in fuxth::Parsing::ALL.map(fuxth::Parsing::syntax) {
+        let unbroken = shape.replace(' ', "\u{a0}");
+        if !shapes.contains(&unbroken) {
+            shapes.push(unbroken);
+        }
+    }
+    let core = fuxth::Builtin::ALL.map(fuxth::Builtin::name).join(" ");
+    let language = format!(
+        "The language: {}; the core's words {core}; and the libraries below, written in \
+         fuxth. Mistakes every run would make are refused before anything runs.",
+        shapes.join(", ")
+    );
+    out.push('\n');
+    let mut width = 0usize;
+    for word in language.split(' ') {
+        if width > 0 && width.saturating_add(word.chars().count()) >= 74 {
+            out.push('\n');
+            width = 0;
+        } else if width > 0 {
+            out.push(' ');
+            width = width.saturating_add(1);
+        }
+        out.push_str(&word.replace('\u{a0}', " "));
+        width = width.saturating_add(word.chars().count());
+    }
+    out.push_str(
+        "
 
 Below, x is a pane, tab, workspace or client (an action's answer is its
 pane), a request on one, or opts; target, subject and place a pane (or a
