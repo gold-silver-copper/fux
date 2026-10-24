@@ -845,7 +845,6 @@ impl History {
             }
         }
         self.maps_changed();
-        self.recount();
     }
 
     /// Starts `block`, empty, as the newest (`make_room`).
@@ -1006,7 +1005,6 @@ impl History {
             kept.set(LINKED, false);
         }
         self.maps_changed();
-        self.recount();
     }
 }
 

@@ -340,10 +340,9 @@ impl Attributes {
     /// `bce` terminfo capability, background colour erase).
     pub(crate) const fn erased(self) -> Self {
         Self {
-            foreground: self.foreground,
-            background: self.background,
             underline_color: Packed([0; 4]),
             flags: 0,
+            ..self
         }
     }
     /// The background colour.

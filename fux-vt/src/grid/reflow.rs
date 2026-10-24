@@ -120,13 +120,7 @@ impl Grid {
         let mut pass = Pass {
             width,
             marks,
-            out: Reflowed {
-                rows: 0,
-                marks: [None; 2],
-                trailing_blank: 0,
-                screen_line: 0,
-                same: 0,
-            },
+            out: Reflowed::default(),
             target,
         };
         // Renditions are looked up only if any row may be double width.
@@ -477,6 +471,7 @@ enum Mark {
 }
 
 /// The shape of a reflow.
+#[derive(Default)]
 struct Reflowed {
     rows: usize,
     /// `None` for a mark no line held.

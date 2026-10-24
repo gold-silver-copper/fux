@@ -307,15 +307,10 @@ impl Text {
     /// The text of `cell`, a cell of this row.
     #[inline]
     pub(crate) fn of<'a>(&'a self, cell: &'a Compact) -> &'a str {
-        let Some((start, len)) = cell.locator() else {
-            return cell.inline();
-        };
-        let held = if len > SHORT { &self.long } else { &self.short };
-        start
-            .checked_add(len)
-            .and_then(|end| held.get(start..end))
-            .and_then(|s| str::from_utf8(s).ok())
-            .unwrap_or("")
+        match cell.locator() {
+            None => cell.inline(),
+            Some(_) => str::from_utf8(self.bytes_of(cell)).unwrap_or(""),
+        }
     }
     /// `of`'s bytes, unread as UTF-8: what an append copies.
     #[inline]
@@ -323,7 +318,7 @@ impl Text {
         let Some((start, len)) = cell.locator() else {
             return cell.inline_bytes();
         };
-        let held = if len > SHORT { &self.long } else { &self.short };
+        let held = self.part(len > SHORT);
         start
             .checked_add(len)
             .and_then(|end| held.get(start..end))
@@ -389,6 +384,13 @@ impl Text {
     fn part(&self, long: bool) -> &Vec<u8> {
         if long { &self.long } else { &self.short }
     }
+    fn part_mut(&mut self, long: bool) -> &mut Vec<u8> {
+        if long {
+            &mut self.long
+        } else {
+            &mut self.short
+        }
+    }
 }
 
 /// The text's part of the invariant checker (THREATS.md section 6, 13).
@@ -412,15 +414,10 @@ impl Text {
             let Some((start, len)) = cell.locator() else {
                 continue;
             };
-            let held = if len > SHORT { &self.long } else { &self.short };
-            let text = start
-                .checked_add(len)
-                .and_then(|end| held.get(start..end))
-                .and_then(|bytes| str::from_utf8(bytes).ok());
-            crate::check::ensure(
-                text.is_some_and(|t| !t.is_empty() && t.len() <= CLUSTER_CAPACITY),
-                || format!("column {i}: text at {start} of {len} bytes is not there"),
-            )?;
+            let text = self.of(cell);
+            crate::check::ensure(!text.is_empty() && text.len() <= CLUSTER_CAPACITY, || {
+                format!("column {i}: text at {start} of {len} bytes is not there")
+            })?;
         }
         Ok(())
     }
@@ -625,11 +622,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
         let Some((start, len)) = (self.cells.get(i)).and_then(|c| c.as_ref().locator()) else {
             return;
         };
-        let store = if len > SHORT {
-            &mut self.text.long
-        } else {
-            &mut self.text.short
-        };
+        let store = self.text.part_mut(len > SHORT);
         let held = start
             .checked_add(len)
             .and_then(|end| store.get_mut(start..end));
@@ -659,11 +652,7 @@ impl<C: AsRef<Compact> + AsMut<Compact>> Line<'_, C> {
     /// Keeps only the text of long clusters (`long`), or of short ones, of
     /// the cells outside `skip`, relocating their cells.
     fn compact(&mut self, long: bool, skip: std::ops::Range<usize>) {
-        let store = if long {
-            &mut self.text.long
-        } else {
-            &mut self.text.short
-        };
+        let store = self.text.part_mut(long);
         let old = std::mem::take(store);
         let (head, rest) = (self.cells)
             .split_at_mut_checked(skip.start.min(self.cells.len()))
