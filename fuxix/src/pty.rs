@@ -408,7 +408,7 @@ fn redrive<T>(
 
 /// The path of the slave of the PTY `master`, in a buffer of ours: macOS's
 /// `ptsname` returns a shared one, so it is asked by an ioctl there.
-fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
+pub(crate) fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
     let fd = master.as_fd().as_raw_fd();
     let mut buffer: [libc::c_char; 128] = [0; 128];
     #[cfg(not(target_os = "macos"))]

@@ -20,6 +20,7 @@ impl Errno {
     /// concurrent openers keep racing for one PTY. See `pty::open`.
     #[cfg(any(target_os = "macos", test))]
     pub(crate) const REDRIVEOPEN: Self = Self(-6);
+    pub(crate) const NOTTY: Self = Self(libc::ENOTTY);
     pub(crate) const NAMETOOLONG: Self = Self(libc::ENAMETOOLONG);
     /// What macOS's `open("/dev/ptmx")` returns when it loses a race with
     /// another process's close, as well as when every PTY is in use (see
