@@ -87,8 +87,8 @@ def find_by_name(d, a, fx):
     d.spawn(argv(fx, a["prog"]), name=a["name"])
     p = d.find(a["name"])
     d.wait_text(p, "READY")
-    if hasattr(d, "send_wait"):
-        d.send_wait(p, ["text:quit", "Enter"], "--wait-exit", timeout=5)
+    if hasattr(d, "send_wait_exit"):
+        d.send_wait_exit(p, ["text:quit", "Enter"], timeout=5)
         return
     d.text(p, "quit")
     d.keys(p, "Enter")
@@ -331,13 +331,7 @@ def agent_two(d, a, fx):
     p = d.spawn(argv(fx, a["prog"]))
     d.wait_text(p, "agent ready")
     for msg in (a["first"], a["second"]):
-        if hasattr(d, "send_wait"):
-            d.send_wait(p, ["text:" + msg, "Enter"], "--wait-text", "answer:")
-            continue
-        before = d.screen(p, history=True).count("answer:")
-        d.text(p, msg)
-        d.keys(p, "Enter")
-        d.poll(lambda: d.screen(p, history=True).count("answer:") > before, 20)
+        d.send_and_wait_text(p, ["text:" + msg, "Enter"], "answer:", timeout=20)
     return re.findall(r"answer: (\S+)", d.screen(p))[-1]
 
 
@@ -484,8 +478,12 @@ def nvim_edit(d, a, fx):
     p = d.spawn(["nvim", "--clean", "edit.txt"], (80, 24))
     d.wait_idle(p, 500)
     d.keys(p, "i")
+    d.wait_text(p, "-- INSERT --")
     d.text(p, a["text"])
     d.keys(p, "Escape")
+    # Escape alone, taken before the next key: Neovim reads Escape and a
+    # key soon after it as one key, Alt and that key.
+    d.wait_gone(p, "-- INSERT --")
     d.text(p, ":wq")
     d.keys(p, "Enter")
     d.wait_exit(p)
@@ -494,12 +492,7 @@ def nvim_edit(d, a, fx):
 def repl(d, a, fx):
     p = d.spawn(["python3", "-q"])
     d.wait_text(p, ">>>")
-    if hasattr(d, "send_wait"):
-        d.send_wait(p, ["text:" + a["expr"], "Enter"], "--wait-text", ">>>", timeout=5)
-    else:
-        d.text(p, a["expr"])
-        d.keys(p, "Enter")
-        d.poll(lambda: re.search(r"^\d+$", d.screen(p), re.M), 5)
+    d.send_and_wait_text(p, ["text:" + a["expr"], "Enter"], ">>>", timeout=5)
     value = re.findall(r"^(\d+)$", d.screen(p), re.M)[-1]
     d.text(p, "exit()")
     d.keys(p, "Enter")

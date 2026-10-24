@@ -3,7 +3,8 @@
 PR #160's table, plus an agent's typical action (a 40-character command
 and Enter) in bash and in a program that reads keys raw (python's REPL).
 Medians of N rounds, in milliseconds, the builds alternating. Both builds
-must speak versions (`str V changed wait`): this fux or later.
+must speak one-word versions (`%2:0.57.0.3.0:RUN`, waited from with
+`str V changed wait`): this fux or later.
 
   speed.py BASE_BIN CAND_BIN [ROUNDS]
 """
@@ -48,7 +49,7 @@ def jobs(bin_, tag):
     out["30 panes started, each waited for its text"] = ms(fan)
     command = "echo 'the quick brown fox jumps over 42'"  # 40 characters
     assert len(command) == 40
-    sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split()[0]
+    sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split(":")[0]
     out["40-char command + Enter, bash"] = ms(lambda: run(bin_, e, sh, "str", command, "text", "str", "Enter", "key", "send-keys"))
     py = until_text(bin_, e, run(bin_, e, "opts", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "run").stdout, ">>>")
     line = "x = 'the quick brown fox jumps over 42'"

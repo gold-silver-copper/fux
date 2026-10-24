@@ -234,12 +234,13 @@ class Driver:
     def wait_bell(self, pane, timeout=10):
         raise Unsupported("bell")
 
-    def send_and_wait_text(self, pane, keys, text, timeout=10):
-        """Sends keys, then waits for text that appears after them."""
-        before = self.screen(pane).count(text)
+    def send_and_wait_text(self, pane, keys, reply, timeout=10):
+        """Sends keys, then waits until the screen holds `reply` once more
+        than before them: a text only the reply holds (`reply_only`)."""
+        before = self.screen(pane).count(reply_only(keys, reply))
         for k in keys:
             self.keys(pane, k) if not k.startswith("text:") else self.text(pane, k[5:])
-        return self.poll(lambda: self.screen(pane).count(text) > before, timeout)
+        return self.poll(lambda: self.screen(pane).count(reply) > before, timeout)
 
     def mouse(self, pane, button, row, col):
         """A click (button 0), or the wheel (64 up, 65 down), at a cell from 0;
@@ -337,22 +338,39 @@ class Driver:
             os.close(master)
 
 
+def reply_only(keys, reply):
+    """`reply`, refused if what the keys type holds it: the input's echo
+    would then pass a wait for the reply."""
+    typed = "".join(k[5:] if k.startswith("text:") else k for k in keys
+                    if k.startswith("text:") or len(k) == 1 or not is_key_name(k))
+    if reply in typed:
+        raise ValueError(f"{reply!r} is in the input {typed!r}: its echo would pass for the reply")
+    return reply
+
+
 # ---------------------------------------------------------------------- fux
+
+
+def counts(version):
+    """A fux version's five counts (`%2:0.57.0.3.0:RUN`): respawns, screen,
+    bells, commands done, ended."""
+    return [int(c) for c in version.split(":")[1].split(".")]
 
 
 def ended(version):
     """Whether a fux version says its program ended (its last count)."""
-    return version.rsplit(".", 1)[-1] == "1"
+    return counts(version)[4] == 1
 
 
 class Fux(Driver):
     """fux, driven with fuxth: each call one program, `str` before each
-    text. Every action answers its pane and the pane's version from just
-    before it acted (`%2 0.57.0.3.0`: starts, screen, bells, commands
-    done, ended); the one wait, `str V changed wait`, returns once the
-    version differs from V. What
-    "done" means is the driver's to judge, as `fux help-agents` says: read
-    the screen after each change, the version held always from before."""
+    text. Every action answers its pane's version from just before it
+    acted (`%2:0.57.0.3.0:RUN`: its pane, then starts, screen, bells,
+    commands done, ended, then the server's run); the one wait, `str V
+    changed wait`, returns once that pane's version differs from V, its
+    first word the version now. What "done" means is the driver's to
+    judge, as `fux help-agents` says: read the screen after each change,
+    the version held always from before."""
     name = "fux"
 
     def __init__(self, work, env, binary):
@@ -405,17 +423,18 @@ class Fux(Driver):
 
     def act(self, *words):
         """An action: its pane, whose version from before it is kept."""
-        pane, version = self.fux(*words).stdout.split()[:2]
+        version = self.fux(*words).stdout.split()[0]
+        pane = version.split(":")[0]
         self.versions[pane] = version
         return pane
 
     # ------------------------------------------------- waiting
 
-    def changed(self, pane, version, timeout):
-        """One wait for the pane's version to differ from `version`: the
-        answer's words (`%2 0.61.0.3.0 screen`, `… exited 3`), or None when
+    def changed(self, version, timeout):
+        """One wait for a version's pane to differ from it: the answer's
+        words (`%2:0.61.0.3.0:RUN screen`, `… exited 3`), or None when
         nothing changed in time (124)."""
-        out = self.fux(*self.pane(pane), "str", version, "changed", str(max(1, int(timeout))),
+        out = self.fux("str", version, "changed", str(max(1, int(timeout))),
                        "timeout", "wait", check=False, timeout=timeout + 10)
         if out.returncode == 124:
             return None
@@ -446,9 +465,9 @@ class Fux(Driver):
             left = end - time.time()
             if left <= 0:
                 raise Timeout(f"{pane} unchanged at {version}")
-            answer = self.changed(pane, version, left)
+            answer = self.changed(version, left)
             if answer is not None:
-                version = self.versions[pane] = answer[1]
+                version = self.versions[pane] = answer[0]
 
     def wait_text(self, pane, text, timeout=10):
         return self.until(pane, lambda: text in self.screen(pane), timeout)
@@ -471,10 +490,10 @@ class Fux(Driver):
         end = time.time() + timeout
         version = self.since(pane)
         while time.time() < end:
-            answer = self.changed(pane, version, quiet)
-            if answer is None or ended(answer[1]):
+            answer = self.changed(version, quiet)
+            if answer is None or ended(answer[0]):
                 return True
-            version = self.versions[pane] = answer[1]
+            version = self.versions[pane] = answer[0]
         raise Timeout(f"{pane} never quiet for {quiet}s")
 
     def wait_exit(self, pane, timeout=10):
@@ -485,37 +504,28 @@ class Fux(Driver):
             left = end - time.time()
             if left <= 0:
                 raise Timeout(f"{pane} still running")
-            answer = self.changed(pane, version, left)
+            answer = self.changed(version, left)
             if answer is not None:
-                version = self.versions[pane] = answer[1]
+                version = self.versions[pane] = answer[0]
         return self.exit_status(pane)
 
     def wait_bell(self, pane, timeout=10):
-        """The version's third count grows."""
-        rung = int(self.since(pane).split(".")[2])
-        return self.until(pane, lambda: int(self.since_now(pane).split(".")[2]) > rung, timeout)
+        """The version's bells count grows."""
+        rung = counts(self.since(pane))[2]
+        return self.until(pane, lambda: counts(self.versions[pane])[2] > rung, timeout)
 
-    def since_now(self, pane):
-        return self.fux(*self.pane(pane), "str", "version", "get").stdout.strip()
-
-    def send_and_wait_text(self, pane, keys, text, timeout=10):
-        before = self.screen(pane, history=True).count(text)
+    def send_and_wait_text(self, pane, keys, reply, timeout=10):
+        """The keys in one action, then until the history holds `reply`
+        once more than before them: a text only the reply holds
+        (`reply_only`)."""
+        before = self.screen(pane, history=True).count(reply_only(keys, reply))
         self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
-        return self.wait_more(pane, text, before, timeout)
+        return self.wait_more(pane, reply, before, timeout)
 
-    def send_wait(self, pane, keys, *until, timeout=20):
-        """Sends keys and waits from their version; the screen after.
-        `until` is old-style: `--wait-idle MS`, `--wait-text T`, `--wait-exit`."""
-        flags = dict(zip(until[::2], until[1::2])) if "--wait-exit" not in until else {"--wait-exit": None}
-        if "--wait-text" in flags:
-            self.send_and_wait_text(pane, keys, flags["--wait-text"], timeout)
-        else:
-            self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
-            if "--wait-exit" in flags:
-                self.wait_exit(pane, timeout)
-            else:
-                self.wait_idle(pane, int(flags.get("--wait-idle", 300)), timeout)
-        return self.screen(pane)
+    def send_wait_exit(self, pane, keys, timeout=20):
+        """The keys in one action, then until the program exits."""
+        self.act(*self.pane(pane), *self.keyed(keys), "send-keys")
+        return self.wait_exit(pane, timeout)
 
     def click_and_wait(self, pane, row, col, text, timeout=10):
         """Clicks, and waits for the text the click brings: the line it is on."""
@@ -554,7 +564,8 @@ class Fux(Driver):
         raise Timeout("no program exited")
 
     def wait_any_text(self, pane, texts, timeout=15):
-        """Which of several texts the pane shows first."""
+        """One of several texts, once the pane shows any: of those it shows
+        then, the first in `texts`' order, not the first to show."""
         return self.until(pane, lambda: next((t for t in texts if t in self.screen(pane)), None), timeout)
 
     # ------------------------------------------------- the rest
