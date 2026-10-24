@@ -990,16 +990,21 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
     Ok(())
 }
 
-/// A pane renamed keeps its name when its program is started again.
+/// A pane renamed keeps its name when its program is started again. A wait
+/// from the ended program's version tells the new one's end too.
 #[test]
 fn respawn_keeps_a_rename() -> Outcome {
     let server = Server::start("")?;
     let pane = id(&server.ok(&run(&[], &["sh", "-c", "exit 0"]))?);
     server.exits(&pane)?;
+    let ended = server.version(&pane)?;
     server.ok(&["str", &pane, "pane", "str", "keepme", "rename"])?;
     server.ok(&["str", &pane, "pane", "respawn"])?;
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
+    server.exits(&pane)?;
+    let answer = server.ok(&["str", &pane, "pane", "str", &ended, "changed", "wait"])?;
+    assert!(answer.ends_with(" respawned exited 0\n"), "{answer}");
     Ok(())
 }
 
@@ -1018,5 +1023,52 @@ fn env_takes_a_pane_tab_or_workspace() -> Outcome {
     server.exits(&pane)?;
     let capture = server.ok(&["str", &pane, "pane", "capture"])?;
     assert_eq!(capture, format!("%1 @1 +1 {named}\n"));
+    Ok(())
+}
+
+/// The code block of `docs/agents.md` after `after`: as written, its
+/// indent taken off.
+fn recipe(after: &str) -> Result<String, String> {
+    let docs = include_str!("../docs/agents.md");
+    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
+    let (_, block) = from.split_once("```sh\n").ok_or("no block")?;
+    let (block, _) = block.split_once("```").ok_or("no end")?;
+    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
+    Ok(lines.map(|l| format!("{l}\n")).collect())
+}
+
+/// The docs' recipes run as written, under bash, with its `step` helper:
+/// a reply's text, and a program's exit.
+#[test]
+fn the_docs_recipes_run_as_written() -> Outcome {
+    let server = Server::start("")?;
+    let step = recipe("## recipes: Waiting for what you need")?;
+    let answers = "read q; sleep 1; echo the answer is 42; sleep 30";
+    let asks = id(&server.ok(&run(&[], &["sh", "-c", answers]))?);
+    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
+    let exit =
+        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    let bin = std::path::Path::new(fux())
+        .parent()
+        .ok_or("fux's directory")?;
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    for (recipe, said) in [(text, "ok=1\n"), (exit, "3\nok=1\n")] {
+        let script = format!("{step}{recipe}echo ok=$ok\n");
+        let out = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .env("PATH", &path)
+            .env("FUX_SOCKET", &server.socket)
+            .env("XDG_CONFIG_HOME", server.dir.join("config"))
+            .env_remove("FUX_PANE")
+            .output()
+            .map_err(e)?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stdout.ends_with(said), "{script}\n{stdout}{stderr}");
+    }
     Ok(())
 }

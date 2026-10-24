@@ -25,8 +25,8 @@ pub const FRAME_LIMIT: usize = 2 << 20;
 /// Why input is not queued, or a pane cannot be made.
 #[derive(Debug)]
 pub enum Error {
-    /// The queue is full, or refusing until the program reads.
-    NotReading,
+    /// The queue is full, or refusing until its terminal takes some.
+    InputFull,
     /// No terminal of this size.
     Terminal { size: Size, source: fux_vt::Error },
 }
@@ -34,8 +34,8 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::NotReading => f.write_str(
-                "the pane's program is not reading its input; nothing more is queued until it does",
+            Error::InputFull => f.write_str(
+                "the pane's input queue is full; nothing more is queued until its terminal takes some",
             ),
             Error::Terminal { size, source } => {
                 write!(f, "a {}x{} terminal: {source}", size.cols(), size.rows())
@@ -58,8 +58,8 @@ pub struct InputQueue {
     lost: Lost,
 }
 
-/// Whether the program lost a reply because it was not reading, and whether
-/// that was told.
+/// Whether a terminal reply was dropped because the queue was full, and
+/// whether that was told.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Lost {
     #[default]
@@ -70,7 +70,7 @@ enum Lost {
 
 impl InputQueue {
     /// Queues `bytes` as a piece, or refuses them whole if the queue is
-    /// full, and then everything until the program reads.
+    /// full, and then everything until its terminal takes some.
     pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
         self.push_with(|out| out.extend_from_slice(bytes.as_ref()))
     }
@@ -88,19 +88,19 @@ impl InputQueue {
             fits
         });
         self.refusing |= !fits;
-        fits.then_some(()).ok_or(Error::NotReading)
+        fits.then_some(()).ok_or(Error::InputFull)
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
     /// Whether `len` bytes more fit now: if not, they are refused, and so
-    /// is everything after them until the program reads, as `push`
+    /// is everything after them until its terminal takes some, as `push`
     /// refuses.
     pub fn fits(&mut self, len: usize) -> Result<(), Error> {
         let fits = len <= self.room();
         self.refusing |= !fits;
-        fits.then_some(()).ok_or(Error::NotReading)
+        fits.then_some(()).ok_or(Error::InputFull)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -109,8 +109,7 @@ impl InputQueue {
             false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
-    /// Queues terminal replies, as `push`: a program that is not reading
-    /// loses them.
+    /// Queues terminal replies, as `push`: a full queue drops them.
     fn reply(&mut self, bytes: &[u8]) {
         if self.push(bytes).is_err() && self.lost == Lost::None {
             self.lost = Lost::Untold;
@@ -128,7 +127,7 @@ impl InputQueue {
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
-    /// Whether input is refused until the program reads.
+    /// Whether input is refused until its terminal takes some.
     pub fn refusing(&self) -> bool {
         self.refusing
     }
@@ -136,7 +135,7 @@ impl InputQueue {
     pub fn front(&self) -> Option<&[u8]> {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
     }
-    /// `n` bytes of the front were written: the program is reading.
+    /// `n` bytes of the front were written: its terminal took them.
     pub fn advance(&mut self, n: usize) {
         self.refusing &= n == 0;
         self.bytes.take(n);
@@ -836,15 +835,15 @@ mod tests {
     /// reads, as the notice says: accepting a later key would deliver it
     /// with a hole where the refused input was.
     #[test]
-    fn after_a_refusal_nothing_is_queued_until_the_program_reads() {
+    fn after_a_refusal_nothing_is_queued_until_its_terminal_takes_some() {
         let mut queue = InputQueue::default();
         while queue.push(vec![b'p'; MAX_INPUT]).is_ok() {}
         let refusal = queue.push(vec![b'k']);
         assert!(
-            matches!(refusal, Err(Error::NotReading)),
+            matches!(refusal, Err(Error::InputFull)),
             "a key after a refused paste: {refusal:?}"
         );
-        assert!(refusal.is_err_and(|e| e.to_string().contains("not reading")));
+        assert!(refusal.is_err_and(|e| e.to_string().contains("input queue is full")));
         // Writing some of the front is the program reading: input is taken
         // again.
         queue.advance(1);

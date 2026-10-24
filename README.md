@@ -58,7 +58,7 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its v
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE.ENDED`: counts
   of its program's starts, its screen's revisions (output read, resizes,
-  history cleared), bells rung and shell commands ended (OSC 133 marks),
+  history cleared or resized), bells rung and shell commands ended (OSC 133 marks),
   and 1 once its program ended; they only grow. An action (`run`,
   `send-keys`, `signal` …) acts at once and answers its pane and its
   version from just before it acted. `PANE str V changed wait` waits until
@@ -174,7 +174,7 @@ prefix again sends it to the pane.
 | `v` / `s` | `me focused horizontal split drop` / `… vertical …` | split side by side / stacked |
 | `x` | `me me focused confirm-close` | close the pane (asks `y`/`n`) |
 | `z` | `me zoom` | zoom the pane, or restore it |
-| `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `h`/`l` reorder |
+| `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer` | paste the newest copy |
 | `n` / `b` | `me next-tab` / `me previous-tab` | next / previous tab |
@@ -185,7 +185,7 @@ prefix again sends it to the pane.
 | `t`, `w` | tab and workspace layers | below |
 
 `r` and `m` are **repeat modes**: `h` `j` `k` `l` act again without the
-prefix until Esc or Enter (as `h` and `l` do after `a`, `t m` and `w m`); the prefix ends the mode and opens the column;
+prefix until Esc or Enter (as `h` and `l` do after `a m`, `t m` and `w m`); the prefix ends the mode and opens the column;
 any other key ends it and is dropped, which the bar says.
 
 `a`, `t` and `w` are **layers**. `t` and `w` share their verbs: `n` new,
@@ -370,12 +370,12 @@ str g str 'me focused vertical str lazygit program split drop' bind
 str M-h str 'me str left focus' bind-root         # no prefix: Alt-h alone
 
 # C-b y: the focused pane's history in your editor, in a split; `env`
-# gives the program the pane's id
+# gives the program the pane's id; after a failure, Enter closes it
 define edit-history
   me focused vertical
   str FUX_TARGET me focused env
   str sh program str -c arg
-  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"; fux here kill' arg
+  str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
   split drop
 end
 str y str edit-history bind  str 'edit history' label  str Panes group

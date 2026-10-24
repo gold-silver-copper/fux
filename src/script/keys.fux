@@ -53,8 +53,8 @@ str 'a t' str 'me me focused choose-tab-for' bind  str 'move to tab…' label  s
 str 'a n' str 'me focused str new-tab move-to' bind  str 'move to a new tab' label  str 'Pane actions' group
 str 'a w' str 'me me focused choose-workspace-for' bind  str 'move to workspace…' label  str 'Pane actions' group
 str 'a W' str 'me focused str new-workspace move-to' bind  str 'move to a new workspace' label  str 'Pane actions' group
-str 'a h' str 'me focused str previous reorder' bind  str 'move pane earlier' label  str Reorder group  repeat
-str 'a l' str 'me focused str next reorder' bind  str 'move pane later' label  str Reorder group  repeat
+str 'a m h' str 'me focused str previous reorder' bind  str 'move pane earlier' label  str Reorder group  repeat
+str 'a m l' str 'me focused str next reorder' bind  str 'move pane later' label  str Reorder group  repeat
 
 str 'm h' str 'me focused str left move-beside' bind  str 'move left' label  str Move group  repeat
 str 'm j' str 'me focused str down move-beside' bind  str 'move down' label  str Move group  repeat

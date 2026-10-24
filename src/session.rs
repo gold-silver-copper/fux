@@ -353,7 +353,7 @@ impl std::error::Error for Error {}
 impl From<pane::Error> for Error {
     fn from(error: pane::Error) -> Self {
         let code = match error {
-            pane::Error::NotReading => Code::NotReading,
+            pane::Error::InputFull => Code::InputFull,
             pane::Error::Terminal { .. } => Code::Start,
         };
         fail(code, error.to_string())
@@ -1427,8 +1427,9 @@ impl Session {
         let id = ids.pane()?;
         let name = basename(named.unwrap_or(config.shell.program()));
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
-        // A command line typed into the new shell goes in at once, before
-        // the shell starts: its terminal takes it in line mode, which gives
+        // A command line typed into the new shell is queued at once, and
+        // written before the shell reads: its terminal takes it in line
+        // mode, which gives
         // a control character its effect and keeps at most `TYPED` bytes of
         // a line. Refused so, it leaves no process behind.
         if let Start::Shell(Some(line), _) = start {
@@ -1969,7 +1970,7 @@ impl Session {
             view.dirty = true;
             if dropped {
                 view.notify(
-                    format!("{id} is not reading its input; a terminal reply was dropped"),
+                    format!("{id}'s input queue is full; a terminal reply was dropped"),
                     true,
                 );
             }
@@ -3090,10 +3091,15 @@ impl Session {
     /// (`there`, by its caller).
     fn ls_one(&mut self, target: AnyRef, get: Option<&str>) -> Result<Reply, Error> {
         let now = Instant::now();
-        let mut fields = match target {
-            AnyRef::Pane(id) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
-            AnyRef::Tab(id) => self.tab(id).map(|t| self.tab_json(t, now)),
-            AnyRef::Workspace(id) => self.workspace(id).map(|w| self.ws_json(w, now)),
+        let mut fields = match (target, get) {
+            // A pane's version alone, which the recipes read after every
+            // change: not the rest of its state (`reading` reads `/proc`).
+            (AnyRef::Pane(id), Some("version")) => {
+                (self.panes.get(&id)).map(|p| vec![("version", Json::str(p.version().to_string()))])
+            }
+            (AnyRef::Pane(id), _) => self.panes.get(&id).map(|p| self.pane_json(p, now)),
+            (AnyRef::Tab(id), _) => self.tab(id).map(|t| self.tab_json(t, now)),
+            (AnyRef::Workspace(id), _) => self.workspace(id).map(|w| self.ws_json(w, now)),
         }
         .unwrap_or_default();
         let Some(field) = get else {
@@ -4052,7 +4058,7 @@ mod tests {
         // Its program reads nothing: the queue refuses everything now.
         assert!(second.input.push(vec![0; 1 << 30]).is_err());
         let sent = run(&mut s, "@1 str x text send-keys");
-        assert!(sent.is_err_and(|e| e.contains("not_reading")), "refused");
+        assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
         let first = s.panes.get(&PaneId::of(1)).ok_or("no %1")?;
         assert_eq!(first.input.len(), 0, "the first pane got none");
         // Keys too many for the room left are refused, and so is a key

@@ -112,7 +112,8 @@ pub fn pane(
     let (rows, cols) = screen.size().into();
     let state = json.then(|| {
         let mut state = state(pane, Instant::now(), copy_mode);
-        // The rows kept above what it read: history it was not asked for.
+        // The history rows kept above the first row read: history it was
+        // not asked for (rows a range leaves out are not counted).
         state.push(("above", above.map_or(Json::Null, Json::int)));
         state
     });
@@ -158,6 +159,7 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     let (row, col) = screen.cursor_position();
     let cursor = (screen.window().row(row)).map(|r| CommandMark { row: r.id(), col });
     let running = commands.output_start.zip(cursor);
+    let ended = running.is_none();
     let Some((start, end)) = running.or(commands.last_output) else {
         return Vec::new();
     };
@@ -185,12 +187,13 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
         .enumerate()
         .filter_map(|(i, row)| {
             let from = if i == 0 { usize::from(start.col) } else { 0 };
-            // The end mark at a line's start ends the output before it;
-            // past it, the row is the command's whole (the prompt goes on
-            // a row of its own), what it wrote right of the cursor too.
+            // An ended command's output ends at its end mark; a running
+            // one's last row is whole, what it wrote right of the cursor
+            // too.
             let to = match (i.saturating_add(1) == count, end.col) {
                 (true, 0) => 0,
                 (true, col) if i == 0 && start.col >= col => 0,
+                (true, col) if ended => usize::from(col),
                 _ => usize::MAX,
             };
             (from < to).then_some((row, from..to))
@@ -244,8 +247,8 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
     let paused = pane.paused();
     // Whether a thread of its foreground blocks reading its terminal, where
     // the system says.
-    let reading = (pane.process.child())
-        .and_then(|child| fuxix::process::reading_terminal(&child.master, child.leader.pid()));
+    let reading =
+        (pane.process.child()).and_then(|child| fuxix::process::reading_terminal(&child.master));
     vec![
         ("version", Json::str(pane.version().to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
@@ -518,6 +521,22 @@ mod tests {
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(&pane, None, view, false, false).0;
         assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
+
+    /// An ended command's output is what lies between its marks: a prompt
+    /// drawn after its end mark on the same row is not part of it.
+    #[test]
+    fn last_output_ends_at_the_end_mark() -> Result<(), Box<dyn std::error::Error>> {
+        let view = CaptureView {
+            source: crate::command::Source::LastOutput,
+            ..CaptureView::default()
+        };
+        let size = fux_vt::Size::new(3, 20)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07\x1b]133;A\x07PROMPT> ");
+        let text = super::pane(&pane, None, view, false, false).0;
+        assert_eq!(text, "hello\n");
         Ok(())
     }
 }

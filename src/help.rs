@@ -221,7 +221,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",
         "wait" => "fux %3 str 0.57.0.3.0 changed 60 timeout wait",
-        "help-agents-on" => "fux str waits help-agents-on",
+        "help-agents-on" => "fux str recipes help-agents-on",
         "changed" => "fux %3 str 0.57.0.3.0 changed wait",
         "timeout" => "fux %3 300 timeout wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",

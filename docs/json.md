@@ -19,7 +19,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
-| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow: its program's starts, its screen's revision (one more for each piece of output read, each resize, each history cleared), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
+| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow: its program's starts, its screen's revision (one more for each piece of output read, each resize, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
 | `program` | what runs in its foreground, `null` if unknown |
 | `reading` | a thread of its foreground is blocked reading its terminal (Linux); `null` where the system does not say |
 | `paused` | a program a restore brought back, waiting for `respawn` |
@@ -59,8 +59,9 @@ prints `null` (`string` makes it the text).
 {"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…,"above":0}
 ```
 
-`above` is how many rows are kept above what was read: history not asked
-for (`null` for `last-output`).
+`above` is how many history rows are kept above the first row read:
+history not asked for (`null` for `last-output`; rows a `rows` range
+leaves out are not counted).
 
 `lines` join a line wrapped at the pane's width whole, unless `wrapped`
 (each screen row a line). Blanks at a line's end are trimmed, but with
@@ -155,7 +156,7 @@ wait's own (above). CODE stays; every one fux gives
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
-  `not_reading`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
+  `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4), `lost`;
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,

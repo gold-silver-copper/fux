@@ -125,10 +125,10 @@ fn pasted(i: usize, len: usize) -> Vec<u8> {
 /// being lost: thousands of single keys, from a client and from
 /// `send-keys`, and many pastes, all arrive in order once it reads again.
 /// Past the queue's bound, input is refused whole with the documented
-/// notice, and, as it says, nothing more is queued until the program reads:
+/// notice, and, as it says, nothing more is queued until its terminal takes some:
 /// what arrives is exactly what was accepted.
 #[test]
-fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
+fn input_waits_for_a_program_that_is_input_full() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
@@ -174,9 +174,9 @@ fn input_waits_for_a_program_that_is_not_reading() -> Outcome {
     client.wait("the notice", |t| {
         t.lines()
             .last()
-            .is_some_and(|b| b.contains("not reading its input"))
+            .is_some_and(|b| b.contains("input queue is full"))
     })?;
-    // Nothing more is queued until the program reads: not even a key.
+    // Nothing more is queued until its terminal takes some: not even a key.
     client.send(b"Z")?;
     std::thread::sleep(Duration::from_millis(200));
     signal(cat, fuxix::process::Signal::Cont);

@@ -398,12 +398,9 @@ and private to the client that opened them:
 - **Choosers:** a tab chooser and a workspace chooser, listing each item with
   its panes and the current one marked. Enter selects; `r` renames; `x` closes
   (with confirmation).
-- **Action menus** for the focused pane, the current tab and the current
-  workspace:
-  - they hold what has no default key (terminate, reorder, swap, move to an
-    existing or new tab or workspace, rename, close);
-  - a menu acts on the item it was opened for, even if focus changes;
-  - a disappeared item is never retargeted.
+- **Pane actions** are ordinary bindings under `a` (rename, close,
+  terminate, swap, move to an existing or new tab or workspace, reorder
+  under `a m`); the column lists them like any other key.
 - **The command prompt** (`:`): type any fux command, with the same grammar as
   the CLI and the config file. Its output or error shows as a notice.
 - **Prompts and confirmations:** a one-line editor (rename) and y/n
@@ -550,10 +547,10 @@ a message naming `-t`. It never guesses a "current" pane.
 | `fux list-keys` | The current bindings, as config lines |
 
 Some commands act on a client's screen rather than on shared state:
-`command-column`, `choose-tab`, `choose-workspace`, `menu pane|tab|workspace`,
+`command-column`, `choose-tab`, `choose-workspace`,
 `command-prompt`, `copy-mode`, `rename-prompt`, `confirm-close`, `zoom`,
 `select-tab`, `select-pane`, `select-workspace`, and
-`choose-pane` (the pane menu's "swap with…"). From a binding or the command prompt, they act on
+`choose-pane` (`a s`, "swap with…"). From a binding or the command prompt, they act on
 the client that pressed the key. From the command line they need `-c CLIENT`
 (`fux ls` lists clients). Without it they fail with a message naming the
 flag.

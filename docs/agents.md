@@ -16,7 +16,8 @@ shell (`str 'CMD' typed` types a line into it).
 **Every pane has a version, and a wait waits for it to change.** A version
 (`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows:
 its program's starts (`respawn`), its screen's revision (one more for each
-piece of output read, each resize, each history cleared), bells and
+piece of output read, each resize, each change to its history: cleared,
+or `history-bytes` set), bells and
 notifications rung, shell commands ended (OSC 133 marks), and 1 once its
 program ended. Every action (`run`, `send-keys`, `send-mouse`, `signal`,
 `split`, `new-tab`, `new-workspace`, `respawn`) acts at once and prints
@@ -63,7 +64,9 @@ Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 Each is a few lines of bash around one helper, `step`: it waits from the
 version in `V` for pane `P` to change, at most `$1` seconds, and puts the
 new version in `V`. `V` is always from before what you wait for, so a
-change between two calls is never missed.
+change between two calls is never missed. Each loop ends with `ok` set
+only if what it waited for came; otherwise `s` holds why it stopped
+(`step`'s status, or 124 once its own time is up).
 
 ```sh
 step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the pane closed; 1 failed
@@ -74,41 +77,50 @@ step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the p
 ```
 
 - **A text the reply writes:** count it before, act, and wait until there
-  is one more. Choose a text only the reply holds: here the question
-  holds no `42`. If the input itself holds it, count once the input shows,
-  so it is in the count, not in what you wait for; a program that draws
-  the input again (a TUI that keeps it above the reply) counts it again.
-  `grep -c` counts lines, and history beyond `history-lines` is dropped,
-  which a count over a long run must allow for.
+  is one more. Choose a text only the reply holds: here the question holds
+  no `42`. If the input itself holds it, `step` until the capture shows
+  the input, then count, so it is in the count, not in what you wait for;
+  a program that draws the input again (a TUI that keeps it above the
+  reply) counts it again. `grep -c` counts lines, and history beyond
+  `history-lines` is dropped, which a count over a long run must allow
+  for.
 
   ```sh
   read -r P V < <(fux %2 str 'What is 6 times 7? Digits only.' paste send-keys)
   n=$(fux "$P" all-history capture | grep -c 42)
   read -r P V < <(fux "$P" str Enter key send-keys)
-  end=$((SECONDS + 600))
-  until [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ]; do
-    [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)) || break
+  end=$((SECONDS + 600)) ok= s=124
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ] && { ok=1; break; }
+    [ "$s" = 2 ] && break                 # it ended, and the text never came
+    step $((end - SECONDS)); s=$?
+    case $s in 0|2) ;; *) break ;; esac
   done
   ```
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
-  wait until no change comes for N seconds; `step`'s 124 ends the loop. A
-  spinner or clock on the screen is a change: then wait for a text.
+  wait until no change comes for N seconds, `step`'s 124. A spinner or
+  clock on the screen is a change: then wait for a text.
 
   ```sh
   read -r P V < <(fux %2 str 'fix the test' paste str Enter key send-keys)
-  end=$((SECONDS + 600))
-  while step 5; do [ "$SECONDS" -lt "$end" ] || break; done
+  end=$((SECONDS + 600)) ok= s=124
+  while [ "$SECONDS" -lt "$end" ]; do
+    step 5; s=$?
+    case $s in 0) ;; 124) ok=1; break ;; *) break ;; esac
+  done
   ```
 - **A shell command's end, with marks** (`shells` says how to turn them
   on): the version's fourth count, `DONE`, grows as one ends.
 
   ```sh
   read -r P V < <(fux %3 str 'make test' line); D=$(cut -d. -f4 <<<"$V")
-  end=$((SECONDS + 600))
-  while [ "$(cut -d. -f4 <<<"$V")" -le "$D" ]; do
-    [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)) || break
+  end=$((SECONDS + 600)) ok= s=124
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(cut -d. -f4 <<<"$V")" -gt "$D" ] && { ok=1; break; }
+    step $((end - SECONDS)); s=$?
+    [ "$s" = 0 ] || break
   done
-  fux "$P" str last_status get; fux "$P" last-output capture
+  [ "$ok" ] && fux "$P" str last_status get && fux "$P" last-output capture
   ```
 - **A shell command's end, without marks:** print a text only its end can
   show, quoted so the line you type does not hold it, and wait for it as
@@ -119,9 +131,13 @@ step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the p
 
   ```sh
   read -r P V < <(fux opts str 'cargo test' command run)
-  end=$((SECONDS + 600))
-  while [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)); do :; done
-  fux "$P" str exited get
+  end=$((SECONDS + 600)) ok= s=124
+  [ "${V##*.}" = 1 ] && ok=1
+  while [ ! "$ok" ] && [ "$SECONDS" -lt "$end" ]; do
+    step $((end - SECONDS)); s=$?
+    case $s in 0) ;; 2) ok=1 ;; *) break ;; esac
+  done
+  [ "$ok" ] && fux "$P" str exited get
   ```
 - **A bell or notification:** the version's third count, `BELLS`, grows:
   loop as for a command's end, with `-f3`.
@@ -143,7 +159,7 @@ step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the p
     me focused vertical
     str FUX_TARGET me focused env
     str sh program str -c arg
-    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f"; rm -f "$f"; fux here kill' arg
+    str 'f=$(mktemp) && fux "$FUX_TARGET" all-history capture >"$f" && ${EDITOR:-vi} "$f" || read -r _; rm -f "$f"; fux here kill' arg
     split drop
   end
   str y str edit-history bind  str 'edit history' label  str Panes group
@@ -182,7 +198,7 @@ pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
 paints its whole background is marked whole), `styles`; then `json`
 for the screen and what is known of the pane: `cursor` is `[ROW,COL]`,
 `alt_screen` whether a program holds the alternate screen, `history_lines`
-the history kept, `above` the rows kept above what was read, `idle_ms`
+the history kept, `above` the history rows kept above the first row read, `idle_ms`
 since its program last wrote. Rows and columns count from 0.
 
 ## shells: Shells and their marks
@@ -224,13 +240,12 @@ names between steps:
 ```sh
 # test.fux: run the tests, wait until they end, read what they printed
 opts str tests name str 'cargo test' command run let T
-# answer -- : wait from an answer's version until the pane's program ends
-define until-ended
-  string str ' ' split-on 1 at
-  dup str . split-on last str 1 eq
-  if drop else T swap changed 600 timeout wait until-ended then
-end
-T until-ended
+T string str ' ' split-on 1 at                 # the version run answered
+begin
+  dup str . split-on last str 1 eq             # its last count: ended
+  if true else T swap changed 600 timeout wait string str ' ' split-on 1 at false then
+until
+drop
 T all-history capture
 ```
 

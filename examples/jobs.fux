@@ -2,16 +2,22 @@
 # exited, the sum of their statuses. `fux examples/jobs.fux` prints 6.
 # expect: 6
 
-# n -- pane: a program that exits with status n; run answers at once, so
-# the next starts at once
+# n -- answer: a program that exits with status n; run answers at once,
+# with its pane and version, so the next starts at once
 define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg run end
-# pane -- status: once its program has exited (a wait answers at once on
-# a program that has)
-define exit-status
-  let P
-  begin P str exited get string str null eq dup if P wait drop then not until
-  P str exited get
+# answer -- : wait from an answer's version until its pane's program has
+# ended (the version's last count is 1), however soon it did
+define until-ended
+  let A
+  A string str ' ' split-on 1 at
+  begin
+    dup str . split-on last str 1 eq
+    if true else A swap changed 600 timeout wait string str ' ' split-on 1 at false then
+  until
+  drop
 end
+# answer -- status: once its pane's program has exited
+define exit-status dup until-ended str exited get end
 
 1 job 2 job 3 job
 rot exit-status rot exit-status rot exit-status

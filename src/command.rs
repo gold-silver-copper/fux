@@ -251,9 +251,10 @@ wire! {
 wire! {
     /// Where a pane stands, as counts that only grow: its program's starts
     /// (`respawn`), its screen's revision (fux-vt's: bumped by each piece
-    /// of output it reads, each resize and each history cleared), bells and
-    /// notifications rung, shell commands ended (OSC 133 `D`), and whether
-    /// its program ended (1). Written `STARTS.SCREEN.BELLS.DONE.ENDED`.
+    /// of output it reads, each resize and each change to its history:
+    /// cleared, or `history-bytes` set), bells and notifications rung,
+    /// shell commands ended (OSC 133 `D`), and whether its program ended
+    /// (1). Written `STARTS.SCREEN.BELLS.DONE.ENDED`.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Version {
         pub starts: u64,

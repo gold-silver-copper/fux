@@ -261,22 +261,34 @@ impl Server {
             if done(&capture) {
                 return Ok(capture);
             }
-            if ended(&since) || Instant::now() > deadline {
-                return Err(format!("{pane} never came to it, at {since}: {capture}"));
+            if ended(&since) {
+                return Err(format!("{pane} ended first, at {since}: {capture}"));
             }
+            since = self.changed(pane, &since, deadline)?;
+        }
+    }
+
+    /// Waits from `since` until `pane`'s version differs, by `deadline`: the
+    /// new version. Unchanged in one wait (124), it waits again.
+    fn changed(&self, pane: &str, since: &str, deadline: Instant) -> Result<String, String> {
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now()).as_secs();
+            if left == 0 {
+                return Err(format!("{pane} unchanged at {since}"));
+            }
+            let left = left.to_string();
             let waited = [
-                "str", pane, "pane", "str", &since, "changed", "10", "timeout", "wait",
+                "str", pane, "pane", "str", since, "changed", &left, "timeout", "wait",
             ];
             let out = self.fux(&waited)?;
-            if out.status != 0 {
-                return Err(format!("{pane} never came to it: {}{capture}", out.stderr));
+            match out.status {
+                0 => {
+                    let words = out.stdout.split_whitespace();
+                    return Ok(words.into_iter().nth(1).unwrap_or_default().to_owned());
+                }
+                124 => continue,
+                _ => return Err(format!("{pane}: {}", out.stderr)),
             }
-            since = out
-                .stdout
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_owned();
         }
     }
 
@@ -293,17 +305,7 @@ impl Server {
         let deadline = after(Duration::from_secs(60));
         let mut since = self.version(pane)?;
         while !ended(&since) {
-            if Instant::now() > deadline {
-                return Err(format!("{pane} did not end, at {since}"));
-            }
-            let waited = [
-                "str", pane, "pane", "str", &since, "changed", "10", "timeout", "wait",
-            ];
-            let out = self.fux(&waited)?;
-            if out.status != 0 {
-                return Err(format!("{pane}: {}", out.stderr));
-            }
-            since = self.version(pane)?;
+            since = self.changed(pane, &since, deadline)?;
         }
         Ok(self
             .ok(&["str", pane, "pane", "str", "exited", "get"])?

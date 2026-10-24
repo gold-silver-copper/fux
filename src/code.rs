@@ -109,8 +109,8 @@ codes! {
     NotRun "not_run",
     /// The pane only has its shell, which `signal` does not signal.
     OnlyShell "only_shell",
-    /// A pane's program is not reading its terminal.
-    NotReading "not_reading",
+    /// A pane's input queue is full: its terminal took none of it since.
+    InputFull "input_full",
     /// A pane where no shell command was marked (OSC 133), for what needs
     /// one (`last-output`).
     NoMarks "no_marks",

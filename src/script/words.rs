@@ -141,7 +141,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "marks", "x -- x", "capture: highlighted text (reverse video, or a background colour) as ⟦this⟧"),
     word("Reading", "main-screen", "x -- x", "capture: what was printed before a program took the screen"),
     word("Reading", "alt-screen", "x -- x", "capture: the full screen a program drew last"),
-    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); one of main-screen, alt-screen and last-output at most"),
+    word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
     word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
@@ -213,7 +213,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
     word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", "socket --", "close a grant's socket"),
-    word("Server", "version", "-- text", "this fux's version"),
+    word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
     // Config
     word("Config", "prefix", "key --", "this client's prefix (config)"),
     word("Config", "bind", "keys code --", "keys after the prefix run fuxth (config)"),
@@ -229,7 +229,7 @@ pub const WORDS: &[Word] = &[
     // Help
     word("Help", "help", "--", "the words, under their headings"),
     word("Help", "help-agents", "--", "how to drive programs from a script or an agent: the first screen, enough for most work"),
-    word("Help", "help-agents-on", "word --", "one topic of that guide at length (recipes waits keys read shells programs servers), or all of it"),
+    word("Help", "help-agents-on", "word --", "one topic of that guide at length (recipes keys read shells programs servers), or all of it"),
     word("Help", "help-json", "--", "what json gives"),
     word("Help", "explain", "word --", "one word at length"),
     word("Help", "check", "file --", "read a fuxth file without running it: its mistakes; a config.fux is run dry too"),

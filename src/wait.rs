@@ -112,8 +112,10 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Version) -> Option<Reply> {
         .filter_map(|(changed, what)| changed.then_some(what))
         .collect(),
     };
-    // Its end, if it ended since.
-    let ended = (pane.process.exit_status()).filter(|_| now.ended != since.ended);
+    // Its end, if it ended since: a program started since is a new one,
+    // whose end is news.
+    let new = now.starts != since.starts || now.ended != since.ended;
+    let ended = (pane.process.exit_status()).filter(|_| new);
     let ended_said = ended.map(crate::process::told);
     let line = std::iter::once(now.to_string())
         .chain(changed.iter().map(|c| (*c).to_owned()))
