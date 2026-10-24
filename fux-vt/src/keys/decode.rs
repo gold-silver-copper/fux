@@ -216,17 +216,6 @@ enum Pasted {
     TooLong(Vec<u8>),
 }
 
-impl Pasted {
-    /// What a paste comes to when it ends: nothing more for one already
-    /// reported too long.
-    fn end(self, limit: usize) -> Option<Input> {
-        match self {
-            Self::Text(text) => Some(finished(text, limit)),
-            Self::TooLong(_) => None,
-        }
-    }
-}
-
 /// A paste's text, whole: a paste if no longer than `limit`, else too
 /// long.
 fn finished(text: Vec<u8>, limit: usize) -> Input {
@@ -266,14 +255,9 @@ fn drop_to_end(
     // again, and counted again there.
     work!(keys, bytes.len());
     // A CSI past its window ends with its final byte, as one read whole does
-    // (`long_answer`); any other byte begins what comes next.
+    // (`csi_end`); any other byte begins what comes next.
     if csi {
-        let end = bytes
-            .iter()
-            .position(|b| !(0x20..=0x3f).contains(b))
-            .ok_or(false)?;
-        let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
-        let rest = end.saturating_add(usize::from(final_byte));
+        let rest = csi_end(bytes).ok_or(false)?;
         return Ok((false, bytes.get(rest..).unwrap_or_default()));
     }
     for (i, &byte) in bytes.iter().enumerate() {
@@ -559,10 +543,12 @@ impl Decoder {
                             bytes = rest;
                             State::Idle
                         }
-                        Err(pasted) if flush => {
-                            out.extend(pasted.end(self.paste_limit));
+                        Err(Pasted::Text(text)) if flush => {
+                            out.push(finished(text, self.paste_limit));
                             return;
                         }
+                        // One reported too long comes to nothing more.
+                        Err(Pasted::TooLong(_)) if flush => return,
                         Err(pasted) => {
                             // Bytes of it came: its wait begins again when marked.
                             let since = since.filter(|_| bytes.is_empty());
@@ -1049,6 +1035,16 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
     mouse::event(code, x, y, release)
 }
 
+/// Where the rest of a CSI, `bytes`, ends: past its final byte, dropped
+/// with it; or at a byte no control sequence holds (ECMA-48 5.4, 5.5: an
+/// ESC, a control), which begins what comes next. `None` while neither has
+/// come.
+fn csi_end(bytes: &[u8]) -> Option<usize> {
+    let end = bytes.iter().position(|b| !(0x20..=0x3f).contains(b))?;
+    let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
+    Some(end.saturating_add(usize::from(final_byte)))
+}
+
 /// A CSI longer than its window (a key's, or a `CSI ?` answer's), `body`
 /// its bytes after `ESC [`: no key nor answer, dropped through its final
 /// byte once that is here, as an over-long OSC or DCS answer is dropped
@@ -1058,14 +1054,7 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 #[cold]
 #[inline(never)]
 fn long_answer(body: &[u8], flush: bool) -> Step {
-    // Its end: a final byte, dropped with it; or a byte no control sequence
-    // holds (ECMA-48 5.4, 5.5: an ESC, a control), which begins what comes
-    // next.
-    let end = body.iter().position(|b| !(0x20..=0x3f).contains(b));
-    match end {
-        Some(end) if body.get(end).is_some_and(|b| (0x40..=0x7e).contains(b)) => {
-            Step::Done(end.saturating_add(3), None)
-        }
+    match csi_end(body) {
         Some(end) => Step::Done(end.saturating_add(2), None),
         None if flush => Step::Done(body.len().saturating_add(2), None),
         // Past what is held: the rest of it is dropped as it comes, to its

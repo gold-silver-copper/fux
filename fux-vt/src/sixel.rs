@@ -403,7 +403,8 @@ impl Decoder {
         room: &mut impl FnMut(usize, bool) -> bool,
     ) -> (u32, u32) {
         let (right, bottom) = self.kept(right, bottom);
-        if !self.needs_growth(right, bottom) {
+        // The pixels it has hold the grid.
+        if right <= self.room.0 && bottom <= self.room.1 {
             (self.across, self.down) = (right, bottom);
             return (right, bottom);
         }
@@ -467,12 +468,6 @@ impl Decoder {
     fn kept(&self, right: u32, bottom: u32) -> (u32, u32) {
         let bottom = bottom.min(most_beside(self.across)).max(self.down);
         (right.min(most_beside(bottom)).max(self.across), bottom)
-    }
-
-    /// Whether a grid of `right` columns and `bottom` rows needs more room
-    /// than its pixels have.
-    fn needs_growth(&self, right: u32, bottom: u32) -> bool {
-        right > self.room.0 || bottom > self.room.1
     }
 
     /// Whether `room` has the bytes for pixels `cols` by `rows` beside

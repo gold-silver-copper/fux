@@ -334,6 +334,9 @@ impl std::str::FromStr for KeyPress {
     fn from_str(name: &str) -> Result<Self, Error> {
         let mut mods = Modifiers::NONE;
         let mut rest = name;
+        let unknown = || Error {
+            name: name.to_owned(),
+        };
         // `C-` and friends are prefixes only while something follows them,
         // so `-` and `C--` name the minus key.
         while let Some((prefix, tail)) = rest.split_at_checked(2) {
@@ -348,9 +351,7 @@ impl std::str::FromStr for KeyPress {
             };
             // A modifier given twice (`M-M-x`) names no key.
             if *held {
-                return Err(Error {
-                    name: name.to_owned(),
-                });
+                return Err(unknown());
             }
             *held = true;
             rest = tail;
@@ -374,11 +375,7 @@ impl std::str::FromStr for KeyPress {
             let mut chars = rest.chars();
             match (chars.next(), chars.next()) {
                 (Some(c), None) if !c.is_control() => Key::Char(c),
-                _ => {
-                    return Err(Error {
-                        name: name.to_owned(),
-                    });
-                }
+                _ => return Err(unknown()),
             }
         };
         Ok(KeyPress::new(key, mods))
