@@ -166,7 +166,10 @@ wait's own (above). CODE stays; every one fux gives
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
-  `unset`, `range`, `fail`, `too_long`, `contract`.
+  `unset`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
+
+A program catches the failures its words give, by code, with `try` (`fux
+help try`); a code no running word gives is refused before it runs.
 
 ## `status json`, `servers json`
 

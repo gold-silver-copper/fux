@@ -1,13 +1,13 @@
 //! Running a compiled program. All its state is data: the stack, a frame
 //! for each call (the code and the step it is at), the `let` names, the
-//! open `list` and `each` blocks. So it can stop anywhere and go on later:
-//! after a budget of steps, so its host can look for Ctrl-C, and at an
-//! application word that needs its host to do something first. It never
+//! open `list`, `each` and `try` blocks. So it can stop anywhere and go on
+//! later: after a budget of steps, so its host can look for Ctrl-C, and at
+//! an application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
 use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
-use crate::error::{Code, Error, Failure, Wants, underflow};
+use crate::error::{Code, Error, Failure, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
 use crate::vocabulary::through;
@@ -22,8 +22,8 @@ pub trait Host {
     /// Runs application word `word` (its id in the vocabulary) on `args`,
     /// as many values as it takes, the deepest first. What it gives goes in
     /// `out`, and it says whether it is done, or the machine is to wait
-    /// while the host does `Request` (then the host pushes its results and
-    /// runs the machine again).
+    /// while the host does `Request` (then the host pushes its results, or
+    /// raises its failure, and runs the machine again).
     fn call(
         &mut self,
         word: usize,
@@ -37,7 +37,8 @@ pub trait Host {
 
 /// Whether the code returns from step `at` doing nothing more: it is past
 /// the last step, or jumps there, through any number of jumps (the ends of
-/// nested `if`s).
+/// nested `if`s). A `try`'s body ends with a step of its own, so a call
+/// last in it keeps the frame the `try` is in.
 fn returns_from<A>(ops: &[Op<A>], mut at: usize) -> bool {
     // Each jump is followed once at most: a chain can't be longer.
     for _ in 0..=ops.len() {
@@ -146,6 +147,18 @@ struct Frame {
     locals: usize,
 }
 
+/// A `try` under way: the codes it catches, its handler's step, and how
+/// far the machine was at it, to go back to: its frames, the stack (where
+/// its body's values start), the open `list` blocks and `each` loops.
+struct Trying {
+    codes: Rc<Vec<Code>>,
+    handler: usize,
+    frames: usize,
+    depth: usize,
+    marks: usize,
+    iters: usize,
+}
+
 /// A program being run.
 pub struct Machine<A> {
     program: Rc<Program<A>>,
@@ -154,9 +167,11 @@ pub struct Machine<A> {
     /// Every frame's `let` names, each frame's from its `locals`.
     locals: Vec<Option<Value<A>>>,
     globals: Vec<Option<Value<A>>>,
-    /// Where each open `list` began on the stack: nothing below may be
-    /// taken inside it.
+    /// Where each open `list` or `try` body began on the stack: nothing
+    /// below may be taken inside it.
     marks: Vec<usize>,
+    /// Each open `try`, innermost last.
+    tries: Vec<Trying>,
     /// Each open `each`: what it walks, and where its next element is: an
     /// index in a list, a byte in a string (so each step finds it at once).
     iters: Vec<(Sequence<A>, usize)>,
@@ -192,6 +207,7 @@ impl<A: AppValue> Machine<A> {
             locals: Vec::new(),
             globals,
             marks: Vec::new(),
+            tries: Vec::new(),
             iters: Vec::new(),
             limits,
             out: Vec::new(),
@@ -215,6 +231,55 @@ impl<A: AppValue> Machine<A> {
         }
         self.stack.push(value);
         Ok(())
+    }
+
+    /// Raises a suspended word's failure at it, as if the word had failed
+    /// when called: a `try` around it that catches its code goes on at its
+    /// handler, when the machine runs again; else its error, said at the
+    /// word, ends the run.
+    pub fn raise(&mut self, failure: Failure) -> Result<(), Error> {
+        self.pending = None;
+        let error = self.failed(failure);
+        self.recover(error)
+    }
+
+    /// An application word's failure, said at the word, or the word it
+    /// names.
+    fn failed(&self, failure: Failure) -> Error {
+        let mut error = self.fail(failure.code, failure.message);
+        error.word = failure.word.or(error.word);
+        error
+    }
+
+    /// `error` caught by the innermost `try` that names its code: what the
+    /// body began undone (its calls, `let` frames, blocks and values), its
+    /// message and code pushed, the handler next. Else `error`.
+    fn recover(&mut self, mut error: Error) -> Result<(), Error> {
+        loop {
+            let Some(caught) = (self.tries.iter()).rposition(|t| t.codes.contains(&error.code))
+            else {
+                return Err(error);
+            };
+            // Those inside it end with it.
+            self.tries.truncate(caught.saturating_add(1));
+            let Some(trying) = self.tries.pop() else {
+                return Err(error);
+            };
+            while self.frames.len() > trying.frames {
+                self.leave();
+            }
+            self.stack.truncate(trying.depth);
+            self.marks.truncate(trying.marks);
+            self.iters.truncate(trying.iters);
+            self.jump(trying.handler);
+            let code = Value::str(error.code.name());
+            // A stack full to its limit fails again, for a `try` further
+            // out to catch.
+            match (self.push(Value::str(error.message))).and_then(|()| self.push(code)) {
+                Ok(()) => return Ok(()),
+                Err(again) => error = again,
+            }
+        }
     }
 
     /// The step each call under way is at, the outermost first: the word
@@ -294,8 +359,22 @@ impl<A: AppValue> Machine<A> {
         if let Some(given) = self.pending.take() {
             self.given(given)?;
         }
-        let program = Rc::clone(&self.program);
         let until = self.steps.saturating_add(budget);
+        loop {
+            match self.steps_until(host, until) {
+                Err(error) => self.recover(error)?,
+                ran => return ran,
+            }
+        }
+    }
+
+    /// Runs until `until` steps are taken in all, or a step fails.
+    fn steps_until<H: Host<Value = A>>(
+        &mut self,
+        host: &mut H,
+        until: u64,
+    ) -> Result<Outcome<H::Request>, Error> {
+        let program = Rc::clone(&self.program);
         loop {
             if self.steps >= until {
                 return Ok(Outcome::Paused);
@@ -408,6 +487,23 @@ impl<A: AppValue> Machine<A> {
                         }
                     }
                 }
+                Op::Try { codes, handler } => {
+                    let values = self.stack.len();
+                    self.tries.push(Trying {
+                        codes: Rc::clone(codes),
+                        handler: *handler,
+                        frames: depth,
+                        depth: values,
+                        marks: self.marks.len(),
+                        iters: self.iters.len(),
+                    });
+                    self.marks.push(values);
+                }
+                Op::Tried(out) => {
+                    self.tries.pop();
+                    self.marks.pop();
+                    frame.step = *out;
+                }
             }
         }
     }
@@ -435,11 +531,7 @@ impl<A: AppValue> Machine<A> {
             from,
             at: from,
         };
-        let done = host.call(id, args, &mut out).map_err(|f| {
-            let mut error = self.fail(f.code, f.message);
-            error.word = f.word.or(error.word);
-            error
-        })?;
+        let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
         let given = Given {
             depth: self.stack.len(),
             word: id,
@@ -552,8 +644,20 @@ impl<A: AppValue> Machine<A> {
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
-        let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
+        let message = underflow("takes", n, &has.to_string(), self.floor());
         Err(self.fail(Code::StackUnderflow, message))
+    }
+
+    /// The innermost block whose body started with an empty stack, if one
+    /// is open: a `try` if its mark is the last.
+    fn floor(&self) -> Option<Floor> {
+        let marks = self.marks.len();
+        let tried = (self.tries.last()).is_some_and(|t| t.marks.saturating_add(1) == marks);
+        match (marks, tried) {
+            (0, _) => None,
+            (_, true) => Some(Floor::Try),
+            (_, false) => Some(Floor::List),
+        }
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {

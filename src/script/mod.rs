@@ -340,6 +340,7 @@ impl From<fuxth::Error> for Failed {
             | Lang::Overflow
             | Lang::Unset
             | Lang::Unused
+            | Lang::BadCodes
             | Lang::Fail
             | Lang::TooLong
             | Lang::Contract

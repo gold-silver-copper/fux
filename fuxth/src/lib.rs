@@ -4,7 +4,8 @@
 //! as a string; every other word takes values from the stack and gives
 //! values back, and never reads the words after it. The parsing words are
 //! few and fixed: `str`, `define NAME … end`, `let NAME`, `list … end`,
-//! `each … end`, `if … else … then` and `begin … until`. Words have names,
+//! `each … end`, `if … else … then`, `begin … until` and
+//! `try … catch … end`, which runs its handler for a failure it names. Words have names,
 //! not symbols (`add`, `eq`, `dup`), and none uses a character a shell
 //! treats specially, so a program can be a shell command's arguments as
 //! well as a file.
@@ -23,7 +24,7 @@
 //! it compiles a program ([`Compiler`]) and runs it ([`Machine::run`]) as its
 //! [`Host`]. A word that needs the application to do something first (ask
 //! a server, say) suspends the run, and the application runs it again once
-//! it has the answer. Nothing blocks, nothing runs on its own thread, and
+//! it has the answer, or raises its failure there ([`Machine::raise`]). Nothing blocks, nothing runs on its own thread, and
 //! the whole state of a run is data, so dropping it stops it.
 //!
 //! The whole program is compiled before any of it runs: a word no one

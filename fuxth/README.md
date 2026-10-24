@@ -17,7 +17,7 @@ line, the deepest first; `print` prints a value at once.
 - **Words, not symbols.** No word uses a character a shell treats specially,
   so a program can be a command's arguments, each argument one word, as well
   as a file.
-- **A small core.** 21 words and 11 parsing words (below). Everything else,
+- **A small core.** 21 words and 13 parsing words (below). Everything else,
   even `dup swap over rot`, is the **standard library** ([`STDLIB`],
   `src/stdlib.fux`), written in fuxth.
 - **Values:** integers (64-bit, checked: no overflow, no division by zero;
@@ -66,6 +66,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs. Checked as `if … else … then`: the two ways join after `end` |
 
 | Word | Stack | |
 |---|---|---|
@@ -106,6 +107,7 @@ let mut words = Vocabulary::default();
 words.kind("ticket", "a ticket")?;               // a kind of the application's values
 words.name("n", "integer", "an integer")?;       // a name effects use, for kinds
 let ask = words.add("ask", "n -- ticket")?;       // takes an integer, gives a ticket
+words.code("refused")?;                          // a failure of its words, for `try`
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -114,6 +116,7 @@ loop {
     match machine.run(&mut my_host, 10_000)? {
         Outcome::Finished => break,
         Outcome::Suspended(request) => { /* do it, then */ machine.push(answer)?; }
+        // or, if doing it failed: machine.raise(failure)?;
         Outcome::Paused => { /* check for Ctrl-C */ }
     }
 }
@@ -132,8 +135,11 @@ as it does the core's, and refuses only what surely fails.
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers
 `Done::Now` or `Done::Later(request)`; a suspended word's results are what the
-host pushes before running the machine again; `machine.at()` is the token
-of the word it stopped at. A `Failure` may name a word of its own, one in a
+host pushes before running the machine again, or its failure is what the
+host raises there (`machine.raise(failure)`), caught by a `try` as one at
+once would be; `machine.at()` is the token of the word it stopped at. The
+codes of its words' failures (`Code::Host`) are the vocabulary's (`code`),
+for a `try` to name. A `Failure` may name a word of its own, one in a
 program the word was given. `print(line)` prints. A word
 gives as many values as its vocabulary says, of the kinds it says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise, when it returns or resumes. A word that is one step (`dup`

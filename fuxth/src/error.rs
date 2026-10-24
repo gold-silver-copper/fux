@@ -4,11 +4,19 @@ use crate::machine::Builtin;
 use crate::token::{Place, Token};
 use std::rc::Rc;
 
-/// Expands `/// doc, Variant "name", ...` to the enum `Code` of those
-/// variants and `Host`, and `name`, each variant's name (a host's code is
-/// its own).
+/// Expands `/// doc, Variant "name" [found], ...` to the enum `Code` of
+/// those variants and `Host`; `name`, each variant's name (a host's code is
+/// its own); and `raised`, whether a running word can raise it: not for a
+/// row marked `[found]`, a mistake found before or after the words run, or
+/// in the application.
 macro_rules! codes {
-    ($($(#[$doc:meta])* $variant:ident $name:literal,)*) => {
+    (@raised) => {
+        true
+    };
+    (@raised found) => {
+        false
+    };
+    ($($(#[$doc:meta])* $variant:ident $name:literal $([$found:ident])?,)*) => {
         /// What kind of failure: each has a name that stays the same, for a
         /// script to tell failures apart by.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,26 +37,35 @@ macro_rules! codes {
                     Code::Host(code) => code,
                 }
             }
+
+            /// Whether a word can raise it as the program runs, so that a
+            /// `try` may catch it.
+            pub fn raised(self) -> bool {
+                match self {
+                    $(Code::$variant => codes!(@raised $($found)?),)*
+                    Code::Host(_) => true,
+                }
+            }
         }
     };
 }
 
 codes! {
     /// A quote is never closed.
-    OpenQuote "open_quote",
+    OpenQuote "open_quote" [found],
     /// A word no definition, builtin or application gives.
-    UnknownWord "unknown_word",
+    UnknownWord "unknown_word" [found],
     /// A parsing word at the end of the program, with nothing to read.
-    MissingToken "missing_token",
+    MissingToken "missing_token" [found],
     /// A name for `define` or `let` that is taken, a number, or a parsing
     /// word.
-    BadName "bad_name",
+    BadName "bad_name" [found],
     /// `define` inside a definition or a block.
-    NotTopLevel "not_top_level",
+    NotTopLevel "not_top_level" [found],
     /// `end`, `else`, `then` or `until` with nothing open for it.
-    Unmatched "unmatched",
+    Unmatched "unmatched" [found],
     /// A definition or block still open at the end.
-    Unclosed "unclosed",
+    Unclosed "unclosed" [found],
     /// A word given fewer values than it takes.
     StackUnderflow "stack_underflow",
     /// The stack grew past its limit.
@@ -66,18 +83,21 @@ codes! {
     Unset "unset",
     /// A value of a kind the application says must be used, left at the
     /// program's end.
-    Unused "unused",
+    Unused "unused" [found],
     /// An index or slice past a string's or list's end, or a number out of
     /// a word's range (a character code, a negative depth).
     Range "range",
     /// `fail`: the program stopped itself, saying why.
     Fail "fail",
+    /// A `try`'s codes not a string written just before it, or naming a
+    /// code no word raises.
+    BadCodes "bad_codes" [found],
     /// A string or list past the length or nesting allowed, or a run that
     /// built more than its share.
     TooLong "too_long",
     /// An application word gave more or fewer values than its vocabulary
     /// says: a mistake in the application, not the program.
-    Contract "contract",
+    Contract "contract" [found],
 }
 
 /// A failure, with where it happened: the token's place and text, when
@@ -173,15 +193,24 @@ impl Wants {
     }
 }
 
+/// A block whose body starts with an empty stack: nothing below it may be
+/// taken there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Floor {
+    List,
+    Try,
+}
+
 /// What too few values says, the checker's and the machine's alike: "takes
 /// 2 values, and the stack has 1". `takes` says how it takes them ("takes",
-/// "needs at least"), `has` how many the stack has.
-pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: bool) -> String {
+/// "needs at least"), `has` how many the stack has, `inside` the block it
+/// is in, if one starts it empty.
+pub(crate) fn underflow(takes: &str, n: usize, has: &str, inside: Option<Floor>) -> String {
     let values = if n == 1 { "value" } else { "values" };
-    let inside = if inside {
-        " (inside list … end, which starts with an empty stack)"
-    } else {
-        ""
+    let inside = match inside {
+        Some(Floor::List) => " (inside list … end, which starts with an empty stack)",
+        Some(Floor::Try) => " (inside try … catch, which starts with an empty stack)",
+        None => "",
     };
     format!("{takes} {n} {values}, and the stack has {has}{inside}")
 }

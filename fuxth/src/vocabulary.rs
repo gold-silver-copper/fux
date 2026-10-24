@@ -35,13 +35,15 @@ pub(crate) struct Word {
 /// The application's words; the kinds of its values, each its name (as
 /// its values' `AppValue::name` says it), as an error says it, and what
 /// one left over is told if a value of it must be used; and the names
-/// effects use for several kinds. The language's kinds are `integer`,
-/// `boolean`, `string` and `list`, and `any` is any value.
+/// effects use for several kinds; and the codes of its failures. The
+/// language's kinds are `integer`, `boolean`, `string` and `list`, and
+/// `any` is any value.
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
     words: Vec<Word>,
     kinds: Vec<(String, String, Option<String>)>,
     names: Vec<(String, Map, String)>,
+    codes: Vec<&'static str>,
 }
 
 /// `said`, the last two joined by "or": "a, b or c".
@@ -133,6 +135,53 @@ impl Vocabulary {
         };
         self.words.push(word);
         Ok(self.words.len().saturating_sub(1))
+    }
+
+    /// A code the application's words may fail with (`Code::Host`), which
+    /// a `try` may name: a word, and none of the language's own.
+    pub fn code(&mut self, name: &'static str) -> Result<(), Error> {
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(refused(format!("{name:?}: a code is one word")));
+        }
+        if Code::ALL.iter().any(|c| c.name() == name) {
+            return Err(refused(format!("{name}: a code of the language's")));
+        }
+        if !self.codes.contains(&name) {
+            self.codes.push(name);
+        }
+        Ok(())
+    }
+
+    /// The code `name` names, if a running word may raise it, for a `try`
+    /// to catch: the language's or the application's; else why not.
+    pub(crate) fn caught(&self, name: &str) -> Result<Code, String> {
+        if let Some(code) = Code::ALL.iter().find(|c| c.name() == name) {
+            return match code.raised() {
+                true => Ok(*code),
+                false => Err(format!(
+                    "{name} is found compiling, at the program's end or in the application, never raised by a running word: no try catches it"
+                )),
+            };
+        }
+        if let Some(code) = self.codes.iter().find(|c| **c == name) {
+            return Ok(Code::Host(code));
+        }
+        let raised = (Code::ALL.iter().filter(|c| c.raised()))
+            .map(|c| c.name())
+            .chain(self.codes.iter().copied());
+        let mut near: Vec<(usize, &str)> = raised
+            .map(|code| (crate::compile::distance(name, code), code))
+            .filter(|(d, _)| *d <= 2)
+            .collect();
+        near.sort_unstable();
+        let near: Vec<&str> = near.into_iter().take(3).map(|(_, code)| code).collect();
+        Err(match near.as_slice() {
+            [] => format!("{name} is no code a word raises"),
+            near => format!(
+                "{name} is no code a word raises; did you mean {}?",
+                listed(near)
+            ),
+        })
     }
 
     pub(crate) fn word(&self, id: usize) -> Option<&Word> {

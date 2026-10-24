@@ -8,13 +8,13 @@
 //!
 //! The stack is described from the top down: the kinds of the top values,
 //! as far as they are known, and below them the rest, whose depth is a
-//! range. At the top level, and inside `list … end`, the depth is counted
-//! from an empty stack. In a definition it is counted from where the stack
-//! was when it was called, which isn't known; each definition is summed up
-//! by how many of its caller's values it surely uses and what it leaves,
-//! and a call applies that summary.
+//! range. At the top level, and inside `list … end` and `try … catch`, the
+//! depth is counted from an empty stack. In a definition it is counted from
+//! where the stack was when it was called, which isn't known; each
+//! definition is summed up by how many of its caller's values it surely
+//! uses and what it leaves, and a call applies that summary.
 use crate::compile::{Op, Program, Steps};
-use crate::error::{Code, Error, Wants, underflow};
+use crate::error::{Code, Error, Floor, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use crate::vocabulary::{Vocabulary, through};
@@ -94,11 +94,11 @@ struct State {
     /// The deepest any way here has reached below the depth at entry: the
     /// values down to there may have been replaced.
     reached: i64,
-    /// Whether the depth is counted from an empty stack (the top level, or
-    /// a `list` body), so too few values is an error here.
+    /// Whether the depth is counted from an empty stack (the top level, a
+    /// `list` or `try` body), so too few values is an error here.
     bounded: bool,
-    /// The states each open `list` began from, innermost last.
-    outer: Vec<State>,
+    /// The states each open `list` or `try` began from, innermost last.
+    outer: Vec<(Floor, State)>,
     /// What kind each open `each` gives, innermost last.
     iters: Vec<Kinds>,
     /// The kinds the code's own `let` names hold, by slot: a definition's
@@ -173,12 +173,12 @@ impl Summary {
 /// A step that surely fails: why.
 enum Failing {
     /// It takes `takes`, and the stack has from `lo` to `hi`; `inside`
-    /// a `list` body.
+    /// a `list` or `try` body.
     Underflow {
         takes: usize,
         lo: i64,
         hi: i64,
-        inside: bool,
+        inside: Option<Floor>,
     },
     /// Its values can't be the kinds it takes.
     Type(String),
@@ -289,7 +289,7 @@ impl State {
                 takes: n,
                 lo,
                 hi,
-                inside: !self.outer.is_empty(),
+                inside: self.outer.last().map(|(floor, _)| *floor),
             });
         }
         self.lo = self.lo.saturating_sub(missing);
@@ -329,10 +329,35 @@ impl State {
             used: self.used.min(other.used),
             reached: self.reached.min(other.reached),
             bounded: self.bounded,
-            outer: outer.map(|(a, b)| a.join(b)).collect(),
+            outer: outer
+                .map(|((floor, a), (_, b))| (*floor, a.join(b)))
+                .collect(),
             iters: iters.map(|(a, b)| a.union(*b)).collect(),
             names: join_names(&self.names, &other.names),
         }
+    }
+
+    /// Into a block whose body starts with an empty stack, this kept for
+    /// its end.
+    fn enter(&mut self, floor: Floor) {
+        let mut inner = State::start(true);
+        inner.iters = self.iters.clone();
+        inner.names = self.names.clone();
+        inner.outer = take(&mut self.outer);
+        inner
+            .outer
+            .push((floor, std::mem::replace(self, State::start(true))));
+        *self = inner;
+    }
+
+    /// Out of the innermost such block: the state it began from, with
+    /// what its body named.
+    fn leave(&mut self) -> State {
+        let mut outer = self.outer.pop().map_or_else(State::unknown, |(_, o)| o);
+        outer.outer = take(&mut self.outer);
+        outer.iters = self.iters.clone();
+        outer.names = take(&mut self.names);
+        outer
     }
 
     /// `joined` (this joined with a new way), with a depth that keeps
@@ -534,7 +559,12 @@ impl<'a, A> Unit<'a, A> {
     ) -> Self {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
-            if let Op::Jump(to) | Op::JumpUnless(to) | Op::EachNext(to) = op {
+            if let Op::Jump(to)
+            | Op::JumpUnless(to)
+            | Op::EachNext(to)
+            | Op::Tried(to)
+            | Op::Try { handler: to, .. } = op
+            {
                 starts.insert(*to);
                 starts.insert(at.saturating_add(1));
             }
@@ -576,7 +606,7 @@ impl<'a, A> Unit<'a, A> {
             };
             for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
                 if forward && to <= start {
-                    let used = next.outer.first().map_or(next.used, |o| o.used);
+                    let used = next.outer.first().map_or(next.used, |(_, o)| o.used);
                     diverged.end(used, Flow::Diverge);
                     continue;
                 }
@@ -670,6 +700,13 @@ impl<'a, A> Unit<'a, A> {
                 state.iters.pop();
                 return vec![(next, body), (*out, state)];
             }
+            // A `try`: on into its body, from an empty stack; or, failing
+            // anywhere in it, to its handler.
+            if let Op::Try { handler, .. } = op {
+                let caught = self.caught(at, *handler, &state);
+                state.enter(Floor::Try);
+                return vec![(next, state), (*handler, caught)];
+            }
             match self.step(op, &mut state) {
                 Err(failing) => {
                     failed(at, self.error(at, op, failing));
@@ -679,7 +716,7 @@ impl<'a, A> Unit<'a, A> {
                 // used what it had: counted as an end, at the definition's
                 // own depth (not a `list` body's).
                 Ok(flow @ (Flow::Diverge | Flow::Stop)) => {
-                    let used = state.outer.first().map_or(state.used, |o| o.used);
+                    let used = state.outer.first().map_or(state.used, |(_, o)| o.used);
                     diverged.end(used, flow);
                     return Vec::new();
                 }
@@ -688,7 +725,7 @@ impl<'a, A> Unit<'a, A> {
             // Every op named, so that a new one that jumps cannot pass here
             // as one that goes on.
             match op {
-                Op::Jump(to) => return vec![(*to, state)],
+                Op::Jump(to) | Op::Tried(to) => return vec![(*to, state)],
                 Op::JumpUnless(to) => return vec![(next, state.clone()), (*to, state)],
                 Op::Push(_)
                 | Op::Builtin(_)
@@ -703,13 +740,30 @@ impl<'a, A> Unit<'a, A> {
                 | Op::Mark
                 | Op::Gather
                 | Op::EachStart
-                | Op::EachNext(_) => {}
+                | Op::EachNext(_)
+                | Op::Try { .. } => {}
             }
             if self.starts.contains(&next) || next >= self.code.ops.len() {
                 return vec![(next, state)];
             }
             at = next;
         }
+    }
+
+    /// The stack at the handler of the `try` at `at`: as it was at `try`,
+    /// then the failure's message and code, both strings. A `let` name
+    /// the body sets may hold what it was set to there, or not.
+    fn caught(&self, at: usize, handler: usize, state: &State) -> State {
+        let mut caught = state.clone();
+        let body = self.code.ops.get(at.saturating_add(1)..handler);
+        for op in body.unwrap_or_default() {
+            if let Op::SetLocal(slot) | Op::SetGlobal(slot) = op {
+                name(&mut caught.names, *slot, ANY);
+            }
+        }
+        caught.push(STR);
+        caught.push(STR);
+        caught
     }
 
     /// One step: whether a run can go on past it.
@@ -806,7 +860,8 @@ impl<'a, A> Unit<'a, A> {
                     state.push(*kinds);
                 }
             }
-            Op::Jump(_) | Op::EachNext(_) => {}
+            // Each is gone through in `block`.
+            Op::Jump(_) | Op::EachNext(_) | Op::Try { .. } => {}
             Op::JumpUnless(_) => must(self.words(), Wants::Flag, state.pop1()?, BOOL)?,
             Op::SetLocal(slot) | Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
@@ -821,22 +876,22 @@ impl<'a, A> Unit<'a, A> {
                 };
                 state.push(kinds);
             }
-            Op::Mark => {
-                let mut inner = State::start(true);
-                inner.iters = state.iters.clone();
-                inner.names = state.names.clone();
-                inner.outer = take(&mut state.outer);
-                inner
-                    .outer
-                    .push(std::mem::replace(state, State::start(true)));
-                *state = inner;
-            }
+            Op::Mark => state.enter(Floor::List),
             Op::Gather => {
-                let mut outer = state.outer.pop().unwrap_or_else(State::unknown);
-                outer.outer = take(&mut state.outer);
-                outer.iters = state.iters.clone();
-                outer.names = take(&mut state.names);
+                let mut outer = state.leave();
                 outer.push(LIST);
+                *state = outer;
+            }
+            // The body went through: what it left is on the stack it began
+            // from.
+            Op::Tried(_) => {
+                let mut outer = state.leave();
+                if state.lo != 0 || state.hi != 0 {
+                    outer.forget(state.lo, state.hi);
+                }
+                for kinds in &state.top {
+                    outer.push(*kinds);
+                }
                 *state = outer;
             }
             Op::EachStart => {
