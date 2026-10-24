@@ -149,9 +149,6 @@ impl Meta {
     fn wrapped(&self) -> bool {
         self.flags & WRAPPED != 0
     }
-    fn prompt(&self) -> bool {
-        self.flags & PROMPT != 0
-    }
     fn rendition(&self) -> LineRendition {
         LineRendition::from_bits(self.flags >> RENDITION_SHIFT)
     }
@@ -1033,12 +1030,18 @@ impl Grid {
     /// not. A change gives the row `version` (`THREATS.md` section 6, 28),
     /// so a host redraws what shows the marks.
     pub fn set_prompt(&mut self, row: u16, prompt: bool, version: u64) {
+        self.set_flag(row, PROMPT, prompt, version);
+    }
+
+    /// Sets or clears `flag` on live row `row` (`Meta::set`), giving the
+    /// row `version` if that changes it.
+    fn set_flag(&mut self, row: u16, flag: u8, on: bool, version: u64) {
         if let Some(slot) = self.slot(row)
             && let Some(m) = self.meta.get_mut(slot)
-            && m.prompt() != prompt
+            && (m.flags & flag != 0) != on
         {
             m.version = version;
-            m.set(PROMPT, prompt);
+            m.set(flag, on);
         }
     }
 
@@ -1067,13 +1070,7 @@ impl Grid {
     }
 
     pub fn wrap(&mut self, row: u16, wrapped: bool, version: u64) {
-        if let Some(slot) = self.slot(row)
-            && let Some(m) = self.meta.get_mut(slot)
-            && m.wrapped() != wrapped
-        {
-            m.version = version;
-            m.set(WRAPPED, wrapped);
-        }
+        self.set_flag(row, WRAPPED, wrapped, version);
     }
     /// Blanks columns `start` to `end` of live row `row` in `style`, with
     /// the other half of a wide glyph the span splits. The row takes
