@@ -381,10 +381,7 @@ impl Decoder {
                 let at = offset(left, y, self.room.0).unwrap_or(usize::MAX);
                 let span = at.saturating_add(run.saturating_mul(4));
                 if let Some(row) = self.pixels.get_mut(at..span) {
-                    row.as_chunks_mut::<4>()
-                        .0
-                        .iter_mut()
-                        .for_each(|pixel| *pixel = [r, g, b, 255]);
+                    row.as_chunks_mut::<4>().0.fill([r, g, b, 255]);
                 }
             }
         }

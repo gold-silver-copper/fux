@@ -2078,10 +2078,7 @@ impl Screen {
     /// Keeps the CSI of `intermediates` and final `byte` that `holds_back`
     /// left, for the next call.
     pub(crate) fn hold(&mut self, intermediates: &[u8], byte: u8) {
-        let mut read = [0u8; 2];
-        for (to, from) in read.iter_mut().zip(intermediates) {
-            *to = *from;
-        }
+        let read = [intermediates.first(), intermediates.get(1)].map(|b| b.copied().unwrap_or(0));
         self.left = Some(Left::Csi(read, intermediates.len().min(2), byte));
     }
 
@@ -2099,11 +2096,6 @@ impl Screen {
     /// inside margins past the budget, the copies left kept for the next
     /// call.
     fn copies(&mut self, c: char, mut count: usize) {
-        let stop = |screen: &mut Self, count: usize| {
-            if count > 0 {
-                screen.left = Some(Left::Copies(c, count));
-            }
-        };
         if let Ok(byte) = u8::try_from(c)
             && (0x20..=0x7e).contains(&byte)
         {
@@ -2111,7 +2103,7 @@ impl Screen {
             let run = [byte; RUN];
             while count > 0 {
                 if self.stopped {
-                    stop(self, count);
+                    self.left = Some(Left::Copies(c, count));
                     return;
                 }
                 let n = count.min(RUN);
@@ -2127,7 +2119,7 @@ impl Screen {
         let insert = self.mode(Mode::Insert);
         while count > 0 {
             if self.stopped {
-                stop(self, count);
+                self.left = Some(Left::Copies(c, count));
                 return;
             }
             // In insert mode each copy moves what is there, as `print` does.
@@ -2320,11 +2312,7 @@ impl Screen {
         let extended = self.mode(Mode::ExtendedReverseWrap);
         let g = self.grid_mut();
         g.cursor.pending_wrap = false;
-        let mut count = if pending {
-            count.saturating_sub(1)
-        } else {
-            count
-        };
+        let mut count = count.saturating_sub(u16::from(pending));
         let (lines, columns) = (g.lines, g.columns());
         let left = columns.first();
         let first = if g.cursor.col() < left { 0 } else { left };
@@ -3824,13 +3812,13 @@ impl Screen {
                 }
                 // ITU-T T.416, 13.1.8, and ctlseqs. An invalid colour is
                 // skipped, and the rest of the SGR goes on.
-                [selector @ (38 | 48 | 58)] => {
-                    if let Some(colour) = Self::colour_after(&mut groups) {
-                        self.set_colour(*selector, colour);
-                    }
-                }
+                // Its colour in the parameters after it, or in its own.
                 [selector @ (38 | 48 | 58), rest @ ..] => {
-                    if let Some(colour) = colour_of(rest) {
+                    let colour = match rest {
+                        [] => Self::colour_after(&mut groups),
+                        _ => colour_of(rest),
+                    };
+                    if let Some(colour) = colour {
                         self.set_colour(*selector, colour);
                     }
                 }

@@ -790,14 +790,12 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
 /// `ESC O`: an SS3 key; else Alt-O, then what follows, once the deadline
 /// has passed if nothing follows yet.
 fn ss3(bytes: &[u8], flush: bool) -> Step {
-    match bytes.get(2) {
+    match bytes.get(2).map(|&last| final_key(last, Modifiers::NONE)) {
         None if !flush => Step::Incomplete,
-        None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-        // A byte no final key names: Alt-O, then the byte.
-        Some(&last) => match final_key(last, Modifiers::NONE) {
-            Some(input) => Step::Done(3, Some(input)),
-            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-        },
+        Some(Some(input)) => Step::Done(3, Some(input)),
+        // A byte no final key names, or none at a flush: Alt-O, then the
+        // byte.
+        None | Some(None) => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
     }
 }
 
@@ -1276,14 +1274,8 @@ fn typed(c: char, kitty: &Kitty) -> char {
         .filter(|_| kitty.mods & (ALT_BIT | CTRL_BIT) != 0 && !c.is_ascii());
     let shift = kitty.mods & SHIFT_BIT != 0;
     // Caps Lock capitalizes a letter, as in a legacy terminal's bytes.
-    let caps = kitty.mods & CAPS_LOCK_BIT != 0;
-    let letter = |c: char| {
-        if shift != caps {
-            c.to_ascii_uppercase()
-        } else {
-            c
-        }
-    };
+    let upper = shift != (kitty.mods & CAPS_LOCK_BIT != 0);
+    let letter = |c: char| if upper { c.to_ascii_uppercase() } else { c };
     match base {
         Some(base) => letter(base),
         None if shift => kitty.shifted.and_then(char::from_u32).unwrap_or(letter(c)),
