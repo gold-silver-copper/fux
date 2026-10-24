@@ -44,17 +44,11 @@ fn splitting_side_by_side_and_stacked_draws_separators_and_focuses_the_new_pane(
     client.keys("echo in-three\r")?;
     client.wait_for("in-three")?;
     assert!(client.bar().contains("%3 sh"), "{}", client.bar());
-    // The CLI splits too, and a typed line goes into the new shell.
-    server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "vertical",
-        "str",
-        "echo \"from cli\"",
-        "typed",
-        "split",
-    ])?;
+    // The CLI splits too; a line typed once its shell's prompt shows goes
+    // into the new shell.
+    let made = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
+    let pane = made.split(':').next().unwrap_or_default();
+    server.type_line(pane, "echo \"from cli\"")?;
     client.wait_for("from cli")?;
     Ok(())
 }

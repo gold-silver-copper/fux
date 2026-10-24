@@ -519,7 +519,6 @@ mod tests {
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
             argv: Vec::new(),
-            typed: None,
             cwd: Some(dir.clone()),
             env: Env::default(),
             id: None,

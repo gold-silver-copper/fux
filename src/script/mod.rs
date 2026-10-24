@@ -100,7 +100,6 @@ pub struct Opts {
     pub cwd: Option<std::path::PathBuf>,
     pub env: crate::command::Env,
     pub argv: Vec<String>,
-    pub typed: Option<String>,
     pub axis: Option<Axis>,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
@@ -1209,7 +1208,7 @@ mod tests {
         assert_eq!(keymap.bindings.all().len(), lines);
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
-            str g str 'me focused horizontal str "echo it'\''s" typed split drop' bind
+            str g str 'me focused horizontal str sh program str "echo it'\''s" arg split drop' bind
             str "a \\ and
             a line" label"#;
         run("mine", mine, &mut keymap)?;

@@ -1,6 +1,5 @@
 //! The command line: a fuxth program, its words' errors and statuses, what
-//! it leaves printed, `json`, programs from stdin and files, and a command
-//! line typed into a new shell.
+//! it leaves printed, `json`, and programs from stdin and files.
 mod support;
 use support::*;
 
@@ -11,67 +10,6 @@ fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
             .ok(&["str", pane, "pane", "screen"])?
             .contains(needle))
     })
-}
-
-#[test]
-fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
-    let server = Server::start("")?;
-    // The line arrives as written: spaces and quotes intact.
-    let line = "printf '[%s]\\n' 'a b' \"it's\" '$HOME'";
-    let pane = server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "horizontal",
-        "str",
-        line,
-        "typed",
-        "split",
-    ])?;
-    assert!(pane.starts_with("%2:"), "{pane}");
-    shows(&server, "%2", "[a b]")?;
-    shows(&server, "%2", "[it's]")?;
-    shows(&server, "%2", "[$HOME]")?;
-    // The command ended; the shell is still there and takes more input.
-    server.type_line("%2", "echo still-here")?;
-    shows(&server, "%2", "\nstill-here")?;
-    // new-tab and new-workspace type theirs too.
-    server.ok(&[
-        "opts",
-        "str",
-        "+1",
-        "workspace",
-        "in",
-        "str",
-        "echo tab-cmd",
-        "typed",
-        "new-tab",
-    ])?;
-    shows(&server, "%3", "\ntab-cmd")?;
-    // Named after its shell, not the line typed into it.
-    let name = server.ok(&["str", "%3", "pane", "str", "name", "get"])?;
-    assert!(!name.contains("echo"), "{name}");
-    server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
-    shows(&server, "%4", "\nws-cmd")?;
-    // The terminal takes the line before the shell reads: a control
-    // character would act as a key there, so it is refused, no pane made.
-    let refused = server.fux(&["str", "%1", "pane", "str", "echo a\nb", "typed", "split"])?;
-    assert!(
-        refused.stderr.starts_with("fux: bad_value: "),
-        "{}",
-        refused.stderr
-    );
-    assert!(!server.ok(&["ls"])?.contains("%5"));
-    // So is a line longer than the terminal keeps (1023 bytes, macOS's).
-    let long: String = std::iter::repeat_n('x', 1024).collect();
-    let refused = server.fux(&["str", "%1", "pane", "str", &long, "typed", "split"])?;
-    assert!(
-        refused.stderr.starts_with("fux: bad_value: "),
-        "{}",
-        refused.stderr
-    );
-    assert!(!server.ok(&["ls"])?.contains("%5"));
-    Ok(())
 }
 
 #[test]

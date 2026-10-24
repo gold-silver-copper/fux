@@ -176,10 +176,10 @@ pub(crate) const OPTIONS: [(&str, &str); 10] = [
     ("run", "name size cwd env command program arg in log-to id"),
     (
         "split",
-        "horizontal vertical cwd env command program arg typed id",
+        "horizontal vertical cwd env command program arg id",
     ),
-    ("new-tab", "name size cwd env typed in id"),
-    ("new-workspace", "name size cwd env typed id"),
+    ("new-tab", "name size cwd env in id"),
+    ("new-workspace", "name size cwd env id"),
     ("respawn", "kill-first env command program arg"),
     (
         "capture",
@@ -207,7 +207,6 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "name" | "size" | "cwd" | "env" | "program" | "arg" | "in" | "log-to" => {
             "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program run"
         }
-        "typed" => "fux opts str 'make test' typed new-tab",
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",

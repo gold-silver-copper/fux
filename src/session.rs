@@ -382,10 +382,6 @@ pub enum Begun {
     Grant(String, Option<WsRef>),
 }
 
-/// The longest command line typed into a new shell: what a terminal in
-/// line mode keeps of a line on macOS (`MAX_CANON`, 1024), less its end;
-/// the smaller of macOS's and Linux's (4095).
-const TYPED: usize = 1023;
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
 /// The size a pane starts at, until it is laid out on a client's screen.
@@ -748,7 +744,7 @@ impl Session {
     /// One workspace, holding one tab with one shell.
     pub fn start(&mut self) -> Result<(), Error> {
         let new = NewPane {
-            start: Start::Shell(None, &[]),
+            start: Start::Shell(&[]),
             cwd: &home(),
             starting: &Starting::default(),
             size: default_size(),
@@ -1424,7 +1420,7 @@ impl Session {
         let config = &self.config;
         let start = new.start;
         let env = match start {
-            Start::Shell(_, env) | Start::Program(_, env) => env,
+            Start::Shell(env) | Start::Program(_, env) => env,
         };
         let launch = pane::Launch {
             argv: match start {
@@ -1434,7 +1430,6 @@ impl Session {
             cwd: new.cwd.to_path_buf(),
             env: env.to_vec(),
         };
-        // A shell is named after the shell, whatever line is typed into it.
         let (named, runs) = match start {
             Start::Shell(..) => (None, Runs::Shell),
             Start::Program(argv, _) => (
@@ -1445,22 +1440,6 @@ impl Session {
         let id = ids.pane()?;
         let name = basename(named.unwrap_or(config.shell.program()));
         let mut pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
-        // A command line typed into the new shell is queued at once, and
-        // written before the shell reads: its terminal takes it in line
-        // mode, which gives a control character its effect and keeps at
-        // most `TYPED` bytes of a line. Refused so, it leaves no process
-        // behind.
-        if let Start::Shell(Some(line), _) = start {
-            if line.len() > TYPED || line.chars().any(char::is_control) {
-                let why = format!(
-                    "a command line typed into a new shell is at most {TYPED} bytes, with no \
-                     control character (a tab too): its terminal, or the shell, would act on it \
-                     as a key"
-                );
-                return Err(fail(Code::BadValue, why));
-            }
-            pane.input.push(format!("{line}\r"))?;
-        }
         // A program brought back by a restore waits for `respawn`.
         let paused = new.starting.restoring && matches!(start, Start::Program(..));
         if !paused && let Some(child) = self.spawn(id, &launch, new.starting, new.size)? {
@@ -2180,7 +2159,6 @@ impl Session {
             &Command::KillServer { force } => self.kill_server(force, origin),
             Command::NewWorkspace {
                 name,
-                typed,
                 size,
                 cwd,
                 env,
@@ -2189,7 +2167,7 @@ impl Session {
                 let (cwd, fit, size) =
                     self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 let new = NewPane {
-                    start: Start::Shell(typed.as_deref(), env.as_slice()),
+                    start: Start::Shell(env.as_slice()),
                     cwd: &cwd,
                     starting: &starting,
                     size,
@@ -2201,7 +2179,6 @@ impl Session {
             Command::NewTab {
                 target,
                 name,
-                typed,
                 size,
                 cwd,
                 env,
@@ -2213,7 +2190,7 @@ impl Session {
                     self.check_tab_name(name, None)?;
                 }
                 let new = NewPane {
-                    start: Start::Shell(typed.as_deref(), env.as_slice()),
+                    start: Start::Shell(env.as_slice()),
                     cwd: &cwd,
                     starting: &starting,
                     size,
@@ -2331,13 +2308,12 @@ impl Session {
                 axis,
                 target,
                 ref argv,
-                ref typed,
                 ref cwd,
                 ref env,
                 id,
             } => {
                 let start = match argv.is_empty() {
-                    true => Start::Shell(typed.as_deref(), env.as_slice()),
+                    true => Start::Shell(env.as_slice()),
                     false => Start::Program(argv, env.as_slice()),
                 };
                 self.split(target, axis, start, cwd.as_deref(), id, origin)
@@ -3338,9 +3314,8 @@ fn closed(origin: &Origin, ids: &[AnyRef]) -> String {
 /// What a new pane starts.
 #[derive(Clone, Copy)]
 enum Start<'a> {
-    /// The shell, with a command line typed into it if one is given, and
-    /// variables set for it.
-    Shell(Option<&'a str>, &'a [(String, String)]),
+    /// The shell, with variables set for it.
+    Shell(&'a [(String, String)]),
     /// A program, run in place of a shell, with variables set for it.
     Program(&'a [String], &'a [(String, String)]),
 }

@@ -40,7 +40,7 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     eventually("wrapped to @1", || {
         Ok(client_line(&server, "c1")?.contains(" @1 "))
     })?;
-    // new-tab from the CLI, with a name and a line typed into it.
+    // new-tab from the CLI, with a name.
     server.ok(&[
         "opts",
         "str",
@@ -50,9 +50,6 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
         "str",
         "logs",
         "name",
-        "str",
-        "echo \"in logs\"",
-        "typed",
         "new-tab",
     ])?;
     client.wait("the named tab", |t| {
@@ -297,13 +294,13 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
         "opts", "str", "hid", "name", "100", "40", "size", "str", "cat", "program", "run",
     ];
     let pane = server.ok(&run)?;
-    let pane = pane.split_whitespace().next().unwrap_or_default();
+    let pane = pane.split(':').next().unwrap_or_default();
     let sized = |size: &str| Ok(server.ok(&["ls"])?.contains(&format!("cat {size}")));
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
     eventually("the client's size", || sized("84x24"))?;
     let other = server.ok(&["opts", "str", "sleep 60", "command", "run"])?;
-    let other = other.split_whitespace().next().unwrap_or_default();
+    let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show-tab"])?;
     eventually("its own size, another tab shown", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;

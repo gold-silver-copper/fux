@@ -11,7 +11,7 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
          str y str split-below bind\n\
          define split-below me focused vertical split drop end\n\
          str h unbind\n\
-         str g str 'me focused horizontal str \"echo from-g\" typed split drop' bind\n\
+         str g str 'me focused horizontal str sh program str -c arg str \"echo from-g; exec sh\" arg split drop' bind\n\
          str Tools group\n",
     )?;
     let mut client = server.attach(24, 90)?;
@@ -47,7 +47,7 @@ fn the_config_sets_the_prefix_and_bindings() -> Outcome {
     client.wait("the Tools group", |t| t.contains("Tools"))?;
     client.keys("g")?;
     // The new pane is on the right; its own row is past the border.
-    client.wait("from-g typed into a new pane", |t| {
+    client.wait("from-g run in a new pane", |t| {
         t.lines().any(|l| l.rsplit('│').next() == Some("from-g"))
     })?;
     Ok(())
@@ -61,7 +61,7 @@ fn settings_reach_the_server() -> Outcome {
     let server = Server::start("str history-bytes 120 set")?;
     // History bytes apply to new panes.
     let pane = server.ok(&["str", "%1", "pane", "vertical", "split"])?;
-    let pane = pane.split_whitespace().next().unwrap_or_default();
+    let pane = pane.split(':').next().unwrap_or_default();
     server.type_line(
         pane,
         "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
@@ -226,7 +226,7 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
         .output()
         .map_err(e)?;
     let pane = String::from_utf8_lossy(&out.stdout);
-    let pane = pane.split_whitespace().next().ok_or("its pane")?;
+    let pane = pane.split(':').next().ok_or("its pane")?;
     server.exits(pane)?;
     let stdout = server.ok(&["str", pane, "pane", "capture"])?;
     assert!(stdout.contains("[unset] [yes]"), "{stdout}");

@@ -104,7 +104,6 @@ pub const WORDS: &[Word] = &[
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "command", "x line -- x", "the program and its arguments, one line split as a shell splits it"),
-    word("Starting", "typed", "x line -- x", "a command line typed into its new shell, at once: its terminal echoes it above the first prompt too"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
@@ -528,7 +527,6 @@ fn modify(
     match name {
         "name" => built.name = Some(string(&next()?)?),
         "cwd" => built.cwd = Some(string(&next()?)?.into()),
-        "typed" => built.typed = Some(string(&next()?)?),
         "in" => built.place = Some(workspace(&next()?)?),
         "log-to" => built.log = Some(string(&next()?)?),
         "history" => built.history = Some(within(&next()?, COUNT)?),
@@ -1020,7 +1018,6 @@ impl fuxth::Host for Host<'_> {
                     "new-tab" => Command::NewTab {
                         target: built.place,
                         name: built.name,
-                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1028,7 +1025,6 @@ impl fuxth::Host for Host<'_> {
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
-                        typed: built.typed,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
@@ -1047,15 +1043,10 @@ impl fuxth::Host for Host<'_> {
                 else {
                     return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
                 };
-                if !built.argv.is_empty() && built.typed.is_some() {
-                    let why = "takes no typed with a program: a line is typed into the shell the program replaces";
-                    return Err(fail(Lang::Unused, why));
-                }
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
                     argv: built.argv,
-                    typed: built.typed,
                     cwd: built.cwd,
                     env: built.env,
                     id,

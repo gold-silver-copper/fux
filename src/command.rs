@@ -508,8 +508,6 @@ wire! {
         },
         NewWorkspace {
             name: Option<String>,
-            /// A command line typed into its new shell.
-            typed: Option<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
@@ -520,7 +518,6 @@ wire! {
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
-            typed: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
@@ -532,7 +529,6 @@ wire! {
             /// A program started in place of a shell, as `run` starts one,
             /// if given.
             argv: Vec<String>,
-            typed: Option<String>,
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
