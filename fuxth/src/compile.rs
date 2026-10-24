@@ -376,7 +376,10 @@ impl<A: Clone> Compiler<A> {
                     self.literal = true;
                 }
                 Some(Parsing::Define) => {
-                    self.top_level(token)?;
+                    if !self.open.is_empty() {
+                        let why = "define goes at the top level, outside any definition or block";
+                        return Err(Error::new(Code::NotTopLevel, why, Some(token)));
+                    }
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
                     // Visible from here on, its own body included, and to
@@ -702,17 +705,6 @@ impl<A: Clone> Compiler<A> {
         };
         crate::check::check(&program, self.known)?;
         Ok(program)
-    }
-
-    fn top_level(&self, token: &Token) -> Result<(), Error> {
-        if self.open.is_empty() {
-            return Ok(());
-        }
-        Err(Error::new(
-            Code::NotTopLevel,
-            "define goes at the top level, outside any definition or block",
-            Some(token),
-        ))
     }
 
     /// Whether `name` may be defined (`define`) or named (`let`): either

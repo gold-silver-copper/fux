@@ -440,9 +440,8 @@ impl<A: AppValue> Machine<A> {
                 }
                 Op::Jump(to) => frame.step = *to,
                 Op::JumpUnless(to) => {
-                    let to = *to;
                     if !self.flag()? {
-                        self.jump(to);
+                        self.jump(*to);
                     }
                 }
                 Op::SetLocal(slot) => {
@@ -487,17 +486,16 @@ impl<A: AppValue> Machine<A> {
                     let app = matches!(walked, Value::App(_));
                     match Seq::of(walked) {
                         Ok(seq) => self.iters.push((seq, 0)),
-                        Err(kind) => return Err(self.type_error(Wants::Each.not(kind, app))),
+                        Err(kind) => return Err(self.fail(Code::Type, Wants::Each.not(kind, app))),
                     }
                 }
                 Op::EachNext(out) => {
-                    let out = *out;
                     let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
                     match next {
                         Some(item) => self.push(item)?,
                         None => {
                             self.iters.pop();
-                            self.jump(out);
+                            self.jump(*out);
                         }
                     }
                 }
@@ -566,10 +564,7 @@ impl<A: AppValue> Machine<A> {
     fn named(&mut self, value: Option<Value<A>>) -> Result<(), Error> {
         match value {
             Some(value) => self.push(value),
-            None => {
-                let message = "read before its let ran".to_owned();
-                Err(self.fail(Code::Unset, message))
-            }
+            None => Err(self.fail(Code::Unset, "read before its let ran")),
         }
     }
 
@@ -672,34 +667,26 @@ impl<A: AppValue> Machine<A> {
         match self.pop()? {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(Wants::Flag.not(other.kind(), false)))
+                Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false)))
             }
         }
     }
 
-    fn type_error(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::Type, message)
-    }
-
-    fn range_error(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::Range, message)
-    }
-
-    fn too_long(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::TooLong, message)
-    }
-
     /// `n` as `word`'s count: 0 or more.
     fn count(&self, word: Builtin, n: i64) -> Result<usize, Error> {
-        usize::try_from(n)
-            .map_err(|_| self.range_error(format!("{} takes a count from 0, not {n}", word.name())))
+        usize::try_from(n).map_err(|_| {
+            self.fail(
+                Code::Range,
+                format!("{} takes a count from 0, not {n}", word.name()),
+            )
+        })
     }
 
     /// `n` as an index into something `len` long.
     fn index(&self, n: i64, len: usize) -> Result<usize, Error> {
         (usize::try_from(n).ok())
             .filter(|i| *i < len)
-            .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}")))
+            .ok_or_else(|| self.fail(Code::Range, format!("index {n}, and it has {len}")))
     }
 
     /// `word` given `got` in a place that takes `arg`'s kinds.
@@ -707,7 +694,10 @@ impl<A: AppValue> Machine<A> {
     fn refused(&self, word: Builtin, arg: Arg, got: &str, app: bool) -> Error {
         // A place that takes any value refuses none.
         let wants = arg.wants.map(|wants| wants(word));
-        self.type_error(wants.map_or_else(|| got.to_owned(), |wants| wants.not(got, app)))
+        self.fail(
+            Code::Type,
+            wants.map_or_else(|| got.to_owned(), |wants| wants.not(got, app)),
+        )
     }
 
     /// A built-in's `N` values off the stack, the deepest first. Too few
@@ -735,7 +725,10 @@ impl<A: AppValue> Machine<A> {
             .built
             .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if self.built > BUILT {
-            return Err(self.too_long(format!("built more than {BUILT} elements in all")));
+            return Err(self.fail(
+                Code::TooLong,
+                format!("built more than {BUILT} elements in all"),
+            ));
         }
         Ok(())
     }
@@ -750,7 +743,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn nested(&self) -> Error {
-        self.too_long(format!(
+        self.fail(Code::TooLong, format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
             NESTING,
             TOTAL
@@ -805,14 +798,20 @@ impl<A: AppValue> Machine<A> {
                     items.extend(l.items().iter().cloned());
                 }
                 Value::Int(_) | Value::Bool(_) | Value::App(_) => {
-                    return Err(self.type_error(format!(
-                        "concat takes a list of strings or of lists, and this one holds {}",
-                        item.kind()
-                    )));
+                    return Err(self.fail(
+                        Code::Type,
+                        format!(
+                            "concat takes a list of strings or of lists, and this one holds {}",
+                            item.kind()
+                        ),
+                    ));
                 }
             }
             if strings && lists {
-                return Err(self.type_error("concat takes a list of strings or of lists, not both"));
+                return Err(self.fail(
+                    Code::Type,
+                    "concat takes a list of strings or of lists, not both",
+                ));
             }
         }
         if strings {
@@ -843,7 +842,7 @@ impl<A: AppValue> Machine<A> {
             }
             (Sequence::Str(_), x) => {
                 let app = matches!(x, Value::App(_));
-                Err(self.type_error(Wants::PushText.not(x.kind(), app)))
+                Err(self.fail(Code::Type, Wants::PushText.not(x.kind(), app)))
             }
         }
     }
@@ -851,9 +850,10 @@ impl<A: AppValue> Machine<A> {
     /// Whether a string or list `n` elements long may be.
     fn fits(&self, n: usize) -> Result<(), Error> {
         if n > LONGEST {
-            return Err(self.too_long(format!(
-                "{n} elements, and a string or list holds at most {LONGEST}"
-            )));
+            return Err(self.fail(
+                Code::TooLong,
+                format!("{n} elements, and a string or list holds at most {LONGEST}"),
+            ));
         }
         Ok(())
     }
@@ -883,7 +883,7 @@ impl<A: AppValue> Machine<A> {
             }
             (Sequence::Str(_), x) => {
                 let app = matches!(x, Value::App(_));
-                Err(self.type_error(Wants::PutText.not(x.kind(), app)))
+                Err(self.fail(Code::Type, Wants::PutText.not(x.kind(), app)))
             }
         }
     }
@@ -1195,7 +1195,7 @@ builtins! { m host;
         m.walk(if a.weight() < b.weight() { &a } else { &b });
         match compare(&a, &b) {
             Some(order) => m.push(Value::Bool(order == Ordering::Less)),
-            None => Err(m.type_error(unordered(&a, &b))),
+            None => Err(m.fail(Code::Type, unordered(&a, &b))),
         }
     }
     Eq "eq" (a: Any, b: Any) "a b -- a=b" "whether two values are the same, of one kind" {
@@ -1220,7 +1220,7 @@ builtins! { m host;
         };
         match item {
             Some(item) => m.push(item),
-            None => Err(m.range_error(format!("index {i}, and it has {len}"))),
+            None => Err(m.fail(Code::Range, format!("index {i}, and it has {len}"))),
         }
     }
     Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq"
@@ -1228,7 +1228,7 @@ builtins! { m host;
         let len = s.len();
         let bounds = usize::try_from(from).ok().zip(usize::try_from(to).ok());
         let Some((a, b)) = bounds.filter(|(a, b)| a <= b && *b <= len) else {
-            return Err(m.range_error(format!("slice from {from} to {to}, and it has {len}")));
+            return Err(m.fail(Code::Range, format!("slice from {from} to {to}, and it has {len}")));
         };
         let n = b.saturating_sub(a);
         let part = match &s {
@@ -1268,7 +1268,7 @@ builtins! { m host;
     Char "char" (n: Int) "n -- c" "the one-character string with code n" {
         match u32::try_from(n).ok().and_then(char::from_u32) {
             Some(c) => m.push(Value::str(c.to_string())),
-            None => Err(m.range_error(format!("{n} is no character code"))),
+            None => Err(m.fail(Code::Range, format!("{n} is no character code"))),
         }
     }
     Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, or the host's kind" {
@@ -1278,7 +1278,7 @@ builtins! { m host;
         m.walk(&x);
         // Made only as far as a string may be long.
         let Some(text) = x.text_upto(LONGEST) else {
-            return Err(m.too_long(format!(
+            return Err(m.fail(Code::TooLong, format!(
                 "the text is longer than a string may be ({LONGEST})"
             )));
         };

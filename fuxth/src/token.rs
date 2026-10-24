@@ -51,6 +51,10 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
         source: Rc::clone(&source),
         line,
     };
+    let token = |(text, at): (String, u32)| Token {
+        text: Rc::from(text),
+        place: place(at),
+    };
     let mut tokens = Vec::new();
     let mut chars = text.chars().peekable();
     let mut line = 1u32;
@@ -60,12 +64,7 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
     while let Some(c) = chars.next() {
         match c {
             '\n' | ' ' | '\t' | '\r' => {
-                if let Some((text, at)) = word.take() {
-                    tokens.push(Token {
-                        text: Rc::from(text),
-                        place: place(at),
-                    });
-                }
+                tokens.extend(word.take().map(token));
                 if c == '\n' {
                     line = next_line(line);
                 }
@@ -98,10 +97,7 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
             }
             '\\' => {
                 let (text, _) = word.get_or_insert_with(|| (String::new(), line));
-                match chars.next() {
-                    Some(c) => text.push(c),
-                    None => text.push('\\'),
-                }
+                text.push(chars.next().unwrap_or('\\'));
             }
             c => {
                 let (text, _) = word.get_or_insert_with(|| (String::new(), line));
@@ -109,12 +105,7 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
             }
         }
     }
-    if let Some((text, at)) = word {
-        tokens.push(Token {
-            text: Rc::from(text),
-            place: place(at),
-        });
-    }
+    tokens.extend(word.map(token));
     Ok(tokens)
 }
 
