@@ -327,10 +327,10 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
                     .filter(|line| !line.trim().is_empty())
                     .map(|line| Json::Raw(line.to_owned().into()))
                     .collect();
-                match (answer.said, objects.len()) {
-                    (Said::Several, _) => Json::Array(objects),
-                    (_, 1) => objects.pop().unwrap_or(Json::Null),
-                    _ => Json::Array(objects),
+                match (answer.said, objects.pop()) {
+                    (Said::Several, last) => Json::Array(objects.into_iter().chain(last).collect()),
+                    (_, Some(one)) if objects.is_empty() => one,
+                    (_, last) => Json::Array(objects.into_iter().chain(last).collect()),
                 }
             }
             None => Json::str(answer.text.clone()),
@@ -451,6 +451,16 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
         return Ok(On::Client(*c));
     }
     target(value).map(On::Target)
+}
+
+/// What a wait or an action on `target` answers: a pane's, its pane; a
+/// tab's or workspace's, no pane, however many panes it has or answered
+/// (name it again to act on it again), and as JSON an array.
+fn answer_of(target: AnyRef) -> Then {
+    match target {
+        AnyRef::Pane(_) => Then::Outcome,
+        AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Several),
+    }
 }
 
 /// The version an action's answer, or a wait's, holds: its pane's from
@@ -1066,13 +1076,7 @@ impl fuxth::Host for Host<'_> {
                     since: built.waits.since.or(built.held),
                     timeout: built.waits.timeout,
                 };
-                // A tab's or workspace's answer is no pane, whichever of its
-                // panes changed: name it again to wait on it again.
-                let then = match target {
-                    AnyRef::Pane(_) => Then::Outcome,
-                    AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Several),
-                };
-                later(ask(Request::Wait(target, wait), then))
+                later(ask(Request::Wait(target, wait), answer_of(target)))
             }
             // ------------------------------------------------------- input
             "send-keys" => {
@@ -1110,7 +1114,7 @@ impl fuxth::Host for Host<'_> {
                     target,
                     inputs: built.inputs,
                 };
-                later(ask(keys, Then::Outcome))
+                later(ask(keys, answer_of(target)))
             }
             "send-mouse" => {
                 let (p, built) = request_pane(name, next()?)?;

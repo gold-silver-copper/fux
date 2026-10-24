@@ -94,9 +94,9 @@ and `X info json` all of it.
 `json` of an action's answer (`send-keys`, `send-mouse`, `signal`,
 `run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
 `{"pane":"%3","version":"0.57.0.3.0","status":0}`: its pane's version from
-just before it acted, or as a new pane starts: one object for an answer
-of one pane, an array of them for an action on several panes. A wait on
-a tab or workspace answers an array however many of its panes answered.
+just before it acted, or as a new pane starts: one object for an action
+or wait on a pane, an array for one on a tab or workspace, however many
+panes it has or answered.
 
 A `wait` answers each pane whose version differs from the one it waited
 from (its program's end too), or that closed:

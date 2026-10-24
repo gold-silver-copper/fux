@@ -766,6 +766,13 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
         json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
         "{json}"
     );
+    // So is a tab's action's.
+    let keys = ["str", &one, "pane", "tab", "str", "y", "text", "send-keys"];
+    let json = server.ok(&[&keys[..], &["json"]].concat())?;
+    assert!(
+        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
+        "{json}"
+    );
     Ok(())
 }
 

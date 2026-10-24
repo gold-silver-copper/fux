@@ -256,8 +256,9 @@ all-history capture
 then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element. An action leaves its
 answer: printed, it is the lines above; given to a word that wants a pane,
-it is its pane (an answer of several panes, a tab's, is none: name the tab
-again, `@1 wait`), and to `wait`, the version it holds too (`T str y text
+it is its pane (an action's or wait's on a tab or workspace is none,
+however many panes it has: name the tab again, `@1 wait`), and to `wait`,
+the version it holds too (`T str y text
 send-keys wait` waits from before the keys; a name keeps that version, so
 `T wait` later waits from when `T` was made, and `T dup str version get
 changed wait` from now); `string` makes it text (`%2 screen string str error

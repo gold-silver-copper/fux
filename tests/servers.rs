@@ -524,13 +524,15 @@ fn a_crashed_server_comes_back() -> Outcome {
     );
     let paused = ["str", app, "pane", "str", "paused", "get"];
     assert_eq!(server.ok(&paused)?, "true\n");
-    // Paused, it takes no keys: nothing would read them.
-    let keys = server.fux(&["str", app, "pane", "str", "x", "text", "send-keys"])?;
-    assert!(
-        keys.stderr.starts_with("fux: not_running: "),
-        "{}",
-        keys.stderr
-    );
+    // Paused, it takes no keys and no signal: nothing runs there.
+    for refused in [
+        &["str", "x", "text", "send-keys"][..],
+        &["str", "TERM", "signal"],
+    ] {
+        let refused = server.fux(&[&["str", app, "pane"][..], refused].concat())?;
+        let said = refused.stderr.starts_with("fux: not_running: ");
+        assert!(said, "{}", refused.stderr);
+    }
     // Its name is taken by what came back, which the refusal says.
     let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "command", "run"])?;
     assert!(

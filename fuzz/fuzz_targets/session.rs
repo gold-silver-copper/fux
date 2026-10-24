@@ -76,7 +76,7 @@ const SIDE: &[&str] = &[
     "str c2 client next-workspace",
     "str c1 client str C-b key send-keys",
     "str c1 client copy-mode",
-    "str c2 client str c2 client focused menu",
+    "str c2 client str c2 client focused choose-pane",
     "str c1 client choose-tab",
     "str c1 client str c1 client focused tab confirm-close",
     "str c2 client str c2 client focused workspace rename-prompt",

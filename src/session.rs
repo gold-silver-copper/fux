@@ -945,6 +945,11 @@ impl Session {
         if let Some(status) = pane.process.exit_status() {
             return Err(ended(pane.id, status));
         }
+        if pane.paused() {
+            let why =
+                format!("{target}: paused since the server restarted: respawn starts its program");
+            return Err(fail(Code::NotRunning, why));
+        }
         let program = match (&pane.runs, pane.process.child()) {
             (Runs::Program(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
@@ -2079,7 +2084,10 @@ impl Session {
                         || since.done > now.done
                         || since.ended > now.ended))
         {
-            let why = format!("{since} is no version of {}: from another pane?", pane.id);
+            let why = format!(
+                "{since} is no version of {}: from another pane, or before a server restart?",
+                pane.id
+            );
             return Err(fail(Code::BadValue, why));
         }
         let limit = wait.timeout.unwrap_or(self.config.wait);
