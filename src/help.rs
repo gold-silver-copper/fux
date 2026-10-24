@@ -74,19 +74,8 @@ Driving programs from a script or an agent: `fux help-agents`; one word:
          fuxth. Mistakes every run would make are refused before anything runs.",
         shapes.join(", ")
     );
-    out.push('\n');
-    let mut width = 0usize;
-    for word in language.split(' ') {
-        if width > 0 && width.saturating_add(word.chars().count()) >= 74 {
-            out.push('\n');
-            width = 0;
-        } else if width > 0 {
-            out.push(' ');
-            width = width.saturating_add(1);
-        }
-        out.push_str(&word.replace('\u{a0}', " "));
-        width = width.saturating_add(word.chars().count());
-    }
+    let words = language.split(' ').map(|w| w.replace('\u{a0}', " "));
+    out.push_str(&wrapped(words, "\n", 74));
     out.push_str(
         "
 
@@ -107,22 +96,32 @@ workspace; ref a name or a handle; text a string, number or boolean.
             word.name, word.effect, word.about
         ));
     }
-    out.push_str("\nThe libraries (`fux help WORD` says each):\n ");
-    let mut width = 1usize;
-    for (name, ..) in library() {
-        width = width.saturating_add(name.len()).saturating_add(1);
-        if width > 78 {
-            out.push_str("\n ");
-            width = name.len().saturating_add(2);
-        }
-        out.push(' ');
-        out.push_str(name);
-    }
+    out.push_str("\nThe libraries (`fux help WORD` says each):");
+    let names = library().into_iter().map(|(name, ..)| name.to_owned());
+    out.push_str(&wrapped(names, "\n  ", 79));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux.\n",
     );
     out
+}
+
+/// `words` joined by blanks, in lines each begun with `start` and at most
+/// `width` columns long, the line end included.
+fn wrapped(words: impl Iterator<Item = String>, start: &str, width: usize) -> String {
+    let (mut out, mut line) = (String::new(), String::from(start));
+    for word in words {
+        if line.len() > start.len() {
+            if line.chars().count().saturating_add(word.chars().count()) >= width {
+                out.push_str(&line);
+                line = String::from(start);
+            } else {
+                line.push(' ');
+            }
+        }
+        line.push_str(&word);
+    }
+    out + &line
 }
 
 /// The prelude's and library's words: each name, stack effect, what it

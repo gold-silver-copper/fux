@@ -699,8 +699,9 @@ pub fn run_capped(
             ));
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
+            // No try may name it: it ends the run, said at the step reached.
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
-            return Err(placed(machine, failed));
+            pushed(machine, Err(failed))?;
         }
         match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
@@ -716,19 +717,14 @@ pub fn run_capped(
                     request: *request,
                     context,
                 };
-                let reply = match asks.ask(&asked, host.out) {
-                    Ok(reply) => reply,
-                    Err(failed) => {
-                        pushed(machine, Err(failed))?;
-                        continue;
-                    }
-                };
-                match &reply.end {
+                let reply = asks.ask(&asked, host.out);
+                let values = reply.and_then(|reply| {
                     // A failure that answered too (a wait's): its answer is
                     // left, printed before why it failed, unless a `try`
                     // catches the failure.
-                    End::Failed { message, .. }
-                        if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
+                    if let End::Failed { message, .. } = &reply.end
+                        && !message.trim().is_empty()
+                        && !reply.text.trim().is_empty()
                     {
                         let answer = Reply {
                             end: End::Done,
@@ -736,9 +732,9 @@ pub fn run_capped(
                         };
                         pushed(machine, answered(answer, then))?;
                     }
-                    End::Failed { .. } | End::Done => {}
-                }
-                pushed(machine, answered(reply, then))?;
+                    answered(reply, then)
+                });
+                pushed(machine, values)?;
             }
             Outcome::Suspended(Ask::Local(what)) => pushed(machine, asks.local(&what, host.out))?,
         }
@@ -751,35 +747,17 @@ fn pushed(
     machine: &mut Machine<Fux>,
     values: Result<Vec<Value<Fux>>, Failed>,
 ) -> Result<(), Failed> {
-    match values {
-        Ok(values) => {
-            for value in values {
-                machine.push(value)?;
-            }
-        }
-        Err(failed) => machine
-            .raise(fuxth::Failure::new(failed.code.into(), failed.message))
-            .map_err(|e| ours(machine, e))?,
+    let values = values.or_else(|failed| {
+        let failure = fuxth::Failure::new(failed.code.into(), failed.message);
+        machine
+            .raise(failure)
+            .map(|()| Vec::new())
+            .map_err(|e| ours(machine, e))
+    })?;
+    for value in values {
+        machine.push(value)?;
     }
     Ok(())
-}
-
-/// A failure in doing what the word the program stopped at asks, named
-/// with that word and where it is, as the language's own errors are.
-fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
-    let Some(at) = machine.at() else {
-        return failed;
-    };
-    let error = fuxth::Error {
-        code: failed.code.into(),
-        message: failed.message,
-        place: Some(at.place),
-        word: Some(at.text),
-    };
-    Failed {
-        message: ours(machine, error).message,
-        ..failed
-    }
 }
 
 /// An error placed where the program is: a failure inside a word of the

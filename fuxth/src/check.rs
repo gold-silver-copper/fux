@@ -563,7 +563,7 @@ impl<'a, A> Unit<'a, A> {
             | Op::JumpUnless(to)
             | Op::EachNext(to)
             | Op::Tried(to)
-            | Op::Try { handler: to, .. } = op
+            | Op::Try(to, _) = op
             {
                 starts.insert(*to);
                 starts.insert(at.saturating_add(1));
@@ -702,7 +702,7 @@ impl<'a, A> Unit<'a, A> {
             }
             // A `try`: on into its body, from an empty stack; or, failing
             // anywhere in it, to its handler.
-            if let Op::Try { handler, .. } = op {
+            if let Op::Try(handler, _) = op {
                 let caught = self.caught(at, *handler, &state);
                 state.enter(Floor::Try);
                 return vec![(next, state), (*handler, caught)];
@@ -741,7 +741,7 @@ impl<'a, A> Unit<'a, A> {
                 | Op::Gather
                 | Op::EachStart
                 | Op::EachNext(_)
-                | Op::Try { .. } => {}
+                | Op::Try(..) => {}
             }
             if self.starts.contains(&next) || next >= self.code.ops.len() {
                 return vec![(next, state)];
@@ -861,7 +861,7 @@ impl<'a, A> Unit<'a, A> {
                 }
             }
             // Each is gone through in `block`.
-            Op::Jump(_) | Op::EachNext(_) | Op::Try { .. } => {}
+            Op::Jump(_) | Op::EachNext(_) | Op::Try(..) => {}
             Op::JumpUnless(_) => must(self.words(), Wants::Flag, state.pop1()?, BOOL)?,
             Op::SetLocal(slot) | Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;

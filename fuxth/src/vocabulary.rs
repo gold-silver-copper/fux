@@ -146,9 +146,7 @@ impl Vocabulary {
         if Code::ALL.iter().any(|c| c.name() == name) {
             return Err(refused(format!("{name}: a code of the language's")));
         }
-        if !self.codes.contains(&name) {
-            self.codes.push(name);
-        }
+        self.codes.push(name);
         Ok(())
     }
 
@@ -166,22 +164,9 @@ impl Vocabulary {
         if let Some(code) = self.codes.iter().find(|c| **c == name) {
             return Ok(Code::Host(code));
         }
-        let raised = (Code::ALL.iter().filter(|c| c.raised()))
-            .map(|c| c.name())
-            .chain(self.codes.iter().copied());
-        let mut near: Vec<(usize, &str)> = raised
-            .map(|code| (crate::compile::distance(name, code), code))
-            .filter(|(d, _)| *d <= 2)
-            .collect();
-        near.sort_unstable();
-        let near: Vec<&str> = near.into_iter().take(3).map(|(_, code)| code).collect();
-        Err(match near.as_slice() {
-            [] => format!("{name} is no code a word raises"),
-            near => format!(
-                "{name} is no code a word raises; did you mean {}?",
-                listed(near)
-            ),
-        })
+        let raised = (Code::ALL.iter().filter(|c| c.raised())).map(|c| c.name());
+        let meant = crate::compile::meant(name, raised.chain(self.codes.iter().copied()));
+        Err(format!("{name} is no code a word raises{meant}"))
     }
 
     pub(crate) fn word(&self, id: usize) -> Option<&Word> {

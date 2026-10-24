@@ -147,16 +147,17 @@ struct Frame {
     locals: usize,
 }
 
-/// A `try` under way: the codes it catches, its handler's step, and how
-/// far the machine was at it, to go back to: its frames, the stack (where
-/// its body's values start), the open `list` blocks and `each` loops.
-struct Trying {
-    codes: Rc<Vec<Code>>,
-    handler: usize,
-    frames: usize,
-    depth: usize,
-    marks: usize,
-    iters: usize,
+/// An open block whose body starts with an empty stack: a `list`, or a
+/// `try` with the codes it catches, its handler's step, and the frames
+/// and `each` loops there were at it, to go back to.
+enum Body {
+    List,
+    Try {
+        codes: Rc<Vec<Code>>,
+        handler: usize,
+        frames: usize,
+        iters: usize,
+    },
 }
 
 /// A program being run.
@@ -167,11 +168,9 @@ pub struct Machine<A> {
     /// Every frame's `let` names, each frame's from its `locals`.
     locals: Vec<Option<Value<A>>>,
     globals: Vec<Option<Value<A>>>,
-    /// Where each open `list` or `try` body began on the stack: nothing
-    /// below may be taken inside it.
-    marks: Vec<usize>,
-    /// Each open `try`, innermost last.
-    tries: Vec<Trying>,
+    /// Where each open `list` or `try` body began on the stack, and which:
+    /// nothing below may be taken inside it.
+    marks: Vec<(usize, Body)>,
     /// Each open `each`: what it walks, and where its next element is: an
     /// index in a list, a byte in a string (so each step finds it at once).
     iters: Vec<(Sequence<A>, usize)>,
@@ -207,7 +206,6 @@ impl<A: AppValue> Machine<A> {
             locals: Vec::new(),
             globals,
             marks: Vec::new(),
-            tries: Vec::new(),
             iters: Vec::new(),
             limits,
             out: Vec::new(),
@@ -256,22 +254,30 @@ impl<A: AppValue> Machine<A> {
     /// message and code pushed, the handler next. Else `error`.
     fn recover(&mut self, mut error: Error) -> Result<(), Error> {
         loop {
-            let Some(caught) = (self.tries.iter()).rposition(|t| t.codes.contains(&error.code))
-            else {
+            let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
+            let Some(caught) = self.marks.iter().rposition(catches) else {
                 return Err(error);
             };
             // Those inside it end with it.
-            self.tries.truncate(caught.saturating_add(1));
-            let Some(trying) = self.tries.pop() else {
+            self.marks.truncate(caught.saturating_add(1));
+            let Some((
+                depth,
+                Body::Try {
+                    handler,
+                    frames,
+                    iters,
+                    ..
+                },
+            )) = self.marks.pop()
+            else {
                 return Err(error);
             };
-            while self.frames.len() > trying.frames {
+            while self.frames.len() > frames {
                 self.leave();
             }
-            self.stack.truncate(trying.depth);
-            self.marks.truncate(trying.marks);
-            self.iters.truncate(trying.iters);
-            self.jump(trying.handler);
+            self.stack.truncate(depth);
+            self.iters.truncate(iters);
+            self.jump(handler);
             let code = Value::str(error.code.name());
             // A stack full to its limit fails again, for a `try` further
             // out to catch.
@@ -461,9 +467,13 @@ impl<A: AppValue> Machine<A> {
                     let value = self.globals.get(*slot).cloned().flatten();
                     self.named(value)?;
                 }
-                Op::Mark => self.marks.push(self.stack.len()),
+                Op::Mark => self.marks.push((self.stack.len(), Body::List)),
                 Op::Gather => {
-                    let from = self.marks.pop().unwrap_or(0).min(self.stack.len());
+                    let from = self
+                        .marks
+                        .pop()
+                        .map_or(0, |(at, _)| at)
+                        .min(self.stack.len());
                     let mut items = Vec::with_capacity(self.stack.len().saturating_sub(from));
                     while self.stack.len() > from {
                         items.extend(self.stack.pop());
@@ -487,20 +497,16 @@ impl<A: AppValue> Machine<A> {
                         }
                     }
                 }
-                Op::Try { codes, handler } => {
-                    let values = self.stack.len();
-                    self.tries.push(Trying {
+                Op::Try(handler, codes) => {
+                    let body = Body::Try {
                         codes: Rc::clone(codes),
                         handler: *handler,
                         frames: depth,
-                        depth: values,
-                        marks: self.marks.len(),
                         iters: self.iters.len(),
-                    });
-                    self.marks.push(values);
+                    };
+                    self.marks.push((self.stack.len(), body));
                 }
                 Op::Tried(out) => {
-                    self.tries.pop();
                     self.marks.pop();
                     frame.step = *out;
                 }
@@ -639,25 +645,17 @@ impl<A: AppValue> Machine<A> {
     /// Where the top `n` values start, if the stack has them: inside a
     /// `list`, only those above where it began.
     fn depth(&self, n: usize) -> Result<usize, Error> {
-        let floor = self.marks.last().copied().unwrap_or(0);
+        let floor = self.marks.last().map_or(0, |(at, _)| *at);
         let has = self.stack.len().saturating_sub(floor);
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
-        let message = underflow("takes", n, &has.to_string(), self.floor());
+        let inside = self.marks.last().map(|(_, body)| match body {
+            Body::List => Floor::List,
+            Body::Try { .. } => Floor::Try,
+        });
+        let message = underflow("takes", n, &has.to_string(), inside);
         Err(self.fail(Code::StackUnderflow, message))
-    }
-
-    /// The innermost block whose body started with an empty stack, if one
-    /// is open: a `try` if its mark is the last.
-    fn floor(&self) -> Option<Floor> {
-        let marks = self.marks.len();
-        let tried = (self.tries.last()).is_some_and(|t| t.marks.saturating_add(1) == marks);
-        match (marks, tried) {
-            (0, _) => None,
-            (_, true) => Some(Floor::Try),
-            (_, false) => Some(Floor::List),
-        }
     }
 
     fn pop(&mut self) -> Result<Value<A>, Error> {
