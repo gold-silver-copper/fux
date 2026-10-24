@@ -868,8 +868,9 @@ impl Session {
     /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`,
     /// if panes start real processes: told of its server (`FUX_PANE`,
     /// `FUX_SOCKET`, a grant's socket if its starter came by one,
-    /// `FUX_SERVER`, and `FUX`, the fux running it), given its starter's variables, and not those its
-    /// starter had not, unless `env` sets them.
+    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
+    /// had), given its starter's variables, and not those its starter had
+    /// not, unless `env` sets them.
     fn spawn(
         &self,
         id: PaneId,
@@ -890,9 +891,10 @@ impl Session {
         vars.extend((self.exe.as_ref()).map(|exe| ("FUX", exe.as_os_str().to_owned())));
         vars.extend((fresh.set.iter()).map(|(k, v)| (k.as_str(), v.clone())));
         vars.extend(env.iter().map(|(k, v)| (k.as_str(), v.into())));
-        let unset: Vec<String> = (fresh.unset.iter())
-            .filter(|name| !env.iter().any(|(k, _)| k == *name))
-            .cloned()
+        // No `FUX` to give: not one the server was started with either.
+        let unset: Vec<String> = (fresh.unset.iter().cloned())
+            .chain(self.exe.is_none().then(|| "FUX".to_owned()))
+            .filter(|name| !env.iter().any(|(k, _)| k == name))
             .collect();
         let child = process::spawn(argv, &launch.cwd, (&vars, &unset), size)
             .map_err(|m| fail(Code::Start, m))?;
