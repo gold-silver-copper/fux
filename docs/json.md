@@ -19,7 +19,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
-| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow: its program's starts, its screen's revision (one more for each piece of output read, each resize, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
+| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow while one program runs (`respawn` starts all but the first afresh): its program's starts, its screen's revision (one more for each piece of output read, each resize, each change to its history: cleared, or `history-bytes` set), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
 | `program` | what runs in its foreground, `null` if unknown |
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `exited` | the status its program exited with (a pane `run` started), else `null` |

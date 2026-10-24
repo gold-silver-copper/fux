@@ -1203,6 +1203,10 @@ impl Session {
     /// `pane_mut`, for input: a pane whose program has exited takes none.
     fn live_pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, Error> {
         let pane = self.pane_mut(id)?;
+        if let Process::HungUp(_) = pane.process {
+            let why = format!("{id}: its program closed its terminal: nothing reads input there");
+            return Err(fail(Code::NotRunning, why));
+        }
         match pane.process.exit_status() {
             Some(status) => Err(ended(pane.id, status)),
             None => Ok(pane),
@@ -2353,7 +2357,7 @@ impl Session {
                 let copying = self.copying(pane.id);
                 let (text, form) = crate::capture::pane(pane, history, view, copying);
                 Ok(Reply {
-                    json: form.unwrap_or_default(),
+                    json: form,
                     ..text.into()
                 })
             }
@@ -2768,7 +2772,7 @@ impl Session {
                 crate::render::compose_view(self, view()?, &mut grid, placement);
                 let (text, form) = crate::capture::client(client, &grid);
                 return Ok(Reply {
-                    json: form.unwrap_or_default(),
+                    json: form,
                     ..text.into()
                 });
             }

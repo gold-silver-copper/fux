@@ -218,10 +218,14 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
     // In one program, a wait on the action's answer waits from the version
-    // it holds, a timeout given between them too.
+    // it holds, a timeout given between them too: asked again once the
+    // change surely came, it answers at once, where one from now would
+    // time out.
     let echoes = id(&server.ok(&run(&[], &["sh", "-c", "read x; sleep 30"]))?);
-    let chained = [&typed(&echoes, "x")[..], &["5", "timeout", "wait"]].concat();
-    let answer = server.ok(&chained)?;
+    let twice = [
+        "dup", "5", "timeout", "wait", "drop", "1", "timeout", "wait",
+    ];
+    let answer = server.ok(&[&typed(&echoes, "x")[..], &twice].concat())?;
     assert!(answer.ends_with(" screen\n"), "{answer}");
     Ok(())
 }
@@ -318,18 +322,18 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
 
 /// Keys reach the program as they are sent, in order: a paste bracketed
 /// as it asked, a count repeating only the key before it, bytes as they
-/// are, a click encoded as it asked.
+/// are, a click encoded as it asked. The program says all it has read so
+/// far after each read: its terminal may split what one action sent.
 #[test]
 fn input_reaches_the_program_as_sent() -> Outcome {
     const READS: &str = r#"
 import os, sys, tty
 tty.setraw(0)
 os.write(1, b"\x1b[?2004h\x1b[?1000h\x1b[?1006hready\r\n")
-while True:
-    got = os.read(0, 256)
-    os.write(1, ("read " + got.hex() + "\r\n").encode())
-    if got.endswith(b"q"):
-        break
+seen = b""
+while not seen.endswith(b"q"):
+    seen += os.read(0, 256)
+    os.write(1, ("seen " + seen.hex() + "\r\n").encode())
 "#;
     let server = Server::start("")?;
     let path = server.dir.join("reads.py");
@@ -338,9 +342,11 @@ while True:
     let started = server.ok(&run(&[], &["python3", "-I", &script]))?;
     let pane = id(&started);
     shows_after(&server, &started, "ready")?;
-    // What the program read, as it said it.
+    // All the program read so far, as it said it.
+    let seen = std::cell::RefCell::new(String::new());
     let sent = |keys: &[&str], read: &str| -> Outcome {
-        let said = format!("read {read}\n");
+        seen.borrow_mut().push_str(read);
+        let said = format!("seen {}\n", seen.borrow());
         let send = [&["str", pane.as_str(), "pane"][..], keys, &["send-keys"]];
         shows_after(&server, &server.ok(&send.concat())?, &said)?;
         Ok(())
@@ -354,9 +360,11 @@ while True:
         "7f7f7f78",
     )?;
     let click = ["str", "click", "2", "4", "mouse"];
-    let said = "read 1b5b3c303b353b334d1b5b3c303b353b336d";
+    seen.borrow_mut()
+        .push_str("1b5b3c303b353b334d1b5b3c303b353b336d");
+    let said = format!("seen {}\n", seen.borrow());
     let clicked = [&["str", pane.as_str(), "pane"][..], &click, &["send-mouse"]];
-    shows_after(&server, &server.ok(&clicked.concat())?, said)?;
+    shows_after(&server, &server.ok(&clicked.concat())?, &said)?;
     server.ok(&[
         "str",
         pane.as_str(),
@@ -735,6 +743,13 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let since = server.version(&one)?;
     let given = server.fux(&["str", "g", "workspace", "str", &since, "changed", "wait"])?;
     assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
+    // A tab of one pane takes its pane's version.
+    let before = version(&server.ok(&typed(&one, "x"))?);
+    let on_tab = [
+        "str", &one, "pane", "tab", "str", &before, "changed", "wait",
+    ];
+    let answer = server.ok(&on_tab)?;
+    assert!(answer.starts_with(&format!("{one} ")), "{answer}");
     Ok(())
 }
 

@@ -12,8 +12,8 @@ use std::time::Instant;
 /// empty, a blank one a space) and its attributes.
 type Cells<'a> = Vec<(&'a str, Attributes)>;
 
-/// A capture as text, and as JSON if it was asked for too: read once.
-type Read = (String, Option<String>);
+/// A capture as text, and as JSON, read once (`json` gives the second).
+type Read = (String, String);
 
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
@@ -116,7 +116,7 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: b
         (rows, cols),
         (cursor, Some(pending)),
         (lines, view),
-        Some(state),
+        state,
     )
 }
 
@@ -214,7 +214,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
         (grid.rows, grid.cols),
         (grid.cursor, None),
         (lines, view),
-        Some(Vec::new()),
+        Vec::new(),
     )
 }
 
@@ -327,7 +327,7 @@ fn print(
     (rows, cols): (u16, u16),
     (cursor, pending): (Option<(u16, u16)>, Option<bool>),
     (mut lines, view): (Vec<Cells<'_>>, CaptureView),
-    state: Option<Vec<(&'static str, Json<'static>)>>,
+    state: Vec<(&'static str, Json<'static>)>,
 ) -> Read {
     // Highlighted: reverse video, or a background colour.
     let highlighted = |a: &Attributes| a.inverse() || a.background() != Color::Default;
@@ -363,30 +363,27 @@ fn print(
     let mut out = shown.join("\n");
     out.push('\n');
     // JSON's lines are the text's, trimmed alike.
-    let json = state.map(|state| {
-        // The screen's own row and column, as the state line says them,
-        // whatever blank rows are trimmed from the lines.
-        let cursor = cursor.map_or(Json::Null, |(y, x)| {
-            Json::Array(vec![Json::int(y), Json::int(x)])
-        });
-        let mut fields = vec![
-            (key, Json::str(id)),
-            ("rows", Json::int(rows)),
-            ("cols", Json::int(cols)),
-            ("cursor", cursor),
-            (
-                "lines",
-                Json::Array(lines.iter().map(|l| Json::str(text(l, false))).collect()),
-            ),
-        ];
-        fields.extend(pending.map(|p| ("wrap_pending", Json::Bool(p))));
-        if view.styles {
-            fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
-        }
-        fields.extend(state);
-        format!("{}\n", Json::Object(fields).render())
+    // The screen's own row and column, as the state line says them,
+    // whatever blank rows are trimmed from the lines.
+    let cursor = cursor.map_or(Json::Null, |(y, x)| {
+        Json::Array(vec![Json::int(y), Json::int(x)])
     });
-    (out, json)
+    let mut fields = vec![
+        (key, Json::str(id)),
+        ("rows", Json::int(rows)),
+        ("cols", Json::int(cols)),
+        ("cursor", cursor),
+        (
+            "lines",
+            Json::Array(lines.iter().map(|l| Json::str(text(l, false))).collect()),
+        ),
+    ];
+    fields.extend(pending.map(|p| ("wrap_pending", Json::Bool(p))));
+    if view.styles {
+        fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
+    }
+    fields.extend(state);
+    (out, format!("{}\n", Json::Object(fields).render()))
 }
 
 /// A line, in SGR with `styles`: each change of attributes set from

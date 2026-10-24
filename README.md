@@ -58,8 +58,9 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its v
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
 - Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE.ENDED`: counts
   of its program's starts, its screen's revisions (output read, resizes,
-  history cleared or resized), bells rung and shell commands ended (OSC 133 marks),
-  and 1 once its program ended; they only grow. An action (`run`,
+  history cleared or resized), bells rung and shell commands ended (OSC
+  133 marks), and 1 once its program ended; they only grow while one
+  program runs (`respawn` starts all but the first afresh). An action (`run`,
   `send-keys`, `signal` …) acts at once and answers its pane and its
   version from just before it acted. `PANE str V changed wait` waits until
   the version differs from V or the pane closes, and answers what changed:
@@ -296,7 +297,7 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE, a pane, tab or workspace as its id: `%3`), `program`, `arg`, `log-to`; answers the pane and its version as it starts |
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane … wait` | wait until its version differs from `str V changed` (else from now's) or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of its panes |
+| `pane … wait` | wait until its version differs from `str V changed` (else from the one an action's or wait's answer holds, else from now's) or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of its panes |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `N times` repeats the input just before it; answers at once, the pane and its version before the keys. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (reverse video and background colours as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |

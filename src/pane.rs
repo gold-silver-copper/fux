@@ -845,7 +845,7 @@ mod tests {
             "a key after a refused paste: {refusal:?}"
         );
         assert!(refusal.is_err_and(|e| e.to_string().contains("input queue is full")));
-        // Writing some of the front is the program reading: input is taken
+        // Some of the front written, its terminal took it: input is taken
         // again.
         queue.advance(1);
         assert!(queue.push(vec![b'k']).is_ok());

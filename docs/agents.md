@@ -19,12 +19,13 @@ while one program runs (`respawn` starts all but the first afresh): its
 program's starts (`respawn`), its screen's revision (one more for each
 piece of output read, each resize, each change to its history: cleared,
 or `history-bytes` set), bells and notifications rung, shell commands
-ended (OSC 133 marks), and 1 once its program ended. Every action (`run`, `send-keys`, `send-mouse`, `signal`,
-`split`, `new-tab`, `new-workspace`, `respawn`) acts at once and prints
-its pane and the version from just before it acted (a new pane's, or a
-respawned one's, as it starts): wait from that one, and nothing its input
-brings is missed. fux never judges whether a program is done: which
-change means done is yours to say (recipes below).
+ended (OSC 133 marks), and 1 once its program ended. Every action
+(`run`, `send-keys`, `send-mouse`, `signal`, `split`, `new-tab`,
+`new-workspace`, `respawn`) acts at once and prints its pane and the
+version from just before it acted (a new pane's, or a respawned one's, as
+it starts): wait from that one, and nothing its input brings is missed.
+fux never judges whether a program is done: which change means done is
+yours to say (recipes below).
 
 ```sh
 fux opts str web name 100 30 size str ./app program str --fast arg run  # start: %2 0.1.0.0.0
@@ -198,8 +199,8 @@ pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
 paints its whole background is marked whole), `styles`; then `json`
 for the screen and what is known of the pane: `cursor` is `[ROW,COL]`,
 `alt_screen` whether a program holds the alternate screen, `history_lines`
-the history kept, `above` the history rows kept above the first row read, `idle_ms`
-since its program last wrote. Rows and columns count from 0.
+the history kept, `above` the history rows kept above the first row read,
+`idle_ms` since its program last wrote. Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
@@ -209,8 +210,8 @@ are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
 read a command's output alone and copy mode's `[` and `]` jump between
 prompts. fux reads marks from any program that sends them. Without marks
-the count stays, and `last-output` says there are none. To send them (in your own startup
-files):
+the count stays, and `last-output` says there are none. To send them (in
+your own startup files):
 
 ```sh
 # bash 4.4 or later (macOS's /bin/bash 3.2 has no PS0), ~/.bashrc
@@ -252,12 +253,15 @@ then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element. An action leaves its
 answer: printed, it is the lines above; given to a word that wants a pane,
 it is its pane, and to `wait`, the version it holds too (`T str y text
-send-keys wait` waits from before the keys); `string` makes it text (`%2 screen string str error
+send-keys wait` waits from before the keys; a name keeps that version, so
+`T wait` later waits from when `T` was made, and `T dup str version get
+changed wait` from now); `string` makes it text (`%2 screen string str error
 contains`). The standard library, written in fuxth, does the rest (`fux
 help` lists it). A mistake every run would make (too few values, a string
 given to `add` or `if`, a request nothing acts on: its error names the word
-to end it with) fails before any word acts; words before a failing one have already acted otherwise. A run exits
-0, or with the status of the failure that stopped it.
+to end it with) fails before any word acts; otherwise the words before a
+failing one have already acted. A run exits 0, or with the status of the
+failure that stopped it.
 
 ## servers: Servers, sizes and more
 
