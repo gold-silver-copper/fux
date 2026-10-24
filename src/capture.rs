@@ -229,16 +229,20 @@ pub fn state(
 ) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
     // What runs in the foreground: a job the shell started, else the
-    // program itself.
-    let foreground =
-        (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
+    // program itself; nothing, where its terminal can't tell.
+    let job = pane.process.job();
+    let foreground = (pane.process.child()).and_then(|child| match job {
+        Ok(job) => Some(job.unwrap_or(child.leader.pid())),
+        Err(_) => None,
+    });
     let program = foreground.and_then(fuxix::process::name);
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
     let commands = screen.commands();
-    let argv = match (&pane.runs, pane.process.job()) {
-        (_, Some(job)) => fuxix::process::argv(job),
-        (Runs::Program(launch), None) => Some(launch.argv.clone()),
-        (Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
+    let argv = match (&pane.runs, job) {
+        (_, Ok(Some(job))) => fuxix::process::argv(job),
+        (Runs::Program(launch), Ok(None)) => Some(launch.argv.clone()),
+        (Runs::Shell, Ok(None)) => foreground.and_then(fuxix::process::argv),
+        (_, Err(_)) => None,
     };
     let (exited, signal) = match pane.process.exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),

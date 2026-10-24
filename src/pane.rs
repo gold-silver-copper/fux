@@ -358,11 +358,14 @@ impl Process {
     }
 
     /// The terminal's foreground process group, if it is not the
-    /// program's own: a job the shell runs.
-    pub fn job(&self) -> Option<Pid> {
-        let child = self.child()?;
+    /// program's own: a job the shell runs; or why the terminal can't
+    /// tell.
+    pub fn job(&self) -> Result<Option<Pid>, fuxix::Errno> {
+        let Some(child) = self.child() else {
+            return Ok(None);
+        };
         let group = fuxix::terminal::foreground_group(&child.master)?;
-        (group != child.leader.pid()).then_some(group)
+        Ok(group.filter(|group| *group != child.leader.pid()))
     }
 
     /// The program's terminal hung up: it is read no more, and waits to be

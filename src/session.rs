@@ -960,7 +960,12 @@ impl Session {
             (Runs::Program(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
         };
-        pane.process.job().or(program).ok_or_else(|| {
+        let job = pane.process.job().map_err(|errno| {
+            let why =
+                format!("{target}: its terminal does not say what runs in its foreground: {errno}");
+            fail(Code::Signal, why)
+        })?;
+        job.or(program).ok_or_else(|| {
             let message = format!("nothing is running in {} but its shell", pane.id);
             fail(Code::OnlyShell, message)
         })

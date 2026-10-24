@@ -230,10 +230,16 @@ pub fn set_window_size(fd: impl AsFd, size: Size) -> Result<()> {
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), set, &size) }).map(drop)
 }
 
-/// The foreground process group of the terminal `fd`, if it has one.
-pub fn foreground_group(fd: impl AsFd) -> Option<Pid> {
+/// The foreground process group of the terminal `fd`: none if it has
+/// none (Linux answers 0) or no session has it as its terminal (`NOTTY`),
+/// else why it can't be told.
+pub fn foreground_group(fd: impl AsFd) -> Result<Option<Pid>> {
     // SAFETY: tcgetpgrp takes a descriptor and touches no memory.
-    Pid::from_raw(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) })
+    match check(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) }) {
+        Ok(group) => Ok(Pid::from_raw(group)),
+        Err(Errno::NOTTY) => Ok(None),
+        Err(errno) => Err(errno),
+    }
 }
 
 /// A new open file for the terminal `fd` is open on, read-write,
@@ -313,7 +319,7 @@ mod tests {
         set_attributes(&slave, &termios).map_err(|e| e.to_string())?;
         assert_eq!(attributes(&slave).map_err(|e| e.to_string())?.modes(), echo);
         // No session has it as its terminal: no foreground group.
-        assert_eq!(foreground_group(&master), None);
+        assert_eq!(foreground_group(&master), Ok(None));
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());
         Ok(())
     }
