@@ -1,6 +1,6 @@
 //! `wait`: a command line that answers once a pane's version (`Version`:
 //! its program's starts, its screen's revision, bells rung, shell commands
-//! ended) differs from the one the caller holds, its program exits, the
+//! ended, its program's end) differs from the one the caller holds, the
 //! pane closes, or the time is up. The caller holds a version from before
 //! what it waits for (the one an action answers, from before it acted, or
 //! a capture's), so nothing that comes between is missed; given none, a
@@ -85,8 +85,8 @@ impl Waiting {
     }
 }
 
-/// What pane `id` answers, if its version differs from `since`, its
-/// program exited or it closed: `%2 0.57.1.3 screen done`, and as JSON.
+/// What pane `id` answers, if its version differs from `since` or it
+/// closed: `%2 0.57.1.3.0 screen done`, and as JSON.
 fn told(id: PaneId, pane: Option<&Pane>, since: Version) -> Option<Reply> {
     let Some(pane) = pane else {
         let end = End::Failed {
@@ -95,8 +95,8 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Version) -> Option<Reply> {
         };
         return Some(said(id, "closed".to_owned(), Vec::new(), end));
     };
-    let (now, ended) = (pane.version(), pane.process.exit_status());
-    if now == since && ended.is_none() {
+    let now = pane.version();
+    if now == since {
         return None;
     }
     // A program started again is a new one: what its counts are now says
@@ -112,6 +112,8 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Version) -> Option<Reply> {
         .filter_map(|(changed, what)| changed.then_some(what))
         .collect(),
     };
+    // Its end, if it ended since.
+    let ended = (pane.process.exit_status()).filter(|_| now.ended != since.ended);
     let ended_said = ended.map(crate::process::told);
     let line = std::iter::once(now.to_string())
         .chain(changed.iter().map(|c| (*c).to_owned()))
@@ -166,7 +168,7 @@ fn said(id: PaneId, line: String, fields: Vec<(&'static str, Json<'static>)>, en
 mod tests {
     use crate::command::Version;
 
-    /// A version is written and read back as `STARTS.SCREEN.BELLS.DONE`.
+    /// A version is written and read back as `STARTS.SCREEN.BELLS.DONE.ENDED`.
     #[test]
     fn a_version_reads_back_as_written() {
         let version = Version {
@@ -174,10 +176,11 @@ mod tests {
             screen: 57,
             bells: 0,
             done: 3,
+            ended: 1,
         };
-        assert_eq!(version.to_string(), "1.57.0.3");
-        assert_eq!("1.57.0.3".parse(), Ok(version));
-        assert!("1.57.0".parse::<Version>().is_err());
-        assert!("1.57.0.3.4".parse::<Version>().is_err());
+        assert_eq!(version.to_string(), "1.57.0.3.1");
+        assert_eq!("1.57.0.3.1".parse(), Ok(version));
+        assert!("1.57.0.3".parse::<Version>().is_err());
+        assert!("1.57.0.3.1.4".parse::<Version>().is_err());
     }
 }

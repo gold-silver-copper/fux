@@ -383,7 +383,8 @@ pub enum Begun {
 }
 
 /// The longest command line typed into a new shell: what a terminal in
-/// line mode keeps of a line on macOS (`MAX_CANON`), less its end.
+/// line mode keeps of a line on macOS (`MAX_CANON`, 1024), less its end;
+/// the smaller of macOS's and Linux's (4095).
 const TYPED: usize = 1023;
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
@@ -666,7 +667,7 @@ fn bad_value(usage: command::Usage) -> Error {
 
 /// The answer of an action on `panes` (keys, a mouse event, a signal, a
 /// program started): each pane it went to and its version before it
-/// acted, or as it starts, a line each (`%2 0.57.0.3`), and as JSON; what
+/// acted, or as it starts, a line each (`%2 0.57.0.3.0`), and as JSON; what
 /// a wait for its effect waits to differ from.
 fn acted(panes: impl IntoIterator<Item = (PaneId, command::Version)>) -> Reply {
     let mut reply = Reply::default();
@@ -4241,10 +4242,10 @@ mod tests {
         assert!(run(&mut s, "opts str main name new-workspace").is_err());
         assert_eq!(
             output(&mut s, "opts str workspace-3 name new-workspace")?,
-            "%2 0.1.0.0\n"
+            "%2 0.1.0.0.0\n"
         );
         // +3 would be workspace-3, which is taken.
-        assert_eq!(output(&mut s, "opts new-workspace")?, "%3 0.1.0.0\n");
+        assert_eq!(output(&mut s, "opts new-workspace")?, "%3 0.1.0.0.0\n");
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace

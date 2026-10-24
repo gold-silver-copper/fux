@@ -340,11 +340,17 @@ class Driver:
 # ---------------------------------------------------------------------- fux
 
 
+def ended(version):
+    """Whether a fux version says its program ended (its last count)."""
+    return version.rsplit(".", 1)[-1] == "1"
+
+
 class Fux(Driver):
     """fux, driven with fuxth: each call one program, `str` before each
     text. Every action answers its pane and the pane's version from just
-    before it acted (`%2 0.57.0.3`); the one wait, `str V changed wait`,
-    returns once the version differs from V or the program ended. What
+    before it acted (`%2 0.57.0.3.0`: starts, screen, bells, commands
+    done, ended); the one wait, `str V changed wait`, returns once the
+    version differs from V. What
     "done" means is the driver's to judge, as `fux help-agents` says: read
     the screen after each change, the version held always from before."""
     name = "fux"
@@ -407,7 +413,7 @@ class Fux(Driver):
 
     def changed(self, pane, version, timeout):
         """One wait for the pane's version to differ from `version`: the
-        answer's words (`%2 0.61.0.3 screen`, `… exited 3`), or None when
+        answer's words (`%2 0.61.0.3.0 screen`, `… exited 3`), or None when
         nothing changed in time (124)."""
         out = self.fux(*self.pane(pane), "str", version, "changed", str(max(1, int(timeout))),
                        "timeout", "wait", check=False, timeout=timeout + 10)
@@ -435,18 +441,14 @@ class Fux(Driver):
             value = test()
             if value:
                 return value
+            if ended(version):
+                raise Exited(f"{pane} ended at {version}")
             left = end - time.time()
             if left <= 0:
                 raise Timeout(f"{pane} unchanged at {version}")
             answer = self.changed(pane, version, left)
-            if answer is None:
-                continue
-            version = self.versions[pane] = answer[1]
-            if "exited" in answer or "killed" in answer:
-                value = test()
-                if value:
-                    return value
-                raise Exited(" ".join(answer))
+            if answer is not None:
+                version = self.versions[pane] = answer[1]
 
     def wait_text(self, pane, text, timeout=10):
         return self.until(pane, lambda: text in self.screen(pane), timeout)
@@ -470,7 +472,7 @@ class Fux(Driver):
         version = self.since(pane)
         while time.time() < end:
             answer = self.changed(pane, version, quiet)
-            if answer is None or "exited" in answer or "killed" in answer:
+            if answer is None or ended(answer[1]):
                 return True
             version = self.versions[pane] = answer[1]
         raise Timeout(f"{pane} never quiet for {quiet}s")
@@ -479,16 +481,14 @@ class Fux(Driver):
         """The program's status: `exited`, or 128 and the signal that killed it."""
         end = time.time() + timeout
         version = self.since(pane)
-        while True:
+        while not ended(version):
             left = end - time.time()
             if left <= 0:
                 raise Timeout(f"{pane} still running")
             answer = self.changed(pane, version, left)
-            if answer is None:
-                continue
-            version = self.versions[pane] = answer[1]
-            if "exited" in answer or "killed" in answer:
-                return self.exit_status(pane)
+            if answer is not None:
+                version = self.versions[pane] = answer[1]
+        return self.exit_status(pane)
 
     def wait_bell(self, pane, timeout=10):
         """The version's third count grows."""

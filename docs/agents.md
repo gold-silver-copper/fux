@@ -14,22 +14,24 @@ start from `opts`, and only `run` takes a program: the other two start a
 shell (`str 'CMD' typed` types a line into it).
 
 **Every pane has a version, and a wait waits for it to change.** A version
-(`0.57.1.3`) counts what only grows: its program's starts (`respawn`), its
-screen's revision (any change to the screen or its history), bells and
-notifications rung, and shell commands ended (OSC 133 marks). Every action
-(`run`, `send-keys`, `send-mouse`, `signal`, `split`, `new-tab`, `respawn`)
-acts at once and prints its pane and the version from just before it
-acted (a new pane's as it starts): wait from that one, and nothing its
-input brings is missed. fux never judges whether a program is done: which
+(`0.57.1.3.0`, `STARTS.SCREEN.BELLS.DONE.ENDED`) counts what only grows:
+its program's starts (`respawn`), its screen's revision (one more for each
+piece of output read, each resize, each history cleared), bells and
+notifications rung, shell commands ended (OSC 133 marks), and 1 once its
+program ended. Every action (`run`, `send-keys`, `send-mouse`, `signal`,
+`split`, `new-tab`, `new-workspace`, `respawn`) acts at once and prints
+its pane and the version from just before it acted (a new pane's, or a
+respawned one's, as it starts): wait from that one, and nothing its input
+brings is missed. fux never judges whether a program is done: which
 change means done is yours to say (recipes below).
 
 ```sh
-fux opts str web name 100 30 size str ./app program str --fast arg run  # start: %2 0.1.0.0
-fux %2 str y text str Enter key send-keys      # keys: %2 0.57.0.3, its version before them
+fux opts str web name 100 30 size str ./app program str --fast arg run  # start: %2 0.1.0.0.0
+fux %2 str y text str Enter key send-keys      # keys: %2 0.57.0.3.0, its version before them
 fux %2 str 'a long prompt' paste send-keys     # a paste, bracketed if the program asked
-fux %2 str 0.57.0.3 changed wait               # until it differs: %2 0.61.0.3 screen
+fux %2 str 0.57.0.3.0 changed wait             # until it differs: %2 0.61.0.3.0 screen
 fux %2 wait                                    # until it differs from now's
-fux %2 str 0.61.0.3 changed 600 timeout wait   # 600s at most (else 30, the server's wait-seconds)
+fux %2 str 0.61.0.3.0 changed 600 timeout wait # 600s at most (else 30, the server's wait-seconds)
 fux %2 all-history capture                     # read the screen; also main-screen, last-output, styles
 fux %2 capture json                            # as JSON, with version, exited, reading
 fux %2 str version get                         # one field: version, exited, reading, last_status
@@ -42,73 +44,87 @@ fux ls                                         # what there is: workspaces, tabs
 fux str agent workspace kill                   # at the end: everything run started
 ```
 
-A wait answers the pane, its version and what changed: `%2 0.61.1.4
-screen bell done`, `exited 3` or `killed by SIGTERM` once its program
-ended, `respawned` once started again (its counts then start afresh). On
-a tab or workspace it waits on every pane, answering those that changed.
-Status: 0 changed or exited; 1 failed (`fux: CODE: MESSAGE` on stderr); 4
-the pane closed (a shell pane closes when its shell exits); 124 nothing
-changed in time (`%2 0.61.1.4 timeout`). Clean up with `fux str agent
-workspace kill`; stop what you start by its pid, never `pkill -f`.
+A wait answers the pane, its version and what changed: `%2 0.61.1.4.0
+screen bell done`, with `exited 3` or `killed by SIGTERM` if its program
+ended since, `respawned` once started again (its counts then start
+afresh). A wait from a version that already holds the end waits for
+something else, as any wait does. On a tab or workspace it waits on the
+panes there as it begins, from each one's version then, answering those
+that changed. Status: 0 changed; 1 failed (`fux: CODE: MESSAGE` on
+stderr); 4 the pane closed (a shell pane closes when its shell exits); 124
+nothing changed in time (`%2 0.61.1.4.0 timeout`). Clean up with `fux str
+agent workspace kill`; stop what you start by its pid, never `pkill -f`.
 
 Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 `keys`, `read`, `shells`, `programs`, `servers`.
 
 ## recipes: Waiting for what you need
 
-Each is a few lines of shell around `changed`; the version a loop holds
-is always from before what it waits for, so a change between two calls is
-never missed. `fux … | cut -d' ' -f2` takes the version from an answer.
+Each is a few lines of bash around one helper, `step`: it waits from the
+version in `V` for pane `P` to change, at most `$1` seconds, and puts the
+new version in `V`. `V` is always from before what you wait for, so a
+change between two calls is never missed.
+
+```sh
+step() {  # status: 0 changed; 2 its program ended; 124 nothing in time; 4 the pane closed; 1 failed
+  local out; out=$(fux "$P" str "$V" changed "$1" timeout wait) || return
+  V=${out#* }; V=${V%% *}
+  case ${V##*.} in 1) return 2 ;; esac
+}
+```
 
 - **A text the reply writes:** count it before, act, and wait until there
-  is one more. Text the input itself shows is counted once it shows, so
-  it never ends its own wait: here the prompt holds `DONE` too.
+  is one more. Choose a text only the reply holds: here the question
+  holds no `42`. If the input itself holds it, count once the input shows,
+  so it is in the count, not in what you wait for; a program that draws
+  the input again (a TUI that keeps it above the reply) counts it again.
+  `grep -c` counts lines, and history beyond `history-lines` is dropped,
+  which a count over a long run must allow for.
 
   ```sh
-  V=$(fux %2 str 'reply DONE when finished' paste send-keys | cut -d' ' -f2)
-  until fux %2 all-history capture | grep -q 'reply DONE'; do
-    V=$(fux %2 str "$V" changed wait | cut -d' ' -f2)
-  done
-  n=$(fux %2 all-history capture | grep -c DONE)          # the prompt's own
-  V=$(fux %2 str Enter key send-keys | cut -d' ' -f2)
-  until [ "$(fux %2 all-history capture | grep -c DONE)" -gt "$n" ]; do
-    V=$(fux %2 str "$V" changed 600 timeout wait | cut -d' ' -f2) || break
+  read -r P V < <(fux %2 str 'What is 6 times 7? Digits only.' paste send-keys)
+  n=$(fux "$P" all-history capture | grep -c 42)
+  read -r P V < <(fux "$P" str Enter key send-keys)
+  end=$((SECONDS + 600))
+  until [ "$(fux "$P" all-history capture | grep -c 42)" -gt "$n" ]; do
+    [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)) || break
   done
   ```
-- **Quiet for N seconds** (an agent's TUI behind a spinner, done or
-  asking you something): wait until no change comes for N seconds.
+- **Quiet for N seconds** (an agent's TUI done, or asking you something):
+  wait until no change comes for N seconds; `step`'s 124 ends the loop. A
+  spinner or clock on the screen is a change: then wait for a text.
 
   ```sh
-  V=$(fux %2 str 'fix the test' paste str Enter key send-keys | cut -d' ' -f2)
-  while out=$(fux %2 str "$V" changed 5 timeout wait); do
-    case $out in *exited*|*killed*) break ;; esac
-    V=$(echo "$out" | cut -d' ' -f2)
-  done
+  read -r P V < <(fux %2 str 'fix the test' paste str Enter key send-keys)
+  end=$((SECONDS + 600))
+  while step 5; do [ "$SECONDS" -lt "$end" ] || break; done
   ```
 - **A shell command's end, with marks** (`shells` says how to turn them
-  on): the version's last count grows as one ends.
+  on): the version's fourth count, `DONE`, grows as one ends.
 
   ```sh
-  V=$(fux %3 str 'make test' line | cut -d' ' -f2); D=${V##*.}
-  while [ "${V##*.}" -le "$D" ]; do
-    V=$(fux %3 str "$V" changed 600 timeout wait | cut -d' ' -f2) || break
+  read -r P V < <(fux %3 str 'make test' line); D=$(cut -d. -f4 <<<"$V")
+  end=$((SECONDS + 600))
+  while [ "$(cut -d. -f4 <<<"$V")" -le "$D" ]; do
+    [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)) || break
   done
-  fux %3 str last_status get; fux %3 last-output capture
+  fux "$P" str last_status get; fux "$P" last-output capture
   ```
 - **A shell command's end, without marks:** print a text only its end can
   show, quoted so the line you type does not hold it, and wait for it as
-  above: `str "make test; echo END-OF''-RUN \$?" line` (`$status` in fish)
-  shows `END-OF''-RUN` as you type it and `END-OF-RUN 0` at its end.
-- **A program's exit:**
+  for a text: `str "make test; echo END-OF''-RUN \$?" line` (`$status` in
+  fish) shows `END-OF''-RUN` as you type it and `END-OF-RUN 0` at its end.
+- **A program's exit:** `step` gives 2 once the version's last count,
+  `ENDED`, is 1.
 
   ```sh
-  read P V < <(fux opts str 'cargo test' command run)
-  until out=$(fux $P str "$V" changed 600 timeout wait) && grep -qE 'exited|killed' <<<"$out"; do
-    V=$(cut -d' ' -f2 <<<"$out")
-  done
-  fux $P str exited get
+  read -r P V < <(fux opts str 'cargo test' command run)
+  end=$((SECONDS + 600))
+  while [ "$SECONDS" -lt "$end" ] && step $((end - SECONDS)); do :; done
+  fux "$P" str exited get
   ```
-- **A bell or notification:** the version's third count grows.
+- **A bell or notification:** the version's third count, `BELLS`, grows:
+  loop as for a command's end, with `-f3`.
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude
@@ -206,9 +222,15 @@ A file of fuxth runs with `fux FILE` (or `fux -` from stdin), and keeps its
 names between steps:
 
 ```sh
-# test.fux
-opts str tests name str bash program run let T
-T str 'cargo test' line drop
+# test.fux: run the tests, wait until they end, read what they printed
+opts str tests name str 'cargo test' command run let T
+# answer -- : wait from an answer's version until the pane's program ends
+define until-ended
+  string str ' ' split-on 1 at
+  dup str . split-on last str 1 eq
+  if drop else T swap changed 600 timeout wait until-ended then
+end
+T until-ended
 T all-history capture
 ```
 

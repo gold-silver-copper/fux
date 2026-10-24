@@ -875,6 +875,8 @@ impl Screen {
     /// Drops the main screen's scrollback; the screen stays (ctlseqs, ED 3).
     pub(crate) fn clear_history(&mut self) {
         self.primary.clear_history();
+        // Rows left history: every reader reads again.
+        self.version = self.version.wrapping_add(1);
         self.structural = self.version;
     }
 

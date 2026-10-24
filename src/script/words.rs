@@ -117,9 +117,9 @@ pub const WORDS: &[Word] = &[
     word("Starting", "new-workspace", "opts -- pane", "a workspace with a tab and a shell"),
     word("Starting", "respawn", "subject -- pane", "start again in its pane the program run started"),
     // Waiting
-    word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE, as an action or capture json gives it), not from now"),
+    word("Waiting", "changed", "x text -- x", "wait from this version of the pane (STARTS.SCREEN.BELLS.DONE.ENDED, as an action or `str version get` gives it), not from now"),
     word("Waiting", "timeout", "x secs -- x", "how long a wait waits at most, else the server's wait-seconds (30)"),
-    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from now's (or the one changed gives), its program exits or the pane closes; a tab or workspace: any of its panes"),
+    word("Waiting", "wait", "place -- answer", "wait until the pane's version differs from now's (or the one changed gives) or the pane closes; a tab or workspace: any of its panes"),
     // Input
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
@@ -515,7 +515,7 @@ fn modify(
             let bad = || {
                 fail(
                     Code::BadValue,
-                    format!("{text:?} is no version: STARTS.SCREEN.BELLS.DONE"),
+                    format!("{text:?} is no version: STARTS.SCREEN.BELLS.DONE.ENDED"),
                 )
             };
             waits.since = Some(text.parse().map_err(|()| bad())?);

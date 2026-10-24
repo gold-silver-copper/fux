@@ -250,15 +250,17 @@ wire! {
 
 wire! {
     /// Where a pane stands, as counts that only grow: its program's starts
-    /// (`respawn`), its screen's revision (fux-vt's: every change to the
-    /// screen or its history), bells and notifications rung, and shell
-    /// commands ended (OSC 133 `D`). Written `STARTS.SCREEN.BELLS.DONE`.
+    /// (`respawn`), its screen's revision (fux-vt's: bumped by each piece
+    /// of output it reads, each resize and each history cleared), bells and
+    /// notifications rung, shell commands ended (OSC 133 `D`), and whether
+    /// its program ended (1). Written `STARTS.SCREEN.BELLS.DONE.ENDED`.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Version {
         pub starts: u64,
         pub screen: u64,
         pub bells: u64,
         pub done: u64,
+        pub ended: u64,
     }
 }
 
@@ -269,12 +271,13 @@ impl std::fmt::Display for Version {
             screen,
             bells,
             done,
+            ended,
         } = self;
-        write!(f, "{starts}.{screen}.{bells}.{done}")
+        write!(f, "{starts}.{screen}.{bells}.{done}.{ended}")
     }
 }
 
-/// `STARTS.SCREEN.BELLS.DONE`, as a version is written.
+/// `STARTS.SCREEN.BELLS.DONE.ENDED`, as a version is written.
 impl std::str::FromStr for Version {
     type Err = ();
     fn from_str(text: &str) -> Result<Version, ()> {
@@ -285,6 +288,7 @@ impl std::str::FromStr for Version {
             screen: next()?,
             bells: next()?,
             done: next()?,
+            ended: next()?,
         };
         match parts.next() {
             None => Ok(version),
@@ -295,8 +299,8 @@ impl std::str::FromStr for Version {
 
 wire! {
     /// A wait: until the version of any of its panes differs from `since`
-    /// (else from theirs as it begins), its program exits or its pane
-    /// closes; how long at most.
+    /// (else from theirs as it begins) or its pane closes; how long at
+    /// most.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
         pub since: Option<Version>,

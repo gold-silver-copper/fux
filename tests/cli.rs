@@ -63,6 +63,15 @@ fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
         refused.stderr
     );
     assert!(!server.ok(&["ls"])?.contains("%5"));
+    // So is a line longer than the terminal keeps (1023 bytes, macOS's).
+    let long: String = std::iter::repeat_n('x', 1024).collect();
+    let refused = server.fux(&["str", "%1", "pane", "str", &long, "typed", "split"])?;
+    assert!(
+        refused.stderr.starts_with("fux: bad_value: "),
+        "{}",
+        refused.stderr
+    );
+    assert!(!server.ok(&["ls"])?.contains("%5"));
     Ok(())
 }
 
@@ -278,7 +287,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     // tab starts a shell, and waits on nothing.
     for unused in [
         &["str", "top", "program"][..],
-        &["str", "0.1.0.0", "changed"][..],
+        &["str", "0.1.0.0.0", "changed"][..],
     ] {
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;

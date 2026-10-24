@@ -44,10 +44,10 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-fux opts str htop program run                     # start htop: %3 0.1.0.0, its pane and version
-fux %3 str 0.1.0.0 changed wait                   # until its version differs: %3 0.4.0.0 screen
+fux opts str htop program run                     # start htop: %3 0.1.0.0.0, its pane and version
+fux %3 str 0.1.0.0.0 changed wait                 # until its version differs: %3 0.4.0.0.0 screen
 fux %3 capture                                    # its screen
-fux %3 str q text send-keys                       # press q: %3 0.9.0.0, its version before
+fux %3 str q text send-keys                       # press q: %3 0.9.0.0.0, its version before
 ```
 
 - A number is a value; `%3`, `@2` and `+1` alone are a pane, a tab and a
@@ -56,13 +56,14 @@ fux %3 str q text send-keys                       # press q: %3 0.9.0.0, its ver
 - What is left at the end is printed, a value a line: a pane as `%3`, a tab
   `@2`, a workspace `+1`, a client `c1`, a capture or listing as its text.
   `json` turns a value into JSON: `fux ls json`, `fux str %3 pane info json`.
-- Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE`: counts of its
-  program's starts, its screen's changes, bells rung and shell commands
-  ended (OSC 133 marks), which only grow. An action (`run`, `send-keys`,
-  `signal` …) acts at once and answers its pane and its version from just
-  before it acted. `PANE str V changed wait` waits until the version
-  differs from V, its program exits or the pane closes, and answers what
-  changed: `%3 0.57.1.4 screen bell done`, `exited 2`. fux never judges
+- Every pane has a **version**, `STARTS.SCREEN.BELLS.DONE.ENDED`: counts
+  of its program's starts, its screen's revisions (output read, resizes,
+  history cleared), bells rung and shell commands ended (OSC 133 marks),
+  and 1 once its program ended; they only grow. An action (`run`,
+  `send-keys`, `signal` …) acts at once and answers its pane and its
+  version from just before it acted. `PANE str V changed wait` waits until
+  the version differs from V or the pane closes, and answers what changed:
+  `%3 0.57.1.4.0 screen bell done`, `exited 2`. fux never judges
   whether a program is done: [docs/agents.md](docs/agents.md) has recipes
   (a text, quiet for N seconds, a command's end, an exit). A failure
   prints `fux: CODE: MESSAGE` on stderr, with the file, line and word, and
@@ -111,7 +112,7 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 
 ```sh
 fux opts str web name 120 40 size str './app --verbose' command run
-fux %3 str 0.57.0.3 changed 60 timeout wait
+fux %3 str 0.57.0.3.0 changed 60 timeout wait
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys
 ```
@@ -119,7 +120,7 @@ fux %3 str 'make test' text str Enter key send-keys
 A program can name what it made:
 
 ```sh
-fux opts str sh program run let P   P str 'echo hello' line drop   P wait   P screen
+fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P string str ' ' split-on 1 at let V   P V changed wait drop   P screen
 ```
 
 The bundled words are written in fuxth themselves: `type` and `press` (text
@@ -294,7 +295,7 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 | `opts … run` (`-- pane`) | start a program in a tab of its own in workspace `agent` (`str WS in` elsewhere), no client moved to it; its pane stays once it exits, with its last screen and status. Options: `name`, `size` (COLS ROWS), `cwd`, `env` (KEY VALUE, a pane, tab or workspace as its id: `%3`), `program`, `arg`, `log-to`; answers the pane and its version as it starts |
 | `pane … split`, `opts … new-tab`, `opts … new-workspace` | a shell beside a pane (or with `program`, that program), in a new tab (`str WS in`: a workspace, made if missing) or a new workspace; `horizontal`/`vertical`, `typed LINE` types a line into the new shell. Names are unique, and do not start with `+`, `%` or `@`. An option a word does not use is refused |
 | `pane … respawn` | start again in its pane what `run` started, its id and size kept; `kill-first` ends it first |
-| `pane … wait` | wait until its version differs from `str V changed` (else from now's), its program exits or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of its panes |
+| `pane … wait` | wait until its version differs from `str V changed` (else from now's) or the pane closes, and answer what changed; `SECS timeout` (else `wait-seconds`, 30). On a tab or workspace, any of its panes |
 | `pane … send-keys` | type `str T text`, keys by name (`str C-c key`), `str T paste` or `str FILE paste-file` (bracketed if the program asked), bytes as they are (`str 1b5b bytes`, in hex: part of a key's sequence or of a character); `N times` repeats the input just before it; answers at once, the pane and its version before the keys. To a tab: each of its panes. To a client (`str c1 client`): as typed at its terminal, its bindings included |
 | `pane str ACTION ROW COL mouse send-mouse` | a mouse event at a cell, from 0 (`click right middle press release wheel-up wheel-down move`), encoded as the program asked |
 | `pane … capture` | the pane's text, trimmed, a line wrapped at the pane's width joined whole (`wrapped`: each screen row a line); `N history`, `all-history`, `full`, `styles`, `marks` (reverse video and background colours as `⟦this⟧`), `main-screen`, `alt-screen`, `last-output`, `A B rows`, `A B cols` |
@@ -336,7 +337,7 @@ interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main",
   "panes":[{"id":"%1","name":"zsh","title":"","rows":23,"cols":80,"pid":4242,
-    "program":"vim","paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
+    "version":"0.57.0.3.0","program":"vim","reading":false,"paused":false,"exited":null,"signal":null,"idle_ms":1520,"alt_screen":true,
     "mouse":true,"mouse_mode":"press_release","bracketed_paste":true,"pictures":[],"cursor_visible":true,
     "history_lines":0,"copy_mode":false,"command_running":false,
     "last_status":null,"bells":0,"notification":null,"cwd":"/home/me",

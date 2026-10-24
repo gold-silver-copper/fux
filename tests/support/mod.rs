@@ -237,7 +237,7 @@ impl Server {
         Ok(out.stdout)
     }
 
-    /// The version of `pane` (`STARTS.SCREEN.BELLS.DONE`).
+    /// The version of `pane` (`STARTS.SCREEN.BELLS.DONE.ENDED`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self
             .ok(&["str", pane, "pane", "str", "version", "get"])?
@@ -246,18 +246,23 @@ impl Server {
     }
 
     /// Waits, as `docs/agents.md`'s recipes do, from version `since` until
-    /// `done` holds of `pane`'s whole capture; its capture then.
+    /// `done` holds of `pane`'s whole capture; its capture then. Fails if
+    /// its program ends first, or after `PATIENCE`.
     pub fn until(
         &self,
         pane: &str,
         since: &str,
         done: impl Fn(&str) -> bool,
     ) -> Result<String, String> {
+        let deadline = after(PATIENCE);
         let mut since = since.to_owned();
         loop {
             let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
             if done(&capture) {
                 return Ok(capture);
+            }
+            if ended(&since) || Instant::now() > deadline {
+                return Err(format!("{pane} never came to it, at {since}: {capture}"));
             }
             let waited = [
                 "str", pane, "pane", "str", &since, "changed", "10", "timeout", "wait",
@@ -265,13 +270,6 @@ impl Server {
             let out = self.fux(&waited)?;
             if out.status != 0 {
                 return Err(format!("{pane} never came to it: {}{capture}", out.stderr));
-            }
-            if out.stdout.contains(" exited ") || out.stdout.contains(" killed by ") {
-                let capture = self.ok(&["str", pane, "pane", "all-history", "capture"])?;
-                return match done(&capture) {
-                    true => Ok(capture),
-                    false => Err(format!("{pane} ended first: {}{capture}", out.stdout)),
-                };
             }
             since = out
                 .stdout
@@ -288,17 +286,28 @@ impl Server {
         self.until(pane, &since, |capture| capture.contains(text))
     }
 
-    /// Waits until `pane`'s program exits: the wait's answer.
+    /// Waits until `pane`'s program has ended, as its version says: its
+    /// `exited` then (`3`, or `null` if a signal killed it).
     pub fn exits(&self, pane: &str) -> Result<String, String> {
-        loop {
-            let out = self.fux(&["str", pane, "pane", "10", "timeout", "wait"])?;
-            if out.status != 0 && out.status != 124 {
+        let deadline = after(PATIENCE);
+        let mut since = self.version(pane)?;
+        while !ended(&since) {
+            if Instant::now() > deadline {
+                return Err(format!("{pane} did not end, at {since}"));
+            }
+            let waited = [
+                "str", pane, "pane", "str", &since, "changed", "10", "timeout", "wait",
+            ];
+            let out = self.fux(&waited)?;
+            if out.status != 0 {
                 return Err(format!("{pane}: {}", out.stderr));
             }
-            if out.stdout.contains(" exited ") || out.stdout.contains(" killed by ") {
-                return Ok(out.stdout);
-            }
+            since = self.version(pane)?;
         }
+        Ok(self
+            .ok(&["str", pane, "pane", "str", "exited", "get"])?
+            .trim()
+            .to_owned())
     }
 
     pub fn attach(&self, rows: u16, cols: u16) -> Result<Client, String> {
@@ -989,4 +998,9 @@ pub fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
         client.pump()?;
         Ok(painted(client).matches(what).count() >= count)
     })
+}
+
+/// Whether `version` says its program ended (`ENDED`, its last count, 1).
+pub fn ended(version: &str) -> bool {
+    version.rsplit('.').next() == Some("1")
 }

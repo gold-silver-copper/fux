@@ -50,7 +50,7 @@ Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, a version, what to read) goes on the pane before it
-(`%2 str y text send-keys`, `%2 str 0.57.0.3 changed wait`, `%2
+(`%2 str y text send-keys`, `%2 str 0.57.0.3.0 changed wait`, `%2
 all-history capture`); only run, new-tab and new-workspace start from opts
 (`opts str 'make test' command run`). An action answers at once, with its
 pane's version before it acted; a wait waits for the version to differ,
@@ -220,9 +220,9 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
         "respawn" => "fux %3 kill-first respawn",
-        "wait" => "fux %3 str 0.57.0.3 changed 60 timeout wait",
+        "wait" => "fux %3 str 0.57.0.3.0 changed 60 timeout wait",
         "help-agents-on" => "fux str waits help-agents-on",
-        "changed" => "fux %3 str 0.57.0.3 changed wait",
+        "changed" => "fux %3 str 0.57.0.3.0 changed wait",
         "timeout" => "fux %3 300 timeout wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "bytes" => "fux %3 str 1b5b41 bytes send-keys",

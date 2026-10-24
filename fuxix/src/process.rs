@@ -85,8 +85,9 @@ macro_rules! signals {
 
 signals! {
     /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
-    /// `Kill`, and any of these for `fux signal`), and `Tstp`, which koh's client sends itself to suspend: a shell reports a job `Tstp` stopped as "Stopped", and one
-    /// `Stop` stopped as "Stopped (signal)". The last six are those a
+    /// `Kill`, and any of these for `fux signal`), and `Tstp`, which a
+    /// client sends itself to suspend: a shell reports a job `Tstp` stopped
+    /// as "Stopped", and one `Stop` stopped as "Stopped (signal)". The last six are those a
     /// program dies of on its own, which fux names when it tells a death.
     Hup "HUP" SIGHUP,
     Int "INT" SIGINT,
@@ -422,61 +423,68 @@ pub fn cwd(pid: Pid) -> Option<PathBuf> {
 }
 
 /// Whether a process of the foreground group of the terminal whose master
-/// is `master` (`leader`'s group, with none) has a thread blocked in a read
-/// of that terminal (read, readv, pread, splice): as Linux says in `/proc`, each
-/// thread's state and system call. A thread waiting in poll, select or
-/// epoll is not reading. `None` where the system does not say.
+/// is `master` has a thread blocked in a read of that terminal (read,
+/// readv, pread, splice): as Linux says in `/proc`, each thread's state and
+/// system call. A thread waiting in poll, select or epoll is not reading.
+/// `None` where the system does not say: no foreground group, or a process
+/// or thread `/proc` would not show (one that ended meanwhile too), unless
+/// one already seen reads.
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 pub fn reading_terminal(master: &crate::pty::Master, leader: Pid) -> Option<bool> {
-    let group = crate::terminal::foreground_group(master).unwrap_or(leader);
+    let group = crate::terminal::foreground_group(master)?.as_raw();
     let tty = master.slave_path();
-    let in_group = |pid: &Pid| {
-        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse::<i32>().ok())
-                == Some(group.as_raw())
-        })
+    let group_of = |pid: Pid| -> Option<i32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(2)?
+            .parse()
+            .ok()
     };
     // The leader's, and the orphans of the group this process adopted
     // (`adopt_orphans`), with theirs.
-    let adopted = children("self").into_iter().filter(|p| *p != leader);
+    let adopted =
+        (children("self").into_iter()).filter(|p| *p != leader && group_of(*p) == Some(group));
     let roots: Vec<Pid> = std::iter::once(leader).chain(adopted).collect();
-    let members = (roots.iter())
-        .flat_map(|root| std::iter::once(*root).chain(below(*root)))
-        .filter(in_group);
-    let reads = |pid: Pid| {
-        let tasks = std::fs::read_dir(format!("/proc/{pid}/task"))
-            .into_iter()
-            .flatten();
-        tasks.flatten().any(|task| {
-            let fd = task.file_name().to_str().and_then(|tid| read_in(pid, tid));
-            fd.is_some_and(|fd| {
-                std::fs::read_link(format!("/proc/{pid}/fd/{fd}"))
-                    .is_ok_and(|target| target == tty || target == std::path::Path::new("/dev/tty"))
-            })
-        })
-    };
-    Some(members.into_iter().any(reads))
+    for pid in (roots.iter()).flat_map(|root| std::iter::once(*root).chain(below(*root))) {
+        if group_of(pid)? != group {
+            continue;
+        }
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()? {
+            let task = task.ok()?.file_name();
+            let Some(fd) = read_in(pid, task.to_str()?)? else {
+                continue;
+            };
+            let target = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).ok()?;
+            if target == tty || target == std::path::Path::new("/dev/tty") {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
 }
 
 /// The descriptor thread `tid` of `pid` is blocked reading, if it sleeps
-/// in read, readv, pread or splice.
+/// in read, readv, pread or splice; `None` if `/proc` would not say.
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn read_in(pid: Pid, tid: &str) -> Option<u64> {
+fn read_in(pid: Pid, tid: &str) -> Option<Option<u64>> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
     if stat.rsplit_once(')')?.1.split_whitespace().next()? != "S" {
-        return None;
+        return Some(None);
     }
     let call = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/syscall")).ok()?;
     let mut words = call.split_whitespace();
-    let nr: libc::c_long = words.next()?.parse().ok()?;
-    let fd = u64::from_str_radix(words.next()?.trim_start_matches("0x"), 16).ok()?;
+    // `running`, or -1 outside a system call: not reading.
+    let Ok(nr) = words.next()?.parse::<libc::c_long>() else {
+        return Some(None);
+    };
     // splice too: `cat` reads its terminal so.
     let reads = [
         libc::SYS_read,
@@ -485,7 +493,11 @@ fn read_in(pid: Pid, tid: &str) -> Option<u64> {
         libc::SYS_preadv,
         libc::SYS_splice,
     ];
-    reads.contains(&nr).then_some(fd)
+    if !reads.contains(&nr) {
+        return Some(None);
+    }
+    let fd = u64::from_str_radix(words.next()?.trim_start_matches("0x"), 16).ok()?;
+    Some(Some(fd))
 }
 
 /// Whether a process of the terminal's foreground group reads it: macOS,

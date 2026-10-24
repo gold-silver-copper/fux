@@ -1109,8 +1109,8 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
         Err(_) => machine.stack(),
     };
     for value in stack {
-        // An answer with nothing to say (a wait for quiet, an empty
-        // listing) prints no blank line; options or a request, nothing.
+        // An answer with nothing to say (an empty listing) prints no
+        // blank line; options or a request, nothing.
         if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
             || matches!(value, Value::App(Fux::Opts(_)))
         {

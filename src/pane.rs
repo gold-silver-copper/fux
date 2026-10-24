@@ -413,7 +413,7 @@ pub(crate) fn basename(program: &str) -> String {
 /// notifications (OSC 9, 777, 99) with the last one's text.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
-    /// Bells and notifications together, as `wait-bell` counts them.
+    /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
     pub last: Option<String>,
 }
@@ -776,6 +776,7 @@ impl Pane {
             screen: self.screen().version(),
             bells: self.alerts.rung,
             done: self.screen().commands().finished,
+            ended: u64::from(self.process.exit_status().is_some()),
         }
     }
 

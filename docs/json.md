@@ -19,7 +19,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `title` | what the program set (OSC 0 or 2), else `""` |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
-| `version` | `STARTS.SCREEN.BELLS.DONE`: its program's starts, its screen's revision, bells and notifications rung, shell commands ended (OSC 133 marks), counts that only grow |
+| `version` | `STARTS.SCREEN.BELLS.DONE.ENDED`, counts that only grow: its program's starts, its screen's revision (one more for each piece of output read, each resize, each history cleared), bells and notifications rung, shell commands ended (OSC 133 marks), and 1 once its program ended |
 | `program` | what runs in its foreground, `null` if unknown |
 | `reading` | a thread of its foreground is blocked reading its terminal (Linux); `null` where the system does not say |
 | `paused` | a program a restore brought back, waiting for `respawn` |
@@ -92,25 +92,27 @@ and `X info json` all of it.
 
 `json` of an action's answer (`send-keys`, `send-mouse`, `signal`,
 `run`, `split`, `new-tab`, `new-workspace`, `respawn`) is
-`{"pane":"%3","version":"0.57.0.3","status":0}`: its pane's version from
+`{"pane":"%3","version":"0.57.0.3.0","status":0}`: its pane's version from
 just before it acted, or as a new pane starts; one object a pane (an array
 of them for a tab's or workspace's panes).
 
 A `wait` answers each pane whose version differs from the one it waited
-from, whose program exited, or that closed:
+from (its program's end too), or that closed:
 
 ```json
-{"pane":"%3","version":"0.61.1.4","changed":["screen","bell","done"],"status":0}
-{"pane":"%4","version":"0.12.0.0","changed":["screen"],"exited":5,"status":0}
-{"pane":"%2","version":"1.3.0.0","changed":["respawned"],"status":0}
-{"pane":"%2","version":"0.61.0.3","status":124,"code":"timeout"}
+{"pane":"%3","version":"0.61.1.4.0","changed":["screen","bell","done"],"status":0}
+{"pane":"%4","version":"0.12.0.0.1","changed":["screen"],"exited":5,"status":0}
+{"pane":"%5","version":"0.9.0.0.1","changed":[],"signal":15,"status":0}
+{"pane":"%2","version":"1.3.0.0.0","changed":["respawned"],"status":0}
+{"pane":"%2","version":"0.61.0.3.0","status":124,"code":"timeout"}
 {"pane":"%3","status":4,"code":"closed"}
 ```
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts start
-afresh). `exited` is the program's status once it exited, `signal` the
-signal that killed it. `code` names a status that is not 0.
+afresh). `exited` is the program's status if it ended since, `signal` the
+signal that killed it; a wait from a version that already holds its end
+waits for something else. `code` names a status that is not 0.
 
 `status` is the exit status. A wait that fails (124, 4) ends the program
 with that status and says why on stderr, one line, `fux: CODE: MESSAGE`;
