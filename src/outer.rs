@@ -23,6 +23,7 @@ use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::View;
+use crate::workspace::PaneMut;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::{Graphics, ModeStatus};
@@ -284,21 +285,28 @@ impl Session {
         typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
-    /// What the panes of `tab` are answered with, from the terminal of
-    /// `colour_client(tab)`: its colours (see the module documentation); its
-    /// palette whole, so that another client's replaces it, entries it did
-    /// not say cleared; and what they are told their terminal draws, which
-    /// is nothing in a tab no client shows, so a program started there draws
-    /// in text, which a capture reads. With no such terminal, nothing.
-    pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, Graphics) {
+    /// Pane `id`, told what the panes of its tab are answered with now,
+    /// from the terminal of `colour_client`: its colours (see the module
+    /// documentation); its palette whole, so that another client's replaces
+    /// it, entries it did not say cleared; and what they are told their
+    /// terminal draws, which is nothing in a tab no client shows, so a
+    /// program started there draws in text, which a capture reads (and its
+    /// mouse reports are made in that terminal's cells). With no such
+    /// terminal, nothing.
+    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
+        let tab = self.locate(id).map(|(_, tab)| tab);
         let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
         let answering = answering.map(|v| &v.terminal);
         let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
-        (
-            answering.map_or_else(Colours::default, |t| t.colours),
-            answering.map_or([None; 16], |t| t.palette),
-            (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics),
-        )
+        let graphics =
+            (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics);
+        let (colours, palette) =
+            answering.map_or_else(Default::default, |t| (t.colours, t.palette));
+        let mut pane = self.parts.pane_mut(id)?;
+        pane.colours = colours;
+        pane.parser.set_host_palette(palette);
+        pane.parser.set_host_graphics(graphics);
+        Some(pane)
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace

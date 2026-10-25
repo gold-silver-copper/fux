@@ -1886,18 +1886,6 @@ impl Session {
         }
     }
 
-    /// Pane `id`, told its tab's host colours, palette and graphics now:
-    /// what its program is answered with, and its mouse reports made in.
-    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
-        let tab = self.locate(id).map(|(_, tab)| tab);
-        let (colours, palette, graphics) = self.host_for(tab);
-        let mut pane = self.parts.pane_mut(id)?;
-        pane.colours = colours;
-        pane.parser.set_host_palette(palette);
-        pane.parser.set_host_graphics(graphics);
-        Some(pane)
-    }
-
     /// Reads into pane `id` with `read`, as every read of a pane's output
     /// does: its tab's host colours and palette given it first; after, its
     /// bell rung, and the views showing it repainted and told if a reply
