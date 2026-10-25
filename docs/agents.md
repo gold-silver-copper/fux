@@ -93,11 +93,13 @@ as integers: `A counts 3 at` is its `DONE`.
   no `42`. If the input itself holds it, wait until the capture shows the
   input, then count, so it is in the count, not in what you wait for; a
   program that draws the input again (a TUI that keeps it above the
-  reply) counts it again. `hits` counts lines, and history beyond
-  `history-bytes` is dropped, so a count over a long run can fall.
+  reply) counts it again. `hits` counts the lines of the last 1000 of
+  history and the screen (a string holds at most 1,000,000 characters,
+  less than `history-bytes` may keep), so a count can fall as lines
+  scroll past them: choose a window the reply surely comes within.
 
   ```fux
-  define hits all-history capture string lines 0 swap each str 42 contains if 1 add then end end
+  define hits 1000 history capture string lines 0 swap each str 42 contains if 1 add then end end
   %2 hits let n
   %2 str 'What is 6 times 7? Digits only.' paste str Enter key send-keys
   begin 600 timeout wait %2 hits n gt until
@@ -120,10 +122,17 @@ as integers: `A counts 3 at` is its `DONE`.
   %3 last-output capture
   ```
 - **A shell command's end, without marks:** print a text only its end can
-  show, quoted so the line you type does not hold it, and wait for it as
-  for a text: `str "make test; echo END-OF''-RUN \$?" line` (`$status` in
-  fish) shows `END-OF''-RUN` as you type it and `END-OF-RUN 0` at its end.
-- **A program's exit:** its version's `ENDED` is 1.
+  show, quoted so the line you type does not hold it, and wait for it:
+  the line shows `END-OF""-RUN` as you type it, and `END-OF-RUN 0` at its
+  end (`$status` in fish).
+
+  ```fux
+  %3 str 'make test; echo END-OF""-RUN $?' line
+  begin 600 timeout wait %3 screen string str END-OF-RUN contains until
+  drop %3 screen
+  ```
+- **A program's exit:** its version's `ENDED` is 1. The loop waits before
+  it looks, so it wants an answer from before the end (`run`'s).
 
   ```fux
   opts str 'cargo test' command run
@@ -145,7 +154,7 @@ as integers: `A counts 3 at` is its `DONE`.
   `agent`. Wait for its prompt (a text it shows) before you type: its
   startup may drop what comes sooner. A command that must run is surer
   started as the program: `opts str sh program str -c arg str 'make test;
-  exec "$SHELL"' arg run`.
+  exec "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude

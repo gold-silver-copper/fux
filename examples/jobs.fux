@@ -5,9 +5,9 @@
 # n -- answer: a program that exits with status n; run answers at once,
 # with its pane and version, so the next starts at once
 define job json opts str sh program str -c arg str 'sleep 0.2; exit "$0"' arg swap arg run end
-# answer -- answer: wait from an answer until its pane's program has ended
-# (its version's last count is 1), however soon it did: a wait on an
-# answer waits from the version it holds
+# answer -- answer: wait from an answer from before its pane's program
+# ended until it has (its version's last count is 1), however soon it
+# did: a wait on an answer waits from the version it holds
 define until-ended
   begin 600 timeout wait dup counts 4 at 1 eq until
 end

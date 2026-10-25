@@ -160,12 +160,12 @@ wait's own (above). CODE stays; every one fux gives
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4), `lost`;
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
-  `config`, `bad_binding`, `check`, `read`, `output`, `nested`, `unused`,
+  `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,
-  `unset`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
+  `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
 
 A program catches the failures its words give, by code, with `try` (`fux
 help try`); a code no running word gives is refused before it runs.

@@ -1095,6 +1095,9 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     // A command's end, marked, once a line comes.
     let marks = r#"read x; printf '\033]133;C\007hi\n\033]133;D;5\007'; sleep 30"#;
     let ended = recipe("- **A shell command's end, with marks**")?.replace("%3", &pane(marks)?);
+    let unmarked = recipe("- **A shell command's end, without marks:**")?
+        .replace("%3", &pane("exec sh -i")?)
+        .replace("make test", "true");
     let exit =
         recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
     let deaf = pane("stty -echo; sleep 30")?;
@@ -1105,6 +1108,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         (quiet, "two\n"),
         (text, "answered\n"),
         (ended, "5\nhi\n"),
+        (unmarked, "END-OF-RUN 0\n"),
         (exit, "3\n"),
         (fallback, ""),
     ]
@@ -1115,7 +1119,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
         std::fs::write(&file, &recipe).map_err(e)?;
         let out = server.fux(&[&file.to_string_lossy()])?;
         assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
-        assert!(out.stdout.ends_with(said), "{recipe}\n{}", out.stdout);
+        assert!(out.stdout.contains(said), "{recipe}\n{}", out.stdout);
     }
     // C-c after nothing came of the key.
     server.exits(&deaf)?;
