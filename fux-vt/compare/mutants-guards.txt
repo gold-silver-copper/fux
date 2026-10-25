@@ -23,11 +23,11 @@ fux-vt/src/screen/pictures.rs: replace > with >= in Screen::over_budget @ self.p
 fux-vt/src/screen/pictures.rs: replace << with >> @ pub const PICTURE_BYTES: usize = 96 << 20;
 
 # B01 and B02
-fux-vt/src/screen/pictures.rs: replace == with != in Screen::place_picture @ p.alternate == alternate && screen.shown(p).is_none_or(covered)
-fux-vt/src/screen/pictures.rs: replace && with || in Screen::place_picture @ p.alternate == alternate && screen.shown(p).is_none_or(covered)
-fux-vt/src/screen/pictures.rs: replace >= with < in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))
-fux-vt/src/screen/pictures.rs: replace || with && in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))
-fux-vt/src/screen/pictures.rs: delete ! in Screen::place_picture @ .map(|(at, p)| at >= placed || !gone(p, self))
+fux-vt/src/screen/pictures.rs: replace Screen::let_go_hidden with () @ let alternate = self.alternate_active;
+fux-vt/src/screen/pictures.rs: replace == with != in Screen::let_go_hidden @ .filter(|(_, p)| p.alternate == alternate && self.shown(p).is_none())
+fux-vt/src/screen/pictures.rs: replace && with || in Screen::let_go_hidden @ .filter(|(_, p)| p.alternate == alternate && self.shown(p).is_none())
+fux-vt/src/screen/pictures.rs: replace Screen::let_go with () @ let mut at = (0..self.pictures.len()).map(|at| gone.contains(&at));
+fux-vt/src/screen/pictures.rs: delete ! in Screen::let_go @ self.pictures.retain(|_| !at.next().unwrap_or(false));
 fux-vt/src/screen/pictures.rs: replace == with != in Screen::shown @ .is_some_and(|cell| cell.contents() == PLACEHOLDER)
 fux-vt/src/screen/pictures.rs: delete ! in Screen::shown @ if !whole {
 fux-vt/src/screen/pictures.rs: replace overlaps -> bool with true @ let (end, e) = (
@@ -604,3 +604,7 @@ fux-vt/src/palette.rs: replace > with >= in answer @ if i > 0 {
 fux-vt/src/palette.rs: replace >> with << in answer @ let high = HEX.get(usize::from(channel >> 4)).copied().unwrap_or(b'0');
 fux-vt/src/palette.rs: replace & with | in answer @ let low = HEX.get(usize::from(channel & 0xf)).copied().unwrap_or(b'0');
 fux-vt/src/palette.rs: replace & with ^ in answer @ let low = HEX.get(usize::from(channel & 0xf)).copied().unwrap_or(b'0');
+
+# B46
+fux-vt/src/screen/pictures.rs: replace <= with > in Screen::cover @ let ready = words.saturating_add(cost) <= COVER_WORDS
+fux-vt/src/screen/pictures.rs: delete ! in Screen::cover @ && !self.over_budget(promised.saturating_add(list).saturating_add(row_words))
