@@ -1089,17 +1089,19 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
 }
 
-/// The program `args` give: none attaches; `-` is stdin; one argument
-/// holding a blank is a whole program, as a shell passes `fux 'ls json'`;
-/// else one with a `/` or ending `.fux` names a file; else each is a word.
+/// The program `args` give: none attaches; `-` is stdin; `--file FILE`
+/// a file (`#!/usr/bin/env -S fux --file`); help as other programs give
+/// it; any other one argument a whole program, as a shell passes
+/// `fux 'ls json'`, never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
     Ok(match args {
         [] => token::arguments(&["attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => token::source("stdin", &read_text("stdin", io::stdin())?)?,
-        [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
-        [file] if file.contains('/') || file.ends_with(".fux") => {
-            token::source(file, &read_file(file.as_ref())?)?
+        [flag, file] if flag == "--file" => token::source(file, &read_file(file.as_ref())?)?,
+        [flag, ..] if flag == "--file" => {
+            let why = "--file runs one file, and takes nothing after it: fux --file FILE";
+            return Err(Failed::new(Code::Usage, why));
         }
         // Help as other programs give it: `help agents TOPIC`, `help json`,
         // `help WORD`, `--help`, `--version`.
@@ -1113,6 +1115,7 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
         },
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
+        [line] => token::source("command line", line)?,
         words => token::arguments(words),
     })
 }
@@ -1155,13 +1158,26 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 mod tests {
-    /// A whole program in one argument is a program, though a word in it
-    /// holds a `/`: never a file to read.
+    /// One argument is a whole program, though it holds a `/` or ends
+    /// `.fux`: never a file to read, which `--file` names.
     #[test]
-    fn one_argument_with_a_blank_is_a_program() -> Result<(), super::Failed> {
-        let tokens = super::program(&["%2 str \"ls /tmp\" line".to_owned()])?;
-        let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
-        assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
+    fn one_argument_is_a_program() -> Result<(), super::Failed> {
+        let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
+            let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            Ok(super::program(&args)?
+                .into_iter()
+                .map(|t| t.text.to_string())
+                .collect())
+        };
+        assert_eq!(
+            words(&["%2 str \"ls /tmp\" line"])?,
+            ["%2", "str", "ls /tmp", "line"]
+        );
+        assert_eq!(words(&["./no/such.fux"])?, ["./no/such.fux"]);
+        let read = words(&["--file", "./no/such.fux"]).err().map(|f| f.code);
+        assert_eq!(read, Some(super::Code::Read));
+        let more = words(&["--file", "a.fux", "b"]).err().map(|f| f.code);
+        assert_eq!(more, Some(super::Code::Usage));
         Ok(())
     }
 

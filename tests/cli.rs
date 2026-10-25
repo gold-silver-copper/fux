@@ -366,8 +366,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     Ok(())
 }
 
-/// `fux -` runs stdin, and `fux FILE` a file: a word with a `/` or ending
-/// `.fux`.
+/// `fux -` runs stdin, and `fux --file FILE` a file, whatever its name.
 #[test]
 fn programs_come_from_stdin_and_files() -> Outcome {
     use std::io::Write;
@@ -393,9 +392,9 @@ fn programs_come_from_stdin_and_files() -> Outcome {
         let file = server.dir.join(name);
         std::fs::write(&file, program).map_err(e)?;
         let path = file.to_string_lossy().into_owned();
-        assert_eq!(server.ok(&[&path])?, "42\n%1\n", "{path}");
+        assert_eq!(server.ok(&["--file", &path])?, "42\n%1\n", "{path}");
     }
-    let missing = server.fux(&["missing.fux"])?;
+    let missing = server.fux(&["--file", "missing.fux"])?;
     assert_eq!(missing.status, 1);
     assert!(
         missing.stderr.starts_with("fux: read: "),

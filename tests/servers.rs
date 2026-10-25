@@ -409,7 +409,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     assert!(!server.ok(&["ls"])?.contains("build"));
     let file = server.dir.join("build.fux");
     std::fs::write(&file, &dump).map_err(e)?;
-    server.ok(&[&file.to_string_lossy()])?;
+    server.ok(&["--file", &file.to_string_lossy()])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(" build\n") && ls.contains(" worker "),
@@ -430,7 +430,7 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
     std::fs::write(&file, &dump).map_err(e)?;
-    server.ok(&[&file.to_string_lossy()])?;
+    server.ok(&["--file", &file.to_string_lossy()])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(" jobs\n") && ls.contains(" job\n"),
@@ -453,7 +453,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let server = Server::start("")?;
     let file = server.dir.join("source.fux");
     std::fs::write(&file, &dump).map_err(e)?;
-    server.ok(&[&file.to_string_lossy()])?;
+    server.ok(&["--file", &file.to_string_lossy()])?;
     let named = server.ok(&["str", "tab-2", "pane"])?;
     let ls = server.ok(&["ls"])?;
     assert!(
@@ -484,7 +484,7 @@ fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     server.ok(&["str", "moved", "workspace", "kill"])?;
     let file = server.dir.join("moved.fux");
     std::fs::write(&file, &dump).map_err(e)?;
-    server.ok(&[&file.to_string_lossy()])?;
+    server.ok(&["--file", &file.to_string_lossy()])?;
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(" moved\n") && ls.contains(" sleep "),

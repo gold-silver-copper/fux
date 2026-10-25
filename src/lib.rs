@@ -98,8 +98,8 @@ pub(crate) fn drain(mut pipe: &PipeReader) {
 }
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
-/// fuxth on stdin; one word naming a file (with a `/`, or ending `.fux`)
-/// runs it; any other words are a fuxth program.
+/// fuxth on stdin; `--file FILE` runs a file; any other words are a fuxth
+/// program.
 pub fn main() -> ExitCode {
     // Words are text: an argument that is not is refused, not mangled.
     let args: Result<Vec<String>, _> = std::env::args_os()

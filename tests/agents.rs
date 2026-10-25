@@ -833,7 +833,11 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let text: String = std::iter::repeat_n(line, 9216).collect();
     let file = server.dir.join("paste.fux");
     std::fs::write(&file, format!("{sink} str '{text}' paste send-keys")).map_err(e)?;
-    shows_after(&server, &server.ok(&[&file.to_string_lossy()])?, "921600")?;
+    shows_after(
+        &server,
+        &server.ok(&["--file", &file.to_string_lossy()])?,
+        "921600",
+    )?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
     let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
     let refused = server.fux(&[&many])?;
@@ -1103,7 +1107,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     {
         let file = server.dir.join(format!("recipe-{i}.fux"));
         std::fs::write(&file, &recipe).map_err(e)?;
-        let out = server.fux(&[&file.to_string_lossy()])?;
+        let out = server.fux(&["--file", &file.to_string_lossy()])?;
         assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
         assert!(out.stdout.contains(said), "{recipe}\n{}", out.stdout);
     }

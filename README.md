@@ -69,9 +69,10 @@ fux %3 str q text send-keys                       # press q: its version from be
   command's end, an exit). A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1; a wait exits 4 if the pane
   closed, 124 if nothing changed in time.
-- A single argument with spaces is a whole program (`fux 'ls json'`);
-  otherwise `fux FILE` runs a file (one with a `/` or ending `.fux`), and
-  `fux -` runs what stdin says. `#` starts a comment.
+- A single argument is a whole program (`fux 'ls json'`), never a file,
+  whatever it holds; `fux --file FILE` runs a file, so a script can start
+  with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin says.
+  `#` starts a comment.
 - The language's core is small on purpose: a few words and parsing words
   (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
   `fux help` and at length in [fuxth/README.md](fuxth/README.md).
@@ -376,7 +377,7 @@ once you bind them.
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
-holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
+holds first): `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
@@ -397,8 +398,8 @@ Nothing is saved on its own. To keep a session past its server (a crash, a
 fresh server:
 
 ```sh
-fux dump > ~/session.fux       # save when you choose
-fux start && fux ~/session.fux # replay on a fresh server
+fux dump > ~/session.fux              # save when you choose
+fux start && fux --file ~/session.fux # replay on a fresh server
 ```
 
 A dump makes the layouts and launches again: each shell starts afresh in

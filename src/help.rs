@@ -44,7 +44,7 @@ pub fn overview() -> String {
         "\
 usage: fux                 attach, starting a server if none runs
        fux WORD...         run the words, a fuxth program (or all in one argument)
-       fux FILE            run a file of fuxth (a word with a / or ending .fux)
+       fux --file FILE     run a file of fuxth (#!/usr/bin/env -S fux --file)
        fux -               run fuxth read from stdin
 
 Words run left to right, each taking what the words before it left: a
@@ -109,8 +109,8 @@ workspace; ref a name or a handle; text a string, number or boolean.
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
          XDG_RUNTIME_DIR unset $TMPDIR/fux. Nothing is saved on its own:\n\
          `fux dump > FILE` saves the layouts and launches when you choose\n\
-         (never what a process held), and `fux start && fux FILE` makes them\n\
-         again on a fresh server.\n",
+         (never what a process held), and `fux start && fux --file FILE` makes\n\
+         them again on a fresh server.\n",
     );
     out
 }
@@ -297,7 +297,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "clear-history" => "fux %3 clear-history",
         "notify" => "fux %3 str 'tests passed' notify",
         "status" => "fux status || fux start",
-        "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
+        "dump" => "fux str work workspace dump-of > work.fux; fux --file work.fux",
         "rename" => "fux %3 str editor rename",
         "kill" => "fux %3 kill",
         "resize-x" => "fux %3 30 percent resize-x",

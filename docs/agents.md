@@ -79,12 +79,12 @@ Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 
 ## recipes: Waiting for what you need
 
-Each is a fuxth program: a file `fux FILE` runs, or `fux - <<'EOF'` in a
+Each is a fuxth program: a file `fux --file FILE` runs, or `fux - <<'EOF'` in a
 script. `A wait` waits from the version answer A holds, so a change between
 two steps is never missed, and leaves the next answer; `A 600 timeout wait`
 waits 600 s at most, else fails with 124 (`timeout`). A loop of waits ends
 when its check holds; to bound the whole of it, run it under the shell's
-`timeout 600 fux FILE` (124 too). `A counts` gives a version's five counts
+`timeout 600 fux --file FILE` (124 too). `A counts` gives a version's five counts
 as integers: `A counts 3 at` is its `DONE`.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
@@ -276,8 +276,9 @@ str make arg run`.
 
 ## programs: A program
 
-A file of fuxth runs with `fux FILE` (or `fux -` from stdin), and keeps its
-names between steps:
+A file of fuxth runs with `fux --file FILE` (or `fux -` from stdin; a
+script may start `#!/usr/bin/env -S fux --file`), and keeps its names
+between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
@@ -333,7 +334,7 @@ stopped it.
   `force-kill-server` stops it.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
   session with it. `fux dump > FILE` saves its layout and launches when you
-  choose; `fux start && fux FILE` makes them again on a fresh server,
+  choose; `fux start && fux --file FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.
 - fux is controlled through its Unix socket alone: a sandbox that denies
