@@ -1654,17 +1654,32 @@ impl Session {
     }
 
     /// What a new tab is laid out on while no client shows it: `size`, if
-    /// given; else the screen of the commanding client, or of any client
-    /// that sizes panes, which it then fits. With none, and no size given,
-    /// it has no size, which is not made up: it is refused.
+    /// given; else the smallest screen of the clients that size the
+    /// caller's tab, else of those showing its workspace, else of any that
+    /// size panes, which it then fits. With none, and no size given, it has
+    /// no size, which is not made up: it is refused.
     fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
             return Ok(Fit::Fixed(size.size()));
         }
-        let own = here.client().and_then(|c| self.views.get(&c));
-        let mut sizing = (own.into_iter().chain(self.views.values())).filter(|v| v.sizes());
-        if let Some(size) = sizing.find_map(Self::screen_size) {
-            return Ok(Fit::Clients(size));
+        let tab = match here {
+            Here::Client(_, place) => Some(place.tab),
+            Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
+        };
+        let ws = |v: &View| self.shown_workspace(v.id).map(Workspace::id);
+        let tiers: [&dyn Fn(&View) -> bool; 3] = [
+            &|v| tab.is_some_and(|t| self.shows(v.id, t)),
+            &|v| here.ws().is_some_and(|w| ws(v) == Some(w)),
+            &|_| true,
+        ];
+        for tier in tiers {
+            let sizes = (self.views.values()).filter(|v| v.sizes() && tier(v));
+            let least = (sizes.filter_map(Self::screen_size))
+                .map(|s| (s.rows(), s.cols()))
+                .reduce(|(r, c), (rows, cols)| (r.min(rows), c.min(cols)));
+            if let Some(Ok(size)) = least.map(|(rows, cols)| Size::new(rows, cols)) {
+                return Ok(Fit::Clients(size));
+            }
         }
         let why = "no client attached sizes it (one that only watches, or with no room for \
                    a pane below its bar, sizes nothing), and no size was given";
@@ -4179,6 +4194,38 @@ mod tests {
         assert_eq!(size(&s).ok(), Some((80, 23)), "sized by the client");
         s.resize(c, 1, 80).map_err(|e| e.to_string())?;
         assert_eq!(size(&s).ok(), Some((40, 12)), "on its own size");
+        Ok(())
+    }
+
+    /// A tab made from the command line in a pane is laid out on the
+    /// smallest screen of the clients sizing that pane's tab, not of
+    /// whichever client attached first.
+    #[test]
+    fn a_new_tab_takes_the_screen_of_the_callers_tab() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut s, _small) = attached(24, 80)?;
+        let big = s.attach(50, 200, None)?;
+        run(&mut s, "opts 100 30 size str other name new-workspace drop")?;
+        run(
+            &mut s,
+            &format!("str {big} client str other workspace show-workspace"),
+        )?;
+        let caller = Caller {
+            gave: Some(PaneId::of(2)),
+            within: Within::This,
+            ..Caller::default()
+        };
+        let new_tab = Command::NewTab {
+            target: None,
+            name: None,
+            size: None,
+            cwd: None,
+            env: crate::command::Env::default(),
+            ids: Wanted::default(),
+        };
+        s.execute(&new_tab, &Origin::Cli(caller))?;
+        let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
+        let size = tab.fit().size();
+        assert_eq!((size.cols(), size.rows()), (200, 49));
         Ok(())
     }
 
