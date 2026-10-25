@@ -311,14 +311,19 @@ impl Subscription {
     /// read, until they are `room` bytes or more (the rest waits for its
     /// next turn); and its end, once everything it watched is gone, which
     /// `there` tells for what the journal no longer holds the close of.
+    /// With no room it is told nothing, not even what it missed, which
+    /// adds up until it has room.
     pub fn told(
         &mut self,
         journal: &Journal,
         room: usize,
         there: impl Fn(AnyRef) -> bool,
     ) -> (String, Option<Ending>) {
-        let (lost, entries) = journal.from(self.next);
         let mut lines = String::new();
+        if room == 0 {
+            return (lines, None);
+        }
+        let (lost, entries) = journal.from(self.next);
         if lost > 0 {
             lines.push_str(&missed(lost, self.json));
             self.next = Seq(self.next.0.saturating_add(lost));
@@ -345,7 +350,7 @@ mod tests {
     use super::*;
 
     /// A reader with no room left reads on from where it stopped; and one
-    /// the journal let entries go past is told how many it missed.
+    /// the journal let entries go past is told how many it missed, once.
     #[test]
     fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
@@ -358,8 +363,13 @@ mod tests {
         for _ in 0..=KEPT {
             journal.push(Place::Workspace(ws), What::Bell);
         }
+        // A reader with no room is told nothing, and what it missed adds
+        // up, told once when it has room.
+        assert_eq!(stream.told(&journal, 0, |_| true).0, "");
+        journal.push(Place::Workspace(ws), What::Bell);
+        assert_eq!(stream.told(&journal, 0, |_| true).0, "");
         let (lines, _) = stream.told(&journal, usize::MAX, |_| true);
-        assert!(lines.starts_with("missed count=1\nbell +1\n"), "{lines}");
+        assert!(lines.starts_with("missed count=2\nbell +1\n"), "{lines}");
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| true).0, "");
         Ok(())
