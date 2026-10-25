@@ -29,9 +29,10 @@ The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached
 terminal why, and removes its socket.
 
-Every pane runs your shell (`str shell str /bin/zsh set`, else `$SHELL`,
-else `/bin/sh`). A pane closes when its shell exits, showing its viewers the
-exit status; a tab closes with its last pane, a workspace with its last tab.
+Every pane runs your shell (`str shell str /bin/zsh set`, else the
+server's `$SHELL`, else your login shell, else `/bin/sh`). A pane closes
+when its shell exits, showing its viewers the exit status; a tab closes
+with its last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
