@@ -170,13 +170,13 @@ wait's own (above). CODE stays; every one fux gives
 A program catches the failures its words give, by code, with `try` (`fux
 help try`); a code no running word gives is refused before it runs.
 
-## `status json`, `servers json`
+## `status json`
 
 ```json
 {"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":16,
  "server_version":"0.35.0","server_protocol":16,"compatible":true}
-[{"name":"test","socket":"/run/user/1000/fux/test.sock","version":"0.35.0","compatible":true}]
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
-a server that stopped left it there.
+a server that stopped left it there. Every server in fux's directory:
+`status json` on each socket there (`fux help agents servers`).

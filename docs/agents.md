@@ -294,7 +294,15 @@ stopped it.
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
   first chooses another server; `start` starts one, `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
-  start`. Inside a person's pane, `here` is that pane. Every pane has
+  start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux`, else
+  `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
+  alone): `status` each.
+
+  ```sh
+  ls "${XDG_RUNTIME_DIR:-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
+    sort -u | while read -r n; do fux str "$n" server status; done
+  ```
+  Inside a person's pane, `here` is that pane. Every pane has
   `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket, or a grant's if
   started through one), `FUX_SERVER` (which run of the server: a
   `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:

@@ -294,7 +294,7 @@ VT220-class terminal.
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture-client json`, an action's or a
-wait's answer (`… wait json`), `status json`, `servers json`; `events-json` and
+wait's answer (`… wait json`), `status json`; `events-json` and
 `events-of-json` stream an object a line. These shapes are part of fux's
 interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 

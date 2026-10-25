@@ -205,7 +205,6 @@ pub const WORDS: &[Word] = &[
     word("Server", "socket", "path --", "the server on this socket, for what follows"),
     word("Server", "start", "--", "start the server in the background, if none answers"),
     word("Server", "status", "-- record", "the server that answers, and its version; with none, fails no_server"),
-    word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
     word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
@@ -1425,7 +1424,6 @@ impl fuxth::Host for Host<'_> {
             ))),
             "start" => local(Local::Start),
             "status" => local(Local::Status),
-            "servers" => local(Local::Servers),
             "kill-server" => tell(Command::KillServer { force: false }),
             "force-kill-server" => local(Local::ForceKill),
             "set" => {

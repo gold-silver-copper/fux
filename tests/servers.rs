@@ -772,8 +772,8 @@ fn a_door_alone_is_a_server() -> Outcome {
     assert_eq!(t(&["start"])?.status, 0);
     let log = std::fs::read_to_string(dir.join("fux.log")).unwrap_or_default();
     assert!(!log.contains("already"), "a second server started: {log}");
-    let servers = named(&rt, &["servers"], &[])?;
-    assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+    let status = t(&["status"])?;
+    assert!(status.stdout.starts_with("fux "), "{}", status.stderr);
     let granted = rt.join("g").join("s.sock");
     let socket = granted.to_string_lossy().into_owned();
     assert_eq!(t(&["str", "agent", "str", &socket, "grant"])?.status, 0);
@@ -946,8 +946,8 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
         );
         assert_eq!(t(&["start"])?.status, 0);
         assert_eq!(serving(&socket), Some(pid), "another server started");
-        let servers = named(&rt, &["servers"], &[])?;
-        assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
+        let status = t(&["status"])?;
+        assert!(status.stdout.starts_with("fux "), "{}", status.stderr);
         let answer = t(&[
             "opts",
             "str",

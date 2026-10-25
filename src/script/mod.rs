@@ -150,7 +150,6 @@ pub enum Said {
     /// JSON that is no one value of fuxth's.
     Json,
     Status,
-    Servers,
 }
 
 impl Said {
@@ -158,7 +157,7 @@ impl Said {
     fn name(self) -> &'static str {
         match self {
             Said::Capture => "capture",
-            Said::Listing | Said::Status | Said::Servers => "listing",
+            Said::Listing | Said::Status => "listing",
             Said::Action(_) | Said::Panes => "answer",
             Said::Json => "json",
         }
@@ -173,7 +172,6 @@ impl Said {
             Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
             Said::Json => "a JSON value",
             Said::Status => "a status",
-            Said::Servers => "a listing of servers",
         }
     }
 
@@ -182,12 +180,7 @@ impl Said {
     pub fn version(self) -> Option<crate::command::Version> {
         match self {
             Said::Action(version) => Some(version),
-            Said::Capture
-            | Said::Listing
-            | Said::Panes
-            | Said::Json
-            | Said::Status
-            | Said::Servers => None,
+            Said::Capture | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
         }
     }
 }
@@ -252,7 +245,6 @@ pub enum Local {
     Server(Choice),
     Start,
     Status,
-    Servers,
     /// Stop the server, whatever its version.
     ForceKill,
     /// Open one of the client's own screens: a client running its keys'
@@ -892,11 +884,6 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
             return Ok(vec![answer(&text, &json, Said::Status)]);
         }
-        Local::Servers => {
-            let fail = |e: crate::socket::Error| client_failed(e.into());
-            let (text, json) = crate::servers().map_err(fail)?;
-            return Ok(vec![answer(&text, &json, Said::Servers)]);
-        }
     }
     Ok(Vec::new())
 }
@@ -1025,7 +1012,6 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         | Local::Server(_)
         | Local::Start
         | Local::Status
-        | Local::Servers
         | Local::ForceKill => "runs from the command line only",
     };
     Err(Failed::new(Code::NotHere, why))

@@ -199,45 +199,6 @@ pub(crate) fn status(
     Ok((text, Json::Object(fields).render()))
 }
 
-/// `fux servers`: every server that answers in fux's directory, a line
-/// each, and the same as a JSON array, from one look at each.
-pub(crate) fn servers() -> Result<(String, String), socket::Error> {
-    let directory = socket::directory()?;
-    let mut names: Vec<String> = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries
-            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-            // A server that serves its door alone has no socket.
-            .filter_map(|name| {
-                let name = name.strip_suffix(".door").unwrap_or(&name);
-                Some(name.strip_suffix(".sock")?.to_owned())
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    names.sort();
-    names.dedup();
-    let mut lines = Vec::new();
-    let mut objects = Vec::new();
-    for name in names {
-        let Ok(socket) = socket::socket_path(&socket::Choice::Name(name.clone())) else {
-            continue;
-        };
-        let Ok(client::Probe::Server { protocol, version }) = client::probe(&socket) else {
-            continue;
-        };
-        let path = socket.path().display().to_string();
-        lines.push(format!("{name}  {path}  fux {version}\n"));
-        objects.push(Json::Object(vec![
-            ("name", Json::str(name)),
-            ("socket", Json::str(path)),
-            ("version", Json::str(version)),
-            ("compatible", Json::Bool(protocol == protocol::PROTOCOL)),
-        ]));
-    }
-    let json = format!("{}\n", Json::Array(objects).render());
-    Ok((lines.concat(), json))
-}
-
 #[cfg(test)]
 mod tests {
     /// The descriptors this process holds on the pipe whose inode is `ino`.
