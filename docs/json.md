@@ -166,7 +166,7 @@ wait's own (above). CODE stays; every one fux gives
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
-  `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;
+  `not_a_key`, `no_program`, `no_keys`, `not_a_client`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,
   `stack_overflow`, `call_depth`, `type`, `div_by_zero`, `overflow`,

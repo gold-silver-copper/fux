@@ -632,8 +632,6 @@ closed! {
     }
 }
 
-/// Whether a host's cell, its width and height in pixels, is smaller than
-/// a sixel band's 2 by 6 (`THREATS.md` B05).
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
 /// default (no feature, no identity) causes no side effects, retains no
 /// OSC payload, and answers only DSR 5n/6n and primary DA.

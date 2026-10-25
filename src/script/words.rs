@@ -261,12 +261,9 @@ pub fn usage(word: &str) -> Option<String> {
     // words that take it do.
     let takes = takes.trim().to_uppercase();
     let request = takes.strip_prefix('X');
-    let taken_by = |w: &str| help::options(w).is_some_and(|mut o| o.any(|o| o == word));
-    let takers = help::OPTIONS
-        .iter()
-        .map(|(w, _)| *w)
-        .filter(|w| taken_by(w));
-    let (opts, panes): (Vec<&str>, Vec<&str>) = takers.partition(|w| help::FROM_OPTS.contains(w));
+    let (opts, panes): (Vec<&str>, Vec<&str>) = taking(word)
+        .into_iter()
+        .partition(|w| help::FROM_OPTS.contains(w));
     let on = match (opts.is_empty(), panes.is_empty()) {
         (true, false) => "PANE",
         (false, true) => "OPTS",
@@ -445,8 +442,7 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
-    let takes = |o: &str| help::options(word).is_some_and(|mut t| t.any(|t| t == o));
-    let Some(option) = built.given.iter().find(|o| !takes(o)) else {
+    let Some(option) = built.given.iter().find(|o| !taking(o).contains(&word)) else {
         return Ok(());
     };
     let instead = format!("takes no {option}: {option} goes on {}", takers(option));
@@ -720,10 +716,19 @@ fn closest_key(word: &str) -> Option<String> {
 /// The words that take `option`, listed; every word that takes options,
 /// for a word that is none.
 pub(super) fn takers(option: &str) -> String {
-    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
     let words: Vec<&str> = help::OPTIONS.iter().map(|(w, ..)| *w).collect();
-    let on: Vec<&str> = words.iter().copied().filter(takes).collect();
+    let on = taking(option);
     crate::words::listed(if on.is_empty() { &words } else { &on }, "or")
+}
+
+/// The words that take `option`, in `help::OPTIONS`'s order.
+fn taking(option: &str) -> Vec<&'static str> {
+    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
+    help::OPTIONS
+        .iter()
+        .map(|(w, ..)| *w)
+        .filter(takes)
+        .collect()
 }
 
 /// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
@@ -752,22 +757,19 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
 
-/// The bytes `inputs` take as the request carries them, which must fit in
-/// one frame: text and pastes their bytes, keys their names' (`C-M-F12`
-/// 7), and each input after the first 5 bytes more.
-fn sent(inputs: &[Input]) -> usize {
-    (inputs.iter())
+/// `inputs`, refused past what one send-keys sends. What they take is
+/// what the request carries, which must fit in one frame: text and pastes
+/// their bytes, keys their names' (`C-M-F12` 7), and each input after the
+/// first 5 bytes more.
+fn fits(inputs: &[Input]) -> Result<(), Failure> {
+    let typed = (inputs.iter())
         .map(|input| match input {
             Input::Text(text) | Input::Paste(text) => text.len(),
             Input::Key(key) => key.to_string().len(),
             Input::Bytes(bytes) => bytes.len(),
         })
         .fold(0usize, usize::saturating_add)
-        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5))
-}
-
-/// `typed` bytes of input, refused past what one send-keys sends.
-fn fits(typed: usize) -> Result<(), Failure> {
+        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5));
     match typed > INPUT_MAX {
         true => Err(fail(
             Lang::TooLong,
@@ -814,6 +816,11 @@ fn act(client: ClientId, action: ClientAction, then: Then) -> Ask {
         action,
     };
     ask_as(client, command, then)
+}
+
+/// An order to a client that answers nothing.
+fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
+    Ok(Done::Later(act(client, action, Then::Nothing)))
 }
 
 /// How a screen's word makes its screen from what follows the client.
@@ -890,7 +897,7 @@ impl fuxth::Host for Host<'_> {
             };
             return match self.context.client == Some(c) {
                 true => local(Local::Open(open)),
-                false => later(act(c, ClientAction::Run(open.code()), Then::Nothing)),
+                false => order(c, ClientAction::Run(open.code())),
             };
         }
         match name {
@@ -1061,7 +1068,7 @@ impl fuxth::Host for Host<'_> {
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
-                fits(sent(&built.inputs))?;
+                fits(&built.inputs)?;
                 let target = match on {
                     On::Target(target) => target,
                     On::Version(version) => AnyRef::Pane(version.pane),
@@ -1331,16 +1338,12 @@ impl fuxth::Host for Host<'_> {
                     ("last", PanePick::Last),
                 ];
                 let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
-                later(act(c, ClientAction::SelectPane(pick), Then::Nothing))
+                order(c, ClientAction::SelectPane(pick))
             }
             "focus-pane" => {
                 let c = client(&next()?)?;
                 let p = pane(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectPane(PanePick::Id(p)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectPane(PanePick::Id(p)))
             }
             "show-tab" => {
                 let c = client(&next()?)?;
@@ -1348,20 +1351,12 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Tab(tab)) = &t else {
                     return Err(wrong("a tab", &t));
                 };
-                later(act(
-                    c,
-                    ClientAction::SelectTab(Pick::Id(*tab)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectTab(Pick::Id(*tab)))
             }
             "show-workspace" => {
                 let c = client(&next()?)?;
                 let w = workspace(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectWorkspace(Pick::Id(w)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
             | "detach" => {
@@ -1376,7 +1371,7 @@ impl fuxth::Host for Host<'_> {
                     "next-tab" | "previous-tab" => ClientAction::SelectTab(Pick::Step(step)),
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),
                 };
-                later(act(c, action, Then::Nothing))
+                order(c, action)
             }
             "capture-client" => {
                 let c = client(&next()?)?;
@@ -1444,8 +1439,8 @@ impl fuxth::Host for Host<'_> {
             "check" => {
                 let path = string(&next()?)?;
                 // Read as running it reads it, and refused alike.
-                let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
-                    .map_err(|f| fail(Code::Read, f.message))?;
+                let text =
+                    super::read_file(path.as_ref()).map_err(|f| fail(Code::Read, f.message))?;
                 // Its mistake, with where it is, as the file's own.
                 let checked = |failed: super::Failed| fail(Code::Check, failed.message);
                 let tokens = fuxth::token::source(&path, &text)

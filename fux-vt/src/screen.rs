@@ -1635,14 +1635,7 @@ impl Screen {
         properties: Properties,
         chars: &mut Chars<'_>,
     ) -> Option<(char, Properties)> {
-        let g = self.grid();
-        let (row, start) = g.cursor.at();
-        let end = g.line_end();
-        let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
-        let fits = (!g.cursor.pending_wrap)
-            .then(|| run_width(properties, start, end, cluster))
-            .flatten();
-        let Some(width) = fits else {
+        let Some((row, start, end, width)) = self.run_start(properties) else {
             return Some((first, properties));
         };
         let style = self.pen_style() | self.protect;
@@ -1686,18 +1679,24 @@ impl Screen {
         stopped
     }
 
-    /// REP's copies of `c`, as `run` writes text: up to `copies` along the
-    /// cursor's row while each fits and joins nothing; says how many, none
-    /// where `print` must write the next.
-    fn fill(&mut self, c: char, properties: Properties, copies: usize) -> usize {
+    /// Where `run` and `fill` write on the cursor's row: its row, the
+    /// cursor's column and the line's end, with the width of a glyph of
+    /// `properties` there, if it fits and joins nothing.
+    #[inline]
+    fn run_start(&self, properties: Properties) -> Option<(u16, u16, u16, u16)> {
         let g = self.grid();
         let (row, start) = g.cursor.at();
         let end = g.line_end();
         let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
-        let fits = (!g.cursor.pending_wrap)
-            .then(|| run_width(properties, start, end, cluster))
-            .flatten();
-        let Some(width) = fits else {
+        let fits = (!g.cursor.pending_wrap).then(|| run_width(properties, start, end, cluster));
+        Some((row, start, end, fits.flatten()?))
+    }
+
+    /// REP's copies of `c`, as `run` writes text: up to `copies` along the
+    /// cursor's row while each fits and joins nothing; says how many, none
+    /// where `print` must write the next.
+    fn fill(&mut self, c: char, properties: Properties, copies: usize) -> usize {
+        let Some((row, start, end, width)) = self.run_start(properties) else {
             return 0;
         };
         let room = usize::from(end.saturating_sub(start).checked_div(width).unwrap_or(0));
@@ -3692,8 +3691,7 @@ impl Screen {
             // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
                 let cell = self.graphics.cell?;
-                let (width, height) = (cell.width(), cell.height());
-                Some(reply!("\x1b[6;{height};{width}t"))
+                Some(reply!("\x1b[6;{};{}t", cell.height(), cell.width()))
             }
             (b"", b't') if n == 14 => {
                 let (height, width) = self.pixel_size()?;

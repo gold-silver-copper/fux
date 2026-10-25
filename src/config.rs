@@ -11,9 +11,9 @@ use std::time::Duration;
 /// `Default`, `NAMES` (every setting's name, in order), `Config::set`,
 /// which reads a setting's text with its `Reads`, and `table`, every
 /// setting with what it takes, its default and its about, which `fux
-/// help set` prints. The row `/// A bell rings.  bell "bell": OnOff =
+/// help set` prints. The row `/// A bell rings.  bell "bell": bool =
 /// true;` gives the field `pub bell: bool`, `true` in `Default`, `"bell"`
-/// in `NAMES`, in `set` the arm `"bell" => self.bell = OnOff::read(value)`,
+/// in `NAMES`, in `set` the arm `"bell" => self.bell = bool::read(value)`,
 /// and in `table` the row `bell`, `on or off`, `on`, `A bell rings.`.
 macro_rules! settings {
     ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty = $default:expr;)*) => {
@@ -63,8 +63,9 @@ macro_rules! settings {
     };
 }
 
-/// How a setting's text is read: the value it gives, what text it takes,
-/// and a value written back as that text.
+/// How a setting's text is read: the value it gives (the type itself, but
+/// for `Number`'s ranges), what text it takes, and a value written back as
+/// that text.
 pub trait Reads {
     type Value;
     fn takes() -> String;
@@ -75,27 +76,27 @@ pub trait Reads {
 settings! {
     /// The program a new pane runs, and its arguments: `$SHELL`, else your
     /// login shell, else `/bin/sh`, unless set.
-    shell "shell": ShellLine = default_shell();
+    shell "shell": Shell = default_shell();
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
     history_bytes "history-bytes": Number<0, { 1 << 30 }> = 8 << 20;
     /// How long a wait waits at most unless it says (`SECS timeout`).
-    wait "wait-seconds": Seconds = Limit::DEFAULT;
+    wait "wait-seconds": Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
     /// (OSC 52).
-    clipboard "clipboard": OnOff = true;
+    clipboard "clipboard": bool = true;
     /// How many paste buffers are kept.
     buffers "buffers": Number<1, MAX_BUFFERS> = 16;
     /// A pane's bell rings your terminal and marks its tab.
-    bell "bell": OnOff = true;
+    bell "bell": bool = true;
     /// Your terminal's title follows the focused pane.
-    titles "titles": OnOff = false;
+    titles "titles": bool = false;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
     /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
-    update_environment "update-environment": Names = KEPT.map(str::to_owned).to_vec();
+    update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec();
 }
 
 /// Why a setting is refused: its code (`config`, or its value's own, as
@@ -209,9 +210,7 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
 }
 
 /// A wait's limit, in seconds.
-pub struct Seconds;
-
-impl Reads for Seconds {
+impl Reads for Limit {
     type Value = Limit;
     fn takes() -> String {
         format!("seconds, 0 to {MAX_WAIT}")
@@ -227,9 +226,7 @@ impl Reads for Seconds {
 }
 
 /// `on` or `off` (or `true` or `false`).
-pub struct OnOff;
-
-impl Reads for OnOff {
+impl Reads for bool {
     type Value = bool;
     fn takes() -> String {
         "on or off".to_owned()
@@ -247,9 +244,7 @@ impl Reads for OnOff {
 }
 
 /// A command line, split as a shell splits it.
-pub struct ShellLine;
-
-impl Reads for ShellLine {
+impl Reads for Shell {
     type Value = Shell;
     fn takes() -> String {
         "a program and its arguments".to_owned()
@@ -264,9 +259,7 @@ impl Reads for ShellLine {
 }
 
 /// Variables' names, separated by blanks.
-pub struct Names;
-
-impl Reads for Names {
+impl Reads for Vec<String> {
     type Value = Vec<String>;
     fn takes() -> String {
         "variable names, separated by blanks".to_owned()
