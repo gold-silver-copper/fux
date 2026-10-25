@@ -3577,7 +3577,9 @@ impl Screen {
         let identity = options.identity();
         let reply = match (intermediates, byte) {
             // HPB (ECMA-48 8.3.58) and VPB (8.3.159): back n columns, or up
-            // n lines.
+            // n lines, as VPR goes down: with origin mode set "the Active
+            // Position cannot be moved above the Top Margin" (DEC STD 070,
+            // DECOM, p. 5-31).
             (b"", b'j' | b'k') => {
                 self.break_cluster();
                 let n = p.first(0, 1).max(1);
@@ -3586,7 +3588,7 @@ impl Screen {
                 if byte == b'j' {
                     g.backward(n);
                 } else {
-                    g.set_row(g.cursor.row().saturating_sub(n));
+                    g.position_line(g.cursor_line().saturating_sub(n));
                 }
                 return Some(Dispatch::Done);
             }

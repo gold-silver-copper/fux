@@ -960,6 +960,9 @@ fn hpb_vpb_ctc_tsr_and_decst8c() -> Result {
     assert_eq!(lines(&p), [" X", "", ""]);
     let p = run(2, 3, b"abc\x1b[jX")?;
     assert_eq!(lines(&p), ["aXc", ""]);
+    // In origin mode VPB stops at the top margin (DEC STD 070, DECOM).
+    let p = run(4, 3, b"\x1b[2;3r\x1b[?6h\x1b[5kX")?;
+    assert_eq!(lines(&p), ["", "X", "", ""]);
     assert_eq!(row(20, b"\x1b[5G\x1b[W\r\tX")?, "    X");
     assert_eq!(row(20, b"\x1b[9G\x1b[2W\r\tX")?, "                X");
     assert_eq!(row(20, b"\x1b[4W\tX")?, "                   X");
