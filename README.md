@@ -429,7 +429,8 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
-  graphics, and the size of its cells (`CSI 16 t`), if your terminal says
+  graphics, and the size of its cells (`CSI 16 t`, asked again each time
+  your terminal is resized, as a font zoom resizes it), if your terminal says
   so, and the pictures it draws are shown on your terminal, clipped to the
   pane; they scroll with the text, and text over one, or an overlay, takes
   it away. A pane no sixel-drawing terminal shows is told none, so its

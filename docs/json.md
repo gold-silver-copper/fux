@@ -32,7 +32,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
 | `pictures_refused` | how many sixel pictures its program drew that were not kept: begun while no terminal showing it drew sixel (its tab not shown, or shown on none that draws sixel and said its cell size), ended once none did, lifted past a scroll region's top as it was placed, or cut: what it drew past what a picture may keep (4096 pixels a side, 4096 by 2160 in all, and the pictures' memory budget) was not kept, placed or not |
-| `cell` | the size of a cell in pixels its program was last told, `{"width":9,"height":18}`, from a terminal showing it that said one (`CSI 16 t`); `null` while none is known: then it places no pictures |
+| `cell` | the size of a cell in pixels its program was last told, `{"width":9,"height":18}`, from a terminal showing it that said one (`CSI 16 t`, asked again each time that terminal is resized, as a font zoom resizes it); `null` while none is known, a resized terminal's until it answers: then it places no pictures |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |

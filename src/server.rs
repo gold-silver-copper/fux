@@ -1586,9 +1586,11 @@ impl Server {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
-                // forgotten, it is repainted in full either way.
+                // forgotten, it is repainted in full either way, and its
+                // cell size, which a font zoom changes, is asked again.
                 Some(AttachedFrame::Resize(size)) => {
                     attached.known = false;
+                    session.terminal_resized(attached.client);
                     let resized = session.resize(attached.client, size.rows(), size.cols());
                     if let Err(refused) = resized {
                         session.notify_to(attached.client, refused.to_string(), true);
