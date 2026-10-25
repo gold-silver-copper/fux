@@ -153,10 +153,12 @@ as integers: `A counts 3 at` is its `DONE`.
   A command's output alone where the shell marks commands, else the screen:
   `str no_marks try %3 last-output capture catch 2drop %3 capture end`.
 - **A shell to type into:** `shell` makes a tab with one in workspace
-  `agent`. Wait for its prompt (a text it shows) before you type: its
-  startup may drop what comes sooner. A command that must run is surer
-  started as the program: `opts str sh program str -c arg str 'make test;
-  exec "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
+  `agent`, on an attached client's screen; with no client attached, give
+  it a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
+  (a text it shows) before you type: its startup may drop what comes
+  sooner. A command that must run is surer started as the program: `opts
+  80 24 size str sh program str -c arg str 'make test; exec
+  "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude

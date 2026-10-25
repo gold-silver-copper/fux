@@ -254,9 +254,9 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
             "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }
-        "env" => "fux opts str PORT 8080 env str ./app program run",
-        "new-tab" => "fux opts str logs name str agent in new-tab",
-        "new-workspace" => "fux opts str work name new-workspace",
+        "env" => "fux opts str PORT 8080 env 80 24 size str ./app program run",
+        "new-tab" => "fux opts str logs name 80 24 size str agent in new-tab",
+        "new-workspace" => "fux opts str work name 80 24 size new-workspace",
         "respawn" | "kill-first" => "fux %3 kill-first respawn",
         "wait" | "changed" => {
             "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait"
