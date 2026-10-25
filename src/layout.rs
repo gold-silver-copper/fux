@@ -929,10 +929,10 @@ mod tests {
         let shares = Shares::new(share(5), share(3));
         assert!(matches!(&root, Tree::Split(split) if split.shares() == shares));
         // Left from the leftmost pane shrinks it, moving its right border.
-        assert!(resize(&mut root, a, p(0), Direction::Left, 5) > Some(0));
+        assert_eq!(resize(&mut root, a, p(0), Direction::Left, 5), Some(5));
         assert_eq!(widths(&root, a, &[0]), [Some(45)]);
         // Never below the minimum.
-        assert!(resize(&mut root, a, p(1), Direction::Left, 200) > Some(0));
+        assert_eq!(resize(&mut root, a, p(1), Direction::Left, 200), Some(43));
         assert_eq!(widths(&root, a, &[0]), [Some(MIN)]);
         // No split along the vertical axis: nothing to move.
         assert_eq!(resize(&mut root, a, p(0), Direction::Up, 1), None);
@@ -952,11 +952,11 @@ mod tests {
         let a = area(81, 24);
         let all = [0, 1, 2, 3];
         assert_eq!(widths(&root, a, &all), [40, 40, 20, 19].map(Some));
-        assert!(resize(&mut root, a, p(2), Direction::Left, 5) > Some(0));
+        assert_eq!(resize(&mut root, a, p(2), Direction::Left, 5), Some(5));
         assert_eq!(widths(&root, a, &all), [35, 45, 25, 19].map(Some));
         // Right from 3, at the right edge: no border there, so 3 shrinks
         // from its left.
-        assert!(resize(&mut root, a, p(3), Direction::Right, 2) > Some(0));
+        assert_eq!(resize(&mut root, a, p(3), Direction::Right, 2), Some(2));
         assert_eq!(widths(&root, a, &all), [35, 45, 27, 17].map(Some));
     }
 
@@ -979,10 +979,10 @@ mod tests {
             widths(&nested, a, &[0, 1, 2, 3]),
             [50, 49, 24, 24].map(Some)
         );
-        assert!(resize(&mut nested, a, p(3), Direction::Left, 30) > Some(0));
+        assert_eq!(resize(&mut nested, a, p(3), Direction::Left, 30), Some(30));
         assert_eq!(widths(&nested, a, &[0, 1, 2, 3]), [42, 57, 2, 54].map(Some));
         let mut pair = tree();
-        assert!(resize(&mut pair, a, p(1), Direction::Left, 100) > Some(0));
+        assert_eq!(resize(&mut pair, a, p(1), Direction::Left, 100), Some(48));
         let held = pair.clone();
         assert_eq!(resize(&mut pair, a, p(1), Direction::Left, 1), Some(0));
         assert_eq!(pair, held);

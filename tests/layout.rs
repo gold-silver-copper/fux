@@ -126,6 +126,9 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
         "{}",
         stuck.stderr
     );
+    // A move of 0 moves nothing, and is not refused.
+    server.ok(&["str", "%1", "pane", "str", "right", "0", "move-border"])?;
+    assert_eq!(size(&server, "%1")?.1, 2);
     Ok(())
 }
 

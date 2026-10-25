@@ -2532,7 +2532,9 @@ impl Session {
                 let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
                 let way = direction.name();
                 let why = match self.parts.reshape(pane, resize) {
+                    // A move of 0 moves nothing, as asked.
                     Some(Some(1..)) => return Ok(Reply::default()),
+                    Some(Some(0)) if amount == 0 => return Ok(Reply::default()),
                     Some(Some(0)) => "the panes it would move are at their least",
                     Some(None) | None => "it has no border there",
                 };
