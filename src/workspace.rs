@@ -549,23 +549,23 @@ impl Parts {
         fit: Fit,
         pane: Pane<Loose>,
     ) -> Result<(), Pane<Loose>> {
-        if self.push_tab((ws, id), name, fit, pane.id()).is_err() {
+        if self.push_tab((ws, id), name, fit, pane.id()).is_none() {
             return Err(pane);
         }
         self.placed((ws, id), pane);
         Ok(())
     }
 
-    /// `add_tab`, holding pane `pane`, in the session.
+    /// `add_tab`, holding pane `pane`, in the session; `None` if there is
+    /// no workspace `ws`.
     fn push_tab(
         &mut self,
         (ws, id): (WsId, TabId),
         name: Option<String>,
         fit: Fit,
         pane: PaneId,
-    ) -> Result<(), NoPane> {
-        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws);
-        let workspace = workspace.ok_or(NoPane)?;
+    ) -> Option<()> {
+        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws)?;
         // Named after its place if no name is given, with a seat for every
         // client that has one in the others.
         let name = name.unwrap_or_else(|| numbered(workspace.tabs.len().saturating_add(1)));
@@ -574,7 +574,7 @@ impl Parts {
         workspace.tabs.push(tab);
         self.journal
             .push(Place::Tab(ws, id), What::Created(Some(name)));
-        Ok(())
+        Some(())
     }
 
     /// `pane`, new, is in tab `at` of its workspace.
@@ -745,24 +745,23 @@ impl Parts {
 
     /// Moves `pane` from its tab to `to`, another: its tab lets go of it,
     /// closing if it held it alone, as its workspace does if that leaves
-    /// it none, and `to` takes it; no other tab changes. Refused, as for a
-    /// tab or workspace there is not, none does.
-    pub(crate) fn relocate(&mut self, pane: PaneId, to: Destination) -> Result<(), NoPane> {
-        let was = self.locate(pane).ok_or(NoPane)?;
-        let (_, from) = tab_mut(&mut self.workspaces, was.1).ok_or(NoPane)?;
+    /// it none, and `to` takes it; no other tab changes. `None`, changing
+    /// nothing, for a pane in no tab, its own tab, or a tab or workspace
+    /// there is not.
+    pub(crate) fn relocate(&mut self, pane: PaneId, to: Destination) -> Option<()> {
+        let was = self.locate(pane)?;
+        let (_, from) = tab_mut(&mut self.workspaces, was.1)?;
         let rest = match from.root.remove(pane) {
             Removed::Left(rest) => Some(rest),
             Removed::Emptied => None,
-            Removed::Absent => return Err(NoPane),
+            Removed::Absent => return None,
         };
         let clients: Vec<ClientId> = from.seats.keys().copied().collect();
         // Taken in before its tab lets go: the workspace a new tab goes in
         // may be the one that would close.
         let at = match to {
             Destination::Tab(to) => {
-                let (ws, tab) = tab_mut(&mut self.workspaces, to)
-                    .filter(|_| to != was.1)
-                    .ok_or(NoPane)?;
+                let (ws, tab) = tab_mut(&mut self.workspaces, to).filter(|_| to != was.1)?;
                 tab.edit(|root| root.append(pane));
                 (ws, to)
             }
@@ -781,7 +780,7 @@ impl Parts {
             (Some(rest), Some((_, from))) => from.edit(|root| *root = rest),
             (None, _) | (_, None) => self.drop_tab(was.1),
         }
-        Ok(())
+        Some(())
     }
 
     /// Changes the layout of `pane`'s tab with `change`, which keeps its

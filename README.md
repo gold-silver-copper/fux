@@ -389,7 +389,8 @@ no room below its bar), is refused: whatever there
 is can be made again. Each split holds its two shares exactly, never
 rounded. A close gives the closed pane's room to its sibling in their
 split, every other share as it was. Moving a border changes only the panes
-that touch it: each split it moves takes the cells its two sides then have
+that touch it, and once those beyond are at their least the next border
+out moves on: each split it moves takes the cells its two sides then have
 as its shares. A terminal's resize changes no share.
 
 Nothing is saved on its own. To keep a session past its server (a crash, a

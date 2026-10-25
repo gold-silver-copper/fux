@@ -717,8 +717,7 @@ impl Split {
                 (l1.saturating_sub(d), l2.saturating_add(d))
             }
         };
-        // A child not shown has nothing to give, nor room to take.
-        if n1 == l1 || l2 == 0 {
+        if n1 == l1 {
             return 0;
         }
         self.first.stretch(r1, (axis, n1), (Side::After, pane));

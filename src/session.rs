@@ -2531,7 +2531,11 @@ impl Session {
             PaneResize::Border(direction, amount) => {
                 let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
                 if self.parts.reshape(pane, resize) != Some(true) {
-                    let message = format!("{pane} has no border to move {}", direction.name());
+                    let message = format!(
+                        "{pane} has no border to move {}, or the panes it would move are \
+                         at their least",
+                        direction.name()
+                    );
                     return Err(fail(Code::NothingThere, message));
                 }
                 Ok(Reply::default())
@@ -2685,7 +2689,7 @@ impl Session {
             }
             Destination::NewTab(_, tab, _) | Destination::NewWorkspace(_, (tab, ..)) => *tab,
         };
-        (self.parts.relocate(pane, dest)).map_err(|NoPane| Error::NoPane(pane))?;
+        (self.parts.relocate(pane, dest)).ok_or(Error::NoTab(tab))?;
         // Both IDs or neither: one taken alone would be lost.
         self.ids = ids;
         // The moving client follows its pane.
