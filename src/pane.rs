@@ -65,14 +65,35 @@ impl std::error::Error for Error {}
 pub struct InputQueue {
     bytes: ByteQueue,
     /// Input was refused, and the program has not read since: everything
-    /// is refused, so none arrives with a hole before it.
-    refusing: bool,
-    /// A run of drops (input the full queue refused, replies past a read's
-    /// bound) was told: the rest of the run is not told again, as the
-    /// notice said nothing is taken till the program reads. The run ends
-    /// as the program reads after the queue refused, or at a read that
-    /// drops no reply while the queue takes input.
-    told: bool,
+    /// is refused, so none arrives with a hole before it, while this run
+    /// of refusals goes on.
+    refusing: Run,
+}
+
+/// A run of one kind of drop: none going on; going on and not yet told;
+/// or told, so the rest of it is counted and not told again, as its
+/// notice said what goes on happening till it ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Run {
+    #[default]
+    Over,
+    Untold,
+    Told,
+}
+
+impl Run {
+    /// A drop of its kind: a run begins, if none goes on.
+    fn dropped(&mut self) {
+        if *self == Run::Over {
+            *self = Run::Untold;
+        }
+    }
+    /// Its drops are told: the rest of a run going on is not.
+    fn told(&mut self) {
+        if *self == Run::Untold {
+            *self = Run::Told;
+        }
+    }
 }
 
 impl InputQueue {
@@ -117,14 +138,14 @@ impl InputQueue {
         if len > INPUT_BYTES {
             return Err(Error::TooLong(len));
         }
-        self.refusing = true;
+        self.refusing.dropped();
         Err(Error::InputFull)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
         match self.refusing {
-            true => 0,
-            false => INPUT_BYTES.saturating_sub(self.len()),
+            Run::Untold | Run::Told => 0,
+            Run::Over => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -136,20 +157,20 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: its terminal took them.
     pub fn advance(&mut self, n: usize) {
-        if n > 0 && std::mem::take(&mut self.refusing) {
-            self.told = false;
+        if n > 0 {
+            self.refusing = Run::Over;
         }
         self.bytes.take(n);
     }
     /// Lets everything queued go, as its program ends unread: how many
-    /// bytes, which its ender tells. A drop yet to be told stays to be.
+    /// bytes, which its ender tells. Its run of refusals ends with it.
     pub fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
+        self.refusing = Run::Over;
         queued
     }
-    /// Everything queued, for tests.
-    #[cfg(test)]
+    /// Everything queued, for tests and for a pane with no process.
     pub fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -637,6 +658,10 @@ pub struct Pane {
     /// What it let go of and has not told a client showing it, its
     /// programs' before a respawn too: kept till one is.
     untold: Losses,
+    /// Its run of replies dropped (`Run`).
+    replies: Run,
+    /// The size its screen was last refused, if its last resize was.
+    refused_size: Option<Size>,
 }
 
 /// A pane to change, with a journal at its place: what its methods do
@@ -797,6 +822,8 @@ impl Pane {
             alerts: Alerts::default(),
             lost: Losses::default(),
             untold: Losses::default(),
+            replies: Run::Over,
+            refused_size: None,
         })
     }
 
@@ -999,8 +1026,9 @@ impl Pane {
         if let Some(scheme) = sink.told.filter(|_| !full) {
             self.scheme_told = Some(scheme);
         }
-        if replies == 0 && !self.input.refusing {
-            self.input.told = false;
+        match replies {
+            0 => self.replies = Run::Over,
+            _ => self.replies.dropped(),
         }
         self.lose(Losses {
             replies,
@@ -1039,12 +1067,21 @@ impl Pane {
             return;
         }
         self.release_frame(tell);
-        if self.parser.resize(size).is_err() {
-            let memory = 1;
-            return self.lose(Losses {
+        let refused = self.parser.refused();
+        let resized = self.parser.resize(size);
+        // A size refused is asked again as the session settles: counted
+        // once, till another size is asked.
+        let memory = self.parser.refused().saturating_sub(refused);
+        let again = resized.is_err() && self.refused_size == Some(size);
+        self.refused_size = resized.is_err().then_some(size);
+        if !again {
+            self.lose(Losses {
                 memory,
                 ..Losses::default()
             });
+        }
+        if resized.is_err() {
+            return;
         }
         tell.tell(PaneEvent::Resized(size));
         self.size_terminal();
@@ -1077,12 +1114,15 @@ impl Pane {
     }
 
     /// fux let `losses` of its program's go: counted, and to be told but
-    /// for input and replies dropped in a run already told
-    /// (`InputQueue::told`).
+    /// for input and replies dropped in a run of them already told
+    /// (`Run`).
     pub(crate) fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
-        if self.input.told {
-            (losses.input, losses.replies) = (0, 0);
+        if self.input.refusing == Run::Told {
+            losses.input = 0;
+        }
+        if self.replies == Run::Told {
+            losses.replies = 0;
         }
         self.untold.add(losses);
     }
@@ -1093,11 +1133,11 @@ impl Pane {
     }
 
     /// What it let go of and has not told, which it then has: the rest of
-    /// a run of drops is not told (`InputQueue::told`).
+    /// each run of drops going on is not told (`Run`).
     pub fn take_untold(&mut self) -> Losses {
-        let untold = std::mem::take(&mut self.untold);
-        self.input.told |= untold.input > 0 || untold.replies > 0;
-        untold
+        self.input.refusing.told();
+        self.replies.told();
+        std::mem::take(&mut self.untold)
     }
 
     /// Queues `bytes` of input for its program, as `InputQueue::push`
@@ -1258,6 +1298,8 @@ impl Pane {
             left,
             alerts,
             lost,
+            replies,
+            refused_size,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1271,6 +1313,7 @@ impl Pane {
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
+        (self.replies, self.refused_size) = (replies, refused_size);
         tell.tell(PaneEvent::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
@@ -1836,6 +1879,33 @@ pub(crate) mod tests {
         assert!(pane.push(vec![0; 2]).is_err());
         assert_eq!(pane.take_untold().input, 1, "a run after the program read");
         assert_eq!(pane.lost().input, 4, "every piece counted");
+        Ok(())
+    }
+
+    /// A run of drops of one kind told keeps no other kind, and no later
+    /// run, from being told: not one that ended before it was told.
+    #[test]
+    fn each_run_of_drops_is_told_once() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0);
+        let room = pane.input.room();
+        pane.push(vec![0; room])?;
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold().input, 1, "another kind");
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        pane.input.drain_all();
+        pane.output(&queries);
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        assert!(pane.take_untold().replies > 0, "told after its run ended");
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0, "a later run");
         Ok(())
     }
 

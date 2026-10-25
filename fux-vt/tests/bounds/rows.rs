@@ -1961,6 +1961,18 @@ pub fn b44(_: Scale, chunk: usize) -> Found {
         2 => {}
         n => return Err(format!("two refusals counted as {n}")),
     }
+    // A resize refused room leaves the screen as it was, and is counted.
+    let mut parser = refusing(u32::MAX)?;
+    let wider = Size::new(1, 20).map_err(|e| e.to_string())?;
+    let resized = parser.resize(wider);
+    fux_vt::refuse_next(0);
+    if resized.is_ok() || parser.refused() != 1 || parser.screen().size().cols() != 10 {
+        return Err(format!(
+            "a refused resize: {resized:?}, {} refusals, {} columns",
+            parser.refused(),
+            parser.screen().size().cols()
+        ));
+    }
     modes_past_a_refusal()?;
     degrades(chunk)
 }

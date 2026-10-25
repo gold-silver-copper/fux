@@ -1038,9 +1038,17 @@ impl Parser {
         self.screen.set_graphics(shown);
     }
     /// Resizes the terminal, reflowing the primary screen with
-    /// [`Feature::Reflow`].
+    /// [`Feature::Reflow`]. A resize refused room leaves the screen as it
+    /// was, and history a resize could not keep is let go; each counts in
+    /// [`Parser::refused`].
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
-        self.screen.resize(size, self.options.has(Feature::Reflow))
+        let degrades = crate::degrades();
+        let resized = self.screen.resize(size, self.options.has(Feature::Reflow));
+        self.count_degrades(degrades);
+        if resized.is_err() {
+            self.refused = self.refused.saturating_add(1);
+        }
+        resized
     }
     /// Keeps at most `bytes` of the primary screen's history from now on:
     /// lowering it lets the oldest rows go at once.
@@ -1059,8 +1067,8 @@ impl Parser {
     pub fn options(&self) -> Options {
         self.options
     }
-    /// How many times carrying out output was refused room (THREATS.md
-    /// 1.3). Each refusal loses only what it was for.
+    /// How many times carrying out output, or a resize, was refused room
+    /// (THREATS.md 1.3). Each refusal loses only what it was for.
     pub fn refused(&self) -> u64 {
         self.refused
     }
