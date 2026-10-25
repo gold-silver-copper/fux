@@ -465,12 +465,22 @@ impl Parts {
         Some(PaneMut(self.panes.get_mut(&id)?, place, &mut self.journal))
     }
 
-    /// Changes each pane with `change`.
+    /// Changes each pane with `change`, tab by tab: each at the place it
+    /// is found, not looked for again.
     pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut Pane)) {
-        let ids: Vec<PaneId> = self.panes.keys().copied().collect();
-        for id in ids {
-            if let Some(mut pane) = self.pane_mut(id) {
-                change(&mut pane);
+        let Parts {
+            workspaces,
+            panes,
+            journal,
+        } = self;
+        for ws in workspaces.iter() {
+            for tab in &ws.tabs {
+                for id in tab.root.as_ref().map(Tree::panes).unwrap_or_default() {
+                    if let Some(pane) = panes.get_mut(&id) {
+                        let place = Place::Pane((ws.id, tab.id), id);
+                        change(&mut PaneMut(pane, place, journal));
+                    }
+                }
             }
         }
     }
