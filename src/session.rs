@@ -974,9 +974,12 @@ impl Session {
         let child = self.spawn(id, &launch, starting, size)?;
         let history = self.config.history_bytes;
         let process = child.map_or(Process::Absent, Process::Reading);
-        let (old, left) = self.pane_mut(id)?.respawned(launch, process, history)?;
+        let mut pane = self.pane_mut(id)?;
+        let queued = pane.input.discard();
+        let (old, left) = pane.respawned(launch, process, history)?;
+        drop(pane);
         self.end(old, true);
-        let left = left_told(left, "the program it ran");
+        let left = left_told((left, queued), "the program it ran");
         if !left.is_empty() {
             let told = format!("{id} respawned{left}");
             for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
@@ -1947,7 +1950,8 @@ impl Session {
         if pane.has_unread() {
             return;
         }
-        let left = left_told(pane.left, "it");
+        let queued = pane.input.discard();
+        let left = left_told((pane.left, queued), "it");
         match pane.runs {
             Runs::Shell => {
                 pane.ended(ended);
@@ -3424,17 +3428,24 @@ impl Session {
 /// The most read of what a program left on its terminal as it ends.
 pub(crate) const LEFT_MAX: usize = 1 << 20;
 
-/// What is said, after its end's own words, of a program that left
-/// more than `LEFT_MAX` on its terminal (`Left::Cut`), `who` naming it:
-/// nothing of one whose terminal was read whole.
-fn left_told(left: Left, who: &str) -> String {
-    match left {
+/// What is said, after its end's own words, of what a program, `who`,
+/// left unread as it ended: more than `LEFT_MAX` on its terminal
+/// (`Left::Cut`), and bytes of input queued for it; nothing of one that
+/// left neither.
+fn left_told((left, queued): (Left, usize), who: &str) -> String {
+    let mut told = match left {
         Left::Read => String::new(),
         Left::Cut => format!(
             "; {who} left more than {} MiB on its terminal: the rest was not read",
             LEFT_MAX >> 20
         ),
+    };
+    if queued > 0 {
+        told.push_str(&format!(
+            "; {queued} bytes of input queued for it were never read"
+        ));
     }
+    told
 }
 
 /// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
@@ -4187,6 +4198,47 @@ mod tests {
             said.contains("respawned; the program it ran left more"),
             "{said}"
         );
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
+        Ok(())
+    }
+
+    /// Input queued for a program that ends without reading it is let go,
+    /// and told with its end: at its exit, or at a respawn over it.
+    #[test]
+    fn input_an_ended_program_never_read_is_told() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        let id = PaneId::of(2);
+        let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
+        let queue = |s: &mut Session, bytes: &[u8]| {
+            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+            pane.input.push(bytes).map_err(|e| e.to_string())
+        };
+        queue(&mut s, b"abc")?;
+        s.exited(id, Ended::Exited(0));
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.ends_with("; 3 bytes of input queued for it were never read"),
+            "{said}"
+        );
+        assert!(s.pane(id).is_ok_and(|p| p.input.is_empty()));
+        // Respawned over while it runs, with input it has not read.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        run(&mut s, "%2 respawn")?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        queue(&mut s, b"de")?;
+        run(&mut s, "%2 kill-first respawn")?;
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {
                 process::reaped(pid);

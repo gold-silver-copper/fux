@@ -162,6 +162,13 @@ impl InputQueue {
         }
         self.bytes.take(n);
     }
+    /// Lets everything queued go, as its program ends unread: how many
+    /// bytes, which its ender tells. A drop yet to be told stays to be.
+    pub fn discard(&mut self) -> usize {
+        let queued = self.len();
+        self.advance(queued);
+        queued
+    }
     /// Everything queued, for tests and for a pane with no process.
     pub fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
@@ -1004,8 +1011,8 @@ impl<S> Pane<S> {
         let runs = Runs::Program(launch);
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
-        // old one (what it said, a bell, a copy, one refused), its colours
-        // and log.
+        // old one (what it said, a bell, a copy, one refused, input dropped;
+        // its input it let go, `InputQueue::discard`), its colours and log.
         let Pane {
             id: _,
             name: _,
@@ -1020,7 +1027,7 @@ impl<S> Pane<S> {
             title,
             parser,
             process: _,
-            input,
+            input: _,
             runs,
             frame,
             unread,
@@ -1036,7 +1043,7 @@ impl<S> Pane<S> {
             Some(_) => Left::Read,
             None => self.left,
         };
-        (self.title, self.parser, self.input, self.runs) = (title, parser, input, runs);
+        (self.title, self.parser, self.runs) = (title, parser, runs);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts) = (mouse_held, left, alerts);
