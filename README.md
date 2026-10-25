@@ -124,8 +124,11 @@ each one's code): `type` and `press` (text and a key into a pane), `line`
 
 A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
-also takes a tab's name (`run`'s tabs are named after their program), `tab`
-and `workspace` a pane, the tab or workspace it is in. Inside a pane,
+also takes a tab's name, the tab's one pane (`run`'s tabs are named after
+their program), `tab` and `workspace` a pane, the tab or workspace it is
+in. A pane's own name (what `rename` gave it, else its program's) finds it
+through `pane-named` alone: `str logs pane-named`. A title a program sets
+finds nothing. Inside a pane,
 `here` is that pane (`FUX_PANE`, below). In a key's program or the
 prompt's, `me` is the client whose key it is, and `me focused` its focused
 pane.

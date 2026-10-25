@@ -611,6 +611,11 @@ wire! {
             text: String,
             kind: Kind,
         },
+        /// The pane given the name `name` (by `rename`, or its program's),
+        /// answered with its id.
+        PaneNamed {
+            name: String,
+        },
         ListBuffers,
         ShowBuffer {
             index: usize,
@@ -764,6 +769,7 @@ impl Command {
         match self {
             C::Ls { .. }
             | C::Resolve { .. }
+            | C::PaneNamed { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }
             | C::SendKeys { .. }

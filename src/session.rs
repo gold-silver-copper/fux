@@ -943,35 +943,12 @@ impl Session {
         }
         match kind {
             Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id())),
+            // A tab's name: its one pane. A pane's own name is
+            // `pane_named`'s.
             Kind::Pane => {
-                // A tab's name, else a pane's own (what `rename` gave
-                // it, or its program's), else the title its program
-                // set, as `ls` shows it.
-                let tab = match named() {
-                    Ok(tab) => tab,
-                    Err(no_tab) => {
-                        let with = |of: fn(&Pane) -> &str| {
-                            let mut panes: Vec<PaneId> = (self.parts.panes().values())
-                                .filter(|p| of(p) == text)
-                                .map(|p| p.id())
-                                .collect();
-                            panes.sort();
-                            panes
-                        };
-                        let mut panes = with(|p| p.name());
-                        if panes.is_empty() {
-                            panes = with(|p| p.title().as_str());
-                        }
-                        if panes.is_empty() {
-                            return Err(no_tab);
-                        }
-                        let many = |n, ids| format!("{text:?} names {n} panes ({ids}): use an id");
-                        return one(&panes, many).map(AnyRef::Pane);
-                    }
-                };
                 let many =
                     |n, ids| format!("{text:?} is a tab of {n} panes ({ids}): use a pane's id");
-                one(&panes_of(tab), many).map(AnyRef::Pane)
+                one(&panes_of(named()?), many).map(AnyRef::Pane)
             }
             Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id())),
             Kind::Workspace => {
@@ -979,6 +956,21 @@ impl Session {
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
             }
         }
+    }
+
+    /// The pane named `name` (`pane-named`): what `rename` gave it, or its
+    /// program's name; never a title its program set.
+    fn pane_named(&self, name: &str) -> Result<PaneId, Error> {
+        let mut panes: Vec<PaneId> = (self.parts.panes().values())
+            .filter(|p| p.name() == name)
+            .map(|p| p.id())
+            .collect();
+        panes.sort();
+        if panes.is_empty() {
+            return Err(fail(Code::NoPane, format!("no pane named {name:?}")));
+        }
+        let many = |n, ids| format!("{name:?} names {n} panes ({ids}): use an id");
+        one(&panes, many)
     }
 
     /// The tabs `target` is or holds: a pane's own, a tab, or a
@@ -2247,13 +2239,8 @@ impl Session {
                 self.parts.each_pane_mut(|p| p.set_history_bytes(history));
                 Ok(Reply::default())
             }
-            Command::Resolve { text, kind } => {
-                let found = self.resolve(text, *kind, here)?;
-                Ok(Reply {
-                    ids: vec![found],
-                    ..format!("{found}\n").into()
-                })
-            }
+            Command::Resolve { text, kind } => Ok(found(self.resolve(text, *kind, here)?)),
+            Command::PaneNamed { name } => Ok(found(AnyRef::Pane(self.pane_named(name)?))),
             &Command::ListBuffers => {
                 let line = |(i, text): (usize, &String)| {
                     let preview: String = (text.chars())
@@ -3043,6 +3030,14 @@ impl Session {
         .render();
         text.push('\n');
         text
+    }
+}
+
+/// The answer of a lookup that found `found`: its id.
+fn found(found: AnyRef) -> Reply {
+    Reply {
+        ids: vec![found],
+        ..format!("{found}\n").into()
     }
 }
 
@@ -4974,15 +4969,19 @@ mod tests {
     }
 
     /// A bare id names its pane, tab or workspace, but not as `str`'s text;
-    /// `json` after a capture gives its JSON.
+    /// a pane's name names it through `pane-named`, a title never; `json`
+    /// after a capture gives its JSON.
     #[test]
     fn ids_and_json_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(output(&mut s, "%1 str name get")?, "sh\n");
         assert_eq!(output(&mut s, "@1 str name get")?, "main\n");
-        // A pane's title names it too, as `ls` shows it.
+        // A pane's name finds it by `pane-named` alone; a title its
+        // program set never does.
+        assert_eq!(output(&mut s, "str sh pane-named")?, "%1\n");
+        assert!(output(&mut s, "str sh pane").is_err(), "a tab's name only");
         s.output(PaneId::of(1), b"\x1b]2;spool\x07");
-        assert_eq!(output(&mut s, "str spool pane")?, "%1\n");
+        assert!(output(&mut s, "str spool pane-named").is_err(), "a title");
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");

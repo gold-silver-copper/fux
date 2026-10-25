@@ -54,6 +54,7 @@ fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
 fux %2 str TERM signal                         # signal what runs in its foreground
 fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its tab's name
+fux str logs pane-named                        # a pane by its own name (rename)
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
 ```

@@ -89,6 +89,7 @@ pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 pub const WORDS: &[Word] = &[
     // Finding
     word("Finding", "pane", "ref -- pane", "the pane ref names: a tab's name (its one pane), %N, a pane, or a tab of one pane"),
+    word("Finding", "pane-named", "name -- pane", "the pane given that name (rename, or its program's); never a title"),
     word("Finding", "tab", "ref -- tab", "the tab ref names: its name, @N, or a pane's tab"),
     word("Finding", "workspace", "ref -- workspace", "the workspace ref names: its name, +N, or a pane's or tab's workspace"),
     word("Finding", "here", "-- pane", "the pane this runs in (FUX_PANE)"),
@@ -917,6 +918,12 @@ impl fuxth::Host for Host<'_> {
                     }
                 }
             }
+            "pane-named" => match string(&next()?)? {
+                name if name.trim().is_empty() => {
+                    Err(fail(Code::NoTarget, "an empty name names no pane"))
+                }
+                name => later(ask(Command::PaneNamed { name }, Then::Handle(Kind::Pane))),
+            },
             "here" => resolve(String::new(), Kind::Pane),
             "client" => {
                 let text = string(&next()?)?;
