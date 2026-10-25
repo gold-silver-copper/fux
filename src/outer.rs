@@ -371,9 +371,9 @@ impl Session {
     /// colours of `colour_client`'s terminal (see the module documentation),
     /// its palette whole, so that another client's replaces it, entries it
     /// did not say cleared; and what `graphics_client`'s terminal draws,
-    /// which is nothing in a tab no client shows with a cell size, so a
-    /// program started there draws in text, which a capture reads. With no
-    /// such terminal, nothing.
+    /// which is no sixel in a tab no client shows with a cell size, so a
+    /// program there draws in text, which a capture reads, in the cell it
+    /// was last told (`Pane::host`). With no such terminal, nothing.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
         let graphics = self.graphics(id);
         let tab = self.locate(id).map(|(_, tab)| tab);
@@ -578,7 +578,8 @@ mod tests {
 
     /// A pane's pictures and cell size are of a terminal showing its tab that
     /// said its cell size, whether or not it said its colours; not of one
-    /// that typed there and went to another tab.
+    /// that typed there and went to another tab, whose cell it keeps till
+    /// one showing it says another.
     #[test]
     fn a_panes_cell_is_of_a_terminal_showing_it_that_said_one() -> Outcome {
         let (mut s, c) = session()?;
@@ -596,7 +597,7 @@ mod tests {
         run(&mut s, "opts str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
-        assert_eq!(cell(&mut s), None);
+        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
         Ok(())
@@ -644,7 +645,7 @@ mod tests {
     /// A cell answer that changes the cell a pane's program is told sizes
     /// its terminal in pixels at once, which signals it (SIGWINCH), not at
     /// its next output; and a refused cell is told once, not again at
-    /// each asking.
+    /// each asking, the program keeping the cell it was told.
     #[test]
     fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -681,7 +682,7 @@ mod tests {
         let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_some(), "refused, told");
-        assert_eq!(pixels(&s), None, "no cell told");
+        assert_eq!(pixels(&s), whole(12, 24), "the cell it was told kept");
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_none(), "told once");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
@@ -697,7 +698,7 @@ mod tests {
 
     /// An idle pane is told the cell of the terminal that draws it as
     /// another comes to: one typed there, or the one drawing it detached;
-    /// none once none does.
+    /// once none does, it keeps the last it was told.
     #[test]
     fn a_pane_is_told_the_cell_of_the_terminal_drawing_it_now() -> Outcome {
         let (mut s, c) = session()?;
@@ -713,7 +714,7 @@ mod tests {
         s.detach(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.detach(d);
-        assert!(cell(&mut s)?.contains(r#""cell":null"#));
+        assert!(cell(&mut s)?.contains(&told(12, 24)));
         Ok(())
     }
 

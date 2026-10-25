@@ -1730,10 +1730,14 @@ impl Session {
     /// that draws it says now (`graphics`) is told that one: as the cell
     /// a terminal says changes, or another terminal draws the pane (one
     /// said it draws sixel, the one drawing it left or another typed
-    /// there), or none does. Its terminal is sized in pixels for it,
-    /// which signals its program, not left till it writes.
+    /// there). Its terminal is sized in pixels for it, which signals its
+    /// program, not left till it writes. One no terminal that said a cell
+    /// draws keeps the cell it was told (`Pane::host`).
     fn host_cells(&mut self) {
-        let told = |p: &&Pane| p.screen().cell_size() != self.graphics(p.id()).cell;
+        let told = |p: &&Pane| {
+            let drawn = self.graphics(p.id()).cell;
+            drawn.is_some_and(|cell| p.screen().cell_size() != Some(cell))
+        };
         let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
             .map(Pane::id)
             .collect();
@@ -4430,6 +4434,44 @@ mod tests {
             process::reaped(pid);
         }
         assert_eq!(told, Some((size.cols() * 10, size.rows() * 20)));
+        Ok(())
+    }
+
+    /// A program in a tab no terminal draws keeps the cell it was told:
+    /// its client shown another tab, back, or detached, its terminal's
+    /// size is as it was, which signals it nothing (SIGWINCH).
+    #[test]
+    fn a_tab_no_terminal_draws_keeps_its_programs_cell() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        let size = s.pane(id).map_err(|e| e.to_string())?.size();
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        let winsize = |s: &Session| {
+            let pane = s.parts.panes().get(&id)?;
+            fuxix::terminal::window_size(&pane.process().child()?.master)
+        };
+        s.input(c, b"\x1b[6;20;10t");
+        let told = winsize(&s);
+        assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
+        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        let show = |ws: &str| format!("str {c} client str {ws} workspace show-workspace");
+        run(&mut s, &show("other"))?;
+        s.output(id, b"drawn unseen");
+        assert_eq!(winsize(&s), told, "hidden");
+        run(&mut s, &show("+1"))?;
+        assert_eq!(winsize(&s), told, "shown again");
+        s.detach(c);
+        s.output(id, b"drawn unseen");
+        assert_eq!(winsize(&s), told, "detached");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+            drop(child.master);
+            if let Err(pid) = child.leader.finish() {
+                process::reaped(pid);
+            }
+        }
         Ok(())
     }
 

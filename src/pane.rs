@@ -939,16 +939,19 @@ impl<S> Pane<S> {
     }
 
     /// Its program's queries are answered with `colours` and `palette`
-    /// from now on, and it is told its terminal draws `graphics`.
+    /// from now on, and it is told its terminal draws `graphics`: with no
+    /// cell there (no terminal that said one draws it), in the cell it was
+    /// last told, which its program keeps, not signalled.
     pub fn host(
         &mut self,
         colours: Colours,
         palette: crate::outer::Palette,
-        graphics: fux_vt::Graphics,
+        mut graphics: fux_vt::Graphics,
     ) {
         self.colours = colours;
         self.parser.set_host_palette(palette);
         let told = self.screen().cell_size();
+        graphics.cell = graphics.cell.or(told);
         self.parser.set_host_graphics(graphics);
         if self.screen().cell_size() != told {
             self.size_terminal();
