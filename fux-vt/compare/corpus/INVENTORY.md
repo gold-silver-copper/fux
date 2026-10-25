@@ -309,7 +309,7 @@ Recordings:
 | `CSI n;n s` | DECSLRM, left and right margins (SCOSC without DECLRMM) | 6 | nvim-split, nvim-wide | implemented |
 | `CSI > 0 c` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | answers (first with `\e[>1;VERSION;0c`) |
 | `CSI > 4;1 m` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
-| `CSI ? 1016 $ p` |  | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | answers (first with `\e[?1016;2$y`) |
+| `CSI ? 1016 $ p` |  | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | answers (first with `\e[?1016;4$y`) |
 | `CSI M` |  | 5 | nvim-insert, nvim-scroll, top | implemented |
 | `CSI n P` | DCH | 5 | bash-history, emacs-scroll, top | implemented |
 | `CSI n L` | IL | 4 | emacs-mx, nvim-scroll, vim | implemented |

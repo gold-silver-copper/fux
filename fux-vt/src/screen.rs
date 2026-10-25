@@ -3756,6 +3756,11 @@ impl Screen {
                     None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
                     None if !private && SET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlySet,
                     None => ModeStatus::NotRecognized,
+                    // No pixel is known without the host's cell: no report
+                    // in pixels can be made, set or not (`encode_mouse`).
+                    Some(Mode::MouseSgrPixels) if self.cell_size().is_none() => {
+                        ModeStatus::PermanentlyReset
+                    }
                     Some(mode) => mode.fixed().unwrap_or(match self.mode(mode) {
                         true => ModeStatus::Set,
                         false => ModeStatus::Reset,

@@ -403,8 +403,8 @@ pub const REPLY_CHANGES: &[(&str, &str, &str)] = &[
     ),
     (
         "\x1b[?1016;0$y",
-        "\x1b[?1016;2$y",
-        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, reset, as ctlseqs (\"Mouse Tracking\") and xterm 411 keep it",
+        "\x1b[?1016;4$y",
+        "SGR-Pixels mouse mode (1016) is a mode fux-vt knows, permanently reset while the host says no cell size, as no report in pixels can be made then",
     ),
 ];
 
