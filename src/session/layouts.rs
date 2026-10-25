@@ -116,9 +116,10 @@ impl Session {
 
     /// The `split` lines that make `split`'s children beside its first,
     /// along `axis`, and then each child's own: each line divides what the
-    /// child before had between it and the rest (`Tree::divide`), so each
+    /// child before had between it and the rest (`Tree::split`), so each
     /// has its weight, and the layout made again is the one there is, at
-    /// every size.
+    /// every size. A split's weights are within `layout::MOST` together,
+    /// as two shares are.
     fn dump_split(&self, axis: Axis, split: &Split, ids: bool, out: &mut String) {
         let firsts: Vec<_> = (split.children())
             .filter_map(|(share, child)| Some((child.first_pane()?, u64::from(share.get()))))

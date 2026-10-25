@@ -15,7 +15,6 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, Rect, Side, Tree};
 use crate::pane::{Loose, Pane};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::num::NonZeroU32;
 
 /// A workspace and its tabs, of which it always has one or more: each is
 /// made with one, and the session removes a workspace its last tab leaves.
@@ -579,23 +578,21 @@ impl Parts {
 
     /// The layout `target`'s tab takes split for pane `new` beside it,
     /// along `axis`, after it, the two dividing what the target had as
-    /// `shares` says if given (`Tree::divide`): what the new pane starts at
-    /// and is put in by (`split`).
+    /// `shares` says (`Tree::split`): what the new pane starts at and is
+    /// put in by (`split`).
     pub(crate) fn plan_split(
         &self,
         (target, new): (PaneId, PaneId),
         axis: Axis,
-        shares: Option<(NonZeroU32, NonZeroU32)>,
-    ) -> Option<Split> {
-        let (_, tab) = self.locate(target)?;
+        shares: layout::Shares,
+    ) -> Result<Split, layout::Unmade> {
+        let (_, tab) = self.locate(target).ok_or(layout::Unmade::NoPane)?;
         let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
-        let was = tabs.find(|t| t.id == tab)?.root.clone()?;
+        let was = tabs.find(|t| t.id == tab).and_then(|t| t.root.clone());
+        let was = was.ok_or(layout::Unmade::NoPane)?;
         let mut root = was.clone();
-        root.split(target, new, axis, Side::After).then_some(())?;
-        if let Some(shares) = shares {
-            root.divide((target, new), shares);
-        }
-        Some(Split { tab, was, root })
+        root.split((target, new), (axis, Side::After), shares)?;
+        Ok(Split { tab, was, root })
     }
 
     /// Puts `pane`, new, in its tab laid out as `split` planned: the pane
@@ -721,20 +718,20 @@ impl Parts {
     }
 
     /// Moves `pane` from its tab to the end of tab `to`, another: its tab
-    /// lets go of it, and `to` takes it; no other tab changes.
-    pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) {
-        let ws = tab_mut(&mut self.workspaces, to).map(|(ws, _)| ws);
-        let (Some(was), Some(ws)) = (self.locate(pane), ws) else {
-            return;
-        };
+    /// lets go of it, and `to` takes it (`layout::append`); no other tab
+    /// changes. Refused, none does.
+    pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) -> Result<(), layout::Unmade> {
+        let was = self.locate(pane).ok_or(layout::Unmade::NoPane)?;
+        let (ws, tab) = tab_mut(&mut self.workspaces, to).ok_or(layout::Unmade::NoPane)?;
+        let mut root = tab.root.clone();
+        layout::append(&mut root, pane)?;
+        tab.edit(|r| *r = root);
         if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
             from.edit(|root| layout::remove(root, pane));
         }
-        if let Some((_, to)) = tab_mut(&mut self.workspaces, to) {
-            to.edit(|root| layout::append(root, pane));
-        }
         self.journal
             .push(Place::Pane((ws, to), pane), What::Moved(was));
+        Ok(())
     }
 
     /// Changes the layout of `pane`'s tab with `change`, which keeps its

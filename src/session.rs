@@ -383,6 +383,20 @@ fn ended(pane: PaneId, status: Ended) -> Error {
     fail(Code::NotRunning, told)
 }
 
+/// A layout change about `pane` not made (`layout::Unmade`).
+fn unmade_error(unmade: layout::Unmade, pane: PaneId) -> Error {
+    match unmade {
+        layout::Unmade::NoPane => Error::NoPane(pane),
+        layout::Unmade::Weights => fail(
+            Code::Size,
+            format!(
+                "{pane}'s split would take weights more than {} together to divide its room exactly",
+                layout::MOST
+            ),
+        ),
+    }
+}
+
 /// What a command line from the CLI begins: its outcome, now, or a wait
 /// for one (`wait`, or an action given wait words).
 pub enum Begun {
@@ -1244,17 +1258,10 @@ impl Session {
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
-        // Two shares are a weight together (`Tree::divide`), as a dump
-        // writes them.
-        if let Some((a, b)) = shares
-            && a.checked_add(b.get()).is_none()
-        {
-            let why = format!("shares {a} and {b} are more than {} together", u32::MAX);
-            return Err(fail(Code::BadValue, why));
-        }
         let new = self.ids.clone().pane()?;
-        let split =
-            (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
+        let shares = shares.unwrap_or(layout::HALVED);
+        let split = (self.parts.plan_split((target, new), axis, shares))
+            .map_err(|unmade| unmade_error(unmade, target))?;
         self.room(split.tab(), Some(split.root()), None)?;
         let seat = |view: &View, now| match followers.contains(&view.id) {
             true => (false, Some(new)),
@@ -2932,7 +2939,8 @@ impl Session {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
                 let mut root = self.root(from).cloned();
-                layout::move_beside(&mut root, pane, destination, direction);
+                layout::move_beside(&mut root, pane, destination, direction)
+                    .map_err(|unmade| unmade_error(unmade, pane))?;
                 self.room(from, root.as_ref(), None)?;
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
@@ -2968,9 +2976,9 @@ impl Session {
             return Ok(String::new());
         }
         let mut root = self.root(tab).cloned();
-        layout::append(&mut root, pane);
+        layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
         self.room(tab, root.as_ref(), here.client())?;
-        self.parts.relocate(pane, tab);
+        (self.parts.relocate(pane, tab)).map_err(|unmade| unmade_error(unmade, pane))?;
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
@@ -5330,20 +5338,89 @@ mod tests {
         Ok(())
     }
 
-    /// Shares divide the room of the pane split, whatever is beside it:
-    /// the others keep theirs, and a dump makes the split again.
+    /// Shares divide the room of the pane split, whatever is beside it,
+    /// exactly: the others keep theirs, and a dump makes the split again.
+    /// Weights that would be more than a u32 together are refused, the
+    /// layout kept.
     #[test]
     fn shares_divide_the_split_panes_room() -> Result<(), String> {
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
+        let made = "opts 101 10 size str +1 workspace in new-tab drop";
+        for halved in ["", "1 1 shares"] {
+            let mut s = started(Config::default())?;
+            let split = format!("%2 {halved} split drop %3 2 1 shares split drop");
+            run(&mut s, &format!("{made} {split}"))?;
+            assert_eq!(widths(&s), [50, 33, 16], "{halved}");
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        }
         let mut s = started(Config::default())?;
-        let made = "opts 101 10 size str +1 workspace in new-tab drop \
-                    %2 split drop %3 2 1 shares split drop";
+        run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
+        let before = s.root(tab).cloned();
+        for split in ["%3 split", "%3 vertical 4294967295 1 shares split"] {
+            let refused = run(&mut s, split).err().unwrap_or_default();
+            assert!(
+                refused.starts_with("size: ") && refused.contains("together"),
+                "{refused}"
+            );
+            assert_eq!(s.root(tab).cloned(), before);
+        }
+        // An even weight halves as it is.
+        run(&mut s, "%2 split drop")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    /// Whatever changes a layout, a dump makes it again: each pane where
+    /// it was, at every size.
+    #[test]
+    fn every_layout_change_dumps_as_it_is() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let made = "opts 100 30 size str +1 workspace in new-tab drop \
+                    opts 100 30 size str +1 workspace in new-tab drop";
         run(&mut s, made)?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
-        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [49, 33, 17]);
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
-        let refused = run(&mut s, "%2 4294967295 1 shares split").err();
-        assert!(refused.is_some_and(|e| e.contains("together")));
+        let areas = [
+            Rect::screen(30, 100),
+            Rect::screen(11, 37),
+            Rect::screen(70, 250),
+        ];
+        for change in [
+            "%2 3 2 shares split drop",
+            "%4 vertical 1 2 shares split drop",
+            "%5 split drop",
+            "%5 vertical split drop",
+            "%2 37 resize-x",
+            "%5 7 resize-y",
+            "%6 str left 3 move-border",
+            "%2 30 percent resize-x",
+            "%2 %6 swap-panes",
+            "%4 str left move-beside",
+            "%5 kill",
+            "%3 str @2 tab move-to",
+            "%6 kill",
+        ] {
+            run(&mut s, change)?;
+            let dump = s.dump_layout(Some(AnyRef::Tab(tab)), false);
+            let mut again = started(Config::default())?;
+            run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
+            let made = (again.parts.workspaces().iter())
+                .flat_map(|w| w.tabs())
+                .last();
+            let (Some(root), Some(made)) = (s.root(tab), made.and_then(|t| t.root())) else {
+                return Err(format!("{change}: no layout"));
+            };
+            for area in areas {
+                let places = |root: &Tree| {
+                    let placed = layout::place(root, area);
+                    root.panes()
+                        .iter()
+                        .map(|p| placed.rect(*p))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(places(made), places(root), "{change}\n{dump}");
+            }
+        }
         Ok(())
     }
 
