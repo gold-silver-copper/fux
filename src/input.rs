@@ -27,8 +27,10 @@ impl Session {
             }
             shown |= self.act(client, act);
         }
-        // Keys a pane's program reads show when its output does: nothing
-        // to paint or settle until then.
+        // Input a pane dropped is told, once a run (`InputQueue`). Keys a
+        // pane's program reads show when its output does: nothing to paint
+        // or settle until then.
+        shown |= self.tell_lost();
         if !shown && self.changes() == changes {
             return;
         }
@@ -117,7 +119,7 @@ impl Session {
 
     /// Types into the client's focused pane what `write` makes for its
     /// screen: a key or a paste, as its program asked. Refused already, and
-    /// said so: nothing more goes in, nor is said again, so a client typing
+    /// told once (`InputQueue`): nothing more goes in, so a client typing
     /// into a pane whose input queue is full costs nothing per key.
     fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
         let Some(pane) = self.focused(client) else {
@@ -127,13 +129,9 @@ impl Session {
         let Some(mut p) = self.parts.pane_mut(pane) else {
             return;
         };
-        if p.input.refusing() {
-            return;
-        }
-        let pushed = p.push_with(write);
-        drop(p);
-        if let Err(error) = pushed {
-            self.notify_to(client, error.to_string(), true);
+        // Refused, it is told as the acts are done (`Session::acts`).
+        if !p.input.refusing() {
+            let _ = p.push_with(write);
         }
     }
 
@@ -159,6 +157,7 @@ impl Session {
             .and_then(|pane| self.parts.pane_mut(pane))
             && let Some(report) = p.screen().focus_report(gained)
         {
+            // Refused, it is told as the acts are done (`Session::acts`).
             let _ = p.input.push(report);
         }
     }
@@ -207,6 +206,7 @@ impl Session {
         };
         let mut report = Vec::new();
         if p.screen().encode_mouse(event, &mut report) {
+            // Refused, it is told as the acts are done (`Session::acts`).
             let _ = p.input.push(&report);
         }
     }
@@ -869,6 +869,27 @@ mod tests {
         s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
+        Ok(())
+    }
+
+    /// A mouse report a full input queue refuses is told, and the keys
+    /// refused after it in the same run are not told again.
+    #[test]
+    fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        p.input.push(full).map_err(|e| e.to_string())?;
+        drop(p);
+        let notice = |s: &mut Session| {
+            let view = s.views.get_mut(&c);
+            view.and_then(|v| v.notice.take()).map(|n| n.text)
+        };
+        s.input(c, b"\x1b[<0;3;2M");
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        s.input(c, b"x");
+        assert_eq!(notice(&mut s), None, "the same run");
         Ok(())
     }
 
