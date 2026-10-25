@@ -909,8 +909,9 @@ impl<S> Pane<S> {
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
             // A program that does not read its input loses it, told
-            // (`Lost`).
-            if let Some(report) = self.parser.resize_report() {
+            // (`Lost`); one that takes none is sent none.
+            let takes = crate::session::refuses_input(self).is_none();
+            if let Some(report) = self.parser.resize_report().filter(|_| takes) {
                 let _ = self.input.push(report);
             }
         }
@@ -1068,14 +1069,13 @@ impl<S> Pane<S> {
             left,
             alerts,
         } = Pane::new(self.id, String::new(), runs, self.size(), history)?;
-        // One that ended said what it left with its exit; one that runs
-        // leaves its input now, the new program started.
+        // The new program starts with nothing queued. One that ended said
+        // what it left with its exit; one that runs leaves its input now,
+        // the new program started.
+        let input = self.input.discard();
         let over = match self.process.exit_status() {
             Some(_) => Left::default(),
-            None => Left {
-                input: self.input.discard(),
-                ..self.left
-            },
+            None => Left { input, ..self.left },
         };
         (self.title, self.parser, self.runs) = (title, parser, runs);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);

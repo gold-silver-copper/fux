@@ -312,11 +312,13 @@ impl Session {
         }
     }
 
-    /// Pane `id`'s program is told the scheme is `scheme`, if its input
-    /// queue takes the report; one refused is told lost (`InputQueue`), and
-    /// sent again once there is room (`tell_schemes`).
+    /// Pane `id`'s program is told the scheme is `scheme`, if it takes
+    /// input (`refuses_input`) and its queue takes the report; one refused
+    /// is told lost (`InputQueue`), and sent again once there is room
+    /// (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
+            && crate::session::refuses_input(&pane).is_none()
             && pane.input.push(scheme.report()).is_ok()
         {
             pane.scheme_told = Some(scheme);

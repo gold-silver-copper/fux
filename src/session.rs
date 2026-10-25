@@ -379,9 +379,11 @@ impl From<pane::Error> for Error {
 }
 
 /// Why `pane`'s program takes no input, if it takes none: the one check
-/// of input typed or sent, and of the reports (mouse, focus) a terminal
-/// is asked to make for it, so that a pane none could reach asks for none.
-pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
+/// of input typed or sent, of the reports (mouse, focus) a terminal is
+/// asked to make for it, so that a pane none could reach asks for none,
+/// and of those fux queues it unasked (in-band resize, colour scheme), so
+/// that none waits for a program respawned there.
+pub(crate) fn refuses_input<S>(pane: &Pane<S>) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
         Process::Absent if pane.paused() => {
@@ -4526,6 +4528,28 @@ mod tests {
                 process::reaped(pid);
             }
         }
+        Ok(())
+    }
+
+    /// A program that ended is queued no report it asked for (in-band
+    /// resize, colour scheme): the one respawned there reads none.
+    #[test]
+    fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        let id = PaneId::of(2);
+        let queued = |s: &Session| s.pane(id).map(|p| p.input.len()).map_err(|e| e.to_string());
+        s.output(id, b"\x1b[?2048h\x1b[?2031h");
+        s.exited(id, Ended::Exited(0));
+        (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?);
+        s.input(c, b"\x1b[?997;1n");
+        assert_eq!(queued(&s)?, 0);
+        run(&mut s, "%2 respawn")?;
+        assert_eq!(queued(&s)?, 0);
         Ok(())
     }
 
