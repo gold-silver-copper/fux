@@ -2125,7 +2125,7 @@ mod tests {
                     2 => {
                         let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
                         let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
-                        s.resize(c, rows, cols);
+                        s.resize(c, rows, cols).map_err(|e| e.to_string())?;
                     }
                     3 => {
                         crate::session::testing::run(&mut s, "str @1 tab str n rename")?;
@@ -2252,7 +2252,7 @@ mod tests {
         );
         s.input(c, b"\x1b");
         s.escape(c);
-        s.resize(c, 10, 36);
+        s.resize(c, 10, 36)?;
         let narrow = bar(&s);
         assert!(narrow.contains("y copy  q quit"), "{narrow}");
         assert!(!narrow.contains("other end"), "{narrow}");
@@ -2654,7 +2654,7 @@ mod tests {
         // The line with its cursor `left` chars from the end.
         let line = |text: &str, left: usize| {
             let mut line: crate::view::Line = crate::view::Line::new(text.into());
-            (0..left).for_each(|_| line.edit(&crate::act::Edit::Left));
+            (0..left).for_each(|_| drop(line.edit(&crate::act::Edit::Left)));
             line
         };
         let end = text.chars().count();

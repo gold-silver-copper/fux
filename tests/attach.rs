@@ -151,11 +151,12 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.keys("stty size\r")?;
     client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
     assert!(server.ok(&["ls"])?.contains("%1 sh 60x19"));
-    // Clamped to 1..=4096 each way; a one-row client has no room for panes.
-    client.resize(1, 5000)?;
-    eventually("the clamp", || {
-        Ok(server.ok(&["ls"])?.contains("client c1 4096x1"))
+    // Past 4096 a way, refused and said: the view keeps its size.
+    client.resize(20, 5000)?;
+    client.wait("the refusal", |t| {
+        t.contains("5000 columns by 20 rows: a client is")
     })?;
+    assert!(server.ok(&["ls"])?.contains("client c1 60x20"));
     Ok(())
 }
 

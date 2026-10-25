@@ -16,6 +16,25 @@
 /// name, `side!(work, fux_vt, "work", checked)`, its `Side::faults` are
 /// what `Parser::check` finds, but for the checks known to fail at BASE
 /// (`fux-vt/tests/corpus/known.rs`): the side's fux-vt has the checker.
+/// An event's text, as either side gives it: the working tree's kept part
+/// of a string (where the base gave no event for one cut), the base's
+/// bytes.
+pub(crate) trait Text {
+    fn heard(self) -> Vec<u8>;
+}
+
+impl Text for &[u8] {
+    fn heard(self) -> Vec<u8> {
+        self.to_vec()
+    }
+}
+
+impl Text for fux_vt::Kept<'_> {
+    fn heard(self) -> Vec<u8> {
+        self.bytes.to_vec()
+    }
+}
+
 macro_rules! side {
     (@faults checked, $terminal:expr) => {{
         let report = $terminal.parser.check();
@@ -219,13 +238,13 @@ macro_rules! side {
                 }
                 fn event(&mut self, event: vt::Event<'_>) {
                     self.0.push(match event {
-                        vt::Event::Title(t) => Heard::Title(t.to_vec()),
-                        vt::Event::IconName(t) => Heard::IconName(t.to_vec()),
+                        vt::Event::Title(t) => Heard::Title(crate::side::Text::heard(t)),
+                        vt::Event::IconName(t) => Heard::IconName(crate::side::Text::heard(t)),
                         vt::Event::Bell => Heard::Bell,
-                        vt::Event::Notification(n) => Heard::Notification(n.to_vec()),
+                        vt::Event::Notification(n) => Heard::Notification(crate::side::Text::heard(n)),
                         vt::Event::Clipboard { selection, data } => Heard::Clipboard {
                             selection: selection.to_vec(),
-                            data: data.to_vec(),
+                            data: crate::side::Text::heard(data),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
                         vt::Event::CommandEnded(status) => Heard::CommandEnded(status),

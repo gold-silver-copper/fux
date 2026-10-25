@@ -34,7 +34,7 @@ yours to say (recipes below).
 A=$(fux opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
 fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
 A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
-fux str "$A" changed 600 timeout wait          # 600 s at most (else 30, the server's wait-seconds)
+fux str "$A" changed 600 timeout wait          # 600 s at most (else the server's wait-seconds)
 fux %2 str y text send-keys wait               # in one program: from the answer's version
 fux %2 str y text send-keys 5 quiet            # until nothing changes there for 5 s
 fux %2 wait                                    # until it differs from now's
@@ -280,8 +280,8 @@ then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
 end` runs its handler instead of failing with one of CODES (`str timeout
 try %2 5 timeout wait catch … end`: its body starts with an empty stack;
-the handler, with the stack as at `try` and the failure's message and code
-on it); a failure it does not name goes on, its status kept. An action
+the handler, with the stack as at `try` and the failure's message, which
+says where as an uncaught one does, and code on it); a failure it does not name goes on, its status kept. An action
 leaves its answer: printed, it is the lines above; given to a word that
 wants a pane, it is its pane (an action's or wait's on a tab or workspace
 is none, however many panes it has: name the tab again, `@1 wait`), and to

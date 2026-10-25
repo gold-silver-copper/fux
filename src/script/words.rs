@@ -204,7 +204,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "status", "-- record", "the server that answers, and its version; with none, fails no_server"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
+    word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
     word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", "socket --", "close a grant's socket"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
@@ -390,7 +390,7 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
 const TAB_MOST: u16 = 500;
 
 /// A size: columns and rows each 1 to `most` (a tab's laid out on,
-/// `TAB_MOST`; a client's, as many as a cell holds).
+/// `TAB_MOST`; a client's, `view::MOST`).
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
     let cells = 1..=i64::from(most);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
@@ -772,9 +772,10 @@ fn fits(typed: usize) -> Result<(), Failure> {
         true => Err(fail(
             Lang::TooLong,
             format!(
-                "{typed} bytes, more than 900 KiB, the most it sends at once \
+                "{typed} bytes, more than {} KiB, the most it sends at once \
                  (text and pastes count their bytes, keys their names', each input \
-                 after the first 5 more)"
+                 after the first 5 more)",
+                INPUT_MAX / 1024
             ),
         )),
         false => Ok(()),
@@ -1194,7 +1195,7 @@ impl fuxth::Host for Host<'_> {
             }
             "resize-client" => {
                 let c = client(&next()?)?;
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1314,7 +1315,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
@@ -1607,17 +1608,13 @@ mod tests {
         assert_eq!(named, all);
     }
 
-    /// `set`'s help and the README's table name every setting, in order.
+    /// `send-keys`'s help, and the guide, state its bound as it has it.
     #[test]
-    fn every_setting_is_told_of() {
-        let set = WORDS.iter().find(|w| w.name == "set");
-        let help: Vec<&str> =
-            (set.map(|w| w.about.split_whitespace().collect())).unwrap_or_default();
-        assert_eq!(help, crate::config::NAMES);
-        let readme = include_str!("../../README.md");
-        for name in crate::config::NAMES {
-            assert!(readme.contains(&format!("\n| `{name}` |")), "{name}");
-        }
+    fn the_input_bound_is_stated_as_checked() {
+        let input = format!("{} KiB at most", INPUT_MAX / 1024);
+        let about = WORDS.iter().find(|w| w.name == "send-keys");
+        assert!(about.is_some_and(|w| w.about.contains(&input)), "{input}");
+        assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
     /// Each word's effect is in the names of fux's kinds, strictly: the

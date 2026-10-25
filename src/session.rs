@@ -14,7 +14,7 @@ use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
 use crate::pane::{self, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
-use crate::view::{ClientKind, Mode, View};
+use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
 use crate::workspace::{Fit, PaneMut, Parts, Seat, Tab, Workspace};
 use fux_vt::Size;
@@ -400,8 +400,6 @@ pub const GRACE: Duration = Duration::from_millis(100);
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
 /// A typical terminal's screen, which a tab no client shows is laid out on.
 const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
-/// The most rows, and columns, a client's view is kept to.
-const MOST: u16 = 4096;
 
 pub(crate) fn default_size() -> Size {
     pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
@@ -1119,7 +1117,7 @@ impl Session {
                         };
                         let mut panes = with(|p| p.name());
                         if panes.is_empty() {
-                            panes = with(|p| p.title());
+                            panes = with(|p| p.title().as_str());
                         }
                         if panes.is_empty() {
                             return Err(no_tab);
@@ -1460,8 +1458,9 @@ impl Session {
                     .ok_or_else(|| fail(Code::NoWorkspace, "the server has no workspace"))?
             }
         };
+        let (rows, cols) = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
         let id = self.ids.client()?;
-        let mut view = View::new(id, rows.clamp(1, MOST), cols.clamp(1, MOST));
+        let mut view = View::new(id, rows, cols);
         view.kind = kind;
         self.views.insert(id, view);
         (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.attach(id));
@@ -1501,17 +1500,17 @@ impl Session {
         }
     }
 
-    /// A client's terminal is `rows` by `cols`: its view, kept at most `MOST`
-    /// each way, takes the size and settles if that changes it, and says
-    /// whether it did.
-    pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) -> bool {
-        let size = (rows.clamp(1, MOST), cols.clamp(1, MOST));
+    /// A client's terminal is `rows` by `cols`: its view takes the size
+    /// and settles if that changes it, and says whether it did; a size no
+    /// view has (`view::size`) is refused, and the view kept.
+    pub fn resize(&mut self, id: ClientId, rows: u16, cols: u16) -> Result<bool, Error> {
+        let size = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
         let view = self.views.get_mut(&id).filter(|v| (v.rows, v.cols) != size);
-        let Some(view) = view else { return false };
+        let Some(view) = view else { return Ok(false) };
         (view.rows, view.cols) = size;
         view.dirty = true;
         self.settle();
-        true
+        Ok(true)
     }
 
     /// Gives a client a notice, an error's if `error`, if it is still
@@ -1887,15 +1886,32 @@ impl Session {
         }
         let viewers = self.viewers(tab);
         // A program's copy, as a copy in copy mode, to the clients showing
-        // it; none with `set clipboard off`.
-        if let Some(text) = copied.filter(|_| self.config.clipboard) {
-            self.copied(text, &viewers);
-        }
+        // it; none with `set clipboard off`. One that is no copy is told.
+        let uncopied = match copied.filter(|_| self.config.clipboard) {
+            // It fits the clipboard: fux-vt keeps less of a string.
+            Some(Ok(text)) => {
+                const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+                self.copied(text, &viewers);
+                None
+            }
+            Some(Err(why)) => Some(why),
+            None => None,
+        };
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
+            if let Some(why) = uncopied {
+                view.notify(
+                    format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
+                    true,
+                );
+            }
             if dropped {
                 view.notify(
-                    format!("{id}'s input queue is full; a terminal reply was dropped"),
+                    format!(
+                        "a terminal reply to {id} was dropped: its input queue was full, \
+                         or one read of its output asked for more than {} bytes of replies",
+                        crate::pane::REPLIES_MAX
+                    ),
                     true,
                 );
             }
@@ -2210,7 +2226,7 @@ impl Session {
                     );
                     return Err(fail(Code::NotHeadless, message));
                 }
-                self.resize(client, size.rows(), size.cols());
+                self.resize(client, size.rows(), size.cols())?;
                 Ok(Reply::default())
             }
             Command::DumpLayout { target } => {
@@ -2948,7 +2964,7 @@ impl Session {
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
             ("name", Json::str(p.name())),
-            ("title", Json::str(p.title())),
+            ("title", Json::str(p.title().as_str())),
             ("rows", Json::Number(i64::from(p.size().rows()))),
             ("cols", Json::Number(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
@@ -3188,6 +3204,9 @@ enum Start<'a> {
     Program(&'a [String], &'a [(String, String)]),
 }
 
+/// The most bytes a name holds.
+const NAME_MAX: usize = 256;
+
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Lang::BadName, "a name cannot be empty or blank"));
@@ -3200,8 +3219,11 @@ fn check_name(name: &str) -> Result<(), Error> {
         let message = "a name cannot contain control or invisible characters";
         return Err(fail(Lang::BadName, message));
     }
-    if name.len() > 256 {
-        return Err(fail(Lang::BadName, "a name is at most 256 bytes"));
+    if name.len() > NAME_MAX {
+        return Err(fail(
+            Lang::BadName,
+            format!("a name is at most {NAME_MAX} bytes"),
+        ));
     }
     Ok(())
 }
@@ -4001,7 +4023,8 @@ mod tests {
     }
 
     /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of the clients showing it, unless `set clipboard off`.
+    /// clipboard of the clients showing it, unless `set clipboard off`;
+    /// one it cannot be is told them.
     #[test]
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
         let (mut s, client) = attached(5, 20)?;
@@ -4014,6 +4037,15 @@ mod tests {
                 .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
+        // One longer than fux-vt keeps of a string copies nothing, said.
+        let long = format!(
+            "\x1b]52;c;{}\x07",
+            std::iter::repeat_n('A', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
+        );
+        s.output(PaneId::of(1), long.as_bytes());
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("nothing was copied")));
+        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
         s.outbox.clear();
         run(&mut s, "str clipboard str off set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
@@ -4090,7 +4122,14 @@ mod tests {
         let ls = output(&mut s, "ls json")?;
         assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
         assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
+        assert!(ls.contains(r#""truncated":[]"#), "{ls}");
+        let long = format!(
+            "\x1b]2;{}\x07",
+            std::iter::repeat_n('t', crate::pane::TITLE_MAX + 1).collect::<String>()
+        );
+        s.output(PaneId::of(2), long.as_bytes());
         let capture = output(&mut s, "str %2 pane capture json")?;
+        assert!(capture.contains(r#""truncated":["title"]"#), "{capture}");
         assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
         Ok(())
     }
@@ -4383,32 +4422,39 @@ mod tests {
         s.output(PaneId::of(1), b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n");
         run(&mut s, "str c1 client copy-mode")?;
         s.input(client, b"g");
-        s.resize(client, 3, 20);
+        s.resize(client, 3, 20)?;
         let view = s.views.get(&client).ok_or("the view")?;
         assert!(matches!(view.mode, Mode::Normal), "copy mode ended");
         Ok(())
     }
 
-    /// A client's size is kept at most 4096 each way, and only a size that
-    /// changes it resizes and repaints it: the same size again, or a larger
-    /// terminal's, changes nothing.
+    /// A client's size is at most `view::MOST` each way, and only a size
+    /// that changes it resizes and repaints it: the same size again changes
+    /// nothing, and one past the bound, or of no rows, is refused.
     #[test]
     fn only_a_size_that_changes_a_client_resizes_it() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = attached(10, 40)?;
+        let past = view::MOST.saturating_add(1);
         for (rows, changes) in [
-            (10, false),
-            (5000, true),
-            (5000, false),
-            (4096, false),
-            (3, true),
+            (10, Some(false)),
+            (view::MOST, Some(true)),
+            (view::MOST, Some(false)),
+            (past, None),
+            (0, None),
+            (3, Some(true)),
         ] {
             if let Some(view) = s.views.get_mut(&c) {
                 view.dirty = false;
             }
-            let resized = s.resize(c, rows, 40);
+            let resized = s.resize(c, rows, 40).ok();
             let dirty = s.views.get(&c).is_some_and(|v| v.dirty);
-            assert_eq!((resized, dirty), (changes, changes), "{rows} rows");
+            assert_eq!(
+                (resized, dirty),
+                (changes, changes == Some(true)),
+                "{rows} rows"
+            );
         }
+        assert!(s.attach(past, 40, None).is_err());
         Ok(())
     }
 
@@ -4419,7 +4465,7 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         let long = format!(
             "str %1 pane str {} rename",
-            std::iter::repeat_n("x", 257).collect::<String>()
+            std::iter::repeat_n("x", NAME_MAX.saturating_add(1)).collect::<String>()
         );
         for code in [
             "opts str %3 name new-workspace",
@@ -4581,6 +4627,12 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
+        // Caught, it says the same, but its code: where, how it is used.
+        let caught = output(&mut s, "str type try 3 upper catch drop end");
+        assert_eq!(
+            caught,
+            Ok(format!("{}\n", upper.trim_start_matches("type: ")))
+        );
         // A server word's answer that overflows the stack fails at the
         // word, as an immediate word's would: a `try` catches it.
         let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";

@@ -237,12 +237,14 @@ query has a capital letter. `[` and `]` find prompts marked with
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
 
-**Clipboards.** A copy goes to fux's paste buffers (the newest 16,
-`buffers`); `C-b p` pastes the newest, bracketed if the program asked for
+**Clipboards.** A copy goes to fux's paste buffers (as many of the newest
+as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
 to 1 MiB encoded, unless `str clipboard str off set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
-and Helix do, copies the same way. fux never reads the clipboard.
+and Helix do, copies the same way, up to 64 KiB encoded; a longer copy, or
+one that is not text, copies nothing, and the clients showing the pane say
+so. fux never reads the clipboard.
 
 ## Shell marks
 
@@ -335,16 +337,8 @@ end
 str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
-| Setting | Value | Default |
-| --- | --- | --- |
-| `shell` | a program and its arguments | `$SHELL`, else your login shell, else `/bin/sh` |
-| `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
-| `wait-seconds` | how long a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
-| `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
-| `buffers` | paste buffers kept, 1 to 1000 | 16 |
-| `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
-| `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
+`fux help set` lists the settings: what each takes, its default and what
+it does.
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use

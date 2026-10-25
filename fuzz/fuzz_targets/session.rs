@@ -13,6 +13,7 @@
 //! the programs the session hands a client (`ToAttached::Run`) and keys sent
 //! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::num::NonZeroUsize;
 
 use fux::act::Act;
@@ -27,11 +28,28 @@ use fux::outer;
 use fux::protocol::{Asked, Context, Reply, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Effect, Screen};
-use fux::script::{Ask, Failed, Host, Local};
+use fux::script::{AsClient, Asks, Failed, Host, run_capped};
 use fux::session::{Begun, Origin, Outgoing, Session};
 use fux::view::Mode;
-use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
+
+/// A session asked in-process, as a server answers a request: begun at
+/// once; a wait not waited on, there being no programs, and no time that
+/// both sessions share. What the client does itself is not in-process.
+struct InSession<'a>(&'a mut Session);
+
+impl Asks for InSession<'_> {
+    fn ask(&mut self, asked: &Asked, _out: &mut dyn Write) -> Result<Reply, Failed> {
+        let origin = match asked.context.client {
+            Some(client) if self.0.views.contains_key(&client) => Origin::Client(client),
+            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
+        };
+        Ok(match self.0.begin(asked.request.clone(), &origin) {
+            Begun::Done(outcome) => outcome,
+            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
+        })
+    }
+}
 
 /// The client's screen as it should look now, in a grid of its own.
 fn compose(s: &Session, c: ClientId) -> Option<Grid> {
@@ -258,20 +276,6 @@ impl Run {
         panes.get(usize::from(pick) % panes.len().max(1)).copied()
     }
 
-    /// A request of the session, as a server answers it: begun at once; a
-    /// wait not waited on, there being no programs, and no time that both
-    /// sessions share.
-    fn ask(&mut self, asked: Asked) -> Reply {
-        let origin = match asked.context.client {
-            Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
-        };
-        match self.s.begin(asked.request, &origin) {
-            Begun::Done(outcome) => outcome,
-            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
-        }
-    }
-
     /// Runs fuxth `code` as `client` (or from no client) runs it, the
     /// keymap its own: what it printed and left, a value a line, or why it
     /// failed; and the screen it opened, if it opened one.
@@ -298,74 +302,24 @@ impl Run {
         let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
         let mut keymap = self.keymap.clone();
         let mut out = Vec::new();
-        let mut host = Host {
-            context: Context {
-                client,
-                ..Context::default()
-            },
-            keymap: Some(&mut keymap),
-            last_bound: None,
-            out: &mut out,
+        let context = Context {
+            client,
+            ..Context::default()
         };
-        let ended = loop {
-            let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
-            match ran {
-                Err(failed) => break Err(failed.to_string()),
-                Ok(Ran::Finished) => break Ok(machine.stack().to_vec()),
-                Ok(Ran::Paused) => break Err("too long".to_owned()),
-                Ok(Ran::Suspended(Ask::Local(Local::Open(open)))) if client.is_some() => {
-                    // Built with what the session answers, as a client
-                    // builds it.
-                    let context = host.context.clone();
-                    let built = open.build(&mut |command| {
-                        Ok(self.ask(Asked {
-                            request: command.into(),
-                            context: context.clone(),
-                        }))
-                    });
-                    match built {
-                        Ok(screen) => *opened = Some(screen),
-                        Err(failed) => break Err(failed.to_string()),
-                    }
-                }
-                Ok(Ran::Suspended(Ask::Local(_))) => break Err("not in-process".to_owned()),
-                Ok(Ran::Suspended(Ask::Server {
-                    request,
-                    client,
-                    then,
-                })) => {
-                    let mut context = host.context.clone();
-                    if client.is_some() {
-                        context.client = client;
-                    }
-                    let reply = self.ask(Asked {
-                        request: *request,
-                        context,
-                    });
-                    // A failure raised in the program, for a `try` to
-                    // catch, as a client's run raises it.
-                    let values = fux::script::answered(reply, then).or_else(|failed| {
-                        let failure = fuxth::Failure::new(failed.code.into(), failed.message);
-                        machine
-                            .raise(failure)
-                            .map(|()| Vec::new())
-                            .map_err(Failed::from)
-                    });
-                    let pushed = values.and_then(|values| {
-                        values
-                            .into_iter()
-                            .try_for_each(|v| machine.push(v).map_err(Failed::from))
-                    });
-                    if let Err(failed) = pushed {
-                        break Err(failed.to_string());
-                    }
-                }
-            }
+        let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
+        // As a client runs it: the real loop, a screen it opens built with
+        // what the session answers.
+        let mut asks = AsClient {
+            asks: &mut InSession(&mut self.s),
+            context,
+            opened: None,
         };
+        let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
+        *opened = asks.opened.filter(|_| client.is_some());
         // As a client keeps what its program did to its keymap.
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended? {
+        for value in &ended.map_err(|failed| failed.to_string())? {
             text.push_str(&value.text());
             text.push('\n');
         }
@@ -846,8 +800,9 @@ fuzz_target!(|data: &[u8]| {
             9 => {
                 let (pick, (rows, cols)) = (input.next(), size(input.next(), input.next()));
                 if let Some(c) = given.client(pick) {
-                    given.s.resize(c, rows, cols);
-                    bytewise.s.resize(c, rows, cols);
+                    let given_resized = given.s.resize(c, rows, cols).is_ok();
+                    let bytewise_resized = bytewise.s.resize(c, rows, cols).is_ok();
+                    assert_eq!(given_resized, bytewise_resized);
                 }
             }
             10 => {

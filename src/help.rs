@@ -179,6 +179,9 @@ pub fn explain(name: &str) -> Option<String> {
                 }
             }
         }
+        if name == "set" {
+            out.push_str(&settings());
+        }
         return Some(out);
     }
     if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
@@ -195,6 +198,21 @@ pub fn explain(name: &str) -> Option<String> {
     }
     let (shape, about) = fuxth::Parsing::named(name)?.syntax();
     Some(format!("{name}  {shape}: {about}\n"))
+}
+
+/// Every setting `set` takes: its name, what text it takes, its default,
+/// and what it does, from `config`'s table.
+fn settings() -> String {
+    let mut out = String::from("\nThe settings:\n");
+    for [name, takes, default, about] in crate::config::table() {
+        let about = format!("{about} By default {default}.");
+        let about = about.split_whitespace().map(str::to_owned);
+        out.push_str(&format!(
+            "  {name}: {takes}{}\n",
+            wrapped(about, "\n      ", 78)
+        ));
+    }
+    out
 }
 
 /// The words that start from `opts`, empty options: they make their own
@@ -292,6 +310,35 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    /// Where the docs and words' help state a bound, they state the
+    /// constant the check uses.
+    #[test]
+    fn the_docs_state_each_bound_as_its_check_has_it() {
+        let grouped = |n: usize| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, digit) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(digit);
+            }
+            out
+        };
+        let readme = include_str!("../README.md");
+        for said in [
+            format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
+            format!("to {} MiB encoded", crate::copy::MAX_CLIPBOARD >> 20),
+            format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
+            format!("at most {} MiB", crate::protocol::MAX_FRAME >> 20),
+        ] {
+            assert!(readme.contains(&said), "README: {said}");
+        }
+        let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
+        let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
+        assert!(about("id").is_some_and(|a| a.contains(&jump)));
+    }
+
     /// Every word, and every word of the library, has its help; examples
     /// compile.
     #[test]
@@ -335,5 +382,10 @@ mod tests {
             }
         }
         assert!(AGENTS.contains("fux "));
+        // `set`'s help names every setting.
+        let set = explain("set").unwrap_or_default();
+        for name in crate::config::NAMES {
+            assert!(set.contains(&format!("\n  {name}: ")), "{name}");
+        }
     }
 }

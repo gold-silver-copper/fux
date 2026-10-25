@@ -16,7 +16,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | --- | --- |
 | `id` | `"%3"` |
 | `name` | its name: the program's, or what `rename` gave it |
-| `title` | what the program set (OSC 0 or 2), else `""` |
+| `title` | what the program set (OSC 0 or 2), else `""`: its first 256 characters, without control characters |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
@@ -37,7 +37,8 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
-| `notification` | the last notification's text, else `null` |
+| `notification` | the last notification's text, else `null`: its first 500 characters, without control characters |
+| `truncated` | the fields above the program sent more of than they keep, the rest dropped: `["title"]`, `["title","notification"]`, else `[]` |
 | `cwd`, `argv` | the foreground process's directory and words, where the system says |
 
 ## `ls json`
@@ -140,8 +141,8 @@ its own place. A reader that falls behind is told the rest as it reads.
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `status` or `signal` |
 | `done` | `status`: a shell command's |
-| `notification` | `text` |
-| `title` | `title` |
+| `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
+| `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
 | `resized` | `cols`, `rows` |
 | `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them; with `events-of`, some may be of other things |
 | `stopped` | last: `reason`, the server stopped |

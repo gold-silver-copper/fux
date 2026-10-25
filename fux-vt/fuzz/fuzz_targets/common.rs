@@ -51,11 +51,11 @@ impl Sink for Record {
         match event {
             Event::Title(t) => {
                 entry.push(b'T');
-                entry.extend_from_slice(t);
+                entry.extend_from_slice(t.bytes);
             }
             Event::IconName(t) => {
                 entry.push(b'I');
-                entry.extend_from_slice(t);
+                entry.extend_from_slice(t.bytes);
             }
             Event::Bell => entry.push(b'B'),
             Event::ColorQuery { number, bel } => {
@@ -64,16 +64,16 @@ impl Sink for Record {
                 entry.push(u8::from(bel));
             }
             Event::Clipboard { selection, data } => {
-                assert!(selection.len().saturating_add(data.len()) < OSC_PAYLOAD_LIMIT);
+                assert!(selection.len().saturating_add(data.bytes.len()) < OSC_PAYLOAD_LIMIT);
                 entry.push(b'C');
                 entry.extend_from_slice(selection);
                 entry.push(0);
-                entry.extend_from_slice(data);
+                entry.extend_from_slice(data.bytes);
             }
             Event::Notification(text) => {
-                assert!(text.len() < OSC_PAYLOAD_LIMIT);
+                assert!(text.bytes.len() < OSC_PAYLOAD_LIMIT);
                 entry.push(b'N');
-                entry.extend_from_slice(text);
+                entry.extend_from_slice(text.bytes);
             }
             Event::CommandEnded(status) => {
                 entry.push(b'E');

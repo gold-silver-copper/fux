@@ -10,6 +10,7 @@ use crate::code::Code;
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
+use crate::pane::{NOTIFICATION_MAX, Said, TITLE_MAX};
 use crate::process::Ended;
 use crate::protocol::Reply;
 use std::collections::VecDeque;
@@ -115,8 +116,8 @@ pub enum What {
     /// Its program started again (`respawn`).
     Respawned,
     Bell,
-    Notification(String),
-    Title(String),
+    Notification(Said<NOTIFICATION_MAX>),
+    Title(Said<TITLE_MAX>),
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
@@ -128,6 +129,14 @@ impl What {
     /// Its name, and what else it says.
     fn said(&self) -> (&'static str, Vec<(&'static str, Json<'static>)>) {
         let text = |key, text: &String| vec![(key, Json::str(text.clone()))];
+        // A program's text, and `truncated` if it sent more.
+        let said = |key, text: &str, cut: bool| {
+            let cut = cut.then_some(("truncated", Json::Bool(true)));
+            [(key, Json::str(text.to_owned()))]
+                .into_iter()
+                .chain(cut)
+                .collect()
+        };
         match self {
             What::Created(name) => (
                 "created",
@@ -144,8 +153,8 @@ impl What {
             ),
             What::Respawned => ("respawned", Vec::new()),
             What::Bell => ("bell", Vec::new()),
-            What::Notification(said) => ("notification", text("text", said)),
-            What::Title(title) => ("title", text("title", title)),
+            What::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
+            What::Title(title) => ("title", said("title", title.as_str(), title.cut())),
             What::Done(status) => (
                 "done",
                 vec![("status", status.map_or(Json::Null, Json::int))],
@@ -364,8 +373,8 @@ mod tests {
             What::Moved((ws, tab)),
             What::Respawned,
             What::Bell,
-            What::Notification(String::new()),
-            What::Title(String::new()),
+            What::Notification(Said::default()),
+            What::Title(Said::default()),
             What::Done(None),
             What::Resized(size),
             What::Exited(Ended::Exited(0)),

@@ -1596,7 +1596,10 @@ impl Server {
                 // forgotten, it is repainted in full either way.
                 Some(AttachedFrame::Resize(size)) => {
                     attached.known = false;
-                    session.resize(attached.client, size.rows(), size.cols());
+                    let resized = session.resize(attached.client, size.rows(), size.cols());
+                    if let Err(refused) = resized {
+                        session.notify_to(attached.client, refused.to_string(), true);
+                    }
                 }
                 Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),

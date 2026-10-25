@@ -400,7 +400,7 @@ impl Session {
     fn title_of<'a>(&'a self, view: &View) -> &'a str {
         let pane = (self.focused(view.id))
             .and_then(|f| self.parts.panes().get(&f))
-            .map(|p| p.title())
+            .map(|p| p.title().as_str())
             .filter(|t| !t.is_empty());
         let tab = self.shown_tab(view.id).map(|t| t.name());
         pane.or(tab).unwrap_or_default()

@@ -178,8 +178,9 @@ impl Copy {
     }
 }
 
-/// The most bytes a search holds.
-const SEARCH_MAX: usize = 1024;
+/// The most bytes a search holds: the line its client types it in
+/// (`screens`) holds no more, and one longer is refused.
+pub const SEARCH_MAX: usize = 1024;
 
 /// What copy mode's bar says it is doing: a label, or the search being
 /// typed after its prompt, which the bar scrolls as a prompt's line.
@@ -531,12 +532,11 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
-/// `text` as a search: no control characters, and at most `SEARCH_MAX`.
-fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control())
-        .take(SEARCH_MAX)
-        .collect()
+/// `text` as a search: no control characters; none past `SEARCH_MAX`
+/// bytes, which no client's line holds.
+fn clean(text: &str) -> Option<String> {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    (text.len() <= SEARCH_MAX).then_some(text)
 }
 
 /// An action in copy mode, its keys the client's (`keymap::copy_act`).
@@ -588,12 +588,19 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::Enter => return,
         // The search line the client types, shown; the search it asks for.
         CopyAct::Typing(line) => {
-            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
+            copy.typing = line.and_then(|(seek, before, after)| {
+                let (before, after) = (clean(&before)?, clean(&after)?);
+                (before.len().saturating_add(after.len()) <= SEARCH_MAX)
+                    .then_some((seek, before, after))
+            });
             return;
         }
         CopyAct::Find { query, seek } => {
             copy.typing = None;
-            let query = clean(&query);
+            let Some(query) = clean(&query) else {
+                view.notify(format!("a search is at most {SEARCH_MAX} bytes"), true);
+                return;
+            };
             if !query.is_empty() {
                 let search = Search { query, seek };
                 jump(copy, screen, height, at, &search, &mut view.notice);
@@ -904,6 +911,20 @@ mod tests {
         let shown = crate::session::testing::output(&mut s, "str c1 client capture-client")?;
         let bar = shown.lines().last().ok_or("no bar")?;
         assert!(bar.contains("END\u{258f}"), "{bar}");
+        Ok(())
+    }
+
+    /// A search past `SEARCH_MAX` bytes, which no client's line holds, is
+    /// refused and said, not cut.
+    #[test]
+    fn a_search_past_its_bound_is_refused() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(6, 40)?;
+        s.input(c, b"\x02c");
+        let query = std::iter::repeat_n('x', SEARCH_MAX.saturating_add(1)).collect();
+        let seek = Seek::Forward;
+        act(&mut s, c, CopyAct::Find { query, seek });
+        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("at most")));
         Ok(())
     }
 

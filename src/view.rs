@@ -9,6 +9,21 @@ pub struct Notice {
     pub error: bool,
 }
 
+/// The most rows, and columns, a client's view has.
+pub const MOST: u16 = 4096;
+
+/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
+/// each way; else why not.
+pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
+    let fits = |n: u16| (1..=MOST).contains(&n);
+    match fits(rows) && fits(cols) {
+        true => Ok((rows, cols)),
+        false => Err(format!(
+            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+        )),
+    }
+}
+
 /// The most bytes a prompt's line holds.
 pub const LINE_MAX: usize = 4096;
 
@@ -45,20 +60,23 @@ impl<const MAX: usize> Line<MAX> {
         self.before + &self.after
     }
 
-    /// An edit of the line: typed text (one line of it, nothing that
-    /// controls, unless the line would pass `MAX` bytes), or a move or a
-    /// deletion.
-    pub fn edit(&mut self, edit: &Edit) {
+    /// An edit of the line: typed text (its control characters, and the
+    /// line end a pasted line ends in, left out), or a move or a deletion.
+    /// Text of more than one line, or that would take the line past `MAX`
+    /// bytes, is refused whole, saying why.
+    pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
             Edit::Insert(text) => {
-                let typed: String = (text.chars())
-                    .take_while(|c| *c != '\n' && *c != '\r')
-                    .filter(|c| !c.is_control())
-                    .collect();
-                let len = self.before.len().saturating_add(self.after.len());
-                if len.saturating_add(typed.len()) <= MAX {
-                    self.before.push_str(&typed);
+                let text = text.trim_end_matches(['\n', '\r']);
+                if text.contains(['\n', '\r']) {
+                    return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                let len = self.before.len().saturating_add(self.after.len());
+                if len.saturating_add(typed.len()) > MAX {
+                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
+                }
+                self.before.push_str(&typed);
             }
             Edit::Backspace => drop(self.before.pop()),
             Edit::Delete => self.after = self.after.chars().skip(1).collect(),
@@ -80,6 +98,7 @@ impl<const MAX: usize> Line<MAX> {
             }
             Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
         }
+        Ok(())
     }
 }
 

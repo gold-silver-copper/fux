@@ -250,7 +250,14 @@ pub fn state(
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
     let pictures = Json::Array(screen.pictures().map(picture).collect());
-    let notification = pane.alerts.last.clone();
+    let notification = pane.alerts.last.as_ref();
+    // The fields whose value the program sent more of than is kept.
+    let cut = [
+        ("title", pane.title().cut()),
+        ("notification", notification.is_some_and(|n| n.cut())),
+    ];
+    let truncated = cut.into_iter().filter(|(_, cut)| *cut);
+    let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
     vec![
         ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
@@ -283,7 +290,11 @@ pub fn state(
         ("command_running", Json::Bool(pane.command_running())),
         ("last_status", last_status.map_or(Json::Null, Json::int)),
         ("bells", Json::int(pane.alerts.rung)),
-        ("notification", notification.map_or(Json::Null, Json::str)),
+        (
+            "notification",
+            notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
+        ),
+        ("truncated", Json::Array(truncated)),
         (
             "cwd",
             foreground
