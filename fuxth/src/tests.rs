@@ -1364,6 +1364,11 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     // fails as too long, which `fail` does not name.
     let long = run("str fail try 0 300000 range fail catch end").err();
     assert_eq!(long.map(|e| e.code), Some(Code::TooLong));
+    // So does a reason that fits whose message, said where, does not: for
+    // a try further out, not cut.
+    let reason: String = std::iter::repeat_n('x', crate::LONGEST).collect();
+    let said = format!("str too_long try str fail try str {reason} fail catch end catch nip end");
+    assert_eq!(run(&said)?, strs(&["too_long"]));
     // A try's codes are written in its own source, not the one before.
     let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
     compiler.add(&token::source("one", "str fail")?)?;

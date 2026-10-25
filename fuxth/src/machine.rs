@@ -293,10 +293,14 @@ impl<A: AppValue> Machine<A> {
             self.stack.truncate(depth);
             self.iters.truncate(iters);
             self.jump(handler);
-            let code = Value::str(error.code.name());
-            // A stack full to its limit fails again, for a `try` further
+            let (located, code) = (error.located(), Value::str(error.code.name()));
+            // A message, said where, longer than a string may be, or a
+            // stack full to its limit, fails again, for a `try` further
             // out to catch.
-            match (self.push(Value::str(error.located()))).and_then(|()| self.push(code)) {
+            let pushed = (self.fits(located.chars().count()))
+                .and_then(|()| self.push(Value::str(located)))
+                .and_then(|()| self.push(code));
+            match pushed {
                 Ok(()) => return Ok(()),
                 Err(again) => error = (self.tell)(self, again),
             }
