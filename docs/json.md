@@ -144,7 +144,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `respawned`, `bell` | |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
-| `exited` | `status` (`null` if it was lost) or `signal` |
+| `exited` | `status` (`null` if it was lost) or `signal`: its program's end; a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
 | `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |

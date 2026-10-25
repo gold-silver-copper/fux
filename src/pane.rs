@@ -950,8 +950,13 @@ impl Pane {
     /// Its program ended so: said, and the process that was there, to be
     /// reaped.
     pub fn exit(&mut self, ended: Ended) -> Process {
-        self.said.push(What::Exited(ended));
+        self.ended(ended);
         std::mem::replace(&mut self.process, Process::Exited(ended))
+    }
+
+    /// Its program ended so: said, as a shell's is before its pane closes.
+    pub fn ended(&mut self, ended: Ended) {
+        self.said.push(What::Exited(ended));
     }
 
     /// What happened in it that events tell, since last taken, oldest

@@ -1834,6 +1834,7 @@ impl Session {
         }
         match pane.runs {
             Runs::Shell => {
+                pane.ended(ended);
                 drop(pane);
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
@@ -4829,6 +4830,18 @@ mod tests {
         });
         ran?;
         let said = "bell %2 @1 +1\nrenamed @1 +1 name=t\ntitle %1 @1 +1 title=title\n";
+        assert_eq!(lines, said);
+        Ok(())
+    }
+
+    /// A shell pane's exit is told, its status with it, then its close
+    /// (and the pane that takes its room).
+    #[test]
+    fn a_shell_panes_exit_is_told_before_its_close() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 split drop")?;
+        let lines = told(&mut s, |s| s.exited(PaneId::of(2), Ended::Signalled(9)));
+        let said = "exited %2 @1 +1 signal=9\nclosed %2 @1 +1\nresized %1 @1 +1 cols=80 rows=24\n";
         assert_eq!(lines, said);
         Ok(())
     }
