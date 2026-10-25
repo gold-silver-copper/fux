@@ -374,6 +374,11 @@ mod tests {
                 "more than {} MiB on its terminal",
                 whole(crate::session::LEFT_MAX, 20)
             ),
+            format!("past {} bytes of replies", crate::pane::REPLIES_MAX),
+            format!(
+                "the {} KiB a string may be",
+                whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)
+            ),
             format!(
                 "{} pixels a side, {} pixels in all",
                 grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),

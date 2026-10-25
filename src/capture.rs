@@ -290,6 +290,14 @@ pub fn state<S>(
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
         ("pictures_refused", Json::int(pane.pictures_refused())),
+        ("replies_dropped", Json::int(pane.alerts.replies_dropped)),
+        (
+            "copies_refused",
+            Json::Object(vec![
+                ("cut", Json::int(pane.alerts.copies_cut)),
+                ("not_text", Json::int(pane.alerts.copies_not_text)),
+            ]),
+        ),
         (
             "cell",
             cell.map_or(Json::Null, |cell| {

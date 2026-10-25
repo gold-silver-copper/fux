@@ -2129,6 +2129,7 @@ impl Session {
             match copy {
                 Ok(text) => copies.push(text),
                 Err(why) => {
+                    pane.alerts.uncopied(why);
                     let n = pane.uncopied.entry(why).or_default();
                     *n = n.saturating_add(1);
                 }
@@ -4948,11 +4949,46 @@ mod tests {
         run(&mut s, "str c1 client str main workspace show-workspace")?;
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("2 of %1's copies")));
+        // Counted in its JSON too, for a reader no notice reaches.
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(
+            json.contains(r#""copies_refused":{"cut":1,"not_text":3}"#),
+            "{json}"
+        );
         s.outbox.clear();
         run(&mut s, "str clipboard str off set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(String::as_str), Some("b"));
+        Ok(())
+    }
+
+    /// Replies dropped past what one read queues are counted in the
+    /// pane's JSON, with no client to tell: those of one read that the
+    /// full queue refuses too.
+    #[test]
+    fn replies_dropped_are_counted_in_a_panes_json() -> Result<(), String> {
+        let (mut s, c) = attached(5, 20)?;
+        s.detach(c);
+        let id = PaneId::of(1);
+        // `ESC [ 1 ; 1 R` each: as many as fit a read's replies, and one more.
+        let fit = crate::pane::REPLIES_MAX / b"\x1b[1;1R".len();
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], fit + 1)
+            .flatten()
+            .copied()
+            .collect();
+        s.output(id, &queries);
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies_dropped":1,"#), "{json}");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let room = pane.input.room();
+        pane.input
+            .push(vec![b'x'; room])
+            .map_err(|e| e.to_string())?;
+        drop(pane);
+        s.output(id, b"\x1b[6n\x1b[6n");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies_dropped":3,"#), "{json}");
         Ok(())
     }
 

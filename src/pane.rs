@@ -293,8 +293,10 @@ impl Title {
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most
-    /// `REPLIES_MAX` bytes; whether one was dropped past them.
+    /// `REPLIES_MAX` bytes, `kept` of them; whether one was dropped past
+    /// them.
     replies: Vec<u8>,
+    kept: u64,
     dropped: bool,
     /// Where its bells, notifications, titles and commands' ends go, in
     /// order, for the session's journal.
@@ -318,8 +320,14 @@ impl Sink<'_> {
     fn keep(&mut self, bytes: &[u8]) -> bool {
         let fits = self.replies.len().saturating_add(bytes.len()) <= REPLIES_MAX;
         match fits {
-            true => self.replies.extend_from_slice(bytes),
-            false => self.dropped = true,
+            true => {
+                self.replies.extend_from_slice(bytes);
+                self.kept = self.kept.saturating_add(1);
+            }
+            false => {
+                self.dropped = true;
+                self.alerts.replies_dropped = self.alerts.replies_dropped.saturating_add(1);
+            }
         }
         fits
     }
@@ -481,12 +489,31 @@ pub(crate) fn basename(program: &str) -> String {
 }
 
 /// What a program rang or announced since it started: bells, and desktop
-/// notifications (OSC 9, 777, 99) with the last one's text.
+/// notifications (OSC 9, 777, 99) with the last one's text; and what of
+/// its output fux dropped or refused, counted for its JSON as clients
+/// showing it are told it (`Session::tell_refused`).
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
     /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
     pub last: Option<Said<NOTIFICATION_MAX>>,
+    /// Replies to its queries dropped: past a read's `REPLIES_MAX`, or
+    /// for a full input queue.
+    pub replies_dropped: u64,
+    /// Its copies (OSC 52) that copied nothing, for each `Uncopied`.
+    pub copies_cut: u64,
+    pub copies_not_text: u64,
+}
+
+impl Alerts {
+    /// Its program's copy copied nothing, for `why`.
+    pub fn uncopied(&mut self, why: Uncopied) {
+        let n = match why {
+            Uncopied::Cut => &mut self.copies_cut,
+            Uncopied::NotText => &mut self.copies_not_text,
+        };
+        *n = n.saturating_add(1);
+    }
 }
 
 /// Why a program's copy (OSC 52) copied nothing.
@@ -838,6 +865,7 @@ impl<S> Pane<S> {
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
+            kept: 0,
             dropped: false,
             happened: &mut self.said,
             title: &mut self.title,
@@ -867,6 +895,10 @@ impl<S> Pane<S> {
         // Queued as `push` queues; a full queue drops them, which is told
         // (`Lost`), as replies past the read's bound are.
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
+        if full {
+            let alerts = &mut sink.alerts;
+            alerts.replies_dropped = alerts.replies_dropped.saturating_add(sink.kept);
+        }
         if let Some(scheme) = sink.told.filter(|_| !full) {
             self.scheme_told = Some(scheme);
         }
