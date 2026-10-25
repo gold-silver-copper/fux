@@ -355,6 +355,23 @@ pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
 /// it is put in.
 pub struct Placed(());
 
+/// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
+/// the one it takes, holding the new pane too.
+pub struct Split {
+    tab: TabId,
+    was: Tree,
+    root: Tree,
+}
+
+impl Split {
+    pub fn tab(&self) -> TabId {
+        self.tab
+    }
+    pub fn root(&self) -> &Tree {
+        &self.root
+    }
+}
+
 /// Leave to take what a pane said (`Pane::said`), which only this module
 /// gives, as it puts what it takes in the journal: code elsewhere cannot
 /// take it and drop it.
@@ -506,35 +523,41 @@ impl Parts {
         self.panes.insert(pane.id(), pane.placed(Placed(())));
     }
 
-    /// Puts `pane`, new, beside `target`, along `axis`, after it, the two
-    /// taking `shares` of their split if given; the pane given back if
-    /// `target` is in no tab.
-    #[expect(clippy::result_large_err, reason = "a pane given back")]
-    pub(crate) fn split(
-        &mut self,
-        target: PaneId,
-        pane: Pane<Loose>,
+    /// The layout `target`'s tab takes split for pane `new` beside it,
+    /// along `axis`, after it, the two taking `shares` of their split if
+    /// given: what the new pane starts at and is put in by (`split`).
+    pub(crate) fn plan_split(
+        &self,
+        (target, new): (PaneId, PaneId),
         axis: Axis,
         shares: Option<(NonZeroU32, NonZeroU32)>,
-    ) -> Result<(), Pane<Loose>> {
-        let (Some(at), new) = (self.locate(target), pane.id()) else {
-            return Err(pane);
-        };
-        let split = |root: &mut Option<Tree>| {
-            let Some(r) = root.as_mut() else {
-                return false;
-            };
-            let split = r.split(target, new, axis, Side::After);
-            if let (true, Some((theirs, its))) = (split, shares) {
-                r.share(target, theirs);
-                r.share(new, its);
-            }
-            split
-        };
-        if !tab_mut(&mut self.workspaces, at.1).is_some_and(|(_, t)| t.edit(split)) {
-            return Err(pane);
+    ) -> Option<Split> {
+        let (_, tab) = self.locate(target)?;
+        let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
+        let was = tabs.find(|t| t.id == tab)?.root.clone()?;
+        let mut root = was.clone();
+        root.split(target, new, axis, Side::After).then_some(())?;
+        if let Some((theirs, its)) = shares {
+            root.share(target, theirs);
+            root.share(new, its);
         }
-        self.placed(at, pane);
+        Some(Split { tab, was, root })
+    }
+
+    /// Puts `pane`, new, in its tab laid out as `split` planned: the pane
+    /// given back if it is not the one planned for, or the tab's layout
+    /// changed since.
+    #[expect(clippy::result_large_err, reason = "a pane given back")]
+    pub(crate) fn split(&mut self, pane: Pane<Loose>, split: Split) -> Result<(), Pane<Loose>> {
+        let Split { tab, was, root } = split;
+        let planned = root.contains(pane.id()) && !was.contains(pane.id());
+        let Some((ws, t)) = tab_mut(&mut self.workspaces, tab)
+            .filter(|(_, t)| planned && t.root.as_ref() == Some(&was))
+        else {
+            return Err(pane);
+        };
+        t.edit(|r| *r = Some(root));
+        self.placed((ws, tab), pane);
         Ok(())
     }
 

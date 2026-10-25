@@ -10,13 +10,13 @@ use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
-use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
+use crate::layout::{self, Axis, Placement, Rect, Tree};
 use crate::pane::{self, Loose, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
-use crate::workspace::{Fit, PaneMut, Parts, Seat, Tab, Workspace};
+use crate::workspace::{Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
 use fuxth::Code as Lang;
 use std::collections::{BTreeMap, VecDeque};
@@ -1203,19 +1203,23 @@ impl Session {
         Err(fail(Code::NotRunning, format!("{id}: {why}")))
     }
 
-    /// The size a pane split from `target` along `axis` starts at: its
-    /// place in the layout once split, which its tab must have room for.
-    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
-        let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let mut ids = self.ids.clone();
-        let new = ids.pane()?;
-        let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
-        root.split(target, new, axis, Side::After);
-        self.room(tab, Some(&root))?;
-        let area = self.reference_area(tab, here);
-        let rect = area.and_then(|area| layout::place(&root, area).rect(new));
-        rect.and_then(|r| Size::new(r.h(), r.w()).ok())
-            .ok_or(Error::NoPane(target))
+    /// The split of `target` along `axis`, the two taking `shares` if
+    /// given, and the size the new pane starts at: its place in the
+    /// layout the split makes, which its tab must have room for.
+    fn split_size(
+        &self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        here: Here,
+    ) -> Result<(Split, Size), Error> {
+        let new = self.ids.clone().pane()?;
+        let split =
+            (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
+        self.room(split.tab(), Some(split.root()))?;
+        let area = self.reference_area(split.tab(), here);
+        let rect = area.and_then(|area| layout::place(split.root(), area).rect(new));
+        let size = rect.and_then(|r| Size::new(r.h(), r.w()).ok());
+        Ok((split, size.ok_or(Error::NoPane(target))?))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -2646,12 +2650,12 @@ impl Session {
         };
         // Its tab found (by `split_size`) before the program starts, which
         // nothing can then leave running.
-        let size = self.split_size(target, axis, here)?;
+        let (split, size) = self.split_size(target, (axis, shares), here)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
-        if let Err(pane) = self.parts.split(target, pane, axis, shares) {
+        if let Err(pane) = self.parts.split(pane, split) {
             self.end(pane.into_process(), true);
             return Err(Error::NoPane(target));
         }
@@ -5046,6 +5050,22 @@ mod tests {
         let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
         assert_eq!(widths, [80, 10, 8]);
         assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    /// A pane split with shares starts at the size its share gives it,
+    /// not resized to it after its program starts.
+    #[test]
+    fn a_split_with_shares_starts_at_its_share() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%2 80 18 shares split drop");
+        });
+        assert!(lines.contains("created %3"), "{lines}");
+        assert!(!lines.contains("resized %3"), "{lines}");
+        let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
+        assert_eq!(size, Some(sized(10, 18)?));
         Ok(())
     }
 
