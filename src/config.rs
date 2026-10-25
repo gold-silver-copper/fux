@@ -235,7 +235,7 @@ impl Reads for bool {
 impl Reads for Shell {
     type Value = Shell;
     fn takes() -> String {
-        "a program and its arguments, separated by blanks".to_owned()
+        "a program and its arguments, separated by blanks, unquoted".to_owned()
     }
     fn read(text: &str) -> Result<Shell, String> {
         Shell::parse(text)
@@ -271,8 +271,14 @@ pub struct Shell {
 
 impl Shell {
     /// Words separated by blanks, the program first: no quoting, so no
-    /// word holds a blank.
+    /// word holds a blank, and a quote or backslash, which would be taken
+    /// as it is, is refused.
     pub fn parse(value: &str) -> Result<Shell, String> {
+        if let Some(quote) = value.chars().find(|c| matches!(c, '\'' | '"' | '\\')) {
+            return Err(format!(
+                "{quote} is taken as it is: words are parted by blanks, and not quoted or escaped"
+            ));
+        }
         let mut words = value.split_whitespace().map(str::to_owned);
         let program = words.next().ok_or("a program is needed")?;
         Ok(Shell {
@@ -315,6 +321,10 @@ mod tests {
         assert_eq!(config.set("bell", "false"), Ok(()));
         assert!(!config.bell);
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
+        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
+        for quoted in ["'/bin/my shell' -l", "zsh -c \"ls\"", "my\\ shell"] {
+            assert!(config.set("shell", quoted).is_err(), "{quoted}");
+        }
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
         let below = config.set("history-bytes", "-1");
