@@ -17,11 +17,7 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
             }
         });
     }
-    if names.is_empty() {
-        "empty".into()
-    } else {
-        names.join(", ")
-    }
+    names.join(", ")
 }
 
 /// A chooser's rows for client `client`: what each is (its ids), its label
@@ -43,7 +39,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                     "{} {} — {}",
                     tab.id(),
                     tab.name(),
-                    pane_names(session, tab.root())
+                    pane_names(session, [tab.root()])
                 );
                 rows.push((AnyRef::Tab(tab.id()), label));
             }
@@ -54,7 +50,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 if Some(ws.id()) == shown {
                     current = Some(rows.len());
                 }
-                let roots = ws.tabs().iter().filter_map(|t| t.root());
+                let roots = ws.tabs().iter().map(|t| t.root());
                 let label = format!("{} {} — {}", ws.id(), ws.name(), pane_names(session, roots));
                 rows.push((AnyRef::Workspace(ws.id()), label));
             }

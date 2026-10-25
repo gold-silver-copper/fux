@@ -505,8 +505,7 @@ fn start(session: &mut Session, client: ClientId) {
 
 /// Copy mode on the client's focused pane, its cursor where the pane's is.
 fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
-    let pane = (place.pane)
-        .ok_or_else(|| session::fail(crate::code::Code::NoPane, "no pane to copy from"))?;
+    let pane = place.pane;
     let screen = session.parts.panes().get(&pane);
     let screen = screen.ok_or(Error::NoPane(pane))?.screen();
     let (cy, cx) = screen.cursor_position();

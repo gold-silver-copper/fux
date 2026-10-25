@@ -37,7 +37,9 @@ pub struct Tab {
     /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
     /// program's): a name given is the only one, and takes fux's.
     given: bool,
-    root: Option<Tree>,
+    /// Its panes, of which it has one or more: a tab is made with one, and
+    /// closes as its last leaves.
+    root: Tree,
     /// Its layout changed since its panes were sized for it: one no client
     /// shows is then laid out again (`Session::size_panes`).
     changed: bool,
@@ -81,10 +83,10 @@ impl Fit {
 }
 
 /// A client's place in a tab: every attached client has one in every tab.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct Seat {
-    /// The pane it focuses, one of the tab's, unless the tab is empty.
-    focus: Option<PaneId>,
+    /// The pane it focuses, one of the tab's.
+    focus: PaneId,
     /// The pane it focused before (`str last focus`), another of the
     /// tab's.
     last: Option<PaneId>,
@@ -97,6 +99,15 @@ pub struct Seat {
 }
 
 impl Seat {
+    /// A seat focusing `pane`, new.
+    fn on(focus: PaneId) -> Seat {
+        Seat {
+            focus,
+            last: None,
+            rang: false,
+            held: false,
+        }
+    }
     pub fn last(&self) -> Option<PaneId> {
         self.last
     }
@@ -138,11 +149,12 @@ impl Workspace {
         }
     }
 
-    /// Removes tab `tab`, giving back its layout: the clients it was shown
-    /// to are shown its neighbour.
-    fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
-        let index = self.tabs.iter().position(|t| t.id == tab)?;
-        let root = self.tabs.get_mut(index)?.root.take();
+    /// Removes tab `tab`: the clients it was shown to are shown its
+    /// neighbour.
+    fn remove_tab(&mut self, tab: TabId) {
+        let Some(index) = self.tabs.iter().position(|t| t.id == tab) else {
+            return;
+        };
         // Tab IDs are unique: this removes the tab at `index`.
         self.tabs.retain(|t| t.id != tab);
         let next = index.min(self.tabs.len().saturating_sub(1));
@@ -152,21 +164,27 @@ impl Workspace {
                 .filter(|t| **t == tab)
                 .for_each(|t| *t = next);
         }
-        root
     }
 }
 
 impl Tab {
-    /// An empty tab, laid out on `fit`, with a seat for each of `clients`.
-    fn new(id: TabId, name: String, fit: Fit, clients: impl Iterator<Item = ClientId>) -> Tab {
+    /// A tab holding `pane` alone, laid out on `fit`, with a seat for each
+    /// of `clients`.
+    fn new(
+        id: TabId,
+        name: String,
+        fit: Fit,
+        clients: impl Iterator<Item = ClientId>,
+        pane: PaneId,
+    ) -> Tab {
         Tab {
             id,
             name,
             given: false,
-            root: None,
+            root: Tree::Pane(pane),
             changed: true,
             fit,
-            seats: clients.map(|c| (c, Seat::default())).collect(),
+            seats: clients.map(|c| (c, Seat::on(pane))).collect(),
             typist: None,
         }
     }
@@ -183,9 +201,8 @@ impl Tab {
         self.given
     }
 
-    /// Its layout, unless it is empty.
-    pub fn root(&self) -> Option<&Tree> {
-        self.root.as_ref()
+    pub fn root(&self) -> &Tree {
+        &self.root
     }
 
     pub fn fit(&self) -> Fit {
@@ -204,14 +221,14 @@ impl Tab {
     /// keeps the last size that showed them all, which a dump makes it at.
     pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
         let area = Fit::Clients(size).area();
-        let shows_all = (self.root.as_ref()).is_none_or(|r| layout::shows_all(r, area));
+        let shows_all = layout::shows_all(&self.root, area);
         if let (Fit::Clients(last), true) = (&mut self.fit, shows_all) {
             *last = size;
         }
     }
 
     pub fn holds(&self, pane: PaneId) -> bool {
-        self.root.as_ref().is_some_and(|r| r.contains(pane))
+        self.root.contains(pane)
     }
 
     pub fn seat(&self, client: ClientId) -> Option<&Seat> {
@@ -224,7 +241,7 @@ impl Tab {
 
     /// The pane `client` focuses here.
     pub fn focus(&self, client: ClientId) -> Option<PaneId> {
-        self.seat(client)?.focus
+        Some(self.seat(client)?.focus)
     }
 
     /// Focuses `pane` for `client`, if the tab holds it, remembering the
@@ -232,15 +249,15 @@ impl Tab {
     pub(crate) fn set_focus(&mut self, client: ClientId, pane: PaneId) {
         let holds = self.holds(pane);
         let seat = self.seats.get_mut(&client);
-        if let Some(seat) = seat.filter(|s| holds && s.focus != Some(pane)) {
-            (seat.last, seat.focus, seat.held) = (seat.focus, Some(pane), false);
+        if let Some(seat) = seat.filter(|s| holds && s.focus != pane) {
+            (seat.last, seat.focus, seat.held) = (Some(seat.focus), pane, false);
         }
     }
 
     /// Changes the layout with `change`; each client then focuses the pane
     /// it did if the tab still holds it, else the one before, else the
     /// first.
-    fn edit<R>(&mut self, change: impl FnOnce(&mut Option<Tree>) -> R) -> R {
+    fn edit<R>(&mut self, change: impl FnOnce(&mut Tree) -> R) -> R {
         let out = change(&mut self.root);
         self.changed = true;
         self.refocus();
@@ -248,13 +265,13 @@ impl Tab {
     }
 
     fn refocus(&mut self) {
-        let root = self.root.as_ref();
-        let inside = |p: &PaneId| root.is_some_and(|r| r.contains(*p));
+        let root = &self.root;
+        let inside = |p: &PaneId| root.contains(*p);
         for seat in self.seats.values_mut() {
-            let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
+            let (focus, last) = (Some(seat.focus).filter(inside), seat.last.filter(inside));
             seat.held &= focus.is_some();
-            seat.focus = focus.or(last).or_else(|| root.map(Tree::first_pane));
-            seat.last = last.filter(|l| Some(*l) != seat.focus);
+            seat.focus = focus.or(last).unwrap_or_else(|| root.first_pane());
+            seat.last = last.filter(|l| *l != seat.focus);
         }
     }
 }
@@ -296,6 +313,16 @@ impl Split {
     pub fn root(&self) -> &Tree {
         &self.root
     }
+}
+
+/// Where a pane moves to (`Parts::relocate`).
+pub enum Destination {
+    /// The end of tab `0`'s layout (`Tree::append`).
+    Tab(TabId),
+    /// A new tab of workspace `0`, laid out on `2`, named after its place.
+    NewTab(WsId, TabId, Fit),
+    /// A new workspace, named, and its one tab, named and laid out so.
+    NewWorkspace((WsId, String), (TabId, String, Fit)),
 }
 
 /// Leave to take what a pane said (`Pane::said`), which only this module
@@ -342,15 +369,6 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
     Some(pair.map(<[T]>::reverse).is_some())
 }
 
-/// Takes `pane` out of `root`, `None` once its last pane is gone.
-fn without(root: &mut Option<Tree>, pane: PaneId) {
-    match root.as_ref().map(|r| r.remove(pane)) {
-        Some(Removed::Left(rest)) => *root = Some(rest),
-        Some(Removed::Emptied) => *root = None,
-        Some(Removed::Absent) | None => {}
-    }
-}
-
 /// Names `old` `new`, journaled at `place` if it is another name.
 fn rename(journal: &mut Journal, place: Place, old: &mut String, new: String) {
     if *old != new {
@@ -380,7 +398,8 @@ impl Parts {
                 w.shown.insert(client, first.id);
             }
             for tab in &mut w.tabs {
-                tab.seats.entry(client).or_default();
+                let first = tab.root.first_pane();
+                tab.seats.entry(client).or_insert(Seat::on(first));
                 tab.refocus();
             }
         }
@@ -471,7 +490,7 @@ impl Parts {
         } = self;
         for ws in workspaces.iter() {
             for tab in &ws.tabs {
-                for id in tab.root.as_ref().map(Tree::panes).unwrap_or_default() {
+                for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
                         let place = Place::Pane((ws.id, tab.id), id);
                         change(&mut PaneMut(pane, place, journal));
@@ -483,19 +502,32 @@ impl Parts {
 
     /// Adds workspace `id` named `name`, its one tab `tab` named
     /// `tab_name` and laid out on `fit`, a seat there for each of
-    /// `clients`, holding `pane` if one is given.
+    /// `clients`, holding `pane`, new.
     pub(crate) fn add_workspace(
+        &mut self,
+        ws: (WsId, String),
+        first: (TabId, String, Fit),
+        clients: impl Iterator<Item = ClientId>,
+        pane: Pane<Loose>,
+    ) {
+        let at = (ws.0, first.0);
+        self.push_workspace(ws, first, clients, pane.id());
+        self.placed(at, pane);
+    }
+
+    /// `add_workspace`, holding pane `pane`, in the session.
+    fn push_workspace(
         &mut self,
         (id, name): (WsId, String),
         (tab, tab_name, fit): (TabId, String, Fit),
         clients: impl Iterator<Item = ClientId>,
-        pane: Option<Pane<Loose>>,
+        pane: PaneId,
     ) {
         self.journal
             .push(Place::Workspace(id), What::Created(Some(name.clone())));
         self.journal
             .push(Place::Tab(id, tab), What::Created(Some(tab_name.clone())));
-        let first = Tab::new(tab, tab_name, fit, clients);
+        let first = Tab::new(tab, tab_name, fit, clients, pane);
         let shown = first.seats.keys().map(|c| (*c, tab)).collect();
         self.workspaces.push(Workspace {
             id,
@@ -504,44 +536,45 @@ impl Parts {
             viewers: BTreeSet::new(),
             shown,
         });
-        self.put(id, tab, pane);
     }
 
     /// Adds tab `id` to workspace `ws`, named `name` or after its place,
-    /// laid out on `fit`, holding `pane` if one is given; the pane given
-    /// back if there is no such workspace.
+    /// laid out on `fit`, holding `pane`, new; the pane given back if
+    /// there is no such workspace.
     #[expect(clippy::result_large_err, reason = "a pane given back")]
     pub(crate) fn add_tab(
         &mut self,
         (ws, id): (WsId, TabId),
         name: Option<String>,
         fit: Fit,
-        pane: Option<Pane<Loose>>,
-    ) -> Result<(), Option<Pane<Loose>>> {
-        let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == ws) else {
+        pane: Pane<Loose>,
+    ) -> Result<(), Pane<Loose>> {
+        if self.push_tab((ws, id), name, fit, pane.id()).is_err() {
             return Err(pane);
-        };
+        }
+        self.placed((ws, id), pane);
+        Ok(())
+    }
+
+    /// `add_tab`, holding pane `pane`, in the session.
+    fn push_tab(
+        &mut self,
+        (ws, id): (WsId, TabId),
+        name: Option<String>,
+        fit: Fit,
+        pane: PaneId,
+    ) -> Result<(), NoPane> {
+        let workspace = self.workspaces.iter_mut().find(|w| w.id == ws);
+        let workspace = workspace.ok_or(NoPane)?;
         // Named after its place if no name is given, with a seat for every
         // client that has one in the others.
         let name = name.unwrap_or_else(|| numbered(workspace.tabs.len().saturating_add(1)));
         let clients = workspace.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten());
+        let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten(), pane);
         workspace.tabs.push(tab);
         self.journal
             .push(Place::Tab(ws, id), What::Created(Some(name)));
-        self.put(ws, id, pane);
         Ok(())
-    }
-
-    /// Puts `pane`, new, in tab `tab`, made empty, of workspace `ws`.
-    fn put(&mut self, ws: WsId, tab: TabId, pane: Option<Pane<Loose>>) {
-        let Some(pane) = pane else {
-            return;
-        };
-        if let Some((_, t)) = tab_mut(&mut self.workspaces, tab) {
-            t.edit(|root| *root = Some(Tree::Pane(pane.id())));
-        }
-        self.placed((ws, tab), pane);
     }
 
     /// `pane`, new, is in tab `at` of its workspace.
@@ -563,7 +596,7 @@ impl Parts {
     ) -> Result<Split, NoPane> {
         let (_, tab) = self.locate(target).ok_or(NoPane)?;
         let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
-        let was = tabs.find(|t| t.id == tab).and_then(|t| t.root.clone());
+        let was = tabs.find(|t| t.id == tab).map(|t| t.root.clone());
         let was = was.ok_or(NoPane)?;
         let mut root = was.clone();
         root.split((target, new), (axis, Side::After), shares)?;
@@ -577,12 +610,12 @@ impl Parts {
     pub(crate) fn split(&mut self, pane: Pane<Loose>, split: Split) -> Result<(), Pane<Loose>> {
         let Split { tab, was, root } = split;
         let planned = root.contains(pane.id()) && !was.contains(pane.id());
-        let Some((ws, t)) = tab_mut(&mut self.workspaces, tab)
-            .filter(|(_, t)| planned && t.root.as_ref() == Some(&was))
+        let Some((ws, t)) =
+            tab_mut(&mut self.workspaces, tab).filter(|(_, t)| planned && t.root == was)
         else {
             return Err(pane);
         };
-        t.edit(|r| *r = Some(root));
+        t.edit(|r| *r = root);
         self.placed((ws, tab), pane);
         Ok(())
     }
@@ -592,11 +625,17 @@ impl Parts {
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane<Loose>> {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
-        tab.edit(|root| without(root, id));
-        let emptied = tab.root.is_none();
+        let emptied = match tab.root.remove(id) {
+            Removed::Left(rest) => {
+                tab.edit(|root| *root = rest);
+                false
+            }
+            Removed::Emptied => true,
+            Removed::Absent => return None,
+        };
         self.journal.push(Place::Pane(at, id), What::Closed);
         if emptied {
-            self.remove_tab(at.1);
+            self.drop_tab(at.1);
         }
         self.panes.remove(&id).map(|pane| pane.placed(Loose))
     }
@@ -605,16 +644,31 @@ impl Parts {
     /// workspace it leaves with none goes too, its viewers shown the first
     /// workspace left.
     pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane<Loose>> {
-        let ws = (self.workspaces.iter_mut()).find(|w| w.tabs.iter().any(|t| t.id == tab));
-        let Some(ws) = ws else {
+        let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) else {
             return Vec::new();
         };
-        let (id, panes) = (ws.id, ws.remove_tab(tab).map(|r| r.panes()));
-        let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
-        for &pane in panes.iter().flatten() {
+        let panes = t.root.panes();
+        for &pane in &panes {
             self.journal
-                .push(Place::Pane((id, tab), pane), What::Closed);
+                .push(Place::Pane((ws, tab), pane), What::Closed);
         }
+        self.drop_tab(tab);
+        let gone = panes
+            .into_iter()
+            .filter_map(|pane| self.panes.remove(&pane));
+        gone.map(|pane| pane.placed(Loose)).collect()
+    }
+
+    /// Takes tab `tab` out of its workspace, and the workspace if it is
+    /// left with none, its viewers shown the first workspace left.
+    fn drop_tab(&mut self, tab: TabId) {
+        let ws = (self.workspaces.iter_mut()).find(|w| w.tabs.iter().any(|t| t.id == tab));
+        let Some(ws) = ws else {
+            return;
+        };
+        ws.remove_tab(tab);
+        let id = ws.id;
+        let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
         self.journal.push(Place::Tab(id, tab), What::Closed);
         if let Some(viewers) = viewers {
             self.workspaces.retain(|w| w.id != id);
@@ -623,9 +677,6 @@ impl Parts {
             }
             self.journal.push(Place::Workspace(id), What::Closed);
         }
-        let gone = panes.into_iter().flatten();
-        let gone = gone.filter_map(|pane| self.panes.remove(&pane));
-        gone.map(|pane| pane.placed(Loose)).collect()
     }
 
     /// Closes everything: the panes given back, to end.
@@ -684,7 +735,7 @@ impl Parts {
         // what its panes have (a zoomed pane, its whole screen).
         let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
         for tab in tabs.filter(|t| t.id == was_a.1 || t.id == was_b.1) {
-            tab.edit(|root| root.as_mut().map(|r| r.swap(a, b)));
+            tab.edit(|root| root.swap(a, b));
         }
         if was_a != was_b {
             self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
@@ -692,21 +743,44 @@ impl Parts {
         }
     }
 
-    /// Moves `pane` from its tab to the end of tab `to`, another: its tab
-    /// lets go of it, and `to` takes it (`Tree::append`); no other tab
-    /// changes. Refused, none does.
-    pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) -> Result<(), NoPane> {
+    /// Moves `pane` from its tab to `to`, another: its tab lets go of it,
+    /// closing if it held it alone, as its workspace does if that leaves
+    /// it none, and `to` takes it; no other tab changes. Refused, as for a
+    /// tab or workspace there is not, none does.
+    pub(crate) fn relocate(&mut self, pane: PaneId, to: Destination) -> Result<(), NoPane> {
         let was = self.locate(pane).ok_or(NoPane)?;
-        let (ws, tab) = tab_mut(&mut self.workspaces, to).ok_or(NoPane)?;
-        tab.edit(|root| match root {
-            Some(root) => root.append(pane),
-            None => *root = Some(Tree::Pane(pane)),
-        });
-        if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
-            from.edit(|root| without(root, pane));
+        let (_, from) = tab_mut(&mut self.workspaces, was.1).ok_or(NoPane)?;
+        let rest = match from.root.remove(pane) {
+            Removed::Left(rest) => Some(rest),
+            Removed::Emptied => None,
+            Removed::Absent => return Err(NoPane),
+        };
+        let clients: Vec<ClientId> = from.seats.keys().copied().collect();
+        // Taken in before its tab lets go: the workspace a new tab goes in
+        // may be the one that would close.
+        let at = match to {
+            Destination::Tab(to) => {
+                let (ws, tab) = tab_mut(&mut self.workspaces, to)
+                    .filter(|_| to != was.1)
+                    .ok_or(NoPane)?;
+                tab.edit(|root| root.append(pane));
+                (ws, to)
+            }
+            Destination::NewTab(ws, tab, fit) => {
+                self.push_tab((ws, tab), None, fit, pane)?;
+                (ws, tab)
+            }
+            Destination::NewWorkspace(ws, first) => {
+                let at = (ws.0, first.0);
+                self.push_workspace(ws, first, clients.into_iter(), pane);
+                at
+            }
+        };
+        self.journal.push(Place::Pane(at, pane), What::Moved(was));
+        match (rest, tab_mut(&mut self.workspaces, was.1)) {
+            (Some(rest), Some((_, from))) => from.edit(|root| *root = rest),
+            (None, _) | (_, None) => self.drop_tab(was.1),
         }
-        self.journal
-            .push(Place::Pane((ws, to), pane), What::Moved(was));
         Ok(())
     }
 
@@ -717,13 +791,13 @@ impl Parts {
     pub(crate) fn reshape<R>(
         &mut self,
         pane: PaneId,
-        change: impl FnOnce(&mut Option<Tree>) -> R,
+        change: impl FnOnce(&mut Tree) -> R,
     ) -> Option<R> {
         let (_, tab) = self.locate(pane)?;
         let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
-        let sorted = |root: &Option<Tree>| {
-            let mut panes = root.as_ref().map(Tree::panes);
-            panes.iter_mut().for_each(|p| p.sort_unstable());
+        let sorted = |root: &Tree| {
+            let mut panes = root.panes();
+            panes.sort_unstable();
             panes
         };
         let was = tab.root.clone();

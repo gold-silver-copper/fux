@@ -463,7 +463,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     Ok(())
 }
 
-/// A workspace whose first tab is empty, its pane moved to a new tab, is
+/// A workspace whose first tab closed, its pane moved to a new tab, is
 /// made again from its dump: the first tab written opens it.
 #[test]
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {

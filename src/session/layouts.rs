@@ -19,15 +19,13 @@ impl Session {
             Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => false,
         };
         for ws in self.parts.workspaces() {
-            // The first tab written opens its workspace: one before it may
-            // be empty (its panes moved out), and is not written.
-            let mut opens = whole;
-            for tab in ws.tabs() {
-                if !self.takes_in(only, ws.id(), tab.id()) || tab.root().is_none() {
-                    continue;
-                }
-                self.dump_tab(ws, tab, whole, opens, &mut out);
-                opens = false;
+            let tabs = ws
+                .tabs()
+                .iter()
+                .filter(|t| self.takes_in(only, ws.id(), t.id()));
+            for (i, tab) in tabs.enumerate() {
+                // The first opens its workspace.
+                self.dump_tab(ws, tab, whole, whole && i == 0, &mut out);
             }
         }
         out
@@ -37,9 +35,7 @@ impl Session {
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
     fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
-        let Some((root, first)) = tab.root().map(|r| (r, r.first_pane())) else {
-            return;
-        };
+        let (root, first) = (tab.root(), tab.root().first_pane());
         let program = self.program(first);
         // A dump run anywhere puts each tab in the workspace of its name,
         // made if there is none (`in`).
