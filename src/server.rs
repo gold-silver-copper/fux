@@ -24,7 +24,7 @@ use signal_hook::consts::SIGCHLD;
 use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
-use std::os::fd::OwnedFd;
+
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use std::time::{Duration, Instant};
@@ -136,12 +136,11 @@ struct Conn {
 /// (`Server::take_frame`): any other frame is a bad one.
 enum Stage {
     /// Its first frame is to be a `Hello`. A client need not wait for the
-    /// answer to send its `Attach`, and the descriptor that came with it,
-    /// its terminal, waits here until then.
-    Hello(Option<OwnedFd>),
-    /// It said hello as `fux attach`: its `Attach` is next, with the
-    /// descriptor it sent, and the kind of client it is.
-    Attaching(Option<OwnedFd>, ClientKind),
+    /// answer to send its `Attach`.
+    Hello,
+    /// It said hello as `fux attach`: its `Attach` is next, and the kind
+    /// of client it is.
+    Attaching(ClientKind),
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -167,8 +166,8 @@ impl Stage {
     /// Whether what the client sends is read.
     fn reads(&self) -> bool {
         match self {
-            Stage::Hello(_)
-            | Stage::Attaching(..)
+            Stage::Hello
+            | Stage::Attaching(_)
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Waiting(_)
@@ -181,8 +180,8 @@ impl Stage {
     fn asked(&self) -> bool {
         match self {
             Stage::Waiting(_) | Stage::Events(_) => true,
-            Stage::Hello(_)
-            | Stage::Attaching(..)
+            Stage::Hello
+            | Stage::Attaching(_)
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -191,11 +190,11 @@ impl Stage {
     }
 }
 
-/// An attached client: its view's id, its terminal if the server took it,
-/// and what its paints are made from.
+/// An attached client: its view's id, and what its paints are made from.
+/// Every paint is relayed to it in `Paint` frames, which it writes to its
+/// terminal.
 struct Attached {
     client: ClientId,
-    tty: Option<TakenTerminal>,
     /// What the client's terminal shows, for diffing, while `known`.
     shown: Grid,
     /// Whether `shown` is what the terminal shows: if not (a new client, a
@@ -248,35 +247,6 @@ impl PaintClock {
     }
 }
 
-/// The client's terminal, which it sent with its `Attach` and the server
-/// reopened (`fuxix::terminal::reopen`): its paints are written here, not
-/// relayed in frames, as tmux's server writes to its client's terminal.
-/// Its keys are the client's, which reads them itself. It is held by its client's attachment alone,
-/// and given back as that ends (`Conn::enter`).
-struct TakenTerminal {
-    fd: OwnedFd,
-    /// What waits to be written to it.
-    out: ByteQueue,
-}
-
-impl TakenTerminal {
-    fn new(fd: OwnedFd) -> TakenTerminal {
-        TakenTerminal {
-            fd,
-            out: ByteQueue::default(),
-        }
-    }
-    /// Hands the terminal back: what waits for it written as far as it
-    /// takes it at once, the rest to `out` for the client to write in paint
-    /// frames, before the `Exit` that follows, and the server's descriptor
-    /// for it closed.
-    fn give_back(mut self, out: &mut ByteQueue) {
-        if write_out(&self.fd, &mut self.out) && !self.out.is_empty() {
-            split_into(self.out.as_slice(), ToAttached::Paint, out);
-        }
-    }
-}
-
 /// Writes `out` to `fd`, nonblocking, as far as it takes it; false if the
 /// write failed. The memory a large write took is given back.
 fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
@@ -293,11 +263,10 @@ fn write_out(fd: impl std::os::fd::AsFd, out: &mut ByteQueue) -> bool {
 }
 
 impl Attached {
-    fn new(client: ClientId, tty: Option<TakenTerminal>) -> Attached {
+    fn new(client: ClientId) -> Attached {
         let now = Instant::now();
         Attached {
             client,
-            tty,
             shown: Grid::new(0, 0),
             known: false,
             spare: Grid::new(0, 0),
@@ -323,13 +292,9 @@ impl Attached {
     }
 
     /// Bytes for the client's terminal, a paint's or what the session sends
-    /// it outside one: written there if the server took it, else framed in
-    /// `out` for the client.
-    fn paint(&mut self, out: &mut ByteQueue, bytes: &[u8]) {
-        match &mut self.tty {
-            Some(tty) => tty.out.push(bytes),
-            None => split_into(bytes, ToAttached::Paint, out),
-        }
+    /// it outside one, framed in `out` for the client.
+    fn paint(out: &mut ByteQueue, bytes: &[u8]) {
+        split_into(bytes, ToAttached::Paint, out);
     }
 }
 
@@ -339,7 +304,7 @@ impl Conn {
             stream,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
-            stage: Stage::Hello(None),
+            stage: Stage::Hello,
         }
     }
 
@@ -358,10 +323,9 @@ impl Conn {
             return None;
         };
         let dirty = session.views.get(&attached.client)?.dirty;
-        let sent = self.out.is_empty() && attached.tty.as_ref().is_none_or(|t| t.out.is_empty());
         // A screen not known is painted whole, whether or not the view
         // changed: forgetting it is asking for that paint.
-        ((dirty || !attached.known) && sent).then_some(attached.clock.due)
+        ((dirty || !attached.known) && self.out.is_empty()).then_some(attached.clock.due)
     }
 
     /// Whether `client` is attached here.
@@ -378,13 +342,13 @@ impl Conn {
     }
 
     /// Moves the connection on to `next`. One that was attached has its
-    /// client detached and its terminal given back, with its own cursor
-    /// shape; one that is dead stays so.
+    /// client detached and its terminal given its own cursor shape back;
+    /// one that is dead stays so.
     fn enter(&mut self, session: &mut Session, next: Stage) {
         if matches!(self.stage, Stage::Dead) {
             return;
         }
-        if let Stage::Attached(mut attached) = mem::replace(&mut self.stage, next) {
+        if let Stage::Attached(attached) = mem::replace(&mut self.stage, next) {
             session.detach(attached.client);
             // A cursor shape a pane set is given back as the terminal's own
             // (`render::cursor_shape`); one never set is left as it was.
@@ -392,10 +356,7 @@ impl Conn {
             let initial = fux_vt::CursorShape::Initial;
             render::cursor_shape(attached.shown.modes.cursor_shape, initial, &mut shape);
             if !shape.is_empty() {
-                attached.paint(&mut self.out, &shape);
-            }
-            if let Some(tty) = attached.tty {
-                tty.give_back(&mut self.out);
+                Attached::paint(&mut self.out, &shape);
             }
         }
     }
@@ -408,23 +369,14 @@ impl Conn {
         }
     }
 
-    /// Its client attaches as `attach` says, with the terminal it sent if
-    /// it sent one, taken or not: the client is told so, and its id,
-    /// before anything is painted; or why it cannot attach.
-    fn attach(
-        &mut self,
-        session: &mut Session,
-        (passed, kind): (Option<OwnedFd>, ClientKind),
-        attach: Attach,
-    ) {
+    /// Its client attaches as `attach` says: it is told its id before
+    /// anything is painted; or why it cannot attach.
+    fn attach(&mut self, session: &mut Session, kind: ClientKind, attach: Attach) {
         match session.attach_as(kind, attach) {
             Ok(client) => {
-                let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
-                let taken = tty.as_ref().map(Option::is_some);
-                let tty = tty.flatten().map(TakenTerminal::new);
-                let attached = Attached::new(client, tty);
+                let attached = Attached::new(client);
                 self.enter(session, Stage::Attached(Box::new(attached)));
-                self.send(session, &ToAttached::Welcome(client, taken));
+                self.send(session, &ToAttached::Welcome(client));
             }
             Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
         }
@@ -456,14 +408,13 @@ impl Conn {
         self.send(session, frame);
     }
 
-    /// Sends the client attached here `frame`: bytes for its terminal
-    /// written there if the server took it, else framed; an `Exit` as its
-    /// last frame.
+    /// Sends the client attached here `frame`; an `Exit` as its last
+    /// frame.
     fn tell(&mut self, session: &mut Session, frame: &ToAttached) {
         match frame {
             ToAttached::Paint(bytes) => {
-                if let Stage::Attached(attached) = &mut self.stage {
-                    attached.paint(&mut self.out, bytes);
+                if let Stage::Attached(_) = &self.stage {
+                    Attached::paint(&mut self.out, bytes);
                 }
             }
             ToAttached::Exit(_) => self.end(session, frame),
@@ -474,25 +425,9 @@ impl Conn {
         }
     }
 
-    /// Writes what waits for the client's terminal, as far as it takes it;
-    /// a terminal that fails is given up, and its client detached, as one
-    /// that can no longer be read is (`Server::serve_tty`): no one would
-    /// read its keys.
-    fn flush_tty(&mut self, session: &mut Session) {
-        if let Some(attached) = self.attached()
-            && let Some(tty) = &mut attached.tty
-            && !write_out(&tty.fd, &mut tty.out)
-        {
-            attached.tty = None;
-            self.end(session, &ToAttached::Exit("detached: the terminal closed"));
-        }
-    }
-
     /// Writes what waits for the client until it is all written or the
-    /// socket takes no more; a connection that fails is dead. What waits
-    /// for its terminal is written too.
+    /// socket takes no more; a connection that fails is dead.
     fn flush(&mut self, session: &mut Session) {
-        self.flush_tty(session);
         if !write_out(&self.stream, &mut self.out) {
             self.enter(session, Stage::Dead);
         }
@@ -596,8 +531,6 @@ enum Slot {
     Children,
     Stops,
     Conn(usize),
-    /// The terminal a client sent, which the server reads and writes.
-    Tty(usize),
     Pane(PaneId),
 }
 
@@ -653,7 +586,6 @@ impl Server {
                         self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags),
-                    Slot::Tty(i) => self.serve_tty(i, flags),
                     Slot::Pane(id) => self.serve_pane(id, flags),
                 }
             }
@@ -806,16 +738,6 @@ impl Server {
                 flags |= PollFlags::OUT;
             }
             add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
-            // Polled for its hangup, and for room to write what waits.
-            if let Stage::Attached(attached) = &conn.stage
-                && let Some(tty) = &attached.tty
-            {
-                let flags = match tty.out.is_empty() {
-                    true => PollFlags::HUP,
-                    false => PollFlags::OUT,
-                };
-                add(PollFd::new(&tty.fd, flags), Slot::Tty(i));
-            }
         }
         for (id, pane) in self.session.parts.panes() {
             if let Process::Reading(child) = &pane.process() {
@@ -868,8 +790,8 @@ impl Server {
         for conn in &mut self.conns {
             let session = &mut self.session;
             match conn.stage {
-                Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
-                Stage::Attaching(..) | Stage::Attached(_) => {
+                Stage::Hello => conn.end(session, &Greeting::Exit(&exit)),
+                Stage::Attaching(_) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit));
                 }
                 Stage::Command | Stage::Waiting(_) | Stage::Events(_) => {
@@ -923,7 +845,7 @@ impl Server {
             painted,
         );
         if !before.is_empty() {
-            attached.paint(&mut conn.out, &before);
+            Attached::paint(&mut conn.out, &before);
         }
         // A picture gone or moved has its cells painted again, blank, which
         // takes its pixels away; one whose cells this paint paints over, or
@@ -959,7 +881,7 @@ impl Server {
         self.paint_buffer.clear();
         let shown = &attached.shown;
         if render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer) {
-            attached.paint(&mut conn.out, &self.paint_buffer);
+            Attached::paint(&mut conn.out, &self.paint_buffer);
             mem::swap(&mut attached.shown, &mut attached.spare);
             attached.known = true;
             attached.clock.painted(now);
@@ -975,7 +897,7 @@ impl Server {
             attached.sixels.picture_into(picture, &mut drawn);
         }
         if !drawn.is_empty() {
-            attached.paint(&mut conn.out, &drawn);
+            Attached::paint(&mut conn.out, &drawn);
         }
         attached.sixels.keep(&pictures);
         attached.pictures = pictures;
@@ -1054,22 +976,6 @@ impl Server {
         }
     }
 
-    /// The terminal a client sent: room to write what waits for it. One
-    /// that closed detaches its client, as a client whose terminal closes
-    /// detaches itself.
-    fn serve_tty(&mut self, index: usize, flags: PollFlags) {
-        let session = &mut self.session;
-        let Some(conn) = self.conns.get_mut(index) else {
-            return;
-        };
-        if flags.intersects(PollFlags::OUT) {
-            conn.flush_tty(session);
-        }
-        if flags.intersects(PollFlags::HUP | PollFlags::ERR) && conn.attached().is_some() {
-            conn.end(session, &ToAttached::Exit("detached: the terminal closed"));
-        }
-    }
-
     /// A client's connection is ready, as `poll` found it (`flags`).
     fn serve_conn(&mut self, index: usize, flags: PollFlags) {
         let Some(conn) = self.conns.get_mut(index) else {
@@ -1124,17 +1030,9 @@ impl Server {
             if frames > 256 || read >= CONN_READ {
                 break false;
             }
-            // A client may send its terminal with its `Attach`.
-            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
-                Ok((0, _)) => break true,
-                Ok((n, fd)) => {
-                    if let (
-                        Some(fd),
-                        Stage::Hello(passed) | Stage::Attaching(passed, ClientKind::Terminal),
-                    ) = (fd, &mut conn.stage)
-                    {
-                        *passed = Some(fd);
-                    }
+            match fuxix::io::read(&conn.stream, &mut self.read_buffer) {
+                Ok(0) => break true,
+                Ok(n) => {
                     read = read.saturating_add(n);
                     decoder.push(self.read_buffer.get(..n).unwrap_or_default());
                 }
@@ -1172,11 +1070,10 @@ impl Server {
             return Ok(false);
         };
         match &mut conn.stage {
-            Stage::Hello(passed) => {
+            Stage::Hello => {
                 let Some(hello) = decoder.frame::<Hello>()? else {
                     return Ok(false);
                 };
-                let passed = passed.take();
                 let ours = Hello::ours(hello.role);
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &Greeting::Hello(ours));
@@ -1189,21 +1086,19 @@ impl Server {
                         self.stop("stopped by fux force-kill-server".into());
                     }
                     (Ok(()), Role::Attach) => {
-                        conn.enter(session, Stage::Attaching(passed, ClientKind::Terminal));
+                        conn.enter(session, Stage::Attaching(ClientKind::Terminal));
                     }
-                    // A headless client has no terminal to pass.
                     (Ok(()), Role::Headless) => {
-                        conn.enter(session, Stage::Attaching(None, ClientKind::Headless));
+                        conn.enter(session, Stage::Attaching(ClientKind::Headless));
                     }
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
-            Stage::Attaching(passed, kind) => {
+            &mut Stage::Attaching(kind) => {
                 let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                let held = (passed.take(), *kind);
-                conn.attach(session, held, attach);
+                conn.attach(session, kind, attach);
             }
             Stage::Attached(attached) => match decoder.frame()? {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
@@ -1410,19 +1305,14 @@ impl Server {
 mod tests {
     use super::*;
 
-    /// A session with a client attached on a connection whose terminal the
-    /// server took, the other end of a socket pair standing in for it: the
-    /// session, the connection, the client's end of its socket, and the
-    /// terminal's other end.
-    fn with_terminal() -> Result<(Session, Conn, UnixStream, UnixStream), String> {
+    /// A session with a client attached on a connection: the session, the
+    /// connection, and the client's end of its socket.
+    fn attached() -> Result<(Session, Conn, UnixStream), String> {
         let (session, client) = crate::session::testing::attached(10, 40)?;
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
-        let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
-        tty.set_nonblocking(true).map_err(|e| e.to_string())?;
         let mut conn = Conn::new(stream);
-        let tty = TakenTerminal::new(OwnedFd::from(tty));
-        conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
-        Ok((session, conn, peer, far))
+        conn.stage = Stage::Attached(Box::new(Attached::new(client)));
+        Ok((session, conn, peer))
     }
 
     /// The frames waiting for the client: what is painted in them, and the
@@ -1450,7 +1340,7 @@ mod tests {
     /// not while its last frame is still being written.
     #[test]
     fn a_forgotten_screen_is_due_a_paint_once_the_last_is_sent() -> Result<(), String> {
-        let (mut session, mut conn, _peer, _far) = with_terminal()?;
+        let (mut session, mut conn, _peer) = attached()?;
         session.views.values_mut().for_each(|v| v.dirty = false);
         if let Some(attached) = conn.attached() {
             attached.known = true;
@@ -1460,30 +1350,8 @@ mod tests {
             attached.known = false;
         }
         assert!(conn.paint_due(&session).is_some());
-        if let Some(tty) = conn.attached().and_then(|a| a.tty.as_mut()) {
-            tty.out.push(b"the last frame");
-        }
+        conn.out.push(b"the last frame");
         assert_eq!(conn.paint_due(&session), None, "one frame in flight");
-        Ok(())
-    }
-
-    /// A terminal given back that takes no more at once (a slow link) has
-    /// what it did not take sent to the client in paint frames before the
-    /// `Exit`, rather than dropped.
-    #[test]
-    fn what_a_terminal_given_back_did_not_take_goes_to_the_client() -> Result<(), String> {
-        let (mut session, mut conn, _peer, _far) = with_terminal()?;
-        // Fill the stand-in until it takes no more.
-        if let Some(tty) = conn.attached().and_then(|a| a.tty.as_mut()) {
-            tty.out.push(&vec![b'x'; 4 << 20]);
-            tty.out.push(b"end");
-        }
-        conn.flush_tty(&mut session);
-        conn.end(&mut session, &ToAttached::Exit("detached"));
-        let (painted, exit) = sent(&conn);
-        assert!(painted.ends_with(b"end"), "the last of what waited");
-        assert_eq!(exit.as_deref(), Some("detached"));
-        assert!(session.views.is_empty(), "the client is detached");
         Ok(())
     }
 
@@ -1493,39 +1361,19 @@ mod tests {
     /// otherwise was not asked to be.
     #[test]
     fn a_cursor_shape_is_given_back_only_once_one_was_set() -> Result<(), String> {
-        use std::io::Read;
         for (shape, given) in [
             (fux_vt::CursorShape::Initial, ""),
             (fux_vt::CursorShape::SteadyBar, "\x1b[0 q\x1b[7 q"),
         ] {
-            let (mut session, mut conn, _peer, mut far) = with_terminal()?;
+            let (mut session, mut conn, _peer) = attached()?;
             if let Some(attached) = conn.attached() {
                 attached.shown.modes.cursor_shape = shape;
             }
             conn.end(&mut session, &ToAttached::Exit("detached"));
-            far.set_nonblocking(true).map_err(|e| e.to_string())?;
-            let mut written = Vec::new();
-            let _ = far.read_to_end(&mut written);
-            assert_eq!(String::from_utf8_lossy(&written), given, "{shape:?}");
+            let (painted, exit) = sent(&conn);
+            assert_eq!(String::from_utf8_lossy(&painted), given, "{shape:?}");
+            assert_eq!(exit.as_deref(), Some("detached"));
         }
-        Ok(())
-    }
-
-    /// A terminal that can no longer be written is given up and its client
-    /// detached, as one that can no longer be read is: no one would read
-    /// its keys.
-    #[test]
-    fn a_terminal_that_cannot_be_written_detaches_its_client() -> Result<(), String> {
-        let (mut session, mut conn, _peer, far) = with_terminal()?;
-        drop(far);
-        if let Some(tty) = conn.attached().and_then(|a| a.tty.as_mut()) {
-            tty.out.push(b"paint");
-        }
-        conn.flush_tty(&mut session);
-        assert!(matches!(conn.stage, Stage::Closing), "the client is let go");
-        assert!(session.views.is_empty(), "and detached");
-        let (_, exit) = sent(&conn);
-        assert_eq!(exit.as_deref(), Some("detached: the terminal closed"));
         Ok(())
     }
 }

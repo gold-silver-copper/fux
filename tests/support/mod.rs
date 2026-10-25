@@ -542,7 +542,7 @@ impl Client {
                     self.terminal.process(&bytes).map_err(e)?;
                 }
                 ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
-                ToAttached::Welcome(me, _) if self.keyboard.is_none() => {
+                ToAttached::Welcome(me) if self.keyboard.is_none() => {
                     let keymap = self.keymap.clone();
                     self.keyboard =
                         Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);

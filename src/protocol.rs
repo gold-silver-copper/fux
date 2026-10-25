@@ -484,14 +484,11 @@ frames! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum ToAttached<'a> {
         /// The answer to its `Attach`, before anything is painted: its id,
-        /// which its bindings' `me` names and a headless client prints; and,
-        /// if it sent its terminal with it (`fuxix::socket::send_with_fd`),
-        /// whether the server took it, to write the paints there itself. If
-        /// it did not, the paints come in frames, as to a client that sent
-        /// none.
-        Welcome(client: ClientId, taken: Option<bool>) = 12,
-        /// Bytes for its terminal: a paint, or what the server sends it
-        /// outside one (a copy, the bell, questions for the terminal).
+        /// which its bindings' `me` names and a headless client prints.
+        Welcome(client: ClientId) = 12,
+        /// Bytes for its terminal, which the client writes there: a paint,
+        /// or what the server sends it outside one (a copy, the bell,
+        /// questions for the terminal). Every paint comes so.
         Paint(bytes: Cow<'a, [u8]>) = 7,
         Exit(reason: &'a str) = EXIT,
         /// The server ended its screen of that kind by itself (copy mode
@@ -723,10 +720,7 @@ mod tests {
         round_trip!(ToAttached, 8, ToAttached::Exit("detached"));
         round_trip!(ToCommand, 9, ToCommand::Stdout(Cow::Borrowed(b"out")));
         round_trip!(Greeting, 11, Greeting::Done(2));
-        let client = ClientId::of(2);
-        for taken in [Some(true), Some(false), None] {
-            round_trip!(ToAttached, 12, ToAttached::Welcome(client, taken));
-        }
+        round_trip!(ToAttached, 12, ToAttached::Welcome(ClientId::of(2)));
         round_trip!(ToAttached, 14, ToAttached::Ended(ScreenKind::Copy));
         round_trip!(ToAttached, 15, ToAttached::Run("me zoom".into()));
         round_trip!(ToAttached, 16, ToAttached::Keys(Vec::new()));

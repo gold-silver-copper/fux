@@ -1,6 +1,6 @@
 //! The clients: an attached one, which reads its terminal's keys, runs
-//! its own bindings, and sends the server typed actions, the server
-//! painting its terminal (or relaying the paints, if it did not take it);
+//! its own bindings, and sends the server typed actions, writing the
+//! paints the server relays to its terminal;
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
 use crate::code::Code;
@@ -839,13 +839,9 @@ pub fn attach(
         read_only: attaching.read_only,
         env: environment(),
     };
-    // The terminal goes with the `Attach`: if the server takes it, it
-    // writes the paints there itself. The keys are the client's either way.
-    let sent = match terminal {
-        true => send_with_terminal(&mut stream, &attach, &stdin),
-        false => send(&mut stream, &attach),
-    };
-    let result = sent.and_then(|()| {
+    // The server relays every paint, which the client writes to its
+    // terminal; the keys are the client's to read.
+    let result = send(&mut stream, &attach).and_then(|()| {
         attached(
             socket,
             &mut stream,
@@ -917,26 +913,6 @@ impl Drop for Raw {
     }
 }
 
-/// Sends `frame` with this process's terminal attached, its first bytes
-/// carrying it.
-fn send_with_terminal<'a>(
-    stream: &mut UnixStream,
-    frame: &impl Frame<'a>,
-    terminal: impl std::os::fd::AsFd,
-) -> Result<(), Error> {
-    let bytes = frame.encode()?;
-    let sent = loop {
-        match fuxix::socket::send_with_fd(&*stream, &bytes, &terminal) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => continue,
-            Err(errno) => return Err(failed("writing to the server")(errno)),
-        }
-    };
-    stream
-        .write_all(bytes.get(sent..).unwrap_or_default())
-        .map_err(failed("writing to the server"))
-}
-
 /// Holds the attachment until the server ends it, and says why: reads the
 /// terminal's keys, with `terminal`, and runs them through the client's
 /// keys; writes the paints the server relays; passes on the terminal's new
@@ -975,7 +951,7 @@ fn attached(
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
-                (ToAttached::Welcome(me, _), None) => {
+                (ToAttached::Welcome(me), None) => {
                     if !terminal {
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;

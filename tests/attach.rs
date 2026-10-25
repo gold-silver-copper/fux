@@ -640,7 +640,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
             version: "0".into(),
             role: Role::Attach,
         });
-        let welcome = ToAttached::Welcome("c1".parse().map_err(e)?, Some(false));
+        let welcome = ToAttached::Welcome("c1".parse().map_err(e)?);
         let ready = ToAttached::Paint(b"READY"[..].into());
         for frame in [hello.encode(), welcome.encode(), ready.encode()] {
             stream.write_all(&frame.map_err(e)?).map_err(e)?;
@@ -950,7 +950,10 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
             ));
         }
     }
+    // The terminal read as a terminal is, while the lines arrive: the
+    // client writes the paints to it, and waits on one that takes no more.
     eventually("every line typed", || {
+        terminal.pump();
         Ok(std::fs::read_to_string(&out).unwrap_or_default() == expected)
     })
     .map_err(|error| {
@@ -1065,157 +1068,4 @@ fn job_state(command: &str, test: fn(&str) -> bool) -> Result<bool, String> {
 /// (`N` on a runner that lowers its priority).
 fn foreground(stat: &str) -> bool {
     stat.starts_with(['R', 'S']) && stat.contains('+')
-}
-
-/// Connects a raw protocol client, says hello as an attach client, and
-/// sends `Attach` with `fd` attached; the frames the server answers with,
-/// read, as their `Debug` text, until `until` holds of them or the wait
-/// ends.
-fn attach_with(
-    server: &Server,
-    fd: impl std::os::fd::AsFd,
-    until: impl Fn(&[String]) -> bool,
-) -> Result<(std::os::unix::net::UnixStream, Vec<String>), String> {
-    use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
-    use std::io::{Read, Write};
-    let mut stream = std::os::unix::net::UnixStream::connect(&server.socket).map_err(e)?;
-    // Set before writing: macOS refuses a timeout on a socket its peer
-    // has closed, as the server may have by the time the writes are done.
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(100)))
-        .map_err(e)?;
-    let hello = Hello {
-        protocol: PROTOCOL,
-        version: "test".into(),
-        role: Role::Attach,
-    };
-    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
-    let attach = Attach {
-        size: sized(8, 30)?,
-        workspace: None,
-        read_only: false,
-        env: Vec::new(),
-    };
-    let bytes = attach.encode().map_err(e)?;
-    let sent = fuxix::socket::send_with_fd(&stream, &bytes, fd).map_err(e)?;
-    stream
-        .write_all(bytes.get(sent..).unwrap_or_default())
-        .map_err(e)?;
-    let mut decoder = Decoder::default();
-    let mut frames = Vec::new();
-    let mut buffer = vec![0u8; 65536];
-    let deadline = after(PATIENCE);
-    while !until(&frames) && std::time::Instant::now() < deadline {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => decoder.push(buffer.get(..n).unwrap_or_default()),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::Interrupted
-                ) => {}
-            Err(error) => return Err(e(error)),
-        }
-        // The server's Hello, then what it sends an attached client.
-        if frames.is_empty()
-            && let Some(frame) = decoder.frame::<Greeting>().map_err(e)?
-        {
-            frames.push(format!("{frame:?}"));
-        }
-        while !frames.is_empty()
-            && let Some(frame) = decoder.frame::<ToAttached>().map_err(e)?
-        {
-            frames.push(format!("{frame:?}"));
-        }
-    }
-    Ok((stream, frames))
-}
-
-/// A client that sends its terminal with its `Attach` is told the server
-/// took it, first, with its id; then the server writes the paints to the terminal
-/// itself. The client still reads its keys and sends them as actions.
-#[test]
-fn the_server_takes_a_terminal_sent_with_attach() -> Outcome {
-    let server = Server::start("")?;
-    let (master, slave) = fuxix::pty::open(pty_size(8, 30)?).map_err(e)?;
-    let (stream, frames) = attach_with(&server, &slave, |f| {
-        f.iter().any(|f| f.starts_with("Welcome"))
-    })?;
-    // First after the server's hello.
-    let first = frames.iter().find(|f| !f.starts_with("Hello"));
-    assert_eq!(
-        first.map(String::as_str),
-        Some("Welcome(ClientId(1), Some(true))"),
-        "{frames:?}"
-    );
-    drop(slave);
-    // The paint, and the questions fux asks a terminal, come on the PTY.
-    let mut seen = Vec::new();
-    let mut buffer = vec![0u8; 65536];
-    eventually("the shell's prompt on the terminal", || {
-        if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
-            seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
-        }
-        Ok(String::from_utf8_lossy(&seen).contains("$ "))
-    })?;
-    let text = String::from_utf8_lossy(&seen).into_owned();
-    assert!(text.contains("\x1b[?2026h"), "a paint: {text:?}");
-    // Keys the client sends reach the shell, and its echo comes back on
-    // the terminal.
-    let enter = fux::keys::Keystroke {
-        press: fux::keymap::key("Enter")?,
-        kitty: None,
-    };
-    for act in [
-        fux::act::Act::Paste("echo taken-ok".to_owned()),
-        fux::act::Act::Key(enter),
-    ] {
-        let frame = fux::protocol::AttachedFrame::Act(Box::new(act));
-        let bytes = fux::protocol::Frame::encode(&frame).map_err(e)?;
-        std::io::Write::write_all(&mut &stream, &bytes).map_err(e)?;
-    }
-    // As the terminal shows it, however the paints that drew it were cut:
-    // the line typed, then what it printed.
-    let mut screen = fux_vt::Parser::new(fux_vt::Size::new(8, 30).map_err(e)?, 0).map_err(e)?;
-    let shows = |screen: &fux_vt::Parser| {
-        let window = screen.screen().window();
-        (0..window.rows())
-            .filter_map(|y| window.row(y))
-            .filter(|row| {
-                row.cells()
-                    .map(|c| c.contents())
-                    .collect::<String>()
-                    .contains("taken-ok")
-            })
-            .count()
-    };
-    eventually("the echo on the terminal", || {
-        if let Ok(n) = fuxix::io::read(&master, &mut buffer) {
-            seen.extend_from_slice(buffer.get(..n).unwrap_or_default());
-        }
-        screen.process(&seen).map_err(e)?;
-        seen.clear();
-        Ok(shows(&screen) >= 2)
-    })
-    .map_err(|error| format!("{error}: {:?}", String::from_utf8_lossy(&seen)))?;
-    drop(stream);
-    Ok(())
-}
-
-/// A descriptor that is no terminal is not taken: the client is told so,
-/// and the paints come in frames, as to a client that sent none.
-#[test]
-fn a_descriptor_that_is_no_terminal_is_not_taken() -> Outcome {
-    let server = Server::start("")?;
-    let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(e)?;
-    let (_stream, frames) = attach_with(&server, &a, |f| f.iter().any(|f| f.starts_with("Paint")))?;
-    let first = frames.iter().find(|f| !f.starts_with("Hello"));
-    assert_eq!(
-        first.map(String::as_str),
-        Some("Welcome(ClientId(1), Some(false))"),
-        "{frames:?}"
-    );
-    Ok(())
 }

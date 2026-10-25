@@ -3,7 +3,7 @@
 use crate::errno::{Errno, Result, check};
 use crate::process::Pid;
 use std::num::NonZeroU16;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 
 /// The type of an `ioctl` request, which differs between C libraries; on
 /// macOS some request constants are typed narrower, and `Request::from`
@@ -263,36 +263,6 @@ pub fn controls_session(fd: impl AsFd) -> bool {
     its > 0 && its == unsafe { libc::getsid(0) }
 }
 
-/// A new open file for the terminal `fd` is open on, read-write,
-/// nonblocking, close-on-exec, and never made this process's controlling
-/// terminal: its flags are its own, so making it nonblocking changes
-/// nothing for whoever else has the terminal open. `NOTTY` if `fd` is not a
-/// terminal, is a PTY's master, whose name opens a new PTY, or was opened as
-/// `/dev/tty`, whose name opens the controlling terminal of whoever opens
-/// it, not `fd`'s.
-pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
-    // Only a master has a slave's name to give.
-    if crate::pty::slave_name(&fd).is_ok() {
-        return Err(Errno::NOTTY);
-    }
-    let mut name = [0 as libc::c_char; 256];
-    // SAFETY: the buffer is whole, of the length given, and ttyname_r
-    // NUL-terminates what it writes there.
-    let failed = unsafe { libc::ttyname_r(fd.as_fd().as_raw_fd(), name.as_mut_ptr(), name.len()) };
-    if failed != 0 {
-        return Err(Errno::from_raw(failed));
-    }
-    let controlling = b"/dev/tty\0";
-    if (name.iter().zip(controlling)).all(|(c, b)| u8::from_ne_bytes(c.to_ne_bytes()) == *b) {
-        return Err(Errno::NOTTY);
-    }
-    let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC;
-    // SAFETY: `name` is a NUL-terminated path.
-    let raw = check(unsafe { libc::open(name.as_ptr(), flags) })?;
-    // SAFETY: `raw` was just opened, is valid, and nothing else owns it.
-    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,26 +270,6 @@ mod tests {
 
     fn size(rows: u16, cols: u16) -> std::result::Result<Size, String> {
         Size::new(rows, cols).ok_or_else(|| "a size".to_owned())
-    }
-
-    /// A terminal reopened is the same terminal, through an open file of
-    /// its own: nonblocking without making the original so. A master, and
-    /// a socket, are refused.
-    #[test]
-    fn a_terminal_reopens_nonblocking_on_its_own() -> std::result::Result<(), String> {
-        let (master, slave) = pty::open(size(10, 20)?).map_err(|e| e.to_string())?;
-        let again = reopen(&slave).map_err(|e| e.to_string())?;
-        assert_eq!(window_size(&again), Some((size(10, 20)?, None)));
-        // Nothing to read: the new file says so at once, not blocking.
-        let mut buffer = [0u8; 4];
-        assert_eq!(crate::io::read(&again, &mut buffer), Err(Errno::AGAIN));
-        crate::io::write(&master, b"hi\n").map_err(|e| e.to_string())?;
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(crate::io::read(&again, &mut buffer).is_ok_and(|n| n > 0));
-        assert_eq!(reopen(&master).err(), Some(Errno::NOTTY));
-        let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
-        assert!(reopen(&a).is_err());
-        Ok(())
     }
 
     #[test]
