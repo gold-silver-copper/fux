@@ -10,7 +10,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// The largest piece a client's typing gives: a whole paste and its
-/// envelope. `send-keys` gives more in one, up to [`INPUT_BYTES`].
+/// envelope. `send-keys` gives more in one, up to `INPUT_MAX`
+/// (`script::words`), which the queue holds ([`INPUT_BYTES`]).
 pub const MAX_INPUT: usize = crate::decode::PASTE_LIMIT + 12;
 /// Input may wait for the program up to this many bytes, however many
 /// pieces it came in.

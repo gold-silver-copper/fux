@@ -3487,8 +3487,11 @@ impl Session {
     }
 }
 
-/// The most read of what a program left on its terminal as it ends.
-pub(crate) const LEFT_MAX: usize = 1 << 20;
+/// The most read of what a program left on its terminal as it ends, in
+/// MiB, as it is said: a whole number of them.
+const LEFT_MIB: usize = 1;
+/// The same in bytes.
+pub(crate) const LEFT_MAX: usize = LEFT_MIB << 20;
 
 /// What is said, after its end's own words, of what a program, `who`,
 /// left unread as it ended: more than `LEFT_MAX` on its terminal
@@ -3497,10 +3500,9 @@ pub(crate) const LEFT_MAX: usize = 1 << 20;
 fn left_told(Left { output, input }: Left, who: &str) -> String {
     let mut told = match output {
         Output::Read => String::new(),
-        Output::Cut => format!(
-            "; {who} left more than {} MiB on its terminal: the rest was not read",
-            LEFT_MAX >> 20
-        ),
+        Output::Cut => {
+            format!("; {who} left more than {LEFT_MIB} MiB on its terminal: the rest was not read")
+        }
     };
     if input > 0 {
         told.push_str(&format!(

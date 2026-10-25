@@ -372,7 +372,7 @@ mod tests {
             format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
             format!(
                 "more than {} MiB on its terminal",
-                crate::session::LEFT_MAX >> 20
+                whole(crate::session::LEFT_MAX, 20)
             ),
             format!(
                 "{} pixels a side, {} pixels in all",
