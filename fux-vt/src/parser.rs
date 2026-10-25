@@ -1025,8 +1025,7 @@ impl Parser {
     /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
     /// whether it shows sixel graphics, which primary device attributes
     /// then say (`4`) with [`Feature::Pictures`] and a cell size. Without
-    /// a cell size no picture is placed and no pixel is reported
-    /// ([`crate::Graphics`]).
+    /// a cell size no picture is placed ([`crate::Graphics`]).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
         graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
         self.screen.set_graphics(graphics);

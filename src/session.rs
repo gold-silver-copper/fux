@@ -2552,9 +2552,6 @@ impl Session {
             );
             return Err(fail(Code::Mouse, message));
         }
-        if let Some(why) = events.iter().find_map(|e| p.no_mouse_report(*e)) {
-            return Err(fail(Code::Mouse, why));
-        }
         let mut report = Vec::new();
         for event in events {
             let release = matches!(event.action, Release(_));

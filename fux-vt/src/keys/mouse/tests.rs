@@ -31,13 +31,7 @@ fn report(
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
-    let sent = mouse_bytes(
-        event,
-        mode,
-        encoding,
-        crate::CellSize::new(10, 20),
-        &mut out,
-    );
+    let sent = mouse_bytes(event, mode, encoding, &mut out);
     assert_eq!(sent, !out.is_empty(), "{event:?} {mode:?} {encoding:?}");
     sent.then_some(out)
 }

@@ -1062,7 +1062,7 @@ fn seeds() -> Vec<Seed> {
                     col: u16::MAX,
                 };
                 let (any, sgr) = (MouseProtocolMode::AnyMotion, MouseProtocolEncoding::Sgr);
-                mouse_bytes(event, any, sgr, None, &mut mouse);
+                mouse_bytes(event, any, sgr, &mut mouse);
                 let within = |out: &Vec<u8>| (1..=64).contains(&out.len());
                 ensure(within(&key) && within(&mouse), || {
                     format!("{} and {} bytes", key.len(), mouse.len())

@@ -29,8 +29,8 @@ pub const PICTURE_BYTES: usize = 96 << 20;
 /// What the host's terminal draws, for the pictures a program asks about
 /// and draws: the size of a cell in pixels, if known, and whether it shows
 /// sixel graphics. With no cell size known, a picture has no cells to be
-/// laid out in and a pointer no pixel: no picture is placed, no pixel
-/// mouse report is sent, and `CSI 14 t` and `CSI 16 t` are not answered.
+/// laid out in: no picture is placed, and `CSI 14 t` and `CSI 16 t` are
+/// not answered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Graphics {
     /// A cell's size in pixels.

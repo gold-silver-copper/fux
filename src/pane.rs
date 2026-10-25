@@ -975,19 +975,6 @@ impl Pane {
         self.title.said()
     }
 
-    /// Why `event` is not reported to its program, if it would be but for
-    /// this: it asked for reports in pixels (mode 1016), and no terminal
-    /// showing it has said its cell size.
-    pub fn no_mouse_report(&self, event: fux_vt::keys::mouse::MouseEvent) -> Option<String> {
-        self.screen().mouse_needs_cell(event).then(|| {
-            format!(
-                "the program in {} asked for mouse reports in pixels (mode 1016), and no terminal \
-                 showing it has said its cell size",
-                self.id
-            )
-        })
-    }
-
     pub fn label(&self) -> &str {
         match self.title.as_str() {
             "" => &self.name,

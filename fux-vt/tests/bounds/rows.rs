@@ -2185,13 +2185,7 @@ pub fn b45(_: Scale, _: usize) -> Found {
                             MouseProtocolEncoding::Sgr,
                         ] {
                             out.clear();
-                            mouse_bytes(
-                                event,
-                                mode,
-                                encoding,
-                                fux_vt::CellSize::new(10, 20),
-                                &mut out,
-                            );
+                            mouse_bytes(event, mode, encoding, &mut out);
                             longest = longest.max(out.len());
                         }
                     }

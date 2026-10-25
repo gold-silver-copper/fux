@@ -18,8 +18,8 @@
 //! into its tab, while attached; else any client's showing the tab; else
 //! none: a pane no attached terminal answers for is not answered colours
 //! it did not set, as no one knows what it is shown on. Its pictures and
-//! pixels are of a terminal showing its tab that said its cell size: the
-//! one that last typed into it, else the first; else none.
+//! cell size are of a terminal showing its tab that said its cell size:
+//! the one that last typed into it, else the first; else none.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -210,7 +210,7 @@ impl Session {
                     view.notify(
                         format!(
                             "your terminal's cell, {width}x{height} pixels, is smaller than a sixel band \
-                             (2x6): no pictures, and no mouse reports in pixels"
+                             (2x6): no pictures"
                         ),
                         true,
                     );
