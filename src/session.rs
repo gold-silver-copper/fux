@@ -455,6 +455,9 @@ pub struct Session {
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
     placed: Placement,
+    /// The tabs clients sized at the last settle: one of a size of its own
+    /// none sizes now is laid out on that size again (`size_panes`).
+    sized: Vec<TabId>,
     /// Something changed that the saved layout may show: a settle, or
     /// output (a shell's directory). The server takes it.
     pub(crate) edited: bool,
@@ -768,6 +771,7 @@ impl Session {
             dying: Vec::new(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
+            sized: Vec::new(),
             edited: false,
             ids: Ids::default(),
             changes: 0,
@@ -1767,9 +1771,11 @@ impl Session {
     }
 
     /// A PTY is the smallest rectangle any client shows it in; one with
-    /// no cells shows it nowhere. A tab no client shows whose layout changed
-    /// is laid out on what its fit says, as commands resizing it are;
-    /// otherwise its panes keep their size, so leaving a tab resizes
+    /// no cells shows it nowhere. A tab no client sizes whose layout changed
+    /// is laid out on what its fit says, as commands resizing it are, and
+    /// so is one with a size of its own that a client sized and none sizes
+    /// now (it switched away, detached, or sizes nothing); otherwise its
+    /// panes keep their size, so leaving a tab that fits clients resizes
     /// nothing. A tab that fits clients takes the smallest screen showing
     /// it as its size. Each tab is laid out as `shown_in` says, which a
     /// pane about to start is sized by too.
@@ -1791,8 +1797,14 @@ impl Session {
                 tab.shown_on(size.into());
             }
         }
-        let changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
-        for tab in screens.into_keys().chain(changed) {
+        let mut dropped = std::mem::take(&mut self.sized);
+        let fixed =
+            |tab: &TabId| (self.tab(*tab)).is_some_and(|t| matches!(t.fit(), Fit::Fixed(_)));
+        dropped.retain(|tab| !screens.contains_key(tab) && fixed(tab));
+        self.sized = screens.keys().copied().collect();
+        let mut changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
+        changed.retain(|tab| !dropped.contains(tab));
+        for tab in screens.into_keys().chain(changed).chain(dropped) {
             if let Some(root) = self.root(tab) {
                 self.shown_in((tab, root), |_, now| now, &mut placed, &mut sizes);
             }
@@ -4149,6 +4161,24 @@ mod tests {
         s.resize(c, 30, 100).map_err(|e| e.to_string())?;
         assert_eq!(s.buffers.front().map(String::as_str), Some("hi"));
         assert!(!s.pane(id).map_err(|e| e.to_string())?.bell, "rung");
+        Ok(())
+    }
+
+    /// A tab with a size of its own is laid out on it again once no client
+    /// sizes it, though the one that did still shows it: grown one row
+    /// high, it sizes nothing.
+    #[test]
+    fn a_fixed_tab_no_client_sizes_is_laid_out_on_its_size() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts 40 12 size str +1 workspace in new-tab drop")?;
+        run(&mut s, &format!("str {c} client str @2 tab show-tab"))?;
+        let size = |s: &Session| {
+            s.pane(PaneId::of(2))
+                .map(|p| (p.size().cols(), p.size().rows()))
+        };
+        assert_eq!(size(&s).ok(), Some((80, 23)), "sized by the client");
+        s.resize(c, 1, 80).map_err(|e| e.to_string())?;
+        assert_eq!(size(&s).ok(), Some((40, 12)), "on its own size");
         Ok(())
     }
 

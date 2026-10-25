@@ -121,11 +121,6 @@ impl Workspace {
         self.tabs.iter().find(|t| t.id == *shown)
     }
 
-    fn tab_of_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
-        let shown = self.shown.get(&client)?;
-        self.tabs.iter_mut().find(|t| t.id == *shown)
-    }
-
     /// Shows `client` the tab `at` says here, if given and one of this
     /// workspace's, and in it focuses the pane it says, if given and there.
     fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
@@ -137,13 +132,7 @@ impl Workspace {
         let Some(shown) = self.shown.get_mut(&client) else {
             return;
         };
-        let was = std::mem::replace(shown, tab);
-        if self.viewers.contains(&client) && was != tab {
-            self.tabs
-                .iter_mut()
-                .filter(|t| t.id == was)
-                .for_each(Tab::hidden);
-        }
+        *shown = tab;
         if let Some((t, pane)) = self.tabs.iter_mut().find(|t| t.id == tab).zip(pane) {
             t.set_focus(client, pane);
         }
@@ -164,15 +153,6 @@ impl Workspace {
                 .for_each(|t| *t = next);
         }
         root
-    }
-
-    /// `client` no longer looks here.
-    fn hide(&mut self, client: ClientId) {
-        if self.viewers.remove(&client)
-            && let Some(tab) = self.tab_of_mut(client)
-        {
-            tab.hidden();
-        }
     }
 }
 
@@ -240,14 +220,6 @@ impl Tab {
 
     pub(crate) fn seat_mut(&mut self, client: ClientId) -> Option<&mut Seat> {
         self.seats.get_mut(&client)
-    }
-
-    /// A client it was shown to, which looked at its workspace, no longer
-    /// sees it: with a size of its own, it is laid out on that again, not
-    /// left at the client's (laid out on clients' screens, it keeps what it
-    /// has: a zoomed pane, its whole screen).
-    fn hidden(&mut self) {
-        self.changed |= matches!(self.fit, Fit::Fixed(_));
     }
 
     /// The pane `client` focuses here.
@@ -425,7 +397,7 @@ impl Parts {
     pub(crate) fn show(&mut self, client: ClientId, ws: WsId, at: Option<crate::session::Spot>) {
         for w in &mut self.workspaces {
             if w.id != ws {
-                w.hide(client);
+                w.viewers.remove(&client);
             } else {
                 w.viewers.insert(client);
                 w.show(client, at);
