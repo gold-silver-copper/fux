@@ -2521,6 +2521,13 @@ impl Session {
     fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let area = self.reference_area(tab, here).ok_or(Error::NoPane(pane))?;
+        // A pane hidden has no place to resize from (`layout::resize`).
+        let root = self.root(tab).ok_or(Error::NoTab(tab))?;
+        if !layout::shows_all(root, area) {
+            let (cols, rows) = (area.w(), area.h());
+            let message = format!("{tab} does not show every pane on {cols}x{rows}");
+            return Err(fail(Code::Size, message));
+        }
         match by {
             PaneResize::Border(direction, amount) => {
                 let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
@@ -5459,6 +5466,22 @@ mod tests {
                 "{lines}"
             );
         }
+        Ok(())
+    }
+
+    /// No border moves on a screen too small to show every pane: a hidden
+    /// pane has no place to move one from.
+    #[test]
+    fn no_border_moves_where_a_pane_is_hidden() -> Result<(), String> {
+        let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "%1 split drop %2 split drop")?;
+        s.resize(c, 11, 6).map_err(|e| e.to_string())?;
+        let refused = run(&mut s, "%1 str right 1 move-border").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("every pane on 6x"),
+            "{refused}"
+        );
         Ok(())
     }
 
