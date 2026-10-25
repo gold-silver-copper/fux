@@ -447,7 +447,7 @@ impl Drop for Fixture {
 }
 
 /// The configuration a walk starts from, and returns to.
-pub const CONFIG_VALID: &str = "str shell str /bin/sh set\nstr history-bytes 500000 set\n";
+pub const CONFIG_VALID: &str = "str shell list str /bin/sh end set\nstr history-bytes 500000 set\n";
 
 /// The environment of everything the walk starts: nothing inherited but
 /// `PATH`, and `HOME` the fixture.

@@ -82,8 +82,14 @@ fn settings_reach_the_server() -> Outcome {
     server.ok(&[
         "str",
         "shell",
+        "list",
         "str",
-        "/usr/bin/env PS1=custom$ /bin/sh",
+        "/usr/bin/env",
+        "str",
+        "PS1=custom$",
+        "str",
+        "/bin/sh",
+        "end",
         "set",
     ])?;
     let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
@@ -108,6 +114,27 @@ fn settings_reach_the_server() -> Outcome {
         let out = server.fux(args)?;
         assert_eq!(out.status, 1, "{args:?}: {}", out.stderr);
     }
+    Ok(())
+}
+
+/// Half a config is no config: one that fails after a `set` sets nothing,
+/// and says why.
+#[test]
+fn a_config_that_fails_sets_nothing() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("half.fux");
+    let text = "str shell list str /usr/bin/env str PS1=custom$ str /bin/sh end set\n\
+                str nonsense 1 set\n";
+    std::fs::write(&config, text).map_err(e)?;
+    let socket = fux::socket::Choice::Path(server.socket.clone());
+    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)));
+    let failed = ran.err().ok_or("the config ran")?;
+    assert!(failed.to_string().contains("nonsense"), "{failed}");
+    let pane = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    let pane = pane.split_whitespace().next().unwrap_or_default();
+    let shown = || server.ok(&["str", pane, "pane", "capture"]);
+    eventually("a prompt", || Ok(shown()?.contains('$')))?;
+    assert!(!shown()?.contains("custom$"), "the shell was set");
     Ok(())
 }
 
@@ -200,7 +227,8 @@ fn the_config_words_examples_check() -> Outcome {
 #[test]
 fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
-    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN FUXT_BYTES' set")?;
+    let server =
+        Server::start("str update-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
     let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
                  printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)

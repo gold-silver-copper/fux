@@ -210,7 +210,7 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
-/// Every setting `set` takes: its name, what text it takes, its default,
+/// Every setting `set` takes: its name, what value it takes, its default,
 /// and what it does, from `config`'s table.
 fn settings() -> String {
     let mut out = String::from("\nThe settings:\n");

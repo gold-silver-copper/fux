@@ -248,7 +248,7 @@ fn copy_mode_ends_when_its_pane_closes_or_its_rows_are_evicted() -> Outcome {
 
 #[test]
 fn paste_buffers_paste_and_the_clipboard_can_be_off() -> Outcome {
-    let server = Server::start("str clipboard str off set")?;
+    let server = Server::start("str clipboard false set")?;
     let mut client = prepared(&server, 12, 40, &["hello-paste"])?;
     copy_mode(&mut client)?;
     client.keys("k\x1b[Hvey")?;

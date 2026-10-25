@@ -599,12 +599,9 @@ wire! {
             target: AnyRef,
             toward: Sibling,
         },
-        /// A server setting (`history-bytes`, `clipboard`, …), as its value's
-        /// text.
-        Set {
-            option: String,
-            value: String,
-        },
+        /// Server settings (`history-bytes`, `clipboard`, …), in force all
+        /// at once: a config's together, as one.
+        Set(settings: Vec<crate::config::Setting>),
         /// What a name or an id in text is: the pane, tab or workspace of
         /// `kind` it names (a tab's name, `%3`, …), answered with its id.
         Resolve {
@@ -757,7 +754,7 @@ impl Command {
             | C::ClearHistory { .. }
             | C::Reorder { .. }
             | C::KillServer { .. }
-            | C::Set { .. }
+            | C::Set(_)
             | C::PasteBuffer { .. } => false,
             C::Client { action, .. } => match action {
                 ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
