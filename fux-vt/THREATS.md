@@ -168,7 +168,7 @@ B26 and B41 bound host-side objects or host calls.
 | B34a | REP of a glyph that joins itself | `text` ≤ 12 a byte + 2,752 to fill the cluster once; `cells` ≤ 12 a byte | Copies joining a full cluster are skipped | 372 × U+1100 `ESC[65535b` | `b34a` |
 | B35 | Screen-wide functions | `cells` ≤ N ÷ 2 a byte; `text` ≤ R × (49C + 128) ÷ 4 a byte; a scroll inside left and right margins ≤ 3N `cells` and R × (49 × span + 128) `text` a byte | — | 4 KiB each of DECRQCRA, DECCRA, DECFRA, DECERA, DECSERA, DECCARA, DECRARA, DECALN, ED 2, 1049, DECIC, DECDC, SL, SR; margin LF, SU and wrapping text | `b35` at 50×200, 500×500, 4095×4096; `bounds.rs` `budget` tests |
 | B36 | Scrolls inside a region | `slots` ≤ 2 × region rows and `cells` ≤ region cells a sequence, the count clamped to the region; ≤ N ÷ 4 cells and 2R ÷ 3 slots a byte | — | `ESC[4095L` at 4095×1; IL across the ring's end | `b36` |
-| B37 | `resize` and reflow (host call) | Heap ≤ steady + another history term; `rows`, `cells` ≤ 3 × (history cells + screen cells + history rows) a call | A rejected resize changes nothing, synchronized output included | Full history, 200 → 199 → 200 columns; 65535×65535 | `b37`; `a_rejected_resize_leaves_synchronized_output_on` |
+| B37 | `resize` and reflow (host call) | Heap ≤ steady + another history term; `rows`, `cells` ≤ 3 × (history cells + screen cells + history rows) a call | A rejected resize changes nothing, synchronized output and the cluster being printed included | Full history, 200 → 199 → 200 columns; 65535×65535 | `b37`; `a_rejected_resize_leaves_synchronized_output_on`, `a_rejected_resize_leaves_a_grapheme_open` |
 | B38 | The screen's size | Rows × columns ≤ `MAX_CELLS` = 67,108,864; history ≤ `MAX_ROWS` rows | `Err(Capacity)`, nothing changed | 65535×65535 | `b38` |
 | B39 | `Cells::new`, `Cells::resize` and `Cells::try_from_iter` | Length ≤ `MAX_CELLS` | `Err(Capacity)`, the cells unchanged | `Cells::new(usize::MAX)` | `b39`; `cells_at_the_most_are_made` |
 | B40 | Row lookups by id (host call) | `rows` ≤ R + ⌊log2(history rows + 1)⌋ + 1 a call; the index's first 256 spans are free (20 KiB a grid), each past costs 80 B of history's budget | `None` for a row that is gone | 8 MiB of empty history; `x ESC[L CR LF` repeated | `b40`; `row_lookup.rs` |
@@ -460,4 +460,5 @@ the tests check instead.
 - **36** Kitty stacks ≤ 32 entries; tab stops kept for no more columns
   than a grid has had (≤ 65,536).
 - **37** A rejected `resize` leaves every reader-visible field as it
-  was, synchronized output included. (Tests: B37.)
+  was, synchronized output included, and the cell printed last, which
+  the next character can still join. (Tests: B37.)

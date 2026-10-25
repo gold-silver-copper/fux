@@ -1268,7 +1268,6 @@ impl Screen {
             self.modes.set(Mode::SynchronizedOutput, false);
             return Ok(());
         }
-        self.last_print = None;
         let version = self.version.saturating_add(1);
         let mut next = self.next_id;
         let (mut primary, kept) = if reflow {
@@ -1277,6 +1276,9 @@ impl Screen {
             self.primary.resized(size, &mut next, version)?
         };
         let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
+        // Only now, with both grids built, does the resize happen: a refused
+        // one leaves the screen whole, the next print still joining.
+        self.last_print = None;
         primary.adopt_history(&mut self.primary, kept);
         // The links' tables and keyboard stacks go along.
         primary.links = mem::take(&mut self.primary.links);
