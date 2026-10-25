@@ -3287,6 +3287,9 @@ enum Start<'a> {
     Program(&'a [String], &'a [(String, String)]),
 }
 
+/// The most bytes a name holds.
+const NAME_MAX: usize = 256;
+
 fn check_name(name: &str) -> Result<(), Error> {
     if name.trim().is_empty() {
         return Err(fail(Lang::BadName, "a name cannot be empty or blank"));
@@ -3299,8 +3302,11 @@ fn check_name(name: &str) -> Result<(), Error> {
         let message = "a name cannot contain control or invisible characters";
         return Err(fail(Lang::BadName, message));
     }
-    if name.len() > 256 {
-        return Err(fail(Lang::BadName, "a name is at most 256 bytes"));
+    if name.len() > NAME_MAX {
+        return Err(fail(
+            Lang::BadName,
+            format!("a name is at most {NAME_MAX} bytes"),
+        ));
     }
     Ok(())
 }
@@ -4529,7 +4535,7 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         let long = format!(
             "str %1 pane str {} rename",
-            std::iter::repeat_n("x", 257).collect::<String>()
+            std::iter::repeat_n("x", NAME_MAX.saturating_add(1)).collect::<String>()
         );
         for code in [
             "opts str %3 name new-workspace",
