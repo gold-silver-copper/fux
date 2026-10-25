@@ -374,7 +374,10 @@ holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with the shares its panes have
-(`2 1 shares`), so the layout comes back as it was, at every size.
+(`2 1 shares`), so the layout comes back as it was, at every size. A split
+or a move that would hide a pane, on its tab's size or on the screen of a
+client showing it (but one that only watches), is refused: whatever there
+is can be made again.
 
 A **server saves its session** the same way, with the ids it had, about a
 second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),

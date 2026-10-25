@@ -1186,27 +1186,18 @@ impl Session {
     }
 
     /// The size a pane split from `target` along `axis` starts at: its
-    /// place in the layout once split.
+    /// place in the layout once split, which its tab must have room for.
     fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let area = self
-            .reference_area(tab, here)
-            .ok_or(Error::NoPane(target))?;
         let mut ids = self.ids.clone();
         let new = ids.pane()?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
         root.split(target, new, axis, Side::After);
-        // No place for it, or one it takes from another pane: the tab is
-        // too small to show another pane.
-        let shows_all = layout::shows_all(&root, area);
-        let rect = layout::place(&root, area).rect(new).filter(|_| shows_all);
+        self.room(tab, Some(&root))?;
+        let area = self.reference_area(tab, here);
+        let rect = area.and_then(|area| layout::place(&root, area).rect(new));
         rect.and_then(|r| Size::new(r.h(), r.w()).ok())
-            .ok_or_else(|| {
-                let message = format!(
-                    "{target}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
-                );
-                fail(Code::Size, message)
-            })
+            .ok_or(Error::NoPane(target))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -1544,11 +1535,12 @@ impl Session {
         layout::place_into(root, area, out);
     }
 
-    /// The area to lay out a tab in for a command: a client's showing it,
-    /// else what its fit says.
+    /// The area to lay out a tab in for a command: the screen of a client
+    /// showing it that sizes its panes (not one that only watches), the
+    /// commanding one's first, else what its fit says.
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
         let own = here.client().and_then(|c| self.views.get(&c));
-        let shows = |v: &&View| self.shows(v.id, tab);
+        let shows = |v: &&View| !v.read_only && self.shows(v.id, tab);
         match (own.filter(shows)).or_else(|| self.views.values().find(shows)) {
             Some(view) => Some(Self::pane_area(view)),
             None => self.tab(tab).map(|t| t.fit().area()),
@@ -2797,7 +2789,7 @@ impl Session {
                 let destination = self.neighbor(pane, direction, here)?;
                 let mut root = self.root(from).cloned();
                 layout::move_beside(&mut root, pane, destination, direction);
-                self.room(from, root.as_ref(), here)?;
+                self.room(from, root.as_ref())?;
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
@@ -2833,7 +2825,7 @@ impl Session {
         }
         let mut root = self.root(tab).cloned();
         layout::append(&mut root, pane);
-        self.room(tab, root.as_ref(), here)?;
+        self.room(tab, root.as_ref())?;
         self.parts.relocate(pane, tab);
         // The moving client follows its pane.
         let pane = Some(pane);
@@ -2841,16 +2833,29 @@ impl Session {
         Ok(format!("{tab}\n"))
     }
 
-    /// Refused unless tab `tab` laid out as `root` shows every pane, as
-    /// for a command from `here`: a pane moved there is not hidden.
-    fn room(&self, tab: TabId, root: Option<&Tree>, here: Here) -> Result<(), Error> {
-        let area = self.reference_area(tab, here).ok_or(Error::NoTab(tab))?;
-        if root.is_none_or(|root| layout::shows_all(root, area)) {
+    /// Refused unless tab `tab` laid out as `root` shows every pane on each
+    /// size it is laid out on: its own, which a dump makes it at (`size`,
+    /// or the screens it last fitted), and the screen of each client
+    /// showing it that sizes its panes. So a split or a move hides no pane,
+    /// and a dump can make every layout there is again.
+    fn room(&self, tab: TabId, root: Option<&Tree>) -> Result<(), Error> {
+        let Some(root) = root else {
             return Ok(());
-        }
-        let message = format!(
-            "{tab} has no room to show every pane laid out so; make it bigger first (`TAB COLS ROWS resize`)"
-        );
+        };
+        let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
+        let screens = (self.views.values())
+            .filter(|v| !v.read_only && self.shows(v.id, tab))
+            .map(|v| (Some(v.id), Self::pane_area(v)));
+        let mut sizes = std::iter::once((None, own)).chain(screens);
+        let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
+            return Ok(());
+        };
+        let (cols, rows) = (area.w(), area.h());
+        let on = match client {
+            Some(client) => format!("{client}'s screen, {cols}x{rows}"),
+            None => format!("its size, {cols}x{rows} (`TAB COLS ROWS resize` makes it bigger)"),
+        };
+        let message = format!("{tab} has no room to show every pane laid out so on {on}");
         Err(fail(Code::Size, message))
     }
 
@@ -4915,6 +4920,57 @@ mod tests {
             .flat_map(|w| w.tabs())
             .last();
         Ok(made.map(|t| rects(&again, t.id)).unwrap_or_default())
+    }
+
+    /// A tab given a size is split only while that size shows every pane,
+    /// though a bigger screen shows it: no pane is hidden once that screen
+    /// goes, and its dump makes it again.
+    #[test]
+    fn a_tab_given_a_size_splits_only_while_it_shows_every_pane() -> Result<(), String> {
+        let (mut s, _) = attached(50, 200)?;
+        let tab = "opts 40 12 size str +1 workspace in new-tab drop";
+        run(&mut s, &format!("{tab} str c1 client str @2 tab show-tab"))?;
+        // Four panes stacked take their 2 rows each and 3 separators.
+        run(
+            &mut s,
+            "%2 vertical split drop %2 vertical split drop %2 vertical split drop",
+        )?;
+        let refused = run(&mut s, "%2 vertical split drop")
+            .err()
+            .unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("40x12"),
+            "{refused}"
+        );
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    /// A tab that fits clients is split only while every screen showing it
+    /// shows every pane, but one that only watches: the size it keeps,
+    /// which its dump makes it at, shows them all.
+    #[test]
+    fn a_tab_fitting_clients_splits_only_while_each_screen_shows_every_pane() -> Result<(), String>
+    {
+        let (mut s, _) = attached(50, 200)?;
+        s.attach(50, 30, None).map_err(|e| e.to_string())?;
+        let watcher = s.attach(50, 8, None).map_err(|e| e.to_string())?;
+        if let Some(view) = s.views.get_mut(&watcher) {
+            view.read_only = true;
+        }
+        // Ten panes side by side take their 2 columns each and 9 separators.
+        for _ in 1..10 {
+            run(&mut s, "%1 split drop")?;
+        }
+        let refused = run(&mut s, "%1 split drop").err().unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("30x"),
+            "{refused}"
+        );
+        let tab: TabId = "@1".parse().map_err(|_| "@1")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
     }
 
     /// Panes are made again at the places they had: 80, 10 and 8 of 100
