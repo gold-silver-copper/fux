@@ -1621,11 +1621,13 @@ impl Parser {
                     let (picture, whole) = (self.sixel.take()).map_or((None, true), |decoder| {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
-                    // One begun while the host drew no sixel, with no host
-                    // cell left to lay it out in, the host's having gone as
-                    // it was read, or that lost bands as it was placed, is
-                    // not placed; one cut is counted too, placed or not.
-                    let placed = picture.map(|p| keeps && self.screen.place_picture(p));
+                    // One begun while the host drew no sixel, ended once it
+                    // drew none (or had no cell to lay it out in), the
+                    // host's having gone as it was read, or that lost bands
+                    // as it was placed, is not placed; one cut is counted
+                    // too, placed or not: each once.
+                    let drawn = keeps && self.screen.sixel();
+                    let placed = picture.map(|p| drawn && self.screen.place_picture(p));
                     if !whole || placed == Some(false) {
                         self.pictures_refused = self.pictures_refused.saturating_add(1);
                     }
