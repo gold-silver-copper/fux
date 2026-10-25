@@ -956,9 +956,9 @@ impl Session {
             let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
             return Err(fail(Code::NotRun, message));
         }
-        // What the program there left is read before another starts: an
-        // exit waiting on it is told, before `respawned`.
-        if kill || pane.exiting.is_some() {
+        // An exit waiting on what its program left is told, all of it
+        // read, before `respawned`.
+        if pane.exiting.is_some() {
             self.drain(id);
         }
         let pane = self.pane(id)?;
@@ -979,6 +979,11 @@ impl Session {
         }
         let size = pane.size();
         let child = self.spawn(id, &launch, starting, size)?;
+        // What one that runs left is read once another started: a start
+        // refused leaves it running, nothing of it cut.
+        if kill {
+            self.drain(id);
+        }
         let history = self.config.history_bytes;
         let process = child.map_or(Process::Absent, Process::Reading);
         let mut pane = self.pane_mut(id)?;
@@ -4308,6 +4313,33 @@ mod tests {
                 process::reaped(pid);
             }
         }
+        Ok(())
+    }
+
+    /// A `kill-first` respawn whose program does not start leaves the one
+    /// there running and unread: what it left (a frame it holds here) is
+    /// read, and a cut said, only once another started.
+    #[test]
+    fn a_respawn_refused_reads_nothing_of_the_old_program() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.output(id, b"\x1b[?2026h\x1b]2;old\x07");
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let mut refused = String::new();
+        let lines = told(&mut s, |s| {
+            let respawn = run(s, "%2 str /no/such/bin program kill-first respawn");
+            refused = respawn.err().unwrap_or_default();
+        });
+        assert!(refused.contains("/no/such/bin"), "{refused}");
+        assert!(lines.is_empty(), "{lines}");
+        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        assert!(pane.frame_deadline().is_some() && pane.left == Left::default());
+        s.launch = None;
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        assert!(at("title")? < at("respawned")?, "{lines}");
         Ok(())
     }
 
