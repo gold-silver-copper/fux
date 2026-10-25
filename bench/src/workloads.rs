@@ -597,10 +597,10 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
                     .map_err(|e| format!("resize to {size:?}: {e}"))?;
                 p
             }
-            None => parser.insert(
+            None => parser.insert(hosted(
                 fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
                     .map_err(|e| format!("a parser of {size:?}: {e}"))?,
-            ),
+            )),
         };
         for piece in pieces(&load.bytes, chunk) {
             let _ = p.process_with(black_box(piece), &mut Sink);
@@ -614,11 +614,26 @@ fn vt(loads: &[Load], baseline: bool, chunk: usize) -> Result<Done, String> {
     })
 }
 
+/// The cell, in pixels, of the terminal the workloads' panes are shown
+/// on: with none, fux-vt places no picture, and a sixel workload would
+/// time its refusal.
+const CELL: (u16, u16) = (9, 18);
+
+/// `parser` shown on a terminal of [`CELL`] that shows sixel.
+fn hosted(mut parser: fux_vt::Parser) -> fux_vt::Parser {
+    parser.set_host_graphics(fux_vt::Graphics {
+        cell: fux_vt::CellSize::new(CELL.0, CELL.1),
+        sixel: true,
+    });
+    parser
+}
+
 /// A pane's parser.
 fn pane_parser(history: usize, options: fux_vt::Options) -> Result<fux_vt::Parser, String> {
     let size = fux_vt::Size::new(synthetic::ROWS, synthetic::COLS).map_err(|e| e.to_string())?;
-    fux_vt::Parser::with_options(size, history, options)
-        .map_err(|e| format!("a parser of {size:?}: {e}"))
+    let parser = fux_vt::Parser::with_options(size, history, options)
+        .map_err(|e| format!("a parser of {size:?}: {e}"))?;
+    Ok(hosted(parser))
 }
 
 /// A moment: a pane's parser fed `setup`, then `measured` unless
@@ -666,8 +681,10 @@ fn full_history(
 fn sixel_picture(payloads: &Path) -> Result<std::sync::Arc<fux_vt::sixel::Picture>, String> {
     let frame = census::make("sixel:256", payloads, 1).ok_or("no sixel:256 payload")??;
     let size = fux_vt::Size::new(census::ROWS, census::COLS).map_err(|e| e.to_string())?;
-    let mut parser = fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
-        .map_err(|e| format!("a parser of {size:?}: {e}"))?;
+    let mut parser = hosted(
+        fux_vt::Parser::with_options(size, HISTORY, fux::pane::OPTIONS)
+            .map_err(|e| format!("a parser of {size:?}: {e}"))?,
+    );
     parser.process(&frame).map_err(|e| e.to_string())?;
     let shown = parser
         .screen()
@@ -790,7 +807,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, 41, 120, None)
         .map_err(|e| e.to_string())?;
-    let pane = s.panes.keys().next().copied().ok_or("no pane")?;
+    let pane = s.parts.panes().keys().next().copied().ok_or("no pane")?;
     // A full screen, as a pane at work shows: the recordings' output.
     for r in recordings.iter().take(8) {
         for (_, output) in &r.steps {
@@ -817,9 +834,9 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         s.acts(c, vec![fux::act::Act::Key(press.into())]);
         // What the PTY would carry to the program, and its echo back.
         let typed = s
-            .panes
-            .get_mut(&pane)
-            .map(|p| p.input.drain_all())
+            .parts
+            .pane_mut(pane)
+            .map(|mut p| p.input.drain_all())
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);
@@ -875,7 +892,7 @@ fn paint(
     if split {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
-            target: *s.panes.keys().next().ok_or("no pane")?,
+            target: *s.parts.panes().keys().next().ok_or("no pane")?,
             argv: Vec::new(),
             cwd: None,
             env: fux::command::Env::default(),
@@ -886,7 +903,7 @@ fn paint(
             &fux::session::Origin::Cli(fux::session::Caller::default()),
         );
     }
-    let panes: Vec<_> = s.panes.keys().copied().collect();
+    let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let mut shown = fux::render::Grid::new(0, 0);
     let mut spare = fux::render::Grid::new(0, 0);
     let mut placement = fux::layout::Placement::default();
@@ -894,7 +911,8 @@ fn paint(
     let (mut painted, mut frames, mut units, mut have) = (0usize, 0usize, 0usize, false);
     while units < total {
         for r in recordings {
-            s.resize(c, r.rows.saturating_add(1), r.cols);
+            s.resize(c, r.rows.saturating_add(1), r.cols)
+                .map_err(|e| e.to_string())?;
             for (_, output) in &r.steps {
                 for read in pieces(output, PANE_READ) {
                     for piece in given(read) {
@@ -1065,7 +1083,7 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     for _ in 1..panes {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
-            target: *s.panes.keys().next().ok_or("no pane")?,
+            target: *s.parts.panes().keys().next().ok_or("no pane")?,
             argv: Vec::new(),
             cwd: None,
             env: fux::command::Env::default(),
@@ -1092,11 +1110,11 @@ fn server_run() -> Result<fux::command::Run, String> {
 
 fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, String> {
     let mut s = session(4)?;
-    let panes: Vec<_> = s.panes.keys().copied().collect();
+    let panes: Vec<_> = s.parts.panes().keys().copied().collect();
     let now = std::time::Instant::now();
     let arm = |s: &fux::session::Session| {
         let watches = (panes.iter())
-            .filter_map(|p| Some((*p, s.panes.get(p)?.counts())))
+            .filter_map(|p| Some((*p, s.parts.panes().get(p)?.counts())))
             .collect();
         fux::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
     };
