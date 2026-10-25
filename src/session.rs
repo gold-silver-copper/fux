@@ -4654,6 +4654,10 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
+        // A server word's answer that overflows the stack fails at the
+        // word, as an immediate word's would: a `try` catches it.
+        let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";
+        assert_eq!(output(&mut s, full).as_deref(), Ok("caught\n"));
         // A wait's limit is a day at most: its deadline a time there is.
         let long = failed(&mut s, "%1 9223372036854775807 timeout wait");
         assert!(

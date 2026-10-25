@@ -718,7 +718,10 @@ pub fn run_capped(
                             end: End::Done,
                             ..reply.clone()
                         };
-                        pushed(machine, answered(answer, then))?;
+                        // Only what it answered: its failure is raised
+                        // once, below.
+                        let answer = answered(answer, then).unwrap_or_default();
+                        pushed(machine, Ok(answer))?;
                     }
                     answered(reply, then)
                 });
@@ -735,15 +738,19 @@ fn pushed(
     machine: &mut Machine<Fux>,
     values: Result<Vec<Value<Fux>>, Failed>,
 ) -> Result<(), Failed> {
-    let values = values.or_else(|failed| {
-        let failure = fuxth::Failure::new(failed.code.into(), failed.message);
-        machine
-            .raise(failure)
-            .map(|()| Vec::new())
-            .map_err(|e| ours(machine, e))
-    })?;
+    let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
+        let failure = fuxth::Failure::new(code, message);
+        machine.raise(failure).map_err(|e| ours(machine, e))
+    };
+    let values = match values {
+        Ok(values) => values,
+        Err(failed) => return raise(machine, failed.code.into(), failed.message),
+    };
+    // A stack too full for them is the word's failure too, for a `try`.
     for value in values {
-        machine.push(value)?;
+        if let Err(full) = machine.push(value) {
+            return raise(machine, full.code, full.message);
+        }
     }
     Ok(())
 }
