@@ -12,7 +12,7 @@
 use crate::events::{Journal, Place, What};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, Rect, Side, Tree};
-use crate::pane::Pane;
+use crate::pane::{Loose, Pane};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -335,9 +335,14 @@ pub struct Parts {
 
 /// A pane of the session's, to change: what it says happened in it
 /// (`Pane::said`) goes in the journal, at its place, as the borrow ends.
-/// The type does not stop a whole pane being put in its place (`*pane =
-/// other`), which would lose what the old one said: no code does.
+/// No whole pane can be put in its place (`*pane = other`), losing what
+/// the old one said: a pane in the session is `Placed`, which only this
+/// module makes, and no other is had by value.
 pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
+
+/// What a pane in the session is (`Pane<Placed>`): made here alone, as
+/// it is put in.
+pub struct Placed(());
 
 /// Leave to take what a pane said (`Pane::said`), which only this module
 /// gives, as it puts what it takes in the journal: code elsewhere cannot
@@ -428,7 +433,7 @@ impl Parts {
         (id, name): (WsId, String),
         (tab, tab_name, fit): (TabId, String, Fit),
         clients: impl Iterator<Item = ClientId>,
-        pane: Option<Pane>,
+        pane: Option<Pane<Loose>>,
     ) {
         self.journal
             .push(Place::Workspace(id), What::Created(Some(name.clone())));
@@ -455,8 +460,8 @@ impl Parts {
         (ws, id): (WsId, TabId),
         name: Option<String>,
         fit: Fit,
-        pane: Option<Pane>,
-    ) -> Result<(), Option<Pane>> {
+        pane: Option<Pane<Loose>>,
+    ) -> Result<(), Option<Pane<Loose>>> {
         let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == ws) else {
             return Err(pane);
         };
@@ -473,7 +478,7 @@ impl Parts {
     }
 
     /// Puts `pane`, new, in tab `tab`, made empty, of workspace `ws`.
-    fn put(&mut self, ws: WsId, tab: TabId, pane: Option<Pane>) {
+    fn put(&mut self, ws: WsId, tab: TabId, pane: Option<Pane<Loose>>) {
         let Some(pane) = pane else {
             return;
         };
@@ -484,16 +489,21 @@ impl Parts {
     }
 
     /// `pane`, new, is in tab `at` of its workspace.
-    fn placed(&mut self, at: (WsId, TabId), pane: Pane) {
+    fn placed(&mut self, at: (WsId, TabId), pane: Pane<Loose>) {
         self.journal
             .push(Place::Pane(at, pane.id), What::Created(None));
-        self.panes.insert(pane.id, pane);
+        self.panes.insert(pane.id, pane.placed(Placed(())));
     }
 
     /// Puts `pane`, new, beside `target`, along `axis`, after it; the pane
     /// given back if `target` is in no tab.
     #[expect(clippy::result_large_err, reason = "a pane given back")]
-    pub(crate) fn split(&mut self, target: PaneId, pane: Pane, axis: Axis) -> Result<(), Pane> {
+    pub(crate) fn split(
+        &mut self,
+        target: PaneId,
+        pane: Pane<Loose>,
+        axis: Axis,
+    ) -> Result<(), Pane<Loose>> {
         let (Some(at), new) = (self.locate(target), pane.id) else {
             return Err(pane);
         };
@@ -509,7 +519,7 @@ impl Parts {
 
     /// Takes pane `id` out of its tab: given back, closed. A tab its going
     /// empties closes too, as does a workspace left with no tabs.
-    pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane> {
+    pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane<Loose>> {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
         let emptied = tab.edit(|root| layout::remove(root, id) && root.is_none());
@@ -517,13 +527,13 @@ impl Parts {
         if emptied {
             self.remove_tab(at.1);
         }
-        self.panes.remove(&id)
+        self.panes.remove(&id).map(|pane| pane.placed(Loose))
     }
 
     /// Removes tab `tab` and gives back the panes in it, closed. A
     /// workspace it leaves with none goes too, its viewers shown the first
     /// workspace left.
-    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane> {
+    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane<Loose>> {
         let ws = (self.workspaces.iter_mut()).find(|w| w.tabs.iter().any(|t| t.id == tab));
         let Some(ws) = ws else {
             return Vec::new();
@@ -543,11 +553,12 @@ impl Parts {
             self.journal.push(Place::Workspace(id), What::Closed);
         }
         let gone = panes.into_iter().flatten();
-        gone.filter_map(|pane| self.panes.remove(&pane)).collect()
+        let gone = gone.filter_map(|pane| self.panes.remove(&pane));
+        gone.map(|pane| pane.placed(Loose)).collect()
     }
 
     /// Closes everything: the panes given back, to end.
-    pub(crate) fn close_all(&mut self) -> Vec<Pane> {
+    pub(crate) fn close_all(&mut self) -> Vec<Pane<Loose>> {
         let tabs: Vec<TabId> = (self.workspaces.iter())
             .flat_map(|w| w.tabs.iter().map(|t| t.id))
             .collect();

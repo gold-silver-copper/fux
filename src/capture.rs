@@ -18,8 +18,8 @@ type Read = (String, String);
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
 /// that says a client is in copy mode on it.
-pub fn pane(
-    pane: &Pane,
+pub fn pane<S>(
+    pane: &Pane<S>,
     run: Run,
     history: Option<usize>,
     view: CaptureView,
@@ -217,8 +217,8 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input.
-pub fn state(
-    pane: &Pane,
+pub fn state<S>(
+    pane: &Pane<S>,
     run: Run,
     now: Instant,
     copy_mode: bool,

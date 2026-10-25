@@ -465,7 +465,13 @@ impl std::fmt::Display for Uncopied {
     }
 }
 
-pub struct Pane {
+/// A pane not in the session: made, or closed. One in it is a
+/// `Pane<workspace::Placed>`, which the session's parts alone make, so no
+/// other pane can be put in its stead (`*pane = other`), losing what it
+/// said.
+pub struct Loose;
+
+pub struct Pane<S = crate::workspace::Placed> {
     pub id: PaneId,
     /// Changed by `rename` and `respawned`, which say so.
     name: String,
@@ -528,20 +534,22 @@ pub struct Pane {
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
+    /// Whether it is in the session.
+    placed: S,
 }
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
                             `fux help agents shells` says how to turn marks on";
 
-impl Pane {
+impl Pane<Loose> {
     pub fn new(
         id: PaneId,
         name: String,
         runs: Runs,
         size: Size,
         history: usize,
-    ) -> Result<Pane, Error> {
+    ) -> Result<Self, Error> {
         let parser = fux_vt::Parser::with_options(size, history, OPTIONS)
             .map_err(|source| Error::Terminal { size, source })?;
         Ok(Pane {
@@ -566,7 +574,29 @@ impl Pane {
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
+            placed: Loose,
         })
+    }
+}
+
+impl<S> Pane<S> {
+    /// The same pane, `placed` so: in the session (`workspace::Placed`),
+    /// or out of it.
+    pub(crate) fn placed<T>(self, placed: T) -> Pane<T> {
+        // Every field but `placed` moved over: one left out does not
+        // compile.
+        macro_rules! moved {
+            ($($field:ident),*) => {{
+                let Pane { $($field,)* placed: _ } = self;
+                Pane { $($field,)* placed }
+            }};
+        }
+        #[rustfmt::skip]
+        let pane = moved!(
+            id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
+            colours, scheme_told, bell, copied, wrote_at, said, mouse_held, respawns, alerts, log
+        );
+        pane
     }
 
     /// Reads program output into the screen, its replies queued as input.
@@ -899,20 +929,41 @@ impl Pane {
         };
         let runs = Runs::Program(launch);
         // A new program, its own pane, its counts afresh but `respawns`. Kept
-        // are what the session has yet to take from the old one (a bell, a
-        // copy), its colours and log.
-        let mut started = Pane::new(self.id, self.name.clone(), runs, self.size(), history)?;
-        started.said = std::mem::take(&mut self.said);
-        started.said.push(What::Respawned);
-        started.rename(name);
-        started.colours = std::mem::take(&mut self.colours);
-        started.bell = self.bell;
-        started.copied = std::mem::take(&mut self.copied);
-        started.log = self.log.take();
+        // are its id and name, what the session has yet to take from the
+        // old one (what it said, a bell, a copy), its colours and log.
+        let Pane {
+            id: _,
+            name: _,
+            said: _,
+            bell: _,
+            copied: _,
+            colours: _,
+            log: _,
+            respawns: _,
+            placed: Loose,
+            title,
+            parser,
+            process: _,
+            input,
+            runs,
+            frame,
+            unread,
+            frame_left,
+            exiting,
+            scheme_told,
+            wrote_at,
+            mouse_held,
+            alerts,
+        } = Pane::new(self.id, String::new(), runs, self.size(), history)?;
+        (self.title, self.parser, self.input, self.runs) = (title, parser, input, runs);
+        (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
+        (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
+        (self.mouse_held, self.alerts) = (mouse_held, alerts);
+        self.said.push(What::Respawned);
+        self.rename(name);
         // 2^64 respawns are never reached: the count never stands still.
-        started.respawns = self.respawns.saturating_add(1);
-        started.process = process;
-        Ok(std::mem::replace(self, started).process)
+        self.respawns = self.respawns.saturating_add(1);
+        Ok(std::mem::replace(&mut self.process, process))
     }
 
     pub fn name(&self) -> &str {
@@ -933,7 +984,7 @@ impl Pane {
 
     /// A pane made with no program runs `child`: a pane not yet in the
     /// session, which alone is had by value.
-    pub fn running(mut self, child: Child) -> Pane {
+    pub fn running(mut self, child: Child) -> Self {
         self.process = Process::Reading(child);
         self
     }
@@ -1102,7 +1153,7 @@ pub(crate) mod tests {
     }
 
     /// The first row's text, blanks as spaces, trimmed.
-    fn first_row(pane: &Pane) -> String {
+    fn first_row<S>(pane: &Pane<S>) -> String {
         let cols = pane.screen().size().cols();
         (0..cols)
             .filter_map(|x| pane.screen().cell(0, x))
@@ -1143,7 +1194,7 @@ pub(crate) mod tests {
         output(n.saturating_mul(2))
     }
 
-    fn pane(rows: u16, cols: u16) -> Result<Pane, Error> {
+    fn pane(rows: u16, cols: u16) -> Result<Pane<Loose>, Error> {
         Pane::new(
             PaneId::of(1),
             "sh".into(),

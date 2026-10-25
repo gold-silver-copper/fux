@@ -11,7 +11,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
-use crate::pane::{self, Pane, Process, Runs, basename};
+use crate::pane::{self, Loose, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
@@ -1378,7 +1378,7 @@ impl Session {
     }
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
-    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane, Error> {
+    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane<Loose>, Error> {
         let config = &self.config;
         let start = new.start;
         let env = match start {

@@ -96,7 +96,7 @@ impl Waiting {
 
 /// What pane `id` answers, if its counts differ from `since` or it
 /// closed: `%2:0.57.1.3.0:RUN screen done`, and as JSON.
-fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Reply> {
+fn told<S>(id: PaneId, pane: Option<&Pane<S>>, since: Counts, run: Run) -> Option<Reply> {
     let Some(pane) = pane else {
         let end = End::Failed {
             code: Code::Closed,
