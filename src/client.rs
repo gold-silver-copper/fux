@@ -421,11 +421,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
-    let output = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)
-        .map_err(failed("the log file"))?;
+    let output = open_log(&log).map_err(|e| Error::Failed(format!("{}: {e}", log.display())))?;
     let mut command = std::process::Command::new(exe);
     command
         .arg(crate::SERVE)
@@ -458,6 +454,22 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
             return Err(see_log("the server did not start within 2 s".to_owned()));
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The server's log at `path`, opened to append: a regular file alone. A
+/// link is not followed, a FIFO with no reader refused at once (`ENXIO`),
+/// not waited on, and a terminal there never becomes this process's.
+fn open_log(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+    let file = (std::fs::OpenOptions::new().create(true).append(true))
+        .custom_flags(flags)
+        .open(path)?;
+    // Nonblocking changes nothing for a regular file's writes.
+    match file.metadata()?.is_file() {
+        true => Ok(file),
+        false => Err(io::Error::other("not a regular file")),
     }
 }
 
@@ -1144,6 +1156,29 @@ mod tests {
                 matches!(notice, Some(Act::Notice { text, .. }) if text.contains("d detaches"));
             assert!(told, "{typed:?}: {acts:?}");
         }
+        Ok(())
+    }
+
+    /// The server's log is a regular file alone: a FIFO no one reads is
+    /// refused at once, not waited on, and a link is not followed.
+    #[test]
+    fn the_server_log_is_a_regular_file() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let fifo = dir.join("fifo.log");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let link = dir.join("link.log");
+        std::os::unix::fs::symlink(dir.join("file.log"), &link)?;
+        let refused = [open_log(&fifo).is_err(), open_log(&link).is_err()];
+        let opened = open_log(&dir.join("file.log")).is_ok();
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((refused, opened), ([true, true], true));
         Ok(())
     }
 
