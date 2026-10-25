@@ -112,7 +112,7 @@ pub fn pane<S>(
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
     print(
-        ("pane", pane.id.to_string()),
+        ("pane", pane.id().to_string()),
         (rows, cols),
         (cursor, Some(pending)),
         (lines, view),

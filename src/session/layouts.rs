@@ -26,7 +26,7 @@ impl Session {
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
             for tab in ws.tabs() {
-                if !self.takes_in(only, ws.id, tab.id) || tab.root().is_none() {
+                if !self.takes_in(only, ws.id(), tab.id()) || tab.root().is_none() {
                     continue;
                 }
                 self.dump_tab(ws, tab, whole, opens, ids, &mut out);
@@ -59,7 +59,7 @@ impl Session {
         let mut line = vec!["opts".to_owned()];
         match (makes, whole && !opens) {
             (true, _) => line.extend(string(ws.name()).chain(["name".to_owned()])),
-            (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
+            (false, true) => line.extend([workspace(ws.id()), "in".to_owned()]),
             (false, false) => line.extend(string(ws.name()).chain(["in".to_owned()])),
         }
         // A name fux gave (`main`, `tab-N`, the program's) it gives again.
@@ -74,9 +74,9 @@ impl Session {
         line.extend([cols, rows, "size".to_owned()]);
         if ids {
             if opens {
-                line.extend(asked(&ws.id.to_string()));
+                line.extend(asked(&ws.id().to_string()));
             }
-            line.extend(asked(&tab.id.to_string()));
+            line.extend(asked(&tab.id().to_string()));
         }
         self.pane_words(first, ids, &mut line);
         line.push(match (program.is_some(), makes) {
@@ -88,7 +88,7 @@ impl Session {
         line.extend(["let".to_owned(), named.clone()]);
         push(out, &line);
         if opens {
-            push(out, &[&named, "workspace", "let", &workspace(ws.id)]);
+            push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
         }
         if tab.given() && makes {
             push(out, &[&named, "tab", "str", tab.name(), "rename"]);

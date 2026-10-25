@@ -748,10 +748,10 @@ impl Session {
     // ---------------------------------------------------------------- lookup
 
     pub fn workspace(&self, id: WsId) -> Option<&Workspace> {
-        self.parts.workspaces().iter().find(|w| w.id == id)
+        self.parts.workspaces().iter().find(|w| w.id() == id)
     }
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
-        (self.parts.workspaces().iter().flat_map(Workspace::tabs)).find(|t| t.id == id)
+        (self.parts.workspaces().iter().flat_map(Workspace::tabs)).find(|t| t.id() == id)
     }
     /// A tab's layout, unless it is empty.
     pub fn root(&self, tab: TabId) -> Option<&Tree> {
@@ -763,8 +763,8 @@ impl Session {
     }
     /// The workspace a tab is in.
     pub fn tab_workspace(&self, tab: TabId) -> Result<WsId, Error> {
-        let ws = (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.id == tab));
-        ws.map(|w| w.id).ok_or(Error::NoTab(tab))
+        let ws = (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.id() == tab));
+        ws.map(|w| w.id()).ok_or(Error::NoTab(tab))
     }
     /// The workspace that holds `target` (a workspace, itself), if it is
     /// there.
@@ -772,7 +772,7 @@ impl Session {
         match target {
             AnyRef::Pane(p) => self.locate(p).map(|(ws, _)| ws),
             AnyRef::Tab(t) => self.tab_workspace(t).ok(),
-            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.id),
+            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.id()),
         }
     }
     /// The workspace client `client` shows.
@@ -793,7 +793,7 @@ impl Session {
     }
     /// Whether client `client` shows tab `tab`.
     pub(crate) fn shows(&self, client: ClientId, tab: TabId) -> bool {
-        self.shown_tab(client).is_some_and(|t| t.id == tab)
+        self.shown_tab(client).is_some_and(|t| t.id() == tab)
     }
     pub fn resolve_ws(&self, r: &WsRef) -> Result<WsId, Error> {
         match r {
@@ -801,7 +801,7 @@ impl Session {
             WsRef::Name(name) => (self.parts.workspaces().iter().find(|w| w.name() == *name))
                 .ok_or_else(|| fail(Code::NoWorkspace, format!("no workspace named {name:?}"))),
         }
-        .map(|w| w.id)
+        .map(|w| w.id())
     }
     /// Whether `only` (with nothing, everything) takes in tab `tab` of
     /// workspace `ws`: its workspace, the tab, or a pane in it.
@@ -845,7 +845,7 @@ impl Session {
     pub fn place(&self, client: ClientId) -> Option<Place> {
         let ws = self.shown_workspace(client)?;
         let tab = ws.tab_of(client)?;
-        let (ws, pane, tab) = (ws.id, tab.focus(client), tab.id);
+        let (ws, pane, tab) = (ws.id(), tab.focus(client), tab.id());
         Some(Place { ws, tab, pane })
     }
 
@@ -937,7 +937,7 @@ impl Session {
     fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
         if let Some(status) = pane.process().exit_status() {
-            return Err(ended(pane.id, status));
+            return Err(ended(pane.id(), status));
         }
         if pane.paused() {
             let why =
@@ -954,7 +954,7 @@ impl Session {
             fail(Code::Signal, why)
         })?;
         job.or(program).ok_or_else(|| {
-            let message = format!("nothing is running in {} but its shell", pane.id);
+            let message = format!("nothing is running in {} but its shell", pane.id());
             fail(Code::OnlyShell, message)
         })
     }
@@ -1078,7 +1078,7 @@ impl Session {
                     Err(fail(code, format!("no {} named {text:?}", kind.name())))
                 }
                 many => {
-                    let each = |t: &&Tab| format!("{} {}", t.id, joined(panes_of(t), " "));
+                    let each = |t: &&Tab| format!("{} {}", t.id(), joined(panes_of(t), " "));
                     let (n, each) = (many.len(), joined(many.iter().map(each), ", "));
                     let why = format!("{text:?} names {n} tabs ({each}): use an id");
                     Err(fail(Code::NoTarget, why))
@@ -1094,7 +1094,7 @@ impl Session {
             return self.stands_for(AnyRef::Pane(version.pane), text, kind);
         }
         match kind {
-            Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id)),
+            Kind::Pane if text.is_empty() => Ok(AnyRef::Pane(self.pane(here.caller_pane()?)?.id())),
             Kind::Pane => {
                 // A tab's name, else a pane's own (what `rename` gave
                 // it, or its program's), else the title its program
@@ -1105,7 +1105,7 @@ impl Session {
                         let with = |of: fn(&Pane) -> &str| {
                             let mut panes: Vec<PaneId> = (self.parts.panes().values())
                                 .filter(|p| of(p) == text)
-                                .map(|p| p.id)
+                                .map(|p| p.id())
                                 .collect();
                             panes.sort();
                             panes
@@ -1125,7 +1125,7 @@ impl Session {
                     |n, ids| format!("{text:?} is a tab of {n} panes ({ids}): use a pane's id");
                 one(&panes_of(tab), many).map(AnyRef::Pane)
             }
-            Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id)),
+            Kind::Tab => named().map(|tab| AnyRef::Tab(tab.id())),
             Kind::Workspace => {
                 let ws = command::parse_workspace(text).map_err(bad_value)?;
                 Ok(AnyRef::Workspace(self.ws_target(Some(&ws), here)?))
@@ -1140,7 +1140,7 @@ impl Session {
             AnyRef::Tab(tab) => vec![tab],
             AnyRef::Workspace(ws) => {
                 let ws = self.workspace(ws).into_iter();
-                ws.flat_map(|w| w.tabs().iter().map(|t| t.id)).collect()
+                ws.flat_map(|w| w.tabs().iter().map(|t| t.id())).collect()
             }
             AnyRef::Pane(pane) => self.locate(pane).map(|(_, tab)| tab).into_iter().collect(),
         }
@@ -1150,7 +1150,7 @@ impl Session {
     /// pane, in order.
     fn panes_of(&self, target: AnyRef) -> Result<Vec<PaneId>, Error> {
         Ok(match target {
-            AnyRef::Pane(pane) => vec![self.pane(pane)?.id],
+            AnyRef::Pane(pane) => vec![self.pane(pane)?.id()],
             AnyRef::Tab(tab) => self.root(tab).ok_or(Error::NoTab(tab))?.panes(),
             AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
                 .tabs()
@@ -1329,7 +1329,7 @@ impl Session {
         let made = Made {
             ws: id,
             tab,
-            pane: pane.id,
+            pane: pane.id(),
         };
         let tab_name = tab_name.unwrap_or_else(|| MAIN.into());
         let clients = self.views.keys().copied();
@@ -1366,7 +1366,7 @@ impl Session {
         let made = Made {
             ws: id,
             tab,
-            pane: pane.id,
+            pane: pane.id(),
         };
         if let Err(pane) = self.parts.add_tab((id, tab), name, fit, Some(pane)) {
             pane.into_iter()
@@ -1454,7 +1454,7 @@ impl Session {
                     })?;
                     self.start(size)?;
                 }
-                (self.parts.workspaces().first().map(|w| w.id))
+                (self.parts.workspaces().first().map(|w| w.id()))
                     .ok_or_else(|| fail(Code::NoWorkspace, "the server has no workspace"))?
             }
         };
@@ -1479,7 +1479,7 @@ impl Session {
     /// pane `at` says, each if given and there.
     fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
         for w in self.parts.workspaces_mut() {
-            if w.id != ws {
+            if w.id() != ws {
                 w.hide(client);
             } else {
                 w.viewers.insert(client);
@@ -1694,12 +1694,12 @@ impl Session {
             sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
             if let (Some(tab), Some(size)) = (self.shown_tab(view.id), Self::screen_size(view)) {
                 let (rows, cols) = size.nonzero();
-                let least = screens.entry(tab.id).or_insert((rows, cols));
+                let least = screens.entry(tab.id()).or_insert((rows, cols));
                 *least = (least.0.min(rows), least.1.min(cols));
             }
         }
         for tab in tabs_mut(self.parts.workspaces_mut()) {
-            if let Some(&size) = screens.get(&tab.id) {
+            if let Some(&size) = screens.get(&tab.id()) {
                 tab.shown_on(size.into());
             }
         }
@@ -1868,8 +1868,10 @@ impl Session {
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
         self.parts.panes().values().flat_map(|pane| {
-            let frame = pane.frame_deadline().map(|at| (at, Timer::Frame(pane.id)));
-            let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id)));
+            let frame = pane
+                .frame_deadline()
+                .map(|at| (at, Timer::Frame(pane.id())));
+            let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id())));
             frame.into_iter().chain(unread)
         })
     }
@@ -2297,9 +2299,9 @@ impl Session {
                 self.move_pane(target, to, here).map(Reply::from)
             }
             &Command::SwapPane { target, with } => {
-                let source = self.pane(target)?.id;
+                let source = self.pane(target)?.id();
                 let other = match with {
-                    SwapWith::Pane(p) => self.pane(p)?.id,
+                    SwapWith::Pane(p) => self.pane(p)?.id(),
                     SwapWith::Toward(direction) => self.neighbor(source, direction, here)?,
                 };
                 self.parts.swap(source, other);
@@ -2327,7 +2329,7 @@ impl Session {
                 if view.source == command::Source::LastOutput && !pane.marked() {
                     return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
                 }
-                let copying = self.copying(pane.id);
+                let copying = self.copying(pane.id());
                 let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
                 Ok(Reply {
                     json: form,
@@ -2492,7 +2494,7 @@ impl Session {
         }
         // With no size, back to fitting clients, at the size it has until
         // one shows it.
-        for tab in tabs_mut(self.parts.workspaces_mut()).filter(|t| tabs.contains(&t.id)) {
+        for tab in tabs_mut(self.parts.workspaces_mut()).filter(|t| tabs.contains(&t.id())) {
             tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
         }
         Ok(())
@@ -2518,7 +2520,7 @@ impl Session {
             let (rows, cols) = (size.rows(), size.cols());
             let message = format!(
                 "{} is {cols}x{rows}: rows count 0-{} and columns 0-{}",
-                p.id,
+                p.id(),
                 rows.saturating_sub(1),
                 cols.saturating_sub(1)
             );
@@ -2555,7 +2557,7 @@ impl Session {
         };
         let mode = p.screen().mouse_protocol_mode();
         let x10 = mode == Asked::Press;
-        let pane = p.id;
+        let pane = p.id();
         if x10 && beyond_x10 {
             let message = format!(
                 "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
@@ -2608,7 +2610,7 @@ impl Session {
             ..Wanted::default()
         };
         self.want(wanted, starting.restoring)?;
-        let target = self.pane(target)?.id;
+        let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane; from the CLI, the
         // clients that focus the split one.
@@ -2623,14 +2625,14 @@ impl Session {
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
-        let new = pane.id;
+        let new = pane.id();
         if let Err(pane) = self.parts.split(target, pane, axis) {
             self.end(pane.into_process(), true);
             return Err(Error::NoPane(target));
         }
         self.ids = ids;
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let split = tabs_mut(self.parts.workspaces_mut()).find(|t| t.id == tab);
+        let split = tabs_mut(self.parts.workspaces_mut()).find(|t| t.id() == tab);
         let split = split.ok_or(Error::NoTab(tab))?;
         for view in (self.views.values_mut()).filter(|v| followers.contains(&v.id)) {
             split.set_focus(view.id, new);
@@ -2774,7 +2776,7 @@ impl Session {
             AnyRef::Workspace(id) => {
                 // The one named (there: `Rename` checks it first), and the
                 // others, whose names it cannot take.
-                let others = self.parts.workspaces().iter().filter(|w| w.id != id);
+                let others = self.parts.workspaces().iter().filter(|w| w.id() != id);
                 check_workspace_name(&name, others)?;
                 self.parts
                     .rename_workspace(id, name)
@@ -2795,7 +2797,7 @@ impl Session {
     }
 
     fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
-        let pane = self.pane(target)?.id;
+        let pane = self.pane(target)?.id();
         // A tab made for it fits clients at its tab's size until one shows it.
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
@@ -2812,7 +2814,7 @@ impl Session {
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
                 let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                (ws, first.ok_or(Error::NoWorkspace(ws))?.id)
+                (ws, first.ok_or(Error::NoWorkspace(ws))?.id())
             }
             MoveTo::NewTab => {
                 let mut ids = self.ids.clone();
@@ -2878,10 +2880,10 @@ impl Session {
                 return Ok(());
             }
             AnyRef::Tab(t) => (self.parts.workspaces_mut().iter_mut())
-                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id == t, toward))
+                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id() == t, toward))
                 .ok_or(Error::NoTab(t))?,
             AnyRef::Workspace(w) => {
-                swap_sibling(self.parts.workspaces_mut(), |ws| ws.id == w, toward)
+                swap_sibling(self.parts.workspaces_mut(), |ws| ws.id() == w, toward)
                     .ok_or(Error::NoWorkspace(w))?
             }
         };
@@ -2928,9 +2930,9 @@ impl Session {
             Pick::Id(t) => (self.tab_workspace(t)?, t),
             Pick::Step(toward) => {
                 let tabs = self.workspace(at.ws).map_or(&[][..], Workspace::tabs);
-                let index = tabs.iter().position(|t| t.id == at.tab);
+                let index = tabs.iter().position(|t| t.id() == at.tab);
                 let next = round(tabs, index.unwrap_or(0), toward);
-                (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id)
+                (at.ws, next.ok_or(Error::OnlyOne(Kind::Tab))?.id())
             }
         };
         let at = Some(Spot {
@@ -2948,7 +2950,7 @@ impl Session {
                 let workspaces = self.parts.workspaces();
                 let index = workspaces.iter().position(|w| w.viewers.contains(&view.id));
                 let next = round(workspaces, index.unwrap_or(0), *toward);
-                next.ok_or(Error::OnlyOne(Kind::Workspace))?.id
+                next.ok_or(Error::OnlyOne(Kind::Workspace))?.id()
             }
         };
         Ok(Picked { ws, at: None })
@@ -2962,12 +2964,12 @@ impl Session {
         let mut out = String::new();
         let listed_pane = |pane: PaneId| !matches!(only, Some(AnyRef::Pane(p)) if p != pane);
         for ws in self.parts.workspaces() {
-            if only.is_none_or(|o| o == AnyRef::Workspace(ws.id)) {
-                out.push_str(&format!("{} {}\n", ws.id, ws.name()));
+            if only.is_none_or(|o| o == AnyRef::Workspace(ws.id())) {
+                out.push_str(&format!("{} {}\n", ws.id(), ws.name()));
             }
-            for tab in (ws.tabs().iter()).filter(|t| self.takes_in(only, ws.id, t.id)) {
+            for tab in (ws.tabs().iter()).filter(|t| self.takes_in(only, ws.id(), t.id())) {
                 let empty = if tab.root().is_none() { " (empty)" } else { "" };
-                out.push_str(&format!("  {} {}{empty}\n", tab.id, tab.name()));
+                out.push_str(&format!("  {} {}{empty}\n", tab.id(), tab.name()));
                 let Some(root) = tab.root() else { continue };
                 root.for_each_pane(&mut |pane| {
                     if !listed_pane(pane) {
@@ -3015,13 +3017,18 @@ impl Session {
     fn pane_json<'a>(&'a self, p: &'a Pane, now: Instant) -> Fields<'a> {
         let pid = |c: &Child| Json::Number(i64::from(c.leader.pid().as_raw()));
         let mut fields = vec![
-            ("id", Json::str(p.id.to_string())),
+            ("id", Json::str(p.id().to_string())),
             ("name", Json::str(p.name())),
             ("rows", Json::Number(i64::from(p.size().rows()))),
             ("cols", Json::Number(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
         ];
-        fields.extend(crate::capture::state(p, self.run, now, self.copying(p.id)));
+        fields.extend(crate::capture::state(
+            p,
+            self.run,
+            now,
+            self.copying(p.id()),
+        ));
         fields
     }
 
@@ -3032,7 +3039,7 @@ impl Session {
             .map(|p| Json::Object(self.pane_json(p, now)))
             .collect();
         vec![
-            ("id", Json::str(t.id.to_string())),
+            ("id", Json::str(t.id().to_string())),
             ("name", Json::str(t.name())),
             ("panes", Json::Array(panes)),
         ]
@@ -3042,7 +3049,7 @@ impl Session {
     fn ws_json<'a>(&'a self, ws: &'a Workspace, now: Instant) -> Fields<'a> {
         let tabs = (ws.tabs().iter()).map(|t| Json::Object(self.tab_json(t, now)));
         vec![
-            ("id", Json::str(ws.id.to_string())),
+            ("id", Json::str(ws.id().to_string())),
             ("name", Json::str(ws.name())),
             ("tabs", Json::Array(tabs.collect())),
         ]
@@ -3118,7 +3125,7 @@ impl Session {
     fn ls_json(&self, only: Option<WsId>) -> String {
         let now = Instant::now();
         let workspaces = (self.parts.workspaces().iter())
-            .filter(|ws| only.is_none_or(|id| id == ws.id))
+            .filter(|ws| only.is_none_or(|id| id == ws.id()))
             .map(|ws| Json::Object(self.ws_json(ws, now)))
             .collect();
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
@@ -3314,7 +3321,7 @@ fn no_tab_named<'a>(
 ) -> Result<(), Error> {
     let tabs: Vec<&Tab> = (workspaces.into_iter())
         .flat_map(Workspace::tabs)
-        .filter(|t| t.given() && t.name() == name && Some(t.id) != except)
+        .filter(|t| t.given() && t.name() == name && Some(t.id()) != except)
         .collect();
     if tabs.is_empty() {
         return Ok(());
@@ -3322,7 +3329,7 @@ fn no_tab_named<'a>(
     // `run` with such a name: `str NAME tab` would not know which, so the
     // program is not started. The tabs, then their panes.
     let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
-    let tabs = tabs.iter().map(|t| t.id).collect();
+    let tabs = tabs.iter().map(|t| t.id()).collect();
     let panes: Vec<PaneId> = panes.collect();
     // One a restore brought back: the surprise is said.
     let restored = panes.iter().any(paused);
@@ -4305,7 +4312,7 @@ mod tests {
             .parts
             .workspaces()
             .first()
-            .map(|w| w.id)
+            .map(|w| w.id())
             .ok_or("a workspace")?;
         let Begun::Waiting(waiting) = s.begin(wait(AnyRef::Workspace(ws)), &origin) else {
             return Err("the workspace's wait answered at once".into());

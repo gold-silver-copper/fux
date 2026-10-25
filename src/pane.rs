@@ -472,7 +472,8 @@ impl std::fmt::Display for Uncopied {
 pub struct Loose;
 
 pub struct Pane<S = crate::workspace::Placed> {
-    pub id: PaneId,
+    /// Given as it is made, and never changed: its events' place.
+    id: PaneId,
     /// Changed by `rename` and `respawned`, which say so.
     name: String,
     /// Set by the program with OSC 0 or 2, which says so.
@@ -964,6 +965,10 @@ impl<S> Pane<S> {
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
         Ok(std::mem::replace(&mut self.process, process))
+    }
+
+    pub fn id(&self) -> PaneId {
+        self.id
     }
 
     pub fn name(&self) -> &str {

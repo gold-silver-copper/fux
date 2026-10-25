@@ -640,7 +640,7 @@ impl Run {
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
         self.s.parts.each_pane_mut(|pane| {
-            let (id, heard) = (pane.id, pane.input.drain_all());
+            let (id, heard) = (pane.id(), pane.input.drain_all());
             let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
             assert!(
                 heard.is_empty() || (Some(id) == focus && asked),
@@ -658,7 +658,7 @@ impl Run {
     fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
         self.s.parts.each_pane_mut(|pane| {
             let queued = pane.input.drain_all();
-            let id = pane.id;
+            let id = pane.id();
             assert!(
                 queued.is_empty(),
                 "{key} in a repeat mode reached {id}: {queued:?}"
@@ -716,7 +716,7 @@ fn check(run: &Run) {
                 assert!(
                     s.parts.panes().contains_key(&pane),
                     "{pane} is in {} but gone",
-                    tab.id
+                    tab.id()
                 );
                 *seen.entry(pane).or_default() += 1;
             }

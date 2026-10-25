@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
         let order: Vec<String> = (s.parts.workspaces().first())
-            .map(|w| w.tabs().iter().map(|t| t.id.to_string()).collect())
+            .map(|w| w.tabs().iter().map(|t| t.id().to_string()).collect())
             .unwrap_or_default();
         assert_eq!(order, ["@2", "@3", "@1"]);
         Ok(())

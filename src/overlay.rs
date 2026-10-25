@@ -13,7 +13,7 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
     for root in roots {
         root.for_each_pane(&mut |id| {
             if let Some(p) = session.parts.panes().get(&id) {
-                names.push(format!("{} {}", p.id, p.label()));
+                names.push(format!("{} {}", p.id(), p.label()));
             }
         });
     }
@@ -36,27 +36,27 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
                 .workspace(place.ws)
                 .ok_or(Error::NoWorkspace(place.ws))?;
             for tab in ws.tabs() {
-                if tab.id == place.tab {
+                if tab.id() == place.tab {
                     current = Some(rows.len());
                 }
                 let label = format!(
                     "{} {} — {}",
-                    tab.id,
+                    tab.id(),
                     tab.name(),
                     pane_names(session, tab.root())
                 );
-                rows.push((AnyRef::Tab(tab.id), label));
+                rows.push((AnyRef::Tab(tab.id()), label));
             }
         }
         Choices::Workspaces => {
-            let shown = session.shown_workspace(client).map(|w| w.id);
+            let shown = session.shown_workspace(client).map(|w| w.id());
             for ws in session.parts.workspaces() {
-                if Some(ws.id) == shown {
+                if Some(ws.id()) == shown {
                     current = Some(rows.len());
                 }
                 let roots = ws.tabs().iter().filter_map(|t| t.root());
-                let label = format!("{} {} — {}", ws.id, ws.name(), pane_names(session, roots));
-                rows.push((AnyRef::Workspace(ws.id), label));
+                let label = format!("{} {} — {}", ws.id(), ws.name(), pane_names(session, roots));
+                rows.push((AnyRef::Workspace(ws.id()), label));
             }
         }
         Choices::Panes(source) => {
@@ -66,7 +66,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             if let Some(root) = root {
                 root.for_each_pane(&mut |id| {
                     if let Some(p) = session.parts.panes().get(&id).filter(|_| id != source) {
-                        rows.push((AnyRef::Pane(p.id), format!("{} {}", p.id, p.label())));
+                        rows.push((AnyRef::Pane(p.id()), format!("{} {}", p.id(), p.label())));
                     }
                 });
             }

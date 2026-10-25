@@ -1296,7 +1296,7 @@ fn bar(
         (session.focused(view.id))
             .and_then(|f| session.parts.panes().get(&f))
             .map(|p| {
-                let mut text = format!("{} {}", p.id, p.label());
+                let mut text = format!("{} {}", p.id(), p.label());
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }
@@ -1336,15 +1336,15 @@ fn bar(
         let name = format!(" {} ", ws.name());
         let bold = base.with_bold(true);
         x = grid.text(y, x, &fit(&name, left_limit), bold, left_limit);
-        let current = ws.tab_of(view.id).map(|t| t.id);
+        let current = ws.tab_of(view.id).map(|t| t.id());
         for tab in ws.tabs() {
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
                 break;
             };
             // A bell rang in a tab the client does not show (`outer`).
-            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id) != current;
+            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
             let label = format!(" {}{} ", tab.name(), if rang { "!" } else { "" });
-            let attrs = if Some(tab.id) == current {
+            let attrs = if Some(tab.id()) == current {
                 Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
                 base

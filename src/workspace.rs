@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 /// A workspace and its tabs, of which it always has one or more: each is
 /// made with one, and the session removes a workspace its last tab leaves.
 pub struct Workspace {
-    pub id: WsId,
+    /// Given as it is made, and never changed: its events' place.
+    id: WsId,
     name: String,
     tabs: Vec<Tab>,
     /// The clients showing it: each attached client shows one workspace
@@ -29,7 +30,8 @@ pub struct Workspace {
 }
 
 pub struct Tab {
-    pub id: TabId,
+    /// Given as it is made, and never changed: its events' place.
+    id: TabId,
     name: String,
     /// Its name was given (`name`, `rename`), not fux's (`main`, `tab-N`, a
     /// program's): a name given is the only one, and takes fux's.
@@ -100,6 +102,10 @@ impl Seat {
 }
 
 impl Workspace {
+    pub fn id(&self) -> WsId {
+        self.id
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -228,6 +234,10 @@ impl Tab {
             seats: clients.map(|c| (c, Seat::default())).collect(),
             typist: None,
         }
+    }
+
+    pub fn id(&self) -> TabId {
+        self.id
     }
 
     pub fn name(&self) -> &str {
@@ -483,7 +493,7 @@ impl Parts {
             return;
         };
         if let Some((_, t)) = tab_mut(&mut self.workspaces, tab) {
-            t.edit(|root| *root = Some(Tree::Pane(pane.id)));
+            t.edit(|root| *root = Some(Tree::Pane(pane.id())));
         }
         self.placed((ws, tab), pane);
     }
@@ -491,8 +501,8 @@ impl Parts {
     /// `pane`, new, is in tab `at` of its workspace.
     fn placed(&mut self, at: (WsId, TabId), pane: Pane<Loose>) {
         self.journal
-            .push(Place::Pane(at, pane.id), What::Created(None));
-        self.panes.insert(pane.id, pane.placed(Placed(())));
+            .push(Place::Pane(at, pane.id()), What::Created(None));
+        self.panes.insert(pane.id(), pane.placed(Placed(())));
     }
 
     /// Puts `pane`, new, beside `target`, along `axis`, after it; the pane
@@ -504,7 +514,7 @@ impl Parts {
         pane: Pane<Loose>,
         axis: Axis,
     ) -> Result<(), Pane<Loose>> {
-        let (Some(at), new) = (self.locate(target), pane.id) else {
+        let (Some(at), new) = (self.locate(target), pane.id()) else {
             return Err(pane);
         };
         let split = |root: &mut Option<Tree>| {

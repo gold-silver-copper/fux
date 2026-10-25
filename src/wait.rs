@@ -213,11 +213,11 @@ mod tests {
         frame.extend_from_slice(b"DONE\x1b[?2026l");
         pane.output(&frame);
         assert!(pane.mid_frame());
-        assert!(super::told(pane.id, Some(&pane), since, run).is_none());
+        assert!(super::told(pane.id(), Some(&pane), since, run).is_none());
         while pane.mid_frame() {
             pane.read_unread();
         }
-        let told = super::told(pane.id, Some(&pane), since, run).ok_or("no answer")?;
+        let told = super::told(pane.id(), Some(&pane), since, run).ok_or("no answer")?;
         assert!(told.text.ends_with(" screen\n"), "{}", told.text);
         Ok(())
     }
