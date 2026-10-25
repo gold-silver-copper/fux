@@ -233,11 +233,8 @@ impl Title {
     pub fn said(&self) -> &Said<TITLE_MAX> {
         &self.now
     }
-    /// Sets it from what a program sent; whether it changed.
-    fn set(&mut self, title: fux_vt::Kept<'_>) -> bool {
-        self.become_(Said::new(title))
-    }
-    fn become_(&mut self, title: Said<TITLE_MAX>) -> bool {
+    /// Sets it to `title`; whether it changed.
+    fn set(&mut self, title: Said<TITLE_MAX>) -> bool {
         let changed = title != self.now;
         self.now = title;
         changed
@@ -251,9 +248,7 @@ impl Title {
     /// The title last pushed comes back; with none, nothing changes.
     /// Whether it changed.
     fn pop(&mut self) -> bool {
-        self.pushed
-            .pop_back()
-            .is_some_and(|title| self.become_(title))
+        self.pushed.pop_back().is_some_and(|title| self.set(title))
     }
 }
 
@@ -295,7 +290,7 @@ impl fux_vt::Sink for Sink<'_> {
     fn event(&mut self, event: Event<'_>) {
         match event {
             Event::Title(title) => {
-                if self.title.set(title) {
+                if self.title.set(Said::new(title)) {
                     self.titled();
                 }
             }
