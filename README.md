@@ -248,9 +248,10 @@ as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked fo
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
 to 1 MiB encoded, unless `str clipboard str off set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
-and Helix do, copies the same way, up to 64 KiB encoded; a longer copy, or
-one that is not text, copies nothing, and the clients showing the pane say
-so. fux never reads the clipboard.
+and Helix do, copies the same way, up to 64 KiB encoded, but only while
+`clipboard` is on: with it off a program's copy copies nothing, to the
+buffers either. A longer copy, or one that is not text, copies nothing, and
+the clients showing the pane say so. fux never reads the clipboard.
 
 ## Shell marks
 
