@@ -111,7 +111,13 @@ impl InputQueue {
     }
     /// Queues terminal replies, as `push`: a full queue drops them.
     fn reply(&mut self, bytes: &[u8]) {
-        if self.push(bytes).is_err() && self.lost == Lost::None {
+        if self.push(bytes).is_err() {
+            self.lose_reply();
+        }
+    }
+    /// A reply was dropped: to be told, unless one was before.
+    fn lose_reply(&mut self) {
+        if self.lost == Lost::None {
             self.lost = Lost::Untold;
         }
     }
@@ -186,6 +192,9 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
     .with(Feature::Reflow)
     .with_identity(Some(IDENTITY));
 
+/// The most bytes of replies one read of a program's output queues: the
+/// rest are dropped, and told as a reply dropped for a full queue is.
+pub const REPLIES_MAX: usize = 4096;
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
 const TITLE_STACK: usize = 10;
 /// The most characters of a title kept.
@@ -261,8 +270,10 @@ impl Title {
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
 struct Sink<'a> {
-    /// The replies to one read, queued together after it: at most 4 KiB.
+    /// The replies to one read, queued together after it: at most
+    /// `REPLIES_MAX` bytes; whether one was dropped past them.
     replies: Vec<u8>,
+    dropped: bool,
     /// The journal its bells, notifications, titles and commands' ends go
     /// to, in order.
     happened: &'a mut log::Log,
@@ -286,8 +297,9 @@ impl Sink<'_> {
 
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        if self.replies.len().saturating_add(bytes.len()) <= 4096 {
-            self.replies.extend_from_slice(bytes);
+        match self.replies.len().saturating_add(bytes.len()) <= REPLIES_MAX {
+            true => self.replies.extend_from_slice(bytes),
+            false => self.dropped = true,
         }
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
@@ -735,6 +747,7 @@ impl Pane {
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
+            dropped: false,
             happened: &mut self.record,
             title: &mut self.title,
             bell: &mut self.bell,
@@ -759,9 +772,12 @@ impl Pane {
                 break;
             }
         }
-        let replies = sink.replies;
+        let (replies, dropped) = (sink.replies, sink.dropped);
         if !replies.is_empty() {
             self.input.reply(&replies);
+        }
+        if dropped {
+            self.input.lose_reply();
         }
         begun
     }
@@ -1255,6 +1271,21 @@ pub(crate) mod tests {
         assert_eq!(pane.input.drain_all(), b"\x1b[48;6;25;0;0t");
         pane.resize(size(6, 25));
         assert!(pane.input.drain_all().is_empty(), "the same size");
+        Ok(())
+    }
+
+    /// Replies past what one read queues are dropped, and that is told.
+    #[test]
+    fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.output(b"\x1b[6n");
+        assert!(!pane.input.lost_reply());
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&queries);
+        assert!(pane.input.lost_reply());
         Ok(())
     }
 

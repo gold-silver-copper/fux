@@ -1967,7 +1967,11 @@ impl Session {
             }
             if dropped {
                 view.notify(
-                    format!("{id}'s input queue is full; a terminal reply was dropped"),
+                    format!(
+                        "a terminal reply to {id} was dropped: its input queue was full, \
+                         or one read of its output asked for more than {} bytes of replies",
+                        crate::pane::REPLIES_MAX
+                    ),
                     true,
                 );
             }
