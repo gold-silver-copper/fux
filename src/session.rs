@@ -7,11 +7,12 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
+use crate::events::Teller;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
-use crate::pane::{self, Left, Loose, Output, Pane, Process, Runs, basename};
+use crate::pane::{self, Output, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
@@ -349,7 +350,7 @@ impl From<pane::Error> for Error {
 /// asked to make for it, so that a pane none could reach asks for none,
 /// and of those fux queues it unasked (in-band resize, colour scheme), so
 /// that none waits for a program respawned there.
-pub(crate) fn refuses_input<S>(pane: &Pane<S>) -> Option<Error> {
+pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
         Process::Exited(status) => return Some(ended(pane.id(), *status)),
@@ -760,10 +761,10 @@ impl Session {
             self.end(process, true);
             return Err(Error::NoPane(id));
         };
-        let (old, left) = pane.respawned(fresh, process);
-        drop(pane);
+        let (pane, tell) = pane.telling();
+        let (old, left) = pane.respawned(fresh, process, tell);
         self.end(old, true);
-        let left = left_told(left, "the program it ran");
+        let left = left.told("the program it ran");
         if !left.is_empty() {
             let told = format!("{id} respawned{left}");
             for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
@@ -782,9 +783,9 @@ impl Session {
         // Each turn reads some of it, and nothing adds more.
         let waits = |p: &Pane| p.has_unread() || p.frame_deadline().is_some();
         while self.pane(id).is_ok_and(waits) {
-            self.read_with(id, |p| {
-                p.release_frame();
-                p.read_unread();
+            self.read_with(id, |p, tell| {
+                p.release_frame(tell);
+                p.read_unread(tell);
             });
         }
         if let Some(ended) = self.pane(id).ok().and_then(|p| p.exiting) {
@@ -1216,7 +1217,7 @@ impl Session {
     }
 
     /// A new pane, its ID taken from `ids`, running what `new` says.
-    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane<Loose>, Error> {
+    fn new_pane(&self, ids: &mut Ids, new: NewPane<'_>) -> Result<Pane, Error> {
         let config = &self.config;
         let start = new.start;
         let env = match start {
@@ -1604,7 +1605,7 @@ impl Session {
             if let Ok(size) = Size::new(rows, cols)
                 && self.pane(id).is_ok_and(|p| p.size() != size)
             {
-                self.read_with(id, |pane| pane.resize(size));
+                self.read_with(id, |pane, tell| pane.resize(size, tell));
                 resized = true;
             }
         }
@@ -1741,9 +1742,8 @@ impl Session {
         }
         match pane.runs {
             Runs::Shell => {
-                pane.ended(ended);
-                let left = left_told(pane.left, "it");
-                drop(pane);
+                let (pane, tell) = pane.telling();
+                let left = pane.ended(ended, tell).left.told("it");
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
                     |s| format!("exited with status {s}"),
@@ -1752,16 +1752,16 @@ impl Session {
             }
             Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
-                let gone = pane.exit(ended);
-                let left = left_told(pane.left, "it");
-                drop(pane);
+                let (pane, tell) = pane.telling();
+                let (end, gone) = pane.exit(ended, tell);
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
                     let deadline = Instant::now();
                     self.dying.push(Dying { child, deadline });
                 }
-                let told = format!("{id} {}{left}", process::told(ended));
+                let told = format!("{id} {}{}", process::told(end.ended), end.left.told("it"));
+                let left = end.left != pane::Left::default();
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                    self.notify_to(client, told.clone(), !left.is_empty());
+                    self.notify_to(client, told.clone(), left);
                 }
                 self.touch();
             }
@@ -1785,7 +1785,7 @@ impl Session {
 
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
-        self.read_with(id, |pane| pane.output(bytes));
+        self.read_with(id, |pane, tell| pane.output(bytes, tell));
     }
 
     /// Everything the session waits for, each with when it is due: the
@@ -1821,14 +1821,15 @@ impl Session {
     /// does: its tab's host colours and palette given it first; after, its
     /// bell rung, its copies made in order, and the views showing it
     /// repainted and told what it refused (`tell_refused`).
-    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane, &mut Teller<'_>)) {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let viewers = self.viewers(tab);
         let clipboard = self.config.clipboard;
         let Some((mut pane, retold)) = self.hosted(id) else {
             return;
         };
-        read(&mut pane);
+        let (read_into, tell) = pane.telling();
+        read(read_into, tell);
         // Sized once for the new cell and what was read, a resize sized
         // so already, which the system does not signal again.
         if retold {
@@ -1853,7 +1854,6 @@ impl Session {
                 }
             }
         }
-        drop(pane);
         if bell {
             self.ring(id, Instant::now());
         }
@@ -1893,7 +1893,6 @@ impl Session {
         };
         let refused = std::mem::take(&mut pane.uncopied);
         let dropped = pane.input.tell_lost();
-        drop(pane);
         let mut told: Vec<String> = (refused.into_iter())
             .map(|(why, n)| match n {
                 1 => format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
@@ -2627,7 +2626,11 @@ impl Session {
     fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
         check_name(&name)?;
         match target {
-            AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
+            AnyRef::Pane(p) => {
+                let mut pane = self.pane_mut(p)?;
+                let (pane, tell) = pane.telling();
+                pane.rename(name, tell);
+            }
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
                 self.give_tab_name(t, name)?;
@@ -3038,28 +3041,9 @@ fn home() -> Result<PathBuf, Error> {
 
 /// The most read of what a program left on its terminal as it ends, in
 /// MiB, as it is said: a whole number of them.
-const LEFT_MIB: usize = 1;
+pub(crate) const LEFT_MIB: usize = 1;
 /// The same in bytes.
 pub(crate) const LEFT_MAX: usize = LEFT_MIB << 20;
-
-/// What is said, after its end's own words, of what a program, `who`,
-/// left unread as it ended: more than `LEFT_MAX` on its terminal
-/// (`Output::Cut`), and bytes of input queued for it; nothing of one that
-/// left neither.
-fn left_told(Left { output, input }: Left, who: &str) -> String {
-    let mut told = match output {
-        Output::Read => String::new(),
-        Output::Cut => {
-            format!("; {who} left more than {LEFT_MIB} MiB on its terminal: the rest was not read")
-        }
-    };
-    if input > 0 {
-        told.push_str(&format!(
-            "; {input} bytes of input queued for it were never written to it"
-        ));
-    }
-    told
-}
 
 /// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
 /// it held more: read as it ends, so that its last screen is whole.
@@ -3522,6 +3506,7 @@ mod tests {
 
     use super::testing::{attached, output, output_as, requests, run, started};
     use super::*;
+    use crate::pane::Left;
 
     /// A client that only watches, of `rows` by `cols`, attached.
     fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
@@ -3634,7 +3619,6 @@ mod tests {
         s.output(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         pane.exiting = Some(crate::process::Ended::Exited(3));
-        drop(pane);
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 kill-first respawn");
         });
@@ -3900,7 +3884,6 @@ mod tests {
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let size = pane.size();
         let child = pane.set_process(Process::Absent);
-        drop(pane);
         let Process::Reading(child) = child else {
             return Err("no program started".into());
         };
@@ -3953,9 +3936,9 @@ mod tests {
         view.terminal.cell = fux_vt::CellSize::new(10, 20);
         let smaller = sized(10, 40)?;
         let mut between = None;
-        s.read_with(id, |pane| {
+        s.read_with(id, |pane, tell| {
             between = pixels(pane);
-            pane.resize(smaller);
+            pane.resize(smaller, tell);
         });
         assert_eq!(between, None, "not sized before the resize");
         let pane = s.pane(id).map_err(|e| e.to_string())?;
@@ -4046,7 +4029,7 @@ mod tests {
         queue(&mut s, b"abc")?;
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(0)));
         assert!(
-            lines.contains("exited %2 @2 +2 status=0 input_unread=3"),
+            lines.contains("exited %2 @2 +2 exited=0 input_unread=3"),
             "{lines}"
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
@@ -4094,7 +4077,9 @@ mod tests {
         let queued = |s: &Session| s.pane(id).map(|p| p.input.len()).map_err(|e| e.to_string());
         s.output(id, b"\x1b[?2048h\x1b[?2031h");
         s.exited(id, Ended::Exited(0));
-        (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?);
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let (pane, tell) = pane.telling();
+        pane.resize(sized(10, 40)?, tell);
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(queued(&s)?, 0);
         run(&mut s, "%2 respawn")?;
@@ -4129,7 +4114,6 @@ mod tests {
             let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
             let mut pane = s.parts.pane_mut(PaneId::of(2)).ok_or("the pane")?;
             pane.set_process(Process::Reading(child));
-            drop(pane);
             run(&mut s, "%2 kill-first respawn")?;
         }
         let dying = std::mem::take(&mut s.dying);
@@ -4330,7 +4314,6 @@ mod tests {
         // Its program reads nothing, and its queue is full.
         let full = vec![0; crate::pane::INPUT_BYTES];
         second.input.push(full).map_err(|e| e.to_string())?;
-        drop(second);
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
         let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
@@ -4342,7 +4325,6 @@ mod tests {
         pane.input
             .push(vec![0; room.saturating_sub(4)])
             .map_err(|e| e.to_string())?;
-        drop(pane);
         assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
         assert!(
             run(&mut s, "%1 str x text send-keys").is_err(),
@@ -4458,7 +4440,6 @@ mod tests {
         pane.input
             .push(vec![b'x'; room])
             .map_err(|e| e.to_string())?;
-        drop(pane);
         s.output(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies_dropped":3,"#), "{json}");
@@ -5229,7 +5210,7 @@ mod tests {
             s.exited(PaneId::of(2), Ended::Exited(0));
         });
         let said =
-            "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 status=0\nclosed %2 @1 +1\n";
+            "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 exited=0\nclosed %2 @1 +1\n";
         assert!(lines.starts_with(said), "{lines}");
         Ok(())
     }

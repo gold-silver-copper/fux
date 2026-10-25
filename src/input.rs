@@ -903,7 +903,6 @@ mod tests {
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         p.input.push(full).map_err(|e| e.to_string())?;
-        drop(p);
         let notice = |s: &mut Session| {
             let view = s.views.get_mut(&c);
             view.and_then(|v| v.notice.take()).map(|n| n.text)
@@ -940,7 +939,6 @@ mod tests {
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         let room = p.input.room();
         p.input.push(vec![0; room]).map_err(|e| e.to_string())?;
-        drop(p);
         let notice = |s: &mut Session| {
             let view = s.views.get_mut(&c);
             view.and_then(|v| v.notice.take()).map(|n| n.text)

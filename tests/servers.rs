@@ -217,7 +217,7 @@ fn events_tell_what_happens() -> Outcome {
     // two: an exit told first is passed over, and never found after.
     next(&format!(r#""event":"bell","pane":"{pane}""#))?;
     let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
-    assert!(exited.ends_with(r#""status":7}"#), "{exited}");
+    assert!(exited.ends_with(r#""exited":7}"#), "{exited}");
     server.ok(&["str", pane, "pane", "kill"])?;
     next(&format!(r#""event":"closed","pane":"{pane}""#))?;
     let _ = events.kill();

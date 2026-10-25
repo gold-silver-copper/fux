@@ -123,6 +123,19 @@ impl PaneId {
         PaneId(n)
     }
 }
+/// A tab and a workspace by number, for tests of a pane alone.
+#[cfg(test)]
+impl TabId {
+    pub(crate) fn of(n: u32) -> TabId {
+        TabId(n)
+    }
+}
+#[cfg(test)]
+impl WsId {
+    pub(crate) fn of(n: u32) -> WsId {
+        WsId(n)
+    }
+}
 /// A client by number, for tests of what is sent it.
 #[cfg(test)]
 impl ClientId {

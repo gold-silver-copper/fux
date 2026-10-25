@@ -1,7 +1,7 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
 use crate::bytes::ByteQueue;
-use crate::events::What;
+use crate::events::{PaneEvent, Teller};
 use crate::id::PaneId;
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
@@ -291,16 +291,16 @@ impl Title {
 }
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
-struct Sink<'a> {
+struct Sink<'a, 't> {
     /// The replies to one read, queued together after it: at most
     /// `REPLIES_MAX` bytes, `kept` of them; whether one was dropped past
     /// them.
     replies: Vec<u8>,
     kept: u64,
     dropped: bool,
-    /// Where its bells, notifications, titles and commands' ends go, in
-    /// order, for the session's journal.
-    happened: &'a mut Vec<What>,
+    /// Where its bells, notifications, titles and commands' ends go: the
+    /// session's journal, in order.
+    tell: &'a mut Teller<'t>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -314,7 +314,7 @@ struct Sink<'a> {
     told: Option<Scheme>,
 }
 
-impl Sink<'_> {
+impl Sink<'_, '_> {
     /// Keeps `bytes` among the replies if they fit `REPLIES_MAX`, and
     /// whether they did; else one is dropped.
     fn keep(&mut self, bytes: &[u8]) -> bool {
@@ -335,11 +335,11 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.said().clone();
-        self.happened.push(What::Title(title));
+        self.tell.tell(PaneEvent::Title(title));
     }
 }
 
-impl fux_vt::Sink for Sink<'_> {
+impl fux_vt::Sink for Sink<'_, '_> {
     fn reply(&mut self, bytes: &[u8]) {
         self.keep(bytes);
     }
@@ -357,14 +357,14 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             Event::Bell => {
-                self.happened.push(What::Bell);
+                self.tell.tell(PaneEvent::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
             Event::Notification(text) => {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = Said::new(text);
-                self.happened.push(What::Notification(text.clone()));
+                self.tell.tell(PaneEvent::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
@@ -375,7 +375,7 @@ impl fux_vt::Sink for Sink<'_> {
                         .ok_or(Uncopied::NotText),
                 });
             }
-            Event::CommandEnded(status) => self.happened.push(What::Done(status)),
+            Event::CommandEnded(status) => self.tell.tell(PaneEvent::Done(status)),
             Event::IconName(_) => {}
         }
     }
@@ -538,13 +538,11 @@ impl std::fmt::Display for Uncopied {
     }
 }
 
-/// A pane not in the session: made, or closed. One in it is a
-/// `Pane<workspace::Placed>`, which the session's parts alone make, so no
-/// other pane can be put in its stead (`*pane = other`), losing what it
-/// said.
-pub struct Loose;
-
-pub struct Pane<S = crate::workspace::Placed> {
+/// A pane: made, in the session, or closed. What it does that events tell
+/// is journaled as it does it: each method that does any takes the
+/// journal at its place (`Teller`), which only the session's parts give
+/// (`workspace::PaneMut`).
+pub struct Pane {
     /// Given as it is made, and never changed: its events' place.
     id: PaneId,
     /// Changed by `rename` and `respawned`, which say so.
@@ -598,9 +596,6 @@ pub struct Pane<S = crate::workspace::Placed> {
     pub uncopied: std::collections::BTreeMap<Uncopied, usize>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
-    /// What happened in it that events tell, in order, since the session
-    /// last took it into its journal (`workspace::PaneMut`).
-    said: Vec<What>,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
@@ -611,8 +606,6 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// `respawned`.
     pub respawns: u64,
     pub alerts: Alerts,
-    /// Whether it is in the session.
-    placed: S,
 }
 
 /// What a program left as it ended, or was respawned over: said with its
@@ -628,6 +621,49 @@ pub struct Left {
     pub input: usize,
 }
 
+impl Left {
+    /// What an event says of it: `truncated` (`true`) if it left more on
+    /// its terminal than is read (`Output::Cut`), and `input_unread`, the
+    /// bytes of input queued for it not yet written to its terminal, if
+    /// any.
+    pub fn fields(self) -> impl Iterator<Item = (&'static str, crate::json::Json<'static>)> {
+        use crate::json::Json;
+        let cut = match self.output {
+            Output::Read => None,
+            Output::Cut => Some(("truncated", Json::Bool(true))),
+        };
+        let input = (self.input > 0).then(|| ("input_unread", Json::int(self.input)));
+        cut.into_iter().chain(input)
+    }
+
+    /// What a notice says of it, after the end's own words, of a program
+    /// `who`: nothing, if it left neither.
+    pub fn told(self, who: &str) -> String {
+        let mib = crate::session::LEFT_MIB;
+        let mut told = match self.output {
+            Output::Read => String::new(),
+            Output::Cut => {
+                format!("; {who} left more than {mib} MiB on its terminal: the rest was not read")
+            }
+        };
+        if self.input > 0 {
+            told.push_str(&format!(
+                "; {} bytes of input queued for it were never written to it",
+                self.input
+            ));
+        }
+        told
+    }
+}
+
+/// How a program ended, and what it left: made once, as it ends
+/// (`Pane::ended`), and journaled and told from that one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct End {
+    pub ended: Ended,
+    pub left: Left,
+}
+
 /// What a program left on its terminal as it ended: read whole, or cut at
 /// the most that is read (`Session::read_left`), the rest not read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -641,7 +677,7 @@ pub enum Output {
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
                             `fux help agents shells` says how to turn marks on";
 
-impl Pane<Loose> {
+impl Pane {
     pub fn new(
         id: PaneId,
         name: String,
@@ -669,35 +705,11 @@ impl Pane<Loose> {
             copied: Vec::new(),
             uncopied: std::collections::BTreeMap::new(),
             wrote_at: Instant::now(),
-            said: Vec::new(),
             respawns: 0,
             left: Left::default(),
             mouse_held: None,
             alerts: Alerts::default(),
-            placed: Loose,
         })
-    }
-}
-
-impl<S> Pane<S> {
-    /// The same pane, `placed` so: in the session (`workspace::Placed`),
-    /// or out of it.
-    pub(crate) fn placed<T>(self, placed: T) -> Pane<T> {
-        // Every field but `placed` moved over: one left out does not
-        // compile.
-        macro_rules! moved {
-            ($($field:ident),*) => {{
-                let Pane { $($field,)* placed: _ } = self;
-                Pane { $($field,)* placed }
-            }};
-        }
-        #[rustfmt::skip]
-        let pane = moved!(
-            id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
-            colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
-            left, alerts
-        );
-        pane
     }
 
     /// Reads program output into the screen, its replies queued as input.
@@ -712,8 +724,8 @@ impl<S> Pane<S> {
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
-    pub fn output(&mut self, bytes: &[u8]) {
-        self.output_at(bytes, Instant::now())
+    pub fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
+        self.output_at(bytes, Instant::now(), tell)
     }
 
     /// [`Pane::output`] at `now`.
@@ -721,13 +733,13 @@ impl<S> Pane<S> {
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
-    pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
+    pub fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
             return;
         }
-        self.read(bytes, now);
+        self.read(bytes, now, tell);
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -760,12 +772,12 @@ impl<S> Pane<S> {
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
-    pub fn read_unread(&mut self) {
+    pub fn read_unread(&mut self, tell: &mut Teller<'_>) {
         let unread = std::mem::take(&mut self.unread.0);
         // Only the work of a sequence read already: a call of no bytes does
         // it, and stops again if that spends its budget.
         if unread.is_empty() {
-            if self.parse(&[], false).is_some() {
+            if self.parse(&[], false, tell).is_some() {
                 self.wait_unread(Vec::new());
             }
             return;
@@ -773,12 +785,12 @@ impl<S> Pane<S> {
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
-        if let Some((taken, _)) = self.parse(frame, false) {
+        if let Some((taken, _)) = self.parse(frame, false, tell) {
             self.frame_left = frame.len().saturating_sub(taken);
             self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
             return;
         }
-        self.read(after, Instant::now());
+        self.read(after, Instant::now(), tell);
     }
 
     /// `left` waits to be read on the pane's next turn, from now.
@@ -788,7 +800,7 @@ impl<S> Pane<S> {
 
     /// Reads `bytes` as [`Pane::output_at`] does at `now`, with no output
     /// waiting.
-    fn read(&mut self, bytes: &[u8], now: Instant) {
+    fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         let mut rest = bytes;
         loop {
             if let Some((held, _, scan)) = &mut self.frame {
@@ -796,7 +808,7 @@ impl<S> Pane<S> {
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
                     if held.len() > FRAME_LIMIT {
-                        self.release_frame();
+                        self.release_frame(tell);
                     }
                     return;
                 };
@@ -805,14 +817,14 @@ impl<S> Pane<S> {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.parse(&frame, false) {
+                if let Some((taken, _)) = self.parse(&frame, false, tell) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
                     self.wait_unread([left, rest].concat());
                     return;
                 }
             } else {
-                match self.parse(rest, true) {
+                match self.parse(rest, true, tell) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
@@ -835,9 +847,9 @@ impl<S> Pane<S> {
     }
 
     /// Reads the held frame now, ended or not.
-    pub fn release_frame(&mut self) {
+    pub fn release_frame(&mut self, tell: &mut Teller<'_>) {
         if let Some((held, ..)) = self.frame.take()
-            && let Some((taken, _)) = self.parse(&held, false)
+            && let Some((taken, _)) = self.parse(&held, false, tell)
         {
             // No output waits while a frame is held: it is the first.
             let left = held.get(taken..).unwrap_or_default().to_vec();
@@ -850,15 +862,20 @@ impl<S> Pane<S> {
     /// and where a call of the parser did all the work one may
     /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
     /// and why (`Stop::Begun` or `Stop::Budget`). What they did (a bell, a
-    /// title, a command's end) is journaled after. Never inlined: the
-    /// parser's loop compiles tighter on its own.
+    /// title, a command's end) is journaled as it is read. Never inlined:
+    /// the parser's loop compiles tighter on its own.
     #[inline(never)]
-    fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
+    fn parse(
+        &mut self,
+        bytes: &[u8],
+        until_frame: bool,
+        tell: &mut Teller<'_>,
+    ) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
             kept: 0,
             dropped: false,
-            happened: &mut self.said,
+            tell,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -924,13 +941,13 @@ impl<S> Pane<S> {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, size: Size) {
+    pub fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
         if self.size() == size {
             return;
         }
-        self.release_frame();
+        self.release_frame(tell);
         if self.parser.resize(size).is_ok() {
-            self.said.push(What::Resized(size));
+            tell.tell(PaneEvent::Resized(size));
             self.size_terminal();
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
@@ -1051,7 +1068,12 @@ impl<S> Pane<S> {
     /// size, before the program started) runs it, on a screen as new, its
     /// history kept; the process that was there, to end, and what it left
     /// as it was respawned over: none, said, once it ended.
-    pub fn respawned(&mut self, fresh: Pane<Loose>, process: Process) -> (Process, Left) {
+    pub fn respawned(
+        &mut self,
+        fresh: Pane,
+        process: Process,
+        tell: &mut Teller<'_>,
+    ) -> (Process, Left) {
         // Named after its program, unless renamed.
         let name = match (&self.runs, &fresh.runs) {
             (Runs::Program(old), Runs::Program(new)) if named(&old.argv) == self.name => {
@@ -1061,18 +1083,16 @@ impl<S> Pane<S> {
         };
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
-        // old one (what it said, a bell, a copy, one refused, input dropped;
-        // its input it let go, `InputQueue::discard`), and its colours.
+        // old one (a bell, a copy, one refused, input dropped; its input it
+        // let go, `InputQueue::discard`), and its colours.
         let Pane {
             id: _,
             name: _,
-            said: _,
             bell: _,
             copied: _,
             uncopied: _,
             colours: _,
             respawns: _,
-            placed: Loose,
             title,
             parser,
             process: _,
@@ -1100,8 +1120,8 @@ impl<S> Pane<S> {
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts) = (mouse_held, left, alerts);
-        self.said.push(What::Respawned(over));
-        self.rename(name);
+        tell.tell(PaneEvent::Respawned(over));
+        self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
         (std::mem::replace(&mut self.process, process), over)
@@ -1116,9 +1136,9 @@ impl<S> Pane<S> {
     }
 
     /// Names it `name`: said, if it is another.
-    pub fn rename(&mut self, name: String) {
+    pub fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
         if name != self.name {
-            self.said.push(What::Renamed(name.clone()));
+            tell.tell(PaneEvent::Renamed(name.clone()));
             self.name = name;
         }
     }
@@ -1127,8 +1147,8 @@ impl<S> Pane<S> {
         &self.process
     }
 
-    /// A pane made with no program runs `child`: a pane not yet in the
-    /// session, which alone is had by value.
+    /// A pane made with no program runs `child`: one not yet in the
+    /// session.
     pub fn running(mut self, child: Child) -> Self {
         self.process = Process::Reading(child);
         self
@@ -1143,25 +1163,24 @@ impl<S> Pane<S> {
         };
     }
 
-    /// Its program ended so: said, no exit waiting to be told after, and
-    /// the process that was there, to be reaped.
-    pub fn exit(&mut self, ended: Ended) -> Process {
-        self.ended(ended);
+    /// Its program ended so: said, no exit waiting to be told after; its
+    /// end, and the process that was there, to be reaped.
+    pub fn exit(&mut self, ended: Ended, tell: &mut Teller<'_>) -> (End, Process) {
+        let end = self.ended(ended, tell);
         self.exiting = None;
-        std::mem::replace(&mut self.process, Process::Exited(ended))
+        (end, std::mem::replace(&mut self.process, Process::Exited(ended)))
     }
 
-    /// Its program ended so, the input queued for it let go: said, as a
-    /// shell's is before its pane closes.
-    pub fn ended(&mut self, ended: Ended) {
+    /// Its program ended so, the input queued for it let go: its end,
+    /// said, as a shell's is before its pane closes.
+    pub fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
         self.left.input = self.input.discard();
-        self.said.push(What::Exited(ended, self.left));
-    }
-
-    /// What happened in it that events tell, since last taken, oldest
-    /// first: for the session's journal, which alone gives the leave.
-    pub(crate) fn said(&mut self, _: crate::workspace::Journaling) -> Vec<What> {
-        std::mem::take(&mut self.said)
+        let end = End {
+            ended,
+            left: self.left,
+        };
+        tell.tell(PaneEvent::Exited(end));
+        end
     }
 
     /// Its process, as it is closed.
@@ -1330,7 +1349,7 @@ pub(crate) mod tests {
     }
 
     /// The first row's text, blanks as spaces, trimmed.
-    fn first_row<S>(pane: &Pane<S>) -> String {
+    fn first_row(pane: &Pane) -> String {
         let cols = pane.screen().size().cols();
         (0..cols)
             .filter_map(|x| pane.screen().cell(0, x))
@@ -1371,14 +1390,53 @@ pub(crate) mod tests {
         output(n.saturating_mul(2))
     }
 
-    fn pane(rows: u16, cols: u16) -> Result<Pane<Loose>, Error> {
-        Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::Shell,
-            size(rows, cols),
-            1 << 10,
-        )
+    fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
+        let size = size(rows, cols);
+        Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 1 << 10).map(Lone::new)
+    }
+
+    /// A pane alone, for tests of it: what it tells goes in a journal of
+    /// its own, at a place of its own.
+    pub(crate) struct Lone {
+        pub pane: Pane,
+        pub journal: crate::events::Journal,
+        at: crate::events::PaneAt,
+    }
+
+    impl std::ops::Deref for Lone {
+        type Target = Pane;
+        fn deref(&self) -> &Pane {
+            &self.pane
+        }
+    }
+
+    impl std::ops::DerefMut for Lone {
+        fn deref_mut(&mut self) -> &mut Pane {
+            &mut self.pane
+        }
+    }
+
+    impl Lone {
+        pub(crate) fn new(pane: Pane) -> Self {
+            let at = ((crate::id::WsId::of(1), crate::id::TabId::of(1)), pane.id());
+            let journal = crate::events::Journal::default();
+            Self { pane, journal, at }
+        }
+        pub(crate) fn output(&mut self, bytes: &[u8]) {
+            (self.pane).output(bytes, &mut self.journal.teller(self.at));
+        }
+        pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
+            (self.pane).output_at(bytes, now, &mut self.journal.teller(self.at));
+        }
+        pub(crate) fn read_unread(&mut self) {
+            (self.pane).read_unread(&mut self.journal.teller(self.at));
+        }
+        pub(crate) fn release_frame(&mut self) {
+            (self.pane).release_frame(&mut self.journal.teller(self.at));
+        }
+        pub(crate) fn resize(&mut self, size: Size) {
+            (self.pane).resize(size, &mut self.journal.teller(self.at));
+        }
     }
 
     /// A call of the parser that does all the work one may stops the read
@@ -1456,7 +1514,8 @@ pub(crate) mod tests {
     /// through one till it ends; what came after it is read after.
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(50, 200), 0)?;
+        let size = size(50, 200);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
@@ -1742,18 +1801,14 @@ pub(crate) mod tests {
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
         let mut pane = pane(3, 30)?;
+        let mut stream = crate::events::Subscription::new(None, false, &pane.journal);
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
-        let said: Vec<String> = pane.said.iter().map(|what| format!("{what:?}")).collect();
+        let (said, _) = stream.told(&pane.journal, usize::MAX, |_| None);
         assert_eq!(
             said,
-            [
-                "Done(Some(1))",
-                "Bell",
-                "Done(Some(0))",
-                "Title(Said { text: \"t\", cut: false })"
-            ]
+            "done %1 @1 +1 status=1\nbell %1 @1 +1\ndone %1 @1 +1 status=0\ntitle %1 @1 +1 title=t\n"
         );
         Ok(())
     }

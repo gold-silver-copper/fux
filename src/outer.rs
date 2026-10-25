@@ -671,7 +671,6 @@ mod tests {
             crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), (size, None))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let _ = pane.set_process(crate::pane::Process::Reading(child));
-        drop(pane);
         let rows_cols = s
             .parts
             .panes()
@@ -802,7 +801,6 @@ mod tests {
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         p.input.push(full).map_err(|e| e.to_string())?;
-        drop(p);
         s.input(c, b"\x1b[?997;2n");
         let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         assert!(
