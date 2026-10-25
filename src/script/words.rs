@@ -98,7 +98,7 @@ pub const WORDS: &[Word] = &[
     // Starting
     word("Starting", "opts", "-- opts", "empty options, for run, new-tab and new-workspace (the other words take them on the pane)"),
     word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
-    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it; needed with no client attached, as fux makes no size up"),
+    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it; needed with no client attached but ones that only watch, as fux makes no size up"),
     word("Starting", "cwd", "x dir -- x", "where it starts"),
     word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),

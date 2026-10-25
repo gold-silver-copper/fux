@@ -99,7 +99,8 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 (`program`, then each `arg`; a shell's line is `str sh program str -c arg str
 LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
 out on an attached client's screen, or on `COLS ROWS size`; with no client
-attached a size must be given: fux makes none up.
+attached (one that only watches does not count) a size must be given: fux
+makes none up.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run
