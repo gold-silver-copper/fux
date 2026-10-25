@@ -480,54 +480,21 @@ impl Run {
         self.inputs(client, inputs);
     }
 
-    /// What a client's terminal sent, decoded, as its client takes it.
+    /// What a client's terminal sent, decoded, as its client takes it
+    /// (`Screen::input`): a key as `press` checks it.
     fn inputs(&mut self, client: ClientId, inputs: Vec<Input>) {
         for input in inputs {
-            let Some(view) = self.s.views.get(&client) else {
+            let Some(read_only) = self.s.views.get(&client).map(|v| v.read_only) else {
                 return;
             };
-            let read_only = view.read_only;
-            let act = match input {
-                Input::Key(stroke) => {
-                    self.press(client, stroke);
-                    continue;
-                }
-                Input::Reply(reply) => Act::Reply(reply),
-                Input::Paste(_)
-                | Input::PasteTooLong
-                | Input::FocusIn
-                | Input::FocusOut
-                | Input::Mouse(_)
-                    if read_only =>
-                {
-                    continue;
-                }
-                Input::Paste(text) => {
-                    let effects = match self.keys.get_mut(&client) {
-                        Some(keys) => keys.screen.paste(&text),
-                        None => Vec::new(),
-                    };
-                    self.effects(client, effects);
-                    continue;
-                }
-                Input::Mouse(_) if self.screen_open(client) => continue,
-                Input::PasteTooLong => {
-                    let limit = fux::decode::PASTE_LIMIT / 1024;
-                    let text = format!("paste exceeds {limit} KiB; discarded");
-                    Act::Notice { text, error: true }
-                }
-                Input::FocusIn => Act::Focus(true),
-                Input::FocusOut => Act::Focus(false),
-                Input::Mouse(event) => Act::Mouse(event),
-            };
-            self.s.acts(client, vec![act]);
+            if let Input::Key(stroke) = input {
+                self.press(client, stroke);
+                continue;
+            }
+            let keys = self.keys.entry(client).or_default();
+            let effects = keys.screen.input(&self.keymap, input, read_only);
+            self.effects(client, effects);
         }
-    }
-
-    fn screen_open(&self, client: ClientId) -> bool {
-        self.keys
-            .get(&client)
-            .is_some_and(|k| k.screen.kind().is_some())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
