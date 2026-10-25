@@ -378,6 +378,21 @@ mod tests {
         assert!(about("id").is_some_and(|a| a.contains(&jump)));
     }
 
+    /// The guide's topics, as `help-agents-on` and the guide's first
+    /// screen list them, are its headings, which `help-agents-on` reads.
+    #[test]
+    fn the_guide_lists_its_topics_as_its_headings_are() {
+        let topics = agents_topics();
+        assert!(topics.len() >= 5, "{topics:?}");
+        let on = WORDS.iter().find(|w| w.name == "help-agents-on");
+        let listed = format!("({})", topics.join(" "));
+        assert!(on.is_some_and(|w| w.about.contains(&listed)), "{listed}");
+        let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
+        let listed = format!("whole guide): {}.", quoted.join(", "));
+        let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(guide.contains(&listed), "agents.md: {listed}");
+    }
+
     /// Every word, and every word of the library, has its help; examples
     /// compile.
     #[test]
