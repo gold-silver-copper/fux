@@ -180,27 +180,29 @@ impl Made {
     }
 }
 
+/// A pane's size to begin with, and the cell its program is told it
+/// starts in: none in a tab no terminal draws yet (`Session::graphics`).
+type Starts = (Size, Option<fux_vt::CellSize>);
+
 /// A pane to make: what it starts, where, what it takes of its starter,
-/// and its size to begin with.
+/// and how it starts (`Starts`).
 #[derive(Clone, Copy)]
 struct NewPane<'a> {
     start: Start<'a>,
     cwd: &'a Path,
     starting: &'a Starting,
     size: Size,
-    /// The cell its program is told it starts in: none in a tab no
-    /// terminal draws yet (`Session::graphics`).
     cell: Option<fux_vt::CellSize>,
 }
 
 impl<'a> NewPane<'a> {
-    fn new(start: Start<'a>, cwd: &'a Path, starting: &'a Starting, size: Size) -> Self {
+    fn new(start: Start<'a>, cwd: &'a Path, starting: &'a Starting, (size, cell): Starts) -> Self {
         Self {
             start,
             cwd,
             starting,
             size,
-            cell: None,
+            cell,
         }
     }
 }
@@ -793,7 +795,7 @@ impl Session {
     /// client's screen of `size`.
     pub fn start(&mut self, size: Size) -> Result<(), Error> {
         let (cwd, starting) = (home(), Starting::default());
-        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, size);
+        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, (size, None));
         self.create_workspace(Some(MAIN.into()), None, Fit::Clients(size), new)
             .map(drop)
     }
@@ -2385,9 +2387,9 @@ impl Session {
                 env,
                 ids,
             } => {
-                let (cwd, fit, size) =
+                let (cwd, fit, sized) =
                     self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
-                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
+                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
                 Ok(made.reply(self.pane(made.pane)?.version(self.run)))
@@ -2400,12 +2402,12 @@ impl Session {
                 env,
                 ids,
             } => {
-                let (cwd, fit, size) =
+                let (cwd, fit, sized) =
                     self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
-                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
+                let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, sized);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
                 let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new)?;
@@ -2430,7 +2432,7 @@ impl Session {
                 ids,
             } => {
                 // Its place is out of every client's way: no client follows.
-                let (dir, fit, size) =
+                let (dir, fit, sized) =
                     self.opening((*ids, cwd.as_deref(), *size), (here, false), &starting)?;
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
@@ -2438,7 +2440,8 @@ impl Session {
                 }
                 // Named after its program, if that makes a name.
                 let derived = Some(pane::named(argv)).filter(|n| check_name(n).is_ok());
-                let new = NewPane::new(Start::Program(argv, env.as_slice()), &dir, &starting, size);
+                let new =
+                    NewPane::new(Start::Program(argv, env.as_slice()), &dir, &starting, sized);
                 let workspace = (workspace.clone()).unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
                 // Opened before the program starts, and emptied after: a run
                 // refused leaves the file as it was.
@@ -2626,21 +2629,21 @@ impl Session {
     /// What `new-workspace`, `new-tab` and `run` do before their pane
     /// starts: the ids asked for taken, the directory it starts in found,
     /// and its tab's fit and the size settling gives its pane: if `follows`,
-    /// its client then shows it, on its screen; else its fit's.
+    /// its client then shows it, on its screen, in the cell its terminal
+    /// said; else its fit's, in no cell, as no terminal draws it.
     fn opening(
         &mut self,
         (ids, dir, size): (Wanted, Option<&Path>, command::Size),
         (here, follows): (Here, bool),
         starting: &Starting,
-    ) -> Result<(PathBuf, Fit, Size), Error> {
+    ) -> Result<(PathBuf, Fit, Starts), Error> {
         self.want(ids, starting.restoring)?;
         let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
-        let follower = here.client().filter(|_| follows);
-        let screen = (follower.and_then(|c| self.views.get(&c)))
-            .filter(|view| view.sizes())
-            .and_then(Self::screen_size);
-        Ok((cwd, fit, screen.unwrap_or(fit.size())))
+        let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
+        let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
+        let cell = follower.and_then(|view| view.terminal.cell);
+        Ok((cwd, fit, (screen.unwrap_or(fit.size()), cell)))
     }
 
     /// `ls`: everything there is, or `target` and what is in it, as text
@@ -2861,10 +2864,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane {
-            cell: self.graphics(target).cell,
-            ..NewPane::new(start, &cwd, &starting, size)
-        };
+        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell));
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -4444,6 +4444,30 @@ mod tests {
             process::reaped(pid);
         }
         assert_eq!(told, Some((size.cols() * 10, size.rows() * 20)));
+        Ok(())
+    }
+
+    /// A new tab or workspace its client follows starts its program in
+    /// the cell that client's terminal said, as it will draw it; one no
+    /// client follows (`run`'s), in none.
+    #[test]
+    fn a_tab_its_client_follows_starts_in_its_terminals_cell() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        s.input(c, b"\x1b[6;20;10t");
+        let origin = Origin::Client(c);
+        let here = s.here(&origin).map_err(|e| e.to_string())?;
+        let mut cell = |follows: bool| {
+            let opening = s.opening(
+                (Wanted::default(), None, None),
+                (here, follows),
+                &Starting::default(),
+            );
+            opening
+                .map(|(_, _, (_, cell))| cell)
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(cell(true)?, fux_vt::CellSize::new(10, 20));
+        assert_eq!(cell(false)?, None);
         Ok(())
     }
 
