@@ -291,7 +291,8 @@ impl Screen {
     }
 
     /// Text pasted: a line being typed takes it; with no screen open, the
-    /// pane does, and the column or a repeat mode ends.
+    /// pane does, and the column or a repeat mode ends; a list, a question
+    /// or copy mode takes none, and says so.
     pub fn paste(&mut self, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
@@ -303,7 +304,8 @@ impl Screen {
             Self::Copy(Some(search)) => self.copy_search(search, insert),
             other @ (Self::List(_) | Self::Confirm { .. } | Self::Copy(_)) => {
                 *self = other;
-                Vec::new()
+                let why = "a list, a question or copy mode is open: nothing was pasted";
+                vec![refusal(why.to_owned())]
             }
         }
     }
@@ -481,6 +483,19 @@ mod tests {
         let mut screen = list();
         assert_eq!(key(&mut screen, "Escape")?, [Effect::Send(Act::Hide)]);
         Ok(())
+    }
+
+    /// A paste where no line is typed goes nowhere, and says so.
+    #[test]
+    fn a_paste_no_screen_takes_is_told() {
+        let told = vec![refusal(
+            "a list, a question or copy mode is open: nothing was pasted".into(),
+        )];
+        for mut screen in [list(), Screen::Copy(None)] {
+            let was = screen.clone();
+            assert_eq!(screen.paste("x"), told);
+            assert_eq!(screen, was);
+        }
     }
 
     /// A rename takes any name, quoted as fuxth reads it back.
