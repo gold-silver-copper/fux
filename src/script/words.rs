@@ -807,9 +807,10 @@ fn fits(typed: usize) -> Result<(), Failure> {
         true => Err(fail(
             Lang::TooLong,
             format!(
-                "{typed} bytes, more than 900 KiB, the most it sends at once \
+                "{typed} bytes, more than {} KiB, the most it sends at once \
                  (text and pastes count their bytes, keys their names', each input \
-                 after the first 5 more)"
+                 after the first 5 more)",
+                INPUT_MAX / 1024
             ),
         )),
         false => Ok(()),
@@ -1641,6 +1642,15 @@ mod tests {
         named.sort_unstable();
         all.sort_unstable();
         assert_eq!(named, all);
+    }
+
+    /// `send-keys`'s help, and the guide, state its bound as it has it.
+    #[test]
+    fn the_input_bound_is_stated_as_checked() {
+        let input = format!("{} KiB at most", INPUT_MAX / 1024);
+        let about = WORDS.iter().find(|w| w.name == "send-keys");
+        assert!(about.is_some_and(|w| w.about.contains(&input)), "{input}");
+        assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
     /// Each word's effect is in the names of fux's kinds, strictly: the

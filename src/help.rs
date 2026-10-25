@@ -315,6 +315,35 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    /// Where the docs and words' help state a bound, they state the
+    /// constant the check uses.
+    #[test]
+    fn the_docs_state_each_bound_as_its_check_has_it() {
+        let grouped = |n: usize| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, digit) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(digit);
+            }
+            out
+        };
+        let readme = include_str!("../README.md");
+        for said in [
+            format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
+            format!("to {} MiB encoded", crate::copy::MAX_CLIPBOARD >> 20),
+            format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
+            format!("at most {} MiB", crate::protocol::MAX_FRAME >> 20),
+        ] {
+            assert!(readme.contains(&said), "README: {said}");
+        }
+        let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
+        let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
+        assert!(about("id").is_some_and(|a| a.contains(&jump)));
+    }
+
     /// Every word, and every word of the library, has its help; examples
     /// compile.
     #[test]

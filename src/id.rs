@@ -169,7 +169,9 @@ impl Ids {
             }
             // An id far ahead would leave none after it: the ids would run out.
             if n > last.saturating_add(MAX_JUMP) || n > u32::MAX - MAX_JUMP {
-                let why = "too far ahead of the ids given so far, which would run out after it";
+                let why = format!(
+                    "more than {MAX_JUMP} past the last given, which would leave too few after it"
+                );
                 return Err(crate::session::fail(Code::Id, format!("id {id}: {why}")));
             }
         }
@@ -184,7 +186,7 @@ impl Ids {
 }
 
 /// How far ahead of the last id given an asked-for one may be.
-const MAX_JUMP: u32 = 1 << 16;
+pub(crate) const MAX_JUMP: u32 = 1 << 16;
 
 fn take(counter: &mut u32, wanted: Option<u32>, what: &'static str) -> Result<u32, Error> {
     if let Some(n) = wanted {
