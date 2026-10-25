@@ -693,8 +693,7 @@ impl Grid {
 
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
-    fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
-        let mut x = x;
+    fn text(&mut self, y: u16, mut x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         for (cluster, width) in clusters(text).filter(|(_, width)| *width > 0) {
             let Some(end) = x
                 .checked_add(width)
@@ -1225,18 +1224,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             b if b == LEFT | RIGHT | UP => "┴",
             _ => "┼",
         };
-        let color = Color::Idx(if focused.is_some_and(|r| r.near(y, x)) {
-            2
-        } else {
-            240
-        });
+        let near = focused.is_some_and(|r| r.near(y, x));
+        let style = Attributes::new(Color::Idx(if near { 2 } else { 240 }), Color::Default);
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
-        grid.put(
-            y,
-            x,
-            CellRef::new(glyph, false, Attributes::new(color, Color::Default)),
-        );
+        grid.put(y, x, CellRef::new(glyph, false, style));
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
     for s in lines {
