@@ -4,7 +4,7 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Subscription};
+use crate::events::{BACKLOG, Ending, Seq, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -569,29 +569,12 @@ struct Saved {
     at: Instant,
     /// Something changed since it was last saved.
     pending: bool,
-    /// The workspaces, tabs and panes it was last saved with.
-    shape: Shape,
+    /// Where in the session's journal it was last saved.
+    saved_at: Seq,
     /// The restore under way, if one is: the other end of a socket its
     /// thread closes as it ends (`Server::restored`). Meanwhile what there
     /// is is not saved over the file.
     restore: Option<UnixStream>,
-}
-
-/// Which workspaces, tabs and panes there are.
-#[derive(Default, PartialEq)]
-struct Shape(Vec<crate::id::WsId>, Vec<crate::id::TabId>, Vec<PaneId>);
-
-impl Shape {
-    fn of(session: &Session) -> Shape {
-        let workspaces = session.parts.workspaces();
-        Shape(
-            workspaces.iter().map(|w| w.id).collect(),
-            (workspaces.iter())
-                .flat_map(|w| w.tabs().iter().map(|t| t.id))
-                .collect(),
-            session.parts.panes().keys().copied().collect(),
-        )
-    }
 }
 
 impl Saved {
@@ -621,7 +604,7 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
-            shape: Shape::default(),
+            saved_at: Seq::default(),
             restore: None,
         })
     }
@@ -678,12 +661,12 @@ impl Saved {
         if !self.pending {
             return;
         }
-        let shape = Shape::of(session);
-        if now < self.at && shape == self.shape {
+        let journal = session.parts.journal();
+        if now < self.at && !journal.made_or_closed(self.saved_at) {
             return;
         }
+        self.saved_at = journal.end();
         self.save(session);
-        self.shape = shape;
         self.at = after(now, SAVE_EVERY);
     }
 

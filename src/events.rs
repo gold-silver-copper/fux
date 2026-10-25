@@ -52,6 +52,13 @@ impl Journal {
         self.next
     }
 
+    /// Whether a workspace, tab or pane was made or closed from `from` on,
+    /// or may have been, in entries let go.
+    pub fn made_or_closed(&self, from: Seq) -> bool {
+        let (lost, mut entries) = self.from(from);
+        lost > 0 || entries.any(|(_, e)| matches!(e.what, What::Created(_) | What::Closed))
+    }
+
     /// What came from `from` on: how many of those entries were let go,
     /// and those kept, oldest first.
     fn from(&self, from: Seq) -> (u64, impl Iterator<Item = &(Seq, Event)>) {
