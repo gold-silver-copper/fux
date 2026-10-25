@@ -317,7 +317,7 @@ and says what is wrong.
 ```sh
 # ~/.config/fux/config.fux
 str C-a prefix
-str shell str '/bin/zsh -l' set                  # a program, then its arguments: blanks part them
+str shell str '/bin/zsh -l' set                  # a program, then its arguments: blanks part them, unquoted
 str clipboard str off set
 
 unbind-all                                        # optional: start from no bindings
