@@ -3599,9 +3599,10 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 }
 
 /// A session itself, as what a program's requests go to, for the tests
-/// and the fuzz targets: each is begun at once, and a wait answered as it
-/// stands, there being no programs to wait on; an event stream and a
-/// grant, which a real server alone serves, are not.
+/// and the fuzz targets: each is begun at once, and a wait answered at its
+/// limit, there being no programs to wait on, once what is due to be read
+/// is; an event stream and a grant, which a real server alone serves, are
+/// not.
 #[cfg(any(test, feature = "in-process"))]
 pub struct InProcess<'s>(pub &'s mut Session);
 
@@ -3619,7 +3620,18 @@ impl crate::script::Asks for InProcess<'_> {
         };
         let outcome = match session.begin(asked.request.clone(), &origin) {
             Begun::Done(outcome) => outcome,
-            Begun::Waiting(waiting) => waiting.answer(session, waiting.due()).unwrap_or_default(),
+            // As the server answers it: the panes' turns and frames come
+            // as they fall due, the soonest first, until it has an answer.
+            Begun::Waiting(waiting) => loop {
+                if let Some(answer) = waiting.answer(session, waiting.due()) {
+                    break answer;
+                }
+                let Some((_, timer)) = session.timers().min_by_key(|(at, _)| *at) else {
+                    let why = "a wait nothing due answers is answered by a real server only";
+                    break Reply::failed(Code::NotHere, why);
+                };
+                session.fire(timer);
+            },
             Begun::Events(_) => {
                 let _ = std::io::Write::write_all(out, b"events stream from a real server only\n");
                 Reply::default()
@@ -4208,6 +4220,22 @@ mod tests {
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
         let size = tab.fit().size();
         assert_eq!((size.cols(), size.rows()), (200, 49));
+        Ok(())
+    }
+
+    /// A wait on a pane part way through a frame is answered in process as
+    /// a server answers it: once the frame is read whole, its screen
+    /// changed, not as an empty success.
+    #[test]
+    fn a_wait_in_process_answers_a_frame_whole() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend(crate::pane::tests::spends_the_budget(24, 80));
+        frame.extend_from_slice(b"DONE\x1b[?2026l");
+        s.output(PaneId::of(1), &frame);
+        assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
+        let answer = output(&mut s, "%1 0 timeout wait")?;
+        assert!(answer.ends_with(" screen\n"), "{answer}");
         Ok(())
     }
 
