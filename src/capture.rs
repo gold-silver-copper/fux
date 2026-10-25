@@ -258,7 +258,7 @@ pub fn state<S>(
     let cut = [
         ("title", pane.title().cut()),
         ("notification", notification.is_some_and(|n| n.cut())),
-        ("output", pane.left == crate::pane::Left::Cut),
+        ("output", pane.left.output == crate::pane::Output::Cut),
     ];
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
     let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
@@ -310,6 +310,7 @@ pub fn state<S>(
             notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
         ),
         ("truncated", Json::Array(truncated)),
+        ("input_unread", Json::int(pane.left.input)),
         (
             "cwd",
             foreground

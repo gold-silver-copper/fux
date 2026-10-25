@@ -574,7 +574,7 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
-    /// What its program left on its terminal as it ended, or is ending.
+    /// What its program left as it ended, or is ending.
     pub left: Left,
     /// How many times its program was started again (`respawn`), each on a
     /// screen of its own: a wait from the program before answers
@@ -587,13 +587,22 @@ pub struct Pane<S = crate::workspace::Placed> {
     placed: S,
 }
 
-/// What a program left on its terminal as it ended, or was respawned
-/// over: read whole, or cut at the most that is read
-/// (`Session::read_left`), the rest not read. Said with its end
-/// (`exited`, `respawned`), in its pane's JSON till it is respawned, and
-/// in the notice of its end.
+/// What a program left as it ended, or was respawned over: said with its
+/// end (`exited`, `respawned`), in its pane's JSON till it is respawned,
+/// and in the notice of its end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Left {
+pub struct Left {
+    /// What it wrote to its terminal.
+    pub output: Output,
+    /// Bytes of input queued for it that it never read, let go
+    /// (`InputQueue::discard`).
+    pub input: usize,
+}
+
+/// What a program left on its terminal as it ended: read whole, or cut at
+/// the most that is read (`Session::read_left`), the rest not read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Output {
     #[default]
     Read,
     Cut,
@@ -633,7 +642,7 @@ impl Pane<Loose> {
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
-            left: Left::Read,
+            left: Left::default(),
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
@@ -1064,9 +1073,14 @@ impl<S> Pane<S> {
             left,
             alerts,
         } = Pane::new(self.id, String::new(), runs, self.size(), history)?;
+        // One that ended said what it left with its exit; one that runs
+        // leaves its input now, the new program started.
         let over = match self.process.exit_status() {
-            Some(_) => Left::Read,
-            None => self.left,
+            Some(_) => Left::default(),
+            None => Left {
+                input: self.input.discard(),
+                ..self.left
+            },
         };
         (self.title, self.parser, self.runs) = (title, parser, runs);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
@@ -1123,8 +1137,10 @@ impl<S> Pane<S> {
         std::mem::replace(&mut self.process, Process::Exited(ended))
     }
 
-    /// Its program ended so: said, as a shell's is before its pane closes.
+    /// Its program ended so, the input queued for it let go: said, as a
+    /// shell's is before its pane closes.
     pub fn ended(&mut self, ended: Ended) {
+        self.left.input = self.input.discard();
         self.said.push(What::Exited(ended, self.left));
     }
 

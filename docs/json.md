@@ -41,6 +41,7 @@ for `id`, `name` and `pid` (it says `pane`):
 | `bells` | bells and notifications rung since it started |
 | `notification` | the last notification's text, else `null`: its first 500 characters, without control characters |
 | `truncated` | the fields above the program sent more of than they keep, the rest dropped: `["title"]`, `["title","notification"]`, else `[]`; and `"output"` once its program left more than 1 MiB on its terminal as it ended, the rest not read (till it is respawned) |
+| `input_unread` | bytes of input queued for its program that it never read as it ended, let go (till it is respawned), else 0 |
 | `cwd`, `argv` | the foreground process's directory and words, where the system says |
 
 ## `ls json`
@@ -146,10 +147,10 @@ even a stream that reads at once, of another pane, miss some, which
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
-| `respawned` | `truncated` (`true`) if the program it ran over left more than 1 MiB on its terminal: the rest was not read |
+| `respawned` | `truncated` (`true`) if the program it ran over left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input queued for it that it never read, let go |
 | `rounded` | a tab's: a pane's going (closed, or moved to another tab) merged splits whose exact shares take weights more than 4,294,967,295 together; a close is not refused, so they are rounded to the nearest that fit |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
-| `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; a shell's pane then closes (`closed`) |
+| `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input queued for it that it never read, let go; a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
 | `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |

@@ -11,7 +11,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Tree};
-use crate::pane::{self, Left, Loose, Pane, Process, Runs, basename};
+use crate::pane::{self, Left, Loose, Output, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
@@ -986,12 +986,9 @@ impl Session {
         }
         let history = self.config.history_bytes;
         let process = child.map_or(Process::Absent, Process::Reading);
-        let mut pane = self.pane_mut(id)?;
-        let queued = pane.input.discard();
-        let (old, left) = pane.respawned(launch, process, history)?;
-        drop(pane);
+        let (old, left) = self.pane_mut(id)?.respawned(launch, process, history)?;
         self.end(old, true);
-        let left = left_told((left, queued), "the program it ran");
+        let left = left_told(left, "the program it ran");
         if !left.is_empty() {
             let told = format!("{id} respawned{left}");
             for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
@@ -1985,11 +1982,10 @@ impl Session {
         if pane.has_unread() {
             return;
         }
-        let queued = pane.input.discard();
-        let left = left_told((pane.left, queued), "it");
         match pane.runs {
             Runs::Shell => {
                 pane.ended(ended);
+                let left = left_told(pane.left, "it");
                 drop(pane);
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
@@ -2000,6 +1996,7 @@ impl Session {
             Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let gone = pane.exit(ended);
+                let left = left_told(pane.left, "it");
                 drop(pane);
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
                     let deadline = Instant::now();
@@ -2025,7 +2022,7 @@ impl Session {
             self.output(id, &left);
         }
         if let (true, Ok(mut pane)) = (cut, self.pane_mut(id)) {
-            pane.left = Left::Cut;
+            pane.left.output = Output::Cut;
         }
     }
 
@@ -3467,19 +3464,19 @@ pub(crate) const LEFT_MAX: usize = 1 << 20;
 
 /// What is said, after its end's own words, of what a program, `who`,
 /// left unread as it ended: more than `LEFT_MAX` on its terminal
-/// (`Left::Cut`), and bytes of input queued for it; nothing of one that
+/// (`Output::Cut`), and bytes of input queued for it; nothing of one that
 /// left neither.
-fn left_told((left, queued): (Left, usize), who: &str) -> String {
-    let mut told = match left {
-        Left::Read => String::new(),
-        Left::Cut => format!(
+fn left_told(Left { output, input }: Left, who: &str) -> String {
+    let mut told = match output {
+        Output::Read => String::new(),
+        Output::Cut => format!(
             "; {who} left more than {} MiB on its terminal: the rest was not read",
             LEFT_MAX >> 20
         ),
     };
-    if queued > 0 {
+    if input > 0 {
         told.push_str(&format!(
-            "; {queued} bytes of input queued for it were never read"
+            "; {input} bytes of input queued for it were never read"
         ));
     }
     told
@@ -4273,7 +4270,7 @@ mod tests {
         )?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
-        let cut = |s: &mut Session| s.parts.pane_mut(id).map(|mut p| p.left = Left::Cut);
+        let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left.output = Output::Cut);
         cut(&mut s);
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3)));
         assert!(
@@ -4344,7 +4341,8 @@ mod tests {
     }
 
     /// Input queued for a program that ends without reading it is let go,
-    /// and told with its end: at its exit, or at a respawn over it.
+    /// and told with its end, whoever watches: at its exit, in `exited` and
+    /// its pane's JSON, or at a respawn over it, in `respawned`.
     #[test]
     fn input_an_ended_program_never_read_is_told() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
@@ -4360,22 +4358,34 @@ mod tests {
             pane.input.push(bytes).map_err(|e| e.to_string())
         };
         queue(&mut s, b"abc")?;
-        s.exited(id, Ended::Exited(0));
+        let lines = told(&mut s, |s| s.exited(id, Ended::Exited(0)));
+        assert!(
+            lines.contains("exited %2 @2 +2 status=0 input_unread=3"),
+            "{lines}"
+        );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
         assert!(
             said.ends_with("; 3 bytes of input queued for it were never read"),
             "{said}"
         );
         assert!(s.pane(id).is_ok_and(|p| p.input.is_empty()));
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""input_unread":3"#), "{json}");
         // Respawned over while it runs, with input it has not read.
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
         run(&mut s, "%2 respawn")?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         queue(&mut s, b"de")?;
-        run(&mut s, "%2 kill-first respawn")?;
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(
+            lines.contains("respawned %2 @2 +2 input_unread=2"),
+            "{lines}"
+        );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
         assert!(said.starts_with("%2 respawned; 2 bytes of input"), "{said}");
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""input_unread":0"#), "{json}");
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {
                 process::reaped(pid);

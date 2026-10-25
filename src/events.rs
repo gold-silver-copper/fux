@@ -10,7 +10,7 @@ use crate::code::Code;
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::pane::{Left, NOTIFICATION_MAX, Said, TITLE_MAX};
+use crate::pane::{Left, NOTIFICATION_MAX, Output, Said, TITLE_MAX};
 use crate::process::Ended;
 use crate::protocol::Reply;
 use std::collections::VecDeque;
@@ -146,7 +146,7 @@ pub enum What {
     /// (`layout::Removed::Rounded`).
     Rounded,
     /// Its program started again (`respawn`), over one that ran: what
-    /// that one left on its terminal.
+    /// that one left.
     Respawned(Left),
     Bell,
     Notification(Said<NOTIFICATION_MAX>),
@@ -154,8 +154,7 @@ pub enum What {
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
-    /// Its program ended: with a status or by a signal, and what it left
-    /// on its terminal.
+    /// Its program ended: with a status or by a signal, and what it left.
     Exited(Ended, Left),
 }
 
@@ -214,13 +213,15 @@ impl What {
 }
 
 /// `truncated` (`true`) if a program left more on its terminal as it ended
-/// than is read (`Left::Cut`).
+/// than is read (`Output::Cut`), and `input_unread`, the bytes of input
+/// queued for it it never read, if any.
 fn left_said(left: Left) -> impl Iterator<Item = (&'static str, Json<'static>)> {
-    let cut = match left {
-        Left::Read => None,
-        Left::Cut => Some(("truncated", Json::Bool(true))),
+    let cut = match left.output {
+        Output::Read => None,
+        Output::Cut => Some(("truncated", Json::Bool(true))),
     };
-    cut.into_iter()
+    let input = (left.input > 0).then(|| ("input_unread", Json::int(left.input)));
+    cut.into_iter().chain(input)
 }
 
 impl Event {
@@ -547,15 +548,24 @@ mod tests {
             What::Renamed(String::new()),
             What::Closed,
             What::Moved((ws, tab)),
-            What::Respawned(Left::Cut),
+            What::Respawned(Left {
+                output: Output::Cut,
+                input: 2,
+            }),
             What::Bell,
             What::Rounded,
             What::Notification(Said::default()),
             What::Title(Said::default()),
             What::Done(None),
             What::Resized(size),
-            What::Exited(Ended::Exited(0), Left::Read),
-            What::Exited(Ended::Signalled(9), Left::Cut),
+            What::Exited(Ended::Exited(0), Left::default()),
+            What::Exited(
+                Ended::Signalled(9),
+                Left {
+                    output: Output::Cut,
+                    input: 2,
+                },
+            ),
         ];
         let mut lines = Vec::new();
         for what in what {
