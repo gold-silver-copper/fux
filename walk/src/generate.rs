@@ -282,13 +282,16 @@ fn cli(rng: &mut Rng, world: &World, clients: &[String]) -> Vec<String> {
     let tabs = world.tabs().count();
     let spaces = world.workspaces.len();
     let line = match rng.below(40) {
-        0 => format!("opts str {} workspace in new-tab", workspace(rng)),
+        0 => format!(
+            "opts 80 24 size str {} workspace in new-tab",
+            workspace(rng)
+        ),
         1 => format!(
-            "opts str {} workspace in str t{} name new-tab",
+            "opts 80 24 size str {} workspace in str t{} name new-tab",
             workspace(rng),
             rng.below(9)
         ),
-        2 => format!("opts str w{} name new-workspace", rng.below(9)),
+        2 => format!("opts 80 24 size str w{} name new-workspace", rng.below(9)),
         3 | 4 => format!("str {} pane horizontal split", pane(rng)),
         5 => format!(
             "str {} pane vertical str echo program str split-typed arg split",

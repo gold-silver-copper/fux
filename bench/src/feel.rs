@@ -239,8 +239,19 @@ impl Session {
             Mux::Direct => Err("no multiplexer".into()),
             Mux::Fux => {
                 // `new-tab` makes a tab with a shell; `run` one with a
-                // program.
-                let mut args = vec!["opts", "str", "main", "workspace", "in"];
+                // program; either at the size of the client's panes, as
+                // fux sizes no tab from a caller with no screen or tab.
+                let (cols, rows) = (COLS.to_string(), ROWS.to_string());
+                let mut args = vec![
+                    "opts",
+                    &cols,
+                    &rows,
+                    "size",
+                    "str",
+                    "main",
+                    "workspace",
+                    "in",
+                ];
                 match program {
                     Some([first, rest @ ..]) => {
                         args.extend(["str", first.as_str(), "program"]);
