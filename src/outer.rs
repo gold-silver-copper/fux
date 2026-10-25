@@ -262,20 +262,20 @@ impl Session {
         }
     }
 
-    /// Tells each pane whose program takes scheme reports (mode 2031) and
-    /// was told a scheme, if the terminal that answers for it now has
-    /// another, with no change of its own waiting (`tell_change`): it was
-    /// shown on another terminal, or on none, when its own changed. Run as
-    /// the session settles.
+    /// Tells each pane whose program takes scheme reports (mode 2031) the
+    /// scheme of the terminal that answers for it, if it was told another
+    /// or none, with no change of its own waiting (`tell_change`): it was
+    /// shown on another terminal, or on none, when its own changed or it
+    /// asked; or its report was refused. Run as the session settles.
     pub(crate) fn tell_schemes(&mut self) {
         let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
             .filter_map(|(id, p)| {
-                let told = p.scheme_told?;
                 let tab = self.locate(*id).map(|(_, t)| t);
                 let terminal = &self.views.get(&self.colour_client(tab)?)?.terminal;
                 let scheme = terminal.colours.scheme?;
-                (terminal.change.is_none() && scheme != told).then_some((*id, scheme))
+                let due = terminal.change.is_none() && p.scheme_told != Some(scheme);
+                due.then_some((*id, scheme))
             })
             .collect();
         for (id, scheme) in due {
@@ -283,11 +283,13 @@ impl Session {
         }
     }
 
-    /// Pane `id`'s program is told the scheme is `scheme`.
+    /// Pane `id`'s program is told the scheme is `scheme`, if its input
+    /// queue takes the report; one refused is told lost (`InputQueue`), and
+    /// sent again as the session settles (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
-        if let Some(mut pane) = self.parts.pane_mut(id) {
-            // A program that does not read loses it, as a reply.
-            let _ = pane.input.push(scheme.report());
+        if let Some(mut pane) = self.parts.pane_mut(id)
+            && pane.input.push(scheme.report()).is_ok()
+        {
             pane.scheme_told = Some(scheme);
         }
     }
@@ -595,6 +597,36 @@ mod tests {
         // Told: not again.
         run(&mut s, "str c1 client str main workspace show-workspace")?;
         assert_eq!(answered(&mut s, 1), "");
+        // One never told, as no terminal answered its query, is told once
+        // one does.
+        s.output(PaneId::of(2), b"\x1b[?2031h\x1b[?996n");
+        assert_eq!(answered(&mut s, 2), "");
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
+        Ok(())
+    }
+
+    /// A scheme report a full input queue refuses is not taken as told: it
+    /// is sent once the program reads, and the loss in between is told.
+    #[test]
+    fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?2031h");
+        s.input(c, b"\x1b[?997;1n");
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        p.input.push(full).map_err(|e| e.to_string())?;
+        drop(p);
+        s.input(c, b"\x1b[?997;2n");
+        let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
+        assert!(
+            notice.is_some_and(|n| n.text.contains("%1")),
+            "the loss is told"
+        );
+        assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
+        s.settle();
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         Ok(())
     }
 

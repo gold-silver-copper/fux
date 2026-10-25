@@ -405,7 +405,9 @@ makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the l
   frame is shown anyway after one second or past 2 MiB.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
   or palette entries 0 to 15 (OSC 4) are told your terminal's, and get its
-  dark/light changes (mode 2031) if it reports them. With several terminals
+  dark/light changes (mode 2031) if it reports them: one whose tab was not
+  shown, or not by that terminal, is told the scheme it is shown with once
+  it is. With several terminals
   attached, a pane is answered from the one showing its tab that typed
   into it last, else the first showing it.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
