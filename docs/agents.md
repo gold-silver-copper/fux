@@ -345,7 +345,13 @@ stopped it.
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no
   room below its bar).
-- `opts str FILE log-to` keeps what a program writes; `dump` prints the
+- To keep what a program writes, run it under `script` in its pane, so it
+  still writes to a terminal (a pipe, as with `tee`, changes what it
+  writes): `opts str script program str -q arg str -e arg str -f arg str
+  LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
+  the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
+  'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
+  first and last line of its own). `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,
   `capture-client` shows it): how to drive fux's own screens.

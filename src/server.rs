@@ -780,7 +780,10 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            add(PollFd::new(&listening.listener, PollFlags::IN), Slot::Listener);
+            add(
+                PollFd::new(&listening.listener, PollFlags::IN),
+                Slot::Listener,
+            );
         }
         add(
             PollFd::new(self.children.pipe(), PollFlags::IN),

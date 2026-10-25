@@ -525,8 +525,6 @@ wire! {
             cwd: Option<PathBuf>,
             env: Env,
             argv: Vec<String>,
-            /// A file everything the program writes goes to too.
-            log: Option<String>,
         },
         /// The program `run` started, started again in its pane.
         Respawn {
@@ -585,12 +583,6 @@ wire! {
         /// workspace.
         DumpLayout {
             target: Option<AnyRef>,
-        },
-        /// What the pane's program writes, kept in a file from now on; `None`
-        /// stops it.
-        Log {
-            target: PaneId,
-            file: Option<String>,
         },
         /// The pane's history, dropped.
         ClearHistory {
@@ -738,7 +730,7 @@ pub enum Reaches<'a> {
     /// or a signal whose effect, if any, comes back as its output.
     Reads,
     /// Panes, tabs and workspaces, made, shaped, named or ended; or what
-    /// they hold changed for those who see them: a notification, a log, a
+    /// they hold changed for those who see them: a notification, a
     /// pane's history cleared.
     Shapes,
     /// Their events, streamed until the reader goes: never ending of itself.
@@ -789,7 +781,6 @@ impl Command {
             | C::MovePane { .. }
             | C::SwapPane { .. }
             | C::ResizePane { .. }
-            | C::Log { .. }
             | C::ClearHistory { .. }
             | C::Reorder { .. } => Reaches::Shapes,
             C::KillServer { .. } => Reaches::Server,

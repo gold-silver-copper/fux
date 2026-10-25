@@ -107,7 +107,6 @@ pub const WORDS: &[Word] = &[
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
     word("Starting", "run", "opts -- answer", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
     word("Starting", "split", "subject -- answer", "split a pane: a shell, or the program given"),
@@ -166,8 +165,6 @@ pub const WORDS: &[Word] = &[
     word("Changing", "swap-panes", "pane pane --", "swap two panes"),
     word("Changing", "swap-toward", "pane way --", "swap a pane with its neighbour"),
     word("Changing", "reorder", "handle way --", "move one place: next or previous"),
-    word("Changing", "start-log", "pane file --", "keep what the pane's program writes from now on"),
-    word("Changing", "stop-log", "pane --", "stop keeping it"),
     word("Changing", "clear-history", "pane --", "drop the pane's history"),
     word("Changing", "buffers", "-- text", "the paste buffers, newest 0"),
     word("Changing", "buffer", "n -- text", "paste buffer n"),
@@ -529,7 +526,6 @@ fn modify(
         "name" => built.name = Some(string(&next()?)?),
         "cwd" => built.cwd = Some(string(&next()?)?.into()),
         "in" => built.place = Some(workspace(&next()?)?),
-        "log-to" => built.log = Some(string(&next()?)?),
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
         "size" => built.size = Some(laid_out(&next()?, &next()?)?),
@@ -981,7 +977,6 @@ impl fuxth::Host for Host<'_> {
                             cwd: built.cwd,
                             env: built.env,
                             argv: built.argv,
-                            log: built.log,
                         };
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
@@ -1263,14 +1258,6 @@ impl fuxth::Host for Host<'_> {
                 let siblings = [("next", Sibling::Next), ("previous", Sibling::Previous)];
                 let toward = one_of(&next()?, &siblings)?;
                 tell(Command::Reorder { target: t, toward })
-            }
-            "start-log" | "stop-log" => {
-                let target = pane(&next()?)?;
-                let file = match name {
-                    "start-log" => Some(string(&next()?)?),
-                    _ => None,
-                };
-                tell(Command::Log { target, file })
             }
             "clear-history" => tell(Command::ClearHistory {
                 target: pane(&next()?)?,

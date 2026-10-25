@@ -603,18 +603,15 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
 }
 
 /// `respawn` starts a run program again in its pane, found by its tab's
-/// name; `log-to` keeps all it wrote; `all-history` reads all history,
+/// name; `all-history` reads all history,
 /// `main-screen` what a full-screen program hides, `alt-screen` its last
 /// screen; a mistyped key name is refused.
 #[test]
-fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
+fn run_programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
-    let log = server.dir.join("job.log");
-    let log_arg = log.to_string_lossy().into_owned();
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
     let before = [
-        "str", "job", "name", "str", "V", "str", "a", "env", "str", &log_arg, "log-to", "40", "10",
-        "size",
+        "str", "job", "name", "str", "V", "str", "a", "env", "40", "10", "size",
     ];
     let started = server.ok(&run(&before, &["sh", "-c", script]))?;
     let pane = id(&started);
@@ -650,8 +647,6 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let again = server.ok(&again)?;
     assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
     shows_after(&server, &again, "full b")?;
-    let kept = std::fs::read_to_string(&log).map_err(e)?;
-    assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
     let menu = id(&server.ok(&run(&[], &["sh", "-c", menu]))?);

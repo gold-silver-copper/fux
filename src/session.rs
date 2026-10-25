@@ -454,45 +454,6 @@ pub(crate) const MAIN: &str = "main";
 /// The workspace `fux run` starts programs in unless told another.
 pub const RUN_WORKSPACE: &str = "agent";
 
-/// A log file, made if it is not there: what a program writes may be
-/// secret, so it is the user's alone.
-/// A link is not followed. A file there already is made the user's alone
-/// too, and emptied, by `emptied`, once nothing refuses the log.
-fn open_log(path: &Path) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let failed = |e| fail(Code::Log, format!("the log {}: {e}", path.display()));
-    if path.is_symlink() {
-        let link = std::io::Error::other("a symbolic link, which a log does not follow");
-        return Err(failed(link));
-    }
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(fuxix::file::NOFOLLOW)
-        .open(path)
-        .map_err(failed)?;
-    // Its mode is set once the run starts: setting the mode it has asks
-    // now whether that will be allowed, before anything runs.
-    let mode = file.metadata().map_err(failed)?.permissions();
-    file.set_permissions(mode).map_err(failed)?;
-    Ok(file)
-}
-
-/// `file`, a log, made the user's alone and emptied: a FIFO or a terminal
-/// has nothing to empty.
-fn emptied(file: std::fs::File) -> Result<std::fs::File, Error> {
-    use std::os::unix::fs::PermissionsExt;
-    let failed = |e| fail(Code::Log, format!("the log: {e}"));
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(failed)?;
-    if file.metadata().map_err(failed)?.is_file() {
-        file.set_len(0).map_err(failed)?;
-    }
-    Ok(file)
-}
-
 /// The one item of `items`; of several, why not: `many` says it from how
 /// many there are and their ids.
 fn one<T: Copy + std::fmt::Display>(
@@ -2140,7 +2101,6 @@ impl Session {
                 cwd,
                 env,
                 argv,
-                log,
             } => {
                 // Its place is out of every client's way: no client follows.
                 let (dir, fit, sized) = self.opening((cwd.as_deref(), *size), (here, false))?;
@@ -2153,22 +2113,11 @@ impl Session {
                 let new =
                     NewPane::new(Start::Program(argv, env.as_slice()), &dir, &starting, sized);
                 let workspace = (workspace.clone()).unwrap_or(WsRef::Name(RUN_WORKSPACE.into()));
-                // Opened before the program starts, and emptied after: a run
-                // refused leaves the file as it was.
-                let log = (log.as_ref())
-                    .map(|p| open_log(&self.cwd_for(here, None).join(p)))
-                    .transpose()?;
                 let tab_name = name.clone().or(derived);
                 let made = self.create_tab(Some(&workspace), here, tab_name, fit, new)?;
-                // Before any of its output is read: it all goes there. One
-                // that can't be emptied stops what was started, before a
-                // name it gives another tab is moved.
-                let log = log.map(emptied).transpose();
-                let log = log.inspect_err(|_| self.close_pane(made.pane, None))?;
                 if let Some(given) = name {
                     self.give_tab_name(made.tab, given.clone())?;
                 }
-                self.pane_mut(made.pane)?.log = log;
                 Ok(made.reply(self.pane(made.pane)?.version(self.run)))
             }
             &Command::Respawn {
@@ -2261,13 +2210,6 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::ResizePane { target, by } => self.resize_pane(target, by, here),
-            Command::Log { target, file } => {
-                self.pane(*target)?;
-                let open = |f: &String| emptied(open_log(&self.cwd_for(here, None).join(f))?);
-                let log = file.as_ref().map(open).transpose()?;
-                self.pane_mut(*target)?.log = log;
-                Ok(Reply::default())
-            }
             &Command::ClearHistory { target } => {
                 self.pane_mut(target)?.clear_history();
                 Ok(Reply::default())
@@ -3644,88 +3586,6 @@ mod tests {
         assert_eq!(size(&s, 1), Some(sized(10, 100)?));
         run(&mut s, "%1 split drop")?;
         assert_eq!(size(&s, 1), Some(sized(10, 50)?));
-        Ok(())
-    }
-
-    /// A run refused (its name is taken, its workspace is not there or
-    /// can't be made) leaves the log file it names as it was, its contents
-    /// and its mode: the file is emptied and made the user's alone only for
-    /// a run that starts.
-    #[test]
-    fn a_refused_run_leaves_its_log_alone() -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::PermissionsExt;
-        let mut s = started(Config::default())?;
-        let log = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
-        let line = |opts: &str| {
-            let log = log.display();
-            format!("opts 80 24 size {opts} str '{log}' log-to str /bin/cat program run")
-        };
-        run(&mut s, &line("str a name"))?;
-        // The one that starts makes it the user's alone.
-        assert_eq!(std::fs::metadata(&log)?.permissions().mode() & 0o777, 0o600);
-        std::fs::write(&log, "kept")?;
-        std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o640))?;
-        let refused = [
-            (line("str a name"), "name_taken"),
-            (line("str +9 in"), "no_workspace"),
-            (line("str %9 in"), "bad_name"),
-            (line("str a in"), "name_taken"),
-        ];
-        let kept = refused.map(|(line, code)| {
-            let failed = run(&mut s, &line).is_err_and(|e| e.contains(code));
-            let mode = std::fs::metadata(&log).map(|m| m.permissions().mode() & 0o777);
-            (code, failed, std::fs::read_to_string(&log).ok(), mode.ok())
-        });
-        std::fs::remove_file(&log)?;
-        for (code, failed, text, mode) in kept {
-            assert!(failed, "{code}");
-            assert_eq!(text.as_deref(), Some("kept"), "{code}");
-            assert_eq!(mode, Some(0o640), "{code}");
-        }
-        Ok(())
-    }
-
-    /// A run whose log can't be readied (procfs refuses a file's mode
-    /// change) fails, and leaves no program of its own running.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_run_whose_log_fails_leaves_nothing_running() -> Result<(), String> {
-        let mut s = started(Config::default())?;
-        let panes = s.parts.panes().len();
-        let ran = run(
-            &mut s,
-            "opts 80 24 size str /proc/self/comm log-to str /bin/cat program run",
-        );
-        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
-        assert_eq!(s.parts.panes().len(), panes);
-        // Refused before it started: its pane's id was never taken.
-        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
-        assert!(
-            s.parts.panes().contains_key(&PaneId::of(2)),
-            "the next run's pane is %2"
-        );
-        Ok(())
-    }
-
-    /// A log whose mode only another user may set (`/dev/null`, root's)
-    /// refuses the run before anything starts: no pane is made for it, so
-    /// the next run's pane is the next id (ids are never given twice).
-    #[test]
-    fn a_log_another_user_owns_refuses_the_run_first() -> Result<(), String> {
-        if fuxix::process::geteuid() == 0 {
-            return Ok(());
-        }
-        let mut s = started(Config::default())?;
-        let ran = run(
-            &mut s,
-            "opts 80 24 size str /dev/null log-to str /bin/cat program run",
-        );
-        assert!(ran.is_err_and(|e| e.contains("log")), "refused");
-        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
-        assert!(
-            s.parts.panes().contains_key(&PaneId::of(2)),
-            "the next run's pane is %2"
-        );
         Ok(())
     }
 
@@ -5396,7 +5256,6 @@ mod tests {
             cwd: Some(dir.clone()),
             env: crate::command::Env::default(),
             argv: vec!["cat".into()],
-            log: None,
         };
         s.execute(&program, &Origin::Cli(Caller::default()))?;
         let dump = s.dump_layout(None);

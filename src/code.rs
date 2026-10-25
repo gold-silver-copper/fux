@@ -141,8 +141,6 @@ codes! {
     Mouse "mouse",
     /// A signal that could not be sent.
     Signal "signal",
-    /// A log file that could not be opened.
-    Log "log",
     /// A directory that is not one.
     NotADirectory "not_a_directory",
     /// A client with a terminal, which sets its own size.

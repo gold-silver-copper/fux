@@ -473,6 +473,25 @@ without it, and a comment line says so: it starts where the dump is run.
 
 ## Not included
 
+- **Pane logs** (tmux's `pipe-pane`): run the program under `script` in its
+  pane, so it still writes to a terminal, rather than to a pipe as with
+  `tee`. On Linux (util-linux):
+
+  ```sh
+  fux opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg run
+  ```
+
+  On macOS and the BSDs, whose `script` takes the command as its last
+  words and flushes with `-F`:
+
+  ```sh
+  fux opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg run
+  ```
+
+  LOG holds the raw bytes the program wrote to its terminal; util-linux
+  adds a first and a last line of its own, which BSD `-q` leaves out. `-e`
+  (util-linux) makes the pane's exit status the program's, which BSD
+  `script` always gives.
 - **fux's own mouse actions**: the mouse reaches only programs that ask for
   it (see [Terminal features](#terminal-features)).
 - **Mouse reports in pixels** (mode 1016): your terminal tells fux the

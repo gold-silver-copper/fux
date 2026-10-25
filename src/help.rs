@@ -229,7 +229,7 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env program arg in log-to"),
+    ("run", "name size cwd env program arg in"),
     ("split", "horizontal vertical shares cwd env program arg"),
     ("new-tab", "name size cwd env in"),
     ("new-workspace", "name size cwd env"),
@@ -257,8 +257,8 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
         "shares" => "fux %3 horizontal 2 1 shares split",
-        "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
-            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
+        "name" | "size" | "cwd" | "program" | "arg" | "in" => {
+            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg run"
         }
         "env" => "fux opts str PORT 8080 env 80 24 size str ./app program run",
         "new-tab" => "fux opts str logs name 80 24 size str agent in new-tab",

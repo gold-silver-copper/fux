@@ -169,7 +169,7 @@ wait's own (above). CODE stays; every one fux gives
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
-  `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
+  `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,

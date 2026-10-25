@@ -103,7 +103,6 @@ pub struct Opts {
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
-    pub log: Option<String>,
     pub kill: bool,
     /// How long a wait waits at most.
     pub timeout: Option<crate::config::Limit>,
