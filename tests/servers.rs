@@ -407,9 +407,13 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     let dump = server.ok(&["str", "build", "workspace", "dump-of"])?;
     server.ok(&["str", "build", "workspace", "kill"])?;
     assert!(!server.ok(&["ls"])?.contains("build"));
+    // A script: made runnable, it runs as it is.
     let file = server.dir.join("build.fux");
     std::fs::write(&file, &dump).map_err(e)?;
-    server.ok(&["--file", &file.to_string_lossy()])?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+    let ran = server.piped(&file, &[], "")?;
+    assert_eq!(ran.status, 0, "{}", ran.stderr);
     let ls = server.ok(&["ls"])?;
     assert!(
         ls.contains(" build\n") && ls.contains(" worker "),

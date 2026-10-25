@@ -30,6 +30,9 @@ pub type Config = std::sync::Arc<(String, String)>;
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
 
+/// The first line of a fuxth script, which runs it as `fux --file`.
+pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
+
 /// fux's default keys: a config, run before the user's.
 const KEYS: &str = include_str!("keys.fux");
 

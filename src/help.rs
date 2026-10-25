@@ -39,12 +39,15 @@ pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
 pub fn overview() -> String {
-    let wait = crate::config::Limit::DEFAULT.seconds();
+    let (wait, shebang) = (
+        crate::config::Limit::DEFAULT.seconds(),
+        crate::script::SHEBANG,
+    );
     let mut out = format!(
         "\
 usage: fux                 attach, starting a server if none runs
        fux WORD...         run the words, a fuxth program (or all in one argument)
-       fux --file FILE     run a file of fuxth (#!/usr/bin/env -S fux --file)
+       fux --file FILE     run a file of fuxth ({shebang})
        fux -               run fuxth read from stdin
 
 Words run left to right, each taking what the words before it left: a

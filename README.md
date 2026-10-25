@@ -373,7 +373,8 @@ once you bind them.
 
 ## Saved sessions
 
-`dump` prints what there is as a fuxth program that makes it again, each
+`dump` prints what there is as a fuxth script that makes it again (its first
+line `#!/usr/bin/env -S fux --file`, so `chmod +x` makes it runnable), each
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
