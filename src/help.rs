@@ -179,6 +179,9 @@ pub fn explain(name: &str) -> Option<String> {
                 }
             }
         }
+        if name == "set" {
+            out.push_str(&settings());
+        }
         return Some(out);
     }
     if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
@@ -195,6 +198,20 @@ pub fn explain(name: &str) -> Option<String> {
     }
     let (shape, about) = fuxth::Parsing::named(name)?.syntax();
     Some(format!("{name}  {shape}: {about}\n"))
+}
+
+/// Every setting `set` takes: its name, what text it takes, its default,
+/// and what it does, from `config`'s table.
+fn settings() -> String {
+    let mut out = String::from("\nThe settings:\n");
+    for setting in crate::config::table() {
+        let head = format!("{}: {}", setting.name, setting.takes);
+        let default = format!("By default {}.", setting.default);
+        let about = format!("{} {default}", setting.about);
+        let about = about.split_whitespace().map(str::to_owned);
+        out.push_str(&format!("  {head}{}\n", wrapped(about, "\n      ", 78)));
+    }
+    out
 }
 
 /// The words that start from `opts`, empty options: they make their own
@@ -341,5 +358,10 @@ mod tests {
             }
         }
         assert!(AGENTS.contains("fux "));
+        // `set`'s help names every setting.
+        let set = explain("set").unwrap_or_default();
+        for name in crate::config::NAMES {
+            assert!(set.contains(&format!("\n  {name}: ")), "{name}");
+        }
     }
 }

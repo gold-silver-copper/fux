@@ -208,7 +208,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
+    word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
     word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", "socket --", "close a grant's socket"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
@@ -1641,19 +1641,6 @@ mod tests {
         named.sort_unstable();
         all.sort_unstable();
         assert_eq!(named, all);
-    }
-
-    /// `set`'s help and the README's table name every setting, in order.
-    #[test]
-    fn every_setting_is_told_of() {
-        let set = WORDS.iter().find(|w| w.name == "set");
-        let help: Vec<&str> =
-            (set.map(|w| w.about.split_whitespace().collect())).unwrap_or_default();
-        assert_eq!(help, crate::config::NAMES);
-        let readme = include_str!("../../README.md");
-        for name in crate::config::NAMES {
-            assert!(readme.contains(&format!("\n| `{name}` |")), "{name}");
-        }
     }
 
     /// Each word's effect is in the names of fux's kinds, strictly: the

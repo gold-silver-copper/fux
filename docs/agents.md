@@ -34,7 +34,7 @@ yours to say (recipes below).
 A=$(fux opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
 fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
 A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
-fux str "$A" changed 600 timeout wait          # 600 s at most (else 30, the server's wait-seconds)
+fux str "$A" changed 600 timeout wait          # 600 s at most (else the server's wait-seconds)
 fux %2 str y text send-keys wait               # in one program: from the answer's version
 fux %2 str y text send-keys 5 quiet            # until nothing changes there for 5 s
 fux %2 wait                                    # until it differs from now's
