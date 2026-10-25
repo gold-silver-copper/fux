@@ -1381,7 +1381,11 @@ impl fuxth::Host for Host<'_> {
             "args" => local(Local::Shell(Shell::Args)),
             "input" => local(Local::Shell(Shell::Input)),
             "read-file" => local(Local::Shell(Shell::ReadFile(string(&next()?)?))),
-            "getenv" => local(Local::Shell(Shell::Getenv(string(&next()?)?))),
+            "getenv" => {
+                let name = string(&next()?)?.parse();
+                let name = name.map_err(|why: String| fail(Code::BadValue, why))?;
+                local(Local::Shell(Shell::Getenv(name)))
+            }
             "warn" => local(Local::Shell(Shell::Warn(next()?.text()))),
             "exit" => local(Local::Shell(Shell::Exit(within(&next()?, 0..=255)?))),
             // ------------------------------------------------------ config

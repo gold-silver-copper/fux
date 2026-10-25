@@ -268,7 +268,7 @@ pub enum Shell {
     /// A file's text (`read-file`).
     ReadFile(String),
     /// An environment variable's value (`getenv`).
-    Getenv(String),
+    Getenv(VarName),
     /// A line on stderr (`warn`).
     Warn(String),
     /// The program's end, with this exit status (`exit`).
@@ -723,14 +723,24 @@ impl Asks for Cli {
     }
 }
 
-/// The value of the environment variable `name`: one not set fails
-/// `unset_var`, never an empty string; one that is not text, or a name no
-/// variable can have, is refused.
-fn getenv(name: &str) -> Result<String, Failed> {
-    if name.is_empty() || name.contains(['=', '\0']) {
-        let why = format!("{name:?}: no variable is named so");
-        return Err(Failed::new(Code::BadValue, why));
+/// A name an environment variable can have: not empty, and with no `=` or
+/// NUL.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VarName(String);
+
+impl std::str::FromStr for VarName {
+    type Err = String;
+    fn from_str(name: &str) -> Result<VarName, String> {
+        match name.is_empty() || name.contains(['=', '\0']) {
+            true => Err(format!("{name:?}: no variable is named so")),
+            false => Ok(VarName(name.to_owned())),
+        }
     }
+}
+
+/// The value of the environment variable `name`: one not set fails
+/// `unset_var`, never an empty string; one that is not text is refused.
+fn getenv(VarName(name): &VarName) -> Result<String, Failed> {
     match std::env::var(name) {
         Ok(value) => Ok(value),
         Err(std::env::VarError::NotPresent) => {
