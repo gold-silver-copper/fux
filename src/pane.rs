@@ -59,8 +59,9 @@ pub struct InputQueue {
     lost: Lost,
 }
 
-/// Whether a terminal reply was dropped because the queue was full, and
-/// whether that was told.
+/// Whether a terminal reply was dropped, and whether that was told: told
+/// once for each run of reads that drop one, which ends at a read that
+/// drops none while the queue takes input.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Lost {
     #[default]
@@ -110,8 +111,8 @@ impl InputQueue {
             false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
-    /// Whether a reply was lost and is yet to be told, which it then is:
-    /// once in the queue's life.
+    /// Whether a reply was lost and is yet to be told, which it then is
+    /// (`Lost`).
     pub fn lost_reply(&mut self) -> bool {
         let untold = self.lost == Lost::Untold;
         if untold {
@@ -746,12 +747,14 @@ impl Pane {
                 break;
             }
         }
-        // Queued as `push` queues; a full queue drops them, which is told
-        // (once in the queue's life), as replies past the read's bound are.
+        // Queued as `push` queues; a full queue drops them, which is told,
+        // as replies past the read's bound are (`Lost`).
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
-        if (full || sink.dropped) && self.input.lost == Lost::None {
-            self.input.lost = Lost::Untold;
-        }
+        self.input.lost = match (self.input.lost, full || sink.dropped) {
+            (Lost::None, true) => Lost::Untold,
+            (Lost::Told, false) if !self.input.refusing => Lost::None,
+            (lost, _) => lost,
+        };
         begun
     }
 
@@ -1359,7 +1362,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Replies past what one read queues are dropped, and that is told.
+    /// Replies past what one read queues are dropped, and that is told:
+    /// once for reads that drop them one after another, and again for a
+    /// later drop after a read that dropped none.
     #[test]
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
         let mut pane = pane(3, 20)?;
@@ -1371,6 +1376,13 @@ pub(crate) mod tests {
             .collect();
         pane.output(&queries);
         assert!(pane.input.lost_reply());
+        pane.input.drain_all();
+        pane.output(&queries);
+        assert!(!pane.input.lost_reply(), "the same run of drops");
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        pane.output(&queries);
+        assert!(pane.input.lost_reply(), "a drop after none");
         Ok(())
     }
 
