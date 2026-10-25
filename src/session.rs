@@ -685,7 +685,7 @@ fn acted(versions: impl IntoIterator<Item = command::Version>) -> Reply {
 }
 
 /// What a client showing pane `id` is told of input it dropped.
-fn lost(id: PaneId) -> String {
+pub(crate) fn lost(id: PaneId) -> String {
     format!(
         "input to {id} was dropped: its input queue was full, and takes nothing until its \
          program reads, or one read of its output asked for more than {} bytes of replies",
