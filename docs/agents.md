@@ -56,8 +56,9 @@ fux str agent workspace kill                   # at the end: everything run star
 ```
 
 A wait answers its pane's version now and what changed:
-`%2:0.61.1.4.0:RUN screen bell done`, with `exited 3` or `killed by
-SIGTERM` if its program ended since, `respawned` once started again (its
+`%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
+SIGTERM` (`killed by signal 64` for one with no name) or `ended, its
+status lost` if its program ended since, `respawned` once started again (its
 counts then start afresh). Its first word is the version to wait from next.
 A wait from a version that already holds the end waits for something else,
 as any wait does; one from a version of a pane since closed answers
@@ -181,7 +182,7 @@ as integers: `A counts 3 at` is its `DONE`.
 
   ```sh
   fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
-  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it up to that bound, quoted for fuxth
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, send-keys' 900 KiB at most, quoted for fuxth
   ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program

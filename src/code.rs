@@ -91,7 +91,8 @@ codes! {
     NoPane "no_pane",
     /// A tab named is not there.
     NoTab "no_tab",
-    /// A workspace named is not there.
+    /// A workspace named is not there; or a client that only watches
+    /// attaches to a server that holds none.
     NoWorkspace "no_workspace",
     /// A client named is not there.
     NoClient "no_client",
@@ -134,7 +135,13 @@ codes! {
     NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
-    /// A size no pane or tab can have.
+    /// A size no pane or tab can have: a client's screen of none, or with
+    /// no room for a pane below its bar (`attach`, its terminal resized,
+    /// `resize-client`); a new tab or workspace no client sizes, given
+    /// none; a pane's `resize-x` or `resize-y` the layout cannot give; a
+    /// tab resized, a split or a pane moved where its tab's panes would
+    /// not all show; a layout whose shares would take more weight than it
+    /// holds.
     Size "size",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",
@@ -155,7 +162,8 @@ codes! {
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
     Closed "closed" CLOSED,
-    /// Everything an event stream watched closed.
+    /// Everything an event stream watched closed or, through a grant,
+    /// moved out of its workspace.
     Gone "gone" CLOSED,
     // A program of words.
     /// A run of more steps than allowed.
