@@ -204,12 +204,13 @@ pub fn explain(name: &str) -> Option<String> {
 /// and what it does, from `config`'s table.
 fn settings() -> String {
     let mut out = String::from("\nThe settings:\n");
-    for setting in crate::config::table() {
-        let head = format!("{}: {}", setting.name, setting.takes);
-        let default = format!("By default {}.", setting.default);
-        let about = format!("{} {default}", setting.about);
+    for [name, takes, default, about] in crate::config::table() {
+        let about = format!("{about} By default {default}.");
         let about = about.split_whitespace().map(str::to_owned);
-        out.push_str(&format!("  {head}{}\n", wrapped(about, "\n      ", 78)));
+        out.push_str(&format!(
+            "  {name}: {takes}{}\n",
+            wrapped(about, "\n      ", 78)
+        ));
     }
     out
 }

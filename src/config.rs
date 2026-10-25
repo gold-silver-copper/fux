@@ -49,26 +49,18 @@ macro_rules! settings {
             }
         }
 
-        /// Every setting, in order: its name, what text it takes, its
-        /// default as that text, and what it does.
-        pub fn table() -> Vec<Setting> {
+        /// Every setting, in order, as `fux help set` tells it: its name,
+        /// what text it takes, its default as that text, and what it does.
+        pub fn table() -> Vec<[String; 4]> {
             let defaults = Config::default();
-            vec![$(Setting {
-                name: $name,
-                takes: <$reads as Reads>::takes(),
-                default: <$reads as Reads>::show(&defaults.$field),
-                about: [$($about.trim()),*].join(" "),
-            },)*]
+            vec![$([
+                $name.to_owned(),
+                <$reads as Reads>::takes(),
+                <$reads as Reads>::show(&defaults.$field),
+                [$($about.trim()),*].join(" "),
+            ],)*]
         }
     };
-}
-
-/// A setting as `fux help set` tells it.
-pub struct Setting {
-    pub name: &'static str,
-    pub takes: String,
-    pub default: String,
-    pub about: String,
 }
 
 /// How a setting's text is read: the value it gives, what text it takes,
