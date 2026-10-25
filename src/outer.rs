@@ -259,10 +259,37 @@ impl Session {
             })
             .collect();
         for id in listening {
-            if let Some(mut pane) = self.parts.pane_mut(id) {
-                // A program that does not read loses it, as a reply.
-                let _ = pane.input.push(scheme.report());
-            }
+            self.tell_scheme(id, scheme);
+        }
+    }
+
+    /// Tells each pane whose program takes scheme reports (mode 2031) and
+    /// was told a scheme, if the terminal that answers for it now has
+    /// another, with no change of its own waiting (`tell_change`): it was
+    /// shown on another terminal, or on none, when its own changed. Run as
+    /// the session settles.
+    pub(crate) fn tell_schemes(&mut self) {
+        let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
+            .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
+            .filter_map(|(id, p)| {
+                let told = p.scheme_told?;
+                let tab = self.locate(*id).map(|(_, t)| t);
+                let terminal = &self.views.get(&self.colour_client(tab)?)?.terminal;
+                let scheme = terminal.colours.scheme?;
+                (terminal.change.is_none() && scheme != told).then_some((*id, scheme))
+            })
+            .collect();
+        for (id, scheme) in due {
+            self.tell_scheme(id, scheme);
+        }
+    }
+
+    /// Pane `id`'s program is told the scheme is `scheme`.
+    fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
+        if let Some(mut pane) = self.parts.pane_mut(id) {
+            // A program that does not read loses it, as a reply.
+            let _ = pane.input.push(scheme.report());
+            pane.scheme_told = Some(scheme);
         }
     }
 
@@ -546,6 +573,27 @@ mod tests {
         s.input(c, b"\x1b[6;5;1t\x1b[?62c");
         assert!(notice(&mut s).is_some_and(|n| n.text.contains("1x5")));
         assert!(s.views.get(&c).is_some_and(|v| v.terminal.cell.is_none()));
+        Ok(())
+    }
+
+    /// A program taking scheme reports (mode 2031) in a tab no terminal
+    /// answers for misses its terminal's change, and is told it once the
+    /// tab is shown again.
+    #[test]
+    fn a_scheme_change_missed_in_an_unshown_tab_is_told_once_shown() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?2031h");
+        s.input(c, b"\x1b[?997;1n");
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
+        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        s.input(c, b"\x1b[?997;2n");
+        assert_eq!(answered(&mut s, 1), "");
+        run(&mut s, "str c1 client str main workspace show-workspace")?;
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
+        // Told: not again.
+        run(&mut s, "str c1 client str main workspace show-workspace")?;
+        assert_eq!(answered(&mut s, 1), "");
         Ok(())
     }
 

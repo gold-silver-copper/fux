@@ -1,9 +1,10 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
+use crate::after;
 use crate::bytes::ByteQueue;
 use crate::events::What;
 use crate::id::PaneId;
+use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
-use crate::{after, outer::Colours};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -270,6 +271,8 @@ struct Sink<'a> {
     copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
+    /// The scheme its program was last told (`Pane::scheme_told`).
+    scheme_told: &'a mut Option<Scheme>,
 }
 
 impl Sink<'_> {
@@ -344,6 +347,7 @@ impl fux_vt::Sink for Sink<'_> {
             (b"?", b'n', Some([996])) if second.is_none() => {
                 if let Some(scheme) = self.colours.scheme {
                     fux_vt::Sink::reply(self, scheme.report());
+                    *self.scheme_told = Some(scheme);
                 }
             }
             (b"", b't', Some([22])) if title => self.title.push(),
@@ -496,6 +500,10 @@ pub struct Pane {
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
+    /// The colour scheme its program was last told, answering `CSI ? 996 n`
+    /// or reporting a change (mode 2031): one its terminal now differs from
+    /// is told it (`Session::tell_schemes`).
+    pub scheme_told: Option<Scheme>,
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
@@ -549,6 +557,7 @@ impl Pane {
             frame_left: 0,
             exiting: None,
             colours: Colours::default(),
+            scheme_told: None,
             bell: false,
             copied: Vec::new(),
             wrote_at: Instant::now(),
@@ -729,6 +738,7 @@ impl Pane {
             alerts: &mut self.alerts,
             copied: &mut self.copied,
             colours: &self.colours,
+            scheme_told: &mut self.scheme_told,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.

@@ -1595,6 +1595,7 @@ impl Session {
         self.views = views;
         self.outbox.extend(ended);
         self.size_panes();
+        self.tell_schemes();
         self.hold_copies();
         self.edited = true;
     }
