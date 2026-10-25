@@ -4816,6 +4816,23 @@ mod tests {
         Ok(())
     }
 
+    /// A dump of a tab is made again however its clients showed it: a
+    /// pane zoomed, which has the whole screen.
+    #[test]
+    fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        run(&mut s, "%1 split drop %1 vertical split drop")?;
+        run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
+        let replays = |s: &Session| {
+            let dump = s.dump_layout(None, false);
+            let mut again = started(Config::default())?;
+            run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+            Ok::<_, String>(again.parts.panes().len())
+        };
+        assert_eq!(replays(&s)?, 4);
+        Ok(())
+    }
+
     /// A kill from the command line names all it closed: a tab's
     /// workspace, when it was the last tab, as a pane's.
     #[test]

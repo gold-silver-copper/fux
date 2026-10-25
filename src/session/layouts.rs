@@ -6,7 +6,7 @@
 use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
-use crate::layout::{Axis, Split, Tree};
+use crate::layout::{self, Axis, Split, Tree};
 use crate::pane::{self, Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
@@ -99,17 +99,20 @@ impl Session {
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
         }
-        // Each pane's size, for the shares of its splits, the last taking
-        // what is left, in the tab of the size given above.
+        // Each pane's place in the tab laid out on the size given above,
+        // for the shares of its splits, the last taking what is left: not
+        // its program's size, which a client's zoom, or clients' screens
+        // of other sizes, make one the layout cannot give.
+        let placed = layout::place(root, tab.fit().area());
         let panes = root.panes();
         if let Some((_, sized)) = panes.split_last() {
             for pane in sized {
-                let Some(size) = self.parts.panes().get(pane).map(|p| p.size()) else {
+                let Some(rect) = placed.rect(*pane) else {
                     continue;
                 };
                 let name = pane_name(*pane);
-                push(out, &[&name, &size.cols().to_string(), "resize-x"]);
-                push(out, &[&name, &size.rows().to_string(), "resize-y"]);
+                push(out, &[&name, &rect.w().to_string(), "resize-x"]);
+                push(out, &[&name, &rect.h().to_string(), "resize-y"]);
             }
         }
         // Panes renamed keep their names.
