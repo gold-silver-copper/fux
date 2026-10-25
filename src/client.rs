@@ -503,16 +503,11 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// A program a client's key or prompt runs, on its worker, in order.
-struct Job {
-    code: String,
-    keymap: Keymap,
-}
-
-/// What a job came to: the keymap, if its program changed it (`bind`
-/// typed at the prompt), what to say of it, and the screen it opened.
+/// What a program on the worker came to: the worker's keymap after it
+/// (`bind` typed at the prompt changes it), what to say of it, and the
+/// screen it opened.
 struct Ran {
-    keymap: Option<Keymap>,
+    keymap: Keymap,
     notice: Option<(String, bool)>,
     opened: Option<Screen>,
 }
@@ -520,8 +515,9 @@ struct Ran {
 /// An attached client's own keys: its keymap, the screen it has open or
 /// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
-/// give, one after another, as the client. What each takes, it turns into
-/// the actions to send the server.
+/// give, one after another, as the client. The worker owns the keymap: a
+/// program changes the worker's, and its keymap here follows. What each
+/// takes, it turns into the actions to send the server.
 ///
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
@@ -531,7 +527,7 @@ pub struct Keyboard {
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
-    jobs: std::sync::mpsc::Sender<Job>,
+    jobs: std::sync::mpsc::Sender<String>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
     /// Programs sent to the worker and not yet done.
@@ -551,20 +547,21 @@ impl Keyboard {
         keymap: Keymap,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
-        let (jobs, todo) = std::sync::mpsc::channel::<Job>();
+        let (jobs, todo) = std::sync::mpsc::channel::<String>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, mut poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         let path = socket.path().to_string_lossy().into_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
+        let mut owned = keymap.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
-                for job in todo {
-                    let ran = run_job(&mut server, me, job, &stops);
+                for code in todo {
+                    let ran = run_job(&mut server, me, &mut owned, &code, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -677,9 +674,7 @@ impl Keyboard {
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
             self.running = self.running.saturating_sub(1);
-            if let Some(keymap) = ran.keymap {
-                self.keymap = keymap;
-            }
+            self.keymap = ran.keymap;
             if let Some((text, error)) = ran.notice {
                 acts.push(Act::Notice { text, error });
             }
@@ -717,12 +712,11 @@ impl Keyboard {
     }
 
     fn run(&mut self, code: String) {
-        let keymap = self.keymap.clone();
         // A stop stops the programs queued with the one it was typed for.
         if self.running == 0 {
             self.stop.reset();
         }
-        if self.jobs.send(Job { code, keymap }).is_ok() {
+        if self.jobs.send(code).is_ok() {
             self.running = self.running.saturating_add(1);
         }
     }
@@ -753,14 +747,15 @@ impl Keyboard {
     }
 }
 
-/// Runs a key's or a screen's program as client `me`.
+/// Runs a key's or a screen's program as client `me`, on the worker's
+/// `keymap`. A program that fails changes no keys: half a change is none.
 fn run_job(
     server: &mut script::Server,
     me: crate::id::ClientId,
-    job: Job,
+    keymap: &mut Keymap,
+    code: &str,
     stop: &script::Stop,
 ) -> Ran {
-    let Job { code, keymap } = job;
     let mut changed = keymap.clone();
     let mut out = Vec::new();
     let mut context = context();
@@ -771,7 +766,7 @@ fn run_job(
         opened: None,
     };
     let result = (|| {
-        let tokens = fuxth::token::source("key", &code)?;
+        let tokens = fuxth::token::source("key", code)?;
         let mut machine = script::compiled(keymap.config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
@@ -782,6 +777,9 @@ fn run_job(
             Some(stop),
         )
     })();
+    if result.is_ok() {
+        *keymap = changed;
+    }
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
@@ -797,7 +795,7 @@ fn run_job(
         }
     };
     Ran {
-        keymap: (changed != keymap).then_some(changed),
+        keymap: keymap.clone(),
         notice,
         opened: asks.opened,
     }
@@ -1111,6 +1109,42 @@ mod tests {
         let acts = keyboard.ran();
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
+        Ok(())
+    }
+
+    /// What the worker's programs came to, once all are done.
+    fn all_ran(keyboard: &mut Keyboard) -> Result<Vec<Act>, Box<dyn std::error::Error>> {
+        let mut acts = Vec::new();
+        while !keyboard.idle() {
+            let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+            if fuxix::poll::poll(&mut done, Some(ANSWER))? == 0 {
+                return Err("a program did not end".into());
+            }
+            acts.extend(keyboard.ran());
+        }
+        Ok(acts)
+    }
+
+    /// Two programs queued before either is done each change the keys
+    /// the other left: neither change is lost. One that fails changes none.
+    #[test]
+    fn queued_programs_keep_each_others_keys() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        for code in [
+            "str C-a prefix",
+            "str F5 str ls bind-root",
+            "str F6 str ls bind-root str Nope prefix",
+        ] {
+            assert!(keyboard.frame(ToAttached::Run(code.into())).is_empty());
+        }
+        all_ran(&mut keyboard)?;
+        let keymap = &keyboard.keymap;
+        let root: Vec<String> = keymap.root.iter().map(|(key, _)| key.to_string()).collect();
+        assert_eq!(
+            (keymap.prefix.to_string(), root),
+            ("C-a".into(), vec!["F5".into()])
+        );
         Ok(())
     }
 
