@@ -470,23 +470,36 @@ impl Screen {
         spend!(pixels, words);
         // A row of its pixels read once for each row of the grid it was
         // drawn in, on the rows some picture under it has, and laid on
-        // each picture with that row.
-        let rows = (coverable.iter().map(|c| c.2.start).min().unwrap_or(0))
-            ..(coverable.iter().map(|c| c.2.end).max().unwrap_or(0));
-        let mut bits = Vec::new();
-        let mut read = None;
-        for y in rows {
+        // each picture with that row: those under it in the order their
+        // rows begin, each walked on its own rows alone, a gap between
+        // them skipped.
+        coverable.sort_by_key(|c| c.2.start);
+        let end = coverable.iter().map(|c| c.2.end).max().unwrap_or(0);
+        let (mut bits, mut read) = (Vec::new(), None);
+        let (mut next, mut active) = (0, Vec::new());
+        let mut y = coverable.first().map_or(end, |c| c.2.start);
+        while y < end {
+            while let Some(c) = coverable.get(next).filter(|c| c.2.start <= y) {
+                active.push((c.0, c.1, c.2.end));
+                next = next.saturating_add(1);
+            }
+            active.retain(|a| a.2 > y);
+            if active.is_empty() {
+                y = coverable.get(next).map_or(end, |c| c.2.start);
+                continue;
+            }
             let row = Some(picture.grid_row(y));
             if read != row {
                 picture.opaque_row(y, right, &mut bits);
                 read = row;
             }
-            for (at, (x, y_at), _) in coverable.iter().filter(|c| c.2.contains(&y)) {
-                let dy = origin.1.saturating_add(i64::from(y)).saturating_sub(*y_at);
-                if let Some(p) = self.pictures.get_mut(*at) {
-                    Arc::make_mut(&mut p.picture).cover_row(dy, origin.0.saturating_sub(*x), &bits);
+            for &(at, (x, y_at), _) in &active {
+                let dy = origin.1.saturating_add(i64::from(y)).saturating_sub(y_at);
+                if let Some(p) = self.pictures.get_mut(at) {
+                    Arc::make_mut(&mut p.picture).cover_row(dy, origin.0.saturating_sub(x), &bits);
                 }
             }
+            y = y.saturating_add(1);
         }
         gone.extend(
             coverable
