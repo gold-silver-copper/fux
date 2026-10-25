@@ -198,30 +198,17 @@ fn left_said(left: Left) -> impl Iterator<Item = (&'static str, Json<'static>)> 
 
 impl Event {
     /// The line that tells it: JSON, or its name, where, and `key=value`
-    /// for the rest; `within` a workspace (a grant's), no tab or workspace
-    /// outside it, as a pane moved in from one, or out to one.
-    pub fn line(&self, json: bool, within: Option<WsId>) -> String {
-        let outside = |ws: WsId| within.is_some_and(|w| w != ws);
-        let (name, mut fields) = self.what.said();
-        if let What::Moved((from, _)) = self.what
-            && outside(from)
-        {
-            fields.clear();
-        }
-        let (pane, tab, ws) = self.place.ids();
-        let at = match ws.is_some_and(outside) {
-            true => (pane, None, None),
-            false => (pane, tab, ws),
-        };
-        line(name, at, fields, json)
+    /// for the rest.
+    pub fn line(&self, json: bool) -> String {
+        let (name, fields) = self.what.said();
+        line(name, self.place.ids(), fields, json)
     }
 }
 
 /// How a stream of events ends: its last line, and its reply.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ending {
-    /// Everything it watched has closed, or left the granted workspace
-    /// (status 4).
+    /// Everything it watched has closed (status 4).
     Gone,
     /// The server stopped, for this reason: a stream that is done.
     Stopped(String),
@@ -306,35 +293,22 @@ fn line(
 }
 
 /// A connection that streams events: which pane, tab or workspace it is
-/// told of (all without one), how, the workspace whose ids alone it is
-/// told (a grant's), and where in the journal it reads next.
+/// told of (all without one), how, and where in the journal it reads next.
 pub struct Subscription {
     target: Option<AnyRef>,
     pub json: bool,
-    within: Option<WsId>,
     next: Seq,
 }
 
 impl Subscription {
     /// One told of what happens from now on.
-    pub fn new(
-        target: Option<AnyRef>,
-        json: bool,
-        within: Option<WsId>,
-        journal: &Journal,
-    ) -> Self {
+    pub fn new(target: Option<AnyRef>, json: bool, journal: &Journal) -> Self {
         let next = journal.end();
-        Self {
-            target,
-            json,
-            within,
-            next,
-        }
+        Self { target, json, next }
     }
 
     /// Whether it is told of `event`: where its target is or holds, or a
-    /// pane's move from there; `within` a workspace, only what is there,
-    /// or a pane's move from there.
+    /// pane's move from there.
     fn wants(&self, event: &Event) -> bool {
         let (pane, tab, ws) = event.place.ids();
         let from = if let What::Moved(from) = event.what {
@@ -342,10 +316,7 @@ impl Subscription {
         } else {
             None
         };
-        let seen = self
-            .within
-            .is_none_or(|w| ws == Some(w) || from.is_some_and(|(f, _)| f == w));
-        seen && self.target.is_none_or(|target| match target {
+        self.target.is_none_or(|target| match target {
             AnyRef::Pane(p) => pane == Some(p),
             AnyRef::Tab(t) => tab == Some(t) || from.is_some_and(|(_, f)| f == t),
             AnyRef::Workspace(w) => ws == Some(w) || from.is_some_and(|(f, _)| f == w),
@@ -353,25 +324,17 @@ impl Subscription {
     }
 
     /// Whether `event` ends what it can be told of its target: the target
-    /// closed, or (a pane) moved out of the workspace it is `within`.
+    /// closed.
     fn ends(&self, event: &Event) -> bool {
-        let (_, _, ws) = event.place.ids();
-        let left = matches!(event.what, What::Moved(_)) && !self.reaches(ws);
-        (event.what == What::Closed || left) && self.target == Some(event.place.thing())
-    }
-
-    /// Whether what is in workspace `ws` (none: gone) is there for it.
-    fn reaches(&self, ws: Option<WsId>) -> bool {
-        ws.is_some_and(|ws| self.within.is_none_or(|w| w == ws))
+        event.what == What::Closed && self.target == Some(event.place.thing())
     }
 
     /// The lines it is told of what the journal holds that it has not
     /// read, until they are `room` bytes or more (the rest waits for its
-    /// next turn); and its end, once everything it watched is gone or out
-    /// of its reach, which `holder` (the workspace that holds a target,
-    /// if any) tells for what the journal no longer holds the close or
-    /// move of. With no room it is told nothing, not even what it missed,
-    /// which adds up until it has room.
+    /// next turn); and its end, once everything it watched is gone, which
+    /// `holder` (the workspace that holds a target, if any) tells for what
+    /// the journal no longer holds the close of. With no room it is told
+    /// nothing, not even what it missed, which adds up until it has room.
     pub fn told(
         &mut self,
         journal: &Journal,
@@ -393,15 +356,13 @@ impl Subscription {
             }
             self.next = Seq(seq.0.saturating_add(1));
             if self.wants(event) {
-                lines.push_str(&event.line(self.json, self.within));
+                lines.push_str(&event.line(self.json));
             }
             if self.ends(event) {
                 return (lines, Some(Ending::Gone));
             }
         }
-        let gone = self
-            .target
-            .is_some_and(|target| !self.reaches(holder(target)));
+        let gone = (self.target).is_some_and(|target| holder(target).is_none());
         (lines, gone.then_some(Ending::Gone))
     }
 }
@@ -416,7 +377,7 @@ mod tests {
     fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
         let mut journal = Journal::default();
-        let mut stream = Subscription::new(None, false, None, &journal);
+        let mut stream = Subscription::new(None, false, &journal);
         journal.push(Place::Workspace(ws), What::Bell);
         journal.push(Place::Workspace(ws), What::Closed);
         assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "bell +1\n");
@@ -433,60 +394,6 @@ mod tests {
         assert!(lines.starts_with("missed count=2\nbell +1\n"), "{lines}");
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| Some(ws)).0, "");
-        Ok(())
-    }
-
-    /// A stream within a workspace (a grant's) is told no tab or
-    /// workspace outside it: of a pane moved in from one or out to one,
-    /// only the pane and the side it sees.
-    #[test]
-    fn a_stream_within_a_workspace_is_told_no_ids_outside_it() -> Result<(), String> {
-        let id = |text: &str| text.parse::<WsId>().map_err(|_| text.to_owned());
-        let tab = |text: &str| text.parse::<TabId>().map_err(|_| text.to_owned());
-        let (inside, outside) = ((id("+1")?, tab("@1")?), (id("+2")?, tab("@2")?));
-        let mut journal = Journal::default();
-        let target = Some(AnyRef::Workspace(inside.0));
-        let mut stream = Subscription::new(target, false, Some(inside.0), &journal);
-        let pane = PaneId::of(3);
-        journal.push(Place::Pane(inside, pane), What::Moved(outside));
-        journal.push(Place::Pane(outside, pane), What::Moved(inside));
-        let told = stream.told(&journal, usize::MAX, |_| Some(inside.0)).0;
-        assert_eq!(
-            told,
-            "moved %3 @1 +1\nmoved %3 from_tab=@1 from_workspace=+1\n"
-        );
-        Ok(())
-    }
-
-    /// A stream of a pane within a workspace (a grant's) is told nothing
-    /// of it once it is moved out, but the move, and ends there; or, if
-    /// the journal let the move go, once it reads on and finds it out.
-    #[test]
-    fn a_stream_of_a_pane_within_a_workspace_ends_as_it_leaves() -> Result<(), String> {
-        let id = |text: &str| text.parse::<WsId>().map_err(|_| text.to_owned());
-        let tab = |text: &str| text.parse::<TabId>().map_err(|_| text.to_owned());
-        let (inside, outside) = ((id("+1")?, tab("@1")?), (id("+2")?, tab("@2")?));
-        let pane = PaneId::of(3);
-        let (target, within) = (Some(AnyRef::Pane(pane)), Some(inside.0));
-        let mut journal = Journal::default();
-        let mut stream = Subscription::new(target, false, within, &journal);
-        journal.push(Place::Pane(inside, pane), What::Bell);
-        journal.push(Place::Pane(outside, pane), What::Moved(inside));
-        journal.push(Place::Pane(outside, pane), What::Bell);
-        let told = stream.told(&journal, usize::MAX, |_| Some(outside.0));
-        let lines = "bell %3 @1 +1\nmoved %3 from_tab=@1 from_workspace=+1\n";
-        assert_eq!(told, (lines.to_owned(), Some(Ending::Gone)));
-        // The move let go: what it reads of the pane is outside, and it
-        // ends once it finds the pane there.
-        let mut stream = Subscription::new(target, false, within, &journal);
-        for _ in 0..=KEPT {
-            journal.push(Place::Pane(outside, pane), What::Bell);
-        }
-        let (lines, end) = stream.told(&journal, usize::MAX, |_| Some(outside.0));
-        assert_eq!(
-            (lines.as_str(), end),
-            ("missed count=1\n", Some(Ending::Gone))
-        );
         Ok(())
     }
 
@@ -540,7 +447,7 @@ mod tests {
                 | What::Title(_)
                 | What::Done(_)
                 | What::Resized(_)
-                | What::Exited(..) => lines.push(Event { place, what }.line(false, None)),
+                | What::Exited(..) => lines.push(Event { place, what }.line(false)),
             }
         }
         for ending in [Ending::Gone, Ending::Stopped(String::new())] {

@@ -88,18 +88,6 @@ pub struct Caller {
     /// Its environment, of which panes it starts take what
     /// `update-environment` names.
     pub env: Vec<(String, std::ffi::OsString)>,
-    pub came: Came,
-}
-
-/// How a caller on the CLI came to the server.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum Came {
-    /// By the server's own socket.
-    #[default]
-    Socket,
-    /// By the socket of a grant: what panes it starts are told to reach
-    /// the server by, so that what runs there is held to the grant too.
-    Grant(PathBuf),
 }
 
 /// The server whose pane a caller on the CLI runs in, as its
@@ -405,9 +393,6 @@ pub enum Begun {
     Waiting(Box<Waiting>),
     /// `fux events`: a stream, until the client goes.
     Events(Box<crate::events::Subscription>),
-    /// A grant of a socket to the workspace (`grant`), or with none, its
-    /// revoking (`revoke`): the server's, which listens.
-    Grant(String, Option<WsRef>),
 }
 
 /// How long a closing pane's processes have to exit after the hangup.
@@ -444,9 +429,6 @@ pub struct Session {
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
     changes: u64,
-    /// The sockets `fux grant` made, each with the workspace it reaches,
-    /// for `ls` to list: the server holds them.
-    pub grants: Vec<Grant>,
     /// In tests, each client's keys as its own client would read them
     /// (`Session::input`), and the keymap every client and run shares.
     #[cfg(test)]
@@ -464,8 +446,6 @@ pub struct Session {
 struct Starting {
     set: Vec<(String, std::ffi::OsString)>,
     unset: Vec<String>,
-    /// The socket they reach the server by, if not its own: a grant's.
-    socket: Option<PathBuf>,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -511,145 +491,6 @@ fn emptied(file: std::fs::File) -> Result<std::fs::File, Error> {
         file.set_len(0).map_err(failed)?;
     }
     Ok(file)
-}
-
-/// What a command from a granted socket may reach: the granted workspace,
-/// if it is there, and nothing outside it.
-struct Reach<'a> {
-    session: &'a Session,
-    ws: Option<WsId>,
-    scope: &'a str,
-    here: Here<'a>,
-}
-
-impl Reach<'_> {
-    fn outside(&self, what: String) -> Error {
-        let scope = self.scope;
-        let message =
-            format!("{what} is not in workspace {scope}, the only one this socket reaches (grant)");
-        fail(Code::NotGranted, message)
-    }
-    fn refuse(&self, what: &'static str) -> Result<(), Error> {
-        let scope = self.scope;
-        let message = format!("this socket reaches workspace {scope} alone (grant), not {what}");
-        Err(fail(Code::NotGranted, message))
-    }
-    fn pane(&self, id: PaneId) -> Result<(), Error> {
-        match self.session.locate(id) {
-            Some((ws, _)) if Some(ws) == self.ws => Ok(()),
-            Some(_) | None => Err(self.outside(id.to_string())),
-        }
-    }
-    fn tab(&self, tab: TabId) -> Result<(), Error> {
-        match self.session.tab_workspace(tab) {
-            Ok(ws) if Some(ws) == self.ws => Ok(()),
-            Ok(_) | Err(_) => Err(self.outside(tab.to_string())),
-        }
-    }
-    fn workspace(&self, ws: &WsRef) -> Result<(), Error> {
-        match self.session.resolve_ws(ws) {
-            Ok(id) if Some(id) == self.ws => Ok(()),
-            Ok(id) => Err(self.outside(id.to_string())),
-            Err(_) => Err(self.outside(match ws {
-                WsRef::Id(id) => id.to_string(),
-                WsRef::Name(name) => format!("{name:?}"),
-            })),
-        }
-    }
-    fn any(&self, target: &AnyRef) -> Result<(), Error> {
-        match target {
-            AnyRef::Pane(p) => self.pane(*p),
-            AnyRef::Tab(t) => self.tab(*t),
-            AnyRef::Workspace(w) => self.workspace(&WsRef::Id(*w)),
-        }
-    }
-
-    /// Whether `request` reaches only the granted workspace.
-    fn request(&self, request: &Request) -> Result<(), Error> {
-        match request {
-            Request::Do(command) => self.command(command),
-            Request::Wait(wait) => match wait.since {
-                command::Since::Now(target) => self.any(&target),
-                command::Since::Version(version) => self.pane(version.pane),
-            },
-            Request::Events(target, _) => target.as_ref().map_or(Ok(()), |t| self.any(t)),
-            Request::Grant(..) | Request::Revoke(_) => self.refuse("another grant"),
-        }
-    }
-
-    /// Whether `command` reaches only the granted workspace.
-    fn command(&self, command: &Command) -> Result<(), Error> {
-        match command {
-            Command::Ls { target, .. } | Command::DumpLayout { target } => {
-                target.as_ref().map_or(Ok(()), |t| self.any(t))
-            }
-            Command::Resolve { text, kind } => {
-                let found = self.session.resolve(text, *kind, self.here);
-                let found = found.map_err(|_| self.outside(format!("{text:?}")))?;
-                self.any(&found)
-            }
-            Command::KillServer { .. } => self.refuse("kill-server"),
-            Command::NewWorkspace { .. } => self.refuse("new-workspace"),
-            Command::Kill { target } => match target {
-                AnyRef::Workspace(_) => self.refuse("killing the workspace"),
-                AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
-            },
-            Command::NewTab { target, .. } => target.as_ref().map_or(Ok(()), |w| self.workspace(w)),
-            Command::Run { workspace, .. } => match workspace {
-                // Run makes the workspace it names if it is not there.
-                Some(WsRef::Name(name)) if name == self.scope => Ok(()),
-                Some(ws) => self.workspace(ws),
-                None => Ok(()),
-            },
-            Command::Split { target, .. }
-            | Command::Respawn { target, .. }
-            | Command::SendMouse { target, .. }
-            | Command::Signal { target, .. }
-            | Command::ResizePane { target, .. }
-            | Command::Log { target, .. }
-            | Command::ClearHistory { target }
-            | Command::CapturePane { target, .. } => self.pane(*target),
-            Command::Notify { target, .. } => match target {
-                Some(target) => self.any(target),
-                None => self.refuse("a notice to every client"),
-            },
-            Command::Resize(what) => match what {
-                Resized::Tabs(target, _) => self.any(target),
-                Resized::Client(..) => self.refuse("a client's size"),
-            },
-            Command::SendKeys { target, .. } => self.any(target),
-            Command::Rename { target, .. } => match target {
-                AnyRef::Workspace(_) => self.refuse("renaming the workspace"),
-                AnyRef::Pane(_) | AnyRef::Tab(_) => self.any(target),
-            },
-            Command::MovePane { target, to } => {
-                self.pane(*target)?;
-                match to {
-                    MoveTo::Tab(tab) => self.tab(*tab),
-                    MoveTo::Workspace(ws) => self.workspace(ws),
-                    MoveTo::NewTab | MoveTo::Beside(_) => Ok(()),
-                    MoveTo::NewWorkspace => self.refuse("a new workspace"),
-                }
-            }
-            Command::SwapPane { target, with } => {
-                self.pane(*target)?;
-                match with {
-                    SwapWith::Pane(pane) => self.pane(*pane),
-                    SwapWith::Toward(_) => Ok(()),
-                }
-            }
-            Command::Reorder { target, .. } => match target {
-                AnyRef::Pane(pane) => self.pane(*pane),
-                AnyRef::Tab(tab) => self.tab(*tab),
-                AnyRef::Workspace(_) => self.refuse("reordering workspaces"),
-            },
-            Command::Set { .. } => self.refuse("the server's settings"),
-            Command::ListBuffers | Command::ShowBuffer { .. } | Command::PasteBuffer { .. } => {
-                self.refuse("the paste buffers, which are everyone's")
-            }
-            Command::Client { .. } => self.refuse("a client's screen"),
-        }
-    }
 }
 
 /// The one item of `items`; of several, why not: `many` says it from how
@@ -750,7 +591,6 @@ impl Session {
             sized: Vec::new(),
             ids: Ids::default(),
             changes: 0,
-            grants: Vec::new(),
             #[cfg(test)]
             test_keys: BTreeMap::new(),
             #[cfg(test)]
@@ -880,11 +720,11 @@ impl Session {
     }
 
     /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
-    /// in cells of `cell`, if panes start real processes: told of its server (`FUX_PANE`,
-    /// `FUX_SOCKET`, a grant's socket if its starter came by one,
-    /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
-    /// had), given its starter's variables, and not those its starter had
-    /// not (but for the server's own above), unless `env` sets them.
+    /// in cells of `cell`, if panes start real processes: told of its
+    /// server (`FUX_PANE`, `FUX_SOCKET`, `FUX_SERVER`, and `FUX`, the fux
+    /// running it, unset if it cannot be had), given its starter's
+    /// variables, and not those its starter had not (but for the server's
+    /// own above), unless `env` sets them.
     fn spawn(
         &self,
         id: PaneId,
@@ -896,7 +736,6 @@ impl Session {
             return Ok(None);
         };
         let (argv, env) = (launch.argv.as_slice(), launch.env.as_slice());
-        let socket = fresh.socket.as_deref().unwrap_or(socket);
         let mut vars = vec![
             ("FUX_PANE", id.to_string().into()),
             ("FUX_SOCKET", socket.as_os_str().to_owned()),
@@ -1061,20 +900,11 @@ impl Session {
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
-        let (env, socket) = match origin {
-            Origin::Cli(caller) => match &caller.came {
-                Came::Socket => (caller.env.as_slice(), None),
-                Came::Grant(socket) => (caller.env.as_slice(), Some(socket.clone())),
-            },
-            Origin::Client(client) => (
-                self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
-                None,
-            ),
+        let env = match origin {
+            Origin::Cli(caller) => caller.env.as_slice(),
+            Origin::Client(client) => self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
         };
-        let mut fresh = Starting {
-            socket,
-            ..Starting::default()
-        };
+        let mut fresh = Starting::default();
         for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
             match env.iter().rev().find(|(k, _)| k == name) {
                 Some((k, v)) => fresh.set.push((k.clone(), v.clone())),
@@ -2174,8 +2004,7 @@ impl Session {
 
     /// Begins a request from a client: one that waits gives its wait,
     /// which the server asks for its answer until it has one; a stream of
-    /// events, its subscription; a grant, for the server to make; any other
-    /// runs at once.
+    /// events, its subscription; any other runs at once.
     pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
         self.begin_request(request, origin)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
@@ -2183,25 +2012,16 @@ impl Session {
 
     /// `begin`'s work: what fails before a request runs is its error.
     fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
-        let scope = self.scope(origin)?;
-        let request = match &scope {
-            Some(scope) => self.scoped(request, scope, origin)?,
-            None => request,
-        };
         let now = Instant::now();
         let wait = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
             Request::Wait(wait) => wait,
             Request::Events(target, json) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
-                // Through a grant, the ids of the granted workspace alone.
-                let within = (scope.map(|name| self.resolve_ws(&WsRef::Name(name)))).transpose()?;
                 let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, json, within, journal);
+                let subscription = crate::events::Subscription::new(target, json, journal);
                 return Ok(Begun::Events(Box::new(subscription)));
             }
-            Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
-            Request::Revoke(socket) => return Ok(Begun::Grant(socket, None)),
         };
         let watches = match wait.since {
             command::Since::Now(target) => (self.panes_of(target)?.into_iter())
@@ -2252,46 +2072,6 @@ impl Session {
         Ok(since.counts)
     }
 
-    /// A request from a granted socket, if it may run: with no target, one
-    /// that would act anywhere (`ls`, `run`, `new-tab`, `events`) acts on
-    /// the granted workspace; one that names, or comes from, anything
-    /// outside it, or reaches what is everyone's (the config, the buffers,
-    /// clients, the server), is refused.
-    fn scoped(&self, mut request: Request, scope: &str, origin: &Origin) -> Result<Request, Error> {
-        // With no target, one that would act anywhere acts on the granted
-        // workspace.
-        let ws = self.resolve_ws(&WsRef::Name(scope.to_owned())).ok();
-        if let Request::Do(command) = &mut request
-            && let Command::Run {
-                workspace: at @ None,
-                ..
-            }
-            | Command::NewTab {
-                target: at @ None, ..
-            } = command
-        {
-            *at = Some(WsRef::Name(scope.to_owned()));
-        }
-        if let Request::Do(Command::DumpLayout { target: at @ None })
-        | Request::Events(at @ None, _) = &mut request
-        {
-            // The granted workspace, which may be gone: then nothing.
-            let gone = fail(
-                Code::NotGranted,
-                format!("workspace {scope} (grant) is gone"),
-            );
-            *at = Some(ws.map(AnyRef::Workspace).ok_or(gone)?);
-        }
-        let reach = Reach {
-            session: self,
-            ws,
-            scope,
-            here: self.here(origin)?,
-        };
-        reach.request(&request)?;
-        Ok(request)
-    }
-
     /// Runs a command, parsed already: from a line, a binding or a chooser.
     pub fn run_command(&mut self, command: &Command, origin: &Origin) -> Reply {
         let outcome = self
@@ -2314,7 +2094,7 @@ impl Session {
         let here = self.here(origin)?;
         let starting = self.starting_for(origin);
         match command {
-            Command::Ls { target, get } => self.ls(*target, get.as_deref(), origin),
+            Command::Ls { target, get } => self.ls(*target, get.as_deref()),
             &Command::KillServer { force } => self.kill_server(force, origin),
             Command::NewWorkspace {
                 name,
@@ -2575,15 +2355,7 @@ impl Session {
 
     /// `ls`: everything there is, or `target` and what is in it, as text
     /// with its JSON kept beside it; or one field of the target's JSON.
-    fn ls(
-        &mut self,
-        target: Option<AnyRef>,
-        get: Option<&str>,
-        origin: &Origin,
-    ) -> Result<Reply, Error> {
-        // Through a grant, the granted workspace alone.
-        let scope = self.scope(origin)?;
-        let scope = (scope.map(|name| self.resolve_ws(&WsRef::Name(name)))).transpose()?;
+    fn ls(&mut self, target: Option<AnyRef>, get: Option<&str>) -> Result<Reply, Error> {
         let (read, only) = match target {
             Some(target) => {
                 let target = self.there(target)?;
@@ -2593,7 +2365,7 @@ impl Session {
                 }
                 (read.text, Some(target))
             }
-            None => (self.ls_json(scope), scope.map(AnyRef::Workspace)),
+            None => (self.ls_json(), None),
         };
         // A reading given as text keeps its JSON, made from the same read:
         // `json` converts what was read, never a later read.
@@ -3175,10 +2947,6 @@ impl Session {
                 });
             }
         }
-        for grant in self.grants.iter().filter(|_| only.is_none()) {
-            let (socket, ws) = (grant.socket.display(), &grant.workspace);
-            out.push_str(&format!("grant {socket} {ws}\n"));
-        }
         let shown = |id: Option<String>| id.unwrap_or_else(|| "-".into());
         for view in self.views.values().filter(|_| only.is_none()) {
             let place = self.place(view.id);
@@ -3302,19 +3070,16 @@ impl Session {
         })
     }
 
-    /// `ls json`: everything, or `only` that workspace, with no clients
-    /// or grants (what a granted socket sees).
-    fn ls_json(&self, only: Option<WsId>) -> String {
+    /// `ls json`: everything.
+    fn ls_json(&self) -> String {
         let now = Instant::now();
         let workspaces = (self.parts.workspaces().iter())
-            .filter(|ws| only.is_none_or(|id| id == ws.id()))
             .map(|ws| Json::Object(self.ws_json(ws, now)))
             .collect();
         let opt = |v: Option<String>| v.map_or(Json::Null, Json::str);
         let clients = self
             .views
             .values()
-            .filter(|_| only.is_none())
             .map(|v| {
                 let place = self.place(v.id);
                 let pane = place.and_then(|p| p.pane);
@@ -3329,19 +3094,9 @@ impl Session {
                 ])
             })
             .collect();
-        let grants = (self.grants.iter())
-            .filter(|_| only.is_none())
-            .map(|grant| {
-                Json::Object(vec![
-                    ("socket", Json::str(grant.socket.to_string_lossy())),
-                    ("workspace", Json::str(grant.workspace.as_str())),
-                ])
-            })
-            .collect();
         let mut text = Json::Object(vec![
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
-            ("grants", Json::Array(grants)),
         ])
         .render();
         text.push('\n');
@@ -3353,70 +3108,6 @@ impl Session {
 fn home() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home.filter(|p| p.is_dir()).unwrap_or_else(|| "/".into())
-}
-
-/// A socket `fux grant` made: its commands reach `workspace` alone, the
-/// workspace of that name it was given, or the first that has it once
-/// there is one, whatever it is renamed after.
-pub struct Grant {
-    pub socket: PathBuf,
-    pub workspace: String,
-    pinned: Option<WsId>,
-}
-
-impl Session {
-    /// The workspace's name a caller from `origin` may reach, and nothing
-    /// else, if it came through a socket `fux grant` made: the one pinned,
-    /// while it is there, else the name it was granted, pinned once a
-    /// workspace has it. Through a grant revoked, nothing.
-    fn scope(&mut self, origin: &Origin) -> Result<Option<String>, Error> {
-        let Origin::Cli(Caller {
-            came: Came::Grant(socket),
-            ..
-        }) = origin
-        else {
-            return Ok(None);
-        };
-        let Some(grant) = self.grants.iter().find(|g| g.socket == *socket) else {
-            let message = "the grant this socket came through was revoked";
-            return Err(fail(Code::NotGranted, message));
-        };
-        if let Some(ws) = grant.pinned.and_then(|id| self.workspace(id)) {
-            return Ok(Some(ws.name().to_owned()));
-        }
-        let name = grant.workspace.clone();
-        let found = self.resolve_ws(&WsRef::Name(name.clone())).ok();
-        if let Some(grant) = self.grants.iter_mut().find(|g| g.socket == *socket) {
-            grant.pinned = found;
-        }
-        Ok(Some(name))
-    }
-
-    /// The workspace's name a grant of `workspace` through `socket` would
-    /// reach (by its id, there; by its name, maybe later, as `run` makes
-    /// the one it names), or why there can be none.
-    pub fn grantable(&self, socket: &Path, workspace: &WsRef) -> Result<String, Error> {
-        if self.grants.iter().any(|g| g.socket == socket) {
-            let message = format!("a grant made {} already", socket.display());
-            return Err(fail(Code::Grant, message));
-        }
-        Ok(match workspace {
-            WsRef::Name(name) => name.clone(),
-            WsRef::Id(id) => {
-                (self.workspace(*id).ok_or(Error::NoWorkspace(*id))?.name()).to_owned()
-            }
-        })
-    }
-
-    /// Grant `socket`, which reaches workspace `workspace` alone.
-    pub fn grant(&mut self, socket: PathBuf, workspace: String) {
-        let pinned = self.resolve_ws(&WsRef::Name(workspace.clone())).ok();
-        self.grants.push(Grant {
-            socket,
-            workspace,
-            pinned,
-        });
-    }
 }
 
 /// The most read of what a program left on its terminal as it ends, in
@@ -3563,8 +3254,7 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
 /// A session itself, as what a program's requests go to, for the tests
 /// and the fuzz targets: each is begun at once, and a wait answered at its
 /// limit, there being no programs to wait on, once what is due to be read
-/// is; an event stream and a grant, which a real server alone serves, are
-/// not.
+/// is; an event stream, which a real server alone serves, is not.
 #[cfg(any(test, feature = "in-process"))]
 pub struct InProcess<'s>(pub &'s mut Session);
 
@@ -3602,7 +3292,6 @@ impl crate::script::Asks for InProcess<'_> {
                 let _ = std::io::Write::write_all(out, b"events stream from a real server only\n");
                 Reply::default()
             }
-            Begun::Grant(..) => Reply::failed(Code::Grant, "a grant is made by a real server only"),
         };
         Ok(outcome)
     }
@@ -3774,9 +3463,7 @@ pub(crate) mod testing {
                     },
                     Request::Do(Command::Resolve { .. })
                     | Request::Wait(..)
-                    | Request::Events(..)
-                    | Request::Grant(..)
-                    | Request::Revoke(_) => return self.0.ask(asked, out),
+                    | Request::Events(..) => return self.0.ask(asked, out),
                     Request::Do(command) => command.clone(),
                 };
                 self.1.push(recorded);
@@ -5589,7 +5276,7 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, false, None, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
         change(s);
         stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))

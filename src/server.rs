@@ -14,7 +14,7 @@ use crate::protocol::{
     ToAttached, ToCommand, split_into,
 };
 use crate::render::{self, Grid};
-use crate::session::{Begun, Caller, Came, Dying, Origin, Outgoing, Session, Timer, Within};
+use crate::session::{Begun, Caller, Dying, Origin, Outgoing, Session, Timer, Within};
 use crate::socket::{Endpoint, SocketPath};
 use crate::view::ClientKind;
 use crate::wait::Waiting;
@@ -26,7 +26,7 @@ use std::mem;
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+
 use std::time::{Duration, Instant};
 
 /// Writes to the server's log, its stderr: `log!("…", args)` expands to
@@ -117,9 +117,7 @@ enum Phase {
     /// retrying at once would repeat: then the listener, which stays
     /// readable meanwhile, rests until `resting`.
     Serving {
-        /// The server's own socket first, then those `fux grant` made, each
-        /// with its path, which its connections reach through.
-        listening: Vec<(Option<PathBuf>, Listening)>,
+        listening: Listening,
         resting: Option<Instant>,
     },
     /// Stopping, its socket gone: the server waits for its clients and
@@ -157,9 +155,6 @@ struct Conn {
     decoder: Decoder,
     out: ByteQueue,
     stage: Stage,
-    /// The socket `fux grant` made that it came through, if one did: its
-    /// commands reach that grant's workspace alone, while it lasts.
-    grant: Option<PathBuf>,
 }
 
 /// Where a connection is in its life, each stage holding what it alone
@@ -369,13 +364,12 @@ impl Attached {
 }
 
 impl Conn {
-    fn new(wire: Wire, grant: Option<PathBuf>) -> Conn {
+    fn new(wire: Wire) -> Conn {
         Conn {
             wire,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
-            grant,
         }
     }
 
@@ -561,44 +555,6 @@ pub struct Server {
     accept_logged: Option<Instant>,
 }
 
-/// `fux grant`: a socket made at `socket` (from the caller's directory
-/// `cwd`), whose commands reach `workspace` alone; or `fux revoke`, the one
-/// made there closed (and what came through it ends): the socket of the
-/// grant it revoked.
-fn grant(
-    listening: &mut Vec<(Option<PathBuf>, Listening)>,
-    session: &mut Session,
-    (socket, workspace): (String, Option<crate::command::WsRef>),
-    cwd: Option<PathBuf>,
-) -> (Reply, Option<PathBuf>) {
-    let failed = |stderr: String| (Reply::failed(Code::Grant, stderr), None);
-    let path = cwd.map_or_else(|| PathBuf::from(&socket), |cwd| cwd.join(&socket));
-    let Some(workspace) = workspace else {
-        let before = listening.len();
-        listening.retain(|(socket, _)| socket.as_ref() != Some(&path));
-        session.grants.retain(|g| g.socket != path);
-        return match listening.len() < before {
-            true => (Reply::default(), Some(path)),
-            false => failed(format!("no grant made {}", path.display())),
-        };
-    };
-    let name = match session.grantable(&path, &workspace) {
-        Ok(name) => name,
-        Err(error) => return failed(error.to_string()),
-    };
-    let checked = crate::socket::checked(&path, "grant");
-    let opened = match checked
-        .map_err(Error::Socket)
-        .and_then(|s| Listening::open(&s))
-    {
-        Ok(opened) => opened,
-        Err(error) => return failed(error.to_string()),
-    };
-    session.grant(path.clone(), name);
-    listening.push((Some(path.clone()), opened));
-    (format!("{}\n", path.display()).into(), None)
-}
-
 /// Why a server could not start.
 #[derive(Debug)]
 pub enum Error {
@@ -646,7 +602,7 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
     let mut server = Server {
         session,
         phase: Phase::Serving {
-            listening: vec![(None, listening)],
+            listening,
             resting: None,
         },
         conns: Vec::new(),
@@ -669,10 +625,10 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
 /// with `get_mut`, as the lints ask.
 #[derive(Clone, Copy)]
 enum Slot {
-    /// A socket listened on, by its place among them (`Phase::Serving`).
-    Listener(usize),
+    /// The socket listened on.
+    Listener,
     /// The door beside it: knocks waiting.
-    Door(usize),
+    Door,
     Children,
     Stops,
     Conn(usize),
@@ -723,8 +679,8 @@ impl Server {
             self.poll(timeout, &mut ready);
             for &(slot, flags) in &ready {
                 match slot {
-                    Slot::Listener(grant) => self.accept(grant),
-                    Slot::Door(grant) => self.open_door(grant),
+                    Slot::Listener => self.accept(),
+                    Slot::Door => self.open_door(),
                     Slot::Children => {
                         crate::drain(self.children.pipe());
                         self.reap();
@@ -861,13 +817,11 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            for (grant, (_, listening)) in listening.iter().enumerate() {
-                if let Some(listener) = &listening.listener {
-                    add(PollFd::new(listener, PollFlags::IN), Slot::Listener(grant));
-                }
-                if let Some(door) = &listening.door {
-                    add(PollFd::new(door.fd(), PollFlags::IN), Slot::Door(grant));
-                }
+            if let Some(listener) = &listening.listener {
+                add(PollFd::new(listener, PollFlags::IN), Slot::Listener);
+            }
+            if let Some(door) = &listening.door {
+                add(PollFd::new(door.fd(), PollFlags::IN), Slot::Door);
             }
         }
         add(
@@ -952,7 +906,6 @@ impl Server {
         log!("{reason}");
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
-        self.session.grants.clear();
         // A stream is told all the journal holds for it, and says why it
         // ends, as one of its lines, and ends as a command that is done.
         self.tell_events(true);
@@ -1085,28 +1038,22 @@ impl Server {
         }
     }
 
-    /// The `at`th socket the server listens on while it serves, and the
-    /// grant's socket, if a grant made it, which its connections reach
-    /// through.
-    fn listening(&mut self, at: usize) -> Option<(&mut Listening, Option<PathBuf>)> {
-        let Phase::Serving { listening, .. } = &mut self.phase else {
-            return None;
-        };
-        (listening.get_mut(at)).map(|(socket, l)| (l, socket.clone()))
+    /// The socket the server listens on while it serves.
+    fn listening(&mut self) -> Option<&mut Listening> {
+        match &mut self.phase {
+            Phase::Serving { listening, .. } => Some(listening),
+            Phase::Stopping(_) => None,
+        }
     }
 
-    /// Accepts the connections waiting on the server's socket, or with
-    /// `grant` on that socket `fux grant` made.
-    fn accept(&mut self, grant: usize) {
+    /// Accepts the connections waiting on the server's socket.
+    fn accept(&mut self) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
-            let Some((
-                Listening {
-                    listener: Some(listener),
-                    ..
-                },
-                through,
-            )) = self.listening(grant)
+            let Some(Listening {
+                listener: Some(listener),
+                ..
+            }) = self.listening()
             else {
                 return;
             };
@@ -1161,26 +1108,22 @@ impl Server {
             if stream.set_nonblocking(true).is_err() {
                 continue;
             }
-            self.conns.push(Conn::new(Wire::Socket(stream), through));
+            self.conns.push(Conn::new(Wire::Socket(stream)));
         }
     }
 
     /// Takes the connections knocks at the door bring: each a client's two
     /// FIFOs, whose owner the door checked, as the socket's peer check
-    /// does. With `grant`, the door beside that grant's socket.
-    fn open_door(&mut self, grant: usize) {
-        let Some((
-            Listening {
-                door: Some(door), ..
-            },
-            through,
-        )) = self.listening(grant)
+    /// does.
+    fn open_door(&mut self) {
+        let Some(Listening {
+            door: Some(door), ..
+        }) = self.listening()
         else {
             return;
         };
         for fifos in door.knocks() {
-            self.conns
-                .push(Conn::new(Wire::Door(fifos), through.clone()));
+            self.conns.push(Conn::new(Wire::Door(fifos)));
         }
     }
 
@@ -1314,13 +1257,6 @@ impl Server {
                 };
                 let passed = passed.take();
                 let ours = Hello::ours(hello.role);
-                // Refused before the answer, which a client reads as why.
-                if conn.grant.is_some() && hello.role != Role::Command {
-                    let refused = "a socket `fux grant` made takes commands only: no client \
-                                   attaches through it, and it stops no server";
-                    conn.end(session, &Greeting::Exit(refused));
-                    return Ok(true);
-                }
                 let between = Mismatch::between(&hello, &ours);
                 conn.send(session, &Greeting::Hello(ours));
                 match (between, hello.role) {
@@ -1392,10 +1328,6 @@ impl Server {
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        let came = match conn.grant.clone() {
-            Some(socket) => Came::Grant(socket),
-            None => Came::Socket,
-        };
         let Context {
             cwd,
             pane,
@@ -1414,9 +1346,8 @@ impl Server {
         let cwd = Some(cwd).filter(|p| p.is_dir());
         // A program run as a client (`str c2 client focused`) names one
         // that must be there.
-        // A key's or the prompt's program acts where its client is; one
-        // from a grant never does.
-        let origin = match client.filter(|_| conn.grant.is_none()) {
+        // A key's or the prompt's program acts where its client is.
+        let origin = match client {
             Some(c) if !session.views.contains_key(&c) => {
                 let outcome = Reply::failed(Code::NoClient, format!("no client {c}"));
                 conn.answer(session, outcome);
@@ -1426,34 +1357,12 @@ impl Server {
             None => Origin::Cli(Caller {
                 gave: pane,
                 within,
-                cwd: cwd.clone(),
+                cwd,
                 env,
-                came,
             }),
         };
         match session.begin(request, &origin) {
             Begun::Done(outcome) => conn.answer(session, outcome),
-            Begun::Grant(socket, workspace) => {
-                let (outcome, revoked) = match &mut self.phase {
-                    Phase::Serving { listening, .. } => {
-                        grant(listening, session, (socket, workspace), cwd)
-                    }
-                    Phase::Stopping(_) => {
-                        (Reply::failed(Code::Grant, "the server is stopping"), None)
-                    }
-                };
-                conn.answer(session, outcome);
-                // Every connection through a grant revoked ends, idle or
-                // not: one kept would reach what the path is granted next.
-                for conn in
-                    (self.conns.iter_mut()).filter(|c| revoked.is_some() && c.grant == revoked)
-                {
-                    if conn.stage.reads() {
-                        let why = "the grant this came through was revoked";
-                        conn.end(session, &ToCommand::Exit(why));
-                    }
-                }
-            }
             Begun::Waiting(waiting) => conn.enter(session, Stage::Waiting(waiting)),
             Begun::Events(subscription) => {
                 // Told it is armed: from here on, nothing is missed.
@@ -1589,7 +1498,7 @@ mod tests {
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
         tty.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(Wire::Socket(stream), None);
+        let mut conn = Conn::new(Wire::Socket(stream));
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))
@@ -1617,34 +1526,6 @@ mod tests {
         assert!(listening.door.is_none(), "with no door");
         drop(listening);
         let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
-    }
-
-    /// A grant from a directory whose name is not UTF-8 is bound at the
-    /// path it names and records, not at a lossy spelling of it. Linux
-    /// only: macOS's file systems refuse a name that is not UTF-8.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_grant_from_a_directory_not_utf8_binds_its_own_path() -> Result<(), String> {
-        use std::os::unix::ffi::OsStrExt;
-        let e = |e: &dyn std::fmt::Display| e.to_string();
-        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
-            .join(format!("fux-grant-{}", std::process::id()))
-            .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
-        let _ = dir.parent().map(std::fs::remove_dir_all);
-        let _ = dir.parent().map(std::fs::create_dir_all);
-        let mut session = crate::session::testing::started(crate::config::Config::default())?;
-        let main = crate::command::WsRef::Name("main".into());
-        let mut listening = Vec::new();
-        let asked = ("g.sock".to_owned(), Some(main));
-        let (reply, _) = grant(&mut listening, &mut session, asked, Some(dir.clone()));
-        assert_eq!(reply.end, crate::protocol::End::Done, "{reply:?}");
-        let bound = std::fs::symlink_metadata(dir.join("g.sock")).map_err(|x| e(&x))?;
-        assert!(std::os::unix::fs::FileTypeExt::is_socket(
-            &bound.file_type()
-        ));
-        drop(listening);
-        let _ = dir.parent().map(std::fs::remove_dir_all);
         Ok(())
     }
 

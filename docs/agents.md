@@ -320,13 +320,13 @@ stopped it.
     sort -u | while read -r n; do fux str "$n" server status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
-  `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket, or a grant's if
-  started through one), `FUX_SERVER` (which run of the server: a
+  `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket), `FUX_SERVER` (which run of the server: a
   `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:
   `stray_pane`) and `FUX` (the fux the server runs, for a script that may
   not find `fux` on PATH; unset if the server cannot name it). A person
-  can give you `str agent str PATH grant`: a socket that reaches workspace
-  `agent` alone. `kill-server` from inside its own server is refused;
+  who wants your panes apart from theirs gives you a server of your own
+  (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
+  `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
 - Nothing is saved on its own: a server that stops, or crashes, takes its
   session with it. `fux dump > FILE` saves its layout and launches when you

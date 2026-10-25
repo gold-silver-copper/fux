@@ -102,8 +102,7 @@ its client does: by the screen it has open (`screens::Screen`: a
 chooser, prompt, confirmation or copy mode), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
 actions, and runs its programs in-process as itself, asked as the tests
-ask (`session::InProcess`: a wait answered as the session stands, a grant
-refused; a screen one opens, built with what the session answers, opens), as it does the programs the
+ask (`session::InProcess`: a wait answered as the session stands; a screen one opens, built with what the session answers, opens), as it does the programs the
 session hands it (`ToAttached::Run`) and the keys sent to it
 (`ToAttached::Keys`); `ToAttached::Ended` ends its screen of that kind. Operations: bytes a
 client types (whole or in pieces), the Escape deadline, resizes, one to

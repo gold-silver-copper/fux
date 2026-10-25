@@ -743,7 +743,7 @@ pub enum Reaches<'a> {
     Shapes,
     /// Their events, streamed until the reader goes: never ending of itself.
     Streams,
-    /// The server itself: stopping it, granting a socket, revoking one.
+    /// The server itself: stopping it.
     Server,
     /// A setting, to `value`.
     Settings { option: &'a str, value: &'a str },
@@ -824,10 +824,6 @@ wire! {
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),
-        /// A socket whose commands reach workspace `workspace` alone.
-        Grant(workspace: WsRef, socket: String),
-        /// The socket a grant made, closed.
-        Revoke(socket: String),
     }
 }
 
@@ -845,7 +841,6 @@ impl Request {
             Self::Do(command) => command.reaches(),
             Self::Wait(..) => Reaches::Reads,
             Self::Events(..) => Reaches::Streams,
-            Self::Grant(..) | Self::Revoke(_) => Reaches::Server,
         }
     }
 }

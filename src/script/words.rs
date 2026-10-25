@@ -140,7 +140,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
-    word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
+    word("Reading", "ls", "-- listing", "workspaces, tabs, panes and clients"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd"),
     word("Reading", "json", "value -- json", "value as JSON (an answer as its JSON); a failed wait stops the program before json runs"),
@@ -206,8 +206,6 @@ pub const WORDS: &[Word] = &[
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
     word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
-    word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
-    word("Server", "revoke", "socket --", "close a grant's socket"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
     // Config
     word("Config", "prefix", "key --", "this client's prefix (config)"),
@@ -1377,12 +1375,6 @@ impl fuxth::Host for Host<'_> {
                 let value = text(&next()?)?;
                 tell(Command::Set { option, value })
             }
-            "grant" => {
-                let workspace = workspace(&next()?)?;
-                let socket = string(&next()?)?;
-                later(ask(Request::Grant(workspace, socket), Then::Text))
-            }
-            "revoke" => tell(Request::Revoke(string(&next()?)?)),
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------ config
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"

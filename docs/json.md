@@ -49,8 +49,7 @@ for `id`, `name` and `pid` (it says `pane`):
 
 ```json
 {"workspaces":[{"id":"+1","name":"main","tabs":[{"id":"@1","name":"main","panes":[PANE…]}]}],
- "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}],
- "grants":[{"socket":"/home/me/.cache/agent.sock","workspace":"agent"}]}
+ "clients":[{"id":"c1","rows":24,"cols":80,"workspace":"+1","tab":"@1","pane":"%1","zoom":false}]}
 ```
 
 `X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
@@ -131,8 +130,7 @@ first failing status naming the whole.
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
 `pane`, `tab` and `workspace` each only where it applies: none of them
-on `ready`, `missed`, `gone` or `stopped`, and no `tab` or `workspace` of
-a pane a grant's stream saw move out of its workspace. Events come in the
+on `ready`, `missed`, `gone` or `stopped`. Events come in the
 order they happened in the whole session, one line each: each is written
 to the session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
@@ -144,13 +142,13 @@ even a stream that reads at once, of another pane, miss some, which
 | `event` | Also |
 | --- | --- |
 | `ready` | first: from here on nothing is missed unsaid |
-| `gone` | last: everything `events-of-json` named has closed or, through a grant, moved out of its workspace (status 4) |
+| `gone` | last: everything `events-of-json` named has closed (status 4) |
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
 | `respawned` | only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
 | `rounded` | a tab's: a pane's going (closed, or moved to another tab) merged splits whose exact shares take weights more than 4,294,967,295 together; a close is not refused, so they are rounded to the nearest that fit |
-| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
+| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
@@ -166,8 +164,7 @@ the file, line and word it came from. Its exit status is 1, or a
 wait's own (above). CODE stays; every one fux gives
 (`src/code.rs` says what each means):
 
-- reaching a server: `no_server`, `mismatch`, `client`, `not_granted`,
-  `grant`;
+- reaching a server: `no_server`, `mismatch`, `client`;
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
   `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;

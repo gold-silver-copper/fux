@@ -82,10 +82,6 @@ codes! {
     Mismatch "mismatch",
     /// The client could not do its part: its socket, its terminal.
     Client "client",
-    /// A socket `grant` made, revoked, or reaching only its workspace.
-    NotGranted "not_granted",
-    /// A grant that cannot be made or revoked.
-    Grant "grant",
     // What a command names.
     /// A pane named is not there.
     NoPane "no_pane",
@@ -160,8 +156,7 @@ codes! {
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
     Closed "closed" CLOSED,
-    /// Everything an event stream watched closed or, through a grant,
-    /// moved out of its workspace.
+    /// Everything an event stream watched closed.
     Gone "gone" CLOSED,
     // A program of words.
     /// A run of more steps than allowed.

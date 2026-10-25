@@ -283,7 +283,7 @@ prints them all.
 | `TERM` | `xterm-256color` |
 | `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
 | `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
-| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it; a grant's socket if the pane was started through one, so what runs there stays within the grant |
+| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it |
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
@@ -515,13 +515,19 @@ Against mistakes, rather than against a program of yours that means harm:
   terminal is attached (headless clients do not count), is refused:
   `force-kill-server` stops it anyway. `kill` takes a handle, never a
   default, so an empty variable closes nothing.
-- `fux str WS str PATH grant` makes a second socket whose requests reach
-  workspace WS alone: an agent given only it can run, read and close what is
-  there, where you can watch it in your own server, and nothing else (no
-  other workspace, the settings, the buffers, clients or the server). `fux
-  str PATH revoke` closes it. Keys it sends into a shell you started there
-  run as you, with your shell's own socket: grant a workspace of the agent's
-  own panes.
+- To keep an agent to panes of its own, give it a server of its own, a
+  session apart from yours:
+
+  ```sh
+  FUX_SOCKET=/run/user/1000/agent.sock fux start
+  FUX_SOCKET=/run/user/1000/agent.sock fux opts 120 40 size new-workspace
+  ```
+
+  An agent given only that socket reaches only what runs there; you watch
+  it by attaching to the socket (`FUX_SOCKET=… fux watch`, or `fux attach`
+  to type there too). Panes never move between servers. It keeps a mistake
+  in one session from reaching the other, nothing more: both servers run as
+  you, so neither is kept from your own processes and files.
 - `fux watch` watches without typing into anything.
 
 ## Development
