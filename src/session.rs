@@ -2782,8 +2782,10 @@ impl Session {
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
-                let beside = |root: &mut _| layout::move_beside(root, pane, destination, direction);
-                self.parts.reshape(pane, beside);
+                let mut root = self.root(from).cloned();
+                layout::move_beside(&mut root, pane, destination, direction);
+                self.room(from, root.as_ref(), here)?;
+                self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
@@ -2813,14 +2815,30 @@ impl Session {
                 (id, tab)
             }
         };
-        if self.locate(pane).is_some_and(|(_, source)| source == tab) {
+        if from == tab {
             return Ok(String::new());
         }
+        let mut root = self.root(tab).cloned();
+        layout::append(&mut root, pane);
+        self.room(tab, root.as_ref(), here)?;
         self.parts.relocate(pane, tab);
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
         Ok(format!("{tab}\n"))
+    }
+
+    /// Refused unless tab `tab` laid out as `root` shows every pane, as
+    /// for a command from `here`: a pane moved there is not hidden.
+    fn room(&self, tab: TabId, root: Option<&Tree>, here: Here) -> Result<(), Error> {
+        let area = self.reference_area(tab, here).ok_or(Error::NoTab(tab))?;
+        if root.is_none_or(|root| layout::shows_all(root, area)) {
+            return Ok(());
+        }
+        let message = format!(
+            "{tab} has no room to show every pane laid out so; make it bigger first (`TAB COLS ROWS resize`)"
+        );
+        Err(fail(Code::Size, message))
     }
 
     fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
@@ -4832,6 +4850,24 @@ mod tests {
         run(&mut s, "str c1 client zoom")?;
         s.resize(c, 2, 2).map_err(|e| e.to_string())?;
         assert_eq!(replays(&s)?, 4);
+        Ok(())
+    }
+
+    /// A pane is not moved where its tab cannot show it, as one is not
+    /// split there: it would be hidden, and its dump not made again.
+    #[test]
+    fn a_pane_is_not_moved_where_it_would_be_hidden() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let split = "opts 5 4 size str +1 workspace in new-tab drop %2 split drop";
+        run(&mut s, split)?;
+        let refused = run(&mut s, "%1 str @2 tab move-to").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("no room"),
+            "{refused}"
+        );
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        assert_eq!(s.root(tab).map(|r| r.panes().len()), Some(2));
         Ok(())
     }
 
