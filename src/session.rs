@@ -1127,23 +1127,13 @@ impl Session {
 
     /// Where a new pane's program starts: `dir`, from the caller's
     /// directory, or with none the directory of the caller, or of `near`.
-    fn start_dir(
-        &self,
-        here: Here,
-        dir: Option<&Path>,
-        near: Option<PaneId>,
-    ) -> Result<PathBuf, Error> {
-        let cwd = match dir {
+    /// Unchecked: one the program cannot start in fails its start, with
+    /// the system's error.
+    fn start_dir(&self, here: Here, dir: Option<&Path>, near: Option<PaneId>) -> PathBuf {
+        match dir {
             Some(dir) => self.cwd_for(here, None).join(dir),
             None => self.cwd_for(here, near),
-        };
-        if cwd.is_dir() {
-            return Ok(cwd);
         }
-        Err(fail(
-            Code::NotADirectory,
-            format!("{} is not a directory", cwd.display()),
-        ))
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -2274,7 +2264,7 @@ impl Session {
         (dir, size): (Option<&Path>, command::Size),
         (here, follows): (Here, bool),
     ) -> Result<(PathBuf, Fit, Starts), Error> {
-        let cwd = self.start_dir(here, dir, None)?;
+        let cwd = self.start_dir(here, dir, None);
         let fit = self.new_fit(size, here)?;
         let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
         let screen = (follower.filter(|view| view.sizes())).and_then(Self::screen_size);
@@ -2469,7 +2459,7 @@ impl Session {
     ) -> Result<Reply, Error> {
         let (here, starting) = (self.here(origin)?, self.starting_for(origin));
         let target = self.pane(target)?.id();
-        let cwd = self.start_dir(here, dir, Some(target))?;
+        let cwd = self.start_dir(here, dir, Some(target));
         // The splitting client follows the new pane, if it shows its tab;
         // from the CLI, the clients that focus the split one.
         let tab = self.locate(target).map(|(_, tab)| tab);

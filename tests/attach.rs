@@ -810,8 +810,12 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
     Ok(())
 }
 
+/// A program that cannot start is reported with the system's error as it
+/// is, and where it was started: a missing program, a missing `#!`
+/// interpreter and a missing directory are all the same `NotFound`, which
+/// fux does not guess between; a directory is not checked first.
 #[test]
-fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
+fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     let server = Server::start("")?;
     // The `shell` setting parts words at blanks and refuses quotes and
     // backslashes: a path with one is none.
@@ -826,22 +830,43 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     std::fs::write(&script, "#!/no/such/sh -e\necho hi\n").map_err(e)?;
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&script, executable).map_err(e)?;
-    for (program, error) in [
-        (&missing, "No such file or directory (os error 2)"),
-        (&not_executable, "Permission denied (os error 13)"),
-        (&script, "its interpreter /no/such/sh does not exist"),
+    let (here, nowhere) = (&server.dir, &server.dir.join("no-such-dir"));
+    let not_found = "No such file or directory (os error 2)";
+    let before = server.ok(&["ls"])?;
+    for (program, cwd, error) in [
+        (&missing, here, not_found),
+        (&not_executable, here, "Permission denied (os error 13)"),
+        (&script, here, not_found),
+        (&std::path::PathBuf::from("/bin/sh"), nowhere, not_found),
+        (
+            &std::path::PathBuf::from("/bin/sh"),
+            &not_executable,
+            "Not a directory (os error 20)",
+        ),
     ] {
         let program = program.to_string_lossy();
         server.ok(&["str", "shell", "str", &program, "set"])?;
-        let out = server.fux(&["opts", "80", "24", "size", "new-workspace"])?;
+        let cwd_text = cwd.to_string_lossy();
+        let out = server.fux(&[
+            "opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            &cwd_text,
+            "cwd",
+            "new-workspace",
+        ])?;
         assert_eq!(out.status, 1);
         assert!(
             out.stderr
-                .ends_with(&format!(": starting {program}: {error}\n")),
+                .ends_with(&format!(": starting {program} in {cwd:?}: {error}\n")),
             "{}",
             out.stderr
         );
     }
+    // Nothing a failed start made is left.
+    assert_eq!(server.ok(&["ls"])?, before);
     // The server is unharmed, and a good shell starts again.
     server.ok(&["str", "shell", "str", "/bin/sh", "set"])?;
     server.ok(&["opts", "80", "24", "size", "new-workspace"])?;

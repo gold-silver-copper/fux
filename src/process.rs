@@ -21,7 +21,8 @@ pub struct Child {
 /// Starts `argv` on a new PTY of `size`, in pixels as `cell` makes it
 /// (`pixels`), in its own session with the PTY as its controlling
 /// terminal: with `env` set and `unset` removed from the server's
-/// environment.
+/// environment. A start that fails says what was started where, and the
+/// system's error as it is ([`fuxix::pty::Slave::spawn`]).
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
@@ -55,7 +56,7 @@ pub fn spawn(
                 command.env(key, value);
             }
         })
-        .map_err(|source| format!("starting {program}: {source}"))?;
+        .map_err(|source| format!("starting {program} in {cwd:?}: {source}"))?;
     // The std handle is dropped without waiting: fux reaps the pid itself, and
     // std never waits on a dropped child.
     drop(child);

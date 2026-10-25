@@ -209,7 +209,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
         "opts", "80", "24", "size", "str", "no\nsuch", "program", "run",
     ])?;
     assert!(
-        path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"no\nsuch:"),
+        path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"starting no\nsuch in "),
         "{}",
         path.stderr
     );

@@ -170,7 +170,7 @@ wait's own (above). CODE stays; every one fux gives
   `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`,
-  `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
+  `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
@@ -186,8 +186,8 @@ help try`); a code no running word gives is refused before it runs.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":18,
- "server_version":"0.35.0","server_protocol":18,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":19,
+ "server_version":"0.35.0","server_protocol":19,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether
