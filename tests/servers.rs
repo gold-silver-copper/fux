@@ -670,6 +670,41 @@ fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     Ok(())
 }
 
+/// How much of a flood the server takes, sent after an Attach, before its
+/// socket takes no more for a while (or the flood, 64 MiB, ends).
+fn flood_after_attach(socket: &std::path::Path) -> Result<usize, String> {
+    use fux::protocol::{Attach, Frame, Hello, PROTOCOL, Role};
+    use std::io::Write;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(e)?;
+    let hello = Hello {
+        protocol: PROTOCOL,
+        version: "flood".into(),
+        role: Role::Attach,
+    };
+    let attach = Attach {
+        size: sized(10, 40)?,
+        workspace: None,
+        read_only: false,
+        env: Vec::new(),
+    };
+    stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;
+    stream.write_all(&attach.encode().map_err(e)?).map_err(e)?;
+    stream.set_nonblocking(true).map_err(e)?;
+    // Not a frame: the server ends the client once it reads it.
+    let junk = vec![0xff; 64 * 1024];
+    let (mut sent, mut stuck) = (0usize, std::time::Instant::now());
+    while sent < 64 << 20 && stuck.elapsed() < std::time::Duration::from_millis(300) {
+        match stream.write(&junk) {
+            Ok(n) => (sent, stuck) = (sent.saturating_add(n), std::time::Instant::now()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => break,
+        }
+    }
+    Ok(sent)
+}
+
 /// A client that attaches while a saved session comes back is let in once
 /// it is back: the session is laid out on the sizes it was saved at, not
 /// on that client's screen, too narrow to show its two panes.
@@ -704,6 +739,10 @@ fn a_client_attaching_during_a_restore_waits_for_it() -> Outcome {
     assert_ne!(held, text, "{text}");
     std::fs::write(&path, held).map_err(e)?;
     restart(&server)?;
+    // One held sends on after its Attach: it is read no more till the
+    // restore ends, what it sends left in its socket, not in the server.
+    let flood = flood_after_attach(&server.socket)?;
+    assert!(flood < 8 << 20, "{flood} bytes taken from a held client");
     let mut client = server.attach_to(10, 4, "agent")?;
     client.ready()?;
     assert!(saved(&server, "failed")?.is_empty(), "{}", server.log());
