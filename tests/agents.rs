@@ -826,9 +826,9 @@ fn an_answer_is_its_pane() -> Outcome {
     Ok(())
 }
 
-/// Input as large as a paste may be (900 KiB) goes in one send-keys, all
-/// of it, from a program read from a file; more is refused as too long,
-/// before anything is sent.
+/// Input as large as one send-keys sends (900 KiB, far past a typed
+/// paste's 64 KiB) goes in one, all of it, from a program read from a
+/// file; more is refused as too long, before anything is sent.
 #[test]
 fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let server = Server::start("")?;
