@@ -230,6 +230,12 @@ impl Placement {
     }
 }
 
+/// Whether `root` placed in `area` shows every one of its panes.
+pub fn shows_all(root: &Tree, area: Rect) -> bool {
+    let placed = place(root, area);
+    root.panes().iter().all(|p| placed.rect(*p).is_some())
+}
+
 impl<A> Tree<A> {
     /// Every pane, in tree order: for when a list is needed, as to step
     /// through it by index.

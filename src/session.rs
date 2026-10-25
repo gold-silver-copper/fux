@@ -1197,9 +1197,8 @@ impl Session {
         root.split(target, new, axis, Side::After);
         // No place for it, or one it takes from another pane: the tab is
         // too small to show another pane.
-        let placed = layout::place(&root, area);
-        let shows_all = root.panes().iter().all(|p| placed.rect(*p).is_some());
-        let rect = placed.rect(new).filter(|_| shows_all);
+        let shows_all = layout::shows_all(&root, area);
+        let rect = layout::place(&root, area).rect(new).filter(|_| shows_all);
         rect.and_then(|r| Size::new(r.h(), r.w()).ok())
             .ok_or_else(|| {
                 let message = format!(
@@ -1985,8 +1984,9 @@ impl Session {
 
     /// `begin`'s work: what fails before a request runs is its error.
     fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
-        let request = match self.scope(origin)? {
-            Some(scope) => self.scoped(request, &scope, origin)?,
+        let scope = self.scope(origin)?;
+        let request = match &scope {
+            Some(scope) => self.scoped(request, scope, origin)?,
             None => request,
         };
         let now = Instant::now();
@@ -1995,8 +1995,10 @@ impl Session {
             Request::Wait(wait) => wait,
             Request::Events(target, json) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
+                // Through a grant, the ids of the granted workspace alone.
+                let within = (scope.map(|name| self.resolve_ws(&WsRef::Name(name)))).transpose()?;
                 let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, json, journal);
+                let subscription = crate::events::Subscription::new(target, json, within, journal);
                 return Ok(Begun::Events(Box::new(subscription)));
             }
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
@@ -2146,7 +2148,7 @@ impl Session {
                 let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
-                let made = self.create_tab(target.as_ref(), here, None, fit, new)?;
+                let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new)?;
                 if let Some(name) = name {
                     self.give_tab_name(made.tab, name.clone())?;
                 }
@@ -2460,8 +2462,7 @@ impl Session {
                 let Some(root) = self.root(*tab) else {
                     continue;
                 };
-                let placed = layout::place(root, area);
-                if root.panes().iter().any(|p| placed.rect(*p).is_none()) {
+                if !layout::shows_all(root, area) {
                     let message = format!(
                         "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
                         root.panes().len()
@@ -2784,8 +2785,10 @@ impl Session {
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
-                let beside = |root: &mut _| layout::move_beside(root, pane, destination, direction);
-                self.parts.reshape(pane, beside);
+                let mut root = self.root(from).cloned();
+                layout::move_beside(&mut root, pane, destination, direction);
+                self.room(from, root.as_ref(), here)?;
+                self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
@@ -2815,14 +2818,30 @@ impl Session {
                 (id, tab)
             }
         };
-        if self.locate(pane).is_some_and(|(_, source)| source == tab) {
+        if from == tab {
             return Ok(String::new());
         }
+        let mut root = self.root(tab).cloned();
+        layout::append(&mut root, pane);
+        self.room(tab, root.as_ref(), here)?;
         self.parts.relocate(pane, tab);
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
         Ok(format!("{tab}\n"))
+    }
+
+    /// Refused unless tab `tab` laid out as `root` shows every pane, as
+    /// for a command from `here`: a pane moved there is not hidden.
+    fn room(&self, tab: TabId, root: Option<&Tree>, here: Here) -> Result<(), Error> {
+        let area = self.reference_area(tab, here).ok_or(Error::NoTab(tab))?;
+        if root.is_none_or(|root| layout::shows_all(root, area)) {
+            return Ok(());
+        }
+        let message = format!(
+            "{tab} has no room to show every pane laid out so; make it bigger first (`TAB COLS ROWS resize`)"
+        );
+        Err(fail(Code::Size, message))
     }
 
     fn reorder(&mut self, target: AnyRef, toward: Sibling) -> Result<(), Error> {
@@ -4729,7 +4748,7 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, false, None, s.parts.journal());
         change(s);
         let there = |target| s.there(target).is_ok();
         stream.told(s.parts.journal(), usize::MAX, there).0
@@ -4749,6 +4768,21 @@ mod tests {
         });
         ran?;
         assert_eq!(lines, "renamed +1 name=x\nrenamed +1 name=main\n");
+        Ok(())
+    }
+
+    /// A tab made with a name is told made with it, not with another
+    /// and then renamed.
+    #[test]
+    fn a_tab_made_with_a_name_is_told_made_with_it() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| {
+            let tab = "opts 80 24 size str t name str +1 workspace in new-tab drop";
+            ran = run(s, tab);
+        });
+        ran?;
+        assert_eq!(lines, "created @2 +1 name=t\ncreated %2 @2 +1\n");
         Ok(())
     }
 
@@ -4798,6 +4832,60 @@ mod tests {
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let fits: Vec<_> = tabs.map(|t| matches!(t.fit(), Fit::Clients(_))).collect();
         assert!(fits.ends_with(&[true, false]), "{dump}");
+        Ok(())
+    }
+
+    /// A tab as big as a client's screen may be, which a tab that fits
+    /// clients takes, is made again from its dump.
+    #[test]
+    fn a_dump_makes_a_tab_as_big_as_a_screen_again() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
+        let mut again = started(Config::default())?;
+        run(&mut again, &s.dump_layout(None, false))?;
+        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
+        let mut sizes = tabs.map(|t| t.fit().size());
+        let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
+        assert!(wide, "{}", s.dump_layout(None, false));
+        Ok(())
+    }
+
+    /// A dump of a tab is made again however its clients showed it: a
+    /// pane zoomed, which has the whole screen; a screen too small for
+    /// every pane, whose size the tab does not take.
+    #[test]
+    fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
+        let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "%1 split drop %1 vertical split drop")?;
+        run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
+        let replays = |s: &Session| {
+            let dump = s.dump_layout(None, false);
+            let mut again = started(Config::default())?;
+            run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+            Ok::<_, String>(again.parts.panes().len())
+        };
+        assert_eq!(replays(&s)?, 4);
+        run(&mut s, "str c1 client zoom")?;
+        s.resize(c, 2, 2).map_err(|e| e.to_string())?;
+        assert_eq!(replays(&s)?, 4);
+        Ok(())
+    }
+
+    /// A pane is not moved where its tab cannot show it, as one is not
+    /// split there: it would be hidden, and its dump not made again.
+    #[test]
+    fn a_pane_is_not_moved_where_it_would_be_hidden() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let split = "opts 5 4 size str +1 workspace in new-tab drop %2 split drop";
+        run(&mut s, split)?;
+        let refused = run(&mut s, "%1 str @2 tab move-to").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("no room"),
+            "{refused}"
+        );
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        assert_eq!(s.root(tab).map(|r| r.panes().len()), Some(2));
         Ok(())
     }
 

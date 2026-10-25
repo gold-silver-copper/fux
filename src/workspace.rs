@@ -51,8 +51,8 @@ pub struct Tab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     /// The screens of the clients showing it: while none does, the last
-    /// it was laid out on (the smallest, of several), or the one it was
-    /// made on.
+    /// it was laid out on (the smallest, of several) that showed every
+    /// pane, or the one it was made on.
     Clients(fux_vt::Size),
     /// A screen of this size, client or none: `size` and `resize`.
     Fixed(fux_vt::Size),
@@ -255,9 +255,12 @@ impl Tab {
 
     /// Clients showing it lay it out on `size`, the smallest of their
     /// screens: laid out on clients' screens, that is its size while none
-    /// does.
+    /// does, if it shows every pane. A screen too small to is not: the tab
+    /// keeps the last size that showed them all, which a dump makes it at.
     pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
-        if let Fit::Clients(last) = &mut self.fit {
+        let area = Fit::Clients(size).area();
+        let shows_all = (self.root.as_ref()).is_none_or(|r| layout::shows_all(r, area));
+        if let (Fit::Clients(last), true) = (&mut self.fit, shows_all) {
             *last = size;
         }
     }
@@ -332,7 +335,14 @@ pub struct Parts {
 
 /// A pane of the session's, to change: what it says happened in it
 /// (`Pane::said`) goes in the journal, at its place, as the borrow ends.
+/// The type does not stop a whole pane being put in its place (`*pane =
+/// other`), which would lose what the old one said: no code does.
 pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
+
+/// Leave to take what a pane said (`Pane::said`), which only this module
+/// gives, as it puts what it takes in the journal: code elsewhere cannot
+/// take it and drop it.
+pub struct Journaling(());
 
 impl std::ops::Deref for PaneMut<'_> {
     type Target = Pane;
@@ -349,7 +359,7 @@ impl std::ops::DerefMut for PaneMut<'_> {
 
 impl Drop for PaneMut<'_> {
     fn drop(&mut self) {
-        for what in self.0.said() {
+        for what in self.0.said(Journaling(())) {
             self.2.push(self.1, what);
         }
     }

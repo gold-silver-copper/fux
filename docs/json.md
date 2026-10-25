@@ -131,6 +131,10 @@ One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
 happened in the whole session, one line each: each is written to the
 session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
+The journal keeps the session's last 16,384 entries, for every stream
+alike: a pane that makes many in one round (a flood of bells) can make
+even a stream that reads at once, of another pane, miss some, which
+`missed` says.
 
 | `event` | Also |
 | --- | --- |
@@ -139,7 +143,7 @@ its own place. A reader that falls behind is told the rest as it reads.
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `respawned`, `bell` | |
-| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
+| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to |
 | `exited` | `status` (`null` if it was lost) or `signal` |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |

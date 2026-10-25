@@ -270,14 +270,14 @@ fn errors_statuses_and_what_is_left() -> Outcome {
             refused.stderr
         );
     }
-    // A size past 500 is refused, saying the range it may take, past a
-    // cell's too.
-    for size in ["501", "65536"] {
+    // A size past a client's screen's most is refused, saying the range
+    // it may take, past a cell's too.
+    for size in ["4097", "65536"] {
         let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
         assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
-        assert!(wide.stderr.contains("1 to 500"), "{}", wide.stderr);
+        assert!(wide.stderr.contains("1 to 4096"), "{}", wide.stderr);
         let opened = server.fux(&["opts", size, "10", "size", "new-tab"])?;
-        assert!(opened.stderr.contains("1 to 500"), "{}", opened.stderr);
+        assert!(opened.stderr.contains("1 to 4096"), "{}", opened.stderr);
     }
     // A new tab from outside a pane is told the option that places it.
     let nowhere = server.fux(&["opts", "80", "24", "size", "str", "logs", "name", "new-tab"])?;
