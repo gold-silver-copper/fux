@@ -24,7 +24,7 @@ use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// What the attach client sets on its terminal: its title saved
@@ -979,9 +979,10 @@ pub fn attach(
     });
     // What the server painted until it let go is written before the
     // terminal is put back, not after, on the shell.
-    output.iter_mut().for_each(Output::finish);
+    let finished = output.as_mut().map_or(Ok(()), Output::finish);
     drop(raw);
-    let _ = writeln!(io::stdout(), "[{}]", result?);
+    let reason = result.and_then(|reason| finished.map(|()| reason))?;
+    let _ = writeln!(io::stdout(), "[{reason}]");
     Ok(())
 }
 
@@ -1056,8 +1057,24 @@ struct Output {
     writer: Option<std::thread::JoinHandle<io::Result<()>>>,
     /// The bytes handed over and not yet written.
     unwritten: std::sync::Arc<AtomicUsize>,
-    /// Readable once the writer wrote some, or ended.
+    /// Whether a write failed, which ends the writer: set before its wake.
+    failed: std::sync::Arc<AtomicBool>,
+    /// Readable once the writer wrote some, or failed.
     wake: io::PipeReader,
+}
+
+/// Writes all of `bytes` to stdout's descriptor, not through `Stdout`,
+/// whose lock a terminal that stopped reading would hold from `restore`.
+fn write_stdout(mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match fuxix::io::write(io::stdout(), bytes) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(Errno::INTR) => {}
+            Err(errno) => return Err(errno.into()),
+        }
+    }
+    Ok(())
 }
 
 impl Output {
@@ -1067,14 +1084,15 @@ impl Output {
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
         fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
         let unwritten = std::sync::Arc::new(AtomicUsize::new(0));
-        let left = unwritten.clone();
+        let failed = std::sync::Arc::new(AtomicBool::new(false));
+        let (left, failing) = (unwritten.clone(), failed.clone());
         let writer = std::thread::Builder::new()
             .name("terminal".into())
             .spawn(move || {
-                let mut stdout = io::stdout();
                 for bytes in todo {
-                    let wrote = stdout.write_all(&bytes).and_then(|()| stdout.flush());
+                    let wrote = write_stdout(&bytes);
                     left.fetch_sub(bytes.len(), Ordering::Relaxed);
+                    failing.store(wrote.is_err(), Ordering::Release);
                     // A pipe too full for it is readable: the client wakes
                     // all the same.
                     let _ = fuxix::io::write(&poke, b"!");
@@ -1086,6 +1104,7 @@ impl Output {
             to: Some(to),
             writer: Some(writer),
             unwritten,
+            failed,
             wake,
         })
     }
@@ -1101,35 +1120,35 @@ impl Output {
         self.unwritten.fetch_add(bytes.len(), Ordering::Relaxed);
         match self.to.as_ref().map(|to| to.send(bytes)) {
             Some(Ok(())) => Ok(()),
-            Some(Err(_)) | None => Err(self.ended()),
+            Some(Err(_)) | None => Err((self.ended().err())
+                .unwrap_or_else(|| Error::Failed("the terminal's writer ended".into()))),
         }
     }
 
-    /// The writer wrote some: an error if it has ended.
+    /// The writer wrote some: an error if a write failed.
     fn woke(&mut self) -> Result<(), Error> {
         crate::drain(&self.wake);
-        match self.writer.as_ref().is_some_and(|w| w.is_finished()) {
-            true => Err(self.ended()),
+        match self.failed.load(Ordering::Acquire) {
+            true => self.ended(),
             false => Ok(()),
         }
     }
 
-    /// Why the writer ended.
-    fn ended(&mut self) -> Error {
+    /// Waits for the writer to end: the write that failed, if one did.
+    fn ended(&mut self) -> Result<(), Error> {
         match self.writer.take().map(std::thread::JoinHandle::join) {
-            Some(Ok(Err(error))) => failed("writing the terminal")(error),
-            Some(Ok(Ok(())) | Err(_)) | None => Error::Failed("the terminal's writer ended".into()),
+            Some(Ok(Err(error))) => Err(failed("writing the terminal")(error)),
+            Some(Err(_)) => Err(Error::Failed("the terminal's writer panicked".into())),
+            Some(Ok(Ok(()))) | None => Ok(()),
         }
     }
 
     /// Waits for all handed over to be written, as the attachment ends:
     /// a terminal that has stopped reading holds the client, as it would
-    /// any program that writes to it.
-    fn finish(&mut self) {
+    /// any program that writes to it. A write that failed is said.
+    fn finish(&mut self) -> Result<(), Error> {
         self.to = None;
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
+        self.ended()
     }
 }
 
@@ -1332,8 +1351,10 @@ fn last_frames(
             match frame {
                 // What the server has left to send, within its bound.
                 ToAttached::Paint(bytes) => {
-                    if let Some(output) = &mut output {
-                        output.push(bytes.into_owned()).ok()?;
+                    if let Some(output) = &mut output
+                        && let Err(error) = output.push(bytes.into_owned())
+                    {
+                        return Some(Err(error));
                     }
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
