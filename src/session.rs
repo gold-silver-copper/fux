@@ -985,11 +985,17 @@ impl Session {
             launch.env.retain(|(k, _)| k != key);
             launch.env.push((key.clone(), value.clone()));
         }
-        let size = (pane.size(), self.graphics(id).cell);
+        // The cell a terminal drawing it says, else the one its pane keeps:
+        // the program it starts is told what the last was.
+        let mut graphics = self.graphics(id);
+        graphics.cell = graphics.cell.or(pane.screen().cell_size());
+        let size = (pane.size(), graphics.cell);
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Program(launch.clone());
-        let fresh = Pane::new(id, String::new(), runs, size.0, self.config.history_bytes)?;
+        let mut fresh = Pane::new(id, String::new(), runs, size.0, self.config.history_bytes)?;
+        // Its program starts sized in that cell, so no resize is due.
+        let _ = fresh.host(Default::default(), Default::default(), graphics);
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started: a start
         // refused leaves it running, nothing of it cut.
@@ -4550,6 +4556,25 @@ mod tests {
                 process::reaped(pid);
             }
         }
+        Ok(())
+    }
+
+    /// A program respawned in a tab no terminal draws is told the cell its
+    /// pane kept, as the program before it was.
+    #[test]
+    fn a_respawn_no_terminal_draws_keeps_the_cell() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        s.input(c, b"\x1b[6;20;10t");
+        s.output(PaneId::of(2), b"x");
+        s.detach(c);
+        run(&mut s, "%2 respawn")?;
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""cell":{"width":10,"height":20}"#), "{json}");
         Ok(())
     }
 
