@@ -1370,10 +1370,11 @@ fn bar(
     }
 }
 
-/// What of the tab `view` shows its screen does not: `[cut %2]` for each
-/// pane placed in less room than its size, `[hidden %3]` for each it has no
-/// room for (when zoomed, the focus alone is shown), each followed by a
-/// space; empty if it shows them all whole.
+/// What of the tab `view` shows its screen does not: `[hidden %3]` for each
+/// pane it has no room for (when zoomed, the focus alone is shown), first,
+/// as nothing of it shows; then `[cut %2]` for each placed in less room
+/// than its size; each followed by a space; empty if it shows them all
+/// whole.
 fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
     let Some(tab) = session.shown_tab(view.id) else {
         return String::new();
@@ -1393,7 +1394,7 @@ fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
             Some(_) => {}
         }
     }
-    [("cut", cut), ("hidden", hidden)]
+    [("hidden", hidden), ("cut", cut)]
         .into_iter()
         .filter(|(_, ids)| !ids.is_empty())
         .map(|(word, ids)| format!("[{word}{ids}] "))

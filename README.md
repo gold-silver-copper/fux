@@ -40,8 +40,8 @@ right the focused pane's number and title (the program's OSC 0/2 title,
 else the pane's name), a notice, or copy mode's position. A screen too
 small for its tab (a watcher's, one smaller than a size the tab was given, or
 one too small for all its panes) shows panes cut off at their right and
-bottom, or none of a pane it has no room for: the bar names them before the title, `[cut %2]
-[hidden %3]`.
+bottom, or none of a pane it has no room for: the bar names them before the
+title, hidden first: `[hidden %3] [cut %2]`.
 
 ## fuxth
 

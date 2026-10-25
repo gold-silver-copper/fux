@@ -3678,10 +3678,10 @@ mod tests {
         let small = bar(&mut s, 6, 80)?.unwrap_or_default();
         assert!(small.contains("[cut %1 %2] %1"), "{small}");
         let short = bar(&mut s, 3, 80)?.unwrap_or_default();
-        assert!(short.contains("[cut %1] [hidden %2] %1"), "{short}");
+        assert!(short.contains("[hidden %2] [cut %1] %1"), "{short}");
         // Named before the tabs and the title on a narrow bar.
         let narrow = bar(&mut s, 3, 24)?.unwrap_or_default();
-        assert!(narrow.contains("[cut %1] [hidden %2]"), "{narrow}");
+        assert!(narrow.contains("[hidden %2] [cut %1]"), "{narrow}");
         Ok(())
     }
 
