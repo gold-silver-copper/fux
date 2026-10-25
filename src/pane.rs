@@ -831,6 +831,12 @@ impl Pane {
         self.parser.screen()
     }
 
+    /// The sixel pictures its program drew while no terminal showing it
+    /// drew sixel, which were not kept.
+    pub fn pictures_refused(&self) -> u64 {
+        self.parser.pictures_refused()
+    }
+
     /// Queues for its program what `write` makes for its screen, as
     /// `InputQueue::push_with` does.
     pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {

@@ -618,6 +618,7 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
         p.process(&picture(6, 12))?;
         let shown = p.screen().pictures().next().map(|s| s.cell);
         assert_eq!(shown, placed.then_some(cell), "{cell:?}");
+        assert_eq!(p.pictures_refused(), u64::from(!placed), "{cell:?}");
     }
     Ok(())
 }

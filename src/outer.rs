@@ -566,6 +566,24 @@ mod tests {
         Ok(())
     }
 
+    /// A picture drawn while no terminal showing its pane draws sixel is
+    /// not kept, and counted (`pictures_refused`).
+    #[test]
+    fn a_picture_no_terminal_draws_is_counted() -> Outcome {
+        let (mut s, c) = session()?;
+        let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
+        let refused = |s: &mut Session| {
+            s.output(PaneId::of(1), picture);
+            (s.parts.panes().get(&PaneId::of(1))).map(crate::pane::Pane::pictures_refused)
+        };
+        s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
+        assert_eq!(refused(&mut s), Some(0));
+        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(refused(&mut s), Some(1));
+        Ok(())
+    }
+
     /// A cell said 0 wide or high is no size said, which is no fault; one
     /// under a sixel band (`CellSize::LEAST`) is refused, and told.
     #[test]
