@@ -41,11 +41,20 @@ fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
 
 /// DECRQM answers each set while it is, and the latest encoding wins
 /// (xterm 411's `extend_coords`): 1006 then 1015 is urxvt, and resetting
-/// 1006 then leaves it so.
+/// 1006 then leaves it so. 1016 is permanently reset while the host gives
+/// no cell size, as no report in pixels can be made.
 #[test]
 fn each_mode_is_kept_and_reported() -> Result {
+    let mut p = parser(b"\x1b[?1016h")?;
+    let mut out = Vec::new();
+    p.process_with_replies(b"\x1b[?1016$p", |b| out.extend_from_slice(b))?;
+    assert_eq!(out, b"\x1b[?1016;4$y");
     for n in [1001, 1007, 1015, 1016] {
         let mut p = parser(format!("\x1b[?{n}h").as_bytes())?;
+        p.set_host_graphics(Graphics {
+            cell: fux_vt::CellSize::new(8, 16),
+            sixel: false,
+        });
         let mut out = Vec::new();
         p.process_with_replies(format!("\x1b[?{n}$p").as_bytes(), |b| {
             out.extend_from_slice(b)

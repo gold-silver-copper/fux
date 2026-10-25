@@ -138,6 +138,11 @@ impl Screen {
         self.graphics.cell
     }
 
+    /// Whether the host draws sixel, as DA1 says: only with a cell size.
+    pub(crate) fn sixel(&self) -> bool {
+        self.graphics.sixel
+    }
+
     /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
     /// says.
     pub(crate) fn set_graphics(&mut self, graphics: Graphics) {

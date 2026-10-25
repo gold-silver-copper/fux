@@ -353,9 +353,9 @@ fux-vt/src/parser.rs: replace > with >= in Parser::grow_osc @ let room = match d
 # B21
 fux-vt/src/parser.rs: replace Bytes<N>::push -> Option<Self> with None @ *self.bytes.get_mut(usize::from(self.len))? = byte;
 fux-vt/src/parser.rs: replace Bytes<N>::push -> Option<Self> with Some(Default::default()) @ *self.bytes.get_mut(usize::from(self.len))? = byte;
-fux-vt/src/parser.rs: replace && with || in Parser::dcs_string @ && self.screen.cell_size().is_some()
-fux-vt/src/parser.rs:13: replace && with || in Parser::dcs_string @ && byte == b'q'
-fux-vt/src/parser.rs:13: replace && with || in Parser::dcs_string @ && read.as_slice().is_empty();
+fux-vt/src/parser.rs:41: replace && with || in Parser::dcs_string @ let sixel = self.screen.sixel() && byte == b'q' && read.as_slice().is_empty();
+fux-vt/src/parser.rs:57: replace && with || in Parser::dcs_string @ let sixel = self.screen.sixel() && byte == b'q' && read.as_slice().is_empty();
+fux-vt/src/screen/pictures.rs: replace Screen::sixel -> bool with true @ self.graphics.sixel
 fux-vt/src/parser.rs: replace &= with |= in Parser::set_host_graphics @ graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
 fux-vt/src/parser.rs: replace && with || in Parser::set_host_graphics @ graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
 

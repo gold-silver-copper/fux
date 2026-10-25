@@ -1,9 +1,10 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
+use crate::after;
 use crate::bytes::ByteQueue;
 use crate::events::What;
 use crate::id::PaneId;
+use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
-use crate::{after, outer::Colours};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -59,8 +60,9 @@ pub struct InputQueue {
     lost: Lost,
 }
 
-/// Whether a terminal reply was dropped because the queue was full, and
-/// whether that was told.
+/// Whether a terminal reply was dropped, and whether that was told: told
+/// once for each run of reads that drop one, which ends at a read that
+/// drops none while the queue takes input.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Lost {
     #[default]
@@ -110,8 +112,8 @@ impl InputQueue {
             false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
-    /// Whether a reply was lost and is yet to be told, which it then is:
-    /// once in the queue's life.
+    /// Whether a reply was lost and is yet to be told, which it then is
+    /// (`Lost`).
     pub fn lost_reply(&mut self) -> bool {
         let untold = self.lost == Lost::Untold;
         if untold {
@@ -265,10 +267,12 @@ struct Sink<'a> {
     /// Set by a bell (BEL).
     bell: &'a mut bool,
     alerts: &'a mut Alerts,
-    /// Set by an OSC 52 write: its UTF-8 text, or why it is no copy.
-    copied: &'a mut Option<Result<String, Uncopied>>,
+    /// Each OSC 52 write, in order: its UTF-8 text, or why it is no copy.
+    copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
+    /// The scheme its program was last told (`Pane::scheme_told`).
+    scheme_told: &'a mut Option<Scheme>,
 }
 
 impl Sink<'_> {
@@ -311,7 +315,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
-                *self.copied = Some(match data.cut {
+                self.copied.push(match data.cut {
                     true => Err(Uncopied::Cut),
                     false => (crate::json::unbase64(data.bytes))
                         .and_then(|d| String::from_utf8(d).ok())
@@ -343,6 +347,7 @@ impl fux_vt::Sink for Sink<'_> {
             (b"?", b'n', Some([996])) if second.is_none() => {
                 if let Some(scheme) = self.colours.scheme {
                     fux_vt::Sink::reply(self, scheme.report());
+                    *self.scheme_told = Some(scheme);
                 }
             }
             (b"", b't', Some([22])) if title => self.title.push(),
@@ -439,7 +444,7 @@ pub struct Alerts {
 }
 
 /// Why a program's copy (OSC 52) copied nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Uncopied {
     /// It was longer than fux-vt keeps of a string.
     Cut,
@@ -495,13 +500,19 @@ pub struct Pane {
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
     pub colours: Colours,
+    /// The colour scheme its program was last told, answering `CSI ? 996 n`
+    /// or reporting a change (mode 2031): one its terminal now differs from
+    /// is told it (`Session::tell_schemes`).
+    pub scheme_told: Option<Scheme>,
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
-    /// The text the program last put on the clipboard (OSC 52) since the
-    /// session last looked, which copies it (`Session::copied`), or why
-    /// it copied nothing, which the session tells.
-    pub copied: Option<Result<String, Uncopied>>,
+    /// What the program put on the clipboard (OSC 52) since the session
+    /// last looked, in order: each text, which the session copies
+    /// (`Session::copied`), or why it copied nothing, which it tells. The
+    /// session takes them after every read, so they are fewer than the
+    /// bytes it read.
+    pub copied: Vec<Result<String, Uncopied>>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it that events tell, in order, since the session
@@ -546,8 +557,9 @@ impl Pane {
             frame_left: 0,
             exiting: None,
             colours: Colours::default(),
+            scheme_told: None,
             bell: false,
-            copied: None,
+            copied: Vec::new(),
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
@@ -726,6 +738,7 @@ impl Pane {
             alerts: &mut self.alerts,
             copied: &mut self.copied,
             colours: &self.colours,
+            scheme_told: &mut self.scheme_told,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -744,12 +757,14 @@ impl Pane {
                 break;
             }
         }
-        // Queued as `push` queues; a full queue drops them, which is told
-        // (once in the queue's life), as replies past the read's bound are.
+        // Queued as `push` queues; a full queue drops them, which is told,
+        // as replies past the read's bound are (`Lost`).
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
-        if (full || sink.dropped) && self.input.lost == Lost::None {
-            self.input.lost = Lost::Untold;
-        }
+        self.input.lost = match (self.input.lost, full || sink.dropped) {
+            (Lost::None, true) => Lost::Untold,
+            (Lost::Told, false) if !self.input.refusing => Lost::None,
+            (lost, _) => lost,
+        };
         begun
     }
 
@@ -892,7 +907,7 @@ impl Pane {
         started.rename(name);
         started.colours = std::mem::take(&mut self.colours);
         started.bell = self.bell;
-        started.copied = self.copied.take();
+        started.copied = std::mem::take(&mut self.copied);
         started.log = self.log.take();
         // 2^64 respawns are never reached: the count never stands still.
         started.respawns = self.respawns.saturating_add(1);
@@ -960,13 +975,11 @@ impl Pane {
         self.title.said()
     }
 
-    /// Why no mouse report can be made for its program, if none can: it
-    /// asked for them in pixels (mode 1016), and no terminal showing it
-    /// has said its cell size.
-    pub fn no_mouse_reports(&self) -> Option<String> {
-        let screen = self.screen();
-        let pixels = screen.mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::SgrPixels;
-        (pixels && screen.cell_size().is_none()).then(|| {
+    /// Why `event` is not reported to its program, if it would be but for
+    /// this: it asked for reports in pixels (mode 1016), and no terminal
+    /// showing it has said its cell size.
+    pub fn no_mouse_report(&self, event: fux_vt::keys::mouse::MouseEvent) -> Option<String> {
+        self.screen().mouse_needs_cell(event).then(|| {
             format!(
                 "the program in {} asked for mouse reports in pixels (mode 1016), and no terminal \
                  showing it has said its cell size",
@@ -1357,7 +1370,9 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// Replies past what one read queues are dropped, and that is told.
+    /// Replies past what one read queues are dropped, and that is told:
+    /// once for reads that drop them one after another, and again for a
+    /// later drop after a read that dropped none.
     #[test]
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
         let mut pane = pane(3, 20)?;
@@ -1369,6 +1384,13 @@ pub(crate) mod tests {
             .collect();
         pane.output(&queries);
         assert!(pane.input.lost_reply());
+        pane.input.drain_all();
+        pane.output(&queries);
+        assert!(!pane.input.lost_reply(), "the same run of drops");
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        pane.output(&queries);
+        assert!(pane.input.lost_reply(), "a drop after none");
         Ok(())
     }
 

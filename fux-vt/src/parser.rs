@@ -1014,8 +1014,8 @@ impl Parser {
     }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15 (`None`: unknown). With `Feature::Palette`, a program's query
-    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it
-    /// rather than xterm's default. A colour the program set still wins,
+    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it,
+    /// and not at all where it is unknown. A colour the program set wins,
     /// and no reset (OSC 104, DECSTR, RIS) clears the host's. It changes no
     /// colour drawn.
     pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
@@ -1327,12 +1327,10 @@ impl Parser {
                 && self.params.is_empty()
         };
         let (decrqss, termcap) = (request(b"$"), request(b"+"));
-        // Sixel: `q` with no intermediates, read only with a cell size to
-        // lay it out in.
-        let sixel = self.options.has(Feature::Pictures)
-            && self.screen.cell_size().is_some()
-            && byte == b'q'
-            && read.as_slice().is_empty();
+        // Sixel: `q` with no intermediates, read only while the host draws
+        // sixel, as DA1 says (with `Feature::Pictures` and a cell size to
+        // lay it out in, `set_host_graphics`).
+        let sixel = self.screen.sixel() && byte == b'q' && read.as_slice().is_empty();
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {

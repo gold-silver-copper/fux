@@ -1594,6 +1594,7 @@ impl Session {
         self.views = views;
         self.outbox.extend(ended);
         self.size_panes();
+        self.tell_schemes();
         self.hold_copies();
         self.edited = true;
     }
@@ -1881,8 +1882,8 @@ impl Session {
 
     /// Reads into pane `id` with `read`, as every read of a pane's output
     /// does: its tab's host colours and palette given it first; after, its
-    /// bell rung, and the views showing it repainted and told if a reply
-    /// was dropped.
+    /// bell rung, its copies made in order, and the views showing it
+    /// repainted and told of each copy refused and of a reply dropped.
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let Some(mut pane) = self.hosted(id) else {
@@ -1891,37 +1892,45 @@ impl Session {
         read(&mut pane);
         let dropped = pane.input.lost_reply();
         let bell = std::mem::take(&mut pane.bell);
-        let copied = pane.copied.take();
+        let copied = std::mem::take(&mut pane.copied);
         drop(pane);
         self.edited = true;
         if bell {
             self.ring(id, Instant::now());
         }
         let viewers = self.viewers(tab);
-        // A program's copy, as a copy in copy mode, to the clients showing
-        // it; none with `set clipboard off`. One that is no copy is told.
-        // A copy fits the clipboard: fux-vt keeps less of a string.
+        // A program's copies, as copies in copy mode, to the clients showing
+        // it; none with `set clipboard off`. Those that are no copy are told,
+        // counted by why. A copy fits the clipboard: fux-vt keeps less of a
+        // string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
-        let uncopied = copied
-            .filter(|_| self.config.clipboard)
-            .and_then(|copy| copy.map(|text| self.copied(text, &viewers)).err());
+        let (mut refused, clipboard) = (Vec::new(), self.config.clipboard);
+        for copy in copied.into_iter().filter(|_| clipboard) {
+            match copy {
+                Ok(text) => _ = self.copied(text, &viewers),
+                Err(why) => refused.push(why),
+            }
+        }
+        refused.sort();
+        let mut told: Vec<String> = (refused.chunk_by(|a, b| a == b))
+            .filter_map(|same| Some((*same.first()?, same.len())))
+            .map(|(why, n)| match n {
+                1 => format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
+                n => format!("{n} of {id}'s copies (OSC 52) each {why}: none of them was copied"),
+            })
+            .collect();
+        if dropped {
+            told.push(format!(
+                "a terminal reply to {id} was dropped: its input queue was full, \
+                 or one read of its output asked for more than {} bytes of replies",
+                crate::pane::REPLIES_MAX
+            ));
+        }
+        let told = told.join("; ");
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
-            if let Some(why) = uncopied {
-                view.notify(
-                    format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
-                    true,
-                );
-            }
-            if dropped {
-                view.notify(
-                    format!(
-                        "a terminal reply to {id} was dropped: its input queue was full, \
-                         or one read of its output asked for more than {} bytes of replies",
-                        crate::pane::REPLIES_MAX
-                    ),
-                    true,
-                );
+            if !told.is_empty() {
+                view.notify(told.clone(), true);
             }
         }
     }
@@ -2543,9 +2552,7 @@ impl Session {
             );
             return Err(fail(Code::Mouse, message));
         }
-        if mode != Asked::None
-            && let Some(why) = p.no_mouse_reports()
-        {
+        if let Some(why) = events.iter().find_map(|e| p.no_mouse_report(*e)) {
             return Err(fail(Code::Mouse, why));
         }
         let mut report = Vec::new();
@@ -4083,11 +4090,23 @@ mod tests {
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.error && n.text.contains("nothing was copied")));
         assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        // In one read: each copy made, in order, and the refusal between them told.
+        if let Some(view) = s.views.get_mut(&client) {
+            view.notice = None;
+        }
+        s.output(
+            PaneId::of(1),
+            b"\x1b]52;c;YQ==\x07\x1b]52;c;***\x07\x1b]52;c;Yg==\x07",
+        );
+        let buffers: Vec<&str> = s.buffers.iter().take(3).map(String::as_str).collect();
+        assert_eq!(buffers, ["b", "a", "foo"]);
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.text.contains("is not base64")));
         s.outbox.clear();
         run(&mut s, "str clipboard str off set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
-        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
+        assert_eq!(s.buffers.front().map(String::as_str), Some("b"));
         Ok(())
     }
 
