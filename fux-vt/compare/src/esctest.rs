@@ -2141,6 +2141,10 @@ const SOURCES: &[(&str, &str)] = &[
         "ctlseqs OSC 4, OSC 5, OSC 10 to 19, OSC 104, OSC 105, OSC 110 to 119",
     ),
     (
+        "palette entry neither",
+        "fux-vt README, Feature::Palette (`Parser::set_host_palette`); ctlseqs OSC 4",
+    ),
+    (
         "DECRQSS",
         "DEC STD 070 §5.13.2, Request Selection or Setting; VT510 DECRQSS; ctlseqs \
          DCS $ q Pt ST",
