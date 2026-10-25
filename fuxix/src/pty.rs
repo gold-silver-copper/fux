@@ -11,10 +11,9 @@ use crate::process::Pid;
 use crate::terminal::{self, Size};
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command};
 
 /// A step of opening a PTY that failed, and why.
@@ -91,7 +90,9 @@ impl Slave {
     /// PTY as its controlling terminal and its stdin, stdout and stderr,
     /// and no other descriptor ([`crate::process::lead_session`]); `setup`
     /// sets its directory and environment. Returns once the program runs,
-    /// with its pid, or once it cannot, with why.
+    /// with its pid, or once it cannot, with the system's error as it is:
+    /// a `NotFound` may be the program, its `#!` interpreter or the
+    /// directory, which the system does not tell apart.
     pub fn spawn<S: AsRef<OsStr>>(
         self,
         argv: &[S],
@@ -109,45 +110,10 @@ impl Slave {
             .stderr(self.0);
         crate::process::lead_session(&mut command, true);
         // Dropping `command` closes this side's copies of the PTY.
-        let child = match command.spawn() {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(match missing_interpreter(&command, program.as_ref()) {
-                    Some(interpreter) => std::io::Error::other(format!(
-                        "its interpreter {interpreter} does not exist"
-                    )),
-                    None => error,
-                });
-            }
-            spawned => spawned?,
-        };
+        let child = command.spawn()?;
         let pid = Pid::of(&child).ok_or_else(|| std::io::Error::other("a child with no pid"))?;
         Ok((child, pid))
     }
-}
-
-/// The `#!` interpreter `program`'s file names, looked up as `command`'s
-/// `exec` looks it up (in its directory, or on its `PATH`), if the file is
-/// there and the interpreter is not: what `exec` found missing.
-fn missing_interpreter(command: &Command, program: &OsStr) -> Option<String> {
-    let file = if program.as_encoded_bytes().contains(&b'/') {
-        let dir = command.get_current_dir();
-        dir.map_or_else(|| PathBuf::from(program), |dir| dir.join(program))
-    } else {
-        let set = command.get_envs().find(|(key, _)| *key == "PATH");
-        let path = set.map_or_else(
-            || std::env::var_os("PATH"),
-            |(_, path)| path.map(OsStr::to_owned),
-        )?;
-        std::env::split_paths(&path)
-            .map(|dir| dir.join(program))
-            .find(|file| file.is_file())?
-    };
-    let mut head = [0u8; 256];
-    let read = std::fs::File::open(file).ok()?.read(&mut head).ok()?;
-    let line = head.get(..read)?.strip_prefix(b"#!")?;
-    let line = line.split(|b| *b == b'\n').next()?;
-    let interpreter = std::str::from_utf8(line).ok()?.split_whitespace().next()?;
-    (!Path::new(interpreter).exists()).then(|| interpreter.to_owned())
 }
 
 /// Opens a PTY of `size`: its master and its slave.
