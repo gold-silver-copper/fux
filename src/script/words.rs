@@ -752,22 +752,19 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
 
-/// The bytes `inputs` take as the request carries them, which must fit in
-/// one frame: text and pastes their bytes, keys their names' (`C-M-F12`
-/// 7), and each input after the first 5 bytes more.
-fn sent(inputs: &[Input]) -> usize {
-    (inputs.iter())
+/// `inputs`, refused past what one send-keys sends. What they take is
+/// what the request carries, which must fit in one frame: text and pastes
+/// their bytes, keys their names' (`C-M-F12` 7), and each input after the
+/// first 5 bytes more.
+fn fits(inputs: &[Input]) -> Result<(), Failure> {
+    let typed = (inputs.iter())
         .map(|input| match input {
             Input::Text(text) | Input::Paste(text) => text.len(),
             Input::Key(key) => key.to_string().len(),
             Input::Bytes(bytes) => bytes.len(),
         })
         .fold(0usize, usize::saturating_add)
-        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5))
-}
-
-/// `typed` bytes of input, refused past what one send-keys sends.
-fn fits(typed: usize) -> Result<(), Failure> {
+        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5));
     match typed > INPUT_MAX {
         true => Err(fail(
             Lang::TooLong,
@@ -1061,7 +1058,7 @@ impl fuxth::Host for Host<'_> {
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
-                fits(sent(&built.inputs))?;
+                fits(&built.inputs)?;
                 let target = match on {
                     On::Target(target) => target,
                     On::Version(version) => AnyRef::Pane(version.pane),
