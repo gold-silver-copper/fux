@@ -578,8 +578,9 @@ impl Parts {
     }
 
     /// The layout `target`'s tab takes split for pane `new` beside it,
-    /// along `axis`, after it, the two taking `shares` of their split if
-    /// given: what the new pane starts at and is put in by (`split`).
+    /// along `axis`, after it, the two dividing what the target had as
+    /// `shares` says if given (`Tree::divide`): what the new pane starts at
+    /// and is put in by (`split`).
     pub(crate) fn plan_split(
         &self,
         (target, new): (PaneId, PaneId),
@@ -591,9 +592,8 @@ impl Parts {
         let was = tabs.find(|t| t.id == tab)?.root.clone()?;
         let mut root = was.clone();
         root.split(target, new, axis, Side::After).then_some(())?;
-        if let Some((theirs, its)) = shares {
-            root.share(target, theirs);
-            root.share(new, its);
+        if let Some(shares) = shares {
+            root.divide((target, new), shares);
         }
         Some(Split { tab, was, root })
     }

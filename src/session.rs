@@ -1244,6 +1244,14 @@ impl Session {
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
+        // Two shares are a weight together (`Tree::divide`), as a dump
+        // writes them.
+        if let Some((a, b)) = shares
+            && a.checked_add(b.get()).is_none()
+        {
+            let why = format!("shares {a} and {b} are more than {} together", u32::MAX);
+            return Err(fail(Code::BadValue, why));
+        }
         let new = self.ids.clone().pane()?;
         let split =
             (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
@@ -5312,6 +5320,23 @@ mod tests {
             refused.contains("no room") && refused.contains("screen"),
             "{refused}"
         );
+        Ok(())
+    }
+
+    /// Shares divide the room of the pane split, whatever is beside it:
+    /// the others keep theirs, and a dump makes the split again.
+    #[test]
+    fn shares_divide_the_split_panes_room() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let made = "opts 101 10 size str +1 workspace in new-tab drop \
+                    %2 split drop %3 2 1 shares split drop";
+        run(&mut s, made)?;
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
+        assert_eq!(widths, [49, 33, 17]);
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        let refused = run(&mut s, "%2 4294967295 1 shares split").err();
+        assert!(refused.is_some_and(|e| e.contains("together")));
         Ok(())
     }
 

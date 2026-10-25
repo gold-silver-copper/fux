@@ -269,14 +269,37 @@ impl<A> Tree<A> {
     fn is_pane(&self, pane: PaneId) -> bool {
         matches!(self, Tree::Pane(p) if *p == pane)
     }
-    /// Gives `pane` `share` of the split it is a child of, if it is in one.
-    pub fn share(&mut self, pane: PaneId, share: NonZeroU32) {
-        if let Tree::Split(_, Split(children)) = self {
-            for (weight, child) in children {
-                match child.is_pane(pane) {
-                    true => *weight = share,
-                    false => child.share(pane, share),
-                }
+    /// Divides what panes `a` and `b`, side by side in one split, take of
+    /// it between them as `shares` says: in a split of their own, the
+    /// shares themselves; among others, what the two had together, so the
+    /// others keep theirs. Two shares whose sum is a weight (`split`) make
+    /// that exact: the pane split had that weight, or none.
+    pub fn divide(&mut self, (a, b): (PaneId, PaneId), shares: (NonZeroU32, NonZeroU32)) {
+        let Tree::Split(_, Split(children)) = self else {
+            return;
+        };
+        let at = |pane| children.iter().position(|(_, c)| c.is_pane(pane));
+        let (Some(i), Some(j)) = (at(a), at(b)) else {
+            return children
+                .iter_mut()
+                .for_each(|(_, c)| c.divide((a, b), shares));
+        };
+        let (wa, wb) = match children.len() {
+            2 => shares,
+            _ => {
+                let weight_of = |i: usize| children.get(i).map_or(0, |(w, _)| u64::from(w.get()));
+                let had = weight_of(i).saturating_add(weight_of(j));
+                let (sa, sb) = (u64::from(shares.0.get()), u64::from(shares.1.get()));
+                let to_a = (had.saturating_mul(sa)).checked_div(sa.saturating_add(sb));
+                let to_a = to_a.unwrap_or(had);
+                // Each a part of what two u32 weights had.
+                let part = |n: u64| weight(u32::try_from(n).unwrap_or(u32::MAX));
+                (part(to_a), part(had.saturating_sub(to_a)))
+            }
+        };
+        for (k, w) in [(i, wa), (j, wb)] {
+            if let Some((weight, _)) = children.get_mut(k) {
+                *weight = w;
             }
         }
     }

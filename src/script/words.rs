@@ -105,7 +105,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
-    word("Starting", "shares", "x n n -- x", "split: the shares of their split the pane and the new one take, beside its other children's (default: the pane's halved)"),
+    word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
