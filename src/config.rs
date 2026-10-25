@@ -2,7 +2,7 @@
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
 use crate::script::Fux;
-use crate::wire::{Error, Reader, Wire, wire};
+use crate::wire::{Error, Reader, Wire};
 use crate::words;
 use fuxth::Value;
 use std::path::PathBuf;
@@ -199,14 +199,13 @@ fn shell_of(passwd: &str, uid: u32) -> Option<String> {
 /// `SHELL`, else the login shell, else `/bin/sh`: the program alone, with
 /// no arguments.
 fn default_shell() -> Shell {
-    let program = (std::env::var("SHELL").ok())
-        .filter(|s| !s.is_empty())
-        .or_else(login_shell)
-        .unwrap_or_else(|| "/bin/sh".into());
-    Shell {
-        program,
-        args: Vec::new(),
-    }
+    let alone = |program| Shell::new(program, Vec::new()).ok();
+    (std::env::var("SHELL").ok().and_then(alone))
+        .or_else(|| login_shell().and_then(alone))
+        .unwrap_or_else(|| Shell {
+            program: "/bin/sh".to_owned(),
+            args: Vec::new(),
+        })
 }
 
 /// Why `value` is not what a setting takes.
@@ -231,7 +230,7 @@ fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
 }
 
 /// `words` as fuxth writes their list.
-fn listed<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+fn fuxth_list<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
     let items = words
         .into_iter()
         .map(|w| format!("str {} ", words::quote(w)));
@@ -311,17 +310,34 @@ impl Reads for bool {
     }
 }
 
-wire! {
-    /// The shell fux starts in a pane: a program, then its arguments, each
-    /// a word as it is, blanks, quotes and all.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Shell {
-        pub program: String,
-        pub args: Vec<String>,
-    }
+/// The shell fux starts in a pane: a program, never empty, then its
+/// arguments, each a word as it is, blanks, quotes and all, but for NUL,
+/// which no word a program is given holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shell {
+    program: String,
+    args: Vec<String>,
 }
 
 impl Shell {
+    /// `program` and `args`, or why they are no shell.
+    pub fn new(program: String, args: Vec<String>) -> Result<Shell, String> {
+        if program.is_empty() {
+            return Err("a program is needed".to_owned());
+        }
+        if let Some(word) = std::iter::once(&program)
+            .chain(&args)
+            .find(|w| w.contains('\0'))
+        {
+            return Err(format!("{word:?}: a program's word holds no NUL"));
+        }
+        Ok(Shell { program, args })
+    }
+
+    pub fn program(&self) -> &str {
+        &self.program
+    }
+
     /// Its command line, the program first.
     pub fn argv(&self) -> Vec<String> {
         let all = std::iter::once(&self.program).chain(&self.args);
@@ -337,17 +353,22 @@ impl Reads for Shell {
     fn read(value: &Value<Fux>) -> Result<Shell, String> {
         let mut words = strings(value)?.into_iter();
         let program = words.next().ok_or("a program is needed")?;
-        Ok(Shell {
-            program,
-            args: words.collect(),
-        })
+        Shell::new(program, words.collect())
     }
     fn show(&self) -> String {
-        listed(
-            std::iter::once(&self.program)
-                .chain(&self.args)
-                .map(String::as_str),
-        )
+        fuxth_list(self.argv().iter().map(String::as_str))
+    }
+}
+
+/// Read back only if it is a shell.
+impl Wire for Shell {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.program.put(out);
+        self.args.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let (program, args) = (String::get(r)?, Vec::get(r)?);
+        Shell::new(program, args).map_err(|_| Error::Bad("shell"))
     }
 }
 
@@ -389,7 +410,7 @@ impl Reads for Vec<EnvName> {
         strings(value)?.iter().map(|name| name.parse()).collect()
     }
     fn show(&self) -> String {
-        listed(self.iter().map(EnvName::as_str))
+        fuxth_list(self.iter().map(EnvName::as_str))
     }
 }
 
@@ -444,6 +465,8 @@ mod tests {
             ("buffers", Value::Int(0)),
             ("bell", Value::str("off")),
             ("shell", list(&[]).ok_or("a list")?),
+            ("shell", list(&["", "-l"]).ok_or("a list")?),
+            ("shell", list(&["/bin/sh", "a\0b"]).ok_or("a list")?),
             ("shell", Value::str("/bin/zsh -l")),
             (
                 "update-environment",
@@ -453,7 +476,18 @@ mod tests {
         ] {
             assert!(Setting::read(name, &value).is_err(), "{name} {value:?}");
         }
-        // Nor does the wire carry what `read` refuses.
+        // Nor does the wire carry what `read` refuses: a count is sent
+        // big-endian, so its last byte is its lowest. The defaults, built
+        // unchecked, are each read back.
+        let defaults = Config::default();
+        for setting in [
+            Setting::HistoryBytes(defaults.history_bytes),
+            Setting::Buffers(defaults.buffers),
+            Setting::Shell(defaults.shell),
+        ] {
+            let bytes = crate::wire::encode(&setting);
+            assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
+        }
         let mut zero = crate::wire::encode(&Setting::Buffers(Number(1)));
         zero.pop();
         zero.push(0);
