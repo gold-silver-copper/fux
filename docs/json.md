@@ -128,9 +128,11 @@ first failing status naming the whole.
 ## `events-json`, `X events-of-json`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
-`pane` and `tab` only where they apply. Events come in the order they
-happened in the whole session, one line each: each is written to the
-session's journal where it happens, and a stream reads the journal from
+`pane`, `tab` and `workspace` each only where it applies: none of them
+on `ready`, `missed`, `gone` or `stopped`, and no `tab` or `workspace` of
+a pane a grant's stream saw move out of its workspace. Events come in the
+order they happened in the whole session, one line each: each is written
+to the session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
 The journal keeps the session's last 16,384 entries, for every stream
 alike: a pane that makes many in one round (a flood of bells) can make

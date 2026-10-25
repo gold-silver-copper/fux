@@ -427,10 +427,10 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   tab no attached terminal shows.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
-  bar until you show it. `set bell off` silences both.
-- **Titles.** With `set titles on`, your terminal's title is the focused
-  pane's (or its tab's name). fux saves your terminal's own title first and
-  restores it when you detach or turn titles off.
+  bar until you show it. `str bell str off set` silences both.
+- **Titles.** With `str titles str on set`, your terminal's title is the
+  focused pane's (or its tab's name). fux saves your terminal's own title
+  first and restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
   graphics, and the size of its cells (`CSI 16 t`, asked again each time

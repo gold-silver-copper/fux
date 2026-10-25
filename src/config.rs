@@ -281,12 +281,12 @@ pub struct Shell {
 
 impl Shell {
     /// Words separated by blanks, the program first: no quoting, so no
-    /// word holds a blank, and a quote or backslash, which would be taken
-    /// as it is, is refused.
+    /// word holds a blank, and a quote or backslash, which would read as
+    /// quoting it does not do, is refused.
     pub fn parse(value: &str) -> Result<Shell, String> {
         if let Some(quote) = value.chars().find(|c| matches!(c, '\'' | '"' | '\\')) {
             return Err(format!(
-                "{quote} is taken as it is: words are parted by blanks, and not quoted or escaped"
+                "{quote} is refused: words are parted by blanks, not quoted or escaped"
             ));
         }
         let mut words = value.split_whitespace().map(str::to_owned);
