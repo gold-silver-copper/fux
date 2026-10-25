@@ -396,8 +396,9 @@ fn seeds() -> Vec<Seed> {
                 out.extend(b"\x07");
                 out
             },
-            // Past the payload limit: read to its end, no event.
-            reaches: |r| ensure(r.events == 0, || format!("{} events", r.events)),
+            // Past the payload limit: read to its end, one event, which
+            // says it was cut (`Kept::cut`).
+            reaches: |r| ensure(r.events == 1, || format!("{} events", r.events)),
             fuzz: Fuzz::Terminal,
         },
         Seed {
