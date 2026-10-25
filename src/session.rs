@@ -1591,11 +1591,14 @@ impl Session {
             // A frame it holds is read as it resizes, as every read of
             // its output is (`read_with`): its terminal's facts given it,
             // its bells and copies taken.
-            if let Ok(size) = Size::new(rows, cols)
-                && self.pane(id).is_ok_and(|p| p.size() != size)
-            {
+            let Ok(size) = Size::new(rows, cols) else {
+                continue;
+            };
+            if self.pane(id).is_ok_and(|p| p.size() != size) {
                 self.read_with(id, |pane| pane.resize(size));
                 resized = true;
+            } else if let Ok(mut pane) = self.pane_mut(id) {
+                pane.keeps_size();
             }
         }
         self.shown_sizes = sizes;

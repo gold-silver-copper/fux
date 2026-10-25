@@ -70,6 +70,9 @@ pub struct InputQueue {
     /// Its run of input lost (`Run`): begun by input refused, not by a
     /// reply refused, and over as it stops refusing.
     run: Run,
+    /// Its run of replies dropped (`Run`): over at a read that drops none
+    /// while it takes input, or as it stops refusing.
+    replies: Run,
 }
 
 /// A run of one kind of drop: none going on; going on and not yet told;
@@ -159,8 +162,8 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: its terminal took them.
     pub fn advance(&mut self, n: usize) {
-        if n > 0 {
-            (self.refusing, self.run) = (false, Run::Over);
+        if n > 0 && std::mem::take(&mut self.refusing) {
+            (self.run, self.replies) = (Run::Over, Run::Over);
         }
         self.bytes.take(n);
     }
@@ -169,10 +172,10 @@ impl InputQueue {
     pub fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
-        (self.refusing, self.run) = (false, Run::Over);
+        (self.run, self.replies) = (Run::Over, Run::Over);
         queued
     }
-    /// Everything queued, for tests and for a pane with no process.
+    /// Everything queued, for tests and the fuzz targets.
     pub fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -685,8 +688,6 @@ pub struct Pane {
     /// What it let go of and has not told a client showing it, its
     /// programs' before a respawn too: kept till one is.
     untold: Losses,
-    /// Its run of replies dropped (`Run`).
-    replies: Run,
     /// The size its screen was last refused, if its last resize was.
     refused_size: Option<Size>,
 }
@@ -849,7 +850,6 @@ impl Pane {
             alerts: Alerts::default(),
             lost: Losses::default(),
             untold: Losses::default(),
-            replies: Run::Over,
             refused_size: None,
         })
     }
@@ -1056,7 +1056,7 @@ impl Pane {
         // A run of dropped replies ends at a read that drops none while
         // the queue takes input.
         if replies == 0 && !self.input.refusing {
-            self.replies = Run::Over;
+            self.input.replies = Run::Over;
         }
         self.lose_replies(replies);
         self.lose(Losses {
@@ -1133,6 +1133,12 @@ impl Pane {
         self.parser.screen()
     }
 
+    /// It is asked the size it has: a size refused before, asked again,
+    /// is a new refusal, counted.
+    pub fn keeps_size(&mut self) {
+        self.refused_size = None;
+    }
+
     /// What fux let go of its program's since it started.
     pub fn lost(&self) -> Losses {
         self.lost
@@ -1146,7 +1152,7 @@ impl Pane {
         if self.input.run == Run::Told {
             losses.input = 0;
         }
-        if self.replies == Run::Told {
+        if self.input.replies == Run::Told {
             losses.replies = 0;
         }
         self.untold.add(losses);
@@ -1155,7 +1161,7 @@ impl Pane {
     /// `n` replies were dropped, in a run of them.
     fn lose_replies(&mut self, n: u64) {
         if n > 0 {
-            self.replies.dropped();
+            self.input.replies.dropped();
             let replies = n;
             self.lose(Losses {
                 replies,
@@ -1173,7 +1179,7 @@ impl Pane {
     /// each run of drops going on is not told (`Run`).
     pub fn take_untold(&mut self) -> Losses {
         self.input.run.told();
-        self.replies.told();
+        self.input.replies.told();
         std::mem::take(&mut self.untold)
     }
 
@@ -1336,7 +1342,6 @@ impl Pane {
             left,
             alerts,
             lost,
-            replies,
             refused_size,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
@@ -1351,7 +1356,7 @@ impl Pane {
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
-        (self.replies, self.refused_size) = (replies, refused_size);
+        self.refused_size = refused_size;
         tell.tell(PaneEvent::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
@@ -1983,6 +1988,15 @@ pub(crate) mod tests {
         pane.resize(size(5, 20));
         assert!(!pane.loses(), "the same run");
         assert_eq!(pane.lost().replies, 2);
+        // The program reads a little: the run is over, and the next
+        // report the queue has no room for is told.
+        pane.input.advance(1);
+        pane.resize(size(6, 20));
+        assert_eq!(
+            pane.take_untold().replies,
+            1,
+            "a run after the program read"
+        );
         Ok(())
     }
 
