@@ -497,8 +497,8 @@ pub struct Alerts {
     /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
     pub last: Option<Said<NOTIFICATION_MAX>>,
-    /// Replies to its queries dropped: past a read's `REPLIES_MAX`, or
-    /// for a full input queue.
+    /// Replies to its queries dropped, and in-band resize reports: past a
+    /// read's `REPLIES_MAX`, or for a full input queue.
     pub replies_dropped: u64,
     /// Its copies (OSC 52) that copied nothing, for each `Uncopied`.
     pub copies_cut: u64,
@@ -946,8 +946,11 @@ impl<S> Pane<S> {
             // A program that does not read its input loses it, told
             // (`Lost`); one that takes none is sent none.
             let takes = crate::session::refuses_input(self).is_none();
-            if let Some(report) = self.parser.resize_report().filter(|_| takes) {
-                let _ = self.input.push(report);
+            if let Some(report) = self.parser.resize_report().filter(|_| takes)
+                && self.input.push(report).is_err()
+            {
+                let dropped = &mut self.alerts.replies_dropped;
+                *dropped = dropped.saturating_add(1);
             }
         }
     }

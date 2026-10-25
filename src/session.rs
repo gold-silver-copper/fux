@@ -4574,7 +4574,10 @@ mod tests {
         s.detach(c);
         run(&mut s, "%2 respawn")?;
         let json = output(&mut s, "%2 capture json")?;
-        assert!(json.contains(r#""cell":{"width":10,"height":20}"#), "{json}");
+        assert!(
+            json.contains(r#""cell":{"width":10,"height":20}"#),
+            "{json}"
+        );
         Ok(())
     }
 
@@ -4990,7 +4993,7 @@ mod tests {
 
     /// Replies dropped past what one read queues are counted in the
     /// pane's JSON, with no client to tell: those of one read that the
-    /// full queue refuses too.
+    /// full queue refuses too, and a resize report it refuses.
     #[test]
     fn replies_dropped_are_counted_in_a_panes_json() -> Result<(), String> {
         let (mut s, c) = attached(5, 20)?;
@@ -5014,6 +5017,14 @@ mod tests {
         s.output(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies_dropped":3,"#), "{json}");
+        // In-band resize reports the full queue refuses are counted: the
+        // one setting mode 2048 answers, and the one a resize sends.
+        s.output(id, b"\x1b[?2048h");
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies_dropped":4,"#), "{json}");
+        run(&mut s, "@1 30 6 resize")?;
+        let json = output(&mut s, "%1 capture json")?;
+        assert!(json.contains(r#""replies_dropped":5,"#), "{json}");
         Ok(())
     }
 
