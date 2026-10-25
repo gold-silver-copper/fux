@@ -288,6 +288,7 @@ pub fn state<S>(
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
         ("pictures_refused", Json::int(pane.pictures_refused())),
+        ("memory_refused", Json::int(pane.memory_refused())),
         ("replies_dropped", Json::int(pane.alerts.replies_dropped)),
         (
             "copies_refused",

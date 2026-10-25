@@ -961,6 +961,12 @@ impl<S> Pane<S> {
         self.parser.pictures_refused()
     }
 
+    /// How many times reading its program's output was refused memory
+    /// (`fux_vt::Parser::refused`): each refusal lost only what it was for.
+    pub fn memory_refused(&self) -> u64 {
+        self.parser.refused()
+    }
+
     /// Queues for its program what `write` makes for its screen, as
     /// `InputQueue::push_with` does.
     pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
