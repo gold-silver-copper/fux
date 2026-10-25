@@ -14,18 +14,19 @@
 //! popping it, the shell would be left unusable. The client pops the flags
 //! as it leaves (`client::LEAVE`).
 //!
-//! The terminal that answers for a pane is, of the clients showing its tab,
-//! the one that last typed into it, else the first; else none: a pane no
-//! terminal showing it answers for is not answered colours it did not
-//! set, as no one knows what it is shown on. Its pictures and cell size
-//! are of a terminal showing its tab that draws sixel and said its cell
-//! size, chosen so; with none, its cell size is of one that said it,
-//! chosen so, and it draws no pictures.
+//! One terminal answers for a tab's panes, its host ([`Session::host`]): of
+//! the terminal clients showing the tab (not headless ones), the one that
+//! last typed into it, else the first attached; none in a tab no terminal
+//! shows. Its terminal answers all of it, colours, palette, sixel and cell
+//! size, with what it said; what it did not say is unknown, never taken
+//! from another terminal showing the tab or kept from an earlier host. A
+//! pane with no host is answered no colour it did not set, as no one knows
+//! what it is shown on.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
-use crate::view::View;
+use crate::view::{ClientKind, View};
 use crate::workspace::PaneMut;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
@@ -137,8 +138,7 @@ pub struct Terminal {
     pub palette: Palette,
     /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
     /// in pixels (`CSI 16 t`): pictures in panes are shown on it, and the
-    /// panes it draws are told so (sixel only with a cell size, which
-    /// pictures are laid out in).
+    /// panes it hosts are told so ([`Terminal::graphics`]).
     pub sixel: bool,
     pub cell: Option<fux_vt::CellSize>,
     /// The cell it last said, width by height, a refused one too: a
@@ -147,17 +147,14 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// What it draws, as the panes it answers for are told.
+    /// What it draws, as the panes it hosts are told: sixel only in a cell
+    /// it said, which pictures are laid out in.
     pub fn graphics(&self) -> Graphics {
-        Graphics {
-            cell: self.cell,
-            sixel: self.sixel,
+        match self.cell {
+            None => Graphics::Text,
+            Some(cell) if self.sixel => Graphics::Sixel(cell),
+            Some(cell) => Graphics::Cell(cell),
         }
-    }
-
-    /// Whether the terminal said anything of its colours.
-    fn said(&self) -> bool {
-        self.colours.known() || self.palette.iter().any(Option::is_some)
     }
 }
 
@@ -266,7 +263,7 @@ impl Session {
         }
     }
 
-    /// Tells the panes whose colours come from client `client` of the scheme
+    /// Tells the panes client `client` hosts of the scheme
     /// change it reported, if one is waiting: each whose program set mode
     /// 2031 gets `CSI ? 997 ; n n`.
     fn tell_change(&mut self, client: ClientId) {
@@ -282,7 +279,7 @@ impl Session {
             .map(|(id, _)| *id)
             .filter(|id| {
                 let tab = self.locate(*id).map(|(_, t)| t);
-                self.colour_client(tab) == Some(client)
+                self.host(tab) == Some(client)
             })
             .collect();
         for id in listening {
@@ -291,7 +288,7 @@ impl Session {
     }
 
     /// Tells each pane whose program takes scheme reports (mode 2031) the
-    /// scheme of the terminal that answers for it, if it was told another
+    /// scheme of its host's terminal, if it was told another
     /// or none, with no change of its own waiting (`tell_change`): it was
     /// shown on another terminal, or on none, when its own changed or it
     /// asked; or its report was refused. Run as the session settles, and
@@ -301,7 +298,7 @@ impl Session {
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
             .filter_map(|(id, p)| {
                 let tab = self.locate(*id).map(|(_, t)| t);
-                let terminal = &self.views.get(&self.colour_client(tab)?)?.terminal;
+                let terminal = &self.views.get(&self.host(tab)?)?.terminal;
                 let scheme = terminal.colours.scheme?;
                 let due = terminal.change.is_none() && p.scheme_told != Some(scheme);
                 due.then_some((*id, scheme))
@@ -325,64 +322,51 @@ impl Session {
         }
     }
 
-    /// Client `client` typed into the tab it shows: its terminal answers for
-    /// the tab's panes.
+    /// Client `client` typed into the tab it shows: it hosts the tab's
+    /// panes, if it is a terminal. A headless client's keys leave the
+    /// typist as it was.
     pub(crate) fn typed(&mut self, client: ClientId) {
-        if let Some(tab) = self.shown_tab_mut(client) {
+        let terminal = self.views.get(&client).map(|v| v.kind) == Some(ClientKind::Terminal);
+        if let Some(tab) = self.shown_tab_mut(client).filter(|_| terminal) {
             tab.typist = Some(client);
         }
     }
 
-    /// The client whose terminal answers for the panes of `tab`: of those
-    /// showing it whose terminal said anything, the one that last typed
-    /// into it, else the first.
-    fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        self.answering(tab, Terminal::said)
-    }
-
-    /// The client whose terminal draws the panes of `tab` as they are told:
-    /// of those showing it that draw sixel and said a cell size, else of
-    /// those that said a cell size, the one that last typed into it, else
-    /// the first.
-    fn graphics_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        (self.answering(tab, |t| t.sixel && t.cell.is_some()))
-            .or_else(|| self.answering(tab, |t| t.cell.is_some()))
-    }
-
-    /// What the terminal that draws pane `id` draws (`graphics_client`):
-    /// nothing, with none.
-    pub(crate) fn graphics(&self, id: PaneId) -> Graphics {
-        let tab = self.locate(id).map(|(_, tab)| tab);
-        let view = self.graphics_client(tab).and_then(|c| self.views.get(&c));
-        view.map_or_else(Graphics::default, |v| v.terminal.graphics())
-    }
-
-    /// Of the attached clients showing `tab` that `said` holds for, the one
-    /// that last typed into it, else the first: one that typed there and
-    /// went to another tab answers for it no more.
-    fn answering(&self, tab: Option<TabId>, said: impl Fn(&Terminal) -> bool) -> Option<ClientId> {
+    /// The host of `tab`'s panes, whose terminal answers for them: of the
+    /// terminal clients showing it, the one that last typed into it, else
+    /// the first attached. One that typed there and went to another tab
+    /// hosts it no more; a headless client, which has no terminal, never
+    /// does.
+    pub(crate) fn host(&self, tab: Option<TabId>) -> Option<ClientId> {
         let tab = tab?;
-        let told = |c: &ClientId| {
-            self.shows(*c, tab) && self.views.get(c).is_some_and(|v| said(&v.terminal))
-        };
-        let typist = self.tab(tab)?.typist.filter(told);
-        typist.or_else(|| self.views.keys().copied().find(told))
+        let terminal =
+            |c: &ClientId| self.views.get(c).map(|v| v.kind) == Some(ClientKind::Terminal);
+        let shows = |c: &ClientId| terminal(c) && self.shows(*c, tab);
+        let typist = self.tab(tab)?.typist.filter(shows);
+        typist.or_else(|| self.views.keys().copied().find(shows))
     }
 
-    /// Pane `id`, told what the panes of its tab are answered with now: the
-    /// colours of `colour_client`'s terminal (see the module documentation),
-    /// its palette whole, so that another client's replaces it, entries it
-    /// did not say cleared; and what `graphics_client`'s terminal draws,
-    /// which is no sixel in a tab no client shows with a cell size, so a
-    /// program there draws in text, which a capture reads, in the cell it
-    /// was last told (`Pane::host`). With no such terminal, nothing; and
-    /// whether that cell is another, its terminal to be sized for it.
-    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<(PaneMut<'_>, bool)> {
-        let graphics = self.graphics(id);
+    /// The terminal of pane `id`'s host, if it has one.
+    fn host_terminal(&self, id: PaneId) -> Option<&Terminal> {
         let tab = self.locate(id).map(|(_, tab)| tab);
-        let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
-        let (colours, palette) = terminal(self.colour_client(tab))
-            .map_or_else(Default::default, |t| (t.colours, t.palette));
+        Some(&self.views.get(&self.host(tab)?)?.terminal)
+    }
+
+    /// What pane `id`'s host draws: text in no cell, with none.
+    pub(crate) fn graphics(&self, id: PaneId) -> Graphics {
+        self.host_terminal(id)
+            .map_or_else(Graphics::default, Terminal::graphics)
+    }
+
+    /// Pane `id`, told what its host's terminal said (see the module
+    /// documentation): its colours, its palette whole, entries it did not
+    /// say cleared, and what it draws: with no host, no sixel and no cell,
+    /// so a program there draws in text, which a capture reads. With no
+    /// such pane, nothing; and whether its cell is another, its terminal
+    /// to be sized for it.
+    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<(PaneMut<'_>, bool)> {
+        let (colours, palette, graphics) = (self.host_terminal(id))
+            .map_or_else(Default::default, |t| (t.colours, t.palette, t.graphics()));
         let mut pane = self.parts.pane_mut(id)?;
         let retold = pane.host(colours, palette, graphics);
         Some((pane, retold))
@@ -579,16 +563,15 @@ mod tests {
         Ok(())
     }
 
-    /// A pane's pictures and cell size are of a terminal showing its tab that
-    /// said its cell size, whether or not it said its colours; not of one
-    /// that typed there and went to another tab, whose cell it keeps till
-    /// one showing it says another.
+    /// A pane's cell size is its host's, whether or not it said its
+    /// colours: unknown while its host said none, not kept from one that
+    /// typed there and went to another tab.
     #[test]
-    fn a_panes_cell_is_of_a_terminal_showing_it_that_said_one() -> Outcome {
+    fn a_panes_cell_is_its_hosts() -> Outcome {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| {
             s.output(PaneId::of(1), b"");
-            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().cell_size())
+            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().graphics().cell())
         };
         assert_eq!(cell(&mut s), None);
         // No colours said: its cell still is.
@@ -600,29 +583,58 @@ mod tests {
         run(&mut s, "opts str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
-        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
+        assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
         Ok(())
     }
 
-    /// A pane's pictures are drawn on a terminal showing it that draws
-    /// sixel and said its cell, though one that draws none typed there
-    /// last; with none that draws sixel, its cell is the one said.
+    /// One terminal answers for a tab, all it said and nothing else: the
+    /// first attached until one types there, then the typist's. One that
+    /// draws no sixel tells its panes none, and shows its pictures on no
+    /// terminal, though another showing the tab draws sixel; a colour it
+    /// did not say is unknown, though another said it.
     #[test]
-    fn a_terminal_that_draws_sixel_draws_a_panes_pictures() -> Outcome {
+    fn the_typists_terminal_answers_for_its_tab_alone() -> Outcome {
         let (mut s, c) = session()?;
-        let graphics = |s: &mut Session| s.graphics(PaneId::of(1));
-        s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
+        let cell = |w, h| fux_vt::CellSize::new(w, h).ok_or("a cell");
+        let background = |s: &mut Session| {
+            let _ = answered(s, 1);
+            s.output(PaneId::of(1), b"\x1b]11;?\x07");
+            answered(s, 1)
+        };
+        s.input(c, b"\x1b]11;#112233\x1b\\\x1b[6;20;10t\x1b[?62;4;22c");
         let d = s.attach(24, 80, None).map_err(|e| e.to_string())?;
         s.input(d, b"\x1b[6;16;8t\x1b[?62;22c");
+        assert_eq!(s.graphics(PaneId::of(1)), Graphics::Sixel(cell(10, 20)?));
+        assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
+        s.output(PaneId::of(1), b"\x1bP9q#1;2;100;0;0!20~\x1b\\");
+        let shown_on_c = |s: &Session| {
+            let (Some(view), mut placement) = (s.views.get(&c), Default::default()) else {
+                return 0;
+            };
+            let mut grid = crate::render::Grid::new(0, 0);
+            crate::render::compose_view(s, view, &mut grid, &mut placement);
+            crate::render::pictures(s, c, &placement).len()
+        };
+        assert_eq!(shown_on_c(&s), 1);
         s.input(d, b"x");
-        let shown = graphics(&mut s);
-        assert!(shown.sixel && shown.cell == fux_vt::CellSize::new(10, 20));
-        run(&mut s, "opts str other name new-workspace")?;
-        run(&mut s, "str c1 client str other workspace show-workspace")?;
-        let shown = graphics(&mut s);
-        assert!(!shown.sixel && shown.cell == fux_vt::CellSize::new(8, 16));
+        assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
+        assert_eq!(background(&mut s), "");
+        assert_eq!(shown_on_c(&s), 0, "kept, not shown");
+        // A headless client, with no terminal, types: d still answers.
+        let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
+        let attach = crate::protocol::Attach::of(size);
+        let headless = s.attach_as(ClientKind::Headless, attach);
+        s.input(headless.map_err(|e| e.to_string())?, b"x");
+        assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
+        assert_eq!(background(&mut s), "");
+        // c types: c answers again; c goes: d answers.
+        s.input(c, b"x");
+        assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
+        assert_eq!(shown_on_c(&s), 1);
+        s.detach(c);
+        assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         Ok(())
     }
 
@@ -648,7 +660,7 @@ mod tests {
     /// A cell answer that changes the cell a pane's program is told sizes
     /// its terminal in pixels at once, which signals it (SIGWINCH), not at
     /// its next output; and a refused cell is told once, not again at
-    /// each asking, the program keeping the cell it was told.
+    /// each asking, the program told it has none.
     #[test]
     fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -685,7 +697,7 @@ mod tests {
         let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_some(), "refused, told");
-        assert_eq!(pixels(&s), whole(12, 24), "the cell it was told kept");
+        assert_eq!(pixels(&s), None, "no cell told");
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_none(), "told once");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
@@ -699,11 +711,10 @@ mod tests {
         Ok(())
     }
 
-    /// An idle pane is told the cell of the terminal that draws it as
-    /// another comes to: one typed there, or the one drawing it detached;
-    /// once none does, it keeps the last it was told.
+    /// An idle pane is told the cell of its host as another comes to: one
+    /// typed there, or the host detached; with none, that it has none.
     #[test]
-    fn a_pane_is_told_the_cell_of_the_terminal_drawing_it_now() -> Outcome {
+    fn a_pane_is_told_the_cell_of_its_host_now() -> Outcome {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
         let told = |w: u16, h: u16| format!(r#""cell":{{"width":{w},"height":{h}}}"#);
@@ -717,14 +728,14 @@ mod tests {
         s.detach(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.detach(d);
-        assert!(cell(&mut s)?.contains(&told(12, 24)));
+        assert!(cell(&mut s)?.contains(r#""cell":null"#));
         Ok(())
     }
 
-    /// A picture drawn while no terminal showing its pane draws sixel is
-    /// not kept, and counted (`pictures_refused`).
+    /// A picture drawn while its pane's host draws no sixel is not kept,
+    /// and counted (`pictures_refused`).
     #[test]
-    fn a_picture_no_terminal_draws_is_counted() -> Outcome {
+    fn a_picture_its_host_does_not_draw_is_counted() -> Outcome {
         let (mut s, c) = session()?;
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let refused = |s: &mut Session| {

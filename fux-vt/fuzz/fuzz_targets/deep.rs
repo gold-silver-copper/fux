@@ -90,10 +90,7 @@ fn size(r: u8, c: u8) -> Option<Size> {
 fn graphics(c: u8) -> Graphics {
     let width = u16::from(c & 0x0f).saturating_add(1);
     let height = u16::from(c >> 4).saturating_mul(2).saturating_add(1);
-    Graphics {
-        cell: fux_vt::CellSize::new(width, height),
-        sixel: true,
-    }
+    fux_vt::CellSize::new(width, height).map_or(Graphics::Text, Graphics::Sixel)
 }
 
 /// The parsers fed alike, and what the run has fed.

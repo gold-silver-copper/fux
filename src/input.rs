@@ -33,8 +33,9 @@ impl Session {
         // pane's program reads show when its output does: nothing to paint
         // or settle until then.
         shown |= self.tell_lost();
-        // Another client typing answers for the tab's panes, which the
-        // settle tells them (`Session::host_cells`), and shows nothing.
+        // Another client typing hosts the tab's panes, which the settle
+        // tells them, painting the tab again where that changed what they
+        // are told (`Session::host_panes`).
         let answers = typist(self) != typed;
         if !shown && !answers && self.changes() == changes {
             return;

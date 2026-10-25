@@ -28,16 +28,28 @@ const MAX_PICTURES: usize = 64;
 pub const PICTURE_BYTES: usize = 96 << 20;
 
 /// What the host's terminal draws, for the pictures a program asks about
-/// and draws: the size of a cell in pixels, if known, and whether it shows
-/// sixel graphics. With no cell size known, a picture has no cells to be
-/// laid out in: no picture is placed, and `CSI 14 t` and `CSI 16 t` are
-/// not answered.
+/// and draws. A picture is laid out in cells, so sixel comes with a cell
+/// size: with none known ([`Graphics::Text`]), no picture is placed, and
+/// `CSI 14 t` and `CSI 16 t` are not answered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Graphics {
-    /// A cell's size in pixels.
-    pub cell: Option<CellSize>,
-    /// Whether it shows sixel graphics.
-    pub sixel: bool,
+pub enum Graphics {
+    /// Text alone, in cells of no known size.
+    #[default]
+    Text,
+    /// Text alone, in cells of this size in pixels.
+    Cell(CellSize),
+    /// Sixel too, in cells of this size in pixels.
+    Sixel(CellSize),
+}
+
+impl Graphics {
+    /// Its cell's size in pixels, if known.
+    pub fn cell(self) -> Option<CellSize> {
+        match self {
+            Self::Text => None,
+            Self::Cell(cell) | Self::Sixel(cell) => Some(cell),
+        }
+    }
 }
 
 /// The size of a cell in pixels, as the host's terminal says it: at least
@@ -135,15 +147,15 @@ pub struct Shown<'a> {
 }
 
 impl Screen {
-    /// A cell's size in pixels, the host's (`Parser::set_host_graphics`),
-    /// if it said.
-    pub fn cell_size(&self) -> Option<CellSize> {
-        self.graphics.cell
+    /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
+    /// last said: its cell size, if known, and whether it shows sixel.
+    pub fn graphics(&self) -> Graphics {
+        self.graphics
     }
 
-    /// Whether the host draws sixel, as DA1 says: only with a cell size.
+    /// Whether the host draws sixel, as DA1 says.
     pub(crate) fn sixel(&self) -> bool {
-        self.graphics.sixel
+        matches!(self.graphics, Graphics::Sixel(_))
     }
 
     /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
@@ -162,7 +174,7 @@ impl Screen {
     /// nothing can show again. Says whether it was placed: not without a
     /// cell size, nor when it lost bands as it was placed.
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> bool {
-        let Some(cell) = self.graphics.cell else {
+        let Some(cell) = self.graphics.cell() else {
             return false;
         };
         if self.pictures.is_empty() {
@@ -593,7 +605,7 @@ impl Screen {
 
     /// The pixel size of the text area, for a program's `CSI 14 t`.
     pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
-        let cell = self.graphics.cell?;
+        let cell = self.graphics.cell()?;
         let (rows, cols) = self.size().into();
         Some((
             u32::from(rows).saturating_mul(u32::from(cell.height())),

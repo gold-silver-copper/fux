@@ -621,10 +621,10 @@ const CELL: (u16, u16) = (9, 18);
 
 /// `parser` shown on a terminal of [`CELL`] that shows sixel.
 fn hosted(mut parser: fux_vt::Parser) -> fux_vt::Parser {
-    parser.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(CELL.0, CELL.1),
-        sixel: true,
-    });
+    parser.set_host_graphics(
+        fux_vt::CellSize::new(CELL.0, CELL.1)
+            .map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     parser
 }
 

@@ -460,10 +460,7 @@ fn a_host_cell_under_a_band_high_is_refused() -> Result {
     assert_eq!(fux_vt::CellSize::new(3, 5), None);
     let options = Options::new().with(Feature::Pictures);
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
-    p.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(3, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(fux_vt::CellSize::new(3, 6).map_or(Graphics::Text, Graphics::Sixel));
     // 6 pixels wide and 12 high, two bands.
     p.process(b"\x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\")?;
     let cells: Vec<_> = p.screen().pictures().map(|s| s.cell).collect();
@@ -696,10 +693,7 @@ fn a_long_csi_answer_is_held_up_to_256_bytes() -> Result {
 fn picturing(rows: u16, cols: u16) -> Result<Parser> {
     let options = Options::new().with(Feature::Pictures);
     let mut p = Parser::with_options(Size::new(rows, cols)?, 0, options)?;
-    p.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(8, 16),
-        sixel: true,
-    });
+    p.set_host_graphics(fux_vt::CellSize::new(8, 16).map_or(Graphics::Text, Graphics::Sixel));
     Ok(p)
 }
 

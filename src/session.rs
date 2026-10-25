@@ -165,7 +165,7 @@ impl Made {
 }
 
 /// A pane's size to begin with, and the cell its program is told it
-/// starts in: none in a tab no terminal draws yet (`Session::graphics`).
+/// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
 /// A pane to make: what it starts, where, what it takes of its starter,
@@ -735,11 +735,9 @@ impl Session {
             launch.env.retain(|(k, _)| k != key);
             launch.env.push((key.clone(), value.clone()));
         }
-        // The cell a terminal drawing it says, else the one its pane keeps:
-        // the program it starts is told what the last was.
-        let mut graphics = self.graphics(id);
-        graphics.cell = graphics.cell.or(pane.screen().cell_size());
-        let size = (pane.size(), graphics.cell);
+        // The program it starts is told its host's cell.
+        let graphics = self.graphics(id);
+        let size = (pane.size(), graphics.cell());
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Program(launch.clone());
@@ -1435,28 +1433,32 @@ impl Session {
         self.views = views;
         self.outbox.extend(ended);
         self.size_panes();
-        self.host_cells();
+        self.host_panes();
         self.tell_schemes();
         self.tell_lost();
         self.hold_copies();
     }
 
-    /// Each pane whose program was told another cell than the terminal
-    /// that draws it says now (`graphics`) is told that one: as the cell
-    /// a terminal says changes, or another terminal draws the pane (one
-    /// said it draws sixel, the one drawing it left or another typed
-    /// there). Its terminal is sized in pixels for it, which signals its
-    /// program, not left till it writes. One no terminal that said a cell
-    /// draws keeps the cell it was told (`Pane::host`).
-    fn host_cells(&mut self) {
-        let told = |p: &&Pane| {
-            let drawn = self.graphics(p.id()).cell;
-            drawn.is_some_and(|cell| p.screen().cell_size() != Some(cell))
-        };
+    /// Each pane whose program was told other graphics than its host's
+    /// terminal draws now (`graphics`) is told those: as a terminal says
+    /// its cell or sixel, or the pane's host changes (another typed there,
+    /// the host left or shows another tab, or there is none). A new cell,
+    /// unknown too, sizes its terminal in pixels, which signals its
+    /// program, not left till it writes; and the clients showing it are
+    /// painted again, as its pictures show only while its host draws sixel
+    /// (`render::pictures`).
+    fn host_panes(&mut self) {
+        let told = |p: &&Pane| self.graphics(p.id()) != p.screen().graphics();
         let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
             .map(Pane::id)
             .collect();
         for id in stale {
+            let tab = self.locate(id).map(|(_, tab)| tab);
+            for client in self.viewers(tab) {
+                if let Some(view) = self.views.get_mut(&client) {
+                    view.dirty = true;
+                }
+            }
             if let Some((pane, true)) = self.hosted(id) {
                 pane.size_terminal();
             }
@@ -2453,7 +2455,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell));
+        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3920,11 +3922,11 @@ mod tests {
         Ok(())
     }
 
-    /// A program in a tab no terminal draws keeps the cell it was told:
-    /// its client shown another tab, back, or detached, its terminal's
-    /// size is as it was, which signals it nothing (SIGWINCH).
+    /// A program in a tab with no host is told it has no cell: its client
+    /// shown another tab, or detached, its terminal has no size in pixels;
+    /// shown it again, the cell its terminal said.
     #[test]
-    fn a_tab_no_terminal_draws_keeps_its_programs_cell() -> Result<(), String> {
+    fn a_tab_with_no_host_tells_its_programs_no_cell() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         let id = PaneId::of(1);
         let size = s.pane(id).map_err(|e| e.to_string())?.size();
@@ -3940,14 +3942,13 @@ mod tests {
         assert!(told.is_some_and(|(_, pixels)| pixels.is_some()), "{told:?}");
         run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
         let show = |ws: &str| format!("str {c} client str {ws} workspace show-workspace");
+        let unknown = |s: &Session| winsize(s).is_some_and(|(_, pixels)| pixels.is_none());
         run(&mut s, &show("other"))?;
-        s.output(id, b"drawn unseen");
-        assert_eq!(winsize(&s), told, "hidden");
+        assert!(unknown(&s), "hidden");
         run(&mut s, &show("+1"))?;
         assert_eq!(winsize(&s), told, "shown again");
         s.detach(c);
-        s.output(id, b"drawn unseen");
-        assert_eq!(winsize(&s), told, "detached");
+        assert!(unknown(&s), "detached");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         if let Process::Reading(child) = pane.set_process(Process::Absent) {
             drop(child.master);
@@ -3958,10 +3959,10 @@ mod tests {
         Ok(())
     }
 
-    /// A program respawned in a tab no terminal draws is told the cell its
-    /// pane kept, as the program before it was.
+    /// A program respawned in a tab with no host is told no cell, though
+    /// the program before it was told one.
     #[test]
-    fn a_respawn_no_terminal_draws_keeps_the_cell() -> Result<(), String> {
+    fn a_respawn_with_no_host_is_told_no_cell() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
         run(&mut s, "opts str /bin/cat program run")?;
         run(
@@ -3973,10 +3974,7 @@ mod tests {
         s.detach(c);
         run(&mut s, "%2 respawn")?;
         let json = output(&mut s, "%2 capture json")?;
-        assert!(
-            json.contains(r#""cell":{"width":10,"height":20}"#),
-            "{json}"
-        );
+        assert!(json.contains(r#""cell":null"#), "{json}");
         Ok(())
     }
 

@@ -310,10 +310,7 @@ macro_rules! side {
                             }
                             p.set_host_palette(palette);
                         }
-                        Call::Graphics(w, h) => p.set_host_graphics(vt::Graphics {
-                            cell: vt::CellSize::new(w, h),
-                            sixel: true,
-                        }),
+                        Call::Graphics(w, h) => p.set_host_graphics(vt::CellSize::new(w, h).map_or(vt::Graphics::Text, vt::Graphics::Sixel)),
                     }
                 }
 

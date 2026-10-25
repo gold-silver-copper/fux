@@ -1136,10 +1136,9 @@ fn replay(seed: &Seed) -> Result<Replayed> {
     let (rows, cols, history) = seed.size;
     let options: Options = Feature::ALL.into_iter().collect();
     let mut parser = Parser::with_options(Size::new(rows, cols)?, history, options)?;
-    parser.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(10, 20),
-        sixel: true,
-    });
+    parser.set_host_graphics(
+        fux_vt::CellSize::new(10, 20).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     let prefix = match seed.prefix {
         Prefix::None => Vec::new(),
         Prefix::EmptyHistory => repeat(b"\n", 349_600),

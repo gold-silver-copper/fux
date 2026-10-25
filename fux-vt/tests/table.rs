@@ -293,10 +293,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
             version: "1.2.3",
         }));
     let mut parser = Parser::with_options(Size::new(6, 12)?, 1 << 16, options)?;
-    parser.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(10, 20),
-        sixel: true,
-    });
+    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
     let text = b"\x1b[Habcdefghijk\r\nlmnopqrstuv\r\nwxyzABCDEFG\r\nHIJKLMNOPQR\x1b[3;5H\x1b[m";
     parser.process_with(text, &mut Record::default())?;
     Ok(parser)
