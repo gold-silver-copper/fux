@@ -335,7 +335,7 @@ mod tests {
     }
 
     /// A tab in the first workspace.
-    const NEW_TAB: &str = "opts str +1 workspace in new-tab";
+    const NEW_TAB: &str = "opts 80 24 size str +1 workspace in new-tab";
 
     /// A name typed into a rename prompt is the name, whatever it looks
     /// like.
@@ -577,8 +577,14 @@ mod tests {
     #[test]
     fn the_tab_layer_reorders_in_a_repeat_mode() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts str +1 workspace in str two name new-tab")?;
-        run(&mut s, "opts str +1 workspace in str three name new-tab")?;
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in str two name new-tab",
+        )?;
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in str three name new-tab",
+        )?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
@@ -695,7 +701,7 @@ mod tests {
         run(&mut s, "str %1 pane horizontal split")?;
         run(&mut s, "str %2 pane vertical split")?;
         run(&mut s, NEW_TAB)?;
-        run(&mut s, "opts new-workspace")?;
+        run(&mut s, "opts 80 24 size new-workspace")?;
         run(&mut s, "str c1 client str %2 pane focus-pane")?;
         Ok((s, c))
     }
@@ -950,7 +956,7 @@ mod tests {
     #[test]
     fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         run(&mut s, "str c1 client str %2 pane focus-pane")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
@@ -1066,7 +1072,10 @@ mod tests {
     #[test]
     fn choosers_mark_the_current_item_and_start_on_it() -> Outcome {
         let (mut s, c) = session()?;
-        run(&mut s, "opts str +1 workspace in str second name new-tab")?;
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in str second name new-tab",
+        )?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.input(c, b"\x02tg");
         let Some(Mode::Panel(Panel::List(list))) = s.views.get(&c).map(|v| &v.mode) else {

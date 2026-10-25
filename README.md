@@ -99,9 +99,10 @@ which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet: they start from `opts`, empty options. Only `run` takes a program
 (`program`, then each `arg`; a shell's line is `str sh program str -c arg str
 LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
-out on an attached client's screen, or on `COLS ROWS size`; with no client
-attached (one that only watches does not count) a size must be given: fux
-makes none up.
+out on `COLS ROWS size`, else on the caller's own screen (a client's keys),
+else on the caller's tab (`fux` run in a pane): never on the screen of
+another client. Run from outside fux, a size must be given: fux makes none
+up.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run

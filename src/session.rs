@@ -1380,39 +1380,32 @@ impl Session {
     }
 
     /// What a new tab is laid out on while no client shows it: `size`, if
-    /// given; else the smallest screen of the clients that size the
-    /// caller's tab, else of those showing its workspace, else of any that
-    /// size panes, which it then fits. With none, and no size given, it has
-    /// no size, which is not made up: it is refused.
+    /// given; else the caller's own screen, if it sizes panes; else the
+    /// size of the caller's tab: the smallest screen of the clients that
+    /// size it, or with none its fit's. Never the screen of a client that
+    /// does not show the caller's tab: a caller with neither, and no size
+    /// given, is refused.
     fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
             return Ok(Fit::Fixed(size.size()));
         }
-        let tab = match here {
-            Here::Client(_, place) => Some(place.tab),
-            Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
-        };
-        let ws = |v: &View| self.shown_workspace(v.id).map(Workspace::id);
-        let tiers: [&dyn Fn(&View) -> bool; 3] = [
-            &|v| tab.is_some_and(|t| self.shows(v.id, t)),
-            &|v| here.ws().is_some_and(|w| ws(v) == Some(w)),
-            &|_| true,
-        ];
-        for tier in tiers {
-            let sizes = (self.views.values()).filter(|v| v.sizes() && tier(v));
-            let least = (sizes.filter_map(Self::screen_size))
+        let own = (here.client().and_then(|c| self.views.get(&c)))
+            .filter(|view| view.sizes())
+            .and_then(Self::screen_size);
+        let tab = || {
+            let tab = match here {
+                Here::Client(_, place) => Some(place.tab),
+                Here::Cli(..) => here.pane().and_then(|p| self.locate(p)).map(|(_, tab)| tab),
+            };
+            let least = (self.sizing(tab?).filter_map(Self::screen_size))
                 .map(|s| (s.rows(), s.cols()))
-                .reduce(|(r, c), (rows, cols)| (r.min(rows), c.min(cols)));
-            if let Some(Ok(size)) = least.map(|(rows, cols)| Size::new(rows, cols)) {
-                return Ok(Fit::Clients(size));
-            }
-        }
-        let why = "no client attached sizes it (one that only watches, or with no room for \
-                   a pane below its bar, sizes nothing), and no size was given";
-        Err(fail(
-            Code::Size,
-            format!("{why}: give a size (`COLS ROWS size`)"),
-        ))
+                .reduce(|(r, c), (rows, cols)| (r.min(rows), c.min(cols)))
+                .and_then(|(rows, cols)| Size::new(rows, cols).ok());
+            least.or_else(|| self.tab(tab?).map(|t| t.fit().size()))
+        };
+        let why = "the caller has no screen that sizes panes and no tab, and no size was given";
+        (own.or_else(tab).map(Fit::Clients))
+            .ok_or_else(|| fail(Code::Size, format!("{why}: give a size (`COLS ROWS size`)")))
     }
 
     /// The clients showing tab `tab` that size its panes.
@@ -3573,7 +3566,7 @@ mod tests {
     #[test]
     fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -3764,7 +3757,7 @@ mod tests {
     #[test]
     fn output_cut_at_an_end_is_told_with_the_end() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -3847,7 +3840,7 @@ mod tests {
     #[test]
     fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -3971,7 +3964,7 @@ mod tests {
     #[test]
     fn a_respawn_with_no_host_is_told_no_cell() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -3991,7 +3984,7 @@ mod tests {
     #[test]
     fn input_an_ended_program_never_read_is_told() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -4044,7 +4037,7 @@ mod tests {
     #[test]
     fn a_respawned_program_reads_no_report_the_ended_one_asked_for() -> Result<(), String> {
         let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
         run(
             &mut s,
             &format!("str {c} client str +2 workspace show-workspace"),
@@ -4176,7 +4169,7 @@ mod tests {
     fn a_program_whose_terminal_is_written_on_still_exits() -> Result<(), String> {
         // A large screen, where each ED is spent as 40,000 cells.
         let (mut s, _) = super::testing::attached(201, 200)?;
-        run(&mut s, "opts str /bin/true program run")?;
+        run(&mut s, "opts 200 200 size str /bin/true program run")?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
@@ -4371,7 +4364,7 @@ mod tests {
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
         assert!(notice.is_some_and(|n| n.text.contains("is not padded base64")));
         // One in a tab no client shows is told once one does.
-        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "opts 20 4 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;
         if let Some(view) = s.views.get_mut(&client) {
             view.notice = None;
@@ -4437,8 +4430,9 @@ mod tests {
     /// started at.
     #[test]
     fn a_tab_no_client_shows_is_sized_as_on_a_clients_screen() -> Result<(), String> {
-        let (mut s, _) = attached(11, 40)?;
-        run(&mut s, "opts str +1 workspace in new-tab")?;
+        let (mut s, c) = attached(11, 40)?;
+        output_as(&mut s, Some(c), "opts str +1 workspace in new-tab drop")?;
+        run(&mut s, "str c1 client str @1 tab show-tab")?;
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size);
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         run(&mut s, "str %2 pane vertical split")?;
@@ -4462,8 +4456,9 @@ mod tests {
         Ok(())
     }
 
-    /// A pane is made only at a size known: with no client attached and no
-    /// size given, there is none, and the request is refused; the first
+    /// A pane is made only at a size known: with no size given, from a
+    /// caller with no screen or tab, there is none, whatever client is
+    /// attached, and the request is refused; the first
     /// client to attach to an empty session starts its shell on its screen,
     /// unless it only watches;
     /// a tab that fits clients keeps the last screen's size once none does.
@@ -4478,7 +4473,7 @@ mod tests {
         );
         let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
         assert!(
-            refused.starts_with("size: ") && refused.contains("no client"),
+            refused.starts_with("size: ") && refused.contains("give a size"),
             "{refused}"
         );
         assert!(s.parts.panes().is_empty());
@@ -4490,6 +4485,10 @@ mod tests {
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
         let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;
         assert_eq!(size(&s, 1), Some((10, 40)));
+        // Nor from a caller with no screen or tab of its own, whatever
+        // client is attached.
+        let refused = run(&mut s, "opts str +1 workspace in new-tab").err();
+        assert!(refused.is_some_and(|r| r.starts_with("size: ")));
         run(&mut s, "str %1 pane vertical split")?;
         s.detach(c);
         run(&mut s, "%2 kill")?;
@@ -4512,7 +4511,7 @@ mod tests {
     #[test]
     fn ls_of_a_target_lists_what_is_in_it() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
-        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "opts 40 10 size str +1 workspace in new-tab")?;
         run(&mut s, "str %2 pane vertical split")?;
         let ids = |only| {
             let text = s.ls_text(Some(only));
@@ -4579,7 +4578,7 @@ mod tests {
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         assert_eq!(notice(&s).as_deref(), Some("%2 sh exited with status 3"));
         // A second tab, shown; its only pane exits, and the tab with it.
-        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.exited(PaneId::of(3), crate::process::Ended::Exited(7));
         assert_eq!(notice(&s).as_deref(), Some("%3 sh exited with status 7"));
@@ -4594,7 +4593,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         run(&mut s, "str %1 pane horizontal split")?;
-        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "opts 40 9 size str +1 workspace in new-tab")?;
         run(&mut s, "str %3 pane str @1 tab move-to")?;
         run(&mut s, "str %1 pane str right move-beside")?;
         let holding = |s: &Session, pane| {
@@ -5428,12 +5427,12 @@ mod tests {
     fn a_screen_with_no_room_lays_out_no_pane() -> Result<(), String> {
         let mut s = started(Config::default())?;
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
-        // Its first client, of one row, has no room: the next one's screen
-        // is the tab's.
-        s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        // A client of one row has no room: its tab, which the other
+        // client's screen sizes, sizes the tab it makes.
+        let one = s.attach(1, 40, None).map_err(|e| e.to_string())?;
         s.attach(11, 40, None).map_err(|e| e.to_string())?;
         s.detach(small);
-        run(&mut s, "opts str +1 workspace in new-tab drop")?;
+        output_as(&mut s, Some(one), "opts str +1 workspace in new-tab drop")?;
         let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 40)?));
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;

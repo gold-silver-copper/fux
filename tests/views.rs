@@ -43,6 +43,9 @@ fn tabs_are_created_and_switched_by_key() -> Outcome {
     // new-tab from the CLI, with a name.
     server.ok(&[
         "opts",
+        "60",
+        "9",
+        "size",
         "str",
         "+1",
         "workspace",
@@ -76,7 +79,16 @@ fn workspaces_are_created_and_switched_by_key() -> Outcome {
     eventually("+2 again", || {
         Ok(client_line(&server, "c1")?.contains(" +2 "))
     })?;
-    server.ok(&["opts", "str", "third", "name", "new-workspace"])?;
+    server.ok(&[
+        "opts",
+        "60",
+        "9",
+        "size",
+        "str",
+        "third",
+        "name",
+        "new-workspace",
+    ])?;
     server.ok(&[
         "str",
         "c1",
@@ -187,7 +199,17 @@ fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 80)?;
     client.wait_for("$")?;
-    server.ok(&["opts", "str", "+1", "workspace", "in", "new-tab"])?;
+    server.ok(&[
+        "opts",
+        "80",
+        "19",
+        "size",
+        "str",
+        "+1",
+        "workspace",
+        "in",
+        "new-tab",
+    ])?;
     server.ok(&["str", "c1", "client", "str", "@1", "tab", "show-tab"])?;
     server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move-to"])?;
     let ls = server.ok(&["ls"])?;
@@ -299,7 +321,9 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
     eventually("the client's size", || sized("84x24"))?;
-    let other = server.ok(&["opts", "str", "sleep", "program", "str", "60", "arg", "run"])?;
+    let other = server.ok(&[
+        "opts", "84", "24", "size", "str", "sleep", "program", "str", "60", "arg", "run",
+    ])?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show-tab"])?;
     eventually("its own size, another tab shown", || sized("100x40"))?;

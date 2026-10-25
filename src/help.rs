@@ -56,9 +56,9 @@ WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only run, new-tab and
 new-workspace start from opts (`opts str make program str test arg
-run`), laid out on an attached client's screen, or with none (one that
-only watches, or has no room below its bar, does not count) on a size
-given (`opts 80 24 size …`): fux makes none up. An action answers at once,
+run`), laid out on a size given (`opts 80 24 size …`), else the
+caller's own screen or tab (`fux` run in a pane): run from outside fux,
+a size must be given, as fux makes none up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
 version differs from V, {wait}s at most unless `SECS timeout` says (the
