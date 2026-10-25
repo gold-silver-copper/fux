@@ -265,8 +265,8 @@ struct Sink<'a> {
     /// Set by a bell (BEL).
     bell: &'a mut bool,
     alerts: &'a mut Alerts,
-    /// Set by an OSC 52 write: its UTF-8 text, or why it is no copy.
-    copied: &'a mut Option<Result<String, Uncopied>>,
+    /// Each OSC 52 write, in order: its UTF-8 text, or why it is no copy.
+    copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
 }
@@ -311,7 +311,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
-                *self.copied = Some(match data.cut {
+                self.copied.push(match data.cut {
                     true => Err(Uncopied::Cut),
                     false => (crate::json::unbase64(data.bytes))
                         .and_then(|d| String::from_utf8(d).ok())
@@ -439,7 +439,7 @@ pub struct Alerts {
 }
 
 /// Why a program's copy (OSC 52) copied nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Uncopied {
     /// It was longer than fux-vt keeps of a string.
     Cut,
@@ -498,10 +498,12 @@ pub struct Pane {
     /// The program rang the bell since the session last looked
     /// (`Session::ring`).
     pub bell: bool,
-    /// The text the program last put on the clipboard (OSC 52) since the
-    /// session last looked, which copies it (`Session::copied`), or why
-    /// it copied nothing, which the session tells.
-    pub copied: Option<Result<String, Uncopied>>,
+    /// What the program put on the clipboard (OSC 52) since the session
+    /// last looked, in order: each text, which the session copies
+    /// (`Session::copied`), or why it copied nothing, which it tells. The
+    /// session takes them after every read, so they are fewer than the
+    /// bytes it read.
+    pub copied: Vec<Result<String, Uncopied>>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it that events tell, in order, since the session
@@ -547,7 +549,7 @@ impl Pane {
             exiting: None,
             colours: Colours::default(),
             bell: false,
-            copied: None,
+            copied: Vec::new(),
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
@@ -892,7 +894,7 @@ impl Pane {
         started.rename(name);
         started.colours = std::mem::take(&mut self.colours);
         started.bell = self.bell;
-        started.copied = self.copied.take();
+        started.copied = std::mem::take(&mut self.copied);
         started.log = self.log.take();
         // 2^64 respawns are never reached: the count never stands still.
         started.respawns = self.respawns.saturating_add(1);
