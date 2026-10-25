@@ -133,7 +133,8 @@ pane.
 ### Which server
 
 `str NAME server` before the rest is the server named NAME (its socket
-`NAME.sock` in `$XDG_RUNTIME_DIR/fux`), `str PATH socket` a socket's path;
+`NAME.sock` in fux's directory, `$XDG_RUNTIME_DIR/fux` or, with
+`XDG_RUNTIME_DIR` unset, `$TMPDIR/fux`), `str PATH socket` a socket's path;
 without either, `FUX_SOCKET`, else the default. A private server for a test
 or an agent:
 
@@ -472,8 +473,10 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
 
 The server listens only on a Unix socket: `str PATH socket`, `str NAME
 server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
-`$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`. An
-auto-started server logs to `fux.log` beside it.
+`server.sock` there. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
+`XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to
+a relative path is refused, as is neither set. An auto-started server logs
+to `fux.log` beside it.
 
 - The socket's directory must be yours, mode 0700, reached only through
   directories no other user can change; fux creates the default one so.

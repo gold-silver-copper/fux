@@ -106,7 +106,8 @@ workspace; ref a name or a handle; text a string, number or boolean.
     out.push_str(&wrapped(names, "\n  ", 79));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
-         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux.\n",
+         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
+         XDG_RUNTIME_DIR unset $TMPDIR/fux.\n",
     );
     out
 }

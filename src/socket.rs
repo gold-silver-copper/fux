@@ -2,7 +2,8 @@
 //!
 //! - The path is `str PATH socket`'s, or `str NAME server`'s
 //!   `NAME.sock` in fux's directory, else `FUX_SOCKET`, else `server.sock`
-//!   there: fux's directory is `$XDG_RUNTIME_DIR/fux`, else `$TMPDIR/fux`.
+//!   there: fux's directory is `$XDG_RUNTIME_DIR/fux` whenever that is
+//!   set (even empty, which is refused), else `$TMPDIR/fux`.
 //! - Its directory is owned by the user, mode 0700; the directories above
 //!   it are not checked (`private_directory`). The socket is mode 0600, set
 //!   before `listen`.
@@ -159,7 +160,8 @@ pub fn start_hint(path: &Path) -> String {
     format!("`fux {words} start` starts one")
 }
 
-/// fux's directory: under `XDG_RUNTIME_DIR`, else `TMPDIR`.
+/// fux's directory: under `XDG_RUNTIME_DIR` whenever it is set, else
+/// `TMPDIR`.
 pub fn directory() -> Result<PathBuf, Error> {
     for base in ["XDG_RUNTIME_DIR", "TMPDIR"] {
         if let Some(value) = std::env::var_os(base) {

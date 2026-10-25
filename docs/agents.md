@@ -309,12 +309,12 @@ stopped it.
   (the first client to attach starts a shell on its screen; one that only
   watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
-  start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux`, else
-  `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
+  start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
   alone): `status` each.
 
   ```sh
-  ls "${XDG_RUNTIME_DIR:-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
+  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
     sort -u | while read -r n; do fux str "$n" server status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
