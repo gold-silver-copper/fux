@@ -209,9 +209,10 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // Portrait, 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19,
 // at most 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (THREATS.md
 // B05). Each lies on the last cell row of the one before, whose 20 rows of
-// 2,000 pixels it covers (B46): their band of 16 bytes a row and 32 words
-// a row (680 words), and two words a row read and written for each of 32
-// (660), 1,340 at most a placement; 5,440 bytes for each of 64 pictures.
+// 2,000 pixels it covers (B46): a list of the rows it shows, 16 bytes each
+// of at most 4,096, and 32 words for each row covered (8,832 words), and
+// the words read and written, 33 for each (660): 9,492 at most a
+// placement, and 70,656 bytes for each of 64 pictures.
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     for (picture, (cell, per_byte, rows)) in [
@@ -226,8 +227,8 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
     ] {
         let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
         let bound = Bound {
-            work: &[("pixels", 0, 0, 215 * 1340)],
-            heap: steady(&setup).saturating_add(64 * 5440),
+            work: &[("pixels", 0, 0, 215 * 9492)],
+            heap: steady(&setup).saturating_add(64 * 70_656),
         };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
         probe.set_host_graphics(

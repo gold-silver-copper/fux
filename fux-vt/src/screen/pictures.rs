@@ -378,7 +378,7 @@ impl Screen {
     /// STD 070-9, 7.2), and as xterm 411 draws pictures, in order, a clear
     /// pixel showing those below (`graphics.c`). One covered whole goes;
     /// so does one with no room to note what is covered, a bit for each
-    /// pixel of a row of it the screen shows, inside the budget (B01), or
+    /// pixel of a row of it covered and 16 bytes a row it shows, inside the budget (B01), or
     /// past the words a placement may cover (`COVER_WORDS`, B46), the
     /// newest covered first. Pictures laid out in other cell sizes are never
     /// shown together, and cover none of each other.
@@ -429,18 +429,15 @@ impl Screen {
                 at_origin.0.saturating_sub(origin.0),
                 at_origin.1.saturating_sub(origin.1),
             );
-            let rows = (i64::from(top).saturating_sub(y))..(i64::from(bottom).saturating_sub(y));
-            let rows = clip(&rows);
-            let rows = rows.start.max(shown.1)..rows.end.min(shown.2).max(shown.1);
+            let rows = span(y, shown.1, shown.2, top, bottom);
             let cols = span(x, 0, shown.0, 0, right);
-            let bytes = p.picture.cover_bytes(shown, &rows);
-            let lines = rows.len();
+            let bytes = p.picture.cover_bytes(shown, rows);
             let cost = (bytes / 8)
-                .saturating_add(lines.saturating_mul(cols.div_ceil(64).saturating_add(1)));
+                .saturating_add(rows.saturating_mul(cols.div_ceil(64).saturating_add(1)));
             let ready = words.saturating_add(cost) <= COVER_WORDS
                 && !self.over_budget(bytes)
                 && (self.pictures.get_mut(at))
-                    .is_some_and(|p| Arc::make_mut(&mut p.picture).coverable(shown, &rows));
+                    .is_some_and(|p| Arc::make_mut(&mut p.picture).coverable(shown));
             if ready {
                 words = words.saturating_add(cost);
                 coverable.push((at, at_origin));
@@ -850,13 +847,6 @@ fn span(at: i64, start: u32, end: u32, from: u32, to: u32) -> usize {
         .min(i64::from(to))
         .saturating_sub(start.max(i64::from(from)));
     usize::try_from(n.max(0)).unwrap_or(0)
-}
-
-/// The rows of a picture's pixels `rows` names, those before its first
-/// left out.
-fn clip(rows: &std::ops::Range<i64>) -> std::ops::Range<u32> {
-    let at = |n: i64| u32::try_from(n.max(0)).unwrap_or(u32::MAX);
-    at(rows.start)..at(rows.end)
 }
 
 /// Whether two areas of cells, each its top row, first column, columns and
