@@ -135,6 +135,8 @@ codes! {
     /// The pane only has its shell, which `signal` does not signal.
     OnlyShell "only_shell",
     /// A pane's input queue is full: its terminal took none of it since.
+    /// Or a client's: a program or keys sent it while too much waits
+    /// unwritten for its terminal.
     InputFull "input_full",
     /// A pane where no shell command was marked (OSC 133), for what needs
     /// one (`last-output`).
