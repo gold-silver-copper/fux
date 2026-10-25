@@ -447,15 +447,18 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   over one, or an overlay, takes it away. Of the terminals showing a pane,
   one that draws sixel and said its cell size draws it (of those, the one
   last typed in there, else the first); with none, its cell size is of one
-  that said it, chosen so; with none of those (its tab not shown, or its
-  client detached), it keeps the last it was told, so its programs are not
-  signalled. A pane shown on no terminal that draws sixel and
-  said its cell size is told no sixel, so its programs draw in text (half
+  that said it, chosen so; with none of those (its tab not shown, its
+  client detached, or each terminal showing it said none), it keeps the last
+  it was told, so its programs are not signalled, though the terminal that
+  said it may no longer draw it. A pane shown on no terminal that draws sixel
+  and said its cell size is told no sixel, so its programs draw in text (half
   blocks), which captures read; `json` says where pictures are, and the cell
   size (`cell`, `null` while it was told none). fux never makes a cell size
-  up: without one (no terminal showing the pane said it, a 0 saying none, or
-  it said one smaller than a sixel band, 2 by 6 pixels, which fux tells you),
-  a sixel picture is not placed, and `CSI 14 t` and `CSI 16 t` go unanswered.
+  up: a terminal says none with a 0, or with one smaller than a sixel band, 2
+  by 6 pixels, which fux tells you. A pane never told one leaves `CSI 14 t`
+  and `CSI 16 t` unanswered; once told one, it answers them with it, kept as
+  above. A sixel picture is placed only while a terminal showing the pane
+  draws sixel and said its cell size.
   Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others;
   not by kitty, whose graphics protocol fux does not speak, nor Ghostty,
   Alacritty or Apple's Terminal.
