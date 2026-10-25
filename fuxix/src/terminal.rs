@@ -263,22 +263,6 @@ pub fn controls_session(fd: impl AsFd) -> bool {
     its > 0 && its == unsafe { libc::getsid(0) }
 }
 
-/// The path of the terminal `fd` is open on (`ttyname_r`): opened again,
-/// a description of its own, whose flags no other process shares.
-pub fn name(fd: impl AsFd) -> Result<std::path::PathBuf> {
-    use std::os::unix::ffi::OsStringExt;
-    let mut name = vec![0u8; 4096];
-    // SAFETY: `name` is writable for its whole length, which is passed;
-    // ttyname_r writes a name ending in NUL within it, or fails.
-    let failed =
-        unsafe { libc::ttyname_r(fd.as_fd().as_raw_fd(), name.as_mut_ptr().cast(), name.len()) };
-    if failed != 0 {
-        return Err(Errno::from_raw(failed));
-    }
-    name.truncate(name.iter().position(|&b| b == 0).unwrap_or(name.len()));
-    Ok(std::ffi::OsString::from_vec(name).into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

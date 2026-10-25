@@ -24,6 +24,7 @@ use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// What the attach client sets on its terminal: its title saved
@@ -1046,60 +1047,89 @@ impl Drop for Raw {
 /// its bound.
 const OUTPUT_MAX: usize = 1 << 20;
 
-/// The paints the server relays, for the terminal: written as far as it
-/// takes them, never waiting on it, so that its keys are read meanwhile.
-/// Through a descriptor of its own: one nonblocking stdout would make the
-/// shell's, and its background jobs', nonblocking too.
+/// The paints the server relays, for the terminal: handed to a thread
+/// that writes them to stdout, waiting on the terminal as any program does,
+/// so that the client reads keys meanwhile. stdout stays as the shell left
+/// it, shared with it and its jobs.
 struct Output {
-    terminal: std::fs::File,
-    waiting: crate::bytes::ByteQueue,
+    to: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    writer: Option<std::thread::JoinHandle<io::Result<()>>>,
+    /// The bytes handed over and not yet written.
+    unwritten: std::sync::Arc<AtomicUsize>,
+    /// Readable once the writer wrote some, or ended.
+    wake: io::PipeReader,
 }
 
 impl Output {
-    /// Opens the terminal on stdout again, nonblocking, to write to.
     fn open() -> Result<Output, Error> {
-        use std::os::unix::fs::OpenOptionsExt;
-        let name = fuxix::terminal::name(io::stdout()).map_err(failed("naming the terminal"))?;
-        let flags = fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
-        let terminal = (std::fs::OpenOptions::new().write(true))
-            .custom_flags(flags)
-            .open(&name)
-            .map_err(|e| Error::Failed(format!("{}: {e}", name.display())))?;
+        let (to, todo) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (wake, poke) = io::pipe()?;
+        fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
+        fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
+        let unwritten = std::sync::Arc::new(AtomicUsize::new(0));
+        let left = unwritten.clone();
+        let writer = std::thread::Builder::new()
+            .name("terminal".into())
+            .spawn(move || {
+                let mut stdout = io::stdout();
+                for bytes in todo {
+                    let wrote = stdout.write_all(&bytes).and_then(|()| stdout.flush());
+                    left.fetch_sub(bytes.len(), Ordering::Relaxed);
+                    // A pipe too full for it is readable: the client wakes
+                    // all the same.
+                    let _ = fuxix::io::write(&poke, b"!");
+                    wrote?;
+                }
+                Ok(())
+            })?;
         Ok(Output {
-            terminal,
-            waiting: crate::bytes::ByteQueue::default(),
+            to: Some(to),
+            writer: Some(writer),
+            unwritten,
+            wake,
         })
     }
 
-    /// Whether the server's frames may be read: less than `OUTPUT_MAX`
-    /// waits.
+    /// Whether the server's frames may be read: less than `OUTPUT_MAX` is
+    /// unwritten, so a paint frame more, `MAX_FRAME` at most, may follow.
     fn room(&self) -> bool {
-        self.waiting.len() < OUTPUT_MAX
+        self.unwritten.load(Ordering::Relaxed) < OUTPUT_MAX
     }
 
-    /// Writes what waits as far as the terminal takes it now.
-    fn write(&mut self) -> Result<(), Error> {
-        while !self.waiting.is_empty() {
-            match fuxix::io::write(&self.terminal, self.waiting.as_slice()) {
-                Ok(0) | Err(Errno::AGAIN) => break,
-                Ok(n) => self.waiting.take(n),
-                Err(Errno::INTR) => {}
-                Err(e) => return Err(failed("writing the terminal")(e)),
-            }
+    /// Hands `bytes` to the writer: an error once it has ended.
+    fn push(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        self.unwritten.fetch_add(bytes.len(), Ordering::Relaxed);
+        match self.to.as_ref().map(|to| to.send(bytes)) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(_)) | None => Err(self.ended()),
         }
-        self.waiting.shrink(OUTPUT_MAX);
-        Ok(())
     }
 
-    /// Writes all that waits, waiting on the terminal, as the attachment
-    /// ends: one that has stopped reading holds the client, as it would
+    /// The writer wrote some: an error if it has ended.
+    fn woke(&mut self) -> Result<(), Error> {
+        crate::drain(&self.wake);
+        match self.writer.as_ref().is_some_and(|w| w.is_finished()) {
+            true => Err(self.ended()),
+            false => Ok(()),
+        }
+    }
+
+    /// Why the writer ended.
+    fn ended(&mut self) -> Error {
+        match self.writer.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(Err(error))) => failed("writing the terminal")(error),
+            Some(Ok(Ok(())) | Err(_)) | None => Error::Failed("the terminal's writer ended".into()),
+        }
+    }
+
+    /// Waits for all handed over to be written, as the attachment ends:
+    /// a terminal that has stopped reading holds the client, as it would
     /// any program that writes to it.
     fn finish(&mut self) {
-        let mut stdout = io::stdout();
-        let _ = stdout
-            .write_all(self.waiting.as_slice())
-            .and_then(|()| stdout.flush());
-        self.waiting = crate::bytes::ByteQueue::default();
+        self.to = None;
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
     }
 }
 
@@ -1136,7 +1166,7 @@ fn attached(
             match (frame, &mut keyboard) {
                 (ToAttached::Paint(bytes), _) => {
                     if let Some(output) = &mut output {
-                        output.waiting.push(&bytes);
+                        output.push(bytes.into_owned())?;
                     }
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
@@ -1155,9 +1185,6 @@ fn attached(
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
             }
-        }
-        if let Some(output) = &mut output {
-            output.write()?;
         }
         for act in std::mem::take(&mut acts) {
             let act = AttachedFrame::Act(Box::new(act));
@@ -1186,10 +1213,10 @@ fn attached(
             fds.push(fd);
             Some(fds.len().saturating_sub(1))
         };
-        // What waits for the terminal is written as it takes it.
-        if let Some(output) = output.as_ref().filter(|o| !o.waiting.is_empty()) {
-            add(PollFd::new(&output.terminal, PollFlags::OUT));
-        }
+        // The terminal's writer, as it writes.
+        let written = output
+            .as_ref()
+            .and_then(|o| add(PollFd::new(&o.wake, PollFlags::IN)));
         // The keys only once the client knows itself, to run them.
         let (wake, typed) = match &keyboard {
             Some(keyboard) => (
@@ -1222,6 +1249,11 @@ fn attached(
                 let _ = last_frames(stream, decoder, true, output.as_deref_mut());
             }
             return Ok(STOPPED.into());
+        }
+        if is(written)
+            && let Some(output) = &mut output
+        {
+            output.woke()?;
         }
         if is(WINCH) {
             crate::drain(winch.pipe());
@@ -1285,9 +1317,8 @@ fn tell(
 }
 
 /// Reads the server's frames up to its `Exit`, waiting `ANSWER` at
-/// most for each read, and writes their paints to the terminal, if there
-/// is an `output` for one, waiting on it (`Output::finish`): how the
-/// attachment ended, the `Exit`'s reason (a refusal, before its
+/// most for each read, and hands their paints to the terminal, if there
+/// is an `output` for one: how the attachment ended, the `Exit`'s reason (a refusal, before its
 /// `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
     stream: &mut UnixStream,
@@ -1299,12 +1330,10 @@ fn last_frames(
     loop {
         while let Some(frame) = decoder.frame().ok()? {
             match frame {
-                // Written as they come, waiting on the terminal: the
-                // attachment is ending.
+                // What the server has left to send, within its bound.
                 ToAttached::Paint(bytes) => {
                     if let Some(output) = &mut output {
-                        output.waiting.push(&bytes);
-                        output.finish();
+                        output.push(bytes.into_owned()).ok()?;
                     }
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
