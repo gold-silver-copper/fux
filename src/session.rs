@@ -1604,9 +1604,9 @@ impl Session {
     /// given; else the screen of the commanding client, or of any client
     /// attached, which it then fits. With no client, and no size given, it
     /// has no size, which is not made up: it is refused.
-    fn new_fit(&self, size: Option<Size>, here: Here) -> Result<Fit, Error> {
+    fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
-            return Ok(Fit::Fixed(size));
+            return Ok(Fit::Fixed(size.size()));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
         let client = (own.into_iter().chain(self.views.values())).find(|v| v.sizes());
@@ -2322,6 +2322,7 @@ impl Session {
                     );
                     return Err(fail(Code::NotHeadless, message));
                 }
+                let size = size.size();
                 self.resize(client, size.rows(), size.cols())?;
                 Ok(Reply::default())
             }
@@ -2456,7 +2457,7 @@ impl Session {
         &mut self,
         ids: Wanted,
         dir: Option<&Path>,
-        size: Option<Size>,
+        size: command::Size,
         here: Here,
         starting: &Starting,
     ) -> Result<(PathBuf, Fit, Size), Error> {
@@ -2534,15 +2535,10 @@ impl Session {
     }
 
     /// `resize` of `target`'s tabs: laid out on `size`, or with none on
-    /// their clients' screens. A size no pane could have, or one that would
-    /// hide one of a tab's panes, as a split that would is, is refused.
-    fn resize_tabs(&mut self, target: AnyRef, size: Option<Size>) -> Result<(), Error> {
-        if let Some(size) = size
-            && !fux_vt::fits(size)
-        {
-            let message = format!("{}x{} is too big for a pane", size.cols(), size.rows());
-            return Err(fail(Code::Size, message));
-        }
+    /// their clients' screens. A size that would hide one of a tab's
+    /// panes, as a split that would is, is refused.
+    fn resize_tabs(&mut self, target: AnyRef, size: command::Size) -> Result<(), Error> {
+        let size = size.map(view::Screen::size);
         let tabs = self.tabs_of(self.there(target)?);
         if let Some(size) = size {
             let area = Fit::Fixed(size).area();

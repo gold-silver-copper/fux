@@ -95,7 +95,7 @@ impl AppValue for Fux {
 pub struct Opts {
     pub on: Option<On>,
     pub name: Option<String>,
-    pub size: Option<fux_vt::Size>,
+    pub size: crate::command::Size,
     pub cwd: Option<std::path::PathBuf>,
     pub env: crate::command::Env,
     pub argv: Vec<String>,

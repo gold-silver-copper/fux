@@ -336,6 +336,16 @@ impl Wire for fux_vt::Size {
     }
 }
 
+impl Wire for crate::view::Screen {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.size().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let size = fux_vt::Size::get(r)?;
+        crate::view::Screen::new(size.rows(), size.cols()).map_err(|_| Error::Bad("size"))
+    }
+}
+
 /// `wire_enum!(Ty { Unit, Tuple(a, b), Named { x, y } })` expands to
 /// `impl Wire for Ty`: a variant's tag, one byte that is its place in the
 /// list (a hidden `#[repr(u8)] enum Tag`, so no two share one and a list
@@ -483,6 +493,23 @@ mod tests {
         each(&Signal::ALL);
         each(&fux_vt::ModeStatus::ALL);
         each(&crate::keys::colour::Scheme::ALL);
+    }
+
+    /// A size a request gives is a screen's, read as it was written; one
+    /// past `view::MOST`, which a saved session could not write, is not
+    /// read at all. Every screen fits a pane.
+    #[test]
+    fn a_size_past_a_screens_is_refused_as_it_is_read() -> Result<(), String> {
+        use crate::view::{MOST, Screen};
+        let most = Screen::new(MOST, MOST)?;
+        assert_eq!(
+            Screen::get(&mut Reader::new(&encode(&most))).ok(),
+            Some(most)
+        );
+        assert!(fux_vt::fits(most.size()));
+        let past = fux_vt::Size::new(10, MOST.saturating_add(1)).map_err(|e| e.to_string())?;
+        assert!(Screen::get(&mut Reader::new(&encode(&past))).is_err());
+        Ok(())
     }
 
     /// A button `send-mouse` presses is never the wheel, and the wheel

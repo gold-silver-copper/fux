@@ -393,10 +393,10 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
 
 /// A size: columns and rows each 1 to `view::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen, Failure> {
     let cells = 1..=i64::from(crate::view::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
+    crate::view::Screen::new(rows, cols).map_err(|e| fail(Lang::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
@@ -1333,7 +1333,7 @@ impl fuxth::Host for Host<'_> {
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
-                    size: Some(size),
+                    size: Some(size.size()),
                 })
             }
             "focus" => {

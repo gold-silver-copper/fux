@@ -24,6 +24,25 @@ pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
     }
 }
 
+/// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
+/// columns. Every size a request gives is one, so each size the server
+/// holds is one a saved session writes (`COLS ROWS size`) and makes again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Screen(fux_vt::Size);
+
+impl Screen {
+    /// `rows` by `cols`, if a screen can be that size; else why not.
+    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
+        let (rows, cols) = size(rows, cols)?;
+        fux_vt::Size::new(rows, cols)
+            .map(Screen)
+            .map_err(|e| e.to_string())
+    }
+    pub fn size(self) -> fux_vt::Size {
+        self.0
+    }
+}
+
 /// The most bytes a prompt's line holds.
 pub const LINE_MAX: usize = 4096;
 

@@ -136,7 +136,7 @@ wire! {
 
 /// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
-pub type Size = Option<fux_vt::Size>;
+pub type Size = Option<crate::view::Screen>;
 
 wire! {
     /// A pane's new width or height (`resize-x`, `resize-y`).
@@ -188,7 +188,7 @@ wire! {
         /// no client shows them, or as the clients showing them are.
         Tabs(target: AnyRef, size: Size),
         /// A headless client's screen.
-        Client(client: ClientId, size: fux_vt::Size),
+        Client(client: ClientId, size: crate::view::Screen),
     }
 }
 
