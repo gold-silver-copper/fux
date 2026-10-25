@@ -38,7 +38,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.23 | CVT (CURSOR LINE TABULATION) | not implemented |  | not implemented, as xterm: fux-vt keeps no line tabulation stops |
 | 8.3.24 | DA (DEVICE ATTRIBUTES) | implemented | `extended::an_identity_answers_device_attributes_and_version_queries` | primary DA; see the README for what each identity claims |
 | 8.3.25 | DAQ (DEFINE AREA QUALIFICATION) | not applicable |  | qualified areas (8.2.11) are for forms: fux-vt guards areas with SPA and EPA alone |
-| 8.3.26 | DCH (DELETE CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
+| 8.3.26 | DCH (DELETE CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` | a picture's cell moved lands as a blank |
 | 8.3.27 | DCS (DEVICE CONTROL STRING) | implemented | `opt_in::setting_reports_answer_the_pen_the_cursor_shape_and_the_margins`, `conformance::a_control_string_ends_at_esc_backslash_alone` | DECRQSS and XTGETTCAP are answered, sixel decoded; any other string is read to its ST and dropped |
 | 8.3.28 | DC1 (DEVICE CONTROL ONE) | not applicable |  | a device control function (8.2.9) for an ancillary device fux-vt has none of; flow control is the tty's |
 | 8.3.29 | DC2 (DEVICE CONTROL TWO) | not applicable |  | a device control function (8.2.9) for an ancillary device fux-vt has none of; flow control is the tty's |
@@ -76,7 +76,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 8.3.61 | HTJ (CHARACTER TABULATION WITH JUSTIFICATION) | not applicable |  | justifies text in a field (8.3.61), a presentation fux-vt does not do |
 | 8.3.62 | HTS (CHARACTER TABULATION SET) | implemented | `conformance::tab_stops_are_set_cleared_and_kept` |  |
 | 8.3.63 | HVP (CHARACTER AND LINE POSITION) | implemented | `extended::hvp_positions_the_cursor_like_cup` |  |
-| 8.3.64 | ICH (INSERT CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
+| 8.3.64 | ICH (INSERT CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` | a picture's cell moved lands as a blank |
 | 8.3.65 | IDCS (IDENTIFY DEVICE CONTROL STRING) | not applicable |  | fux-vt answers no DCS whose kind needs identifying (8.3.65: diagnostic, DRCS) |
 | 8.3.66 | IGS (IDENTIFY GRAPHIC SUBREPERTOIRE) | not applicable |  | fux-vt reads UTF-8, whose repertoire is all of Unicode (8.3.66) |
 | 8.3.67 | IL (INSERT LINE) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
@@ -259,12 +259,12 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-135 SRM | SRM (SET/RESET SEND RECEIVE MODE) | implemented | `modes::decrqm_reports_the_ansi_modes_kept_in_one_state` | permanently set (no local echo): fux-vt never images what is typed |
 | 5-138 IRM | IRM (SET/RESET INSERT/REPLACEMENT MODE) | implemented | `conformance::insert_mode_moves_what_is_there`, `conformance::a_cluster_widened_is_placed_as_a_wide_glyph` |  |
 | 5-139 |  (INSERT OR REPLACE GRAPHIC CHARACTER) | implemented | `conformance::insert_mode_moves_what_is_there` | printing in insert and replace mode |
-| 5-142 ICH | ICH (INSERT CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
-| 5-144 DCH | DCH (DELETE CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
+| 5-142 ICH | ICH (INSERT CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` | a picture's cell moved lands as a blank |
+| 5-144 DCH | DCH (DELETE CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` | a picture's cell moved lands as a blank |
 | 5-146 IL | IL (INSERT LINE) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
 | 5-148 DL | DL (DELETE LINE) | implemented | `margins::scrolling_is_bounded_by_the_margins` |  |
-| 5-150 DECIC | DECIC (INSERT COLUMN) | implemented | `margins::decic_and_decdc_insert_and_delete_columns` |  |
-| 5-151 DECDC | DECDC (DELETE COLUMN) | implemented | `margins::decic_and_decdc_insert_and_delete_columns` |  |
+| 5-150 DECIC | DECIC (INSERT COLUMN) | implemented | `margins::decic_and_decdc_insert_and_delete_columns` | a picture's cell moved lands as a blank |
+| 5-151 DECDC | DECDC (DELETE COLUMN) | implemented | `margins::decic_and_decdc_insert_and_delete_columns` | a picture's cell moved lands as a blank |
 | 5-152 ECH | ECH (ERASE CHARACTER) | implemented | `margins::edits_stop_at_the_right_margin`, `semantics::erase_insert_delete_and_wide_halves_are_repaired` |  |
 | 5-154 EL | EL (ERASE IN LINE) | implemented | `conformance::ed_and_el_carry_out_each_parameter`, `conformance::blanks_brought_in_take_the_pens_colours`, `semantics::a_row_erased_whole_ends_the_line_above` |  |
 | 5-156 ED | ED (ERASE IN DISPLAY) | implemented | `conformance::ed_and_el_carry_out_each_parameter`, `conformance::blanks_brought_in_take_the_pens_colours`, `renditions::decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions`, `semantics::a_row_erased_whole_ends_the_line_above`, `semantics::a_top_row_erased_whole_ends_the_line_in_history` |  |

@@ -195,7 +195,8 @@ impl Picture {
             usize::try_from(first).unwrap_or(usize::MAX),
             usize::try_from(end).unwrap_or(0),
         );
-        for (at, word) in (0_i64..).zip(bits).take(end).skip(first) {
+        let words = bits.get(first..end.min(bits.len())).unwrap_or_default();
+        for (at, word) in (i64::try_from(first).unwrap_or(i64::MAX)..).zip(words) {
             covered.put(y, x.saturating_add(at.saturating_mul(64)), *word);
         }
     }
