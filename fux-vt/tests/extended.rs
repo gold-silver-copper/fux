@@ -1541,6 +1541,14 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
         sixel: true,
     });
     assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
+    // One with a cell size that draws no sixel: none said, and none read.
+    p.set_host_graphics(fux_vt::Graphics {
+        cell: fux_vt::CellSize::new(9, 18),
+        sixel: false,
+    });
+    assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
+    p.process(b"\x1bPq!6~\x1b\\")?;
+    assert_eq!(p.screen().pictures().count(), 0);
     p.set_host_graphics(fux_vt::Graphics {
         cell: fux_vt::CellSize::new(9, 18),
         sixel: true,

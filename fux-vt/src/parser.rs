@@ -1327,12 +1327,10 @@ impl Parser {
                 && self.params.is_empty()
         };
         let (decrqss, termcap) = (request(b"$"), request(b"+"));
-        // Sixel: `q` with no intermediates, read only with a cell size to
-        // lay it out in.
-        let sixel = self.options.has(Feature::Pictures)
-            && self.screen.cell_size().is_some()
-            && byte == b'q'
-            && read.as_slice().is_empty();
+        // Sixel: `q` with no intermediates, read only while the host draws
+        // sixel, as DA1 says (with `Feature::Pictures` and a cell size to
+        // lay it out in, `set_host_graphics`).
+        let sixel = self.screen.sixel() && byte == b'q' && read.as_slice().is_empty();
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {
