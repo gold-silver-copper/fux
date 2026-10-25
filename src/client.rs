@@ -8,7 +8,7 @@ use crate::command::{Command, Request};
 use crate::decode::Input;
 use crate::door::{self, Link};
 use crate::keymap::Keymap;
-use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
+use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
     Reply, Role, ToAttached, ToCommand,
@@ -214,8 +214,7 @@ fn greeted(
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
             sent.map(|()| theirs.version.to_owned())
         }
-        (_, Err(error)) => Err(error),
-        (Err(error), Ok(())) => Err(error),
+        (_, Err(error)) | (Err(error), Ok(())) => Err(error),
         (Ok(Some(Greeting::Done(_)) | None), Ok(())) => Err(no_answer()),
     }
 }
@@ -679,12 +678,6 @@ impl Keyboard {
         self.screen = screen;
     }
 
-    /// A key typed: to the screen open, else through the bindings.
-    fn press(&mut self, stroke: Keystroke, acts: &mut Vec<Act>) {
-        let effects = self.screen.key(&self.keymap, stroke, self.read_only);
-        self.apply(effects, acts);
-    }
-
     /// What a key or a paste led to: actions for the server, programs to run.
     fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Act>) {
         for effect in effects {
@@ -709,7 +702,11 @@ impl Keyboard {
     /// What the terminal sent, decoded.
     fn input(&mut self, input: Input, acts: &mut Vec<Act>) {
         match input {
-            Input::Key(stroke) => self.press(stroke, acts),
+            // A key typed: to the screen open, else through the bindings.
+            Input::Key(stroke) => {
+                let effects = self.screen.key(&self.keymap, stroke, self.read_only);
+                self.apply(effects, acts);
+            }
             Input::Reply(reply) => acts.push(Act::Reply(reply)),
             Input::Paste(_)
             | Input::PasteTooLong
@@ -828,10 +825,7 @@ pub fn attach(
     };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
-    let size = match size {
-        Some(size) => size,
-        None => window_size().ok_or(Error::NoSize)?,
-    };
+    let size = size.or_else(window_size).ok_or(Error::NoSize)?;
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
         size,
