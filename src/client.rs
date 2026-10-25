@@ -551,7 +551,7 @@ impl Keyboard {
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, mut poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
-        let path = socket.path().to_string_lossy().into_owned();
+        let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
         let mut owned = keymap.clone();

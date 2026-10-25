@@ -178,7 +178,7 @@ impl Server {
         }
         // The config, as a client runs it: its settings to the server, its
         // bindings to the keymap the scripted clients type through.
-        let socket = fux::socket::Choice::Path(server.socket.to_string_lossy().into_owned());
+        let socket = fux::socket::Choice::Path(server.socket.clone());
         let mut to = fux::script::Server::new(socket);
         server.keymap = fux::script::run_file(&config_path, Some(&mut to)).map_err(e)?;
         // A server starts with nothing in it; the tests' first shell, %1 in
@@ -193,8 +193,7 @@ impl Server {
 
     /// Its socket, as fux takes it.
     pub fn socket_path(&self) -> Result<fux::socket::SocketPath, String> {
-        let path = self.socket.to_string_lossy();
-        fux::socket::socket_path(&fux::socket::Choice::Path(path.to_string())).map_err(e)
+        fux::socket::socket_path(&fux::socket::Choice::Path(self.socket.clone())).map_err(e)
     }
 
     /// The server's process id, while it runs.

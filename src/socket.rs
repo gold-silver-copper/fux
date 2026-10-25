@@ -107,7 +107,7 @@ pub enum Choice {
     #[default]
     Default,
     /// A socket's path (`socket`).
-    Path(String),
+    Path(std::path::PathBuf),
     /// A server's name: its socket is `NAME.sock` in fux's directory.
     Name(String),
 }
