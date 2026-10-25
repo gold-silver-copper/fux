@@ -462,12 +462,6 @@ fn libraries() -> Result<Compiler<Fux>, Failed> {
     Ok(compiler)
 }
 
-/// Whether the word `text` reads the token after it as a word of its own:
-/// the text `str` takes, the name `define` or `let` gives.
-pub(crate) fn reads_token(text: &str) -> bool {
-    matches!(text, "str" | "define" | "let")
-}
-
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
 /// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
 /// `str` takes. Nor may `define` or `let` give one as a name: it
@@ -507,7 +501,10 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
             }
             (Some(_) | None, _) => out.push(token.clone()),
         }
-        after = (after.is_none() && reads_token(&token.text)).then_some(&*token.text);
+        // A word that reads the token after it as a word of its own: the
+        // text `str` takes, the name `define` or `let` gives.
+        let reads = matches!(&*token.text, "str" | "define" | "let");
+        after = (after.is_none() && reads).then_some(&*token.text);
     }
     Ok(out)
 }
