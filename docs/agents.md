@@ -181,7 +181,7 @@ as integers: `A counts 3 at` is its `DONE`.
 
   ```sh
   fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
-  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it up to the 900 KiB, quoted for fuxth
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it up to that bound, quoted for fuxth
   ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program

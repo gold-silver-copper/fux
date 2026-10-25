@@ -347,6 +347,8 @@ mod tests {
         for said in [
             format!("\"protocol\":{protocol},"),
             format!("\"server_protocol\":{protocol},"),
+            format!("its first {} characters", crate::pane::TITLE_MAX),
+            format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
