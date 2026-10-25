@@ -139,7 +139,7 @@ its own place. A reader that falls behind is told the rest as it reads.
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `respawned`, `bell` | |
-| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
+| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to |
 | `exited` | `status` (`null` if it was lost) or `signal` |
 | `done` | `status`: a shell command's |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |

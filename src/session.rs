@@ -1984,8 +1984,9 @@ impl Session {
 
     /// `begin`'s work: what fails before a request runs is its error.
     fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
-        let request = match self.scope(origin)? {
-            Some(scope) => self.scoped(request, &scope, origin)?,
+        let scope = self.scope(origin)?;
+        let request = match &scope {
+            Some(scope) => self.scoped(request, scope, origin)?,
             None => request,
         };
         let now = Instant::now();
@@ -1994,8 +1995,10 @@ impl Session {
             Request::Wait(wait) => wait,
             Request::Events(target, json) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
+                // Through a grant, the ids of the granted workspace alone.
+                let within = (scope.map(|name| self.resolve_ws(&WsRef::Name(name)))).transpose()?;
                 let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, json, journal);
+                let subscription = crate::events::Subscription::new(target, json, within, journal);
                 return Ok(Begun::Events(Box::new(subscription)));
             }
             Request::Grant(workspace, socket) => return Ok(Begun::Grant(socket, Some(workspace))),
@@ -4745,7 +4748,7 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, false, None, s.parts.journal());
         change(s);
         let there = |target| s.there(target).is_ok();
         stream.told(s.parts.journal(), usize::MAX, there).0

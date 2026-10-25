@@ -185,10 +185,22 @@ impl What {
 
 impl Event {
     /// The line that tells it: JSON, or its name, where, and `key=value`
-    /// for the rest.
-    pub fn line(&self, json: bool) -> String {
-        let (name, fields) = self.what.said();
-        line(name, Some(self.place), fields, json)
+    /// for the rest; `within` a workspace (a grant's), no tab or workspace
+    /// outside it, as a pane moved in from one, or out to one.
+    pub fn line(&self, json: bool, within: Option<WsId>) -> String {
+        let outside = |ws: WsId| within.is_some_and(|w| w != ws);
+        let (name, mut fields) = self.what.said();
+        if let What::Moved((from, _)) = self.what
+            && outside(from)
+        {
+            fields.clear();
+        }
+        let (pane, tab, ws) = self.place.ids();
+        let at = match ws.is_some_and(outside) {
+            true => (pane, None, None),
+            false => (pane, tab, ws),
+        };
+        line(name, at, fields, json)
     }
 }
 
@@ -208,7 +220,7 @@ impl Ending {
             Self::Gone => ("gone", Vec::new()),
             Self::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason.clone()))]),
         };
-        line(name, None, fields, json)
+        line(name, (None, None, None), fields, json)
     }
 
     /// The stream's reply, as it ends.
@@ -223,25 +235,29 @@ impl Ending {
 /// A stream's first line, once it is armed: from here on, nothing is
 /// missed unsaid.
 pub fn ready(json: bool) -> String {
-    line("ready", None, Vec::new(), json)
+    line("ready", (None, None, None), Vec::new(), json)
 }
 
 /// The line that says `count` entries of the journal were let go before
 /// the stream was told them: of its target or not, which is not known.
 fn missed(count: u64, json: bool) -> String {
-    line("missed", None, vec![("count", Json::int(count))], json)
+    line(
+        "missed",
+        (None, None, None),
+        vec![("count", Json::int(count))],
+        json,
+    )
 }
 
-/// The line of an event named `name` at `place` (none for the stream's
-/// own): JSON, or its name, the ids and `key=value` for the rest of
-/// `fields`.
+/// The line of an event named `name` at the pane, tab and workspace given
+/// (none for the stream's own): JSON, or its name, the ids and
+/// `key=value` for the rest of `fields`.
 fn line(
     name: &str,
-    place: Option<Place>,
+    (pane, tab, ws): (Option<PaneId>, Option<TabId>, Option<WsId>),
     fields: Vec<(&'static str, Json<'static>)>,
     json: bool,
 ) -> String {
-    let (pane, tab, ws) = place.map_or((None, None, None), Place::ids);
     let at = [
         ("pane", pane.map(|p| p.to_string())),
         ("tab", tab.map(|t| t.to_string())),
@@ -276,18 +292,30 @@ fn line(
 }
 
 /// A connection that streams events: which pane, tab or workspace it is
-/// told of (all without one), how, and where in the journal it reads next.
+/// told of (all without one), how, the workspace whose ids alone it is
+/// told (a grant's), and where in the journal it reads next.
 pub struct Subscription {
     target: Option<AnyRef>,
     pub json: bool,
+    within: Option<WsId>,
     next: Seq,
 }
 
 impl Subscription {
     /// One told of what happens from now on.
-    pub fn new(target: Option<AnyRef>, json: bool, journal: &Journal) -> Self {
+    pub fn new(
+        target: Option<AnyRef>,
+        json: bool,
+        within: Option<WsId>,
+        journal: &Journal,
+    ) -> Self {
         let next = journal.end();
-        Self { target, json, next }
+        Self {
+            target,
+            json,
+            within,
+            next,
+        }
     }
 
     /// Whether it is told of `event`: where its target is or holds, or a
@@ -338,7 +366,7 @@ impl Subscription {
             }
             self.next = Seq(seq.0.saturating_add(1));
             if self.wants(event) {
-                lines.push_str(&event.line(self.json));
+                lines.push_str(&event.line(self.json, self.within));
             }
             if self.closes(event) {
                 return (lines, Some(Ending::Gone));
@@ -359,7 +387,7 @@ mod tests {
     fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
         let mut journal = Journal::default();
-        let mut stream = Subscription::new(None, false, &journal);
+        let mut stream = Subscription::new(None, false, None, &journal);
         journal.push(Place::Workspace(ws), What::Bell);
         journal.push(Place::Workspace(ws), What::Closed);
         assert_eq!(stream.told(&journal, 1, |_| true).0, "bell +1\n");
@@ -376,6 +404,28 @@ mod tests {
         assert!(lines.starts_with("missed count=2\nbell +1\n"), "{lines}");
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| true).0, "");
+        Ok(())
+    }
+
+    /// A stream within a workspace (a grant's) is told no tab or
+    /// workspace outside it: of a pane moved in from one or out to one,
+    /// only the pane and the side it sees.
+    #[test]
+    fn a_stream_within_a_workspace_is_told_no_ids_outside_it() -> Result<(), String> {
+        let id = |text: &str| text.parse::<WsId>().map_err(|_| text.to_owned());
+        let tab = |text: &str| text.parse::<TabId>().map_err(|_| text.to_owned());
+        let (inside, outside) = ((id("+1")?, tab("@1")?), (id("+2")?, tab("@2")?));
+        let mut journal = Journal::default();
+        let target = Some(AnyRef::Workspace(inside.0));
+        let mut stream = Subscription::new(target, false, Some(inside.0), &journal);
+        let pane = PaneId::of(3);
+        journal.push(Place::Pane(inside, pane), What::Moved(outside));
+        journal.push(Place::Pane(outside, pane), What::Moved(inside));
+        let told = stream.told(&journal, usize::MAX, |_| true).0;
+        assert_eq!(
+            told,
+            "moved %3 @1 +1\nmoved %3 from_tab=@1 from_workspace=+1\n"
+        );
         Ok(())
     }
 
@@ -433,7 +483,7 @@ mod tests {
                 | What::Title(_)
                 | What::Done(_)
                 | What::Resized(_)
-                | What::Exited(_) => lines.push(Event { place, what }.line(false)),
+                | What::Exited(_) => lines.push(Event { place, what }.line(false, None)),
             }
         }
         for ending in [Ending::Gone, Ending::Stopped(String::new())] {
