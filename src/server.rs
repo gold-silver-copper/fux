@@ -179,6 +179,12 @@ enum Stage {
     /// It said hello as `fux attach`: its `Attach` is next, with the
     /// descriptor it sent, and the kind of client it is.
     Attaching(Option<OwnedFd>, ClientKind),
+    /// Its `Attach` came while a restore runs: it attaches as it says once
+    /// the restore is over (`Server::restored`), until then no screen
+    /// showing what the restore makes, laid out on the sizes saved alone.
+    /// It is read no more till then: what it sends next waits in its
+    /// socket, not in the server.
+    AttachHeld(Option<OwnedFd>, ClientKind, Box<Attach>),
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -215,7 +221,7 @@ impl Stage {
             | Stage::Held(_)
             | Stage::Waiting(_)
             | Stage::Events(_) => true,
-            Stage::Closing | Stage::Dead => false,
+            Stage::AttachHeld(..) | Stage::Closing | Stage::Dead => false,
         }
     }
 
@@ -225,6 +231,7 @@ impl Stage {
             Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => true,
             Stage::Hello(_)
             | Stage::Attaching(..)
+            | Stage::AttachHeld(..)
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -448,6 +455,28 @@ impl Conn {
     fn send<'a>(&mut self, session: &mut Session, frame: &impl Frame<'a>) {
         if self.out.push_with(|out| frame.encode_into(out)).is_err() {
             self.enter(session, Stage::Dead);
+        }
+    }
+
+    /// Its client attaches as `attach` says, with the terminal it sent if
+    /// it sent one, taken or not: the client is told so, and its id,
+    /// before anything is painted; or why it cannot attach.
+    fn attach(
+        &mut self,
+        session: &mut Session,
+        (passed, kind): (Option<OwnedFd>, ClientKind),
+        attach: Attach,
+    ) {
+        match session.attach_as(kind, attach) {
+            Ok(client) => {
+                let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
+                let taken = tty.as_ref().map(Option::is_some);
+                let tty = tty.flatten().map(TakenTerminal::new);
+                let attached = Attached::new(client, tty);
+                self.enter(session, Stage::Attached(Box::new(attached)));
+                self.send(session, &ToAttached::Welcome(client, taken));
+            }
+            Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
         }
     }
 
@@ -974,7 +1003,13 @@ impl Server {
                 && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
             {
                 self.request(index, held.request, held.context);
-            } else if let Stage::Attaching(..) = conn.stage {
+            } else if let Stage::AttachHeld(..) = conn.stage
+                && let Stage::AttachHeld(passed, kind, attach) = mem::replace(
+                    &mut conn.stage,
+                    Stage::Attaching(None, ClientKind::Headless),
+                )
+            {
+                conn.attach(&mut self.session, (passed, kind), *attach);
                 self.read_conn(index);
             }
         }
@@ -1020,7 +1055,9 @@ impl Server {
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
         self.conns.retain(|conn| {
-            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
+            conn.stage.reads()
+                || matches!(conn.stage, Stage::AttachHeld(..))
+                || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
         });
     }
 
@@ -1059,12 +1096,12 @@ impl Server {
             add(PollFd::new(end, PollFlags::IN), Slot::Restore);
         }
         for (i, conn) in self.conns.iter().enumerate() {
-            // A connection that is not read is open only while it has
-            // something to write.
+            // A connection that is not read is polled only for what it
+            // has to write, and for its end.
             let mut flags = if conn.reads() {
                 PollFlags::IN
             } else {
-                PollFlags::OUT
+                PollFlags::HUP
             };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
@@ -1158,7 +1195,7 @@ impl Server {
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
-                Stage::Attaching(..) | Stage::Attached(_) => {
+                Stage::Attaching(..) | Stage::AttachHeld(..) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit));
                 }
                 Stage::Command | Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => {
@@ -1395,9 +1432,13 @@ impl Server {
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         let reads = conn.reads();
-        // One that is not read learns that its peer is gone by writing.
+        // One that is not read learns that its peer is gone by writing;
+        // one with nothing to write, that it is gone.
         if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
+        }
+        if gone && !reads && conn.out.is_empty() {
+            conn.enter(&mut self.session, Stage::Dead);
         }
         // A command client whose answer is now written: its next request
         // may already wait, read before.
@@ -1523,42 +1564,20 @@ impl Server {
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
-            // A client attaches once the restore under way is over
-            // (`Server::restored`): until then no screen shows what it
-            // makes, which it lays out on the sizes saved alone.
-            Stage::Attaching(..) if restore_runs => return Ok(false),
             Stage::Attaching(passed, kind) => {
-                let Some(Attach {
-                    size,
-                    workspace,
-                    read_only,
-                    env,
-                }) = decoder.frame()?
-                else {
+                let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_ref()) {
-                    Ok(client) => {
-                        if let Some(view) = session.views.get_mut(&client) {
-                            view.read_only = read_only;
-                            view.env = env;
-                        }
-                        // The client's terminal, if it sent it, taken or
-                        // not: the client is told so, and its id, before
-                        // anything is painted.
-                        let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
-                        let taken = tty.as_ref().map(Option::is_some);
-                        let tty = tty.flatten().map(TakenTerminal::new);
-                        conn.enter(
-                            session,
-                            Stage::Attached(Box::new(Attached::new(client, tty))),
-                        );
-                        conn.send(session, &ToAttached::Welcome(client, taken));
-                    }
-                    Err(error) => conn.end(session, &ToAttached::Exit(&error.to_string())),
+                let held = (passed.take(), *kind);
+                if restore_runs {
+                    let (passed, kind) = held;
+                    conn.enter(session, Stage::AttachHeld(passed, kind, Box::new(attach)));
+                } else {
+                    conn.attach(session, held, attach);
                 }
             }
+            // What came after its `Attach` waits with it, kept.
+            Stage::AttachHeld(..) => return Ok(false),
             Stage::Attached(attached) => match decoder.frame()? {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
                 // The client's terminal was resized, which may have moved

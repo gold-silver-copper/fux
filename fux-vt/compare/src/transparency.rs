@@ -253,8 +253,9 @@ impl Through {
         );
         // The client attaching starts its first shell, on its screen.
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
+        let size = fux_vt::Size::new(client_rows, cols).map_err(|e| format!("fux: {e}"))?;
         let client = session
-            .attach_as(ClientKind::Terminal, client_rows, cols, None)
+            .attach_as(ClientKind::Terminal, fux::protocol::Attach::of(size))
             .map_err(|e| format!("fux: {e}"))?;
         let mut placement = Placement::default();
         let view = session.views.get(&client).ok_or("fux: no view")?;

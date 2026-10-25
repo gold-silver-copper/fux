@@ -344,20 +344,16 @@ impl Fixture {
         Ok(id)
     }
 
-    /// A client that asks for 9000 by 9000, speaking the protocol, for as
-    /// long as `ls` takes to show it: the size it got.
-    pub fn clamped(&self) -> Result<(u16, u16), String> {
-        use fux::protocol::{Attach, AttachedFrame, Frame, Hello, PROTOCOL, Role};
-        let before = self.listed_clients()?;
+    /// A client that asks for 9000 by 9000, speaking the protocol: why
+    /// the server refused it, or a failure if it was let in.
+    pub fn too_big(&self) -> Result<String, String> {
+        use fux::protocol::{Attach, Decoder, Frame, Greeting, Hello, PROTOCOL, Role, ToAttached};
         let mut stream = UnixStream::connect(&self.socket).map_err(|e| e.to_string())?;
         let hello = Hello {
             protocol: PROTOCOL,
             version: "walk".into(),
             role: Role::Attach,
         };
-        stream
-            .write_all(&hello.encode().map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
         let size = fux_vt::Size::new(9000, 9000).map_err(|e| e.to_string())?;
         let attach = Attach {
             size,
@@ -365,34 +361,34 @@ impl Fixture {
             read_only: false,
             env: Vec::new(),
         };
+        for frame in [hello.encode(), attach.encode()] {
+            stream
+                .write_all(&frame.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
         stream
-            .write_all(&attach.encode().map_err(|e| e.to_string())?)
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| e.to_string())?;
-        // Composing a 4096 by 4096 screen, some 16.7 million cells, takes
-        // most of a second in a release build and seconds in a debug one.
-        let patience = Duration::from_secs(60);
-        let deadline = after(patience);
-        let size = loop {
-            let ls = self.fux_within(&["ls"], patience)?.stdout;
-            if let Some(line) = ls.lines().find(|l| {
-                l.strip_prefix("client ")
-                    .and_then(|l| l.split_whitespace().next())
-                    .is_some_and(|id| !before.iter().any(|b| b == id))
-            }) {
-                let size = line.split_whitespace().nth(2).unwrap_or_default();
-                let (cols, rows) = size.split_once('x').unwrap_or_default();
-                break (
-                    rows.parse().map_err(|_| format!("a size in {line:?}"))?,
-                    cols.parse().map_err(|_| format!("a size in {line:?}"))?,
-                );
+        let (mut decoder, mut greeted, mut buffer) = (Decoder::default(), false, [0u8; 4096]);
+        loop {
+            if !greeted {
+                match decoder.frame::<Greeting>().map_err(|e| e.to_string())? {
+                    Some(Greeting::Hello(_)) => greeted = true,
+                    Some(other) => return Err(format!("greeted with {other:?}")),
+                    None => {}
+                }
             }
-            if Instant::now() > deadline {
-                return Err("the 9000 by 9000 client never attached".into());
+            if greeted {
+                match decoder.frame::<ToAttached>().map_err(|e| e.to_string())? {
+                    Some(ToAttached::Exit(reason)) => return Ok(reason.to_owned()),
+                    Some(other) => return Err(format!("let in: {other:?}")),
+                    None => {}
+                }
             }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let _ = stream.write_all(&AttachedFrame::Detach.encode().map_err(|e| e.to_string())?);
-        Ok(size)
+            let n = stream.read(&mut buffer).map_err(|e| e.to_string())?;
+            let read = buffer.get(..n).filter(|r| !r.is_empty());
+            decoder.push(read.ok_or("the server closed without a word")?);
+        }
     }
 
     /// A fresh serial for an act's marker.

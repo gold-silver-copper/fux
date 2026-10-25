@@ -304,6 +304,19 @@ impl OneKind for Attach {
     const KIND: u8 = 2;
 }
 
+impl Attach {
+    /// A client of `size` that types, asks for no workspace, and has no
+    /// environment.
+    pub fn of(size: fux_vt::Size) -> Attach {
+        Attach {
+            size,
+            workspace: None,
+            read_only: false,
+            env: Vec::new(),
+        }
+    }
+}
+
 frames! {
     /// An attached client's frames.
     #[derive(Clone, Debug, PartialEq)]

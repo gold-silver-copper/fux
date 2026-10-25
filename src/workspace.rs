@@ -9,6 +9,7 @@
 //! events tell is changed only here, by methods that journal the change
 //! as they make it, and a pane is changed only through a [`PaneMut`], which
 //! journals what it says happened in it as the borrow ends.
+use crate::command::Sibling;
 use crate::events::{Journal, Place, What};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, Rect, Side, Tree};
@@ -115,25 +116,20 @@ impl Workspace {
         &self.tabs
     }
 
-    /// The tabs, to change or reorder but not to add or remove.
-    pub fn tabs_mut(&mut self) -> &mut [Tab] {
-        &mut self.tabs
-    }
-
     /// The tab `client` is shown here.
     pub fn tab_of(&self, client: ClientId) -> Option<&Tab> {
         let shown = self.shown.get(&client)?;
         self.tabs.iter().find(|t| t.id == *shown)
     }
 
-    pub(crate) fn tab_of_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
+    fn tab_of_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
         let shown = self.shown.get(&client)?;
         self.tabs.iter_mut().find(|t| t.id == *shown)
     }
 
     /// Shows `client` the tab `at` says here, if given and one of this
     /// workspace's, and in it focuses the pane it says, if given and there.
-    pub(crate) fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
+    fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
         let Some(crate::session::Spot { tab, pane }) =
             at.filter(|at| self.tabs.iter().any(|t| t.id == at.tab))
         else {
@@ -154,22 +150,6 @@ impl Workspace {
         }
     }
 
-    /// The layouts of its tabs no client shows that changed since their
-    /// panes were sized, each with the area its fit lays it out in, for
-    /// sizing them. Those are then taken as sized, as is a shown one, by
-    /// its clients.
-    pub(crate) fn changed_unshown(&mut self) -> impl Iterator<Item = (&Tree, Rect)> {
-        let (viewers, shown_to) = (&self.viewers, &self.shown);
-        self.tabs.iter_mut().filter_map(move |tab| {
-            let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
-            let changed = std::mem::take(&mut tab.changed);
-            let tab = &*tab;
-            (tab.root.as_ref())
-                .filter(|_| changed && !shown)
-                .map(|root| (root, tab.fit.area()))
-        })
-    }
-
     /// Removes tab `tab`, giving back its layout: the clients it was shown
     /// to are shown its neighbour.
     fn remove_tab(&mut self, tab: TabId) -> Option<Tree> {
@@ -187,37 +167,12 @@ impl Workspace {
         root
     }
 
-    /// A client attaches: it is shown the first tab, and focuses each tab's
-    /// first pane.
-    pub(crate) fn attach(&mut self, client: ClientId) {
-        if let Some(first) = self.tabs.first() {
-            self.shown.insert(client, first.id);
-        }
-        for tab in &mut self.tabs {
-            tab.seats.entry(client).or_default();
-            tab.refocus();
-        }
-    }
-
     /// `client` no longer looks here.
-    pub(crate) fn hide(&mut self, client: ClientId) {
+    fn hide(&mut self, client: ClientId) {
         if self.viewers.remove(&client)
             && let Some(tab) = self.tab_of_mut(client)
         {
             tab.hidden();
-        }
-    }
-
-    /// A client detaches: nothing here names it.
-    pub(crate) fn forget(&mut self, client: ClientId) {
-        let viewed = self.viewers.remove(&client);
-        let shown = self.shown.remove(&client);
-        for tab in &mut self.tabs {
-            // A tab the client showed is laid out again on its own fit (its
-            // `size`), not left at the client's.
-            tab.changed |= viewed && shown == Some(tab.id);
-            tab.seats.remove(&client);
-            tab.typist = tab.typist.filter(|t| *t != client);
         }
     }
 }
@@ -355,6 +310,23 @@ pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
 /// it is put in.
 pub struct Placed(());
 
+/// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
+/// the one it takes, holding the new pane too.
+pub struct Split {
+    tab: TabId,
+    was: Tree,
+    root: Tree,
+}
+
+impl Split {
+    pub fn tab(&self) -> TabId {
+        self.tab
+    }
+    pub fn root(&self) -> &Tree {
+        &self.root
+    }
+}
+
 /// Leave to take what a pane said (`Pane::said`), which only this module
 /// gives, as it puts what it takes in the journal: code elsewhere cannot
 /// take it and drop it.
@@ -387,6 +359,18 @@ fn tab_mut(workspaces: &mut [Workspace], id: TabId) -> Option<(WsId, &mut Tab)> 
     tabs.find(|(_, t)| t.id == id)
 }
 
+/// Swaps the item `is` picks with its sibling `toward`: none if `is` picks
+/// none, false if it has no sibling that way.
+fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) -> Option<bool> {
+    let index = items.iter().position(is)?;
+    let first = match toward {
+        Sibling::Next => Some(index),
+        Sibling::Previous => index.checked_sub(1),
+    };
+    let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
+    Some(pair.map(<[T]>::reverse).is_some())
+}
+
 /// Names `old` `new`, journaled at `place` if it is another name.
 fn rename(journal: &mut Journal, place: Place, old: &mut String, new: String) {
     if *old != new {
@@ -400,10 +384,84 @@ impl Parts {
         &self.workspaces
     }
 
-    /// The workspaces, to change what events do not tell: where clients
-    /// are, what they focus, the tabs' fits, the order.
-    pub(crate) fn workspaces_mut(&mut self) -> &mut [Workspace] {
-        &mut self.workspaces
+    /// Tab `id`, to change what events do not tell: what its clients
+    /// focus, its fit. One tab at a time, and none is made but here, so
+    /// none is put in another's place (`mem::swap`), its panes moved with
+    /// no journal entry.
+    pub(crate) fn tab_mut(&mut self, id: TabId) -> Option<&mut Tab> {
+        tab_mut(&mut self.workspaces, id).map(|(_, tab)| tab)
+    }
+
+    /// A client attaches: it is shown each workspace's first tab, and
+    /// focuses each tab's first pane.
+    pub(crate) fn attach(&mut self, client: ClientId) {
+        for w in &mut self.workspaces {
+            if let Some(first) = w.tabs.first() {
+                w.shown.insert(client, first.id);
+            }
+            for tab in &mut w.tabs {
+                tab.seats.entry(client).or_default();
+                tab.refocus();
+            }
+        }
+    }
+
+    /// A client detaches: nothing names it.
+    pub(crate) fn forget(&mut self, client: ClientId) {
+        for w in &mut self.workspaces {
+            let viewed = w.viewers.remove(&client);
+            let shown = w.shown.remove(&client);
+            for tab in &mut w.tabs {
+                // A tab the client showed is laid out again on its own fit
+                // (its `size`), not left at the client's.
+                tab.changed |= viewed && shown == Some(tab.id);
+                tab.seats.remove(&client);
+                tab.typist = tab.typist.filter(|t| *t != client);
+            }
+        }
+    }
+
+    /// Shows `client` workspace `ws`, and there the tab and pane `at`
+    /// says, each if given and there.
+    pub(crate) fn show(&mut self, client: ClientId, ws: WsId, at: Option<crate::session::Spot>) {
+        for w in &mut self.workspaces {
+            if w.id != ws {
+                w.hide(client);
+            } else {
+                w.viewers.insert(client);
+                w.show(client, at);
+            }
+        }
+    }
+
+    /// Swaps tab `tab` with its sibling `toward` in its workspace: none if
+    /// there is no such tab, false if it has no sibling that way.
+    pub(crate) fn reorder_tab(&mut self, tab: TabId, toward: Sibling) -> Option<bool> {
+        (self.workspaces.iter_mut())
+            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward))
+    }
+
+    /// Swaps workspace `ws` with its sibling `toward`, as `reorder_tab`.
+    pub(crate) fn reorder_workspace(&mut self, ws: WsId, toward: Sibling) -> Option<bool> {
+        swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)
+    }
+
+    /// The layouts of the tabs no client sizes (`sized` says which do)
+    /// that changed since their panes were sized, each with the area its
+    /// fit lays it out in, for sizing them. Those are then taken as sized,
+    /// as is a sized one, by its clients.
+    pub(crate) fn changed_unshown(
+        &mut self,
+        sized: impl Fn(TabId) -> bool,
+    ) -> impl Iterator<Item = (&Tree, Rect)> {
+        let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
+        tabs.filter_map(move |tab| {
+            let changed = std::mem::take(&mut tab.changed);
+            let tab = &*tab;
+            (tab.root.as_ref())
+                .filter(|_| changed && !sized(tab.id))
+                .map(|root| (root, tab.fit.area()))
+        })
     }
 
     pub fn panes(&self) -> &BTreeMap<PaneId, Pane> {
@@ -506,35 +564,41 @@ impl Parts {
         self.panes.insert(pane.id(), pane.placed(Placed(())));
     }
 
-    /// Puts `pane`, new, beside `target`, along `axis`, after it, the two
-    /// taking `shares` of their split if given; the pane given back if
-    /// `target` is in no tab.
-    #[expect(clippy::result_large_err, reason = "a pane given back")]
-    pub(crate) fn split(
-        &mut self,
-        target: PaneId,
-        pane: Pane<Loose>,
+    /// The layout `target`'s tab takes split for pane `new` beside it,
+    /// along `axis`, after it, the two taking `shares` of their split if
+    /// given: what the new pane starts at and is put in by (`split`).
+    pub(crate) fn plan_split(
+        &self,
+        (target, new): (PaneId, PaneId),
         axis: Axis,
         shares: Option<(NonZeroU32, NonZeroU32)>,
-    ) -> Result<(), Pane<Loose>> {
-        let (Some(at), new) = (self.locate(target), pane.id()) else {
-            return Err(pane);
-        };
-        let split = |root: &mut Option<Tree>| {
-            let Some(r) = root.as_mut() else {
-                return false;
-            };
-            let split = r.split(target, new, axis, Side::After);
-            if let (true, Some((theirs, its))) = (split, shares) {
-                r.share(target, theirs);
-                r.share(new, its);
-            }
-            split
-        };
-        if !tab_mut(&mut self.workspaces, at.1).is_some_and(|(_, t)| t.edit(split)) {
-            return Err(pane);
+    ) -> Option<Split> {
+        let (_, tab) = self.locate(target)?;
+        let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
+        let was = tabs.find(|t| t.id == tab)?.root.clone()?;
+        let mut root = was.clone();
+        root.split(target, new, axis, Side::After).then_some(())?;
+        if let Some((theirs, its)) = shares {
+            root.share(target, theirs);
+            root.share(new, its);
         }
-        self.placed(at, pane);
+        Some(Split { tab, was, root })
+    }
+
+    /// Puts `pane`, new, in its tab laid out as `split` planned: the pane
+    /// given back if it is not the one planned for, or the tab's layout
+    /// changed since.
+    #[expect(clippy::result_large_err, reason = "a pane given back")]
+    pub(crate) fn split(&mut self, pane: Pane<Loose>, split: Split) -> Result<(), Pane<Loose>> {
+        let Split { tab, was, root } = split;
+        let planned = root.contains(pane.id()) && !was.contains(pane.id());
+        let Some((ws, t)) = tab_mut(&mut self.workspaces, tab)
+            .filter(|(_, t)| planned && t.root.as_ref() == Some(&was))
+        else {
+            return Err(pane);
+        };
+        t.edit(|r| *r = Some(root));
+        self.placed((ws, tab), pane);
         Ok(())
     }
 

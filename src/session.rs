@@ -10,13 +10,13 @@ use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
-use crate::layout::{self, Axis, Placement, Rect, Side, Tree};
+use crate::layout::{self, Axis, Placement, Rect, Tree};
 use crate::pane::{self, Loose, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{End, Reply, ScreenKind, ToAttached};
+use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
-use crate::workspace::{Fit, PaneMut, Parts, Seat, Tab, Workspace};
+use crate::workspace::{Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
 use fuxth::Code as Lang;
 use std::collections::{BTreeMap, VecDeque};
@@ -794,8 +794,8 @@ impl Session {
         self.shown_workspace(client)?.tab_of(client)
     }
     pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
-        let ws = (self.parts.workspaces_mut().iter_mut()).find(|w| w.viewers.contains(&client))?;
-        ws.tab_of_mut(client)
+        let tab = self.shown_tab(client)?.id();
+        self.parts.tab_mut(tab)
     }
     /// The pane client `client` focuses.
     pub fn focused(&self, client: ClientId) -> Option<PaneId> {
@@ -1203,19 +1203,23 @@ impl Session {
         Err(fail(Code::NotRunning, format!("{id}: {why}")))
     }
 
-    /// The size a pane split from `target` along `axis` starts at: its
-    /// place in the layout once split, which its tab must have room for.
-    fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
-        let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let mut ids = self.ids.clone();
-        let new = ids.pane()?;
-        let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
-        root.split(target, new, axis, Side::After);
-        self.room(tab, Some(&root))?;
-        let area = self.reference_area(tab, here);
-        let rect = area.and_then(|area| layout::place(&root, area).rect(new));
-        rect.and_then(|r| Size::new(r.h(), r.w()).ok())
-            .ok_or(Error::NoPane(target))
+    /// The split of `target` along `axis`, the two taking `shares` if
+    /// given, and the size the new pane starts at: its place in the
+    /// layout the split makes, which its tab must have room for.
+    fn split_size(
+        &self,
+        target: PaneId,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
+        here: Here,
+    ) -> Result<(Split, Size), Error> {
+        let new = self.ids.clone().pane()?;
+        let split =
+            (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
+        self.room(split.tab(), Some(split.root()))?;
+        let area = self.reference_area(split.tab(), here);
+        let rect = area.and_then(|area| layout::place(split.root(), area).rect(new));
+        let size = rect.and_then(|r| Size::new(r.h(), r.w()).ok());
+        Ok((split, size.ok_or(Error::NoPane(target))?))
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -1427,21 +1431,25 @@ impl Session {
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
         let workspace = workspace.map(command::parse_workspace).transpose();
+        let size = Size::new(rows, cols).map_err(|e| fail(Code::Size, e.to_string()))?;
         let workspace = workspace.map_err(bad_value)?;
-        self.attach_as(ClientKind::Terminal, rows, cols, workspace.as_ref())
+        self.attach_as(
+            ClientKind::Terminal,
+            Attach {
+                workspace,
+                ..Attach::of(size)
+            },
+        )
     }
 
-    /// `attach`, for a client of `kind`.
-    pub fn attach_as(
-        &mut self,
-        kind: ClientKind,
-        rows: u16,
-        cols: u16,
-        workspace: Option<&WsRef>,
-    ) -> Result<ClientId, Error> {
+    /// A client of `kind` attaches as `attach` says: one that only watches
+    /// is one from the start, and sizes nothing.
+    pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
         // A size no view has is refused before anything starts on it.
-        let (rows, cols) = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
-        let ws = match workspace {
+        let (rows, cols) = attach.size.nonzero();
+        let (rows, cols) =
+            view::size(rows.get(), cols.get()).map_err(|why| fail(Code::Size, why))?;
+        let ws = match &attach.workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
                 // A server with nothing in it (just started, or its session
@@ -1461,9 +1469,9 @@ impl Session {
         };
         let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols);
-        view.kind = kind;
+        (view.kind, view.read_only, view.env) = (kind, attach.read_only, attach.env);
         self.views.insert(id, view);
-        (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.attach(id));
+        self.parts.attach(id);
         self.show(id, ws, None);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
@@ -1472,21 +1480,14 @@ impl Session {
 
     pub fn detach(&mut self, id: ClientId) {
         self.views.remove(&id);
-        (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.forget(id));
+        self.parts.forget(id);
         self.settle();
     }
 
     /// Shows `client` workspace `ws`, one there is, and there the tab and
     /// pane `at` says, each if given and there.
     fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
-        for w in self.parts.workspaces_mut() {
-            if w.id() != ws {
-                w.hide(client);
-            } else {
-                w.viewers.insert(client);
-                w.show(client, at);
-            }
-        }
+        self.parts.show(client, ws, at);
     }
 
     /// The command's client, if it has one, follows what it made or moved:
@@ -1557,9 +1558,8 @@ impl Session {
     /// showing it that sizes its panes (not one that only watches), the
     /// commanding one's first, else what its fit says.
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
-        let own = here.client().and_then(|c| self.views.get(&c));
-        let shows = |v: &&View| !v.read_only && self.shows(v.id, tab);
-        match (own.filter(shows)).or_else(|| self.views.values().find(shows)) {
+        let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
+        match own.or_else(|| self.sizing(tab).next()) {
             Some(view) => Some(Self::pane_area(view)),
             None => self.tab(tab).map(|t| t.fit().area()),
         }
@@ -1574,16 +1574,23 @@ impl Session {
             return Ok(Fit::Fixed(size));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let client = own.into_iter().chain(self.views.values()).next();
+        let client = (own.into_iter().chain(self.views.values())).find(|v| v.sizes());
         let why = match client.map(|view| Self::screen_size(view).ok_or(view.id)) {
             Some(Ok(size)) => return Ok(Fit::Clients(size)),
             Some(Err(client)) => format!("{client}'s screen has no room for a pane below its bar"),
-            None => "no client is attached to lay it out on, and no size was given".to_owned(),
+            None => "no client is attached to lay it out on (one that only watches sizes \
+                     nothing), and no size was given"
+                .to_owned(),
         };
         Err(fail(
             Code::Size,
             format!("{why}: give a size (`COLS ROWS size`)"),
         ))
+    }
+
+    /// The clients showing tab `tab` that size its panes.
+    fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
+        (self.views.values()).filter(move |v| v.sizes() && self.shows(v.id, tab))
     }
 
     /// The size a client's screen gives panes, below its bar, if any.
@@ -1687,26 +1694,26 @@ impl Session {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
-        // Each shown tab's smallest screen.
+        // Each tab a client sizes, and its smallest screen if it has one.
         let mut screens = BTreeMap::new();
-        // A client that only watches sizes nothing: it shows the panes as
-        // they are.
-        for view in self.views.values().filter(|v| !v.read_only) {
+        for view in self.views.values().filter(|v| v.sizes()) {
             self.placement_into(view, &mut placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
             sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
-            if let (Some(tab), Some(size)) = (self.shown_tab(view.id), Self::screen_size(view)) {
-                let (rows, cols) = size.nonzero();
-                let least = screens.entry(tab.id()).or_insert((rows, cols));
-                *least = (least.0.min(rows), least.1.min(cols));
+            if let Some(tab) = self.shown_tab(view.id) {
+                let least = screens.entry(tab.id()).or_insert(None);
+                if let Some((rows, cols)) = Self::screen_size(view).map(Size::nonzero) {
+                    let (r, c) = least.get_or_insert((rows, cols));
+                    (*r, *c) = ((*r).min(rows), (*c).min(cols));
+                }
             }
         }
-        for tab in tabs_mut(self.parts.workspaces_mut()) {
-            if let Some(&size) = screens.get(&tab.id()) {
+        for (&tab, &size) in &screens {
+            if let (Some(size), Some(tab)) = (size, self.parts.tab_mut(tab)) {
                 tab.shown_on(size.into());
             }
         }
-        let changed = (self.parts.workspaces_mut().iter_mut()).flat_map(Workspace::changed_unshown);
+        let changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
@@ -1804,18 +1811,20 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
-    /// What a program wrote as it exited may still be on its terminal, or
+    /// What either wrote as it exited may still be on its terminal, or
     /// read and waiting for the pane's next turns (`Pane::has_unread`): it
-    /// is told exited once all of it is on its screen, from the turn that
-    /// reads the last of it (`Session::fire`).
+    /// is told exited once all of it is on its screen, its bells, titles
+    /// and notifications journaled, from the turn that reads the last of
+    /// it (`Session::fire`); a shell's pane then closes.
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
-        let program = (self.parts.panes().get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
-        let program = program.map(|p| p.exiting.is_none());
+        let Some(first) = self.parts.panes().get(&id).map(|p| p.exiting.is_none()) else {
+            return;
+        };
         // Once, at the first word of the exit, its terminal drained (what
-        // a program left writing there is not waited for), and the status
-        // kept till the last of it is read; at each, a frame it holds read,
-        // one begun in output read since too.
-        if program == Some(true) {
+        // it left writing there is not waited for), and the status kept
+        // till the last of it is read; at each, a frame it holds read, one
+        // begun in output read since too.
+        if first {
             let left = (self.parts.panes().get(&id))
                 .map(|p| unread(p.process()))
                 .unwrap_or_default();
@@ -1823,17 +1832,13 @@ impl Session {
                 self.output(id, &left);
             }
         }
-        if program.is_some() {
-            self.read_with(id, Pane::release_frame);
-        }
+        self.read_with(id, Pane::release_frame);
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
-        if program.is_some() {
-            pane.exiting = Some(ended);
-            if pane.has_unread() {
-                return;
-            }
+        pane.exiting = Some(ended);
+        if pane.has_unread() {
+            return;
         }
         match pane.runs {
             Runs::Shell => {
@@ -2521,8 +2526,10 @@ impl Session {
         }
         // With no size, back to fitting clients, at the size it has until
         // one shows it.
-        for tab in tabs_mut(self.parts.workspaces_mut()).filter(|t| tabs.contains(&t.id())) {
-            tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
+        for tab in tabs {
+            if let Some(tab) = self.parts.tab_mut(tab) {
+                tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
+            }
         }
         Ok(())
     }
@@ -2646,19 +2653,18 @@ impl Session {
         };
         // Its tab found (by `split_size`) before the program starts, which
         // nothing can then leave running.
-        let size = self.split_size(target, axis, here)?;
+        let (split, size) = self.split_size(target, (axis, shares), here)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
-        if let Err(pane) = self.parts.split(target, pane, axis, shares) {
+        if let Err(pane) = self.parts.split(pane, split) {
             self.end(pane.into_process(), true);
             return Err(Error::NoPane(target));
         }
         self.ids = ids;
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let split = tabs_mut(self.parts.workspaces_mut()).find(|t| t.id() == tab);
-        let split = split.ok_or(Error::NoTab(tab))?;
+        let split = self.parts.tab_mut(tab).ok_or(Error::NoTab(tab))?;
         for view in (self.views.values_mut()).filter(|v| followers.contains(&v.id)) {
             split.set_focus(view.id, new);
             view.zoom = false;
@@ -2885,9 +2891,7 @@ impl Session {
             return Ok(());
         };
         let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
-        let screens = (self.views.values())
-            .filter(|v| !v.read_only && self.shows(v.id, tab))
-            .map(|v| (Some(v.id), Self::pane_area(v)));
+        let screens = (self.sizing(tab)).map(|v| (Some(v.id), Self::pane_area(v)));
         let mut sizes = std::iter::once((None, own)).chain(screens);
         let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
             return Ok(());
@@ -2917,12 +2921,9 @@ impl Session {
                 self.parts.swap(p, other);
                 return Ok(());
             }
-            AnyRef::Tab(t) => (self.parts.workspaces_mut().iter_mut())
-                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id() == t, toward))
-                .ok_or(Error::NoTab(t))?,
+            AnyRef::Tab(t) => self.parts.reorder_tab(t, toward).ok_or(Error::NoTab(t))?,
             AnyRef::Workspace(w) => {
-                swap_sibling(self.parts.workspaces_mut(), |ws| ws.id() == w, toward)
-                    .ok_or(Error::NoWorkspace(w))?
+                (self.parts.reorder_workspace(w, toward)).ok_or(Error::NoWorkspace(w))?
             }
         };
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
@@ -3385,22 +3386,6 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
     items.get(next).filter(|_| len > 1)
 }
 
-/// Swaps the item `is` picks with its sibling `toward`: none if `is` picks
-/// none, false if it has no sibling that way.
-fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) -> Option<bool> {
-    let index = items.iter().position(is)?;
-    let first = match toward {
-        Sibling::Next => Some(index),
-        Sibling::Previous => index.checked_sub(1),
-    };
-    let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
-    Some(pair.map(<[T]>::reverse).is_some())
-}
-
-fn tabs_mut(workspaces: &mut [Workspace]) -> impl Iterator<Item = &mut Tab> {
-    workspaces.iter_mut().flat_map(|w| w.tabs_mut().iter_mut())
-}
-
 /// What the other modules' tests share: a session started with the default
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
@@ -3769,6 +3754,41 @@ mod tests {
 
     use super::testing::{attached, output, requests, run, started};
     use super::*;
+
+    /// A client that only watches, of `rows` by `cols`, attached.
+    fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
+        let attach = Attach {
+            read_only: true,
+            ..Attach::of(sized(rows, cols)?)
+        };
+        s.attach_as(ClientKind::Terminal, attach)
+            .map_err(|e| e.to_string())
+    }
+
+    /// A client that attaches only to watch sizes nothing from its first
+    /// moment: its screen, too narrow to split, is not the tab's size.
+    #[test]
+    fn a_watcher_sizes_nothing_as_it_attaches() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        watch(&mut s, 10, 3)?;
+        let pane = s.parts.panes().get(&PaneId::of(1)).map(Pane::size);
+        assert_eq!(pane, Some(sized(24, 80)?));
+        run(&mut s, "%1 split drop")
+    }
+
+    /// A tab only a watcher shows is laid out on its own size: a resize
+    /// and a split are applied to its panes.
+    #[test]
+    fn a_tab_only_watched_is_laid_out_on_its_size() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        watch(&mut s, 30, 120)?;
+        run(&mut s, "str @1 tab 100 10 resize")?;
+        let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
+        assert_eq!(size(&s, 1), Some(sized(10, 100)?));
+        run(&mut s, "%1 split drop")?;
+        assert_eq!(size(&s, 1), Some(sized(10, 50)?));
+        Ok(())
+    }
 
     /// A run refused (its name is taken, its workspace is not there or
     /// can't be made) leaves the log file it names as it was, its contents
@@ -4891,6 +4911,22 @@ mod tests {
         Ok(())
     }
 
+    /// What a shell wrote as it exited, a frame it held too, is read
+    /// before its exit is told: its bell and title are not lost.
+    #[test]
+    fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 split drop")?;
+        let lines = told(&mut s, |s| {
+            s.output(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+            s.exited(PaneId::of(2), Ended::Exited(0));
+        });
+        let said =
+            "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 status=0\nclosed %2 @1 +1\n";
+        assert!(lines.starts_with(said), "{lines}");
+        Ok(())
+    }
+
     /// A saved session names only the tabs given a name: one fux named by
     /// its place (`tab-3`, its place now 2) comes back named by its place
     /// again, not as a name given, which a tab named so later could not
@@ -5015,10 +5051,7 @@ mod tests {
     {
         let (mut s, _) = attached(50, 200)?;
         s.attach(50, 30, None).map_err(|e| e.to_string())?;
-        let watcher = s.attach(50, 8, None).map_err(|e| e.to_string())?;
-        if let Some(view) = s.views.get_mut(&watcher) {
-            view.read_only = true;
-        }
+        watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
             run(&mut s, "%1 split drop")?;
@@ -5046,6 +5079,22 @@ mod tests {
         let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
         assert_eq!(widths, [80, 10, 8]);
         assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    /// A pane split with shares starts at the size its share gives it,
+    /// not resized to it after its program starts.
+    #[test]
+    fn a_split_with_shares_starts_at_its_share() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 100 10 size str +1 workspace in new-tab drop")?;
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%2 80 18 shares split drop");
+        });
+        assert!(lines.contains("created %3"), "{lines}");
+        assert!(!lines.contains("resized %3"), "{lines}");
+        let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
+        assert_eq!(size, Some(sized(10, 18)?));
         Ok(())
     }
 

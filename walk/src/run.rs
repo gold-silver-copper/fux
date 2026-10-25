@@ -170,13 +170,19 @@ pub fn take(fixture: &mut Fixture, step: &Step, at: usize) -> Result<(), End> {
             std::fs::write(&fixture.config, text)
                 .map_err(|e| fail(at, "writing the configuration", e.to_string()))?;
         }
-        Step::Clamp => {
-            let (rows, cols) = fixture.clamped().map_err(|e| fail(at, "attaching", e))?;
-            if (rows, cols) != (4096, 4096) {
+        Step::TooBig => {
+            let before = fixture
+                .listed_clients()
+                .map_err(|e| fail(at, "listing", e))?;
+            let refused = fixture.too_big().map_err(|e| fail(at, "attaching", e))?;
+            let after = fixture
+                .listed_clients()
+                .map_err(|e| fail(at, "listing", e))?;
+            if !refused.contains(&fux::view::MOST.to_string()) || before != after {
                 return Err(fail(
                     at,
-                    "a size is clamped to 4096",
-                    format!("9000 by 9000 became {rows} by {cols}"),
+                    "a size past view::MOST is refused, and no client attached",
+                    format!("9000 by 9000: {refused:?}; clients {before:?}, then {after:?}"),
                 ));
             }
         }
