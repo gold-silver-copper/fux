@@ -1291,6 +1291,14 @@ builtins! { m host;
         host.print(&text).map_err(|f| m.fail(f.code, f.message))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
-        Err(m.fail(Code::Fail, x.text()))
+        // Its reason is a string a try may keep: made as `string` makes one.
+        m.walk(&x);
+        let Some(text) = x.text_upto(LONGEST) else {
+            return Err(m.fail(Code::TooLong, format!(
+                "the reason is longer than a string may be ({LONGEST})"
+            )));
+        };
+        m.build(text.chars_len())?;
+        Err(m.fail(Code::Fail, text.to_string()))
     }
 }

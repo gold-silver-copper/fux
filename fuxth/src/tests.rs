@@ -1354,6 +1354,17 @@ fn strs(values: &[&str]) -> Vec<Value<Ticket>> {
 fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let caught = run("1 str fail try 2 str no fail catch end")?;
     assert_eq!(caught, [ints(&[1]), strs(&["no", "fail"])].concat());
+    // A reason a try keeps is a string: one longer than a string may be
+    // fails as too long, which `fail` does not name.
+    let long = run("str fail try 0 300000 range fail catch end").err();
+    assert_eq!(long.map(|e| e.code), Some(Code::TooLong));
+    // A try's codes are written in its own source, not the one before.
+    let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
+    compiler.add(&token::source("one", "str fail")?)?;
+    let refused = compiler
+        .add(&token::source("two", "try 1 catch end")?)
+        .err();
+    assert_eq!(refused.map(|e| e.code), Some(Code::BadCodes));
     assert_eq!(
         run("1 str fail try 2 3 catch drop drop 0 end")?,
         ints(&[1, 2, 3])

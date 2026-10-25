@@ -365,6 +365,8 @@ impl<A: Clone> Compiler<A> {
     }
 
     fn source(&mut self, tokens: &[Token]) -> Result<(), Error> {
+        // A literal is part of the step after it in the same source alone.
+        self.literal = false;
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
