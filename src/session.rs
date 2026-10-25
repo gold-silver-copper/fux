@@ -1802,11 +1802,13 @@ impl Session {
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
+            // A frame it holds is read as it resizes, as every read of
+            // its output is (`read_with`): its terminal's facts given it,
+            // its bells and copies taken.
             if let Ok(size) = Size::new(rows, cols)
-                && let Some(mut pane) = self.parts.pane_mut(id)
-                && pane.size() != size
+                && self.pane(id).is_ok_and(|p| p.size() != size)
             {
-                pane.resize(size);
+                self.read_with(id, |pane| pane.resize(size));
                 resized = true;
             }
         }
@@ -4119,6 +4121,20 @@ mod tests {
         assert_eq!((left.len(), more), (LEFT_MAX, true));
         let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
         assert_eq!(left_on(&null), (Vec::new(), false));
+        Ok(())
+    }
+
+    /// A frame held as its pane is resized is read as every output is:
+    /// its copy copied and its bell rung, not left for a later read.
+    #[test]
+    fn a_frame_a_resize_reads_is_read_whole() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        s.output(id, b"\x1b[?2026h\x07\x1b]52;c;aGk=\x07");
+        assert!(s.buffers.is_empty(), "held");
+        s.resize(c, 30, 100).map_err(|e| e.to_string())?;
+        assert_eq!(s.buffers.front().map(String::as_str), Some("hi"));
+        assert!(!s.pane(id).map_err(|e| e.to_string())?.bell, "rung");
         Ok(())
     }
 
