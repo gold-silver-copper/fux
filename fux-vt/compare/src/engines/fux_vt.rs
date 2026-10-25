@@ -32,7 +32,7 @@ impl Sink for Heard {
     }
     fn event(&mut self, event: Event<'_>) {
         if let Event::Title(title) = event {
-            self.title = Some(String::from_utf8_lossy(title).into_owned());
+            self.title = Some(String::from_utf8_lossy(title.bytes).into_owned());
         }
     }
 }

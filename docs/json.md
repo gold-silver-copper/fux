@@ -16,7 +16,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | --- | --- |
 | `id` | `"%3"` |
 | `name` | its name: the program's, or what `rename` gave it |
-| `title` | what the program set (OSC 0 or 2), else `""` |
+| `title` | what the program set (OSC 0 or 2), else `""`: its first 256 characters, without control characters |
 | `rows`, `cols` | its size |
 | `pid` | its program's process, `null` once it exited |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
@@ -37,7 +37,8 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `command_running` | a shell command runs (OSC 133 marks) |
 | `last_status` | the last shell command's status, else `null` |
 | `bells` | bells and notifications rung since it started |
-| `notification` | the last notification's text, else `null` |
+| `notification` | the last notification's text, else `null`: its first 500 characters, without control characters |
+| `truncated` | the fields above the program sent more of than they keep, the rest dropped: `["title"]`, `["title","notification"]`, else `[]` |
 | `cwd`, `argv` | the foreground process's directory and words, where the system says |
 
 ## `ls json`
@@ -136,8 +137,8 @@ its journal recorded them, one line each.
 | `closed`, `moved`, `respawned`, `bell` | |
 | `exited` | `status` or `signal` |
 | `done` | `status`: a shell command's |
-| `notification` | `text` (the last of a round) |
-| `title` | `title` |
+| `notification` | `text` (the last of a round), `truncated` (`true`) if cut as a pane's `notification` is |
+| `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
 | `resized` | `cols`, `rows` |
 | `lost` | last: the reader fell behind (status 1) |
 | `missed` | a pane's events were let go before they were told (past the 1024 its journal keeps) |

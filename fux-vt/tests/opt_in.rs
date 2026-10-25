@@ -22,12 +22,18 @@ impl Sink for Record {
     }
     fn event(&mut self, event: Event<'_>) {
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let cut = |k: fux_vt::Kept<'_>| if k.cut { " (cut)" } else { "" };
         self.events.push(match event {
-            Event::Title(t) => format!("title:{}", text(t)),
-            Event::IconName(t) => format!("icon:{}", text(t)),
+            Event::Title(t) => format!("title:{}{}", text(t.bytes), cut(t)),
+            Event::IconName(t) => format!("icon:{}{}", text(t.bytes), cut(t)),
             Event::Bell => "bell".to_owned(),
             Event::Clipboard { selection, data } => {
-                format!("clipboard:{}:{}", text(selection), text(data))
+                format!(
+                    "clipboard:{}:{}{}",
+                    text(selection),
+                    text(data.bytes),
+                    cut(data)
+                )
             }
             Event::ColorQuery { number, bel } => {
                 format!("color:{number}:{}", if bel { "bel" } else { "st" })
@@ -107,18 +113,24 @@ fn events_are_chunk_invariant() -> Result {
 fn osc_payloads_are_bounded_and_cancellable() -> Result {
     let mut parser = Parser::with_options(Size::new(4, 20)?, 0, EVENTS)?;
     let mut record = Record::default();
-    // An over-limit title is consumed without an event.
+    // An over-limit title is consumed, its start told, cut.
     parser.process_with(b"\x1b]2;", &mut record)?;
     for _ in 0..OSC_PAYLOAD_LIMIT / 1024 + 2 {
         parser.process_with(&[b'x'; 1024], &mut record)?;
     }
     parser.process_with(b"\x07", &mut record)?;
-    assert!(record.events.is_empty());
-    // Exactly at the limit is delivered.
+    let start = format!(
+        "title:{} (cut)",
+        std::iter::repeat_n('x', OSC_PAYLOAD_LIMIT - 2).collect::<String>()
+    );
+    assert_eq!(record.events, [start]);
+    // Exactly at the limit is delivered whole.
+    record.events.clear();
     let mut exact = b"\x1b]2;".to_vec();
     exact.resize(4 + OSC_PAYLOAD_LIMIT - 2, b'y');
     exact.push(7);
     parser.process_with(&exact, &mut record)?;
+    assert!(record.events.iter().all(|e| !e.ends_with("(cut)")));
     assert_eq!(record.events.len(), 1);
     // CAN cancels without an event, and the next string starts clean.
     record.events.clear();

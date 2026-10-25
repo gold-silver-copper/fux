@@ -188,27 +188,58 @@ pub const OPTIONS: fux_vt::Options = fux_vt::Options::new()
 
 /// The most titles a pane's program can push (`CSI 22 t`): xterm's bound.
 const TITLE_STACK: usize = 10;
+/// The most characters of a title kept.
+pub const TITLE_MAX: usize = 256;
+/// The most characters of a notification kept.
+pub const NOTIFICATION_MAX: usize = 500;
+
+/// Text a program sent (a title, a notification), as it is kept: without
+/// control characters, at most `MAX` characters, and `cut` if it held more
+/// (or was longer than fux-vt keeps of a string), the rest dropped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Said<const MAX: usize> {
+    text: String,
+    cut: bool,
+}
+
+impl<const MAX: usize> Said<MAX> {
+    fn new(sent: fux_vt::Kept<'_>) -> Self {
+        let text = String::from_utf8_lossy(sent.bytes);
+        let mut chars = text.chars().filter(|c| !c.is_control());
+        let text = chars.by_ref().take(MAX).collect();
+        let cut = sent.cut || chars.next().is_some();
+        Self { text, cut }
+    }
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+    /// Whether the program sent more than was kept.
+    pub fn cut(&self) -> bool {
+        self.cut
+    }
+}
 
 /// A pane's title, as its program sets it with OSC 0 or 2, and the titles
 /// it pushed (`CSI 22 t`) to pop (`CSI 23 t`), at most xterm's ten: a push
 /// past them forgets the oldest.
 #[derive(Default)]
 pub struct Title {
-    now: String,
-    pushed: VecDeque<String>,
+    now: Said<TITLE_MAX>,
+    pushed: VecDeque<Said<TITLE_MAX>>,
 }
 
 impl Title {
     pub fn as_str(&self) -> &str {
+        self.now.as_str()
+    }
+    pub fn said(&self) -> &Said<TITLE_MAX> {
         &self.now
     }
-    /// Sets it from what a program sent, without control characters, at
-    /// most 256 characters of it; whether it changed.
-    fn set(&mut self, title: &[u8]) -> bool {
-        let text = String::from_utf8_lossy(title);
-        self.become_(text.chars().filter(|c| !c.is_control()).take(256).collect())
+    /// Sets it from what a program sent; whether it changed.
+    fn set(&mut self, title: fux_vt::Kept<'_>) -> bool {
+        self.become_(Said::new(title))
     }
-    fn become_(&mut self, title: String) -> bool {
+    fn become_(&mut self, title: Said<TITLE_MAX>) -> bool {
         let changed = title != self.now;
         self.now = title;
         changed
@@ -239,9 +270,8 @@ struct Sink<'a> {
     /// Set by a bell (BEL).
     bell: &'a mut bool,
     alerts: &'a mut Alerts,
-    /// Set by an OSC 52 write of UTF-8 text, at most `MAX_CLIPBOARD`
-    /// encoded.
-    copied: &'a mut Option<String>,
+    /// Set by an OSC 52 write: its UTF-8 text, or why it is no copy.
+    copied: &'a mut Option<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
 }
@@ -249,7 +279,7 @@ struct Sink<'a> {
 impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
-        let title = self.title.as_str().to_owned();
+        let title = self.title.said().clone();
         self.happened.push(log::Event::Title(title));
     }
 }
@@ -280,19 +310,20 @@ impl fux_vt::Sink for Sink<'_> {
             }
             Event::Notification(text) => {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
-                let text = String::from_utf8_lossy(text);
-                let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
+                let text = Said::new(text);
                 self.happened.push(log::Event::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
-            Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
-                let text = crate::json::unbase64(data).and_then(|d| String::from_utf8(d).ok());
-                if let Some(text) = text {
-                    *self.copied = Some(text);
-                }
+            Event::Clipboard { data, .. } => {
+                *self.copied = Some(match data.cut {
+                    true => Err(Uncopied::Cut),
+                    false => (crate::json::unbase64(data.bytes))
+                        .and_then(|d| String::from_utf8(d).ok())
+                        .ok_or(Uncopied::NotText),
+                });
             }
             Event::CommandEnded(status) => self.happened.push(log::Event::Done(status)),
-            Event::IconName(_) | Event::Clipboard { .. } => {}
+            Event::IconName(_) => {}
         }
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
@@ -417,7 +448,29 @@ pub(crate) fn basename(program: &str) -> String {
 pub struct Alerts {
     /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
-    pub last: Option<String>,
+    pub last: Option<Said<NOTIFICATION_MAX>>,
+}
+
+/// Why a program's copy (OSC 52) copied nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Uncopied {
+    /// It was longer than fux-vt keeps of a string.
+    Cut,
+    /// It was not base64 of UTF-8 text.
+    NotText,
+}
+
+impl std::fmt::Display for Uncopied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Uncopied::Cut => write!(
+                f,
+                "is longer than the {} KiB a string may be",
+                fux_vt::OSC_PAYLOAD_LIMIT / 1024
+            ),
+            Uncopied::NotText => f.write_str("is not base64 of UTF-8 text"),
+        }
+    }
 }
 
 pub struct Pane {
@@ -456,8 +509,9 @@ pub struct Pane {
     /// (`Session::ring`).
     pub bell: bool,
     /// The text the program last put on the clipboard (OSC 52) since the
-    /// session last looked, which copies it (`Session::copied`).
-    pub copied: Option<String>,
+    /// session last looked, which copies it (`Session::copied`), or why
+    /// it copied nothing, which the session tells.
+    pub copied: Option<Result<String, Uncopied>>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it, in order: its journal (`crate::log`), which
@@ -1204,6 +1258,41 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A title or notification longer than a pane keeps is cut there, and
+    /// says so, as is one longer than fux-vt keeps of a string; one that
+    /// fits is whole. The guide states the bounds.
+    #[test]
+    fn what_is_cut_of_a_title_is_said() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let (long, fits) = (
+            std::iter::repeat_n('t', TITLE_MAX + 1).collect::<String>(),
+            std::iter::repeat_n('n', NOTIFICATION_MAX).collect::<String>(),
+        );
+        pane.output(format!("\x1b]2;{long}\x07\x1b]9;{fits}\x07").as_bytes());
+        assert_eq!(
+            pane.title.as_str(),
+            long.get(..TITLE_MAX).unwrap_or_default()
+        );
+        assert!(pane.title.said().cut());
+        let notification = pane.alerts.last.as_ref();
+        assert_eq!(
+            notification.map(|n| (n.as_str(), n.cut())),
+            Some((&*fits, false))
+        );
+        let huge = std::iter::repeat_n('x', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>();
+        pane.output(format!("\x1b]2;{huge}\x07").as_bytes());
+        assert_eq!(
+            pane.title.as_str(),
+            huge.get(..TITLE_MAX).unwrap_or_default()
+        );
+        assert!(pane.title.said().cut());
+        for bound in [TITLE_MAX, NOTIFICATION_MAX] {
+            let said = format!("first {bound} characters");
+            assert!(crate::help::JSON.contains(&said), "{said}");
+        }
+        Ok(())
+    }
+
     /// xterm's title stack: vim and tmux push the title on starting and pop
     /// it on leaving, so the pane's title comes back. Ps 1 (the icon) is no
     /// title; the stack keeps at most ten; a pop with none pushed changes
@@ -1275,7 +1364,12 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(
             said,
-            ["Done(Some(1))", "Bell", "Done(Some(0))", "Title(\"t\")"]
+            [
+                "Done(Some(1))",
+                "Bell",
+                "Done(Some(0))",
+                "Title(Said { text: \"t\", cut: false })"
+            ]
         );
         Ok(())
     }

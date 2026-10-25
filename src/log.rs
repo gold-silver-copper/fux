@@ -1,6 +1,7 @@
 //! A pane's journal: what happens in it, in the order it happens, each
 //! entry numbered: bells, notifications, titles, shell commands' ends and
 //! resizes, which `events` streams.
+use crate::pane::{NOTIFICATION_MAX, Said, TITLE_MAX};
 use std::collections::VecDeque;
 
 /// A number from a pane's journal: the order things happened in.
@@ -13,9 +14,9 @@ pub enum Event {
     /// The program rang the bell.
     Bell,
     /// The program sent a notification (OSC 9, 777): its text.
-    Notification(String),
+    Notification(Said<NOTIFICATION_MAX>),
     /// The program set its title.
-    Title(String),
+    Title(Said<TITLE_MAX>),
     /// A shell command ended (OSC 133 `D`): its status, if the shell said.
     Done(Option<i32>),
     /// The screen took a new size.

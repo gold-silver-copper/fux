@@ -542,8 +542,9 @@ impl Phase {
 }
 
 /// The most OSC payload bytes retained for [`Event`] delivery, hyperlinks
-/// and the palette. A longer OSC string is consumed and dropped; nothing
-/// beyond this is ever buffered.
+/// and the palette. Of a longer OSC string the rest is consumed and
+/// dropped, its event `cut` ([`Kept`]); nothing beyond this is ever
+/// buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
@@ -745,25 +746,36 @@ impl Identity {
     }
 }
 
+/// An OSC string's text as it was kept: raw bytes, all of them, or the
+/// first of a string longer than [`OSC_PAYLOAD_LIMIT`], `cut` saying the
+/// rest was dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kept<'a> {
+    /// The bytes kept.
+    pub bytes: &'a [u8],
+    /// Whether the string went on past them.
+    pub cut: bool,
+}
+
 /// A side effect requested by child output. Only delivered with
 /// [`Feature::Events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// OSC 0 or OSC 2.
-    Title(&'a [u8]),
+    Title(Kept<'a>),
     /// OSC 0 or OSC 1.
-    IconName(&'a [u8]),
+    IconName(Kept<'a>),
     /// BEL executed outside a control string.
     Bell,
     /// A desktop notification: OSC 9 (iTerm2), OSC 777 (`notify;title;body`)
     /// or OSC 99 (kitty).
-    Notification(&'a [u8]),
+    Notification(Kept<'a>),
     /// OSC 52 set request; a `?` query is not an event.
     Clipboard {
         /// The selection parameter, `Pc`: `c`, `p`, `s` and so on, or empty.
         selection: &'a [u8],
         /// The data, `Pd`, as sent (normally base64).
-        data: &'a [u8],
+        data: Kept<'a>,
     },
     /// A query of one of xterm's dynamic colours, `OSC Ps ; ?` with `Ps`
     /// from 10 to 19 (ctlseqs, "Operating System Commands"). One OSC can ask
@@ -1803,9 +1815,9 @@ impl Parser {
     }
 
     /// Carries out the completed OSC string, cut short unless `whole`,
-    /// ended by BEL if `bel`, else by ST. An overflowed string is no event,
-    /// and closes any link. Out of line, so `byte` stays small enough to
-    /// inline into the parser's loop.
+    /// ended by BEL if `bel`, else by ST. An overflowed string's event is
+    /// `cut`; it sets no colour, and closes any link. Out of line, so
+    /// `byte` stays small enough to inline into the parser's loop.
     #[inline(never)]
     fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) {
         let payload = std::mem::take(&mut self.osc);
@@ -1858,34 +1870,38 @@ impl Parser {
         {
             return;
         }
-        if !self.options.has(Feature::Events) || !whole {
+        if !self.options.has(Feature::Events) {
             return;
         }
+        // What the string's start holds, the rest cut if it overflowed.
+        let kept = |bytes| Kept { bytes, cut: !whole };
         match command {
             b"0" => {
-                sink.event(Event::IconName(rest));
-                sink.event(Event::Title(rest));
+                sink.event(Event::IconName(kept(rest)));
+                sink.event(Event::Title(kept(rest)));
             }
-            b"1" => sink.event(Event::IconName(rest)),
-            b"2" => sink.event(Event::Title(rest)),
+            b"1" => sink.event(Event::IconName(kept(rest))),
+            b"2" => sink.event(Event::Title(kept(rest))),
             // OSC 9 ; 4 is ConEmu's progress report, not a notification.
-            b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(rest)),
+            b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(kept(rest))),
             b"777" => {
                 if let Some(text) = rest.strip_prefix(b"notify;") {
-                    sink.event(Event::Notification(text));
+                    sink.event(Event::Notification(kept(text)));
                 }
             }
             b"99" => {
                 let text = crate::split_semicolon(rest).map(|(_, text)| text);
-                sink.event(Event::Notification(text.unwrap_or_default()));
+                sink.event(Event::Notification(kept(text.unwrap_or_default())));
             }
             b"52" => {
                 if let Some((selection, data)) = crate::split_semicolon(rest)
                     && data != b"?"
                 {
+                    let data = kept(data);
                     sink.event(Event::Clipboard { selection, data });
                 }
             }
+            _ if !whole => {}
             // OSC 10 to 19 the palette did not read (it is off, or the
             // number is written `010`) still ask the host for their
             // colours; what they set is kept nowhere.

@@ -1946,12 +1946,25 @@ impl Session {
         }
         let viewers = self.viewers(tab);
         // A program's copy, as a copy in copy mode, to the clients showing
-        // it; none with `set clipboard off`.
-        if let Some(text) = copied.filter(|_| self.config.clipboard) {
-            self.copied(text, &viewers);
-        }
+        // it; none with `set clipboard off`. One that is no copy is told.
+        let uncopied = match copied.filter(|_| self.config.clipboard) {
+            // It fits the clipboard: fux-vt keeps less of a string.
+            Some(Ok(text)) => {
+                const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+                self.copied(text, &viewers);
+                None
+            }
+            Some(Err(why)) => Some(why),
+            None => None,
+        };
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
+            if let Some(why) = uncopied {
+                view.notify(
+                    format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
+                    true,
+                );
+            }
             if dropped {
                 view.notify(
                     format!("{id}'s input queue is full; a terminal reply was dropped"),
@@ -4076,7 +4089,8 @@ mod tests {
     }
 
     /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of the clients showing it, unless `set clipboard off`.
+    /// clipboard of the clients showing it, unless `set clipboard off`;
+    /// one it cannot be is told them.
     #[test]
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
         let (mut s, client) = attached(5, 20)?;
@@ -4089,6 +4103,15 @@ mod tests {
                 .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
+        // One longer than fux-vt keeps of a string copies nothing, said.
+        let long = format!(
+            "\x1b]52;c;{}\x07",
+            std::iter::repeat_n('A', fux_vt::OSC_PAYLOAD_LIMIT).collect::<String>()
+        );
+        s.output(PaneId::of(1), long.as_bytes());
+        let notice = s.views.get(&client).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("nothing was copied")));
+        assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
         s.outbox.clear();
         run(&mut s, "str clipboard str off set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
@@ -4165,7 +4188,14 @@ mod tests {
         let ls = output(&mut s, "ls json")?;
         assert!(ls.contains(r#""name":"say \"hi\" \\ 界""#), "{ls}");
         assert!(ls.contains(r#""title":"tab\\title""#), "{ls}");
+        assert!(ls.contains(r#""truncated":[]"#), "{ls}");
+        let long = format!(
+            "\x1b]2;{}\x07",
+            std::iter::repeat_n('t', crate::pane::TITLE_MAX + 1).collect::<String>()
+        );
+        s.output(PaneId::of(2), long.as_bytes());
         let capture = output(&mut s, "str %2 pane capture json")?;
+        assert!(capture.contains(r#""truncated":["title"]"#), "{capture}");
         assert!(capture.contains(r#""lines":["a       b 界"]"#), "{capture}");
         Ok(())
     }
