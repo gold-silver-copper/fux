@@ -52,9 +52,9 @@ fn paint(old: Option<&Grid>, new: &Grid) -> Vec<u8> {
 /// clients are looking at, and the bindings and layers they are in.
 /// Seeds pick them by position, so a new one goes at the end.
 const SIDE: &[&str] = &[
-    "opts 80 24 size str +1 workspace in new-tab drop",
-    "opts 80 24 size str +1 workspace in str two name str htop program new-tab drop",
-    "opts 80 24 size str ws name new-workspace drop",
+    "opts 80 23 size str +1 workspace in new-tab drop",
+    "opts 80 23 size str +1 workspace in str two name str htop program new-tab drop",
+    "opts 80 23 size str ws name new-workspace drop",
     "str %1 pane horizontal split drop",
     "str %2 pane vertical split drop",
     "str %2 pane horizontal split drop",
