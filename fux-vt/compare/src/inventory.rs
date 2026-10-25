@@ -64,8 +64,6 @@ enum Does {
     Unhandled,
     /// Consumed with no state, reply or report.
     Ignored(&'static str),
-    /// Read in part.
-    Partly(&'static str),
     /// Answered.
     Answers(String),
     Implemented(&'static str),
@@ -76,7 +74,6 @@ impl Does {
         match self {
             Does::Unhandled => "not implemented: reported as unhandled".into(),
             Does::Ignored(why) => format!("not implemented: {why}"),
-            Does::Partly(why) => format!("partly: {why}"),
             Does::Answers(reply) => format!("answers (first with `{reply}`)"),
             Does::Implemented("") => "implemented".into(),
             Does::Implemented(what) => format!("implemented: {what}"),
@@ -84,7 +81,7 @@ impl Does {
     }
 
     fn missing(&self) -> bool {
-        matches!(self, Does::Unhandled | Does::Ignored(_) | Does::Partly(_))
+        matches!(self, Does::Unhandled | Does::Ignored(_))
     }
 }
 
@@ -669,12 +666,8 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
         b'^' => "PM".to_owned(),
         _ => "SOS".to_owned(),
     };
-    let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r") {
+    let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r" | "DCS $ q  q") {
         Does::Implemented("answered (Feature::SettingReports)")
-    } else if kind == b'P' && key == "DCS $ q  q" {
-        Does::Partly(
-            "answered once the program set a cursor shape; the terminal's own is not known",
-        )
     } else if kind == b'P' && key.starts_with("DCS $ q") {
         Does::Implemented("answered as invalid, as xterm answers it")
     } else if kind == b'P' && key.starts_with("DCS + q") {

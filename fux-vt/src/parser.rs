@@ -1848,7 +1848,6 @@ impl Parser {
         let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
             Some(Setting::Written) => b'1',
             Some(Setting::Unknown) | None => b'0',
-            Some(Setting::Unanswered) => return,
         };
         sink.reply(format!("\x1bP{}$r{setting}\x1b\\", char::from(status)).as_bytes());
     }

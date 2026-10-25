@@ -150,7 +150,6 @@ Recordings:
 | `OSC 133 ; C` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `OSC 133 ; D` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `CSI 0 % m` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: reported as unhandled |
-| `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | partly: answered once the program set a cursor shape; the terminal's own is not known |
 | `DCS + q (#2)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
 | `DCS + q (#4)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
 | `DCS + q (%i)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
@@ -305,6 +304,7 @@ Recordings:
 | `CSI > q` | XTVERSION | 8 | lazygit, lazygit-small, lazygit-stage, tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | answers (first with `\eP>\|fux VERSION\e\\`) |
 | `CSI ? 1015 h` | mouse: urxvt encoding | 8 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | implemented |
 | `CSI ? 12 $ p` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[?12;2$y`) |
+| `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered (Feature::SettingReports) |
 | `CSI ? 996 n` | colour-scheme query | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
 | `CSI n;n s` | DECSLRM, left and right margins (SCOSC without DECLRMM) | 6 | nvim-split, nvim-wide | implemented |
 | `CSI > 0 c` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | answers (first with `\e[>1;VERSION;0c`) |

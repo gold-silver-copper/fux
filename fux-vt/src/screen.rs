@@ -475,10 +475,6 @@ pub(crate) enum Setting {
     Written,
     /// A request fux-vt does not know, which xterm answers as invalid.
     Unknown,
-    /// No answer: the terminal's own cursor shape (`CursorShape::Initial`),
-    /// which fux-vt does not know; vim, which asks, takes an invalid answer
-    /// for keys.
-    Unanswered,
 }
 
 /// What a CSI sequence came to.
@@ -3178,12 +3174,10 @@ impl Screen {
                 out.push('m');
             }
             b" q" => {
-                let shape = self.terminal.cursor_shape;
-                if shape == CursorShape::Initial {
-                    return Setting::Unanswered;
-                }
-                // 0 as the blinking block it is, as xterm answers it.
-                let ps = shape.number().max(1);
+                // 0 as the blinking block it is, as xterm answers it; the
+                // terminal's own shape as 7, xterm's "initial resources"
+                // (ctlseqs, DECSCUSR), which DECSCUSR 7 restores.
+                let ps = self.terminal.cursor_shape.number().max(1);
                 out.extend(char::from_digit(ps.into(), 10));
                 out.push_str(" q");
             }
