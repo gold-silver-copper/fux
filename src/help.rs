@@ -330,18 +330,33 @@ mod tests {
             }
             out
         };
-        let readme = include_str!("../README.md");
+        // A size in KiB or MiB is one only if it is a whole number of them.
+        let whole = |n: usize, shift: u32| {
+            assert_eq!(n % (1 << shift), 0, "{n} in units of {}", 1 << shift);
+            n >> shift
+        };
+        // Its words, a blank between each, as its lines wrap them.
+        let readme = include_str!("../README.md").split_whitespace();
+        let readme = readme.collect::<Vec<_>>().join(" ");
         let (least_width, least_height) = fux_vt::CellSize::LEAST;
+        let bell_gap = crate::outer::BELL_GAP.as_millis();
         for said in [
             format!("{least_width} by {least_height} pixels"),
             format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
-            format!("to {} MiB encoded", crate::copy::MAX_CLIPBOARD >> 20),
-            format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
-            format!("at most {} MiB", crate::protocol::MAX_FRAME >> 20),
-            format!("past {} MiB", crate::pane::FRAME_LIMIT >> 20),
+            format!("to {} MiB encoded", whole(crate::copy::MAX_CLIPBOARD, 20)),
+            format!("up to {} KiB encoded", whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)),
+            format!("at most {} MiB", whole(crate::protocol::MAX_FRAME, 20)),
+            format!("past {} MiB", whole(crate::pane::FRAME_LIMIT, 20)),
+            format!("at most once every {bell_gap} ms"),
         ] {
             assert!(readme.contains(&said), "README: {said}");
         }
+        // Said in words: "after one second", "about a second after".
+        let second = std::time::Duration::from_secs(1);
+        assert_eq!(crate::pane::FRAME_TIMEOUT, second);
+        assert!(readme.contains("shown anyway after one second"));
+        assert_eq!(crate::server::SAVE_EVERY, second);
+        assert!(readme.contains("about a second after what output changes"));
         let longest = format!("at most {} characters", grouped(fuxth::LONGEST));
         assert!(AGENTS.contains(&longest), "agents.md: {longest}");
         let protocol = crate::protocol::PROTOCOL;

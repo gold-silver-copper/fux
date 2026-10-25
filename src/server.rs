@@ -579,7 +579,7 @@ pub struct Server {
 }
 
 /// How long after a change the layout is saved at the latest.
-const SAVE_EVERY: Duration = Duration::from_secs(1);
+pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(1);
 
 /// The layout a server saves as it changes, for the next server on its
 /// socket to bring back after a crash or a reboot: in
