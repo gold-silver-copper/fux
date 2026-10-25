@@ -569,16 +569,17 @@ pub fn move_beside(
 /// `direction`: its border on that side, the pane growing, then while the
 /// panes beyond are at their least, the borders beyond it, nearest first.
 /// With no border on that side, its border on the other moves, the pane
-/// shrinking, to its least. Whether a border moved.
+/// shrinking, to its least. How far it moved; `None` if the pane has no
+/// border along the axis, is not in the tree, or the area hides a pane.
 pub fn resize(
     root: &mut Tree,
     area: Rect,
     pane: PaneId,
     direction: Direction,
     amount: u16,
-) -> bool {
+) -> Option<u16> {
     if !shows_all(root, area) {
-        return false;
+        return None;
     }
     let (axis, toward) = (Axis::of(direction), Side::of(direction));
     let mut move_side = |side| {
@@ -591,11 +592,7 @@ pub fn resize(
         };
         root.shift(area, shift, &mut left)
     };
-    let moved = match move_side(toward) {
-        Some(moved) => moved,
-        None => move_side(toward.other()).unwrap_or(0),
-    };
-    moved > 0
+    move_side(toward).or_else(|| move_side(toward.other()))
 }
 
 /// `root` with `pane` resized to `len` cells along `axis`, as placed in
@@ -647,9 +644,10 @@ impl Tree {
         };
         let [first, _, second] = split.parts(area);
         let in_first = split.first.contains(shift.pane);
-        let deeper = match in_first {
-            true => split.first.shift(first, shift, left),
-            false => split.second.shift(second, shift, left),
+        let deeper = match (in_first, split.second.contains(shift.pane)) {
+            (true, _) => split.first.shift(first, shift, left),
+            (false, true) => split.second.shift(second, shift, left),
+            (false, false) => return None,
         };
         // This split's border is on that side of the child holding it.
         let here = split.axis == shift.axis && in_first == (shift.side == Side::After);
@@ -924,20 +922,24 @@ mod tests {
     fn resizing_moves_the_nearest_border_and_respects_minimums() {
         let mut root = tree();
         let a = area(81, 24);
-        assert!(resize(&mut root, a, p(0), Direction::Right, 10));
+        assert_eq!(resize(&mut root, a, p(0), Direction::Right, 10), Some(10));
         assert_eq!(widths(&root, a, &[0, 1]), [50, 30].map(Some));
         // The shares are the cells each then has.
         let share = |n| NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN);
         let shares = Shares::new(share(5), share(3));
         assert!(matches!(&root, Tree::Split(split) if split.shares() == shares));
         // Left from the leftmost pane shrinks it, moving its right border.
-        assert!(resize(&mut root, a, p(0), Direction::Left, 5));
+        assert!(resize(&mut root, a, p(0), Direction::Left, 5) > Some(0));
         assert_eq!(widths(&root, a, &[0]), [Some(45)]);
         // Never below the minimum.
-        assert!(resize(&mut root, a, p(1), Direction::Left, 200));
+        assert!(resize(&mut root, a, p(1), Direction::Left, 200) > Some(0));
         assert_eq!(widths(&root, a, &[0]), [Some(MIN)]);
         // No split along the vertical axis: nothing to move.
-        assert!(!resize(&mut root, a, p(0), Direction::Up, 1));
+        assert_eq!(resize(&mut root, a, p(0), Direction::Up, 1), None);
+        // A pane not in the tree moves nothing.
+        let held = root.clone();
+        assert_eq!(resize(&mut root, a, p(9), Direction::Left, 1), None);
+        assert_eq!(root, held);
     }
 
     /// The border that moves is the nearest on the side asked for, however
@@ -950,11 +952,11 @@ mod tests {
         let a = area(81, 24);
         let all = [0, 1, 2, 3];
         assert_eq!(widths(&root, a, &all), [40, 40, 20, 19].map(Some));
-        assert!(resize(&mut root, a, p(2), Direction::Left, 5));
+        assert!(resize(&mut root, a, p(2), Direction::Left, 5) > Some(0));
         assert_eq!(widths(&root, a, &all), [35, 45, 25, 19].map(Some));
         // Right from 3, at the right edge: no border there, so 3 shrinks
         // from its left.
-        assert!(resize(&mut root, a, p(3), Direction::Right, 2));
+        assert!(resize(&mut root, a, p(3), Direction::Right, 2) > Some(0));
         assert_eq!(widths(&root, a, &all), [35, 45, 27, 17].map(Some));
     }
 
@@ -977,12 +979,12 @@ mod tests {
             widths(&nested, a, &[0, 1, 2, 3]),
             [50, 49, 24, 24].map(Some)
         );
-        assert!(resize(&mut nested, a, p(3), Direction::Left, 30));
+        assert!(resize(&mut nested, a, p(3), Direction::Left, 30) > Some(0));
         assert_eq!(widths(&nested, a, &[0, 1, 2, 3]), [42, 57, 2, 54].map(Some));
         let mut pair = tree();
-        assert!(resize(&mut pair, a, p(1), Direction::Left, 100));
+        assert!(resize(&mut pair, a, p(1), Direction::Left, 100) > Some(0));
         let held = pair.clone();
-        assert!(!resize(&mut pair, a, p(1), Direction::Left, 1));
+        assert_eq!(resize(&mut pair, a, p(1), Direction::Left, 1), Some(0));
         assert_eq!(pair, held);
     }
 

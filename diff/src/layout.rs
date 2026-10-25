@@ -140,8 +140,10 @@ macro_rules! stack {
                                 .unwrap_or(Direction::Left);
                             match (&mut self.root, pane(p)) {
                                 (Some(root), Some(p)) => {
-                                    layout::resize(root, self.area, p, direction, amount)
-                                        .to_string()
+                                    format!(
+                                        "{:?}",
+                                        layout::resize(root, self.area, p, direction, amount)
+                                    )
                                 }
                                 _ => String::new(),
                             }

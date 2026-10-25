@@ -122,7 +122,7 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     let stuck = server.fux(&["str", "%1", "pane", "str", "up", "1", "move-border"])?;
     assert_eq!(stuck.status, 1);
     assert!(
-        stuck.stderr.contains("no border to move up"),
+        stuck.stderr.contains("it has no border there"),
         "{}",
         stuck.stderr
     );

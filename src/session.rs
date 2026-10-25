@@ -2530,15 +2530,16 @@ impl Session {
         match by {
             PaneResize::Border(direction, amount) => {
                 let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
-                if self.parts.reshape(pane, resize) != Some(true) {
-                    let message = format!(
-                        "{pane} has no border to move {}, or the panes it would move are \
-                         at their least",
-                        direction.name()
-                    );
-                    return Err(fail(Code::NothingThere, message));
-                }
-                Ok(Reply::default())
+                let way = direction.name();
+                let why = match self.parts.reshape(pane, resize) {
+                    Some(Some(1..)) => return Ok(Reply::default()),
+                    Some(Some(0)) => "the panes it would move are at their least",
+                    Some(None) | None => "it has no border there",
+                };
+                Err(fail(
+                    Code::NothingThere,
+                    format!("{pane} cannot move {way}: {why}"),
+                ))
             }
             PaneResize::To(axis, extent) => {
                 (self.resize_pane_to(pane, area, axis, extent)).map(Reply::from)
