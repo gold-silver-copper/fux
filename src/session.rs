@@ -2030,7 +2030,7 @@ impl Session {
         let outcome = self
             .execute(command, origin)
             .unwrap_or_else(|error| failure(error, origin));
-        if !command.reaches().shows_nothing_new() {
+        if !command.shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
         }

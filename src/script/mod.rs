@@ -1016,24 +1016,18 @@ struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        use crate::command::Reaches as R;
-        match asked.request.reaches() {
-            R::Settings { option, value } => match &mut self.0 {
-                Some(server) => server.ask(asked, out),
-                None => match crate::config::Config::default().set(option, value) {
-                    Ok(()) => Ok(Reply::default()),
-                    Err(why) => Err(Failed::new(Code::Config, why)),
-                },
-            },
-            R::Reads
-            | R::Shapes
-            | R::Streams
-            | R::Server
-            | R::Buffers { .. }
-            | R::Client { .. } => Err(Failed::new(
+        let Request::Do(crate::command::Command::Set { option, value }) = &asked.request else {
+            return Err(Failed::new(
                 Code::NotConfig,
                 "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
-            )),
+            ));
+        };
+        match &mut self.0 {
+            Some(server) => server.ask(asked, out),
+            None => match crate::config::Config::default().set(option, value) {
+                Ok(()) => Ok(Reply::default()),
+                Err(why) => Err(Failed::new(Code::Config, why)),
+            },
         }
     }
 }

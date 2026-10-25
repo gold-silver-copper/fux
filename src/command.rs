@@ -726,45 +726,10 @@ impl Env {
     }
 }
 
-/// What a command reaches, which decides where it may run (a saved
-/// session, a config) and whether a client shows anything new after it:
-/// one answer per command, so a new command must give one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reaches<'a> {
-    /// Panes, tabs and workspaces, read; or a pane's program, handed input
-    /// or a signal whose effect, if any, comes back as its output.
-    Reads,
-    /// Panes, tabs and workspaces, made, shaped, named or ended; or what
-    /// they hold changed for those who see them: a notification, a
-    /// pane's history cleared.
-    Shapes,
-    /// Their events, streamed until the reader goes: never ending of itself.
-    Streams,
-    /// The server itself: stopping it.
-    Server,
-    /// A setting, to `value`.
-    Settings { option: &'a str, value: &'a str },
-    /// The paste buffers; `reads` if it only reads them.
-    Buffers { reads: bool },
-    /// A client's screen; `reads` if it only reads it or types at it (the
-    /// keys take effect as the client's own).
-    Client { reads: bool },
-}
-
-impl Reaches<'_> {
-    /// Whether every client's screen is as it was after it.
-    pub fn shows_nothing_new(self) -> bool {
-        match self {
-            Self::Reads | Self::Streams => true,
-            Self::Shapes | Self::Server | Self::Settings { .. } => false,
-            Self::Buffers { reads } | Self::Client { reads } => reads,
-        }
-    }
-}
-
 impl Command {
-    /// What it reaches.
-    pub fn reaches(&self) -> Reaches<'_> {
+    /// Whether every client's screen is as it was after it: one answer per
+    /// command, so a new command must give one.
+    pub fn shows_nothing_new(&self) -> bool {
         use Command as C;
         match self {
             C::Ls { .. }
@@ -774,7 +739,9 @@ impl Command {
             | C::DumpLayout { .. }
             | C::SendKeys { .. }
             | C::SendMouse { .. }
-            | C::Signal { .. } => Reaches::Reads,
+            | C::Signal { .. }
+            | C::ListBuffers
+            | C::ShowBuffer { .. } => true,
             C::NewWorkspace { .. }
             | C::NewTab { .. }
             | C::Split { .. }
@@ -788,21 +755,18 @@ impl Command {
             | C::SwapPane { .. }
             | C::ResizePane { .. }
             | C::ClearHistory { .. }
-            | C::Reorder { .. } => Reaches::Shapes,
-            C::KillServer { .. } => Reaches::Server,
-            C::Set { option, value } => Reaches::Settings { option, value },
-            C::ListBuffers | C::ShowBuffer { .. } => Reaches::Buffers { reads: true },
-            C::PasteBuffer { .. } => Reaches::Buffers { reads: false },
-            C::Client { action, .. } => Reaches::Client {
-                reads: match action {
-                    ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
-                    ClientAction::Detach
-                    | ClientAction::Choices(_)
-                    | ClientAction::Zoom
-                    | ClientAction::SelectPane(_)
-                    | ClientAction::SelectTab(_)
-                    | ClientAction::SelectWorkspace(_) => false,
-                },
+            | C::Reorder { .. }
+            | C::KillServer { .. }
+            | C::Set { .. }
+            | C::PasteBuffer { .. } => false,
+            C::Client { action, .. } => match action {
+                ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
+                ClientAction::Detach
+                | ClientAction::Choices(_)
+                | ClientAction::Zoom
+                | ClientAction::SelectPane(_)
+                | ClientAction::SelectTab(_)
+                | ClientAction::SelectWorkspace(_) => false,
             },
         }
     }
@@ -828,16 +792,5 @@ wire! {
 impl From<Command> for Request {
     fn from(command: Command) -> Request {
         Request::Do(command)
-    }
-}
-
-impl Request {
-    /// What it reaches.
-    pub fn reaches(&self) -> Reaches<'_> {
-        match self {
-            Self::Do(command) => command.reaches(),
-            Self::Wait(..) => Reaches::Reads,
-            Self::Events(..) => Reaches::Streams,
-        }
     }
 }
