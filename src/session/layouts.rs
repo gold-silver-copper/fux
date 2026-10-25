@@ -8,7 +8,7 @@ use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Split, Tree};
 use crate::pane::{self, Launch, Runs};
-use crate::workspace::{Tab, Workspace};
+use crate::workspace::{Fit, Tab, Workspace};
 
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
@@ -67,8 +67,8 @@ impl Session {
             line.extend(string(tab.name()).chain(["name".to_owned()]));
         }
         // Its size, which a server with no client attached needs to make
-        // it: one that fits clients is made again fixed at the size it has,
-        // the only one it has.
+        // it: one that fits clients is made at the size it has, then fits
+        // clients again (`resize-auto`).
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
@@ -92,6 +92,9 @@ impl Session {
         }
         if tab.given() && makes {
             push(out, &[&named, "tab", "str", tab.name(), "rename"]);
+        }
+        if matches!(tab.fit(), Fit::Clients(_)) {
+            push(out, &[&named, "tab", "resize-auto"]);
         }
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);

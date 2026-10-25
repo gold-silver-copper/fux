@@ -4786,6 +4786,21 @@ mod tests {
         Ok(())
     }
 
+    /// A dump makes a tab that fits clients' screens at the size it has,
+    /// and it fits them again; a tab given a size keeps it.
+    #[test]
+    fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
+        let dump = s.dump_layout(None, false);
+        let mut again = started(Config::default())?;
+        run(&mut again, &dump)?;
+        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
+        let fits: Vec<_> = tabs.map(|t| matches!(t.fit(), Fit::Clients(_))).collect();
+        assert!(fits.ends_with(&[true, false]), "{dump}");
+        Ok(())
+    }
+
     /// A kill from the command line names all it closed: a tab's
     /// workspace, when it was the last tab, as a pane's.
     #[test]

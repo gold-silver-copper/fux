@@ -372,7 +372,8 @@ to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
 holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
-needs: one that fitted clients' screens is made fixed at its size.
+needs; one that fits clients' screens fits them again after
+(`resize-auto`).
 
 A **server saves its session** the same way, with the ids it had, about a
 second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
