@@ -396,16 +396,8 @@ pub enum Begun {
 
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
-/// The size a pane starts at, until it is laid out on a client's screen.
-const DEFAULT_SIZE: (u16, u16) = (24, 80);
-/// A typical terminal's screen, which a tab no client shows is laid out on.
-const TYPICAL: Rect = Rect::screen(DEFAULT_SIZE.0, DEFAULT_SIZE.1);
 /// The most rows, and columns, a client's view is kept to.
 const MOST: u16 = 4096;
-
-pub(crate) fn default_size() -> Size {
-    pane::size(DEFAULT_SIZE.0, DEFAULT_SIZE.1)
-}
 
 pub struct Session {
     pub workspaces: Vec<Workspace>,
@@ -749,11 +741,12 @@ impl Session {
         }
     }
 
-    /// One workspace, holding one tab with one shell.
-    pub fn start(&mut self) -> Result<(), Error> {
+    /// One workspace, holding one tab with one shell, laid out on a
+    /// client's screen of `size`.
+    pub fn start(&mut self, size: Size) -> Result<(), Error> {
         let (cwd, starting) = (home(), Starting::default());
-        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, default_size());
-        self.create_workspace(Some(MAIN.into()), None, Fit::Clients, new)
+        let new = NewPane::new(Start::Shell(&[]), &cwd, &starting, size);
+        self.create_workspace(Some(MAIN.into()), None, Fit::Clients(size), new)
             .map(drop)
     }
 
@@ -1222,17 +1215,13 @@ impl Session {
         Err(fail(Code::NotRunning, format!("{id}: {why}")))
     }
 
-    /// The size a pane starts at in a new tab laid out on `fit`.
-    fn start_size(&self, fit: Fit, here: Here) -> Size {
-        let area = self.tab_area(fit, here);
-        pane::size(area.h(), area.w())
-    }
-
     /// The size a pane split from `target` along `axis` starts at: its
     /// place in the layout once split.
     fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
-        let area = self.reference_area(tab, here);
+        let area = self
+            .reference_area(tab, here)
+            .ok_or(Error::NoPane(target))?;
         let mut ids = self.ids.clone();
         let new = ids.pane()?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
@@ -1241,16 +1230,14 @@ impl Session {
         // too small to show another pane.
         let placed = layout::place(&root, area);
         let shows_all = root.panes().iter().all(|p| placed.rect(*p).is_some());
-        let rect = placed
-            .rect(new)
-            .filter(|_| shows_all)
+        let rect = placed.rect(new).filter(|_| shows_all);
+        rect.and_then(|r| Size::new(r.h(), r.w()).ok())
             .ok_or_else(|| {
                 let message = format!(
                     "{target}'s tab has no room for another pane; make it bigger first (`TAB COLS ROWS resize`)"
                 );
                 fail(Code::Size, message)
-            })?;
-        Ok(pane::size(rect.h(), rect.w()))
+            })
     }
 
     /// Resizes `pane`, placed in `area`, to `cols` and `rows`, either or
@@ -1474,9 +1461,17 @@ impl Session {
         let ws = match workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
-                // A server whose session did not come back starts afresh.
+                // A server with nothing in it (just started, or its session
+                // did not come back) starts its first shell on this client's
+                // screen.
                 if self.workspaces.is_empty() {
-                    self.start()?;
+                    let below = rows.clamp(1, MOST).saturating_sub(1);
+                    let size = Size::new(below, cols.clamp(1, MOST)).map_err(|_| {
+                        let why =
+                            format!("a screen of {rows} rows has no room for a pane below its bar");
+                        fail(Code::Size, why)
+                    })?;
+                    self.start(size)?;
                 }
                 self.workspaces
                     .first()
@@ -1579,23 +1574,46 @@ impl Session {
     }
 
     /// The area to lay out a tab in for a command: a client's showing it,
-    /// else what its fit says (`tab_area`).
-    fn reference_area(&self, tab: TabId, here: Here) -> Rect {
+    /// else what its fit says.
+    fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
         let own = here.client().and_then(|c| self.views.get(&c));
         let shows = |v: &&View| self.shows(v.id, tab);
         match (own.filter(shows)).or_else(|| self.views.values().find(shows)) {
-            Some(view) => Self::pane_area(view),
-            None => self.tab_area(self.tab(tab).map_or(Fit::Clients, Tab::fit), here),
+            Some(view) => Some(Self::pane_area(view)),
+            None => self.tab(tab).map(|t| t.fit().area()),
         }
     }
 
-    /// The area a tab no client shows is laid out in on `fit`: a fixed
-    /// size's, else the commanding client's screen, else any client's, else
-    /// a typical terminal's.
-    fn tab_area(&self, fit: Fit, here: Here) -> Rect {
+    /// What a new tab is laid out on while no client shows it: `size`, if
+    /// given; else the screen of the commanding client, or of any client
+    /// attached, which it then fits. With no client, and no size given, it
+    /// has no size, which is not made up: it is refused.
+    fn new_fit(&self, size: Option<Size>, here: Here) -> Result<Fit, Error> {
+        if let Some(size) = size {
+            return Ok(Fit::Fixed(size));
+        }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let client = own.or_else(|| self.views.values().next());
-        fit.area(client.map_or(TYPICAL, Self::pane_area))
+        let client = own.into_iter().chain(self.views.values()).next();
+        let screen = client.map(|view| Self::screen_size(view).ok_or(view.id));
+        match screen {
+            Some(Ok(size)) => Ok(Fit::Clients(size)),
+            Some(Err(client)) => Err(fail(
+                Code::Size,
+                format!(
+                    "{client}'s screen has no room for a pane below its bar; give a size (`COLS ROWS size`)"
+                ),
+            )),
+            None => Err(fail(
+                Code::Size,
+                "no client is attached to lay it out on, and no size was given: give one (`COLS ROWS size`)",
+            )),
+        }
+    }
+
+    /// The size a client's screen gives panes, below its bar, if any.
+    fn screen_size(view: &View) -> Option<Size> {
+        let area = Self::pane_area(view);
+        Size::new(area.h(), area.w()).ok()
     }
 
     // -------------------------------------------------------------- repair
@@ -1689,27 +1707,40 @@ impl Session {
         Some(kind)
     }
 
-    /// A PTY is the smallest rectangle any client shows it in. A tab no
-    /// client shows whose layout changed is laid out on what its fit says,
-    /// as commands resizing it are; otherwise its panes keep their size, so
-    /// leaving a tab resizes nothing.
+    /// A PTY is the smallest rectangle any client shows it in; one with
+    /// no cells shows it nowhere. A tab no client shows whose layout changed
+    /// is laid out on what its fit says, as commands resizing it are;
+    /// otherwise its panes keep their size, so leaving a tab resizes
+    /// nothing. A tab that fits clients takes the smallest screen showing
+    /// it as its size.
     fn size_panes(&mut self) {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
+        // Each shown tab's smallest screen.
+        let mut screens = BTreeMap::new();
         // A client that only watches sizes nothing: it shows the panes as
         // they are.
         for view in self.views.values().filter(|v| !v.read_only) {
             self.placement_into(view, &mut placed);
-            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
+            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
+            sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
+            if let (Some(tab), Some(size)) = (self.shown_tab(view.id), Self::screen_size(view)) {
+                let (rows, cols) = size.nonzero();
+                let least = screens.entry(tab.id).or_insert((rows, cols));
+                *least = (least.0.min(rows), least.1.min(cols));
+            }
         }
-        // With no client, a tab that fits clients is laid out as a typical
-        // terminal would show it (`tab_area`).
-        let client = self.views.values().next().map_or(TYPICAL, Self::pane_area);
-        let changed = (self.workspaces.iter_mut()).flat_map(|w| w.changed_unshown(client));
+        for tab in tabs_mut(&mut self.workspaces) {
+            if let Some(&size) = screens.get(&tab.id) {
+                tab.shown_on(size.into());
+            }
+        }
+        let changed = (self.workspaces.iter_mut()).flat_map(Workspace::changed_unshown);
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
-            sizes.extend(placed.panes.iter().map(|(p, r)| (*p, (r.h(), r.w()))));
+            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
+            sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
@@ -1722,8 +1753,8 @@ impl Session {
             let (rows, cols) = shown.iter().fold(first, |(rows, cols), (_, (h, w))| {
                 (rows.min(*h), cols.min(*w))
             });
-            let size = pane::size(rows, cols);
-            if let Some(pane) = self.panes.get_mut(&id)
+            if let Ok(size) = Size::new(rows, cols)
+                && let Some(pane) = self.panes.get_mut(&id)
                 && pane.size() != size
             {
                 pane.resize(size);
@@ -2203,9 +2234,9 @@ impl Session {
                 log,
                 ids,
             } => {
-                let (dir, fit, _) = self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 // Its place is out of every client's way: no client follows.
-                let size = self.start_size(fit, Here::NOWHERE);
+                let (dir, fit, size) =
+                    self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
@@ -2260,7 +2291,7 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::Resize(Resized::Tabs(target, size)) => {
-                self.resize_tabs(target, size, here)?;
+                self.resize_tabs(target, size)?;
                 Ok(Reply::default())
             }
             &Command::Resize(Resized::Client(client, size)) => {
@@ -2410,8 +2441,8 @@ impl Session {
     ) -> Result<(PathBuf, Fit, Size), Error> {
         self.want(ids, starting.restoring)?;
         let cwd = self.start_dir(here, dir, None)?;
-        let fit = size.map_or(Fit::Clients, Fit::Fixed);
-        Ok((cwd, fit, self.start_size(fit, here)))
+        let fit = self.new_fit(size, here)?;
+        Ok((cwd, fit, fit.size()))
     }
 
     /// `ls`: everything there is, or `target` and what is in it, as text
@@ -2484,17 +2515,16 @@ impl Session {
     /// `resize` of `target`'s tabs: laid out on `size`, or with none on
     /// their clients' screens. A size no pane could have, or one that would
     /// hide one of a tab's panes, as a split that would is, is refused.
-    fn resize_tabs(&mut self, target: AnyRef, size: Option<Size>, here: Here) -> Result<(), Error> {
+    fn resize_tabs(&mut self, target: AnyRef, size: Option<Size>) -> Result<(), Error> {
         if let Some(size) = size
             && !fux_vt::fits(size)
         {
             let message = format!("{}x{} is too big for a pane", size.cols(), size.rows());
             return Err(fail(Code::Size, message));
         }
-        let fit = size.map_or(Fit::Clients, Fit::Fixed);
         let tabs = self.tabs_of(self.there(target)?);
-        if size.is_some() {
-            let area = self.tab_area(fit, here);
+        if let Some(size) = size {
+            let area = Fit::Fixed(size).area();
             for tab in &tabs {
                 let Some(root) = self.root(*tab) else {
                     continue;
@@ -2509,8 +2539,10 @@ impl Session {
                 }
             }
         }
+        // With no size, back to fitting clients, at the size it has until
+        // one shows it.
         for tab in tabs_mut(&mut self.workspaces).filter(|t| tabs.contains(&t.id)) {
-            tab.set_fit(fit);
+            tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
         }
         Ok(())
     }
@@ -2703,7 +2735,7 @@ impl Session {
     /// size, its tab laid out as for the command.
     fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
-        let area = self.reference_area(tab, here);
+        let area = self.reference_area(tab, here).ok_or(Error::NoPane(pane))?;
         match by {
             PaneResize::Border(direction, amount) => {
                 let tab = tab_of(&mut self.workspaces, pane)?;
@@ -2814,7 +2846,7 @@ impl Session {
     /// the command.
     fn neighbor(&self, from: PaneId, direction: Direction, here: Here) -> Result<PaneId, Error> {
         let found = self.locate(from).and_then(|(_, tab)| {
-            let area = self.reference_area(tab, here);
+            let area = self.reference_area(tab, here)?;
             layout::neighbor(&layout::place(self.root(tab)?, area), from, direction)
         });
         found.ok_or(Error::NoNeighbor { from, direction })
@@ -2843,6 +2875,9 @@ impl Session {
 
     fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
         let pane = self.pane(target)?.id;
+        // A tab made for it fits clients at its tab's size until one shows it.
+        let (_, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
@@ -2864,7 +2899,7 @@ impl Session {
                 let ws = ws.ok_or(Error::NoPane(pane))?;
                 let mut ids = self.ids.clone();
                 let id = ids.tab()?;
-                ws.add_tab(id, None, None, Fit::Clients);
+                ws.add_tab(id, None, None, fit);
                 self.ids = ids;
                 (ws.id, id)
             }
@@ -2876,7 +2911,7 @@ impl Session {
                 self.ids = ids;
                 let name = self.workspace_name(id);
                 let clients = self.views.keys().copied();
-                let first = Tab::new(tab, MAIN.into(), None, Fit::Clients, clients);
+                let first = Tab::new(tab, MAIN.into(), None, fit, clients);
                 self.workspaces.push(Workspace::new(id, name, first));
                 (id, tab)
             }
@@ -3395,7 +3430,7 @@ pub(crate) mod testing {
     use crate::id::ClientId;
 
     /// A session of `config`, but for its shell, `/bin/sh` (each pane is
-    /// named after it), started.
+    /// named after it), started at 80 by 24.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
             shell: crate::config::Shell::parse("/bin/sh").map_err(|e| e.1)?,
@@ -3403,7 +3438,8 @@ pub(crate) mod testing {
         };
         let run = crate::command::Run::now().ok_or("no clock")?;
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
-        session.start().map_err(|e| e.to_string())?;
+        let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
+        session.start(size).map_err(|e| e.to_string())?;
         session.test_keymap = crate::script::default_keys().map_err(|e| e.to_string())?;
         Ok(session)
     }
@@ -3744,6 +3780,11 @@ fn bytes(p: &Pane, inputs: &[Input]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    /// `rows` by `cols`.
+    fn sized(rows: u16, cols: u16) -> Result<fux_vt::Size, String> {
+        fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
+    }
+
     use super::testing::{attached, output, requests, run, started};
     use super::*;
 
@@ -3758,7 +3799,7 @@ mod tests {
         let log = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
         let line = |opts: &str| {
             let log = log.display();
-            format!("opts {opts} str '{log}' log-to str /bin/cat program run")
+            format!("opts 80 24 size {opts} str '{log}' log-to str /bin/cat program run")
         };
         run(&mut s, &line("str a name"))?;
         // The one that starts makes it the user's alone.
@@ -3794,12 +3835,12 @@ mod tests {
         let panes = s.panes.len();
         let ran = run(
             &mut s,
-            "opts str /proc/self/comm log-to str /bin/cat program run",
+            "opts 80 24 size str /proc/self/comm log-to str /bin/cat program run",
         );
         assert!(ran.is_err_and(|e| e.contains("log")), "refused");
         assert_eq!(s.panes.len(), panes);
         // Refused before it started: its pane's id was never taken.
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         assert!(
             s.panes.contains_key(&PaneId::of(2)),
             "the next run's pane is %2"
@@ -3816,9 +3857,12 @@ mod tests {
             return Ok(());
         }
         let mut s = started(Config::default())?;
-        let ran = run(&mut s, "opts str /dev/null log-to str /bin/cat program run");
+        let ran = run(
+            &mut s,
+            "opts 80 24 size str /dev/null log-to str /bin/cat program run",
+        );
         assert!(ran.is_err_and(|e| e.contains("log")), "refused");
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         assert!(
             s.panes.contains_key(&PaneId::of(2)),
             "the next run's pane is %2"
@@ -3830,7 +3874,7 @@ mod tests {
     #[test]
     fn a_paste_into_an_exited_pane_is_refused() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
         s.buffers.push_front("x".into());
         let pasted = run(&mut s, "%2 0 paste-buffer");
@@ -3843,11 +3887,11 @@ mod tests {
     #[test]
     fn a_pane_respawned_twice_in_its_grace_kills_both() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
         for _ in 0..2 {
-            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
             let pane = s.panes.get_mut(&PaneId::of(2)).ok_or("the pane")?;
             pane.process = Process::Reading(child);
             run(&mut s, "%2 kill-first respawn")?;
@@ -3885,11 +3929,11 @@ mod tests {
     #[test]
     fn a_program_exits_once_its_output_is_read() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "opts str /bin/true program run")?;
+        run(&mut s, "opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         // /bin/sh, which macOS has where it has no /bin/true.
         let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
         (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
         let exited = |s: &Session| {
             (s.panes.get(&id))
@@ -3940,7 +3984,7 @@ mod tests {
         run(&mut s, "opts str /bin/true program run")?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), pane::size(4, 20))?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
         (s.panes.get_mut(&id).ok_or("the pane")?).process = Process::Reading(child);
         let rows = s.panes.get(&id).map(|p| p.screen().size().rows());
         assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");
@@ -3982,7 +4026,7 @@ mod tests {
     #[test]
     fn a_frame_held_at_exit_is_on_the_last_screen() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "opts str /bin/true program run")?;
+        run(&mut s, "opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026hHELD");
         s.exited(id, Ended::Exited(0));
@@ -4002,7 +4046,7 @@ mod tests {
     #[test]
     fn a_frame_begun_after_the_exit_is_on_the_last_screen() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        run(&mut s, "opts str /bin/true program run")?;
+        run(&mut s, "opts 80 24 size str /bin/true program run")?;
         let id = PaneId::of(2);
         let mut out: Vec<u8> = std::iter::repeat_n(b"X\x1b[65535b", 2000)
             .flatten()
@@ -4117,7 +4161,7 @@ mod tests {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts str +1 workspace in new-tab")?;
         let size = |s: &Session, p| s.panes.get(&PaneId::of(p)).map(Pane::size);
-        assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         run(&mut s, "str %2 pane vertical split")?;
         let (top, bottom) = (size(&s, 2), size(&s, 3));
         let rows = top
@@ -4129,7 +4173,46 @@ mod tests {
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         run(&mut s, "str c1 client zoom")?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
-        assert_eq!(size(&s, 2), Some(crate::pane::size(10, 40)));
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        Ok(())
+    }
+
+    /// A pane is made only at a size known: with no client attached and no
+    /// size given, there is none, and the request is refused; the first
+    /// client to attach to an empty session starts its shell on its screen;
+    /// a tab that fits clients keeps the last screen's size once none does.
+    #[test]
+    fn a_pane_is_made_only_at_a_size_known() -> Result<(), String> {
+        let run_id = crate::command::Run::now().ok_or("no clock")?;
+        let mut s = Session::new(
+            Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+            run_id,
+        );
+        let refused = run(&mut s, "opts new-workspace").err().unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("no client"),
+            "{refused}"
+        );
+        assert!(s.panes.is_empty());
+        let size = |s: &Session, p| s.panes.get(&PaneId::of(p)).map(|p| p.size().into());
+        let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;
+        assert_eq!(size(&s, 1), Some((10, 40)));
+        run(&mut s, "str %1 pane vertical split")?;
+        s.detach(c);
+        run(&mut s, "%2 kill")?;
+        assert_eq!(
+            size(&s, 1),
+            Some((10, 40)),
+            "laid out again on the last screen"
+        );
+        let refused = run(&mut s, "opts str +1 workspace in new-tab")
+            .err()
+            .unwrap_or_default();
+        assert!(refused.starts_with("size: "), "{refused}");
+        run(&mut s, "opts str +1 workspace in 30 8 size new-tab")?;
+        assert_eq!(size(&s, 3), Some((8, 30)));
         Ok(())
     }
 
@@ -4336,14 +4419,14 @@ mod tests {
     fn workspace_names_stay_unique_and_failures_use_no_ids()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut s = started(Config::default())?;
-        assert!(run(&mut s, "opts str main name new-workspace").is_err());
+        assert!(run(&mut s, "opts 80 24 size str main name new-workspace").is_err());
         assert_eq!(
-            output(&mut s, "opts str workspace-3 name new-workspace")?,
+            output(&mut s, "opts 80 24 size str workspace-3 name new-workspace")?,
             format!("%2:0.0.0.0.0:{}\n", s.run)
         );
         // +3 would be workspace-3, which is taken.
         let third = format!("%3:0.0.0.0.0:{}\n", s.run);
-        assert_eq!(output(&mut s, "opts new-workspace")?, third);
+        assert_eq!(output(&mut s, "opts 80 24 size new-workspace")?, third);
         let names: Vec<&str> = s.workspaces.iter().map(|w| w.name.as_str()).collect();
         assert_eq!(names, ["main", "workspace-3", "workspace-4"]);
         // A move to a new workspace with no tab ID left takes no workspace
@@ -4716,7 +4799,7 @@ mod tests {
     #[test]
     fn a_dump_names_only_the_tabs_given_a_name() -> Result<(), String> {
         let mut s = started(Config::default())?;
-        let tab = "opts str +1 workspace in new-tab drop";
+        let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
         let dump = s.dump_layout(None, true);
@@ -4734,12 +4817,12 @@ mod tests {
         let kill = |s: &mut Session, target| {
             (s.execute(&Command::Kill { target }, &cli)).map(|reply| reply.text)
         };
-        run(&mut s, "opts str two name new-workspace drop")?;
+        run(&mut s, "opts 80 24 size str two name new-workspace drop")?;
         assert_eq!(
             kill(&mut s, AnyRef::Tab("@2".parse()?))?,
             "closed @2 %2 +2\n"
         );
-        run(&mut s, "opts str three name new-workspace drop")?;
+        run(&mut s, "opts 80 24 size str three name new-workspace drop")?;
         assert_eq!(
             kill(&mut s, AnyRef::Pane(PaneId::of(3)))?,
             "closed %3 @3 +3\n"

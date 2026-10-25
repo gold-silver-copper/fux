@@ -201,6 +201,9 @@ fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     let out = std::process::Command::new(FUX)
         .args([
             "opts",
+            "80",
+            "24",
+            "size",
             "str",
             "sh",
             "program",

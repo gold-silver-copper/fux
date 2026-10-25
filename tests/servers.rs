@@ -91,7 +91,9 @@ fn servers_are_named_and_kills_are_guarded() -> Outcome {
     );
     // From one of its own panes, kill-server is refused; force-kill-server
     // is not.
-    let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+    let sh = server.ok(&[
+        "opts", "80", "24", "size", "str", "sh", "name", "str", "sh", "program", "run",
+    ])?;
     let sh = first_word(&sh);
     let line = format!("'{FUX}' kill-server; echo status=$?");
     let sent = server.ok(&[
@@ -195,6 +197,9 @@ fn events_tell_what_happens() -> Outcome {
     next(r#""event":"ready""#)?;
     let pane = server.ok(&[
         "opts",
+        "80",
+        "24",
+        "size",
         "str",
         "sh",
         "program",
@@ -237,7 +242,12 @@ fn keys_to_a_tab_reach_each_pane() -> Outcome {
     let bash = [
         "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg",
     ];
-    let a = server.ok(&[&["opts", "str", "a", "name"][..], &bash, &["run"]].concat())?;
+    let a = server.ok(&[
+        &["opts", "80", "24", "size", "str", "a", "name"][..],
+        &bash,
+        &["run"],
+    ]
+    .concat())?;
     let a = first_word(&a);
     let b = server.ok(&[&["str", a, "pane", "horizontal"][..], &bash, &["split"]].concat())?;
     let b = first_word(&b);
@@ -274,6 +284,9 @@ fn a_grant_reaches_one_workspace() -> Outcome {
     let through = |args: &[&str]| server.fux_env(args, &[("FUX_SOCKET", &socket)]);
     let job = through(&[
         "opts",
+        "80",
+        "24",
+        "size",
         "str",
         "job",
         "name",
@@ -295,7 +308,7 @@ fn a_grant_reaches_one_workspace() -> Outcome {
         vec!["str", "%1", "pane", "screen"],
         vec!["force-kill-server"],
         vec!["str", "bell", "str", "off", "set"],
-        vec!["opts", "new-workspace"],
+        vec!["opts", "80", "24", "size", "new-workspace"],
     ] {
         let out = through(&refused)?;
         assert_eq!(out.status, 1, "{refused:?} went through");
@@ -541,7 +554,9 @@ fn a_crashed_server_comes_back() -> Outcome {
         assert!(said, "{}", refused.stderr);
     }
     // Its name is taken by what came back, which the refusal says.
-    let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "command", "run"])?;
+    let taken = server.fux(&[
+        "opts", "80", "24", "size", "str", "app", "name", "str", "cat", "command", "run",
+    ])?;
     assert!(
         taken.stderr.starts_with("fux: name_taken: ") && taken.stderr.contains("brought back"),
         "{}",
@@ -567,7 +582,7 @@ fn a_crashed_server_comes_back() -> Outcome {
 fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     let server = Server::start("")?;
     let run = [
-        "opts", "str", "late", "name", "str", "sleep 60", "command", "run",
+        "opts", "80", "24", "size", "str", "late", "name", "str", "sleep 60", "command", "run",
     ];
     let late = server.ok(&run)?;
     let late = first_word(&late);
@@ -599,7 +614,16 @@ fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
 #[test]
 fn a_dump_makes_its_workspace_again() -> Outcome {
     let server = Server::start("")?;
-    let pane = server.ok(&["opts", "str", "build", "name", "new-workspace"])?;
+    let pane = server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "build",
+        "name",
+        "new-workspace",
+    ])?;
     let worker = server.ok(&[
         "str",
         first_word(&pane),
@@ -644,7 +668,8 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
     server.ok(&[
-        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "run",
+        "opts", "80", "24", "size", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60",
+        "command", "run",
     ])?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
@@ -665,7 +690,8 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.ok(&[
-        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "run",
+        "opts", "80", "24", "size", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60",
+        "command", "run",
     ])?;
     let dump = source.ok(&["dump"])?;
     let server = Server::start("")?;
@@ -687,7 +713,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "opts", "str", "moved", "in", "str", "sleep 60", "command", "run",
+        "opts", "80", "24", "size", "str", "moved", "in", "str", "sleep 60", "command", "run",
     ])?;
     server.ok(&[
         "str",
@@ -726,6 +752,9 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
     assert!(ls.contains("+1 main"), "{ls}");
     let answer = server.ok(&[
         "opts",
+        "80",
+        "24",
+        "size",
         "str",
         "sh",
         "program",
@@ -781,7 +810,7 @@ fn a_door_alone_is_a_server() -> Outcome {
     let through = named(
         &rt,
         &[
-            "str", &socket, "socket", "opts", "str", "true", "program", "run",
+            "str", &socket, "socket", "opts", "80", "24", "size", "str", "true", "program", "run",
         ],
         &[],
     )?;
@@ -850,7 +879,9 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
         let mut byte = [0u8; 1];
         b.read_exact(&mut byte).map_err(e)?;
         assert!(server.ok(&["ls"])?.contains("+1 main"));
-        let sh = server.ok(&["opts", "str", "sh", "name", "str", "sh", "program", "run"])?;
+        let sh = server.ok(&[
+            "opts", "80", "24", "size", "str", "sh", "name", "str", "sh", "program", "run",
+        ])?;
         let sh = first_word(&sh);
         let keys = server.ok(&[
             "str",
@@ -875,7 +906,8 @@ fn a_sandboxed_client_reaches_its_server_through_the_door() -> Outcome {
         assert!(status.starts_with("fux "), "{status}");
         let through = server.fux_env(
             &[
-                "opts", "str", "inside", "name", "str", "true", "program", "run",
+                "opts", "80", "24", "size", "str", "inside", "name", "str", "true", "program",
+                "run",
             ],
             &[("FUX_SOCKET", &grant)],
         )?;
@@ -950,6 +982,9 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
         assert!(servers.stdout.starts_with("t  "), "{}", servers.stdout);
         let answer = t(&[
             "opts",
+            "80",
+            "24",
+            "size",
             "str",
             "sh",
             "program",
@@ -977,7 +1012,7 @@ fn a_sandboxed_server_serves_through_its_door_alone() -> Outcome {
         let status = t(&["status"])?;
         assert!(status.stderr.contains("no fux server"), "{}", status.stderr);
         assert_eq!(t(&["start"])?.status, 0);
-        assert!(t(&["ls"])?.stdout.contains("main"));
+        assert!(t(&["ls"])?.stdout.contains("agent"));
         let killed = t(&["force-kill-server"])?;
         assert_eq!(killed.status, 0, "{}", killed.stderr);
         eventually("the server gone", || Ok(serving(&socket).is_none()))
@@ -1009,7 +1044,9 @@ fn a_sandboxed_request_ends_with_its_server() -> Outcome {
     let crash = "import os, signal, time\ntime.sleep(1)\nos.kill(os.getppid(), signal.SIGKILL)\ntime.sleep(30)\n";
     let checked = sandboxed(|| {
         let mut client = Command::new(FUX)
-            .args(["str", "t", "server", "opts", "str", "python3", "program"])
+            .args([
+                "str", "t", "server", "opts", "80", "24", "size", "str", "python3", "program",
+            ])
             .args([
                 "str", "-c", "arg", "str", crash, "arg", "run", "30", "timeout", "wait",
             ])

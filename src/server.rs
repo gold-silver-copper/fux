@@ -772,8 +772,6 @@ pub enum Error {
     Socket(crate::socket::Error),
     /// The listener or the signal pipes could not be set up.
     Setup(std::io::Error),
-    /// The first workspace could not be made.
-    Start(crate::session::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -781,7 +779,6 @@ impl std::fmt::Display for Error {
         match self {
             Error::Socket(error) => error.fmt(f),
             Error::Setup(error) => error.fmt(f),
-            Error::Start(error) => error.fmt(f),
         }
     }
 }
@@ -804,26 +801,22 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let mut session = Session::new(
+    let session = Session::new(
         crate::config::Config::default(),
         socket.path().to_owned(),
         true,
         run,
     );
+    // A server starts with nothing in it, or what a restore brings back:
+    // the first client to attach starts its first shell, on its screen, and
+    // a request makes a pane only at a size it knows.
     let mut saved = Saved::of(socket);
-    let restoring = match &mut saved {
+    match &mut saved {
         Some(saved) if fresh => {
             let _ = fs::remove_file(&saved.path);
-            false
         }
-        Some(saved) => {
-            saved.restore = saved.restore(socket);
-            saved.restore.is_some()
-        }
-        None => false,
-    };
-    if !restoring {
-        session.start().map_err(Error::Start)?;
+        Some(saved) => saved.restore = saved.restore(socket),
+        None => {}
     }
     let mut server = Server {
         session,
@@ -989,17 +982,10 @@ impl Server {
         ControlFlow::Continue(())
     }
 
-    /// A restore is over: the requests held for it are answered; and if it
-    /// brought nothing back, there is a first workspace, as a fresh server
-    /// has.
+    /// A restore is over: the requests held for it are answered.
     fn restored(&mut self) {
         if let Some(saved) = &mut self.saved {
             saved.restore = None;
-        }
-        if self.session.workspaces.is_empty()
-            && let Err(error) = self.session.start()
-        {
-            log!("starting afresh: {error}");
         }
         for index in 0..self.conns.len() {
             let Some(conn) = self.conns.get_mut(index) else {

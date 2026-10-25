@@ -185,6 +185,13 @@ impl Server {
         let socket = fux::socket::Choice::Path(server.socket.to_string_lossy().into_owned());
         let mut to = fux::script::Server::new(socket);
         server.keymap = fux::script::run_file(&config_path, Some(&mut to)).map_err(e)?;
+        // A server starts with nothing in it; the tests' first shell, %1 in
+        // workspace main, is 80 by 24, in the server's home.
+        let home = server.dir.to_string_lossy().into_owned();
+        let first = [
+            "opts", "str", "main", "name", "80", "24", "size", "str", &home, "cwd",
+        ];
+        server.ok(&[&first[..], &["new-workspace"]].concat())?;
         Ok((server, held))
     }
 

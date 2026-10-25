@@ -37,13 +37,15 @@ pub struct Tab {
     pub(crate) typist: Option<ClientId>,
 }
 
-/// What a tab no client shows is laid out on. A client that shows it lays
-/// it out on its own screen, whichever this is.
+/// What a tab no client shows is laid out on: a size every tab has, given
+/// or a client's, never made up. A client that shows it lays it out on its
+/// own screen, whichever this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
-    /// A client's screen, any attached client's: with none attached, a
-    /// typical terminal's (`session::TYPICAL`).
-    Clients,
+    /// The screens of the clients showing it: while none does, the last
+    /// it was laid out on (the smallest, of several), or the one it was
+    /// made on.
+    Clients(fux_vt::Size),
     /// A screen of this size, client or none: `size` and `resize`.
     Fixed(fux_vt::Size),
 }
@@ -55,13 +57,15 @@ pub(crate) fn numbered(place: usize) -> String {
 }
 
 impl Fit {
-    /// The area it lays a tab out in: a fixed size's, or `client`, a
-    /// client's screen.
-    pub fn area(self, client: Rect) -> Rect {
+    /// The size it lays a tab out in while no client shows it.
+    pub fn size(self) -> fux_vt::Size {
         match self {
-            Fit::Fixed(size) => Rect::screen(size.rows(), size.cols()),
-            Fit::Clients => client,
+            Fit::Clients(size) | Fit::Fixed(size) => size,
         }
+    }
+    /// That size, as an area.
+    pub fn area(self) -> Rect {
+        Rect::screen(self.size().rows(), self.size().cols())
     }
 }
 
@@ -160,10 +164,10 @@ impl Workspace {
     }
 
     /// The layouts of its tabs no client shows that changed since their
-    /// panes were sized, each with the area its fit lays it out in given
-    /// `client`, a client's screen, for sizing them. Those are then taken
-    /// as sized, as is a shown one, by its clients.
-    pub(crate) fn changed_unshown(&mut self, client: Rect) -> impl Iterator<Item = (&Tree, Rect)> {
+    /// panes were sized, each with the area its fit lays it out in, for
+    /// sizing them. Those are then taken as sized, as is a shown one, by
+    /// its clients.
+    pub(crate) fn changed_unshown(&mut self) -> impl Iterator<Item = (&Tree, Rect)> {
         let (viewers, shown_to) = (&self.viewers, &self.shown);
         self.tabs.iter_mut().filter_map(move |tab| {
             let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
@@ -171,7 +175,7 @@ impl Workspace {
             let tab = &*tab;
             (tab.root.as_ref())
                 .filter(|_| changed && !shown)
-                .map(|root| (root, tab.fit.area(client)))
+                .map(|root| (root, tab.fit.area()))
         })
     }
 
@@ -264,6 +268,15 @@ impl Tab {
     pub(crate) fn set_fit(&mut self, fit: Fit) {
         self.fit = fit;
         self.changed = true;
+    }
+
+    /// Clients showing it lay it out on `size`, the smallest of their
+    /// screens: laid out on clients' screens, that is its size while none
+    /// does.
+    pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
+        if let Fit::Clients(last) = &mut self.fit {
+            *last = size;
+        }
     }
 
     pub fn holds(&self, pane: PaneId) -> bool {

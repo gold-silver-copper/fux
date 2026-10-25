@@ -97,7 +97,7 @@ pub const WORDS: &[Word] = &[
     // Starting
     word("Starting", "opts", "-- opts", "empty options, for run, new-tab and new-workspace (the other words take them on the pane)"),
     word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
-    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it"),
+    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it; needed with no client attached, as fux makes no size up"),
     word("Starting", "cwd", "x dir -- x", "where it starts"),
     word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
@@ -158,7 +158,7 @@ pub const WORDS: &[Word] = &[
     word("Changing", "notify", "handle text --", "a notice on the clients showing it"),
     word("Changing", "notify-all", "text --", "a notice on every client"),
     word("Changing", "resize", "handle cols rows --", "what a tab (or a pane's) is laid out on while no client shows it"),
-    word("Changing", "resize-auto", "handle --", "a tab laid out on a client's screen again"),
+    word("Changing", "resize-auto", "handle --", "a tab laid out on a client's screen again (at its size until one shows it)"),
     word("Changing", "resize-x", "pane width --", "a pane's width: cells, or a percent"),
     word("Changing", "resize-y", "pane height --", "a pane's height: cells, or a percent"),
     word("Changing", "percent", "n -- size", "n percent of the tab, for resize-x and resize-y"),

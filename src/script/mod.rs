@@ -866,6 +866,9 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             if size.is_none() && !io::IsTerminal::is_terminal(&io::stdin()) {
                 return Err(client_failed(client::Error::NotATerminal));
             }
+            if size.is_none() && client::window_size().is_none() {
+                return Err(client_failed(client::Error::NoSize));
+            }
             let (socket, _) = started(server)?;
             let (keymap, problem) = configured(server);
             let attach = client::Attaching {

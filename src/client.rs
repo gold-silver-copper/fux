@@ -54,6 +54,8 @@ pub enum Error {
     Mismatch(Mismatch),
     Protocol(crate::protocol::Error),
     NotATerminal,
+    /// The terminal says no size (`TIOCGWINSZ`), or 0 rows or columns.
+    NoSize,
     /// What a request streamed could not be written out.
     Output(io::Error),
     /// Anything else that failed: why.
@@ -71,6 +73,7 @@ impl Error {
             | Error::Refused(_)
             | Error::Protocol(_)
             | Error::NotATerminal
+            | Error::NoSize
             | Error::Failed(_) => Code::Client,
         }
     }
@@ -96,6 +99,10 @@ impl std::fmt::Display for Error {
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
+            Error::NoSize => f.write_str(
+                "this terminal says no size (0 rows or columns), which fux would have to make up; \
+                 give it one (`stty rows 24 cols 80`)",
+            ),
             Error::Output(error) => write!(f, "writing the output: {error}"),
             Error::Failed(why) => f.write_str(why),
         }
@@ -454,10 +461,10 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     }
 }
 
-/// The terminal's rows and columns; a server's default if it does not say.
-fn window_size() -> fux_vt::Size {
-    fuxix::terminal::window_size(io::stdout())
-        .map_or(crate::session::default_size(), |s| (s.rows, s.cols).into())
+/// The terminal's rows and columns, if it says them: one that says none
+/// (or 0 of either) has no size fux could lay panes out on.
+pub(crate) fn window_size() -> Option<fux_vt::Size> {
+    fuxix::terminal::window_size(io::stdout()).map(|s| (s.rows, s.cols).into())
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
@@ -821,7 +828,10 @@ pub fn attach(
     };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
-    let size = size.unwrap_or_else(window_size);
+    let size = match size {
+        Some(size) => size,
+        None => window_size().ok_or(Error::NoSize)?,
+    };
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
         size,
@@ -1024,8 +1034,9 @@ fn attached(
         }
         if is(WINCH) {
             crate::drain(winch.pipe());
-            if terminal {
-                let resize = AttachedFrame::Resize(window_size());
+            // A terminal that says no size now keeps the last it said.
+            if terminal && let Some(size) = window_size() {
+                let resize = AttachedFrame::Resize(size);
                 if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &resize) {
                     return ended;
                 }

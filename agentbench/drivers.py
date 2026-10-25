@@ -574,8 +574,10 @@ class Fux(Driver):
         words = ["opts"]
         if name:
             words += ["str", name, "name"]
-        if size:
-            words += [str(size[0]), str(size[1]), "size"]
+        # fux makes no size up, and no client is attached here: with none
+        # asked for, tmux's size for a session no client shows, 80 by 24.
+        cols, rows = size or (80, 24)
+        words += [str(cols), str(rows), "size"]
         words += ["str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
