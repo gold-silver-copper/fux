@@ -380,12 +380,9 @@ impl Parts {
     /// A client detaches: nothing names it.
     pub(crate) fn forget(&mut self, client: ClientId) {
         for w in &mut self.workspaces {
-            let viewed = w.viewers.remove(&client);
-            let shown = w.shown.remove(&client);
+            w.viewers.remove(&client);
+            w.shown.remove(&client);
             for tab in &mut w.tabs {
-                // A tab the client showed is laid out again on its own fit
-                // (its `size`), not left at the client's.
-                tab.changed |= viewed && shown == Some(tab.id);
                 tab.seats.remove(&client);
                 tab.typist = tab.typist.filter(|t| *t != client);
             }

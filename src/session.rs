@@ -4284,6 +4284,21 @@ mod tests {
         Ok(())
     }
 
+    /// A client detaching from a zoomed tab that fits clients resizes
+    /// nothing, as showing another does not: its panes keep their size.
+    #[test]
+    fn a_zoomed_tab_its_client_detaches_from_keeps_its_sizes() -> Result<(), String> {
+        let sizes =
+            |s: &Session| [1, 2].map(|p| s.parts.panes().get(&PaneId::of(p)).map(Pane::size));
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "%1 split drop")?;
+        run(&mut s, &format!("str {c} client zoom"))?;
+        let zoomed = sizes(&s);
+        s.detach(c);
+        assert_eq!(sizes(&s), zoomed);
+        Ok(())
+    }
+
     /// A program that left more on its terminal than is read says so with
     /// its end, where no later notice hides it: in `exited`, its pane's
     /// JSON and the exit's notice; and one respawned over while it ran, in
