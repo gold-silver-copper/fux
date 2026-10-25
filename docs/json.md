@@ -10,7 +10,7 @@ panes an array of their objects). Rows and columns count from 0; times are milli
 ## A pane
 
 `ls json` gives each pane these; `PANE capture json` gives them too, but
-for `id`, `name`, `title` and `pid` (it says `pane`):
+for `id`, `name` and `pid` (it says `pane`):
 
 | Field | Value |
 | --- | --- |

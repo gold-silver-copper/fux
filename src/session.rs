@@ -2981,7 +2981,6 @@ impl Session {
         let mut fields = vec![
             ("id", Json::str(p.id.to_string())),
             ("name", Json::str(p.name())),
-            ("title", Json::str(p.title().as_str())),
             ("rows", Json::Number(i64::from(p.size().rows()))),
             ("cols", Json::Number(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),

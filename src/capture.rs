@@ -259,6 +259,7 @@ pub fn state(
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
     let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
     vec![
+        ("title", Json::str(pane.title().as_str().to_owned())),
         ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
