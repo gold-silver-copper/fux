@@ -1,7 +1,7 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
 use crate::bytes::ByteQueue;
-use crate::events::{Journal, PaneEvent, Teller};
+use crate::events::{Journal, Teller, Told};
 use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
@@ -334,7 +334,7 @@ impl Sink<'_, '_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.said().clone();
-        self.tell.tell(PaneEvent::Title(title));
+        self.tell.tell(Told::Title(title));
     }
 }
 
@@ -356,14 +356,14 @@ impl fux_vt::Sink for Sink<'_, '_> {
                 }
             }
             Event::Bell => {
-                self.tell.tell(PaneEvent::Bell);
+                self.tell.tell(Told::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
             Event::Notification(text) => {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = Said::new(text);
-                self.tell.tell(PaneEvent::Notification(text.clone()));
+                self.tell.tell(Told::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
@@ -374,7 +374,7 @@ impl fux_vt::Sink for Sink<'_, '_> {
                         .ok_or(Uncopied::NotText),
                 });
             }
-            Event::CommandEnded(status) => self.tell.tell(PaneEvent::Done(status)),
+            Event::CommandEnded(status) => self.tell.tell(Told::Done(status)),
             Event::IconName(_) => {}
         }
     }
@@ -504,9 +504,9 @@ pub struct Losses {
     /// Pieces of input (keys, a paste, `send-keys`) its full queue
     /// refused.
     pub input: u64,
-    /// Replies to its queries, and reports fux queues it unasked (its
-    /// size, its colour scheme), dropped: past a read's `REPLIES_MAX`, or
-    /// for a full queue.
+    /// Replies to its queries, and in-band resize reports, dropped: past
+    /// a read's `REPLIES_MAX`, or for a full queue. A colour-scheme report
+    /// refused is sent again (`Pane::offer`), not lost.
     pub replies: u64,
     /// Its copies (OSC 52) that copied nothing, by why (`Uncopied`).
     pub copies_cut: u64,
@@ -597,7 +597,7 @@ impl Losses {
 }
 
 /// Why a program's copy (OSC 52) copied nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub enum Uncopied {
     /// It was longer than fux-vt keeps of a string.
     Cut,
@@ -1111,7 +1111,7 @@ impl Pane {
         if resized.is_err() {
             return;
         }
-        tell.tell(PaneEvent::Resized(size));
+        tell.tell(Told::Resized(size));
         self.size_terminal();
         // In-band resize: the report follows the PTY's new size, never
         // precedes it (references/modern/mode_2048_in_band_resize.md). A
@@ -1147,7 +1147,7 @@ impl Pane {
     /// fux let `losses` of its program's go: counted, and to be told but
     /// for input and replies dropped in a run of them already told
     /// (`Run`).
-    pub(crate) fn lose(&mut self, mut losses: Losses) {
+    fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
         if self.input.run == Run::Told {
             losses.input = 0;
@@ -1156,6 +1156,20 @@ impl Pane {
             losses.replies = 0;
         }
         self.untold.add(losses);
+    }
+
+    /// Its program's copy (OSC 52) copied nothing, for `why`.
+    pub fn uncopied(&mut self, why: Uncopied) {
+        let (copies_cut, copies_not_text) = match why {
+            Uncopied::Cut => (1, 0),
+            Uncopied::NotText => (0, 1),
+        };
+        let losses = Losses {
+            copies_cut,
+            copies_not_text,
+            ..Losses::default()
+        };
+        self.lose(losses);
     }
 
     /// `n` replies were dropped, in a run of them.
@@ -1357,7 +1371,7 @@ impl Pane {
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
         self.refused_size = refused_size;
-        tell.tell(PaneEvent::Respawned(over));
+        tell.tell(Told::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
@@ -1375,7 +1389,7 @@ impl Pane {
     /// Names it `name`: said, if it is another.
     fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
         if name != self.name {
-            tell.tell(PaneEvent::Renamed(name.clone()));
+            tell.tell(Told::Renamed(name.clone()));
             self.name = name;
         }
     }
@@ -1419,7 +1433,7 @@ impl Pane {
             ended,
             left: self.left,
         };
-        tell.tell(PaneEvent::Exited(end));
+        tell.tell(Told::Exited(end));
         end
     }
 

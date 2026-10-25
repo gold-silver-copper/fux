@@ -1836,11 +1836,7 @@ impl Session {
         {
             match copy {
                 Ok(text) => copies.push(text),
-                Err(why) => pane.lose(pane::Losses {
-                    copies_cut: u64::from(why == pane::Uncopied::Cut),
-                    copies_not_text: u64::from(why == pane::Uncopied::NotText),
-                    ..pane::Losses::default()
-                }),
+                Err(why) => pane.uncopied(why),
             }
         }
         if bell {

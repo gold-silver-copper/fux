@@ -80,9 +80,10 @@ pub struct Teller<'a> {
 }
 
 impl Teller<'_> {
-    /// `what` happened in the pane.
-    pub(crate) fn tell(&mut self, what: PaneEvent) {
-        self.journal.push(Event::Pane(self.at, what));
+    /// The pane tells `what`.
+    pub(crate) fn tell(&mut self, what: Told) {
+        self.journal
+            .push(Event::Pane(self.at, PaneEvent::Told(what)));
     }
 }
 
@@ -109,11 +110,19 @@ pub enum Change {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaneEvent {
     Created,
-    /// Named otherwise: its new name.
-    Renamed(String),
     Closed,
     /// To another tab, from this workspace and tab.
     Moved((WsId, TabId)),
+    /// What the pane itself tells: these alone a `Teller` takes; its
+    /// place and lifetime are the session's parts' to journal.
+    Told(Told),
+}
+
+/// What a pane tells of itself and its program (`Teller::tell`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Told {
+    /// Named otherwise: its new name.
+    Renamed(String),
     /// Its program started again (`respawn`), over one that ran: what
     /// that one left.
     Respawned(Left),
@@ -149,6 +158,24 @@ impl Change {
 impl PaneEvent {
     /// Its name, and what else it says.
     fn said(&self) -> (&'static str, Fields) {
+        match self {
+            PaneEvent::Created => ("created", Vec::new()),
+            PaneEvent::Closed => ("closed", Vec::new()),
+            PaneEvent::Moved((ws, tab)) => (
+                "moved",
+                vec![
+                    ("from_tab", Json::str(tab.to_string())),
+                    ("from_workspace", Json::str(ws.to_string())),
+                ],
+            ),
+            PaneEvent::Told(told) => told.said(),
+        }
+    }
+}
+
+impl Told {
+    /// Its name, and what else it says.
+    fn said(&self) -> (&'static str, Fields) {
         // A program's text, and `truncated` if it sent more.
         let said = |key, text: &str, cut: bool| {
             let cut = cut.then_some(("truncated", Json::Bool(true)));
@@ -158,29 +185,20 @@ impl PaneEvent {
                 .collect()
         };
         match self {
-            PaneEvent::Created => ("created", Vec::new()),
-            PaneEvent::Renamed(name) => ("renamed", named(name)),
-            PaneEvent::Closed => ("closed", Vec::new()),
-            PaneEvent::Moved((ws, tab)) => (
-                "moved",
-                vec![
-                    ("from_tab", Json::str(tab.to_string())),
-                    ("from_workspace", Json::str(ws.to_string())),
-                ],
-            ),
-            PaneEvent::Respawned(left) => ("respawned", left.fields().collect()),
-            PaneEvent::Bell => ("bell", Vec::new()),
-            PaneEvent::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
-            PaneEvent::Title(title) => ("title", said("title", title.as_str(), title.cut())),
-            PaneEvent::Done(status) => (
+            Told::Renamed(name) => ("renamed", named(name)),
+            Told::Respawned(left) => ("respawned", left.fields().collect()),
+            Told::Bell => ("bell", Vec::new()),
+            Told::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
+            Told::Title(title) => ("title", said("title", title.as_str(), title.cut())),
+            Told::Done(status) => (
                 "done",
                 vec![("status", status.map_or(Json::Null, Json::int))],
             ),
-            PaneEvent::Resized(size) => {
+            Told::Resized(size) => {
                 let cols = ("cols", Json::int(size.cols()));
                 ("resized", vec![cols, ("rows", Json::int(size.rows()))])
             }
-            PaneEvent::Exited(End { ended, left }) => {
+            Told::Exited(End { ended, left }) => {
                 let ended = std::iter::once(ended.field());
                 ("exited", ended.chain(left.fields()).collect())
             }
@@ -393,7 +411,7 @@ mod tests {
     fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
-        let bell = Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Bell);
+        let bell = Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Told(Told::Bell));
         let mut journal = Journal::default();
         let mut stream = Subscription::new(None, false, &journal);
         journal.push(bell.clone());
@@ -434,28 +452,28 @@ mod tests {
         };
         let events = [
             Event::Pane(at, PaneEvent::Created),
-            Event::Pane(at, PaneEvent::Renamed(String::new())),
+            Event::Pane(at, PaneEvent::Told(Told::Renamed(String::new()))),
             Event::Pane(at, PaneEvent::Closed),
             Event::Pane(at, PaneEvent::Moved((ws, tab))),
-            Event::Pane(at, PaneEvent::Respawned(cut)),
-            Event::Pane(at, PaneEvent::Bell),
-            Event::Pane(at, PaneEvent::Notification(Said::default())),
-            Event::Pane(at, PaneEvent::Title(Said::default())),
-            Event::Pane(at, PaneEvent::Done(None)),
-            Event::Pane(at, PaneEvent::Resized(size)),
+            Event::Pane(at, PaneEvent::Told(Told::Respawned(cut))),
+            Event::Pane(at, PaneEvent::Told(Told::Bell)),
+            Event::Pane(at, PaneEvent::Told(Told::Notification(Said::default()))),
+            Event::Pane(at, PaneEvent::Told(Told::Title(Said::default()))),
+            Event::Pane(at, PaneEvent::Told(Told::Done(None))),
+            Event::Pane(at, PaneEvent::Told(Told::Resized(size))),
             Event::Pane(
                 at,
-                PaneEvent::Exited(End {
+                PaneEvent::Told(Told::Exited(End {
                     ended: Ended::Exited(0),
                     left: Left::default(),
-                }),
+                })),
             ),
             Event::Pane(
                 at,
-                PaneEvent::Exited(End {
+                PaneEvent::Told(Told::Exited(End {
                     ended: Ended::Signalled(9),
                     left: cut,
-                }),
+                })),
             ),
             Event::Tab((ws, tab), Change::Created(String::new())),
             Event::Tab((ws, tab), Change::Renamed(String::new())),
@@ -472,16 +490,18 @@ mod tests {
                 Event::Pane(
                     _,
                     PaneEvent::Created
-                    | PaneEvent::Renamed(_)
                     | PaneEvent::Closed
                     | PaneEvent::Moved(..)
-                    | PaneEvent::Respawned(_)
-                    | PaneEvent::Bell
-                    | PaneEvent::Notification(_)
-                    | PaneEvent::Title(_)
-                    | PaneEvent::Done(_)
-                    | PaneEvent::Resized(_)
-                    | PaneEvent::Exited(_),
+                    | PaneEvent::Told(
+                        Told::Renamed(_)
+                        | Told::Respawned(_)
+                        | Told::Bell
+                        | Told::Notification(_)
+                        | Told::Title(_)
+                        | Told::Done(_)
+                        | Told::Resized(_)
+                        | Told::Exited(_),
+                    ),
                 )
                 | Event::Tab(_, Change::Created(_) | Change::Renamed(_) | Change::Closed)
                 | Event::Workspace(_, Change::Created(_) | Change::Renamed(_) | Change::Closed) => {
