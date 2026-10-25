@@ -150,6 +150,7 @@ impl What {
             What::Exited(Ended::Signalled(signal)) => {
                 ("exited", vec![("signal", Json::int(*signal))])
             }
+            What::Exited(Ended::Lost) => ("exited", vec![("status", Json::Null)]),
         }
     }
 }

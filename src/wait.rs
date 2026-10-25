@@ -149,6 +149,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     fields.extend(ended.map(|ended| match ended {
         Ended::Exited(code) => ("exited", Json::int(code)),
         Ended::Signalled(signal) => ("signal", Json::int(signal)),
+        Ended::Lost => ("exited", Json::Null),
     }));
     let changed = said(id, line, fields, End::Done);
     Some(Reply {

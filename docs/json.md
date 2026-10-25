@@ -24,7 +24,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
-| `signal` | the signal that killed it (its number), else `null` |
+| `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost, where `-1` once stood in |
 | `idle_ms` | how long since fux last read output from its program (or it started) |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
@@ -111,8 +111,8 @@ from (its program's end too):
 
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts start
-afresh). `exited` is the program's status if it ended since, `signal` the
-signal that killed it; a wait from a version that already holds its end
+afresh). `exited` is the program's status if it ended since (`null` if
+that status was lost), `signal` the signal that killed it; a wait from a version that already holds its end
 waits for something else.
 
 A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
@@ -135,7 +135,7 @@ its journal recorded them, one line each.
 | `gone` | last: everything `events-of-json` named has closed (status 4) |
 | `created`, `renamed` | `name`, for a tab or workspace |
 | `closed`, `moved`, `respawned`, `bell` | |
-| `exited` | `status` or `signal` |
+| `exited` | `status` (`null` if it was lost) or `signal` |
 | `done` | `status`: a shell command's |
 | `notification` | `text` (the last of a round) |
 | `title` | `title` |

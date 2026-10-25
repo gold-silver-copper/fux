@@ -375,7 +375,7 @@ impl From<pane::Error> for Error {
 /// `pane`'s program has ended, with `status`: it takes no input.
 fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
-        Ended::Exited(_) => "",
+        Ended::Exited(_) | Ended::Lost => "",
         Ended::Signalled(_) => "was ",
     };
     let told = format!("the program in {pane} {was}{}", process::told(status));
@@ -1870,7 +1870,6 @@ impl Session {
     /// is told exited once all of it is on its screen, from the turn that
     /// reads the last of it (`Session::fire`).
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
-        let status = process::shell_status(ended);
         let program = (self.panes.get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
         let program = program.map(|p| p.exiting.is_none());
         // Once, at the first word of the exit, its terminal drained (what
@@ -1898,7 +1897,13 @@ impl Session {
             }
         }
         match pane.runs {
-            Runs::Shell => self.close_pane(id, Some(format!("exited with status {status}"))),
+            Runs::Shell => {
+                let why = process::shell_status(ended).map_or_else(
+                    || process::told(ended),
+                    |s| format!("exited with status {s}"),
+                );
+                self.close_pane(id, Some(why));
+            }
             Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
                 let gone = std::mem::replace(&mut pane.process, Process::Exited(ended));
