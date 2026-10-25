@@ -337,6 +337,21 @@ fn a_rejected_resize_leaves_synchronized_output_on() -> Result {
 }
 
 #[test]
+fn a_rejected_resize_leaves_a_grapheme_open() -> Result {
+    let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
+    p.process("🇵".as_bytes())?;
+    assert_eq!(
+        p.resize(Size::new(u16::MAX, u16::MAX)?),
+        Err(Error::Capacity)
+    );
+    // UAX #29 GB12: the second regional indicator joins the first.
+    p.process("🇯".as_bytes())?;
+    assert_eq!(cell(&p, 0, 0)?.contents(), "🇵🇯");
+    assert!(cell(&p, 0, 2)?.contents().is_empty());
+    Ok(())
+}
+
+#[test]
 fn resize_rejects_bad_capacity_without_mutating_state() -> Result {
     let mut p = Parser::new(Size::new(3, 5)?, 1 << 10)?;
     p.process(b"abcde\r\nfghij\r\nklmno\r\npqrst")?;

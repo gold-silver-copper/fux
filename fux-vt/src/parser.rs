@@ -926,7 +926,7 @@ impl Parser {
         })
     }
     /// 1: the OSC payload held is within its limit, one byte past it
-    /// inside an OSC string, in room for no more than that.
+    /// inside an OSC string, in room for the limit and that byte alone.
     #[cfg(feature = "checks")]
     fn check_osc(&self) -> Result<(), String> {
         let inside = matches!(self.state, State::Osc { .. });
@@ -934,7 +934,7 @@ impl Parser {
         crate::check::ensure(self.osc.len() <= most, || {
             format!("{} OSC bytes held, {most} at most", self.osc.len())
         })?;
-        let room = OSC_PAYLOAD_LIMIT.saturating_add(1);
+        let room = self.osc_limit.saturating_add(1);
         crate::check::ensure(self.osc.capacity() <= room, || {
             format!(
                 "room for {} OSC bytes, {room} at most (B20)",
@@ -1230,6 +1230,7 @@ impl Parser {
                 remaining = remaining.get(length..).unwrap_or_default();
                 (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
             } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
+                self.screen.cancel_single_shift();
                 let (length, framed) = self.csi_sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
                 framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
@@ -1482,8 +1483,8 @@ impl Parser {
     }
 
     /// Room in the OSC buffer for `more` bytes: grown by doubling up to 16
-    /// KiB, then at once to `OSC_PAYLOAD_LIMIT` and the byte that marks it
-    /// overflowed, so it never holds more than that (THREATS.md B20).
+    /// KiB, then at once to the limit the features set and the byte that
+    /// marks it overflowed, never past them (THREATS.md B20).
     #[inline]
     fn osc_room(&mut self, more: usize) {
         let need = self.osc.len().saturating_add(more);
@@ -1496,16 +1497,20 @@ impl Parser {
     fn grow_osc(&mut self, need: usize) {
         const DOUBLING: usize = 16 << 10;
         let doubled = need.max(self.osc.capacity().saturating_mul(2));
+        let most = self.osc_limit.saturating_add(1);
         let room = match doubled > DOUBLING {
-            true => OSC_PAYLOAD_LIMIT.saturating_add(1),
-            false => doubled,
+            true => most,
+            false => doubled.min(most),
         };
         self.osc.reserve_exact(room.saturating_sub(self.osc.len()));
     }
 
     fn ground(&mut self, byte: u8, sink: &mut impl Sink) {
         match byte {
-            0x1b => self.state = State::Escape(Intermediates::default()),
+            0x1b => {
+                self.screen.cancel_single_shift();
+                self.state = State::Escape(Intermediates::default());
+            }
             0x00..=0x1f | 0x7f => {
                 self.control(byte, sink);
                 self.screen.forget_repeat();
@@ -1848,7 +1853,6 @@ impl Parser {
         let status = match request.map(|r| self.screen.setting_report(r.as_slice(), &mut setting)) {
             Some(Setting::Written) => b'1',
             Some(Setting::Unknown) | None => b'0',
-            Some(Setting::Unanswered) => return,
         };
         sink.reply(format!("\x1bP{}$r{setting}\x1b\\", char::from(status)).as_bytes());
     }

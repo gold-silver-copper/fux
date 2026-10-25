@@ -1,6 +1,25 @@
 use super::*;
 use crate::test_rng::Rng;
 
+/// B20: the OSC buffer has room for the limit the features set and the
+/// byte that marks a string overflowed, and no more, however a string is
+/// split: 65 bytes with prompt marks alone, 1 with no feature reading OSC.
+#[test]
+fn the_osc_buffer_has_room_for_its_limit_alone() -> Result<(), Error> {
+    for (options, room) in [
+        (Options::from(Feature::PromptMarks), 65),
+        (Options::new(), 1),
+    ] {
+        let mut p = Parser::with_options(Size::of(2, 10), 0, options)?;
+        p.process(b"\x1b]133;")?;
+        for _ in 0..40 {
+            p.process(b"aa")?;
+        }
+        assert!(p.osc.capacity() <= room, "{} for {room}", p.osc.capacity());
+    }
+    Ok(())
+}
+
 /// The ASCII run path writes cells without asking about grapheme clusters.
 /// That is only right because no ASCII character continues a cluster (fux-vt
 /// never joins after a Prepend), and because the run leaves its last cell

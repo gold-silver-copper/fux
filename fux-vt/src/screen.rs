@@ -167,11 +167,14 @@ impl Printed {
 
 /// The character sets a program designates and shifts between (ECMA-35;
 /// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII, DEC
-/// Special Graphics or DEC Supplemental Graphics, the one in GL, and the
-/// one a single shift invokes for the next character. The national sets
-/// are not kept: another set is ASCII, as xterm reads one in UTF-8. At
-/// level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
-/// STD 070, 3.6.4.2), G0 and G1 ASCII.
+/// Special Graphics or DEC Supplemental Graphics, and the one in GL; a
+/// single shift is no part of them, nor of what DECSC saves
+/// (`Screen::single`). The national sets and the other sets ctlseqs lists
+/// are not kept: each is ASCII, as xterm reads one in UTF-8; a designation
+/// of no set is ignored (DEC STD 070, 3.5.1.3: "Unimplemented functions
+/// shall be ignored as if they were not received"). At level 2, G2 and G3
+/// are DEC Supplemental at power-up and soft reset (DEC STD 070, 3.6.4.2),
+/// G0 and G1 ASCII.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
 pub(crate) struct Charsets {
@@ -181,8 +184,6 @@ pub(crate) struct Charsets {
     graphics: u8,
     /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
     gl: Set,
-    /// G2 after SS2, G3 after SS3: the set of the next graphic character.
-    single: Option<Set>,
 }
 
 /// One of the four sets a program designates (ECMA-35, 6.3).
@@ -201,11 +202,11 @@ impl Set {
     }
     /// The set an SCS's first intermediate names: `(` G0, `)` G1, `*` G2
     /// and `+` G3.
-    fn of(intermediates: &[u8]) -> Self {
-        match intermediates.first() {
-            Some(b')') => Set::G1,
-            Some(b'*') => Set::G2,
-            Some(b'+') => Set::G3,
+    fn of(intermediate: u8) -> Self {
+        match intermediate {
+            b')' => Set::G1,
+            b'*' => Set::G2,
+            b'+' => Set::G3,
             _ => Set::G0,
         }
     }
@@ -224,14 +225,24 @@ enum Designated {
 }
 
 impl Designated {
-    /// The set a final alone designates (SCS): `0` DEC Special Graphics,
-    /// `<` DEC Supplemental, any other ASCII.
-    #[inline]
-    fn of(byte: u8) -> Self {
-        match byte {
-            b'0' => Self::Graphics,
-            b'<' => Self::Supplemental,
-            _ => Self::Ascii,
+    /// The 94-character set an SCS's final `byte` designates, after the
+    /// intermediate naming G0 to G3 and `intermediate`, its own if it has
+    /// one (ctlseqs, "Designate G0 Character Set"): `0` DEC Special
+    /// Graphics, `<` and `% 5` DEC Supplemental, the other sets listed
+    /// there ASCII; none for a combination that names no set.
+    fn of(intermediate: &[u8], byte: u8) -> Option<Self> {
+        match (intermediate, byte) {
+            ([], b'0') => Some(Self::Graphics),
+            ([], b'<') | (b"%", b'5') => Some(Self::Supplemental),
+            (
+                [],
+                b'4'..=b'7' | b'9' | b'=' | b'>' | b'A'..=b'C' | b'E' | b'H' | b'I' | b'J' | b'K',
+            )
+            | ([], b'Q' | b'R' | b'Y' | b'Z' | b'`' | b'f')
+            | (b"\"", b'4' | b'>' | b'?')
+            | (b"%", b'0' | b'2' | b'3' | b'6' | b'=')
+            | (b"&", b'4' | b'5') => Some(Self::Ascii),
+            _ => None,
         }
     }
 }
@@ -254,18 +265,14 @@ impl Charsets {
         Self {
             graphics: supplemental | supplemental << 4,
             gl: Set::G0,
-            single: None,
         }
     }
-    /// Whether text needs mapping: a single shift waits, or GL's set is
-    /// not ASCII.
+    /// Whether GL's set is not ASCII.
     fn graphics(self) -> bool {
-        self.single.is_some() || self.graphics & self.gl.bit() != 0
+        self.graphics & self.gl.bit() != 0
     }
-    /// The character `raw` prints as, in the set a single shift invokes,
-    /// which it spends, or else the set in GL.
-    fn map(&mut self, raw: char) -> char {
-        let set = self.single.take().unwrap_or(self.gl);
+    /// The character `raw` prints as in `set`.
+    fn map(self, set: Set, raw: char) -> char {
         if self.graphics & set.bit() == 0 {
             raw
         } else if self.graphics & set.bit() << 4 != 0 {
@@ -273,17 +280,6 @@ impl Charsets {
         } else {
             special_graphics(raw)
         }
-    }
-    /// SCS of a set with an intermediate of its own (`ESC ( % 5`): DEC
-    /// Supplemental for `% 5`, else ASCII.
-    #[cold]
-    #[inline(never)]
-    fn scs(&mut self, intermediates: &[u8], byte: u8) {
-        let kind = match (intermediates.get(1), byte) {
-            (Some(b'%'), b'5') => Designated::Supplemental,
-            _ => Designated::Ascii,
-        };
-        self.designate(Set::of(intermediates), kind);
     }
     fn designate(&mut self, set: Set, kind: Designated) {
         let bits = match kind {
@@ -475,10 +471,6 @@ pub(crate) enum Setting {
     Written,
     /// A request fux-vt does not know, which xterm answers as invalid.
     Unknown,
-    /// No answer: the terminal's own cursor shape (`CursorShape::Initial`),
-    /// which fux-vt does not know; vim, which asks, takes an invalid answer
-    /// for keys.
-    Unanswered,
 }
 
 /// What a CSI sequence came to.
@@ -597,6 +589,11 @@ pub struct Screen {
     pen_style: u32,
     blank_style: u32,
     charsets: Charsets,
+    /// G2 after SS2, G3 after SS3: the set of the next graphic character,
+    /// which spends it. Any other function but SO and SI cancels it (DEC
+    /// STD 070, 3.8.3.2), so none is pending as a control or sequence runs
+    /// (`cancel_single_shift`).
+    single: Option<Set>,
     /// The modes kept as bits (`Kind::Flag`, `Margins`, `Frame`,
     /// `SizeReport`) that are set.
     modes: Modes,
@@ -833,6 +830,7 @@ impl Screen {
             pen_style: 0,
             blank_style: 0,
             charsets: Charsets::default(),
+            single: None,
             modes: Modes::DEFAULT,
             saved_modes: Modes::default(),
             protect: 0,
@@ -1268,7 +1266,6 @@ impl Screen {
             self.modes.set(Mode::SynchronizedOutput, false);
             return Ok(());
         }
-        self.last_print = None;
         let version = self.version.saturating_add(1);
         let mut next = self.next_id;
         let (mut primary, kept) = if reflow {
@@ -1277,6 +1274,9 @@ impl Screen {
             self.primary.resized(size, &mut next, version)?
         };
         let (mut alternate, _) = self.alternate.resized(size, &mut next, version)?;
+        // Only now, with both grids built, does the resize happen: a refused
+        // one leaves the screen whole, the next print still joining.
+        self.last_print = None;
         primary.adopt_history(&mut self.primary, kept);
         // The links' tables and keyboard stacks go along.
         primary.links = mem::take(&mut self.primary.links);
@@ -1485,22 +1485,26 @@ impl Screen {
     }
 
     /// SUB (DEC STD 070, p. 5-132): the error character (U+2426), printed
-    /// in no character set: a single shift waits on.
+    /// in no character set.
     #[cold]
     #[inline(never)]
     pub(crate) fn substitute(&mut self) {
-        let single = self.charsets.single;
-        self.print('\u{2426}');
-        self.charsets.single = single;
+        self.print_as('\u{2426}', Properties::of('\u{2426}'));
+    }
+
+    /// Cancels a pending single shift, as a function other than a graphic
+    /// character, SO or SI begins (NUL and DEL are none, `control`): "If
+    /// the next character in the received data stream is not a graphic
+    /// character [...], the single shift function is ignored" (DEC STD 070,
+    /// 3.8.3.2, SS2 and SS3). SS2 and SS3 then set it again.
+    pub(crate) fn cancel_single_shift(&mut self) {
+        self.single = None;
     }
 
     #[inline(never)]
     pub(crate) fn print(&mut self, raw: char) {
-        let c = if self.charsets.graphics() {
-            self.charsets.map(raw)
-        } else {
-            raw
-        };
+        let set = self.single.take().unwrap_or(self.charsets.gl);
+        let c = self.charsets.map(set, raw);
         self.print_as(c, Properties::of(c))
     }
 
@@ -1536,6 +1540,13 @@ impl Screen {
         if width == 0 {
             if let Some((row, col)) = self.before_cursor() {
                 let g = self.grid();
+                // A picture's cell holds a control, which ends a cluster
+                // (UAX #29 GB4): the mark has no cell, as at a row's start.
+                if g.cell(row, col)
+                    .is_some_and(|c| c.contents() == PLACEHOLDER)
+                {
+                    return;
+                }
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
@@ -2145,7 +2156,7 @@ impl Screen {
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> usize {
         let all = bytes.len();
         // Character sets and insert mode take `print`, a glyph at a time.
-        if self.charsets.graphics() || self.mode(Mode::Insert) {
+        if self.single.is_some() || self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
                     return i;
@@ -2204,6 +2215,7 @@ impl Screen {
     /// the pair that ends most lines, in one call.
     pub(crate) fn carriage_return_line_feed(&mut self) {
         self.break_cluster();
+        self.cancel_single_shift();
         let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
         g.cursor.pending_wrap = false;
@@ -2217,6 +2229,11 @@ impl Screen {
     pub(crate) fn control(&mut self, byte: u8) {
         if (8..=13).contains(&byte) {
             self.break_cluster();
+        }
+        // NUL and DEL are "Ignored on input (not stored in input buffer)"
+        // (DEC STD 070, 5.9.1): no function, as SO and SI cancel none.
+        if !matches!(byte, 0x00 | 0x0e | 0x0f | 0x7f) {
+            self.cancel_single_shift();
         }
         if byte == 8 && self.reverse_wraps() {
             let pending = self.grid().cursor.pending_wrap;
@@ -2368,26 +2385,20 @@ impl Screen {
         g.fit_cursor();
         self.attributes = saved.attributes;
         self.pen_changed();
-        // A single shift is no state DECSC saves (DEC STD 070, DECSC and
-        // DECRC; ECMA-35, 9.4): the one pending stays, spent or not.
-        self.charsets = Charsets {
-            single: self.charsets.single,
-            ..saved.charsets
-        };
+        self.charsets = saved.charsets;
         self.protect = saved.protect;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> bool {
         // SCS (DEC STD 070, SCS): ESC ( F designates G0, ESC ) F G1, ESC * F
         // G2 and ESC + F G3; F `0` is DEC Special Graphics, `<` (the
-        // user-preferred supplemental set) and `% 5` DEC Supplemental, and
-        // any other set is ASCII here.
+        // user-preferred supplemental set) and `% 5` DEC Supplemental, any
+        // other set ctlseqs lists is ASCII here, and no set is ignored.
         match intermediates {
-            [b'(' | b')' | b'*' | b'+'] => {
-                self.charsets
-                    .designate(Set::of(intermediates), Designated::of(byte));
-            }
-            [b'(' | b')' | b'*' | b'+', _] => self.charsets.scs(intermediates, byte),
+            [g @ (b'(' | b')' | b'*' | b'+'), set @ ..] => match Designated::of(set, byte) {
+                Some(kind) => self.charsets.designate(Set::of(*g), kind),
+                None => return false,
+            },
             b"#" if byte == b'8' => {
                 self.alignment();
                 return true;
@@ -2413,8 +2424,8 @@ impl Screen {
             // (9.4): either for the next graphic character alone.
             b'n' => self.charsets.gl = Set::G2,
             b'o' => self.charsets.gl = Set::G3,
-            b'N' => self.charsets.single = Some(Set::G2),
-            b'O' => self.charsets.single = Some(Set::G3),
+            b'N' => self.single = Some(Set::G2),
+            b'O' => self.single = Some(Set::G3),
             // LS1R, LS2R and LS3R (ECMA-35, 9.3.2): GR, which no byte
             // reaches in UTF-8 (15.4), so no state is kept.
             b'~' | b'}' | b'|' => {}
@@ -2766,7 +2777,8 @@ impl Screen {
     /// (`xtermCheckRect`, ctlseqs' XTCHECKSUM): each cell's character, plus
     /// 0x08 hidden, 0x10 underlined, 0x20 inverse, 0x40 blinking and 0x80
     /// bold, summed in 16 bits and negated. A character past Latin-1 or
-    /// below a space, and a wide glyph's second half, count as ESC, but for
+    /// below a space, a picture's cell (a C1 control, `PLACEHOLDER`) and a
+    /// wide glyph's second half count as ESC, but for
     /// a DEC Special Graphics or Supplemental glyph (`dec_code`); a
     /// cluster's combining marks are added as they are, as xterm counts
     /// them. An empty cell counts as a space, as on DEC's terminals. The
@@ -2793,7 +2805,7 @@ impl Screen {
                     None if cell.is_wide_continuation() => ESC,
                     None => 0x20,
                     Some(c) => match u16::try_from(u32::from(c)) {
-                        Ok(code @ 0x20..=0xff) => code,
+                        Ok(code @ (0x20..=0x7f | 0xa0..=0xff)) => code,
                         _ => dec_code(c).map_or(ESC, u16::from),
                     },
                 };
@@ -2868,11 +2880,7 @@ impl Screen {
             // another is ignored.
             b'x' => {
                 let c = match u8::try_from(p.first(0, 32)) {
-                    Ok(byte @ 32..=126) => {
-                        let mut gl = self.charsets;
-                        gl.single = None;
-                        gl.map(char::from(byte))
-                    }
+                    Ok(byte @ 32..=126) => self.charsets.map(self.charsets.gl, char::from(byte)),
                     Ok(byte @ 160..=255) => char::from(byte),
                     _ => return,
                 };
@@ -3168,12 +3176,10 @@ impl Screen {
                 out.push('m');
             }
             b" q" => {
-                let shape = self.terminal.cursor_shape;
-                if shape == CursorShape::Initial {
-                    return Setting::Unanswered;
-                }
-                // 0 as the blinking block it is, as xterm answers it.
-                let ps = shape.number().max(1);
+                // 0 as the blinking block it is, as xterm answers it; the
+                // terminal's own shape as 7, xterm's "initial resources"
+                // (ctlseqs, DECSCUSR), which DECSCUSR 7 restores.
+                let ps = self.terminal.cursor_shape.number().max(1);
                 out.extend(char::from_digit(ps.into(), 10));
                 out.push_str(" q");
             }
@@ -3567,7 +3573,9 @@ impl Screen {
         let identity = options.identity();
         let reply = match (intermediates, byte) {
             // HPB (ECMA-48 8.3.58) and VPB (8.3.159): back n columns, or up
-            // n lines.
+            // n lines, as VPR goes down: with origin mode set "the Active
+            // Position cannot be moved above the Top Margin" (DEC STD 070,
+            // DECOM, p. 5-31).
             (b"", b'j' | b'k') => {
                 self.break_cluster();
                 let n = p.first(0, 1).max(1);
@@ -3576,7 +3584,7 @@ impl Screen {
                 if byte == b'j' {
                     g.backward(n);
                 } else {
-                    g.set_row(g.cursor.row().saturating_sub(n));
+                    g.position_line(g.cursor_line().saturating_sub(n));
                 }
                 return Some(Dispatch::Done);
             }
