@@ -12,13 +12,25 @@ const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
+/// The language's codes that fuxth finds only compiling or at a program's
+/// end, which fux's words raise as they run too, for a `try` to catch:
+/// `unused`, options a word would leave unused; `unknown_word`, `explain`'s
+/// word that is none; `bad_name`, a name a pane, tab or workspace cannot
+/// have.
+pub const RAISED: [fuxth::Code; 3] = [
+    fuxth::Code::Unused,
+    fuxth::Code::UnknownWord,
+    fuxth::Code::BadName,
+];
+
 /// `codes! { /// doc  Variant "name", Closed "closed" CLOSED, … }` expands
 /// to the enum `Code` of those variants and `Lang`, the language's own
 /// codes; `Code::ALL`, fux's own in order; `Code::status`, each one's exit
 /// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
 /// as for the language's; `Code::raised`, whether a word a program runs
 /// can fail with it, so a `try` may catch it: not for a row marked
-/// `[run_loop]`, which only the loop running the program gives; and
+/// `[run_loop]`, which only the loop running the program gives; a
+/// language's code if fuxth's words raise it, or fux's (`RAISED`); and
 /// `fuxth::Code::from`, each one as the language takes it (one of fux's as
 /// `Host`, by its name).
 macro_rules! codes {
@@ -58,7 +70,7 @@ macro_rules! codes {
             pub fn raised(self) -> bool {
                 match self {
                     $(Code::$variant => codes!(@raised $($by)?),)*
-                    Code::Lang(LangCode(code)) => code.raised(),
+                    Code::Lang(LangCode(code)) => code.raised() || RAISED.contains(&code),
                 }
             }
         }

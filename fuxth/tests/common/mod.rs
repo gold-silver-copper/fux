@@ -99,7 +99,7 @@ impl Host for Toy {
 fn vocabulary() -> Vocabulary {
     let mut words = Vocabulary::default();
     let _ = words.add("ask", "any -- integer");
-    let _ = words.code("not_a_number");
+    let _ = words.raises(fuxth::Code::Host("not_a_number"));
     words
 }
 

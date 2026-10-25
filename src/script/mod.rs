@@ -399,7 +399,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
-/// names its words' effects use, and the words.
+/// names its words' effects use, the words, and the codes they raise.
 pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     let mut vocabulary = fuxth::Vocabulary::default();
     for (kind, said, unused) in words::KINDS {
@@ -420,8 +420,12 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
-    for code in Code::ALL.iter().filter(|c| c.raised()) {
-        vocabulary.code(code.name())?;
+    let own = Code::ALL.iter().filter(|c| c.raised());
+    for code in own
+        .map(|c| fuxth::Code::from(*c))
+        .chain(crate::code::RAISED)
+    {
+        vocabulary.raises(code)?;
     }
     Ok(vocabulary)
 }

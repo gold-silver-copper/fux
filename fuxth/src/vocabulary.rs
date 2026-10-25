@@ -43,7 +43,7 @@ pub struct Vocabulary {
     words: Vec<Word>,
     kinds: Vec<(String, String, Option<String>)>,
     names: Vec<(String, Map, String)>,
-    codes: Vec<&'static str>,
+    codes: Vec<Code>,
 }
 
 /// `said`, the last two joined by "or": "a, b or c".
@@ -137,35 +137,40 @@ impl Vocabulary {
         Ok(self.words.len().saturating_sub(1))
     }
 
-    /// A code the application's words may fail with (`Code::Host`), which
-    /// a `try` may name: a word, and none of the language's own.
-    pub fn code(&mut self, name: &'static str) -> Result<(), Error> {
-        if name.is_empty() || name.contains(char::is_whitespace) {
-            return Err(refused(format!("{name:?}: a code is one word")));
+    /// A code the application's words may fail with, which a `try` may
+    /// name: one of its own (`Code::Host`), a word that is none of the
+    /// language's; or one of the language's that plain fuxth finds only
+    /// compiling or at a program's end (`Code::raised` is false), which its
+    /// words raise as they run. One fuxth's words raise already changes
+    /// nothing.
+    pub fn raises(&mut self, code: Code) -> Result<(), Error> {
+        let name = code.name();
+        if let Code::Host(_) = code {
+            if name.is_empty() || name.contains(char::is_whitespace) {
+                return Err(refused(format!("{name:?}: a code is one word")));
+            }
+            if Code::ALL.iter().any(|c| c.name() == name) {
+                return Err(refused(format!("{name}: a code of the language's")));
+            }
         }
-        if Code::ALL.iter().any(|c| c.name() == name) {
-            return Err(refused(format!("{name}: a code of the language's")));
-        }
-        self.codes.push(name);
+        self.codes.push(code);
         Ok(())
     }
 
     /// The code `name` names, if a running word may raise it, for a `try`
     /// to catch: the language's or the application's; else why not.
     pub(crate) fn caught(&self, name: &str) -> Result<Code, String> {
-        if let Some(code) = Code::ALL.iter().find(|c| c.name() == name) {
-            return match code.raised() {
+        let raised = |code: &&Code| code.raised() || self.codes.contains(code);
+        let all = Code::ALL.iter().chain(&self.codes);
+        if let Some(code) = all.clone().find(|c| c.name() == name) {
+            return match raised(&code) {
                 true => Ok(*code),
                 false => Err(format!(
                     "{name} is found compiling, at the program's end or in the application, never raised by a running word: no try catches it"
                 )),
             };
         }
-        if let Some(code) = self.codes.iter().find(|c| **c == name) {
-            return Ok(Code::Host(code));
-        }
-        let raised = (Code::ALL.iter().filter(|c| c.raised())).map(|c| c.name());
-        let meant = crate::compile::meant(name, raised.chain(self.codes.iter().copied()));
+        let meant = crate::compile::meant(name, all.filter(raised).map(|c| c.name()));
         Err(format!("{name} is no code a word raises{meant}"))
     }
 

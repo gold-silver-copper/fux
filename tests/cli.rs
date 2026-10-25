@@ -270,6 +270,14 @@ fn errors_statuses_and_what_is_left() -> Outcome {
             refused.stderr
         );
     }
+    // The language's codes fux's words give as they run are caught by
+    // name: an option left unused, a word `explain` has not, a name a
+    // target would read as an id.
+    let program = "str unused try opts str top program str w in new-tab drop str made catch nip end
+        str unknown_word try str nosuch explain str shown catch nip end
+        str bad_name try str %1 pane tab str %7 rename str renamed catch nip end";
+    let caught = server.ok(&program.split_whitespace().collect::<Vec<_>>())?;
+    assert_eq!(caught, "unused\nunknown_word\nbad_name\n");
     // A size past a client's screen's most is refused, saying the range
     // it may take, past a cell's too.
     for size in ["4097", "65536"] {
