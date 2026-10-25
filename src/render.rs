@@ -130,6 +130,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     else {
         return Vec::new();
     };
+    let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
     for &(id, rect) in &placement.panes {
         let Some(pane) = session.panes.get(&id) else {

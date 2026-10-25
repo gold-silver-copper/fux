@@ -114,8 +114,8 @@ pub use parser::{
     Unhandled,
 };
 pub use screen::{
-    CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
-    PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
+    CellSize, CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding,
+    MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, char_width, continues_cluster, str_width};
 #[cfg(feature = "checks")]

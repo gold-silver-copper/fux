@@ -715,8 +715,7 @@ impl Screen {
 
 mod pictures;
 mod shell;
-pub(crate) use pictures::CELL;
-pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
+pub use pictures::{CellSize, Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
 pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
@@ -3692,7 +3691,8 @@ impl Screen {
             }
             // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
-                let (width, height) = self.graphics.cell?;
+                let cell = self.graphics.cell?;
+                let (width, height) = (cell.width(), cell.height());
                 Some(reply!("\x1b[6;{height};{width}t"))
             }
             (b"", b't') if n == 14 => {

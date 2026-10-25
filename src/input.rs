@@ -203,12 +203,20 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
+        let Some(p) = self.hosted(pane) else {
             return;
         };
         let mut report = Vec::new();
         if p.screen().encode_mouse(event, &mut report) {
             let _ = p.input.push(&report);
+        } else if p.screen().mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::SgrPixels
+            && p.screen().cell_size().is_none()
+            && let Some(view) = self.views.get_mut(&client)
+        {
+            view.notify(
+                format!("{pane} takes mouse reports in pixels, and no terminal showing it gave a cell size"),
+                true,
+            );
         }
     }
 }

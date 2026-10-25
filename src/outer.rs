@@ -122,18 +122,18 @@ pub struct Terminal {
     pub palette: Palette,
     /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
     /// in pixels (`CSI 16 t`): pictures in panes are shown on it, and the
-    /// panes it answers for are told so.
+    /// panes it answers for are told so (sixel only with a cell size, which
+    /// pictures are laid out in).
     pub sixel: bool,
-    pub cell: Option<(u16, u16)>,
+    pub cell: Option<fux_vt::CellSize>,
 }
 
 impl Terminal {
-    /// What it draws, as the panes it answers for are told: sixel only with
-    /// a known cell size, which pictures are laid out in.
+    /// What it draws, as the panes it answers for are told.
     pub fn graphics(&self) -> Graphics {
         Graphics {
             cell: self.cell,
-            sixel: self.sixel && self.cell.is_some(),
+            sixel: self.sixel,
         }
     }
 
@@ -206,8 +206,19 @@ impl Session {
                 }
                 self.tell_change(client);
             }
+            // A cell smaller than a sixel band is no size a picture can be
+            // laid out in: refused, and said, not made one.
             Reply::CellSize { width, height } => {
-                terminal.cell = Some((width, height));
+                terminal.cell = fux_vt::CellSize::new(width, height);
+                if terminal.cell.is_none() {
+                    view.notify(
+                        format!(
+                            "your terminal's cell, {width}x{height} pixels, is smaller than a sixel band \
+                             (2x6): no pictures, and no mouse reports in pixels"
+                        ),
+                        true,
+                    );
+                }
                 view.dirty = true;
             }
             // The terminal speaks the kitty protocol: its keys are read

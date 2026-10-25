@@ -31,6 +31,7 @@ for `id`, `name`, `title` and `pid` (it says `pane`):
 | `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
+| `cell` | the size of a cell in pixels its program was last told, `{"width":10,"height":20}`, from a terminal showing it that said one (`CSI 16 t`); `null` while none is known: then it places no pictures and gets no mouse reports in pixels (mode 1016) |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |

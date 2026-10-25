@@ -161,6 +161,7 @@ fuzz_target!(|data: &[u8]| {
                 event,
                 MouseProtocolMode::AnyMotion,
                 MouseProtocolEncoding::Sgr,
+                None,
                 &mut sgr,
             );
             // The wheel is never released or held.

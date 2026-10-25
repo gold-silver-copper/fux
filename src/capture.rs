@@ -277,6 +277,15 @@ pub fn state(
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
+        (
+            "cell",
+            screen.cell_size().map_or(Json::Null, |cell| {
+                Json::Object(vec![
+                    ("width", Json::int(cell.width())),
+                    ("height", Json::int(cell.height())),
+                ])
+            }),
+        ),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),

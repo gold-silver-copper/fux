@@ -91,7 +91,7 @@ fn graphics(c: u8) -> Graphics {
     let width = u16::from(c & 0x0f).saturating_add(1);
     let height = u16::from(c >> 4).saturating_mul(2).saturating_add(1);
     Graphics {
-        cell: Some((width, height)),
+        cell: fux_vt::CellSize::new(width, height),
         sixel: true,
     }
 }

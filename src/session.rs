@@ -1923,24 +1923,32 @@ impl Session {
         }
     }
 
+    /// Pane `id`, told its tab's host colours, palette and graphics now:
+    /// what its program is answered with, and its mouse reports made in.
+    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<&mut Pane> {
+        let tab = self.pane_tabs.get(&id).copied();
+        let (colours, palette, graphics) = self.host_for(tab);
+        let pane = self.panes.get_mut(&id)?;
+        pane.colours = colours;
+        pane.parser.set_host_palette(palette);
+        pane.parser.set_host_graphics(graphics);
+        Some(pane)
+    }
+
     /// Reads into pane `id` with `read`, as every read of a pane's output
     /// does: its tab's host colours and palette given it first; after, its
     /// bell rung, and the views showing it repainted and told if a reply
     /// was dropped.
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let tab = self.pane_tabs.get(&id).copied();
-        let (colours, palette, graphics) = self.host_for(tab);
-        let Some(pane) = self.panes.get_mut(&id) else {
+        let Some(pane) = self.hosted(id) else {
             return;
         };
-        pane.colours = colours;
-        pane.parser.set_host_palette(palette);
-        pane.parser.set_host_graphics(graphics);
         read(pane);
-        self.edited = true;
         let dropped = pane.input.lost_reply();
         let bell = std::mem::take(&mut pane.bell);
         let copied = pane.copied.take();
+        self.edited = true;
         if bell {
             self.ring(id, Instant::now());
         }
@@ -2527,6 +2535,8 @@ impl Session {
         use fux_vt::MouseProtocolMode as Asked;
         use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
         let run = self.run;
+        // Made in the cell size its terminal says now.
+        self.hosted(target);
         let p = self.live_pane_mut(target)?;
         let size = p.size();
         if row >= size.rows() || col >= size.cols() {
@@ -2574,6 +2584,16 @@ impl Session {
         if x10 && beyond_x10 {
             let message = format!(
                 "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
+            );
+            return Err(fail(Code::Mouse, message));
+        }
+        // In pixels (1016), no report can be made without a cell size.
+        let pixels =
+            p.screen().mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::SgrPixels;
+        if mode != Asked::None && pixels && p.screen().cell_size().is_none() {
+            let message = format!(
+                "the program in {pane} asked for mouse reports in pixels (mode 1016), and no terminal \
+                 showing it has said its cell size"
             );
             return Err(fail(Code::Mouse, message));
         }

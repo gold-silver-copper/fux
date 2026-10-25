@@ -633,10 +633,6 @@ closed! {
 
 /// Whether a host's cell, its width and height in pixels, is smaller than
 /// a sixel band's 2 by 6 (`THREATS.md` B05).
-fn cell_too_small(cell: (u16, u16)) -> bool {
-    cell.0 < 2 || cell.1 < 6
-}
-
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
 /// default (no feature, no identity) causes no side effects, retains no
 /// OSC payload, and answers only DSR 5n/6n and primary DA.
@@ -1018,17 +1014,11 @@ impl Parser {
     /// Tells the parser what the host's terminal draws: the size of a cell
     /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
     /// whether it shows sixel graphics, which primary device attributes
-    /// then say (`4`) with [`Feature::Pictures`].
-    ///
-    /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
-    /// placing a picture costs a bounded number of cells (`THREATS.md` B05).
+    /// then say (`4`) with [`Feature::Pictures`] and a cell size. Without
+    /// a cell size no picture is placed and no pixel is reported
+    /// ([`crate::Graphics`]).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
-        graphics.sixel &= self.options.has(Feature::Pictures);
-        if let Some(cell) = graphics.cell
-            && cell_too_small(cell)
-        {
-            graphics.cell = Some((cell.0.max(2), cell.1.max(6)));
-        }
+        graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
         self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with
@@ -1327,9 +1317,12 @@ impl Parser {
                 && self.params.is_empty()
         };
         let (decrqss, termcap) = (request(b"$"), request(b"+"));
-        // Sixel: `q` with no intermediates.
-        let sixel =
-            self.options.has(Feature::Pictures) && byte == b'q' && read.as_slice().is_empty();
+        // Sixel: `q` with no intermediates, read only with a cell size to
+        // lay it out in.
+        let sixel = self.options.has(Feature::Pictures)
+            && self.screen.cell_size().is_some()
+            && byte == b'q'
+            && read.as_slice().is_empty();
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {
