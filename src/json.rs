@@ -121,25 +121,46 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The bytes standard base64 `text` encodes, padded or not, as a program's
-/// OSC 52 sends them; `None` if it is not base64.
+/// The bytes `text` encodes in standard base64, as OSC 52 sends them;
+/// `None` unless it is exactly RFC 4648's encoding of them:
+/// - whole quanta: "the final unit of encoded output will be an integral
+///   multiple of 4 characters with no "=" padding", "two characters followed
+///   by two "=" padding characters" or "three characters followed by one
+///   "=" padding character" (§4), as "Implementations MUST include
+///   appropriate pad characters at the end of encoded data unless the
+///   specification referring to this document explicitly states otherwise"
+///   (§3.2), and OSC 52's, xterm's ctlseqs, does not;
+/// - "Implementations MUST reject the encoded data if it contains
+///   characters outside the base alphabet" (§3.3), "=" being padding only;
+/// - pad bits "MUST be set to zero by conforming encoders", and "decoders
+///   MAY chose to reject an encoding if the pad bits have not been set to
+///   zero" (§3.5), as this one does, so bytes have one encoding.
 pub fn unbase64(text: &[u8]) -> Option<Vec<u8>> {
-    let text = (text.strip_suffix(b"==").or_else(|| text.strip_suffix(b"="))).unwrap_or(text);
+    let (quanta, []) = text.as_chunks::<4>() else {
+        return None;
+    };
     // A capacity hint only.
-    let mut out = Vec::with_capacity(text.len().div_ceil(4).saturating_mul(3));
-    // Four characters at a time, and what is left over.
-    let (whole, rest) = text.as_chunks::<4>();
-    for chunk in
-        (whole.iter().map(|chunk| chunk.as_slice())).chain((!rest.is_empty()).then_some(rest))
-    {
+    let mut out = Vec::with_capacity(quanta.len().saturating_mul(3));
+    let last = quanta.len().saturating_sub(1);
+    for (i, quantum) in quanta.iter().enumerate() {
+        // Padding ends the last quantum only: "xx==" is one byte, "xxx=" two.
+        let chars = match quantum {
+            [_, _, b'=', b'='] if i == last => 2,
+            [_, _, _, b'='] if i == last => 3,
+            _ => 4,
+        };
         let mut n = 0u32;
-        for (c, shift) in chunk.iter().zip([18u32, 12, 6, 0]) {
+        for (c, shift) in quantum.iter().take(chars).zip([18u32, 12, 6, 0]) {
             let value = TABLE.iter().position(|t| t == c)?;
             n |= u32::try_from(value).ok()? << shift;
         }
-        // Four characters are three bytes, three two, two one; one is none.
-        let bytes = n.to_be_bytes();
-        out.extend_from_slice(bytes.get(1..chunk.len()).filter(|b| !b.is_empty())?);
+        // A zero byte, the bytes, then the pad bits.
+        let word = n.to_be_bytes();
+        let (bytes, pad) = word.split_at_checked(chars)?;
+        if pad.iter().any(|&b| b != 0) {
+            return None;
+        }
+        out.extend_from_slice(bytes.get(1..)?);
     }
     Some(out)
 }
@@ -180,12 +201,21 @@ mod tests {
                 Some(input.as_bytes())
             );
         }
-        assert_eq!(
-            unbase64(b"Zm9vYg").as_deref(),
-            Some(&b"foob"[..]),
-            "unpadded"
-        );
-        for bad in [&b"Zm9v!"[..], b"Z", b"Zm=v", b"Zm9vY"] {
+        // Unpadded, misplaced or extra padding, pad bits set, a character
+        // outside the alphabet.
+        for bad in [
+            &b"Zg"[..],
+            b"Zm9vYg",
+            b"Zg=",
+            b"Zm9v=",
+            b"==",
+            b"Z===",
+            b"Zm=v",
+            b"Zg==Zg==",
+            b"Zh==",
+            b"Zm9=",
+            b"Zm9v!A==",
+        ] {
             assert_eq!(unbase64(bad), None, "{bad:?}");
         }
     }
