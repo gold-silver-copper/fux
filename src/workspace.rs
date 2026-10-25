@@ -426,13 +426,11 @@ impl Parts {
             .push(Place::Tab(id, tab), What::Created(Some(tab_name.clone())));
         let first = Tab::new(tab, tab_name, fit, clients);
         let shown = first.seats.keys().map(|c| (*c, tab)).collect();
-        let viewers = BTreeSet::new();
-        let tabs = vec![first];
         self.workspaces.push(Workspace {
             id,
             name,
-            tabs,
-            viewers,
+            tabs: vec![first],
+            viewers: BTreeSet::new(),
             shown,
         });
         self.put(id, tab, pane);
