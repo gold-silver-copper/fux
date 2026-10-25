@@ -197,9 +197,10 @@ impl From<(NonZeroU16, NonZeroU16)> for Size {
     }
 }
 
-/// The size of the terminal `fd`: `None` if it is no terminal, or says it
-/// has no rows or no columns, as one over a serial line may.
-pub fn window_size(fd: impl AsFd) -> Option<Size> {
+/// The size of the terminal `fd`, and its size in pixels if it says one:
+/// `None` if it is no terminal, or says it has no rows or no columns, as
+/// one over a serial line may.
+pub fn window_size(fd: impl AsFd) -> Option<(Size, Option<Pixels>)> {
     let mut size = libc::winsize {
         ws_row: 0,
         ws_col: 0,
@@ -209,17 +210,30 @@ pub fn window_size(fd: impl AsFd) -> Option<Size> {
     let get = Request::from(libc::TIOCGWINSZ);
     // SAFETY: TIOCGWINSZ writes one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), get, &mut size) }).ok()?;
-    Size::new(size.ws_row, size.ws_col)
+    let pixels = (NonZeroU16::new(size.ws_xpixel).zip(NonZeroU16::new(size.ws_ypixel)))
+        .map(|(width, height)| Pixels { width, height });
+    Some((Size::new(size.ws_row, size.ws_col)?, pixels))
 }
 
-/// Sets the size of the terminal `fd`; the kernel tells its foreground
-/// group with SIGWINCH.
-pub fn set_window_size(fd: impl AsFd, size: Size) -> Result<()> {
+/// The size of a terminal's whole window in pixels, as `TIOCSWINSZ` takes
+/// it: for a program that lays pictures out in it, or divides it by a
+/// size in cells for its cell.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pixels {
+    pub width: NonZeroU16,
+    pub height: NonZeroU16,
+}
+
+/// Sets the size of the terminal `fd`, in cells and, if known, in
+/// `pixels` (else 0 by 0, as the kernel says unknown); the kernel tells
+/// its foreground group with SIGWINCH when either changes.
+pub fn set_window_size(fd: impl AsFd, size: Size, pixels: Option<Pixels>) -> Result<()> {
+    let (x, y) = pixels.map_or((0, 0), |p| (p.width.get(), p.height.get()));
     let size = libc::winsize {
         ws_row: size.rows.get(),
         ws_col: size.cols.get(),
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+        ws_xpixel: x,
+        ws_ypixel: y,
     };
     let set = Request::from(libc::TIOCSWINSZ);
     // SAFETY: TIOCSWINSZ reads one winsize, and `size` is one.
@@ -295,7 +309,7 @@ mod tests {
     fn a_terminal_reopens_nonblocking_on_its_own() -> std::result::Result<(), String> {
         let (master, slave) = pty::open(size(10, 20)?).map_err(|e| e.to_string())?;
         let again = reopen(&slave).map_err(|e| e.to_string())?;
-        assert_eq!(window_size(&again), Some(size(10, 20)?));
+        assert_eq!(window_size(&again), Some((size(10, 20)?, None)));
         // Nothing to read: the new file says so at once, not blocking.
         let mut buffer = [0u8; 4];
         assert_eq!(crate::io::read(&again, &mut buffer), Err(Errno::AGAIN));
@@ -311,9 +325,13 @@ mod tests {
     #[test]
     fn modes_and_size_round_trip_on_a_pty() -> std::result::Result<(), String> {
         let (master, slave) = pty::open(size(24, 80)?).map_err(|e| e.to_string())?;
-        assert_eq!(window_size(&slave), Some(size(24, 80)?));
-        set_window_size(&master, size(5, 7)?).map_err(|e| e.to_string())?;
-        assert_eq!(window_size(&slave), Some(size(5, 7)?));
+        assert_eq!(window_size(&slave), Some((size(24, 80)?, None)));
+        set_window_size(&master, size(5, 7)?, None).map_err(|e| e.to_string())?;
+        assert_eq!(window_size(&slave), Some((size(5, 7)?, None)));
+        let pixels = (NonZeroU16::new(70).zip(NonZeroU16::new(100)))
+            .map(|(width, height)| Pixels { width, height });
+        set_window_size(&master, size(5, 7)?, pixels).map_err(|e| e.to_string())?;
+        assert_eq!(window_size(&slave), Some((size(5, 7)?, pixels)));
         let mut modes = attributes(&slave).map_err(|e| e.to_string())?;
         assert!(modes.modes().echo, "a new terminal echoes");
         assert!(modes.modes().canonical, "and edits a line at a time");

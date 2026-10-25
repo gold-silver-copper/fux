@@ -894,9 +894,7 @@ impl<S> Pane<S> {
         self.release_frame();
         if self.parser.resize(size).is_ok() {
             self.said.push(What::Resized(size));
-            if let Some(child) = self.process.child() {
-                let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
-            }
+            self.size_terminal();
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
             // A program that does not read its input loses it, told
@@ -939,7 +937,33 @@ impl<S> Pane<S> {
     ) {
         self.colours = colours;
         self.parser.set_host_palette(palette);
+        let told = self.screen().cell_size();
         self.parser.set_host_graphics(graphics);
+        if self.screen().cell_size() != told {
+            self.size_terminal();
+        }
+    }
+
+    /// Sizes its program's terminal as its screen is, and in pixels as the
+    /// cell it is told makes it, where one is and the whole fits the
+    /// kernel's count: a change of either signals the program (SIGWINCH),
+    /// which asks again.
+    fn size_terminal(&self) {
+        let Some(child) = self.process.child() else {
+            return;
+        };
+        let size = self.size();
+        let side = |cells: u16, pixels: u16| {
+            let whole = u32::from(cells).checked_mul(u32::from(pixels))?;
+            std::num::NonZeroU16::new(u16::try_from(whole).ok()?)
+        };
+        let pixels = self.screen().cell_size().and_then(|cell| {
+            Some(fuxix::terminal::Pixels {
+                width: side(size.cols(), cell.width())?,
+                height: side(size.rows(), cell.height())?,
+            })
+        });
+        let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
     }
 
     pub fn clear_history(&mut self) {

@@ -466,7 +466,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
 /// and the server paints, if it says them: one that says none (or 0 of
 /// either) has no size fux could lay panes out on.
 pub(crate) fn window_size() -> Option<fux_vt::Size> {
-    fuxix::terminal::window_size(io::stdin()).map(|s| (s.rows, s.cols).into())
+    fuxix::terminal::window_size(io::stdin()).map(|(s, _)| (s.rows, s.cols).into())
 }
 
 /// Whether stdin and stdout are one terminal: the same device, or both the

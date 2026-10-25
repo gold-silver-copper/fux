@@ -84,7 +84,7 @@ impl Client {
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
         let size = fuxix::terminal::Size::new(rows, cols).ok_or("a zero size")?;
-        fuxix::terminal::set_window_size(master, size).map_err(|e| e.to_string())?;
+        fuxix::terminal::set_window_size(master, size, None).map_err(|e| e.to_string())?;
         // The same size signals nothing, and nothing is repainted: the
         // screen stays as it is.
         if (rows, cols) == (self.rows, self.cols) {

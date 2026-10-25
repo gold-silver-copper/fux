@@ -141,6 +141,9 @@ pub struct Terminal {
     /// pictures are laid out in).
     pub sixel: bool,
     pub cell: Option<fux_vt::CellSize>,
+    /// The cell it last said, width by height, a refused one too: a
+    /// refusal is told as the answer changes, not at each asking.
+    said_cell: Option<(u16, u16)>,
 }
 
 impl Terminal {
@@ -225,6 +228,9 @@ impl Session {
             // laid out in: refused, and said, not made one. A 0 is no size
             // said, as terminals that do not know theirs answer.
             Reply::CellSize { width, height } => {
+                if terminal.said_cell.replace((width, height)) == Some((width, height)) {
+                    return;
+                }
                 terminal.cell = fux_vt::CellSize::new(width, height);
                 if terminal.cell.is_none() && width != 0 && height != 0 {
                     let (least_width, least_height) = fux_vt::CellSize::LEAST;
@@ -237,6 +243,12 @@ impl Session {
                     );
                 }
                 view.dirty = true;
+                // The panes it shows are told a cell that changed now, not
+                // at their next output (`Pane::host`).
+                let tab = self.shown_tab(client).and_then(crate::workspace::Tab::root);
+                for id in tab.map(crate::layout::Tree::panes).unwrap_or_default() {
+                    self.hosted(id);
+                }
             }
             // The terminal speaks the kitty protocol: its keys are read
             // exactly from now on.
@@ -632,6 +644,59 @@ mod tests {
         assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
         s.input(c, b"\x1b[6;24;12t");
         assert!(cell(&mut s)?.contains(r#""cell":{"width":12,"height":24}"#));
+        Ok(())
+    }
+
+    /// A cell answer that changes the cell a pane's program is told sizes
+    /// its terminal in pixels at once, which signals it (SIGWINCH), not at
+    /// its next output; and a refused cell is told once, not again at
+    /// each asking.
+    #[test]
+    fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
+        let (mut s, c) = session()?;
+        let id = PaneId::of(1);
+        let argv = ["/bin/cat".to_owned()];
+        let size = fux_vt::Size::new(4, 20).map_err(|e| e.to_string())?;
+        let child = crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), size)?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let _ = pane.set_process(crate::pane::Process::Reading(child));
+        drop(pane);
+        let rows_cols = s
+            .parts
+            .panes()
+            .get(&id)
+            .map(|p| p.size())
+            .ok_or("the pane")?;
+        let pixels = |s: &Session| {
+            let pane = s.parts.panes().get(&id)?;
+            let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
+            pixels.map(|p| (p.width.get(), p.height.get()))
+        };
+        assert_eq!(pixels(&s), None, "no cell said");
+        s.input(c, b"\x1b[6;20;10t");
+        let whole = |w: u16, h: u16| {
+            Some((
+                w.checked_mul(rows_cols.cols())?,
+                h.checked_mul(rows_cols.rows())?,
+            ))
+        };
+        assert_eq!(pixels(&s), whole(10, 20));
+        s.input(c, b"\x1b[6;24;12t");
+        assert_eq!(pixels(&s), whole(12, 24));
+        let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
+        s.input(c, b"\x1b[6;5;1t");
+        assert!(notice(&mut s).is_some(), "refused, told");
+        assert_eq!(pixels(&s), None, "no cell told");
+        s.input(c, b"\x1b[6;5;1t");
+        assert!(notice(&mut s).is_none(), "told once");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let crate::pane::Process::Reading(child) = pane.set_process(crate::pane::Process::Absent)
+        {
+            drop(child.master);
+            if let Err(pid) = child.leader.finish() {
+                crate::process::reaped(pid);
+            }
+        }
         Ok(())
     }
 
