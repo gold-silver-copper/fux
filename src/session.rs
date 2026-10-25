@@ -2145,7 +2145,7 @@ impl Session {
                 let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
                 // A workspace named that is not there is made, as `run`
                 // makes one, its first tab this one.
-                let made = self.create_tab(target.as_ref(), here, None, fit, new)?;
+                let made = self.create_tab(target.as_ref(), here, name.clone(), fit, new)?;
                 if let Some(name) = name {
                     self.give_tab_name(made.tab, name.clone())?;
                 }
@@ -4765,6 +4765,21 @@ mod tests {
         });
         ran?;
         assert_eq!(lines, "renamed +1 name=x\nrenamed +1 name=main\n");
+        Ok(())
+    }
+
+    /// A tab made with a name is told made with it, not with another
+    /// and then renamed.
+    #[test]
+    fn a_tab_made_with_a_name_is_told_made_with_it() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let mut ran = Ok(());
+        let lines = told(&mut s, |s| {
+            let tab = "opts 80 24 size str t name str +1 workspace in new-tab drop";
+            ran = run(s, tab);
+        });
+        ran?;
+        assert_eq!(lines, "created @2 +1 name=t\ncreated %2 @2 +1\n");
         Ok(())
     }
 
