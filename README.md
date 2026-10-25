@@ -437,7 +437,10 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   your terminal is resized, as a font zoom resizes it), if your terminal says
   so, and the pictures it draws are shown on your terminal, clipped to the
   pane; they scroll with the text, and text over one, or an overlay, takes
-  it away. A pane no sixel-drawing terminal shows is told none, so its
+  it away. Of the terminals showing a pane, one that draws sixel and said
+  its cell size draws it (of those, the one last typed in there, else the
+  first); with none, its cell size is of one that said it, chosen so. A pane shown on no
+  terminal that draws sixel and said its cell size is told no sixel, so its
   programs draw in text (half blocks), which captures read; `json` says
   where pictures are, and the cell size (`cell`, `null` while unknown).
   fux never makes a cell size up: without one (no terminal showing the

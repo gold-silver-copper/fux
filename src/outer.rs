@@ -18,7 +18,9 @@
 //! the one that last typed into it, else the first; else none: a pane no
 //! terminal showing it answers for is not answered colours it did not
 //! set, as no one knows what it is shown on. Its pictures and cell size
-//! are of a terminal showing its tab that said its cell size, chosen so.
+//! are of a terminal showing its tab that draws sixel and said its cell
+//! size, chosen so; with none, its cell size is of one that said it,
+//! chosen so, and it draws no pictures.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -331,10 +333,12 @@ impl Session {
     }
 
     /// The client whose terminal draws the panes of `tab` as they are told:
-    /// of those showing it that said a cell size, the one that last typed
-    /// into it, else the first.
+    /// of those showing it that draw sixel and said a cell size, else of
+    /// those that said a cell size, the one that last typed into it, else
+    /// the first.
     fn graphics_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        self.answering(tab, |t| t.cell.is_some())
+        (self.answering(tab, |t| t.sixel && t.cell.is_some()))
+            .or_else(|| self.answering(tab, |t| t.cell.is_some()))
     }
 
     /// What the terminal that draws pane `id` draws (`graphics_client`):
@@ -589,6 +593,26 @@ mod tests {
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
+        Ok(())
+    }
+
+    /// A pane's pictures are drawn on a terminal showing it that draws
+    /// sixel and said its cell, though one that draws none typed there
+    /// last; with none that draws sixel, its cell is the one said.
+    #[test]
+    fn a_terminal_that_draws_sixel_draws_a_panes_pictures() -> Outcome {
+        let (mut s, c) = session()?;
+        let graphics = |s: &mut Session| s.graphics(PaneId::of(1));
+        s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
+        let d = s.attach(24, 80, None).map_err(|e| e.to_string())?;
+        s.input(d, b"\x1b[6;16;8t\x1b[?62;22c");
+        s.input(d, b"x");
+        let shown = graphics(&mut s);
+        assert!(shown.sixel && shown.cell == fux_vt::CellSize::new(10, 20));
+        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        let shown = graphics(&mut s);
+        assert!(!shown.sixel && shown.cell == fux_vt::CellSize::new(8, 16));
         Ok(())
     }
 
