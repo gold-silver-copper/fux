@@ -390,6 +390,10 @@ mod tests {
         let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
         let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
         assert!(about("id").is_some_and(|a| a.contains(&jump)));
+        let sides = format!("1 to {} each", crate::view::MOST);
+        for name in ["size", "resize", "resize-client", "headless"] {
+            assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");
+        }
     }
 
     /// The guide's topics, as `help-agents-on` and the guide's first

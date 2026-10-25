@@ -135,13 +135,13 @@ codes! {
     NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
-    /// A size no pane or tab can have: a client's screen of none, or with
-    /// no room for a pane below its bar (`attach`, its terminal resized,
-    /// `resize-client`); a new tab or workspace no client sizes, given
-    /// none; a pane's `resize-x` or `resize-y` the layout cannot give; a
-    /// tab resized, a split or a pane moved where its tab's panes would
-    /// not all show; a layout whose shares would take more weight than it
-    /// holds.
+    /// A size no pane or tab can have: a client's screen of none, or past
+    /// 4096 (`view::MOST`) a side (`attach`, its terminal resized), or with
+    /// no room for a pane below its bar as it starts a server's first
+    /// shell; a new tab or workspace no client sizes, given none; a pane's
+    /// `resize-x` or `resize-y` the layout cannot give; a tab resized, a
+    /// split or a pane moved where its tab's panes would not all show; a
+    /// layout whose shares would take more weight than it holds.
     Size "size",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",
