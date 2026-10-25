@@ -3663,6 +3663,25 @@ mod tests {
         Ok(())
     }
 
+    /// A screen smaller than its tab names in its bar the panes it cuts
+    /// off and those it has no room for.
+    #[test]
+    fn a_small_screen_names_the_panes_it_cuts_and_hides() -> Result<(), String> {
+        let (mut s, _) = attached(25, 80)?;
+        run(&mut s, "str %1 pane vertical split drop")?;
+        let bar = |s: &mut Session, rows, cols| {
+            let grid = watch(s, rows, cols).map(|c| crate::render::compose(s, c));
+            Ok::<_, String>(grid?.map(|g| g.row_text(g.rows.saturating_sub(1))))
+        };
+        let roomy = bar(&mut s, 30, 100)?.unwrap_or_default();
+        assert!(!roomy.contains('['), "{roomy}");
+        let small = bar(&mut s, 6, 80)?.unwrap_or_default();
+        assert!(small.contains("[cut %1 %2] %1"), "{small}");
+        let short = bar(&mut s, 3, 80)?.unwrap_or_default();
+        assert!(short.contains("[cut %1] [hidden %2] %1"), "{short}");
+        Ok(())
+    }
+
     /// A tab made from the command line in a pane is laid out on the
     /// smallest screen of the clients sizing that pane's tab, not of
     /// whichever client attached first.

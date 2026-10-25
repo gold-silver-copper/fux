@@ -1016,7 +1016,7 @@ pub fn compose_held(
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
-    bar(grid, session, view, copy);
+    bar(grid, session, view, placement, copy);
     match &view.mode {
         Mode::Panel(Panel::Column(c)) => column(grid, view, c),
         Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
@@ -1270,6 +1270,7 @@ fn bar(
     grid: &mut Grid,
     session: &Session,
     view: &View,
+    placement: &Placement,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) {
     let Some(y) = view.rows.checked_sub(1) else {
@@ -1298,7 +1299,8 @@ fn bar(
         (session.focused(view.id))
             .and_then(|f| session.parts.panes().get(&f))
             .map(|p| {
-                let mut text = format!("{} {}", p.id(), p.label());
+                let mut text = unseen(session, view, placement);
+                text.push_str(&format!("{} {}", p.id(), p.label()));
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }
@@ -1360,6 +1362,36 @@ fn bar(
         let start = view.cols.saturating_sub(width(&text).saturating_add(1));
         grid.text(y, start, &text, attrs, view.cols);
     }
+}
+
+/// What of the tab `view` shows its screen does not: `[cut %2]` for each
+/// pane placed in less room than its size, `[hidden %3]` for each it has no
+/// room for (when zoomed, the focus alone is shown), each followed by a
+/// space; empty if it shows them all whole.
+fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
+    let Some(tab) = session.shown_tab(view.id) else {
+        return String::new();
+    };
+    let panes = match tab.focus(view.id).filter(|_| view.zoom) {
+        Some(focus) => vec![focus],
+        None => tab.root().panes(),
+    };
+    let (mut cut, mut hidden) = (String::new(), String::new());
+    for id in panes {
+        let size = session.parts.panes().get(&id).map(|p| p.size());
+        match placement.rect(id) {
+            None => hidden.push_str(&format!(" {id}")),
+            Some(r) if size.is_some_and(|s| r.h() < s.rows() || r.w() < s.cols()) => {
+                cut.push_str(&format!(" {id}"));
+            }
+            Some(_) => {}
+        }
+    }
+    [("cut", cut), ("hidden", hidden)]
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .map(|(word, ids)| format!("[{word}{ids}] "))
+        .collect()
 }
 
 /// A line of a panel: its text, borrowed where it can be, and its style.

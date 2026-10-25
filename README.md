@@ -37,7 +37,11 @@ A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's number and title (the program's OSC 0/2 title,
-else the pane's name), a notice, or copy mode's position.
+else the pane's name), a notice, or copy mode's position. A screen smaller
+than its tab (a watcher's, or a client's beside a bigger one, for a tab sized
+on its own) shows panes cut off at their right and bottom, or none of a pane
+it has no room for: the bar names them before the title, `[cut %2]
+[hidden %3]`.
 
 ## fuxth
 
