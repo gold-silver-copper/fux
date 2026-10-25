@@ -2556,15 +2556,10 @@ impl Session {
             );
             return Err(fail(Code::Mouse, message));
         }
-        // In pixels (1016), no report can be made without a cell size.
-        let pixels =
-            p.screen().mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::SgrPixels;
-        if mode != Asked::None && pixels && p.screen().cell_size().is_none() {
-            let message = format!(
-                "the program in {pane} asked for mouse reports in pixels (mode 1016), and no terminal \
-                 showing it has said its cell size"
-            );
-            return Err(fail(Code::Mouse, message));
+        if mode != Asked::None
+            && let Some(why) = p.no_mouse_reports()
+        {
+            return Err(fail(Code::Mouse, why));
         }
         let mut report = Vec::new();
         for event in events {
