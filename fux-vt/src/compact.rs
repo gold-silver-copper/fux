@@ -98,10 +98,7 @@ impl Compact {
     }
     /// Whether any of `cells` is either half of a wide glyph.
     pub(crate) fn any_halves(cells: &[Self]) -> bool {
-        Self::any_of(cells, HALVES)
-    }
-    fn any_of(cells: &[Self], flags: u32) -> bool {
-        cells.iter().fold(0, |any, cell| any | cell.word) & flags != 0
+        cells.iter().fold(0, |any, cell| any | cell.word) & HALVES != 0
     }
     /// A blank cell in style 0, the halves `halves` says ([`CellRef`]'s).
     #[inline]
