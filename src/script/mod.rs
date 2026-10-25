@@ -1104,7 +1104,7 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
         && !settings.0.is_empty()
     {
         let request = crate::command::Command::Set(settings.0).into();
-        server.ask(&Asked { request, context }, &mut io::sink())?;
+        succeeded(server.ask(&Asked { request, context }, &mut io::sink())?)?;
     }
     Ok(keymap)
 }
