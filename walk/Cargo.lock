@@ -33,6 +33,7 @@ dependencies = [
  "fux",
  "fux-vt",
  "fuxix",
+ "fuxth",
  "serde_json",
  "signal-hook",
 ]
