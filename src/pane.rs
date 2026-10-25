@@ -289,11 +289,23 @@ struct Sink<'a> {
     copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
-    /// The scheme its program was last told (`Pane::scheme_told`).
-    scheme_told: &'a mut Option<Scheme>,
+    /// The scheme a `CSI ? 996 n` among `replies` answered, last: its
+    /// program was told it once they are queued (`Pane::scheme_told`).
+    told: Option<Scheme>,
 }
 
 impl Sink<'_> {
+    /// Keeps `bytes` among the replies if they fit `REPLIES_MAX`, and
+    /// whether they did; else one is dropped.
+    fn keep(&mut self, bytes: &[u8]) -> bool {
+        let fits = self.replies.len().saturating_add(bytes.len()) <= REPLIES_MAX;
+        match fits {
+            true => self.replies.extend_from_slice(bytes),
+            false => self.dropped = true,
+        }
+        fits
+    }
+
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.said().clone();
@@ -303,10 +315,7 @@ impl Sink<'_> {
 
 impl fux_vt::Sink for Sink<'_> {
     fn reply(&mut self, bytes: &[u8]) {
-        match self.replies.len().saturating_add(bytes.len()) <= REPLIES_MAX {
-            true => self.replies.extend_from_slice(bytes),
-            false => self.dropped = true,
-        }
+        self.keep(bytes);
     }
     /// A colour query (OSC 10, 11) is answered if the colour is known.
     fn event(&mut self, event: Event<'_>) {
@@ -363,9 +372,10 @@ impl fux_vt::Sink for Sink<'_> {
         let title = matches!(second, None | Some([] | [0] | [2]));
         match (intermediates, action, first) {
             (b"?", b'n', Some([996])) if second.is_none() => {
-                if let Some(scheme) = self.colours.scheme {
-                    fux_vt::Sink::reply(self, scheme.report());
-                    *self.scheme_told = Some(scheme);
+                if let Some(scheme) = self.colours.scheme
+                    && self.keep(scheme.report())
+                {
+                    self.told = Some(scheme);
                 }
             }
             (b"", b't', Some([22])) if title => self.title.push(),
@@ -787,7 +797,7 @@ impl<S> Pane<S> {
             alerts: &mut self.alerts,
             copied: &mut self.copied,
             colours: &self.colours,
-            scheme_told: &mut self.scheme_told,
+            told: None,
         };
         // The parser refuses only allocations beyond its limits; the screen
         // stays as it was and output continues.
@@ -809,6 +819,9 @@ impl<S> Pane<S> {
         // Queued as `push` queues; a full queue drops them, which is told
         // (`Lost`), as replies past the read's bound are.
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
+        if let Some(scheme) = sink.told.filter(|_| !full) {
+            self.scheme_told = Some(scheme);
+        }
         if sink.dropped {
             self.input.dropped();
         } else if !full && !self.input.refusing && self.input.lost == Lost::Told {
@@ -1166,6 +1179,35 @@ pub(crate) mod tests {
         pane.output(b"\x1b[?2031h\x1b[?2031$p");
         assert!(pane.screen().mode(Mode::ColorSchemeUpdates));
         assert_eq!(pane.input.drain_all(), b"\x1b[?2031;1$y");
+        Ok(())
+    }
+
+    /// A scheme query answered while its program's input queue is full, or
+    /// past a read's replies, was not told: the scheme it was told stays
+    /// as it was, so the session tells it again (`tell_schemes`).
+    #[test]
+    fn a_scheme_answer_refused_is_not_told() -> Result<(), Error> {
+        use crate::outer::{Colours, Scheme};
+        let mut pane = pane(3, 30)?;
+        pane.colours = Colours {
+            scheme: Some(Scheme::Light),
+            ..Colours::default()
+        };
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .chain(*b"\x1b[?996n")
+            .collect();
+        pane.output(&queries);
+        assert_eq!(pane.scheme_told, None, "past a read's replies");
+        pane.input.drain_all();
+        pane.input.push(b"x")?;
+        assert!(pane.input.push(vec![0; INPUT_BYTES]).is_err());
+        pane.output(b"\x1b[?996n");
+        assert_eq!(pane.scheme_told, None, "the queue full");
+        pane.input.drain_all();
+        pane.output(b"\x1b[?996n");
+        assert_eq!(pane.scheme_told, Some(Scheme::Light));
         Ok(())
     }
 
