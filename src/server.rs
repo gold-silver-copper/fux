@@ -1097,21 +1097,29 @@ impl Server {
         }
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is polled only for what it
-            // has to write, and for its end.
-            let mut flags = if conn.reads() {
-                PollFlags::IN
-            } else {
-                PollFlags::HUP
+            // has to write. One with nothing to write either (an attach
+            // held) asks for nothing: a hang-up is told unasked (POSIX),
+            // where the system tells one at all; else it is found as the
+            // connection is read again. Asking for a hang-up would not do:
+            // macOS then wakes for each byte waiting unread, and tells a
+            // peer that shut only its side as hung up.
+            let mut flags = match conn.reads() {
+                true => PollFlags::IN,
+                false => PollFlags::NONE,
             };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
             match &conn.wire {
                 Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
-                // Each FIFO for its own way, and for its end.
+                // Each FIFO for its own way, the way in for its end too.
                 Wire::Door(fifos) => {
-                    if flags.intersects(PollFlags::IN) {
-                        add(PollFd::new(&fifos.up, PollFlags::IN), Slot::Conn(i));
+                    if conn.reads() || conn.out.is_empty() {
+                        let flags = match conn.reads() {
+                            true => PollFlags::IN,
+                            false => PollFlags::NONE,
+                        };
+                        add(PollFd::new(&fifos.up, flags), Slot::Conn(i));
                     }
                     if flags.intersects(PollFlags::OUT) {
                         add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
@@ -1432,12 +1440,15 @@ impl Server {
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         let reads = conn.reads();
-        // One that is not read learns that its peer is gone by writing;
-        // one with nothing to write, that it is gone.
+        // One that is not read learns that its peer is gone by writing.
+        // A hang-up says only that nothing more comes (macOS says it of a
+        // peer that shut its side): one that is read once its answer is
+        // written takes what it sent first; one that is still not read,
+        // with nothing to write, is dead.
         if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
         }
-        if gone && !reads && conn.out.is_empty() {
+        if gone && !conn.reads() && conn.out.is_empty() {
             conn.enter(&mut self.session, Stage::Dead);
         }
         // A command client whose answer is now written: its next request
