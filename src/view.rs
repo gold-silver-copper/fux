@@ -60,20 +60,23 @@ impl<const MAX: usize> Line<MAX> {
         self.before + &self.after
     }
 
-    /// An edit of the line: typed text (one line of it, nothing that
-    /// controls, unless the line would pass `MAX` bytes), or a move or a
-    /// deletion.
-    pub fn edit(&mut self, edit: &Edit) {
+    /// An edit of the line: typed text (its control characters, and the
+    /// line end a pasted line ends in, left out), or a move or a deletion.
+    /// Text of more than one line, or that would take the line past `MAX`
+    /// bytes, is refused whole, saying why.
+    pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
             Edit::Insert(text) => {
-                let typed: String = (text.chars())
-                    .take_while(|c| *c != '\n' && *c != '\r')
-                    .filter(|c| !c.is_control())
-                    .collect();
-                let len = self.before.len().saturating_add(self.after.len());
-                if len.saturating_add(typed.len()) <= MAX {
-                    self.before.push_str(&typed);
+                let text = text.trim_end_matches(['\n', '\r']);
+                if text.contains(['\n', '\r']) {
+                    return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                let len = self.before.len().saturating_add(self.after.len());
+                if len.saturating_add(typed.len()) > MAX {
+                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
+                }
+                self.before.push_str(&typed);
             }
             Edit::Backspace => drop(self.before.pop()),
             Edit::Delete => self.after = self.after.chars().skip(1).collect(),
@@ -95,6 +98,7 @@ impl<const MAX: usize> Line<MAX> {
             }
             Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
         }
+        Ok(())
     }
 }
 

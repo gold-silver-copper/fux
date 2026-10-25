@@ -345,9 +345,10 @@ impl Screen {
                 std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
-                prompt.line.edit(&edit);
+                let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                Vec::from_iter(self.panel().map(|p| Effect::Send(Act::Show(p))))
+                let shown = self.panel().map(|p| Effect::Send(Act::Show(p)));
+                shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
     }
@@ -393,15 +394,21 @@ impl Screen {
                 seek,
             },
             LineAct::Edit(edit) => {
-                line.edit(&edit);
+                let refused = line.edit(&edit).err();
                 let typing = (seek, line.before().to_owned(), line.after().to_owned());
                 *self = Self::Copy(Some((seek, line)));
-                return vec![Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))))];
+                let shown = Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))));
+                return std::iter::once(shown).chain(refused.map(refusal)).collect();
             }
         };
         *self = Self::Copy(None);
         vec![Effect::Send(Act::Copy(sent))]
     }
+}
+
+/// A line's refusal of an edit, told as an error's notice.
+fn refusal(text: String) -> Effect {
+    Effect::Send(Act::Notice { text, error: true })
 }
 
 #[cfg(test)]

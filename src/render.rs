@@ -2653,7 +2653,7 @@ mod tests {
         // The line with its cursor `left` chars from the end.
         let line = |text: &str, left: usize| {
             let mut line: crate::view::Line = crate::view::Line::new(text.into());
-            (0..left).for_each(|_| line.edit(&crate::act::Edit::Left));
+            (0..left).for_each(|_| drop(line.edit(&crate::act::Edit::Left)));
             line
         };
         let end = text.chars().count();

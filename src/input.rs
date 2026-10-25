@@ -1007,7 +1007,13 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x7f\x7f\x7f\x7f\x7f");
         assert_eq!(mode(&s, c), "prompt |");
+        // A paste of two lines is refused whole, and said; of one line,
+        // its line end left out, typed.
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
+        assert_eq!(mode(&s, c), "prompt |");
+        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("one line")));
+        s.input(c, b"\x1b[200~one\n\x1b[201~");
         assert_eq!(mode(&s, c), "prompt one|");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");
