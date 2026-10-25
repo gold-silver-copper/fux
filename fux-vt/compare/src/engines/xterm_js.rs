@@ -282,35 +282,6 @@ fn with_node<T>(f: impl FnOnce(&mut Node) -> Result<T, String>) -> Result<T, Str
     .map_err(|e| format!("node: {e}"))?
 }
 
-/// `bytes` in base64, as engine.mjs reads it.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3).saturating_mul(4));
-    let mut put = |n: u32, sextets: usize| {
-        for (i, shift) in [18u32, 12, 6, 0].into_iter().enumerate() {
-            let letter = if i < sextets {
-                usize::try_from(n.wrapping_shr(shift) & 63)
-                    .ok()
-                    .and_then(|at| ALPHABET.get(at))
-                    .map_or('=', |&b| char::from(b))
-            } else {
-                '='
-            };
-            out.push(letter);
-        }
-    };
-    let (whole, rest) = bytes.as_chunks::<3>();
-    for &[a, b, c] in whole {
-        put(u32::from_be_bytes([0, a, b, c]), 4);
-    }
-    match *rest {
-        [a] => put(u32::from_be_bytes([0, a, 0, 0]), 2),
-        [a, b] => put(u32::from_be_bytes([0, a, b, 0]), 3),
-        _ => {}
-    }
-    out
-}
-
 pub struct XtermJs {
     id: u64,
 }
@@ -502,7 +473,7 @@ impl XtermJs {
         let line = format!(
             r#"{{"op":"write","id":{},"data":"{}","ack":{ack}}}"#,
             self.id,
-            base64(bytes)
+            fux::json::base64(bytes)
         );
         if ack {
             node.ask(&line).map(drop)
