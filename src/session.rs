@@ -2935,7 +2935,7 @@ impl Session {
         // A tab made for it fits clients at its tab's size until one shows it.
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
-        let (ws, tab) = match to {
+        let (ws, tab, made) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
                 let mut root = self.root(from).cloned();
@@ -2945,19 +2945,23 @@ impl Session {
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
-            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
+            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab, false),
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
                 let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                (ws, first.ok_or(Error::NoWorkspace(ws))?.id())
+                (ws, first.ok_or(Error::NoWorkspace(ws))?.id(), false)
             }
+            // A tab made for it holds it alone, which shows on every size
+            // it is laid out on (each has a cell: its fit's, and a screen
+            // that sizes panes, `View::sizes`): nothing after refuses the
+            // move.
             MoveTo::NewTab => {
                 let mut ids = self.ids.clone();
                 let id = ids.tab()?;
                 (self.parts.add_tab((from_ws, id), None, fit, None))
                     .map_err(|_| Error::NoWorkspace(from_ws))?;
                 self.ids = ids;
-                (from_ws, id)
+                (from_ws, id, true)
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
@@ -2969,15 +2973,17 @@ impl Session {
                 let clients = self.views.keys().copied();
                 let first = (tab, MAIN.into(), fit);
                 (self.parts).add_workspace((id, name), first, clients, None);
-                (id, tab)
+                (id, tab, true)
             }
         };
         if from == tab {
             return Ok(String::new());
         }
-        let mut root = self.root(tab).cloned();
-        layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
-        self.room(tab, root.as_ref(), here.client())?;
+        if !made {
+            let mut root = self.root(tab).cloned();
+            layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
+            self.room(tab, root.as_ref(), here.client())?;
+        }
         (self.parts.relocate(pane, tab)).map_err(|unmade| unmade_error(unmade, pane))?;
         // The moving client follows its pane.
         let pane = Some(pane);
@@ -5335,6 +5341,31 @@ mod tests {
             refused.contains("no room") && refused.contains("screen"),
             "{refused}"
         );
+        Ok(())
+    }
+
+    /// A screen with no room below its bar shows no layout and sizes
+    /// nothing: it refuses no split of the tab it shows, and a pane it
+    /// moves to a tab made for it is in that tab, never leaving one empty.
+    #[test]
+    fn a_screen_with_no_room_refuses_nothing() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        let tiny = s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        run(&mut s, "%1 split drop %1 split drop")?;
+        for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
+            let lines = told(&mut s, |s| {
+                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move-to"));
+                assert!(moved.is_ok(), "{moved:?}");
+            });
+            assert!(
+                lines.contains("created") && lines.contains(&format!("moved {pane}")),
+                "{lines}"
+            );
+        }
+        let empty = (s.parts.workspaces().iter())
+            .flat_map(|w| w.tabs())
+            .filter(|t| t.root().is_none());
+        assert_eq!(empty.count(), 0);
         Ok(())
     }
 
