@@ -567,7 +567,9 @@ impl Reach<'_> {
     /// Whether `command` reaches only the granted workspace.
     fn command(&self, command: &Command) -> Result<(), Error> {
         match command {
-            Command::Ls { target, .. } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
+            Command::Ls { target, .. } | Command::DumpLayout { target } => {
+                target.as_ref().map_or(Ok(()), |t| self.any(t))
+            }
             Command::Resolve { text, kind } => {
                 let found = self.session.resolve(text, *kind, self.here);
                 let found = found.map_err(|_| self.outside(format!("{text:?}")))?;
@@ -633,7 +635,6 @@ impl Reach<'_> {
                 self.refuse("the paste buffers, which are everyone's")
             }
             Command::Client { .. } => self.refuse("a client's screen"),
-            Command::DumpLayout { target } => target.as_ref().map_or(Ok(()), |t| self.any(t)),
         }
     }
 }
@@ -2192,9 +2193,7 @@ impl Session {
                 if let Some(given) = name {
                     self.give_tab_name(made.tab, given.clone())?;
                 }
-                if let Some(mut pane) = self.parts.pane_mut(made.pane) {
-                    pane.log = log;
-                }
+                self.pane_mut(made.pane)?.log = log;
                 Ok(made.reply(self.pane(made.pane)?.version(self.run)))
             }
             &Command::Respawn {
@@ -2755,8 +2754,8 @@ impl Session {
                 self.give_tab_name(t, name)?;
             }
             AnyRef::Workspace(id) => {
-                // The one named, and the others, whose names it cannot take.
-                self.workspace(id).ok_or(Error::NoWorkspace(id))?;
+                // The one named (there: `Rename` checks it first), and the
+                // others, whose names it cannot take.
                 let others = self.parts.workspaces().iter().filter(|w| w.id != id);
                 check_workspace_name(&name, others)?;
                 self.parts
@@ -2780,7 +2779,7 @@ impl Session {
     fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
         let pane = self.pane(target)?.id;
         // A tab made for it fits clients at its tab's size until one shows it.
-        let (_, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
+        let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
         let (ws, tab) = match to {
             &MoveTo::Beside(direction) => {
@@ -2796,13 +2795,12 @@ impl Session {
                 (ws, first.ok_or(Error::NoWorkspace(ws))?.id)
             }
             MoveTo::NewTab => {
-                let (ws, _) = self.locate(pane).ok_or(Error::NoPane(pane))?;
                 let mut ids = self.ids.clone();
                 let id = ids.tab()?;
-                (self.parts.add_tab((ws, id), None, fit, None))
-                    .map_err(|_| Error::NoWorkspace(ws))?;
+                (self.parts.add_tab((from_ws, id), None, fit, None))
+                    .map_err(|_| Error::NoWorkspace(from_ws))?;
                 self.ids = ids;
-                (ws, id)
+                (from_ws, id)
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
