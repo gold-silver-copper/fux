@@ -91,7 +91,8 @@ codes! {
     NoPane "no_pane",
     /// A tab named is not there.
     NoTab "no_tab",
-    /// A workspace named is not there.
+    /// A workspace named is not there; or a client that only watches
+    /// attaches to a server that holds none.
     NoWorkspace "no_workspace",
     /// A client named is not there.
     NoClient "no_client",
@@ -134,7 +135,13 @@ codes! {
     NoMarks "no_marks",
     /// A program that could not start.
     Start "start",
-    /// A size no pane or tab can have.
+    /// A size no pane or tab can have: a client's screen past 4096
+    /// (`view::MOST`) a side (`attach`, its terminal resized), or with
+    /// no room for a pane below its bar as it starts a server's first
+    /// shell; a new tab or workspace no client sizes, given none; a pane's
+    /// `resize-x` or `resize-y` the layout cannot give; a tab resized, a
+    /// split or a pane moved where its tab's panes would not all show; a
+    /// layout whose shares would take more weight than it holds.
     Size "size",
     /// A mouse event the pane's program does not ask for.
     Mouse "mouse",
@@ -155,10 +162,9 @@ codes! {
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
     Closed "closed" CLOSED,
-    /// Everything an event stream watched closed.
+    /// Everything an event stream watched closed or, through a grant,
+    /// moved out of its workspace.
     Gone "gone" CLOSED,
-    /// The reader of an event stream fell too far behind.
-    Lost "lost",
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps" [run_loop],
@@ -192,8 +198,6 @@ codes! {
     NoKeys "no_keys",
     /// A value that is not a client.
     NotAClient "not_a_client",
-    /// A paste that could not be read.
-    Paste "paste",
 }
 
 impl Code {
@@ -248,22 +252,26 @@ mod tests {
         assert_eq!(Code::from(fuxth::Code::Host("closed")), Code::Closed);
     }
 
+    /// Every code has a name of its own, and docs/json.md's list of
+    /// errors names each, and no other.
     #[test]
     fn every_code_has_its_own_name_and_the_docs_list_it() {
         let docs = crate::help::JSON;
         let errors = docs.split("## Errors").nth(1).unwrap_or_default();
-        let errors = errors.split("\n## ").next().unwrap_or_default();
+        // The list: from its first item to the blank line after it.
+        let list = errors.split("\n- ").skip(1).collect::<Vec<_>>().join(" ");
+        let list = list.split("\n\n").next().unwrap_or_default();
+        // What is quoted: every other piece between backquotes.
+        let quoted = list.split('`').enumerate().filter(|(i, _)| i % 2 == 1);
+        let listed: std::collections::BTreeSet<&str> = quoted.map(|(_, name)| name).collect();
+        let mut names = std::collections::BTreeSet::new();
         for (i, code) in Code::all().enumerate() {
             assert_eq!(code.name().parse(), Ok(code), "{code:?}");
             assert_eq!(Code::from(fuxth::Code::from(code)), code);
             let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
             assert!(!named, "{code:?} shares its name");
-            let listed = errors.contains(&format!("`{}`", code.name()));
-            assert!(
-                listed,
-                "docs/json.md's Errors does not list {}",
-                code.name()
-            );
+            names.insert(code.name());
         }
+        assert_eq!(listed, names, "docs/json.md's Errors and fux's codes");
     }
 }

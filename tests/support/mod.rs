@@ -185,6 +185,13 @@ impl Server {
         let socket = fux::socket::Choice::Path(server.socket.to_string_lossy().into_owned());
         let mut to = fux::script::Server::new(socket);
         server.keymap = fux::script::run_file(&config_path, Some(&mut to)).map_err(e)?;
+        // A server starts with nothing in it; the tests' first shell, %1 in
+        // workspace main, is 80 by 24, in the server's home.
+        let home = server.dir.to_string_lossy().into_owned();
+        let first = [
+            "opts", "str", "main", "name", "80", "24", "size", "str", &home, "cwd",
+        ];
+        server.ok(&[&first[..], &["new-workspace"]].concat())?;
         Ok((server, held))
     }
 
@@ -768,7 +775,7 @@ impl Server {
     /// Types a line into a pane once its shell shows a prompt.
     pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
         eventually(&format!("a prompt in {pane}"), || {
-            Ok(self.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+            Ok(self.ok(&["str", pane, "pane", "capture"])?.contains('$'))
         })?;
         self.ok(&[
             "str",
@@ -939,7 +946,7 @@ impl Terminal {
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
-        fuxix::terminal::set_window_size(master, pty_size(rows, cols)?).map_err(e)?;
+        fuxix::terminal::set_window_size(master, pty_size(rows, cols)?, None).map_err(e)?;
         self.screen = terminal(rows, cols)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())

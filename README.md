@@ -21,16 +21,18 @@ fux                               # attach, starting a server if none runs
 `fux` alone attaches this terminal, starting a server in the background if
 none answers; `fux str work attach-to` attaches to workspace `work`, and
 `fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
-new server has one workspace, tab and shell. `C-b d` detaches, and the
-shells keep running. Inside a fux pane, `fux` refuses to attach.
+new server holds nothing: the first client to attach starts workspace
+`main`, with one tab and a shell, on its screen. `fux watch` starts
+nothing: with no server, or one holding nothing, it is refused. `C-b d`
+detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached
 terminal why, and removes its socket.
 
-Every pane runs your shell (`str shell str /bin/zsh set`, else `$SHELL`,
-else `/bin/sh`). A pane closes when its shell exits, showing its viewers the
-exit status; a tab closes with its last pane, a workspace with its last tab.
+Every pane runs your shell (the `shell` setting: `fux help set`). A pane closes
+when its shell exits, showing its viewers the exit status; a tab closes
+with its last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
@@ -44,7 +46,7 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-A=$(fux opts str htop program run)                # start htop: %3:0.0.0.0.0:RUN, its version
+A=$(fux opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
 fux %3 str q text send-keys                       # press q: its version from before
@@ -94,10 +96,14 @@ What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet: they start from `opts`, empty options. Only `run` takes a program
-(`command`, `program`); `new-tab` and `new-workspace` start a shell.
+(`program`, then each `arg`; a shell's line is `str sh program str -c arg str
+LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
+out on an attached client's screen, or on `COLS ROWS size`; with no client
+attached (one that only watches does not count) a size must be given: fux
+makes none up.
 
 ```sh
-fux opts str web name 120 40 size str './app --verbose' command run
+fux opts str web name 120 40 size str ./app program str --verbose arg run
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 ```
@@ -105,14 +111,14 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P wait drop   P screen
+fux opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
 ```
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
-(a line typed and Enter), `screen` (a capture), `shell` (a tab with a shell
-in workspace `agent`), `quiet` (a wait until nothing changes for N
-seconds) and `counts` (a version's counts, as integers).
+(a line typed and Enter), `shell` (a tab with a shell in workspace
+`agent`), `quiet` (a wait until nothing changes for N seconds) and
+`counts` (a version's counts, as integers).
 
 ### Finding things
 
@@ -127,13 +133,14 @@ pane.
 ### Which server
 
 `str NAME server` before the rest is the server named NAME (its socket
-`NAME.sock` in `$XDG_RUNTIME_DIR/fux`), `str PATH socket` a socket's path;
+`NAME.sock` in fux's directory, `$XDG_RUNTIME_DIR/fux` or, with
+`XDG_RUNTIME_DIR` unset, `$TMPDIR/fux`), `str PATH socket` a socket's path;
 without either, `FUX_SOCKET`, else the default. A private server for a test
 or an agent:
 
 ```sh
-fux str test server start                         # returns once it answers
-fux str test server opts str ./app program run
+fux str test server start                         # returns once it answers: nothing in it yet
+fux str test server opts 80 24 size str ./app program run
 fux str test server kill-server
 ```
 
@@ -236,12 +243,15 @@ query has a capital letter. `[` and `]` find prompts marked with
 characters whole, joins soft-wrapped lines, and trims trailing blanks. One
 copy is at most 262,144 cells.
 
-**Clipboards.** A copy goes to fux's paste buffers (the newest 16,
-`buffers`); `C-b p` pastes the newest, bracketed if the program asked for
+**Clipboards.** A copy goes to fux's paste buffers (as many of the newest
+as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
 to 1 MiB encoded, unless `str clipboard str off set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
-and Helix do, copies the same way. fux never reads the clipboard.
+and Helix do, copies the same way, up to 64 KiB encoded, but only while
+`clipboard` is on: with it off a program's copy copies nothing, to the
+buffers either. A longer copy, or one that is not text, copies nothing, and
+the clients showing the pane say so. fux never reads the clipboard.
 
 ## Shell marks
 
@@ -279,12 +289,11 @@ prints them all.
 
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
-`update-environment`, which a pane takes from whoever starts it, and, last,
-what a program's `env` sets (`opts str NAME str VALUE env str PROGRAM
-program run`). A name in `update-environment` that the starter lacks is
-unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
-table's value. A starter with no environment at all, as `env -i` leaves
-one, changes none.
+`update-environment`, which a pane takes from whoever starts it (`fux help
+set` says what one the starter lacks becomes), and, last, what a program's
+`env` sets (`opts str NAME str VALUE env 80 24 size str PROGRAM program
+run`). A starter with no environment at all, as `env -i` leaves one,
+changes none.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -294,7 +303,7 @@ VT220-class terminal.
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture-client json`, an action's or a
-wait's answer (`… wait json`), `status json`, `servers json`; `events-json` and
+wait's answer (`… wait json`), `status json`; `events-json` and
 `events-of-json` stream an object a line. These shapes are part of fux's
 interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 
@@ -309,7 +318,7 @@ and says what is wrong.
 ```sh
 # ~/.config/fux/config.fux
 str C-a prefix
-str shell str '/bin/zsh -l' set
+str shell str '/bin/zsh -l' set                  # a program, then its arguments: blanks part them, unquoted
 str clipboard str off set
 
 unbind-all                                        # optional: start from no bindings
@@ -334,16 +343,8 @@ end
 str y str edit-history bind  str 'edit history' label  str Panes group
 ```
 
-| Setting | Value | Default |
-| --- | --- | --- |
-| `shell` | a program and its arguments | `$SHELL`, else your login shell, else `/bin/sh` |
-| `history-bytes` | bytes of each pane's history, how far copy mode scrolls and `history capture` reads; past it, the oldest rows go; 0 to 1 GiB; a change applies to every pane | 8388608 (8 MiB) |
-| `wait-seconds` | how long a wait waits at most unless it says (`SECS timeout`), 0 to 86,400 | 30 |
-| `clipboard` | `on` or `off`: copies, fux's and programs', reach your terminal's clipboard | `on` |
-| `buffers` | paste buffers kept, 1 to 1000 | 16 |
-| `bell` | `on` or `off`: a pane's bell rings your terminal and marks its tab | `on` |
-| `titles` | `on` or `off`: your terminal's title follows the focused pane | `off` |
-| `update-environment` | variable names: a new pane takes these from whoever starts it, rather than from the server, which may have started long ago; one they lack is unset, but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` | `DISPLAY KRB5CCNAME SSH_AGENT_PID SSH_ASKPASS SSH_AUTH_SOCK SSH_CONNECTION WAYLAND_DISPLAY XAUTHORITY` |
+`fux help set` lists the settings: what each takes, its default and what
+it does.
 
 **Bindings** run fuxth, compiled when bound, run fresh each time their keys
 are typed, as your client (`me`). A binding, and the command prompt, may use
@@ -372,15 +373,33 @@ once you bind them.
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
-holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`.
+holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
+tab is made at the size it has (`size`), which a server with no client
+needs; one that fits clients' screens fits them again after
+(`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
+split keeps two thirds of its room, the new one takes a third), so the
+layout comes back as it was, at every size. A split
+or a move that would hide a pane, on its tab's size or on the screen of a
+client showing it (but one that sizes nothing: that only watches, or has
+no room below its bar), is refused: whatever there
+is can be made again. Shares are held exactly, never rounded, in weights
+at most 4,294,967,295 together; a split or a move that would take more is
+refused (`size`), room or not: the 32nd split halving the newest pane of
+one row does. Resizing a border weighs a split's panes by their sizes, and
+makes room for more. A close is never refused: shares it merges past that
+bound are rounded to the nearest that fit, which the `rounded` event says.
 
-A **server saves its session** the same way, with the ids it had, about a
-second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
+A **server saves its session** the same way, with the ids it had: at once
+after a change to what it holds (a workspace, tab or pane made, closed,
+moved, renamed or respawned, an order, a border, a size given), and about
+a second after what output changes (a shell's directory), in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
 written whole and moved in place, yours alone. A server started on the same
 socket after a crash, a `kill -9` or a reboot runs it to bring the session
 back with the same ids: shells start fresh in their directories; a program
 `run` started waits, saying so on its screen, until `respawn` starts it
-(`paused` in `ls json`). `kill-server` and the last pane closing forget it.
+(`paused` in `ls json`). Each tab comes back at the size it had, as a dump
+makes it (`TAB resize-auto` lets one fit clients again); a client that
+attaches meanwhile is let in once it is back. `kill-server` and the last pane closing forget it.
 
 ## Terminal features
 
@@ -403,26 +422,47 @@ back with the same ids: shells start fresh in their directories; a program
   frame is shown anyway after one second or past 2 MiB.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
   or palette entries 0 to 15 (OSC 4) are told your terminal's, and get its
-  dark/light changes (mode 2031) if it reports them. With several terminals
-  attached, a pane is answered from the one that typed into its tab last.
+  dark/light changes (mode 2031) if it reports them: one whose tab was not
+  shown, or not by that terminal, is told the scheme it is shown with once
+  it is. With several terminals
+  attached, a pane is answered from the one showing its tab that typed
+  into it last, else the first showing it.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
-  win over your terminal's; your terminal's palette is never changed.
+  win over your terminal's; your terminal's palette is never changed. A
+  colour no one knows is not answered: one your terminal didn't say,
+  palette entries past 15 the program didn't set, and every colour in a
+  tab no attached terminal shows.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
-  bar until you show it. `set bell off` silences both.
-- **Titles.** With `set titles on`, your terminal's title is the focused
-  pane's (or its tab's name). fux saves your terminal's own title first and
-  restores it when you detach or turn titles off.
+  bar until you show it. `str bell str off set` silences both.
+- **Titles.** With `str titles str on set`, your terminal's title is the
+  focused pane's (or its tab's name). fux saves your terminal's own title
+  first and restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
-  graphics, and the size of its cells (`CSI 16 t`), if your terminal says
-  so, and the pictures it draws are shown on your terminal, clipped to the
-  pane; they scroll with the text, and text over one, or an overlay, takes
-  it away. A pane no sixel-drawing terminal shows is told none, so its
-  programs draw in text (half blocks), which captures read; `json` says
-  where pictures are. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
-  mlterm and others; not by kitty, whose graphics protocol fux does not
-  speak, nor Ghostty, Alacritty or Apple's Terminal.
+  graphics, and the size of its cells (`CSI 16 t`, asked again each time
+  your terminal is resized, as a font zoom resizes it), if your terminal
+  says so (its terminal's size in pixels, `TIOCGWINSZ`, follows the cell,
+  and a change signals it, SIGWINCH), and the pictures it draws are shown on
+  your terminal, clipped to the pane; they scroll with the text, and text
+  over one, or an overlay, takes it away. Of the terminals showing a pane,
+  one that draws sixel and said its cell size draws it (of those, the one
+  last typed in there, else the first); with none, its cell size is of one
+  that said it, chosen so; with none of those (its tab not shown, its
+  client detached, or each terminal showing it said none), it keeps the last
+  it was told, so its programs are not signalled, though the terminal that
+  said it may no longer draw it. A pane shown on no terminal that draws sixel
+  and said its cell size is told no sixel, so its programs draw in text (half
+  blocks), which captures read; `json` says where pictures are, and the cell
+  size (`cell`, `null` while it was told none). fux never makes a cell size
+  up: a terminal says none with a 0, or with one smaller than a sixel band, 2
+  by 6 pixels, which fux tells you. A pane never told one leaves `CSI 14 t`
+  and `CSI 16 t` unanswered; once told one, it answers them with it, kept as
+  above. A sixel picture is placed only while a terminal showing the pane
+  draws sixel and said its cell size.
+  Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others;
+  not by kitty, whose graphics protocol fux does not speak, nor Ghostty,
+  Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.
 - **In-band resize reports** (mode 2048) are sent when a pane's size
@@ -432,6 +472,10 @@ back with the same ids: shells start fresh in their directories; a program
 
 - **fux's own mouse actions**: the mouse reaches only programs that ask for
   it (see [Terminal features](#terminal-features)).
+- **Mouse reports in pixels** (mode 1016): your terminal tells fux the
+  cell the mouse is in, not the pixel within it, and fux makes none up.
+  The mode is reported permanently reset and setting it changes nothing,
+  so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
 - **Programs that outlive their server**: a crash ends them; the next server
@@ -444,8 +488,10 @@ back with the same ids: shells start fresh in their directories; a program
 
 The server listens only on a Unix socket: `str PATH socket`, `str NAME
 server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
-`$XDG_RUNTIME_DIR/fux/server.sock`, else `$TMPDIR/fux/server.sock`. An
-auto-started server logs to `fux.log` beside it.
+`server.sock` there. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
+`XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to
+a relative path is refused, as is neither set. An auto-started server logs
+to `fux.log` beside it.
 
 - The socket's directory must be yours, mode 0700, reached only through
   directories no other user can change; fux creates the default one so.

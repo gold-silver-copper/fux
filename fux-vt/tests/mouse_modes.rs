@@ -1,5 +1,5 @@
 //! xterm's mouse modes 1001 (highlight tracking), 1007 (alternate scroll),
-//! 1015 (urxvt) and 1016 (SGR with pixels), as ctlseqs ("Mouse Tracking")
+//! 1015 (urxvt) and 1016 (SGR with pixels, never set), as ctlseqs ("Mouse Tracking")
 //! names them and xterm 411 sends them (button.c `EditorButton` and
 //! `EmitMousePosition`, scrollbar.c `AlternateScroll`, charproc.c's
 //! default translations): each kept, reported by DECRQM, and encoded.
@@ -44,7 +44,7 @@ fn sent(p: &Parser, event: MouseEvent) -> Option<String> {
 /// 1006 then leaves it so.
 #[test]
 fn each_mode_is_kept_and_reported() -> Result {
-    for n in [1001, 1007, 1015, 1016] {
+    for n in [1001, 1007, 1015] {
         let mut p = parser(format!("\x1b[?{n}h").as_bytes())?;
         let mut out = Vec::new();
         p.process_with_replies(format!("\x1b[?{n}$p").as_bytes(), |b| {
@@ -98,20 +98,21 @@ fn urxvt_sends_the_code_plus_32_and_decimal_positions() -> Result {
     Ok(())
 }
 
-/// SGR with pixels (1016): SGR's form, the pointer's pixel from one: the
-/// middle of the cell, in the host's cell size, or 10 by 20.
+/// SGR with pixels (1016) is permanently reset, a cell size known or not:
+/// an event names a cell, not the pixel within it. Setting it changes
+/// nothing, so a program that asked for SGR first gets SGR in cells.
 #[test]
-fn sgr_pixels_reports_the_pointers_pixel() -> Result {
-    let mut p = parser(b"\x1b[?1000h\x1b[?1016h")?;
-    let press = event(MouseAction::Press(MouseButton::Left), 1, 2);
-    let release = event(MouseAction::Release(Some(MouseButton::Left)), 1, 2);
-    assert_eq!(sent(&p, press).as_deref(), Some("^[[<0;26;31M"));
-    assert_eq!(sent(&p, release).as_deref(), Some("^[[<0;26;31m"));
+fn sgr_pixels_is_never_set_and_the_cell_encoding_stays() -> Result {
+    let mut p = parser(b"\x1b[?1000h\x1b[?1006h\x1b[?1016h")?;
     p.set_host_graphics(Graphics {
-        cell: Some((8, 16)),
+        cell: fux_vt::CellSize::new(8, 16),
         sixel: false,
     });
-    assert_eq!(sent(&p, press).as_deref(), Some("^[[<0;21;25M"));
+    let mut out = Vec::new();
+    p.process_with_replies(b"\x1b[?1016$p", |b| out.extend_from_slice(b))?;
+    assert_eq!(out, b"\x1b[?1016;4$y");
+    let press = event(MouseAction::Press(MouseButton::Left), 1, 2);
+    assert_eq!(sent(&p, press).as_deref(), Some("^[[<0;3;2M"));
     Ok(())
 }
 

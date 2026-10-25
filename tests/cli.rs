@@ -7,7 +7,7 @@ use support::*;
 fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
     eventually(&format!("{needle:?} in {pane}"), || {
         Ok(server
-            .ok(&["str", pane, "pane", "screen"])?
+            .ok(&["str", pane, "pane", "capture"])?
             .contains(needle))
     })
 }
@@ -67,7 +67,16 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
         ls.contains("+1 work2") && ls.contains("@1 code") && ls.contains("%1 editor"),
         "{ls}"
     );
-    server.ok(&["opts", "str", "other", "name", "new-workspace"])?;
+    server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "other",
+        "name",
+        "new-workspace",
+    ])?;
     let clash = server.fux(&["str", "other", "workspace", "str", "work2", "rename"])?;
     assert!(
         clash.stderr.contains("a workspace is named"),
@@ -109,7 +118,16 @@ fn rename_move_swap_reorder_and_kill() -> Outcome {
     server.ok(&["str", "work2", "workspace", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("work2") && ls.contains("other"), "{ls}");
-    server.ok(&["opts", "str", "third", "name", "new-workspace"])?;
+    server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
+        "str",
+        "third",
+        "name",
+        "new-workspace",
+    ])?;
     server.ok(&["str", "@2", "tab", "kill"])?;
     let ls = server.ok(&["ls"])?;
     assert!(!ls.contains("other") && ls.contains("third"), "{ls}");
@@ -187,7 +205,9 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A program's path holding a line end fails to start, the line end
     // shown as `\n`, as is a line separator in a message.
-    let path = server.fux(&["opts", "str", "no\nsuch", "program", "run"])?;
+    let path = server.fux(&[
+        "opts", "80", "24", "size", "str", "no\nsuch", "program", "run",
+    ])?;
     assert!(
         path.stderr.starts_with("fux: start: ") && path.stderr.contains(r"no\nsuch:"),
         "{}",
@@ -201,7 +221,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "opts", "str", "sleep 30", "command", "run", "1", "timeout", "wait",
+        "opts", "80", "24", "size", "str", "sleep", "program", "str", "30", "arg", "run", "1",
+        "timeout", "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -249,24 +270,24 @@ fn errors_statuses_and_what_is_left() -> Outcome {
             refused.stderr
         );
     }
-    // A size past 500 is refused, saying the range it may take, past a
-    // cell's too.
-    for size in ["501", "65536"] {
+    // A size past a client's screen's most is refused, saying the range
+    // it may take, past a cell's too.
+    for size in ["4097", "65536"] {
         let wide = server.fux(&["str", "%1", "pane", size, "10", "resize"])?;
         assert!(wide.stderr.starts_with("fux: range: "), "{}", wide.stderr);
-        assert!(wide.stderr.contains("1 to 500"), "{}", wide.stderr);
+        assert!(wide.stderr.contains("1 to 4096"), "{}", wide.stderr);
         let opened = server.fux(&["opts", size, "10", "size", "new-tab"])?;
-        assert!(opened.stderr.contains("1 to 500"), "{}", opened.stderr);
+        assert!(opened.stderr.contains("1 to 4096"), "{}", opened.stderr);
     }
     // A new tab from outside a pane is told the option that places it.
-    let nowhere = server.fux(&["opts", "str", "logs", "name", "new-tab"])?;
+    let nowhere = server.fux(&["opts", "80", "24", "size", "str", "logs", "name", "new-tab"])?;
     assert!(
         nowhere.stderr.contains("`str NAME in`"),
         "{}",
         nowhere.stderr
     );
     let placed = [
-        "opts", "str", "logs", "name", "str", "agent", "in", "new-tab",
+        "opts", "80", "24", "size", "str", "logs", "name", "str", "agent", "in", "new-tab",
     ];
     assert_eq!(server.fux(&placed)?.status, 0);
     Ok(())
@@ -296,10 +317,10 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     // Refused before `run` starts anything.
     let before = said(&[
-        "opts", "str", "sh", "program", "run", "str", "a", "1", "add",
+        "opts", "80", "24", "size", "str", "sh", "program", "run", "str", "a", "1", "add",
     ])?;
     assert!(
-        before.starts_with("fux: type: argument 9: add: "),
+        before.starts_with("fux: type: argument 12: add: "),
         "{before}"
     );
     assert!(!server.ok(&["ls"])?.contains("agent"), "nothing ran");
@@ -335,7 +356,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // What a word takes, all of it: focus's every way, text's booleans.
     let way = said(&["str", "c9", "client", "str", "sideways", "focus"])?;
     assert!(way.contains("up, down, next, previous or last"), "{way}");
-    let text = said(&["%1", "opts", "text"])?;
+    let text = said(&["%1", "opts", "80", "24", "size", "text"])?;
     assert!(text.contains("a string, a number or a boolean"), "{text}");
     // A workspace of one pane is that pane; of more, said so.
     assert_eq!(server.ok(&["%1", "workspace", "pane"])?, "%1\n");
@@ -391,7 +412,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     client.wait_for("$")?;
     let json = server.ok(&["ls", "json"])?;
     for field in [
-        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"title\":\"\",\"rows\":9,\"cols\":50,\"pid\":",
+        "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"rows\":9,\"cols\":50,\"pid\":",
         "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"grants\":[]}",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
@@ -423,7 +444,9 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
-        .args(["opts", "str", "touch here", "command", "run"])
+        .args([
+            "opts", "80", "24", "size", "str", "touch", "program", "str", "here", "arg", "run",
+        ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
@@ -473,7 +496,7 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     };
     let ran = full()?
         .args([
-            "help", "opts", "str", "sleep", "program", "str", "9", "arg", "run",
+            "help", "opts", "80", "24", "size", "str", "sleep", "program", "str", "9", "arg", "run",
         ])
         .output()
         .map_err(e)?;

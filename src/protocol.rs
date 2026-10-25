@@ -19,7 +19,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 16;
+pub const PROTOCOL: u32 = 17;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -302,6 +302,19 @@ wire! {
 
 impl OneKind for Attach {
     const KIND: u8 = 2;
+}
+
+impl Attach {
+    /// A client of `size` that types, asks for no workspace, and has no
+    /// environment.
+    pub fn of(size: fux_vt::Size) -> Attach {
+        Attach {
+            size,
+            workspace: None,
+            read_only: false,
+            env: Vec::new(),
+        }
+    }
 }
 
 frames! {
@@ -650,7 +663,7 @@ mod tests {
         };
         round_trip!(Hello, 1, hello(Role::Attach));
         round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
-        let size = crate::session::default_size();
+        let size = fux_vt::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX));
         let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
         round_trip!(
             Attach,

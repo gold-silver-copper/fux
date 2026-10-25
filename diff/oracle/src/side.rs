@@ -219,13 +219,13 @@ macro_rules! side {
                 }
                 fn event(&mut self, event: vt::Event<'_>) {
                     self.0.push(match event {
-                        vt::Event::Title(t) => Heard::Title(t.to_vec()),
-                        vt::Event::IconName(t) => Heard::IconName(t.to_vec()),
+                        vt::Event::Title(t) => Heard::Title(t.bytes.to_vec()),
+                        vt::Event::IconName(t) => Heard::IconName(t.bytes.to_vec()),
                         vt::Event::Bell => Heard::Bell,
-                        vt::Event::Notification(n) => Heard::Notification(n.to_vec()),
+                        vt::Event::Notification(n) => Heard::Notification(n.bytes.to_vec()),
                         vt::Event::Clipboard { selection, data } => Heard::Clipboard {
                             selection: selection.to_vec(),
-                            data: data.to_vec(),
+                            data: data.bytes.to_vec(),
                         },
                         vt::Event::ColorQuery { number, bel } => Heard::ColorQuery { number, bel },
                         vt::Event::CommandEnded(status) => Heard::CommandEnded(status),
@@ -311,7 +311,7 @@ macro_rules! side {
                             p.set_host_palette(palette);
                         }
                         Call::Graphics(w, h) => p.set_host_graphics(vt::Graphics {
-                            cell: Some((w, h)),
+                            cell: vt::CellSize::new(w, h),
                             sixel: true,
                         }),
                     }

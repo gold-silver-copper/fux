@@ -8,6 +8,8 @@
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
+use crate::copy::SEARCH_MAX;
+use crate::decode::Input;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
@@ -43,7 +45,7 @@ pub enum Screen {
         about: AnyRef,
     },
     /// Copy mode, and the search line being typed in it, forward or back.
-    Copy(Option<(Seek, Line<1024>)>),
+    Copy(Option<(Seek, Line<SEARCH_MAX>)>),
 }
 
 /// A chooser: its rows, each running fuxth when chosen and about a tab,
@@ -259,6 +261,33 @@ impl Screen {
         }
     }
 
+    /// What a client's terminal sent (`input`), decoded: what it leads to,
+    /// as `key` and `paste` say, else what the server is sent. A client
+    /// that only watches (`read_only`) is told it of a paste, and sends no
+    /// focus change or mouse report; the mouse is a program's only while
+    /// no screen of the client's own is open.
+    pub fn input(&mut self, keymap: &Keymap, input: Input, read_only: bool) -> Vec<Effect> {
+        let send = |act| vec![Effect::Send(act)];
+        match input {
+            Input::Key(stroke) => self.key(keymap, stroke, read_only),
+            Input::Reply(reply) => send(Act::Reply(reply)),
+            Input::Paste(_) | Input::PasteTooLong if read_only => {
+                send(crate::keymap::watching(keymap))
+            }
+            Input::FocusIn | Input::FocusOut | Input::Mouse(_) if read_only => Vec::new(),
+            Input::Paste(text) => self.paste(&text),
+            Input::PasteTooLong => {
+                let limit = crate::decode::PASTE_LIMIT / 1024;
+                let text = format!("paste exceeds {limit} KiB; discarded");
+                send(Act::Notice { text, error: true })
+            }
+            Input::FocusIn => send(Act::Focus(true)),
+            Input::FocusOut => send(Act::Focus(false)),
+            Input::Mouse(_) if self.kind().is_some() => Vec::new(),
+            Input::Mouse(event) => send(Act::Mouse(event)),
+        }
+    }
+
     /// A key typed: what it leads to, through the bindings of `keymap` if
     /// no screen is open (`read_only`: the client only watches). A screen
     /// closes itself (`Screen::default`) as the key says.
@@ -290,7 +319,8 @@ impl Screen {
     }
 
     /// Text pasted: a line being typed takes it; with no screen open, the
-    /// pane does, and the column or a repeat mode ends.
+    /// pane does, and the column or a repeat mode ends; a list, a question
+    /// or copy mode takes none, and says so.
     pub fn paste(&mut self, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
@@ -302,7 +332,8 @@ impl Screen {
             Self::Copy(Some(search)) => self.copy_search(search, insert),
             other @ (Self::List(_) | Self::Confirm { .. } | Self::Copy(_)) => {
                 *self = other;
-                Vec::new()
+                let why = "a list, a question or copy mode is open: nothing was pasted";
+                vec![refusal(why.to_owned())]
             }
         }
     }
@@ -344,14 +375,15 @@ impl Screen {
                 std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
-                prompt.line.edit(&edit);
+                let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                Vec::from_iter(self.panel().map(|p| Effect::Send(Act::Show(p))))
+                let shown = self.panel().map(|p| Effect::Send(Act::Show(p)));
+                shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
     }
 
-    fn copy(&mut self, search: Option<(Seek, Line<1024>)>, press: KeyPress) -> Vec<Effect> {
+    fn copy(&mut self, search: Option<(Seek, Line<SEARCH_MAX>)>, press: KeyPress) -> Vec<Effect> {
         if let Some(search) = search {
             return match line_act(press) {
                 Some(act) => self.copy_search(search, act),
@@ -380,7 +412,11 @@ impl Screen {
         Vec::from_iter(act.map(|(act, _)| Effect::Send(Act::Copy(act))))
     }
 
-    fn copy_search(&mut self, (seek, mut line): (Seek, Line<1024>), act: LineAct) -> Vec<Effect> {
+    fn copy_search(
+        &mut self,
+        (seek, mut line): (Seek, Line<SEARCH_MAX>),
+        act: LineAct,
+    ) -> Vec<Effect> {
         let sent = match act {
             LineAct::Cancel => CopyAct::Typing(None),
             LineAct::Submit => CopyAct::Find {
@@ -388,15 +424,21 @@ impl Screen {
                 seek,
             },
             LineAct::Edit(edit) => {
-                line.edit(&edit);
+                let refused = line.edit(&edit).err();
                 let typing = (seek, line.before().to_owned(), line.after().to_owned());
                 *self = Self::Copy(Some((seek, line)));
-                return vec![Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))))];
+                let shown = Effect::Send(Act::Copy(CopyAct::Typing(Some(typing))));
+                return std::iter::once(shown).chain(refused.map(refusal)).collect();
             }
         };
         *self = Self::Copy(None);
         vec![Effect::Send(Act::Copy(sent))]
     }
+}
+
+/// A line's refusal of an edit, told as an error's notice.
+fn refusal(text: String) -> Effect {
+    Effect::Send(Act::Notice { text, error: true })
 }
 
 #[cfg(test)]
@@ -469,6 +511,19 @@ mod tests {
         let mut screen = list();
         assert_eq!(key(&mut screen, "Escape")?, [Effect::Send(Act::Hide)]);
         Ok(())
+    }
+
+    /// A paste where no line is typed goes nowhere, and says so.
+    #[test]
+    fn a_paste_no_screen_takes_is_told() {
+        let told = vec![refusal(
+            "a list, a question or copy mode is open: nothing was pasted".into(),
+        )];
+        for mut screen in [list(), Screen::Copy(None)] {
+            let was = screen.clone();
+            assert_eq!(screen.paste("x"), told);
+            assert_eq!(screen, was);
+        }
     }
 
     /// A rename takes any name, quoted as fuxth reads it back.

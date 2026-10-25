@@ -52,13 +52,16 @@ number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only run, new-tab and
-new-workspace start from opts (`opts str 'make test' command run`). An
-action answers at once, with its pane's version from before it acted, one
-word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until
-its version differs from V, {wait}s at most unless `SECS timeout` says
-(the server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on
-stderr. Driving programs from a script or an agent: `fux help-agents`; one
-word: `fux help WORD`.
+new-workspace start from opts (`opts str make program str test arg
+run`), laid out on an attached client's screen, or with none (one that
+only watches, or has no room below its bar, does not count) on a size
+given (`opts 80 24 size …`): fux makes none up. An action answers at once,
+with its pane's version from before it acted, one word
+(`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
+version differs from V, {wait}s at most unless `SECS timeout` says (the
+server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on stderr.
+Driving programs from a script or an agent: `fux help-agents`; one word:
+`fux help WORD`.
 ",
     );
     // The language's parsing words and core, as fuxth says them: a block's
@@ -103,7 +106,8 @@ workspace; ref a name or a handle; text a string, number or boolean.
     out.push_str(&wrapped(names, "\n  ", 79));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
-         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux.\n",
+         FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
+         XDG_RUNTIME_DIR unset $TMPDIR/fux.\n",
     );
     out
 }
@@ -179,6 +183,9 @@ pub fn explain(name: &str) -> Option<String> {
                 }
             }
         }
+        if name == "set" {
+            out.push_str(&settings());
+        }
         return Some(out);
     }
     if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
@@ -197,6 +204,21 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
+/// Every setting `set` takes: its name, what text it takes, its default,
+/// and what it does, from `config`'s table.
+fn settings() -> String {
+    let mut out = String::from("\nThe settings:\n");
+    for [name, takes, default, about] in crate::config::table() {
+        let about = format!("{about} By default {default}.");
+        let about = about.split_whitespace().map(str::to_owned);
+        out.push_str(&format!(
+            "  {name}: {takes}{}\n",
+            wrapped(about, "\n      ", 78)
+        ));
+    }
+    out
+}
+
 /// The words that start from `opts`, empty options: they make their own
 /// pane. Every other word's options go on the pane it acts on.
 pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
@@ -204,21 +226,18 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env command program arg in log-to id"),
-    (
-        "split",
-        "horizontal vertical cwd env command program arg id",
-    ),
+    ("run", "name size cwd env program arg in log-to id"),
+    ("split", "horizontal vertical shares cwd env program arg id"),
     ("new-tab", "name size cwd env in id"),
     ("new-workspace", "name size cwd env id"),
-    ("respawn", "kill-first env command program arg"),
+    ("respawn", "kill-first env program arg"),
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
          rows cols",
     ),
     ("wait", "changed timeout"),
-    ("send-keys", "text key paste paste-file bytes times"),
+    ("send-keys", "text key paste bytes"),
     ("send-mouse", "mouse"),
     ("signal", ""),
 ];
@@ -234,26 +253,24 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
-        "command" => "fux opts str 'python3 -I app.py --fast' command run",
+        "shares" => "fux %3 horizontal 2 1 shares split",
         "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
             "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }
-        "env" => "fux opts str PORT 8080 env str ./app program run",
-        "new-tab" => "fux opts str logs name str agent in new-tab",
-        "new-workspace" => "fux opts str work name new-workspace",
+        "env" => "fux opts str PORT 8080 env 80 24 size str ./app program run",
+        "new-tab" => "fux opts str logs name 80 24 size str agent in new-tab",
+        "new-workspace" => "fux opts str work name 80 24 size new-workspace",
         "respawn" | "kill-first" => "fux %3 kill-first respawn",
         "wait" | "changed" => {
             "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait"
         }
         "help-agents-on" => "fux str recipes help-agents-on",
         "timeout" => "fux %3 300 timeout wait",
-        "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",
         "paste" => "fux %3 str 'a long prompt' paste str Enter key send-keys",
-        "paste-file" => "fux %3 str prompt.txt paste-file send-keys",
         "signal" => "fux %3 str TERM signal",
         "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
         "capture" | "history" => "fux %3 100 history capture",
@@ -287,7 +304,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
         "set" => "fux str history-bytes 16777216 set",
-        "server" => "fux str test server start opts str ./app program run",
+        "server" => "fux str test server start opts 80 24 size str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
         _ => return None,
@@ -297,6 +314,102 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the docs and words' help state a bound, they state the
+    /// constant the check uses; the JSON they show is this protocol's.
+    #[test]
+    fn the_docs_state_each_bound_as_its_check_has_it() {
+        // Thousands grouped by commas, as the docs write them.
+        let grouped = |n: usize| {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, digit) in digits.chars().enumerate() {
+                if i > 0 && digits.len().saturating_sub(i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(digit);
+            }
+            out
+        };
+        // A size in KiB or MiB is one only if it is a whole number of them.
+        let whole = |n: usize, shift: u32| {
+            assert_eq!(n % (1 << shift), 0, "{n} in units of {}", 1 << shift);
+            n >> shift
+        };
+        // Its words, a blank between each, as its lines wrap them.
+        let readme = include_str!("../README.md").split_whitespace();
+        let readme = readme.collect::<Vec<_>>().join(" ");
+        let (least_width, least_height) = fux_vt::CellSize::LEAST;
+        let bell_gap = crate::outer::BELL_GAP.as_millis();
+        for said in [
+            format!("{least_width} by {least_height} pixels"),
+            format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
+            format!("to {} MiB encoded", whole(crate::copy::MAX_CLIPBOARD, 20)),
+            format!("up to {} KiB encoded", whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)),
+            format!("at most {} MiB", whole(crate::protocol::MAX_FRAME, 20)),
+            format!("past {} MiB", whole(crate::pane::FRAME_LIMIT, 20)),
+            format!("at most once every {bell_gap} ms"),
+            format!(
+                "at most {} together",
+                grouped(usize::try_from(crate::layout::MOST).unwrap_or_default())
+            ),
+        ] {
+            assert!(readme.contains(&said), "README: {said}");
+        }
+        // Said in words: "after one second", "about a second after".
+        let second = std::time::Duration::from_secs(1);
+        assert_eq!(crate::pane::FRAME_TIMEOUT, second);
+        assert!(readme.contains("shown anyway after one second"));
+        assert_eq!(crate::server::SAVE_EVERY, second);
+        assert!(readme.contains("about a second after what output changes"));
+        let longest = format!("at most {} characters", grouped(fuxth::LONGEST));
+        assert!(AGENTS.contains(&longest), "agents.md: {longest}");
+        let protocol = crate::protocol::PROTOCOL;
+        for said in [
+            format!("\"protocol\":{protocol},"),
+            format!("\"server_protocol\":{protocol},"),
+            format!("its first {} characters", crate::pane::TITLE_MAX),
+            format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
+            format!(
+                "more than {} MiB on its terminal",
+                whole(crate::session::LEFT_MAX, 20)
+            ),
+            format!("past {} bytes of replies", crate::pane::REPLIES_MAX),
+            format!(
+                "the {} KiB a string may be",
+                whole(fux_vt::OSC_PAYLOAD_LIMIT, 10)
+            ),
+            format!(
+                "{} pixels a side, {} pixels in all",
+                grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),
+                grouped(fux_vt::sixel::MAX_PIXELS)
+            ),
+        ] {
+            assert!(JSON.contains(&said), "json.md: {said}");
+        }
+        let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
+        let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
+        assert!(about("id").is_some_and(|a| a.contains(&jump)));
+        let sides = format!("1 to {} each", crate::view::MOST);
+        for name in ["size", "resize", "resize-client", "headless"] {
+            assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");
+        }
+    }
+
+    /// The guide's topics, as `help-agents-on` and the guide's first
+    /// screen list them, are its headings, which `help-agents-on` reads.
+    #[test]
+    fn the_guide_lists_its_topics_as_its_headings_are() {
+        let topics = agents_topics();
+        assert!(topics.len() >= 5, "{topics:?}");
+        let on = WORDS.iter().find(|w| w.name == "help-agents-on");
+        let listed = format!("({})", topics.join(" "));
+        assert!(on.is_some_and(|w| w.about.contains(&listed)), "{listed}");
+        let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
+        let listed = format!("whole guide): {}.", quoted.join(", "));
+        let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(guide.contains(&listed), "agents.md: {listed}");
+    }
 
     /// Every word, and every word of the library, has its help; examples
     /// compile.
@@ -341,5 +454,10 @@ mod tests {
             }
         }
         assert!(AGENTS.contains("fux "));
+        // `set`'s help names every setting.
+        let set = explain("set").unwrap_or_default();
+        for name in crate::config::NAMES {
+            assert!(set.contains(&format!("\n  {name}: ")), "{name}");
+        }
     }
 }

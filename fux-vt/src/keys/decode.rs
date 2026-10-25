@@ -140,7 +140,8 @@ pub enum Reply {
         sixel: bool,
     },
     /// The size of a cell in pixels, `CSI 6 ; height ; width t`: the answer
-    /// to `CSI 16 t`.
+    /// to `CSI 16 t`, as the terminal said it (`crate::CellSize::new` says
+    /// whether a picture can be laid out in it).
     CellSize {
         /// A cell's width in pixels.
         width: u16,
@@ -978,8 +979,8 @@ fn cell_size(params: &[u8]) -> Option<Reply> {
     if numbers.next()? != "6" {
         return None;
     }
-    let height = numbers.next()?.parse().ok().filter(|n| *n > 0)?;
-    let width = numbers.next()?.parse().ok().filter(|n| *n > 0)?;
+    let height = numbers.next()?.parse().ok()?;
+    let width = numbers.next()?.parse().ok()?;
     numbers
         .next()
         .is_none()

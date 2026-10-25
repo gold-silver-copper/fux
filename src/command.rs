@@ -6,6 +6,7 @@ use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::wire::wire;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 wire! {
@@ -135,7 +136,7 @@ wire! {
 
 /// How a tab no client shows is laid out (`size`, `resize`): `None`,
 /// on a client's screen.
-pub type Size = Option<fux_vt::Size>;
+pub type Size = Option<crate::view::Screen>;
 
 wire! {
     /// A pane's new width or height (`resize-x`, `resize-y`).
@@ -187,7 +188,7 @@ wire! {
         /// no client shows them, or as the clients showing them are.
         Tabs(target: AnyRef, size: Size),
         /// A headless client's screen.
-        Client(client: ClientId, size: fux_vt::Size),
+        Client(client: ClientId, size: crate::view::Screen),
     }
 }
 
@@ -516,6 +517,9 @@ wire! {
             env: Env,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
+            /// The shares of their split the split pane and the new one
+            /// take (`shares`), if given; else the pane's is halved.
+            shares: Option<(NonZeroU32, NonZeroU32)>,
         },
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.

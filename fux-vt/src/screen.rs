@@ -99,8 +99,8 @@ impl CursorShape {
     }
 }
 
-/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 / 1015 / 1016
-/// h`), the latest set winning, as xterm 411's `extend_coords`.
+/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 / 1015 h`),
+/// the latest set winning, as xterm 411's `extend_coords`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolEncoding {
     /// The legacy encoding: coordinates as single bytes.
@@ -113,9 +113,6 @@ pub enum MouseProtocolEncoding {
     /// Mode 1015, urxvt: `CSI b ; x ; y M`, `b` the code plus 32 and a
     /// release unnamed, as the default encoding has them.
     Urxvt,
-    /// Mode 1016, SGR with pixels: SGR's form, the pointer's position in
-    /// pixels from one.
-    SgrPixels,
 }
 
 /// The cell printed last, the state of its grapheme cluster, and what a
@@ -715,8 +712,7 @@ impl Screen {
 
 mod pictures;
 mod shell;
-pub(crate) use pictures::CELL;
-pub use pictures::{Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
+pub use pictures::{CellSize, Graphics, PICTURE_BYTES, PLACEHOLDER, Shown};
 pub use shell::{Commands, Mark as CommandMark};
 #[cfg(test)]
 mod tests;
@@ -1636,14 +1632,7 @@ impl Screen {
         properties: Properties,
         chars: &mut Chars<'_>,
     ) -> Option<(char, Properties)> {
-        let g = self.grid();
-        let (row, start) = g.cursor.at();
-        let end = g.line_end();
-        let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
-        let fits = (!g.cursor.pending_wrap)
-            .then(|| run_width(properties, start, end, cluster))
-            .flatten();
-        let Some(width) = fits else {
+        let Some((row, start, end, width)) = self.run_start(properties) else {
             return Some((first, properties));
         };
         let style = self.pen_style() | self.protect;
@@ -1687,18 +1676,24 @@ impl Screen {
         stopped
     }
 
-    /// REP's copies of `c`, as `run` writes text: up to `copies` along the
-    /// cursor's row while each fits and joins nothing; says how many, none
-    /// where `print` must write the next.
-    fn fill(&mut self, c: char, properties: Properties, copies: usize) -> usize {
+    /// Where `run` and `fill` write on the cursor's row: its row, the
+    /// cursor's column and the line's end, with the width of a glyph of
+    /// `properties` there, if it fits and joins nothing.
+    #[inline]
+    fn run_start(&self, properties: Properties) -> Option<(u16, u16, u16, u16)> {
         let g = self.grid();
         let (row, start) = g.cursor.at();
         let end = g.line_end();
         let cluster = self.last_print.map(|p| p.cluster).unwrap_or_default();
-        let fits = (!g.cursor.pending_wrap)
-            .then(|| run_width(properties, start, end, cluster))
-            .flatten();
-        let Some(width) = fits else {
+        let fits = (!g.cursor.pending_wrap).then(|| run_width(properties, start, end, cluster));
+        Some((row, start, end, fits.flatten()?))
+    }
+
+    /// REP's copies of `c`, as `run` writes text: up to `copies` along the
+    /// cursor's row while each fits and joins nothing; says how many, none
+    /// where `print` must write the next.
+    fn fill(&mut self, c: char, properties: Properties, copies: usize) -> usize {
+        let Some((row, start, end, width)) = self.run_start(properties) else {
             return 0;
         };
         let room = usize::from(end.saturating_sub(start).checked_div(width).unwrap_or(0));
@@ -3692,8 +3687,8 @@ impl Screen {
             }
             // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
-                let (width, height) = self.graphics.cell?;
-                Some(reply!("\x1b[6;{height};{width}t"))
+                let cell = self.graphics.cell?;
+                Some(reply!("\x1b[6;{};{}t", cell.height(), cell.width()))
             }
             (b"", b't') if n == 14 => {
                 let (height, width) = self.pixel_size()?;

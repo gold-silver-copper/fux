@@ -16,6 +16,8 @@ impl Session {
             return;
         }
         let changes = self.changes();
+        let typist = |s: &Self| s.shown_tab(client).and_then(|t| t.typist);
+        let typed = typist(self);
         // Whether any of it may have changed what a client shows.
         let mut shown = false;
         // A client that only watches sends no other acts than its
@@ -27,14 +29,20 @@ impl Session {
             }
             shown |= self.act(client, act);
         }
-        // Keys a pane's program reads show when its output does: nothing
-        // to paint or settle until then.
-        if !shown && self.changes() == changes {
+        // Input a pane dropped is told, once a run (`InputQueue`). Keys a
+        // pane's program reads show when its output does: nothing to paint
+        // or settle until then.
+        shown |= self.tell_lost();
+        // Another client typing answers for the tab's panes, which the
+        // settle tells them (`Session::host_cells`), and shows nothing.
+        let answers = typist(self) != typed;
+        if !shown && !answers && self.changes() == changes {
             return;
         }
         // A command the input ran repainted every client already; else only
         // this client's screen changed: its mode, notice or overlay.
-        if self.changes() == changes
+        if shown
+            && self.changes() == changes
             && let Some(view) = self.views.get_mut(&client)
         {
             view.dirty = true;
@@ -48,15 +56,9 @@ impl Session {
             Act::Key(stroke) => return self.key(client, stroke),
             Act::Paste(text) => self.paste(client, &text),
             // A focus change or a mouse report for the program shows
-            // nothing until it answers.
-            Act::Focus(gained) => {
-                self.focus_event(client, gained);
-                return false;
-            }
-            Act::Mouse(event) => {
-                self.mouse(client, event);
-                return false;
-            }
+            // nothing until it answers, but its refusal.
+            Act::Focus(gained) => return self.focus_event(client, gained),
+            Act::Mouse(event) => return self.mouse(client, event),
             Act::Reply(reply) => self.terminal_reply(client, reply),
             // The client's screen, drawn as it says; copy mode left, if
             // the client has moved on from it.
@@ -107,35 +109,47 @@ impl Session {
                 true
             }
         };
-        if shown {
-            view.dirty = true;
-        }
+        view.dirty |= shown;
         // Encoded as its program asked.
-        self.type_in(client, |screen, out| {
+        let refused = self.type_in(client, |screen, out| {
             crate::encode::key_bytes(stroke, screen.key_mode(), out)
         });
-        shown
+        shown || refused
     }
 
     /// Types into the client's focused pane what `write` makes for its
-    /// screen: a key or a paste, as its program asked. Refused already, and
-    /// said so: nothing more goes in, nor is said again, so a client typing
-    /// into a pane whose input queue is full costs nothing per key.
-    fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
+    /// screen: a key or a paste, as its program asked (`put_in`).
+    fn type_in(
+        &mut self,
+        client: ClientId,
+        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
+    ) -> bool {
         let Some(pane) = self.focused(client) else {
-            return;
+            return false;
         };
         self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
-            return;
+        self.put_in(client, pane, write)
+    }
+
+    /// Queues for pane `pane`'s program what `write` makes for its screen,
+    /// as `send-keys` does (`live_pane_mut`). Each piece refused, its
+    /// program not running or its input queue refusing (`InputQueue`), is
+    /// told to `client`, which sent it, the first of a run too; whether
+    /// one was.
+    fn put_in(
+        &mut self,
+        client: ClientId,
+        pane: crate::id::PaneId,
+        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
+    ) -> bool {
+        let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
+            Ok(Ok(())) => return false,
+            Ok(Err(crate::pane::Error::InputFull)) => crate::session::lost(pane),
+            Ok(Err(refused)) => refused.to_string(),
+            Err(refused) => refused.to_string(),
         };
-        if p.input.refusing() {
-            return;
-        }
-        let screen = p.parser.screen();
-        if let Err(error) = p.input.push_with(|out| write(screen, out)) {
-            self.notify_to(client, error.to_string(), true);
-        }
+        self.notify_to(client, why, true);
+        true
     }
 
     fn paste(&mut self, client: ClientId, text: &str) {
@@ -147,21 +161,22 @@ impl Session {
             return;
         }
         view.notice = None;
-        self.type_in(client, |screen, out| {
+        let _ = self.type_in(client, |screen, out| {
             crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
         });
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
-    /// hears of it, if it asked.
-    fn focus_event(&mut self, client: ClientId, gained: bool) {
-        if let Some(p) = self
-            .focused(client)
-            .and_then(|pane| self.panes.get_mut(&pane))
-            && let Some(report) = p.screen().focus_report(gained)
-        {
-            let _ = p.input.push(report);
-        }
+    /// hears of it, if it asked and its program takes input (`put_in`): a
+    /// pane whose program ended is not told, nor its viewer refused.
+    fn focus_event(&mut self, client: ClientId, gained: bool) -> bool {
+        let Some(pane) = self.focused(client) else {
+            return false;
+        };
+        let asked = self.parts.panes().get(&pane);
+        let asked = asked.filter(|p| crate::session::refuses_input(p).is_none());
+        let report = asked.and_then(|p| p.screen().focus_report(gained));
+        report.is_some_and(|r| self.put_in(client, pane, |_, out| out.extend_from_slice(r)))
     }
 
     /// A mouse report from the client's terminal, which reports only while
@@ -170,17 +185,18 @@ impl Session {
     /// no mouse actions of its own: a report outside the focused pane is
     /// dropped, except that the motion and release of a press made inside
     /// are kept to the pane's edge, so the program never sees a button left
-    /// down. One that arrives as an overlay opens is dropped.
-    fn mouse(&mut self, client: ClientId, event: MouseEvent) {
+    /// down. One that arrives as an overlay opens is dropped. One the
+    /// pane refuses is told (`put_in`); whether it was.
+    fn mouse(&mut self, client: ClientId, event: MouseEvent) -> bool {
         let Some(view) = self.views.get(&client) else {
-            return;
+            return false;
         };
         let Some(pane) = self.focused(client).filter(|_| view.mode.is_normal()) else {
-            return;
+            return false;
         };
         let placement = self.placement(view);
         let Some(rect) = placement.rect(pane) else {
-            return;
+            return false;
         };
         let inside = rect.contains(event.row, event.col);
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
@@ -192,7 +208,7 @@ impl Session {
             MouseAction::Motion(_) => (false, None),
         };
         if !(inside || held && !press) {
-            return;
+            return false;
         }
         if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client))
             && let Some(holds) = holds
@@ -203,13 +219,10 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
-            return;
-        };
         let mut report = Vec::new();
-        if p.screen().encode_mouse(event, &mut report) {
-            let _ = p.input.push(&report);
-        }
+        let asked = self.parts.panes().get(&pane);
+        asked.is_some_and(|p| p.screen().encode_mouse(event, &mut report))
+            && self.put_in(client, pane, |_, out| out.extend_from_slice(&report))
     }
 }
 
@@ -279,8 +292,8 @@ mod tests {
 
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
-        (s.panes.get_mut(&PaneId::of(pane)))
-            .map(|p| p.input.drain_all())
+        (s.parts.pane_mut(PaneId::of(pane)))
+            .map(|mut p| p.input.drain_all())
             .unwrap_or_default()
     }
 
@@ -291,14 +304,15 @@ mod tests {
     }
 
     fn pane_width(s: &Session, pane: u32) -> u16 {
-        s.panes
+        s.parts
+            .panes()
             .get(&PaneId::of(pane))
             .map_or(0, |p| p.screen().size().cols())
     }
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.workspaces.first().map(|w| w.tabs().len())
+        s.parts.workspaces().first().map(|w| w.tabs().len())
     }
 
     /// The prefix, then `keys`.
@@ -568,8 +582,8 @@ mod tests {
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
-        let order: Vec<String> = (s.workspaces.first())
-            .map(|w| w.tabs().iter().map(|t| t.id.to_string()).collect())
+        let order: Vec<String> = (s.parts.workspaces().first())
+            .map(|w| w.tabs().iter().map(|t| t.id().to_string()).collect())
             .unwrap_or_default();
         assert_eq!(order, ["@2", "@3", "@1"]);
         Ok(())
@@ -872,6 +886,82 @@ mod tests {
         Ok(())
     }
 
+    /// A mouse report a full input queue refuses is told, and so is each
+    /// key, paste, report and focus change refused after it, the notice
+    /// cleared by a key shown again.
+    #[test]
+    fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        p.input.push(full).map_err(|e| e.to_string())?;
+        drop(p);
+        let notice = |s: &mut Session| {
+            let view = s.views.get_mut(&c);
+            view.and_then(|v| v.notice.take()).map(|n| n.text)
+        };
+        s.input(c, b"\x1b[<0;3;2M");
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        let typed = [
+            b"x".as_slice(),
+            b"y",
+            b"\x1b[200~z\x1b[201~",
+            b"\x1b[<0;3;2M",
+            b"\x1b[I",
+        ];
+        for typed in typed {
+            s.input(c, typed);
+            let told = notice(&mut s);
+            assert!(
+                told.is_some_and(|n| n.contains("input to %1 was dropped")),
+                "{typed:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The first key a full queue refuses is told, though a run of drops
+    /// before it, of replies, was told already.
+    #[test]
+    fn the_first_key_refused_is_told() -> Outcome {
+        let (mut s, c) = session()?;
+        let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[6n", crate::pane::REPLIES_MAX)
+            .flatten()
+            .collect();
+        s.output(PaneId::of(1), &queries);
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        let room = p.input.room();
+        p.input.push(vec![0; room]).map_err(|e| e.to_string())?;
+        drop(p);
+        let notice = |s: &mut Session| {
+            let view = s.views.get_mut(&c);
+            view.and_then(|v| v.notice.take()).map(|n| n.text)
+        };
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        s.input(c, b"x");
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        Ok(())
+    }
+
+    /// A key or paste typed into a pane whose program exited is refused,
+    /// as `send-keys` is, and told: never queued for no one to read.
+    #[test]
+    fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+        for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
+            s.input(c, typed);
+            let notice = s.views.get_mut(&c).and_then(|v| v.notice.take());
+            let told = notice.map(|n| n.text).unwrap_or_default();
+            assert!(told.contains("the program in %2 exited 3"), "{told}");
+            assert!(queued(&mut s, 2).is_empty());
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_drag_out_of_the_pane_is_kept_to_its_edge() -> Outcome {
         let (mut s, c) = session()?;
@@ -963,12 +1053,12 @@ mod tests {
         run(&mut s, "str main workspace str other rename")?;
         assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
         s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
-        assert_eq!(s.workspaces.first().map(|w| w.name.as_str()), Some("new"));
+        assert_eq!(s.parts.workspaces().first().map(|w| w.name()), Some("new"));
         run(&mut s, "str c1 client str new workspace confirm-close")?;
         run(&mut s, "str new workspace str again rename")?;
         assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
         s.input(c, b"y");
-        assert!(s.workspaces.iter().all(|w| w.name != "again"));
+        assert!(s.parts.workspaces().iter().all(|w| w.name() != "again"));
         Ok(())
     }
 
@@ -1007,7 +1097,15 @@ mod tests {
         assert_eq!(mode(&s, c), "prompt YaX界Z|");
         s.input(c, b"\x7f\x7f\x7f\x7f\x7f");
         assert_eq!(mode(&s, c), "prompt |");
+        // A paste of two lines is refused whole, and said, a blank one too;
+        // of one line, its line end left out, typed.
         s.input(c, b"\x1b[200~one\ntwo\x1b[201~");
+        assert_eq!(mode(&s, c), "prompt |");
+        s.input(c, b"\x1b[200~one\n\n\x1b[201~");
+        assert_eq!(mode(&s, c), "prompt |");
+        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("one line")));
+        s.input(c, b"\x1b[200~one\n\x1b[201~");
         assert_eq!(mode(&s, c), "prompt one|");
         escape(&mut s, c);
         assert_eq!(mode(&s, c), "normal");

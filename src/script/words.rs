@@ -14,6 +14,7 @@ use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
 use fuxth::{Code as Lang, Done, Failure, Value};
+use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 
 /// A word of fux's vocabulary.
@@ -97,14 +98,14 @@ pub const WORDS: &[Word] = &[
     // Starting
     word("Starting", "opts", "-- opts", "empty options, for run, new-tab and new-workspace (the other words take them on the pane)"),
     word("Starting", "name", "x name -- x", "the tab's or workspace's name"),
-    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it"),
+    word("Starting", "size", "x cols rows -- x", "what its tab is laid out on while no client shows it, 1 to 4096 each; needed with no client attached but ones that only watch or have no room below their bar, as fux makes no size up"),
     word("Starting", "cwd", "x dir -- x", "where it starts"),
     word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
-    word("Starting", "command", "x line -- x", "the program and its arguments, one line split into words as a shell splits them (quotes, backslashes); no shell runs it, so ; | && and > are words: for those, str sh program str -c arg str LINE arg"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
+    word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
@@ -122,13 +123,11 @@ pub const WORDS: &[Word] = &[
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", "x text -- x", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
-    word("Input", "paste-file", "x file -- x", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
     word("Input", "bytes", "x hex -- x", "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character"),
-    word("Input", "times", "x n -- x", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", "subject -- answer", "send the mouse event on it"),
-    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground"),
+    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground"),
     // Reading
     word("Reading", "capture", "subject -- capture", "the screen, as the words on the pane say"),
     word("Reading", "history", "x lines -- x", "capture: lines of history first"),
@@ -157,8 +156,8 @@ pub const WORDS: &[Word] = &[
     word("Changing", "rename", "handle text --", "rename a pane, tab or workspace"),
     word("Changing", "notify", "handle text --", "a notice on the clients showing it"),
     word("Changing", "notify-all", "text --", "a notice on every client"),
-    word("Changing", "resize", "handle cols rows --", "what a tab (or a pane's) is laid out on while no client shows it"),
-    word("Changing", "resize-auto", "handle --", "a tab laid out on a client's screen again"),
+    word("Changing", "resize", "handle cols rows --", "what a tab (or a pane's) is laid out on while no client shows it, 1 to 4096 each"),
+    word("Changing", "resize-auto", "handle --", "a tab laid out on a client's screen again (at its size until one shows it)"),
     word("Changing", "resize-x", "pane width --", "a pane's width: cells, or a percent"),
     word("Changing", "resize-y", "pane height --", "a pane's height: cells, or a percent"),
     word("Changing", "percent", "n -- size", "n percent of the tab, for resize-x and resize-y"),
@@ -178,7 +177,7 @@ pub const WORDS: &[Word] = &[
     word("Clients", "attach", "--", "show the server in this terminal"),
     word("Clients", "attach-to", "workspace --", "the same, on a workspace"),
     word("Clients", "watch", "--", "attach without typing: keys do nothing but the prefix, then d, which detaches"),
-    word("Clients", "headless", "cols rows --", "a client with no terminal, until signalled; prints its id"),
+    word("Clients", "headless", "cols rows --", "a client with no terminal, 1 to 4096 each, until signalled; prints its id"),
     word("Clients", "focus", "client way --", "left right up down next previous or last pane"),
     word("Clients", "focus-pane", "client pane --", "focus a pane"),
     word("Clients", "show-tab", "client tab --", "show a tab"),
@@ -199,16 +198,15 @@ pub const WORDS: &[Word] = &[
     word("Clients", "command-prompt", "client --", "a prompt for fuxth"),
     word("Clients", "detach", "client --", "detach a client"),
     word("Clients", "capture-client", "client -- capture", "what a client's terminal shows"),
-    word("Clients", "resize-client", "client cols rows --", "a headless client's size"),
+    word("Clients", "resize-client", "client cols rows --", "a headless client's size, 1 to 4096 each"),
     // Server
     word("Server", "server", "name --", "the server named so (NAME.sock in fux's directory), for what follows"),
     word("Server", "socket", "path --", "the server on this socket, for what follows"),
     word("Server", "start", "--", "start the server in the background, if none answers"),
     word("Server", "status", "-- record", "the server that answers, and its version; with none, fails no_server"),
-    word("Server", "servers", "-- listing", "the servers that answer in fux's directory"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", "setting text --", "shell history-bytes wait-seconds clipboard buffers bell titles update-environment"),
+    word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
     word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
     word("Server", "revoke", "socket --", "close a grant's socket"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
@@ -265,12 +263,9 @@ pub fn usage(word: &str) -> Option<String> {
     // words that take it do.
     let takes = takes.trim().to_uppercase();
     let request = takes.strip_prefix('X');
-    let taken_by = |w: &str| help::options(w).is_some_and(|mut o| o.any(|o| o == word));
-    let takers = help::OPTIONS
-        .iter()
-        .map(|(w, _)| *w)
-        .filter(|w| taken_by(w));
-    let (opts, panes): (Vec<&str>, Vec<&str>) = takers.partition(|w| help::FROM_OPTS.contains(w));
+    let (opts, panes): (Vec<&str>, Vec<&str>) = taking(word)
+        .into_iter()
+        .partition(|w| help::FROM_OPTS.contains(w));
     let on = match (opts.is_empty(), panes.is_empty()) {
         (true, false) => "PANE",
         (false, true) => "OPTS",
@@ -366,6 +361,12 @@ fn int(value: &Value<Fux>) -> Result<i64, Failure> {
 const CELL: RangeInclusive<i64> = 0..=u16::MAX as i64;
 const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 
+/// A share of a split (`shares`): 1 or more, in a u32.
+fn share(value: &Value<Fux>) -> Result<NonZeroU32, Failure> {
+    let n = within(value, 1..=i64::from(u32::MAX))?;
+    NonZeroU32::new(n).ok_or_else(|| fail(Lang::Range, "a share is 1 or more"))
+}
+
 /// An integer within `range`, as the type it goes in.
 fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Result<T, Failure> {
     let n = int(value)?;
@@ -390,15 +391,12 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
     })
 }
 
-/// The most columns, and rows, a tab is laid out on.
-const TAB_MOST: u16 = 500;
-
-/// A size: columns and rows each 1 to `most` (a tab's laid out on,
-/// `TAB_MOST`; a client's, as many as a cell holds).
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
-    let cells = 1..=i64::from(most);
+/// A size: columns and rows each 1 to `view::MOST`, as a client's screen,
+/// and so a tab that fits clients, may be.
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen, Failure> {
+    let cells = 1..=i64::from(crate::view::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
+    crate::view::Screen::new(rows, cols).map_err(|e| fail(Lang::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
@@ -449,8 +447,7 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
-    let takes = |o: &str| help::options(word).is_some_and(|mut t| t.any(|t| t == o));
-    let Some(option) = built.given.iter().find(|o| !takes(o)) else {
+    let Some(option) = built.given.iter().find(|o| !taking(o).contains(&word)) else {
         return Ok(());
     };
     let instead = format!("takes no {option}: {option} goes on {}", takers(option));
@@ -538,9 +535,10 @@ fn modify(
         "log-to" => built.log = Some(string(&next()?)?),
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
-        "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
+        "size" => built.size = Some(laid_out(&next()?, &next()?)?),
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
+        "shares" => built.shares = Some((share(&next()?)?, share(&next()?)?)),
         "kill-first" => built.kill = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
@@ -554,14 +552,6 @@ fn modify(
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
-        "command" => {
-            let line = string(&next()?)?;
-            let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
-            if argv.first().is_none_or(|p| p.is_empty()) {
-                return Err(fail(Code::NoProgram, "an empty command line"));
-            }
-            built.argv = argv;
-        }
         "program" => {
             let program = string(&next()?)?;
             match built.argv.first_mut() {
@@ -639,29 +629,6 @@ fn modify(
                 )
             })?;
             built.inputs.push(Input::Key(press));
-        }
-        "paste-file" => {
-            let path = string(&next()?)?;
-            let most = (INPUT_MAX, "900 KiB, the most one paste takes");
-            let text =
-                super::read_file(path.as_ref(), most).map_err(|f| fail(Code::Paste, f.message))?;
-            built.inputs.push(Input::Paste(text));
-        }
-        // The input just before it, n times in all: refused before it is
-        // copied if that is more than send-keys sends.
-        "times" => {
-            let n: usize = within(&next()?, 1..=1000)?;
-            let Some(last) = built.inputs.last().cloned() else {
-                return Err(fail(
-                    Code::NoKeys,
-                    "repeats the input before it: str Down key 3 times",
-                ));
-            };
-            let more = sent(std::slice::from_ref(&last)).saturating_add(5);
-            fits(sent(&built.inputs).saturating_add(more.saturating_mul(n.saturating_sub(1))))?;
-            built
-                .inputs
-                .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
         }
         "mouse" => {
             let mouse = one_of(&next()?, &MICE)?;
@@ -755,10 +722,19 @@ fn closest_key(word: &str) -> Option<String> {
 /// The words that take `option`, listed; every word that takes options,
 /// for a word that is none.
 pub(super) fn takers(option: &str) -> String {
-    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
     let words: Vec<&str> = help::OPTIONS.iter().map(|(w, ..)| *w).collect();
-    let on: Vec<&str> = words.iter().copied().filter(takes).collect();
+    let on = taking(option);
     crate::words::listed(if on.is_empty() { &words } else { &on }, "or")
+}
+
+/// The words that take `option`, in `help::OPTIONS`'s order.
+fn taking(option: &str) -> Vec<&'static str> {
+    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
+    help::OPTIONS
+        .iter()
+        .map(|(w, ..)| *w)
+        .filter(takes)
+        .collect()
 }
 
 /// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
@@ -786,30 +762,32 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
+// A frame holds it, with room for the rest of its request; and an empty
+// input queue its text and bytes, which go in as they are (`Pane::input`).
+const _: () = assert!(INPUT_MAX < crate::protocol::MAX_PAYLOAD);
+const _: () = assert!(INPUT_MAX <= crate::pane::INPUT_BYTES);
 
-/// The bytes `inputs` take as the request carries them, which must fit in
-/// one frame: text and pastes their bytes, keys their names' (`C-M-F12`
-/// 7), and each input after the first 5 bytes more.
-fn sent(inputs: &[Input]) -> usize {
-    (inputs.iter())
+/// `inputs`, refused past what one send-keys sends. What they take is
+/// what the request carries, which must fit in one frame: text and pastes
+/// their bytes, keys their names' (`C-M-F12` 7), and each input after the
+/// first 5 bytes more.
+fn fits(inputs: &[Input]) -> Result<(), Failure> {
+    let typed = (inputs.iter())
         .map(|input| match input {
             Input::Text(text) | Input::Paste(text) => text.len(),
             Input::Key(key) => key.to_string().len(),
             Input::Bytes(bytes) => bytes.len(),
         })
         .fold(0usize, usize::saturating_add)
-        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5))
-}
-
-/// `typed` bytes of input, refused past what one send-keys sends.
-fn fits(typed: usize) -> Result<(), Failure> {
+        .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5));
     match typed > INPUT_MAX {
         true => Err(fail(
             Lang::TooLong,
             format!(
-                "{typed} bytes, more than 900 KiB, the most it sends at once \
+                "{typed} bytes, more than {} KiB, the most it sends at once \
                  (text and pastes count their bytes, keys their names', each input \
-                 after the first 5 more)"
+                 after the first 5 more)",
+                INPUT_MAX / 1024
             ),
         )),
         false => Ok(()),
@@ -848,6 +826,11 @@ fn act(client: ClientId, action: ClientAction, then: Then) -> Ask {
         action,
     };
     ask_as(client, command, then)
+}
+
+/// An order to a client that answers nothing.
+fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
+    Ok(Done::Later(act(client, action, Then::Nothing)))
 }
 
 /// How a screen's word makes its screen from what follows the client.
@@ -924,7 +907,7 @@ impl fuxth::Host for Host<'_> {
             };
             return match self.context.client == Some(c) {
                 true => local(Local::Open(open)),
-                false => later(act(c, ClientAction::Run(open.code()), Then::Nothing)),
+                false => order(c, ClientAction::Run(open.code())),
             };
         }
         match name {
@@ -1055,6 +1038,7 @@ impl fuxth::Host for Host<'_> {
                     cwd: built.cwd,
                     env: built.env,
                     id,
+                    shares: built.shares,
                 };
                 later(ask(split, Then::Handle(Kind::Pane)))
             }
@@ -1095,7 +1079,7 @@ impl fuxth::Host for Host<'_> {
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
-                fits(sent(&built.inputs))?;
+                fits(&built.inputs)?;
                 let target = match on {
                     On::Target(target) => target,
                     On::Version(version) => AnyRef::Pane(version.pane),
@@ -1222,14 +1206,14 @@ impl fuxth::Host for Host<'_> {
             "resize" | "resize-auto" => {
                 let target = target(&next()?)?;
                 let size = match name {
-                    "resize" => Some(laid_out(&next()?, &next()?, TAB_MOST)?),
+                    "resize" => Some(laid_out(&next()?, &next()?)?),
                     _ => None,
                 };
                 tell(Command::Resize(Resized::Tabs(target, size)))
             }
             "resize-client" => {
                 let c = client(&next()?)?;
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1349,11 +1333,11 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
-                    size: Some(size),
+                    size: Some(size.size()),
                 })
             }
             "focus" => {
@@ -1365,16 +1349,12 @@ impl fuxth::Host for Host<'_> {
                     ("last", PanePick::Last),
                 ];
                 let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
-                later(act(c, ClientAction::SelectPane(pick), Then::Nothing))
+                order(c, ClientAction::SelectPane(pick))
             }
             "focus-pane" => {
                 let c = client(&next()?)?;
                 let p = pane(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectPane(PanePick::Id(p)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectPane(PanePick::Id(p)))
             }
             "show-tab" => {
                 let c = client(&next()?)?;
@@ -1382,20 +1362,12 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Tab(tab)) = &t else {
                     return Err(wrong("a tab", &t));
                 };
-                later(act(
-                    c,
-                    ClientAction::SelectTab(Pick::Id(*tab)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectTab(Pick::Id(*tab)))
             }
             "show-workspace" => {
                 let c = client(&next()?)?;
                 let w = workspace(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectWorkspace(Pick::Id(w)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
             | "detach" => {
@@ -1410,7 +1382,7 @@ impl fuxth::Host for Host<'_> {
                     "next-tab" | "previous-tab" => ClientAction::SelectTab(Pick::Step(step)),
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),
                 };
-                later(act(c, action, Then::Nothing))
+                order(c, action)
             }
             "capture-client" => {
                 let c = client(&next()?)?;
@@ -1425,7 +1397,6 @@ impl fuxth::Host for Host<'_> {
             ))),
             "start" => local(Local::Start),
             "status" => local(Local::Status),
-            "servers" => local(Local::Servers),
             "kill-server" => tell(Command::KillServer { force: false }),
             "force-kill-server" => local(Local::ForceKill),
             "set" => {
@@ -1479,8 +1450,8 @@ impl fuxth::Host for Host<'_> {
             "check" => {
                 let path = string(&next()?)?;
                 // Read as running it reads it, and refused alike.
-                let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
-                    .map_err(|f| fail(Code::Read, f.message))?;
+                let text =
+                    super::read_file(path.as_ref()).map_err(|f| fail(Code::Read, f.message))?;
                 // Its mistake, with where it is, as the file's own.
                 let checked = |failed: super::Failed| fail(Code::Check, failed.message);
                 let tokens = fuxth::token::source(&path, &text)
@@ -1643,17 +1614,13 @@ mod tests {
         assert_eq!(named, all);
     }
 
-    /// `set`'s help and the README's table name every setting, in order.
+    /// `send-keys`'s help, and the guide, state its bound as it has it.
     #[test]
-    fn every_setting_is_told_of() {
-        let set = WORDS.iter().find(|w| w.name == "set");
-        let help: Vec<&str> =
-            (set.map(|w| w.about.split_whitespace().collect())).unwrap_or_default();
-        assert_eq!(help, crate::config::NAMES);
-        let readme = include_str!("../../README.md");
-        for name in crate::config::NAMES {
-            assert!(readme.contains(&format!("\n| `{name}` |")), "{name}");
-        }
+    fn the_input_bound_is_stated_as_checked() {
+        let input = format!("{} KiB at most", INPUT_MAX / 1024);
+        let about = WORDS.iter().find(|w| w.name == "send-keys");
+        assert!(about.is_some_and(|w| w.about.contains(&input)), "{input}");
+        assert!(crate::help::AGENTS.contains(&input), "{input}");
     }
 
     /// Each word's effect is in the names of fux's kinds, strictly: the

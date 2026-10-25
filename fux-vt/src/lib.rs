@@ -110,12 +110,12 @@ pub use geometry::Size;
 pub use link::{Hyperlink, ID_LIMIT, URI_LIMIT};
 pub use mode::{Mode, ModeStatus};
 pub use parser::{
-    Event, Feature, FrameScan, Identity, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink, Stop,
-    Unhandled,
+    Event, Feature, FrameScan, Identity, Kept, OSC_PAYLOAD_LIMIT, Options, Params, Parser, Sink,
+    Stop, Unhandled,
 };
 pub use screen::{
-    CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding, MouseProtocolMode,
-    PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
+    CellSize, CommandMark, Commands, CursorShape, Graphics, MouseProtocolEncoding,
+    MouseProtocolMode, PICTURE_BYTES, PLACEHOLDER, Screen, Shown,
 };
 pub use unicode::{UNICODE_VERSION, char_width, continues_cluster, str_width};
 #[cfg(feature = "checks")]

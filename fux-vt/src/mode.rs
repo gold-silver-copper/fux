@@ -144,8 +144,10 @@ modes! {
         AlternateScroll (true, 1007) => Kind::Flag,
         /// Mouse encoding 1015, urxvt.
         MouseUrxvt (true, 1015) => Kind::Encoding(MouseProtocolEncoding::Urxvt),
-        /// Mouse encoding 1016, SGR with pixels.
-        MouseSgrPixels (true, 1016) => Kind::Encoding(MouseProtocolEncoding::SgrPixels),
+        /// Mouse encoding 1016, SGR with pixels: permanently reset, as a
+        /// `MouseEvent` names a cell and not the pixel within it, which is
+        /// not made up; a program keeps its cell encoding.
+        MouseSgrPixels (true, 1016) => Kind::Permanent(false),
         /// Extended reverse wraparound (`CSI ? 1045 h`): back over any line.
         ExtendedReverseWrap (true, 1045) [soft] => Kind::Flag,
         /// The alternate screen (`CSI ? 1047 h`), cleared on leaving it.

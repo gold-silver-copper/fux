@@ -542,8 +542,9 @@ impl Phase {
 }
 
 /// The most OSC payload bytes retained for [`Event`] delivery, hyperlinks
-/// and the palette. A longer OSC string is consumed and dropped; nothing
-/// beyond this is ever buffered.
+/// and the palette. Of a longer OSC string the rest is consumed and
+/// dropped, its event `cut` ([`Kept`]); nothing beyond this is ever
+/// buffered.
 pub const OSC_PAYLOAD_LIMIT: usize = 64 * 1024;
 
 /// The most OSC payload bytes retained with [`Feature::PromptMarks`] alone:
@@ -629,12 +630,6 @@ closed! {
         /// ignored, and neither DA1 nor XTSMGRAPHICS says the terminal has it.
         Pictures,
     }
-}
-
-/// Whether a host's cell, its width and height in pixels, is smaller than
-/// a sixel band's 2 by 6 (`THREATS.md` B05).
-fn cell_too_small(cell: (u16, u16)) -> bool {
-    cell.0 < 2 || cell.1 < 6
 }
 
 /// How a parser behaves: the [`Feature`]s on, and who it answers as. The
@@ -745,25 +740,36 @@ impl Identity {
     }
 }
 
+/// An OSC string's text as it was kept: raw bytes, all of them, or the
+/// first of a string longer than [`OSC_PAYLOAD_LIMIT`], `cut` saying the
+/// rest was dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kept<'a> {
+    /// The bytes kept.
+    pub bytes: &'a [u8],
+    /// Whether the string went on past them.
+    pub cut: bool,
+}
+
 /// A side effect requested by child output. Only delivered with
 /// [`Feature::Events`]; payloads are raw bytes, bounded by [`OSC_PAYLOAD_LIMIT`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// OSC 0 or OSC 2.
-    Title(&'a [u8]),
+    Title(Kept<'a>),
     /// OSC 0 or OSC 1.
-    IconName(&'a [u8]),
+    IconName(Kept<'a>),
     /// BEL executed outside a control string.
     Bell,
     /// A desktop notification: OSC 9 (iTerm2), OSC 777 (`notify;title;body`)
     /// or OSC 99 (kitty).
-    Notification(&'a [u8]),
+    Notification(Kept<'a>),
     /// OSC 52 set request; a `?` query is not an event.
     Clipboard {
         /// The selection parameter, `Pc`: `c`, `p`, `s` and so on, or empty.
         selection: &'a [u8],
         /// The data, `Pd`, as sent (normally base64).
-        data: &'a [u8],
+        data: Kept<'a>,
     },
     /// A query of one of xterm's dynamic colours, `OSC Ps ; ?` with `Ps`
     /// from 10 to 19 (ctlseqs, "Operating System Commands"). One OSC can ask
@@ -863,6 +869,8 @@ pub struct Parser {
     /// does not stop.
     end: u64,
     refused: u64,
+    /// Sixel pictures not placed (`Parser::pictures_refused`).
+    pictures_refused: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -897,6 +905,7 @@ impl Parser {
             spent: 0,
             end: u64::MAX,
             refused: 0,
+            pictures_refused: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1008,8 +1017,8 @@ impl Parser {
     }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15 (`None`: unknown). With `Feature::Palette`, a program's query
-    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it
-    /// rather than xterm's default. A colour the program set still wins,
+    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it,
+    /// and not at all where it is unknown. A colour the program set wins,
     /// and no reset (OSC 104, DECSTR, RIS) clears the host's. It changes no
     /// colour drawn.
     pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
@@ -1018,17 +1027,10 @@ impl Parser {
     /// Tells the parser what the host's terminal draws: the size of a cell
     /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
     /// whether it shows sixel graphics, which primary device attributes
-    /// then say (`4`) with [`Feature::Pictures`].
-    ///
-    /// A cell is taken as at least 2 by 6 pixels, a sixel's band, so that
-    /// placing a picture costs a bounded number of cells (`THREATS.md` B05).
+    /// then say (`4`) with [`Feature::Pictures`] and a cell size. Without
+    /// a cell size no picture is placed ([`crate::Graphics`]).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
-        graphics.sixel &= self.options.has(Feature::Pictures);
-        if let Some(cell) = graphics.cell
-            && cell_too_small(cell)
-        {
-            graphics.cell = Some((cell.0.max(2), cell.1.max(6)));
-        }
+        graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
         self.screen.set_graphics(graphics);
     }
     /// Resizes the terminal, reflowing the primary screen with
@@ -1057,6 +1059,20 @@ impl Parser {
     /// 1.3). Each refusal loses only what it was for.
     pub fn refused(&self) -> u64 {
         self.refused
+    }
+    /// How many sixel pictures the program sent, with [`Feature::Pictures`],
+    /// that were not placed whole, each counted as it ends: begun while the
+    /// host drew no sixel (`set_host_graphics`), and not kept; ended once
+    /// it had no cell size; lifted past a scroll region's top as it was
+    /// placed; or cut, placed or not: what it drew past what a picture may
+    /// keep ([`crate::sixel::MAX_SIDE`] a side,
+    /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
+    /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,
+    /// or that CAN ended, is none. One placed whole and let go later, the
+    /// oldest first as newer ones need the room, is not counted, as
+    /// history let go is not.
+    pub fn pictures_refused(&self) -> u64 {
+        self.pictures_refused
     }
     /// Process output while deliberately discarding terminal query replies.
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
@@ -1327,18 +1343,21 @@ impl Parser {
                 && self.params.is_empty()
         };
         let (decrqss, termcap) = (request(b"$"), request(b"+"));
-        // Sixel: `q` with no intermediates.
-        let sixel =
-            self.options.has(Feature::Pictures) && byte == b'q' && read.as_slice().is_empty();
+        // Sixel: `q` with no intermediates, with `Feature::Pictures`; kept
+        // only while the host draws sixel, as DA1 says (with a cell size to
+        // lay it out in, `set_host_graphics`), else read only to tell
+        // whether it drew anything, which its end counts.
+        let sixel = byte == b'q' && read.as_slice().is_empty();
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {
             self.termcap = true;
             State::IgnoreString
-        } else if sixel {
+        } else if sixel && self.options.has(Feature::Pictures) {
             self.sixel = Some(crate::sixel::Decoder::new(
                 self.params.first(0, 0),
                 self.params.first(1, 0),
+                self.screen.sixel(),
             ));
             State::Sixel
         } else {
@@ -1598,11 +1617,19 @@ impl Parser {
                 }
                 State::Sixel => {
                     let screen = &mut self.screen;
-                    let picture = (self.sixel.take()).and_then(|decoder| {
+                    let keeps = self.sixel.as_ref().is_some_and(|d| d.keeps());
+                    let (picture, whole) = (self.sixel.take()).map_or((None, true), |decoder| {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
-                    if let Some(picture) = picture {
-                        self.screen.place_picture(picture);
+                    // One begun while the host drew no sixel, ended once it
+                    // drew none (or had no cell to lay it out in), the
+                    // host's having gone as it was read, or that lost bands
+                    // as it was placed, is not placed; one cut is counted
+                    // too, placed or not: each once.
+                    let drawn = keeps && self.screen.sixel();
+                    let placed = picture.map(|p| drawn && self.screen.place_picture(p));
+                    if !whole || placed == Some(false) {
+                        self.pictures_refused = self.pictures_refused.saturating_add(1);
                     }
                 }
                 State::Ground
@@ -1803,9 +1830,9 @@ impl Parser {
     }
 
     /// Carries out the completed OSC string, cut short unless `whole`,
-    /// ended by BEL if `bel`, else by ST. An overflowed string is no event,
-    /// and closes any link. Out of line, so `byte` stays small enough to
-    /// inline into the parser's loop.
+    /// ended by BEL if `bel`, else by ST. An overflowed string's event is
+    /// `cut`; it sets no colour, and closes any link. Out of line, so
+    /// `byte` stays small enough to inline into the parser's loop.
     #[inline(never)]
     fn dispatch_osc(&mut self, whole: bool, bel: bool, sink: &mut impl Sink) {
         let payload = std::mem::take(&mut self.osc);
@@ -1858,34 +1885,38 @@ impl Parser {
         {
             return;
         }
-        if !self.options.has(Feature::Events) || !whole {
+        if !self.options.has(Feature::Events) {
             return;
         }
+        // What the string's start holds, the rest cut if it overflowed.
+        let kept = |bytes| Kept { bytes, cut: !whole };
         match command {
             b"0" => {
-                sink.event(Event::IconName(rest));
-                sink.event(Event::Title(rest));
+                sink.event(Event::IconName(kept(rest)));
+                sink.event(Event::Title(kept(rest)));
             }
-            b"1" => sink.event(Event::IconName(rest)),
-            b"2" => sink.event(Event::Title(rest)),
+            b"1" => sink.event(Event::IconName(kept(rest))),
+            b"2" => sink.event(Event::Title(kept(rest))),
             // OSC 9 ; 4 is ConEmu's progress report, not a notification.
-            b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(rest)),
+            b"9" if !rest.starts_with(b"4;") => sink.event(Event::Notification(kept(rest))),
             b"777" => {
                 if let Some(text) = rest.strip_prefix(b"notify;") {
-                    sink.event(Event::Notification(text));
+                    sink.event(Event::Notification(kept(text)));
                 }
             }
             b"99" => {
                 let text = crate::split_semicolon(rest).map(|(_, text)| text);
-                sink.event(Event::Notification(text.unwrap_or_default()));
+                sink.event(Event::Notification(kept(text.unwrap_or_default())));
             }
             b"52" => {
                 if let Some((selection, data)) = crate::split_semicolon(rest)
                     && data != b"?"
                 {
+                    let data = kept(data);
                     sink.event(Event::Clipboard { selection, data });
                 }
             }
+            _ if !whole => {}
             // OSC 10 to 19 the palette did not read (it is off, or the
             // number is written `010`) still ask the host for their
             // colours; what they set is kept nowhere.

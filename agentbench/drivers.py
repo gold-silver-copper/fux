@@ -200,11 +200,15 @@ class Driver:
         """The status the pane's program exited with, or None while it runs."""
         raise Unsupported("exit status")
 
+    def has_ended(self, pane):
+        """Whether the pane's program ended: here, that its status is known."""
+        return self.exit_status(pane) is not None
+
     # Waits: polling, unless a driver has better.
 
     def wait_text(self, pane, text, timeout=10):
         return self.poll(lambda: text in self.screen(pane), timeout,
-                         lambda: self.exit_status(pane) is not None)
+                         lambda: self.has_ended(pane))
 
     def wait_gone(self, pane, text, timeout=10):
         return self.poll(lambda: text not in self.screen(pane), timeout)
@@ -229,7 +233,7 @@ class Driver:
         """Waits for text that may scroll off the screen at once: the
         screen and its history are searched."""
         return self.poll(lambda: text in self.screen(pane, history=True), timeout,
-                         lambda: self.exit_status(pane) is not None)
+                         lambda: self.has_ended(pane))
 
     def wait_bell(self, pane, timeout=10):
         raise Unsupported("bell")
@@ -558,7 +562,7 @@ class Fux(Driver):
         end = time.time() + timeout
         while time.time() < end:
             for name, p in panes.items():
-                if self.exit_status(p) is not None:
+                if self.has_ended(p):
                     return name
             self.nap()
         raise Timeout("no program exited")
@@ -574,8 +578,10 @@ class Fux(Driver):
         words = ["opts"]
         if name:
             words += ["str", name, "name"]
-        if size:
-            words += [str(size[0]), str(size[1]), "size"]
+        # fux makes no size up, and no client is attached here: with none
+        # asked for, tmux's size for a session no client shows, 80 by 24.
+        cols, rows = size or (80, 24)
+        words += [str(cols), str(rows), "size"]
         words += ["str", argv[0], "program"]
         for a in argv[1:]:
             words += ["str", a, "arg"]
@@ -614,6 +620,11 @@ class Fux(Driver):
         if s["exited"] is not None:
             return s["exited"]
         return 128 + s["signal"] if s.get("signal") else None
+
+    def has_ended(self, pane):
+        # Its version's ENDED is the fact: an exit whose status was lost
+        # has neither `exited` nor `signal`.
+        return ended(self.state(pane)["version"])
 
     def cursor_hidden(self, pane):
         return not self.state(pane)["cursor_visible"]

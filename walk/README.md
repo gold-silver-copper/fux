@@ -66,7 +66,8 @@ recorded as the concrete step it became:
 - **commands:** fuxth programs from the whole vocabulary, with valid and
   invalid targets (never `kill-server`);
 - **what no command expresses:** a client resized (down to 1×1, 1×200,
-  40×1); a client asking for 9000×9000, which must get 4096×4096; a pane's
+  40×1); a client asking for 9000×9000 (`too-big`), which the server must
+  refuse, naming its bound, with no client attached; a pane's
   program acting through `act.sh` (alternate screen, mouse reporting,
   bracketed paste, application cursor keys, `stty`, a burst of output, not
   reading, exiting with a status); SIGSTOP and SIGCONT to a pane's shell
@@ -110,9 +111,6 @@ Narrowed, and why:
   screen appears when it grows.
 - **Error notices** cut by a tiny bar to under four characters are not
   judged; a longer cut one must match a template's beginning.
-- **The 9000×9000 client** waits up to 60 seconds for its listing:
-  composing a 4096×4096 screen (16.7 million cells) takes seconds in a
-  debug build.
 
 ## Traces
 

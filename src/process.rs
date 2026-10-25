@@ -18,17 +18,25 @@ pub struct Child {
     pub master: Master,
 }
 
-/// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
-/// its controlling terminal: with `env` set and `unset` removed from the
-/// server's environment.
+/// Starts `argv` on a new PTY of `size`, in pixels as `cell` makes it
+/// (`pixels`), in its own session with the PTY as its controlling
+/// terminal: with `env` set and `unset` removed from the server's
+/// environment.
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
     (env, unset): (&[(&str, std::ffi::OsString)], &[String]),
-    size: fux_vt::Size,
+    (size, cell): (fux_vt::Size, Option<fux_vt::CellSize>),
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
+    // Before the program starts, which may ask but once. Its size in
+    // cells is set (`open`), or nothing starts; its pixels are told where
+    // the system takes them, else left unknown (0 by 0), as
+    // `Pane::size_terminal` leaves them, a program never refused for them.
+    if let Some(pixels) = pixels(size, cell) {
+        let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
+    }
     let (child, pid) = slave
         .spawn(argv, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
@@ -57,18 +65,49 @@ pub fn spawn(
     })
 }
 
-pub use fuxix::process::Status as Ended;
+/// A terminal of `size` in pixels, as `cell` makes it: unknown without a
+/// cell, or where the whole does not fit the kernel's count.
+pub fn pixels(
+    size: fux_vt::Size,
+    cell: Option<fux_vt::CellSize>,
+) -> Option<fuxix::terminal::Pixels> {
+    let side = |cells: u16, pixels: u16| {
+        let whole = u32::from(cells).checked_mul(u32::from(pixels))?;
+        std::num::NonZeroU16::new(u16::try_from(whole).ok()?)
+    };
+    let cell = cell?;
+    Some(fuxix::terminal::Pixels {
+        width: side(size.cols(), cell.width())?,
+        height: side(size.rows(), cell.height())?,
+    })
+}
 
-/// The end of a program whose status could not be read: no exit code is
-/// negative, so it is never taken for a success.
-pub const UNKNOWN: Ended = Ended::Exited(-1);
+/// How a pane's program ended: as the system says, or with its status
+/// lost (its leader no unreaped child whose status can be read), which is
+/// no exit code and no signal, and is said as unknown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ended {
+    Exited(i32),
+    Signalled(i32),
+    Lost,
+}
+
+impl From<Status> for Ended {
+    fn from(status: Status) -> Self {
+        match status {
+            Status::Exited(code) => Ended::Exited(code),
+            Status::Signalled(signal) => Ended::Signalled(signal),
+        }
+    }
+}
 
 /// The status a shell reports for a process: its exit code, or 128 plus the
-/// signal that killed it, whose numbers are small.
-pub fn shell_status(status: Status) -> i32 {
-    match status {
-        Status::Exited(code) => code,
-        Status::Signalled(signal) => 128i32.saturating_add(signal),
+/// signal that killed it, whose numbers are small; none for a status lost.
+pub fn shell_status(ended: Ended) -> Option<i32> {
+    match ended {
+        Ended::Exited(code) => Some(code),
+        Ended::Signalled(signal) => Some(128i32.saturating_add(signal)),
+        Ended::Lost => None,
     }
 }
 
@@ -87,8 +126,11 @@ impl Leader {
     /// `None` while it lives, stopped or not. The check does not wait, so
     /// no signal interrupts it; it fails only for a pid that is no unreaped
     /// child, one gone, whose status is lost.
-    pub fn exited(&self) -> Option<Status> {
-        fuxix::process::ended(self.0).unwrap_or(Some(UNKNOWN))
+    pub fn exited(&self) -> Option<Ended> {
+        match fuxix::process::ended(self.0) {
+            Ok(status) => status.map(Ended::from),
+            Err(_) => Some(Ended::Lost),
+        }
     }
 
     /// Signals its process group and every other process in its session.
@@ -137,12 +179,13 @@ pub fn reaped(pid: Pid) -> bool {
     !matches!(fuxix::process::reap(pid), Ok(None))
 }
 
-/// How an end is told: `exited 3`, or `killed by SIGSEGV`.
-pub fn told(ended: Status) -> String {
+/// How an end is told: `exited 3`, `killed by SIGSEGV` (`killed by
+/// signal 64` for one POSIX does not name), or `ended, its status lost`.
+pub fn told(ended: Ended) -> String {
     match ended {
-        UNKNOWN => "ended, its status unknown".to_owned(),
-        Status::Exited(code) => format!("exited {code}"),
-        Status::Signalled(raw) => match Signal::from_raw(raw) {
+        Ended::Lost => "ended, its status lost".to_owned(),
+        Ended::Exited(code) => format!("exited {code}"),
+        Ended::Signalled(raw) => match Signal::from_raw(raw) {
             Some(signal) => format!("killed by SIG{}", signal.name()),
             None => format!("killed by signal {raw}"),
         },
@@ -159,8 +202,7 @@ mod tests {
     fn a_status_not_read_is_no_success() -> Result<(), String> {
         let me = i32::try_from(std::process::id()).map_err(|e| e.to_string())?;
         let leader = Leader(Pid::from_raw(me).ok_or("no pid")?, false);
-        let ended = leader.exited();
-        assert!(ended.is_some_and(|s| s != Status::Exited(0)), "{ended:?}");
+        assert_eq!(leader.exited(), Some(Ended::Lost));
         Ok(())
     }
 }

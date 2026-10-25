@@ -1,6 +1,6 @@
-//! Text, in the baseline and the current fux: lines split into the same
-//! words or errors, words quote alike; key names read and print alike;
-//! JSON strings and base64 are written the same. Config files are no longer
+//! Text, in the baseline and the current fux: words quote alike; key
+//! names read and print alike; JSON strings and base64 are written the
+//! same. Config files are no longer
 //! compared: the baseline's grammar is gone, and a config is a fuxth
 //! program its clients run.
 use crate::rng::Rng;
@@ -17,13 +17,8 @@ macro_rules! stack {
             use $fux::keys::KeyPress;
             use $fux::words;
 
-            pub fn words(line: &str) -> String {
-                let split = words::split(line).map_err(|e| e.to_string());
-                let argv = split.clone().unwrap_or_default();
-                format!(
-                    "{split:?} {:?}",
-                    argv.iter().map(|w| words::quote(w)).collect::<Vec<_>>()
-                )
+            pub fn quote(word: &str) -> String {
+                words::quote(word)
             }
 
             pub fn key(name: &str) -> String {
@@ -67,9 +62,9 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
             .map(|_| r.pick(PIECES).copied().unwrap_or_default())
             .collect();
         same(
-            &format!("the line {line:?}"),
-            base::words(&line),
-            cur::words(&line),
+            &format!("the word {line:?}"),
+            base::quote(&line),
+            cur::quote(&line),
         )?;
         same(
             &format!("the text {line:?}"),
@@ -101,6 +96,6 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         bump(&mut keys);
     }
     Ok(format!(
-        "{lines} lines split, quoted and written as JSON, {keys} key names"
+        "{lines} words quoted and written as JSON, {keys} key names"
     ))
 }

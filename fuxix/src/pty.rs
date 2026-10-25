@@ -188,7 +188,7 @@ pub fn open(size: Size) -> Result<(Master, Slave), Error> {
         .open(&name)
         .map_err(|e| Errno::from_io_error(&e).unwrap_or(Errno::INVAL))
         .map_err(at("opening the PTY slave"))?;
-    terminal::set_window_size(&master, size).map_err(at("TIOCSWINSZ"))?;
+    terminal::set_window_size(&master, size, None).map_err(at("TIOCSWINSZ"))?;
     crate::io::set_nonblocking(&master, true).map_err(at("O_NONBLOCK"))?;
     let slave = OwnedFd::from(slave);
     #[cfg(target_os = "macos")]

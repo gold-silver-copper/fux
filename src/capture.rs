@@ -17,9 +17,9 @@ type Read = (String, String);
 
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
-/// that says a client is in copy mode on it.
-pub fn pane(
-    pane: &Pane,
+/// that says a client is in copy mode on it (`state`).
+pub fn pane<S>(
+    pane: &Pane<S>,
     run: Run,
     history: Option<usize>,
     view: CaptureView,
@@ -112,7 +112,7 @@ pub fn pane(
     // line, though the cursor shows on this one's last cell.
     let pending = cursor.is_some() && screen.pending_wrap();
     print(
-        ("pane", pane.id.to_string()),
+        ("pane", pane.id().to_string()),
         (rows, cols),
         (cursor, Some(pending)),
         (lines, view),
@@ -216,18 +216,21 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
-/// that say how it takes input.
-pub fn state(
-    pane: &Pane,
+/// that say how it takes input; whether a client is in copy mode on it,
+/// and the cell its program is told, by the terminal that draws its tab
+/// (`Session::host_cells`).
+pub fn state<S>(
+    pane: &Pane<S>,
     run: Run,
     now: Instant,
     copy_mode: bool,
 ) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
+    let cell = screen.cell_size();
     // What runs in the foreground: a job the shell started, else the
     // program itself; nothing, where its terminal can't tell.
-    let job = pane.process.job();
-    let foreground = (pane.process.child()).and_then(|child| match job {
+    let job = pane.process().job();
+    let foreground = (pane.process().child()).and_then(|child| match job {
         Ok(job) => Some(job.unwrap_or(child.leader.pid())),
         Err(_) => None,
     });
@@ -240,18 +243,27 @@ pub fn state(
         (Runs::Shell, Ok(None)) => foreground.and_then(fuxix::process::argv),
         (_, Err(_)) => None,
     };
-    let (exited, signal) = match pane.process.exit_status() {
+    let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
-        None => (Json::Null, Json::Null),
+        Some(crate::process::Ended::Lost) | None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
-    let hung_up = matches!(pane.process, Process::HungUp(_));
+    let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
     let pictures = Json::Array(screen.pictures().map(picture).collect());
-    let notification = pane.alerts.last.clone();
+    let notification = pane.alerts.last.as_ref();
+    // The fields whose value the program sent more of than is kept.
+    let cut = [
+        ("title", pane.title().cut()),
+        ("notification", notification.is_some_and(|n| n.cut())),
+        ("output", pane.left.output == crate::pane::Output::Cut),
+    ];
+    let truncated = cut.into_iter().filter(|(_, cut)| *cut);
+    let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
     vec![
+        ("title", Json::str(pane.title().as_str().to_owned())),
         ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
@@ -277,13 +289,36 @@ pub fn state(
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
+        ("pictures_refused", Json::int(pane.pictures_refused())),
+        ("replies_dropped", Json::int(pane.alerts.replies_dropped)),
+        (
+            "copies_refused",
+            Json::Object(vec![
+                ("cut", Json::int(pane.alerts.copies_cut)),
+                ("not_text", Json::int(pane.alerts.copies_not_text)),
+            ]),
+        ),
+        (
+            "cell",
+            cell.map_or(Json::Null, |cell| {
+                Json::Object(vec![
+                    ("width", Json::int(cell.width())),
+                    ("height", Json::int(cell.height())),
+                ])
+            }),
+        ),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
         ("last_status", last_status.map_or(Json::Null, Json::int)),
         ("bells", Json::int(pane.alerts.rung)),
-        ("notification", notification.map_or(Json::Null, Json::str)),
+        (
+            "notification",
+            notification.map_or(Json::Null, |n| Json::str(n.as_str().to_owned())),
+        ),
+        ("truncated", Json::Array(truncated)),
+        ("input_unread", Json::int(pane.left.input)),
         (
             "cwd",
             foreground

@@ -29,9 +29,15 @@ fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// `run`'s words: `opts`, then `before` (name, size, waits…), then the
-/// program, then `run`.
+/// program, then `run`; at 80 by 24 unless `before` gives a size, as no
+/// client is attached to lay it out on.
 fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
-    [&["opts"][..], before, &program(argv), &["run"]].concat()
+    let size: &[&str] = if before.contains(&"size") {
+        &[]
+    } else {
+        &["80", "24", "size"]
+    };
+    [&["opts"][..], size, before, &program(argv), &["run"]].concat()
 }
 
 /// `send-keys` to `pane` typing `line`, then Enter.
@@ -346,7 +352,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
         let words = [
-            "opts", "str", shell, "name", "str", home, "str", &dir, "env",
+            "opts", "80", "24", "size", "str", shell, "name", "str", home, "str", &dir, "env",
         ];
         server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
         check(shell)?;
@@ -401,7 +407,9 @@ while not seen.endswith(b"q"):
     sent(&["str", "a b", "paste"], "1b5b3230307e6120621b5b3230317e")?;
     sent(&["str", "c3a9", "bytes"], "c3a9")?;
     sent(
-        &["str", "BSpace", "key", "3", "times", "str", "x", "text"],
+        &[
+            "0", "3", "range", "each", "drop", "str", "BSpace", "key", "end", "str", "x", "text",
+        ],
         "7f7f7f78",
     )?;
     let click = ["str", "click", "2", "4", "mouse"];
@@ -671,8 +679,12 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
         1
     );
-    let taken = server.fux(&["opts", "str", "ed", "name", "new-tab"])?;
-    assert_eq!(taken.status, 1, "a name taken");
+    let taken = server.fux(&["opts", "80", "24", "size", "str", "ed", "name", "new-tab"])?;
+    assert!(
+        taken.stderr.starts_with("fux: name_taken: "),
+        "{}",
+        taken.stderr
+    );
     // A common spelling is a key's name too; a typo is told the closest.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
@@ -814,50 +826,28 @@ fn an_answer_is_its_pane() -> Outcome {
     Ok(())
 }
 
-/// Input as large as a paste may be (900 KiB) goes in one send-keys, all
-/// of it; more is refused as too long, before anything is sent.
+/// Input as large as one send-keys sends (900 KiB, far past a typed
+/// paste's 64 KiB) goes in one, all of it, from a program read from a
+/// file; more is refused as too long, before anything is sent.
 #[test]
 fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let server = Server::start("")?;
-    let file = server.dir.join("paste.txt");
-    let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
-    std::fs::write(&file, std::iter::repeat_n(line, 9216).collect::<String>()).map_err(e)?;
     let count = "stty -echo; head -c 921600 | wc -c; cat > /dev/null";
     let sink = id(&server.ok(&run(&[], &["sh", "-c", count]))?);
-    let path = file.to_string_lossy();
-    let paste = [
-        "str",
-        &sink,
-        "pane",
-        "str",
-        &path,
-        "paste-file",
-        "send-keys",
-    ];
-    shows_after(&server, &server.ok(&paste)?, "921600")?;
+    let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
+    let text: String = std::iter::repeat_n(line, 9216).collect();
+    let file = server.dir.join("paste.fux");
+    std::fs::write(&file, format!("{sink} str '{text}' paste send-keys")).map_err(e)?;
+    shows_after(&server, &server.ok(&[&file.to_string_lossy()])?, "921600")?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
-    let many = [
-        "str",
-        &sink,
-        "pane",
-        "str",
-        &long,
-        "text",
-        "1000",
-        "times",
-        "send-keys",
-    ];
-    let refused = server.fux(&many)?;
+    let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
+    let refused = server.fux(&[&many])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     // Keys count as the request carries them, their names and more: so
     // many that the request could not be sent are too long too.
-    let mut keys = vec!["str", &sink, "pane"];
-    for _ in 0..90 {
-        keys.extend(["str", "C-M-F12", "key", "1000", "times"]);
-    }
-    keys.push("send-keys");
-    let refused = server.fux(&keys)?;
+    let keys = format!("{sink} 0 90000 range each drop str C-M-F12 key end send-keys");
+    let refused = server.fux(&[&keys])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     Ok(())
@@ -879,7 +869,7 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
         "let",
         "P",
         "P",
-        "screen",
+        "capture",
         "let",
         "C",
         "P",
@@ -1098,8 +1088,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     let unmarked = recipe("- **A shell command's end, without marks:**")?
         .replace("%3", &pane("exec sh -i")?)
         .replace("make test", "true");
-    let exit =
-        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    let exit = recipe("- **A program's exit:**")?.replace(
+        "str cargo program str test arg",
+        "str sh program str -c arg str 'sleep 1; exit 3' arg",
+    );
     let deaf = pane("stty -echo; sleep 30")?;
     let fallback = recipe("- **A deadline, a fallback, a retry:**")?
         .replace("%2", &deaf)

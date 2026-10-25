@@ -28,18 +28,50 @@ pub const PICTURE_BYTES: usize = 96 << 20;
 
 /// What the host's terminal draws, for the pictures a program asks about
 /// and draws: the size of a cell in pixels, if known, and whether it shows
-/// sixel graphics.
+/// sixel graphics. With no cell size known, a picture has no cells to be
+/// laid out in: no picture is placed, and `CSI 14 t` and `CSI 16 t` are
+/// not answered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Graphics {
-    /// A cell's width and height in pixels.
-    pub cell: Option<(u16, u16)>,
+    /// A cell's size in pixels.
+    pub cell: Option<CellSize>,
     /// Whether it shows sixel graphics.
     pub sixel: bool,
 }
 
-/// The cell a picture is laid out in when the host does not say: a common
-/// terminal font's.
-pub(crate) const CELL: (u16, u16) = (10, 20);
+/// The size of a cell in pixels, as the host's terminal says it: at least
+/// a sixel's band (`LEAST`), so that placing a picture costs a bounded
+/// number of cells (`THREATS.md` B05). A smaller one is no size a picture
+/// can be laid out in, and is refused, not replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellSize {
+    width: u16,
+    height: u16,
+}
+
+impl CellSize {
+    /// The smallest cell, width and height in pixels: a sixel band, 2 by 6.
+    pub const LEAST: (u16, u16) = (2, 6);
+    /// A cell `width` by `height` pixels, unless smaller than a sixel band.
+    pub fn new(width: u16, height: u16) -> Option<Self> {
+        holds_a_band(width, height).then_some(Self { width, height })
+    }
+    /// Its width in pixels.
+    pub fn width(self) -> u16 {
+        self.width
+    }
+    /// Its height in pixels.
+    pub fn height(self) -> u16 {
+        self.height
+    }
+}
+
+/// Whether a cell `width` by `height` pixels holds a sixel band
+/// (`CellSize::LEAST`): a function of its own, which the mutation guards
+/// name (cargo-mutants leaves `new` unmutated).
+fn holds_a_band(width: u16, height: u16) -> bool {
+    width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
+}
 
 /// A picture placed on a grid.
 #[derive(Clone, Debug)]
@@ -103,9 +135,14 @@ pub struct Shown<'a> {
 
 impl Screen {
     /// A cell's size in pixels, the host's (`Parser::set_host_graphics`),
-    /// else the one pictures are laid out in.
-    pub(crate) fn cell_pixels(&self) -> (u16, u16) {
-        self.graphics.cell.unwrap_or(CELL)
+    /// if it said.
+    pub fn cell_size(&self) -> Option<CellSize> {
+        self.graphics.cell
+    }
+
+    /// Whether the host draws sixel, as DA1 says: only with a cell size.
+    pub(crate) fn sixel(&self) -> bool {
+        self.graphics.sixel
     }
 
     /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
@@ -114,25 +151,29 @@ impl Screen {
         self.graphics = graphics;
     }
 
-    /// Places `picture` at the cursor: its cells take the placeholder, a
+    /// Places `picture` at the cursor, in the host's cells (none without
+    /// a cell size, which nothing can stand in for): its cells take the placeholder, a
     /// row at a time down from the cursor's (scrolling at the bottom, as a
     /// terminal scrolls a sixel picture), clipped at the right edge; the
     /// cursor ends on the row its last band ends in, in its first column. A picture of this screen
     /// it covers goes, and so does one this screen no longer shows (text
     /// or an erase over it, its rows gone from history), whose pixels
-    /// nothing can show again.
-    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) {
+    /// nothing can show again. Says whether it was placed: not without a
+    /// cell size, nor when it lost bands as it was placed.
+    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> bool {
+        let Some(cell) = self.graphics.cell else {
+            return false;
+        };
         if self.pictures.is_empty() {
             // Nothing to follow: its rows are followed from here.
             self.primary
                 .followed()
                 .set(Some(self.primary.history_numbers().1));
         }
+        let cell = (cell.width(), cell.height());
         self.track_pictures();
-        let cell = self.graphics.cell.unwrap_or(CELL);
         let cells = |pixels: u32, per: u16| {
-            let per = u32::from(per.max(1));
-            u16::try_from(pixels.div_ceil(per))
+            u16::try_from(pixels.div_ceil(u32::from(per)))
                 .unwrap_or(u16::MAX)
                 .max(1)
         };
@@ -159,7 +200,7 @@ impl Screen {
         // printed"), as the line a glyph printed there would end at.
         let across = cols.min(self.grid().line_end().saturating_sub(col));
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
-            return;
+            return false;
         };
         // Each row's cells take the placeholder as a fill, not as text: no
         // pen, mode, cluster or print reaches them (DEC STD 070-9, 11.1).
@@ -237,7 +278,7 @@ impl Screen {
         }
         // Moved with the cells, the picture's rows are the last `rows`
         // down to its last band's, if they lie inside the region; else it
-        // lost bands, and is not kept.
+        // lost bands, and is not placed.
         let top = match lifted {
             false => Some(top),
             true => {
@@ -251,7 +292,7 @@ impl Screen {
         };
         let alternate = self.alternate_active;
         let Some(top) = top else {
-            return;
+            return false;
         };
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
@@ -304,6 +345,7 @@ impl Screen {
             let Some(victim) = self.victim() else { break };
             self.pictures.remove(victim);
         }
+        true
     }
 
     /// The bytes of pixels the screen's pictures hold, on either grid.
@@ -550,11 +592,11 @@ impl Screen {
 
     /// The pixel size of the text area, for a program's `CSI 14 t`.
     pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
-        let (width, height) = self.graphics.cell?;
+        let cell = self.graphics.cell?;
         let (rows, cols) = self.size().into();
         Some((
-            u32::from(rows).saturating_mul(u32::from(height)),
-            u32::from(cols).saturating_mul(u32::from(width)),
+            u32::from(rows).saturating_mul(u32::from(cell.height())),
+            u32::from(cols).saturating_mul(u32::from(cell.width())),
         ))
     }
 }
@@ -675,7 +717,7 @@ mod faults {
             col: 0,
             cols: 1,
             rows: 1,
-            cell: CELL,
+            cell: (10, 20),
             alternate: false,
             whole_at: 0,
             cropped: 0,

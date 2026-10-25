@@ -13,7 +13,7 @@ const GONE_WITHIN: Duration = Duration::from_secs(3);
 /// pane's shell shows a prompt.
 fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
     })?;
     server.ok(&[
         "str",
@@ -49,10 +49,13 @@ fn gone(pid: i32, what: &str) -> Outcome {
 #[test]
 fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     // dash's own way with jobs is what is tested; CI's machines all have it.
+    // The `shell` setting parts words at blanks and refuses quotes and
+    // backslashes: a path with one is none.
     let path = std::env::var_os("PATH").unwrap_or_default();
+    let refused = |c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '\\');
     let Some(dash) = std::env::split_paths(&path)
         .map(|dir| dir.join("dash"))
-        .find(|dash| dash.is_file())
+        .find(|dash| dash.is_file() && !dash.to_string_lossy().contains(refused))
     else {
         eprintln!("skipped: dash is not installed");
         return Ok(());
@@ -61,7 +64,16 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         if how == "workspace kill" {
-            server.ok(&["opts", "str", "doomed", "name", "new-workspace"])?;
+            server.ok(&[
+                "opts",
+                "80",
+                "24",
+                "size",
+                "str",
+                "doomed",
+                "name",
+                "new-workspace",
+            ])?;
         } else {
             server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
         }
@@ -157,7 +169,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let (pane, leader) = server.newest_pane()?;
     // Settled: the new shell has a prompt.
     eventually("a prompt", || {
-        Ok(server.ok(&["str", &pane, "pane", "screen"])?.contains('$'))
+        Ok(server.ok(&["str", &pane, "pane", "capture"])?.contains('$'))
     })?;
     signal(leader, Signal::Stop);
     // Stopped, the kernel has sent the server SIGCHLD; two round trips
@@ -185,7 +197,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     server.type_line(&pane, "echo alive-$((1+1))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "screen"])?
+            .ok(&["str", &pane, "pane", "capture"])?
             .contains("alive-2"))
     })?;
     // A kill closes it, with the signal's status: 128 + 9.
@@ -223,7 +235,7 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     server.type_line(&pane, "echo still-$((2+2))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "screen"])?
+            .ok(&["str", &pane, "pane", "capture"])?
             .contains("still-4"))
     })?;
     assert!(alive(job), "the stopped job ended");
@@ -245,8 +257,8 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
     let answer = server.ok(&[
-        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "str", &fifo,
-        "arg", "str", &pidfile, "arg", "run",
+        "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg",
+        "str", &fifo, "arg", "str", &pidfile, "arg", "run",
     ])?;
     let pane = answer
         .split_whitespace()

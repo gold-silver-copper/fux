@@ -8,7 +8,7 @@ use crate::command::{Command, Request};
 use crate::decode::Input;
 use crate::door::{self, Link};
 use crate::keymap::Keymap;
-use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
+use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
     Reply, Role, ToAttached, ToCommand,
@@ -54,6 +54,8 @@ pub enum Error {
     Mismatch(Mismatch),
     Protocol(crate::protocol::Error),
     NotATerminal,
+    /// The terminal says no size (`TIOCGWINSZ`), or 0 rows or columns.
+    NoSize,
     /// What a request streamed could not be written out.
     Output(io::Error),
     /// Anything else that failed: why.
@@ -71,6 +73,7 @@ impl Error {
             | Error::Refused(_)
             | Error::Protocol(_)
             | Error::NotATerminal
+            | Error::NoSize
             | Error::Failed(_) => Code::Client,
         }
     }
@@ -95,7 +98,13 @@ impl std::fmt::Display for Error {
             Error::Refused(reason) => f.write_str(reason),
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
-            Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
+            Error::NotATerminal => {
+                f.write_str("fux attach needs a terminal on stdin and stdout, the same one")
+            }
+            Error::NoSize => f.write_str(
+                "the terminal on stdin says no size (0 rows or columns), which fux would have to make up; \
+                 give it one (`stty rows 24 cols 80`)",
+            ),
             Error::Output(error) => write!(f, "writing the output: {error}"),
             Error::Failed(why) => f.write_str(why),
         }
@@ -207,8 +216,7 @@ fn greeted(
             Mismatch::between(ours, &theirs).map_err(Error::Mismatch)?;
             sent.map(|()| theirs.version.to_owned())
         }
-        (_, Err(error)) => Err(error),
-        (Err(error), Ok(())) => Err(error),
+        (_, Err(error)) | (Err(error), Ok(())) => Err(error),
         (Ok(Some(Greeting::Done(_)) | None), Ok(())) => Err(no_answer()),
     }
 }
@@ -454,10 +462,30 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     }
 }
 
-/// The terminal's rows and columns; a server's default if it does not say.
-fn window_size() -> fux_vt::Size {
-    fuxix::terminal::window_size(io::stdout())
-        .map_or(crate::session::default_size(), |s| (s.rows, s.cols).into())
+/// The rows and columns of the terminal on stdin, which the client reads
+/// and the server paints, if it says them: one that says none (or 0 of
+/// either) has no size fux could lay panes out on.
+pub(crate) fn window_size() -> Option<fux_vt::Size> {
+    fuxix::terminal::window_size(io::stdin()).map(|(s, _)| (s.rows, s.cols).into())
+}
+
+/// Whether stdin and stdout are one terminal: the same device, or both the
+/// session's controlling terminal (`fux </dev/tty`, whose device is
+/// `/dev/tty`'s). The client reads keys from stdin, which the server
+/// paints, and sets the terminal's modes through stdout.
+pub(crate) fn on_one_terminal() -> bool {
+    use io::IsTerminal as _;
+    use std::os::fd::AsFd as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let device = |fd: std::os::fd::BorrowedFd<'_>| {
+        let file = std::fs::File::from(fd.try_clone_to_owned().ok()?);
+        file.metadata().ok().map(|m| m.rdev())
+    };
+    io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && (device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
+            || fuxix::terminal::controls_session(io::stdin())
+                && fuxix::terminal::controls_session(io::stdout()))
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
@@ -672,12 +700,6 @@ impl Keyboard {
         self.screen = screen;
     }
 
-    /// A key typed: to the screen open, else through the bindings.
-    fn press(&mut self, stroke: Keystroke, acts: &mut Vec<Act>) {
-        let effects = self.screen.key(&self.keymap, stroke, self.read_only);
-        self.apply(effects, acts);
-    }
-
     /// What a key or a paste led to: actions for the server, programs to run.
     fn apply(&mut self, effects: Vec<Effect>, acts: &mut Vec<Act>) {
         for effect in effects {
@@ -699,33 +721,10 @@ impl Keyboard {
         }
     }
 
-    /// What the terminal sent, decoded.
+    /// What the terminal sent, decoded (`Screen::input`).
     fn input(&mut self, input: Input, acts: &mut Vec<Act>) {
-        match input {
-            Input::Key(stroke) => self.press(stroke, acts),
-            Input::Reply(reply) => acts.push(Act::Reply(reply)),
-            Input::Paste(_)
-            | Input::PasteTooLong
-            | Input::FocusIn
-            | Input::FocusOut
-            | Input::Mouse(_)
-                if self.read_only => {}
-            Input::Paste(text) => {
-                let effects = self.screen.paste(&text);
-                self.apply(effects, acts);
-            }
-            Input::PasteTooLong => {
-                let limit = crate::decode::PASTE_LIMIT / 1024;
-                let text = format!("paste exceeds {limit} KiB; discarded");
-                acts.push(Act::Notice { text, error: true });
-            }
-            Input::FocusIn => acts.push(Act::Focus(true)),
-            Input::FocusOut => acts.push(Act::Focus(false)),
-            // The mouse is a program's, while the client shows none of its
-            // own screens.
-            Input::Mouse(_) if self.screen.kind().is_some() => {}
-            Input::Mouse(event) => acts.push(Act::Mouse(event)),
-        }
+        let effects = self.screen.input(&self.keymap, input, self.read_only);
+        self.apply(effects, acts);
     }
 
     /// Keys the server says were typed here (`send-keys` to this client),
@@ -821,7 +820,7 @@ pub fn attach(
     };
     let (mut stream, mut decoder, _) = connect(socket, role)?;
     let signals = early.map_or_else(Signals::new, Ok)?;
-    let size = size.unwrap_or_else(window_size);
+    let size = size.or_else(window_size).ok_or(Error::NoSize)?;
     let raw = terminal.then(|| Raw::enter(&stdin)).transpose()?;
     let attach = Attach {
         size,
@@ -1024,8 +1023,9 @@ fn attached(
         }
         if is(WINCH) {
             crate::drain(winch.pipe());
-            if terminal {
-                let resize = AttachedFrame::Resize(window_size());
+            // A terminal that says no size now keeps the last it said.
+            if terminal && let Some(size) = window_size() {
+                let resize = AttachedFrame::Resize(size);
                 if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &resize) {
                     return ended;
                 }
@@ -1134,6 +1134,22 @@ mod tests {
         let acts = keyboard.ran();
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
+        Ok(())
+    }
+
+    /// A client that only watches is told of each key and paste it takes
+    /// no further: a paste, and a key after the prefix but `d`, as a key.
+    #[test]
+    fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), true)?;
+        for typed in [&b"x"[..], b"\x1b[200~p\x1b[201~", b"\x02c"] {
+            let acts = keyboard.bytes(typed, Instant::now());
+            let notice = acts.first().filter(|_| acts.len() == 1);
+            let told =
+                matches!(notice, Some(Act::Notice { text, .. }) if text.contains("d detaches"));
+            assert!(told, "{typed:?}: {acts:?}");
+        }
         Ok(())
     }
 

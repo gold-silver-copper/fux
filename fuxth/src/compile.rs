@@ -421,8 +421,9 @@ impl<A: Clone> Compiler<A> {
                         let out = self.code().len();
                         self.code().patch(jump, out);
                     }
-                    Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no block that end closes is open")),
+                    other => {
+                        return Err(mismatched(token, other, "no block that end closes is open"));
+                    }
                 },
                 Some(Parsing::Let) => {
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
@@ -467,16 +468,14 @@ impl<A: Clone> Compiler<A> {
                             at: token.clone(),
                         });
                     }
-                    Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no if is open")),
+                    other => return Err(mismatched(token, other, "no if is open")),
                 },
                 Some(Parsing::Then) => match self.open.pop() {
                     Some(Open::If { jump, .. } | Open::Else { jump, .. }) => {
                         let here = self.code().len();
                         self.code().patch(jump, here);
                     }
-                    Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no if is open")),
+                    other => return Err(mismatched(token, other, "no if is open")),
                 },
                 Some(Parsing::Begin) => {
                     let start = self.code().len();
@@ -489,8 +488,7 @@ impl<A: Clone> Compiler<A> {
                     Some(Open::Begin { start, .. }) => {
                         self.code().push(Op::JumpUnless(start), token);
                     }
-                    Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no begin is open")),
+                    other => return Err(mismatched(token, other, "no begin is open")),
                 },
                 Some(Parsing::List) => {
                     self.code().push(Op::Mark, token);
@@ -522,8 +520,7 @@ impl<A: Clone> Compiler<A> {
                         self.code().patch(step, jump.saturating_add(1));
                         self.open.push(Open::Catch { jump, at });
                     }
-                    Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no try is open")),
+                    other => return Err(mismatched(token, other, "no try is open")),
                 },
                 None => self.word(token, text, literal)?,
             }
@@ -750,10 +747,6 @@ fn missing(token: &Token, what: &str) -> Error {
     )
 }
 
-fn unmatched(token: &Token, why: &str) -> Error {
-    Error::new(Code::Unmatched, why, Some(token))
-}
-
 fn opened(open: &Open) -> (&Token, &'static str) {
     match open {
         Open::Define { at } => (at, "define … end"),
@@ -776,8 +769,13 @@ fn unclosed(open: &Open) -> Error {
     )
 }
 
-fn mismatched(token: &Token, open: &Open) -> Error {
-    let (at, what) = opened(open);
+/// `token`, which closes a block, closing `open`, not its own; with no
+/// block open, `none` says what it lacks.
+fn mismatched(token: &Token, open: Option<Open>, none: &str) -> Error {
+    let Some(open) = open else {
+        return Error::new(Code::Unmatched, none, Some(token));
+    };
+    let (at, what) = opened(&open);
     Error::new(
         Code::Unmatched,
         format!("the open block is {what}, from {}", at.place),

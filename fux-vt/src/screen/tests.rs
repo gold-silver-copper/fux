@@ -321,13 +321,23 @@ fn the_main_saved_cursor_is_what_leaving_the_alternate_screen_restores() -> Resu
     Ok(())
 }
 
+/// A parser that places pictures, its host's cells 10 by 20 pixels.
+fn pictured(size: Size, history: usize) -> Result<crate::Parser, Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(size, history, options)?;
+    p.set_host_graphics(crate::Graphics {
+        cell: crate::CellSize::new(10, 20),
+        sixel: true,
+    });
+    Ok(p)
+}
+
 /// A picture the screen no longer shows holds no pixels: placing another
 /// lets go of one that text covered, and RIS of every one, as it clears
 /// the cells they covered.
 #[test]
 fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(6, 10), 10, options)?;
+    let mut p = pictured(Size::of(6, 10), 10)?;
     let sixel = b"\x1bPq#1;2;100;0;0!6~\x1b\\";
     p.process(sixel)?;
     p.process(b"\x1b[1;1Hx\x1b[3;5H")?;
@@ -344,8 +354,7 @@ fn pictures_no_longer_shown_are_let_go() -> Result<(), Error> {
 /// 4096 by 2160, drawn to their last pixel, and one more left unfinished.
 #[test]
 fn pictures_hold_no_more_than_their_budget() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     let mut hostile = picture(4096, 2160);
     hostile.truncate(hostile.len().saturating_sub(2));
     for _ in 0..64 {
@@ -383,8 +392,7 @@ fn shown(p: &crate::Parser) -> Vec<u64> {
 /// drawn beside the others; a byte more lets the oldest go (B01).
 #[test]
 fn pictures_fill_their_budget_exactly() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     // 4096 by 2048 pixels: 32 MiB, three to the budget.
     for _ in 0..3 {
         p.process(&picture(4096, 2048))?;
@@ -401,8 +409,7 @@ fn pictures_fill_their_budget_exactly() -> Result<(), Error> {
 /// so does one on the other screen.
 #[test]
 fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     // 100 by 120 pixels: 48,000 bytes, 10 by 6 cells at 10 by 20; room for
     // two of them.
     p.set_picture_bytes(100_000);
@@ -433,8 +440,7 @@ fn pictures_no_longer_shown_go_first() -> Result<(), Error> {
 /// being drawn that alone is past it lets go of what it drew.
 #[test]
 fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     let one = picture(100, 120);
     p.process(b"\x1b[1;1H")?;
     p.process(&one)?;
@@ -463,8 +469,7 @@ fn a_lowered_picture_budget_lets_pictures_go() -> Result<(), Error> {
 /// go (THREATS.md B02): each one cell, in a cell of its own.
 #[test]
 fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     let one = picture(1, 1);
     for n in 0..65u16 {
         p.process(format!("\x1b[{};{}H", n / 8 + 1, (n % 8) * 2 + 1).as_bytes())?;
@@ -481,8 +486,7 @@ fn a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go() -> Result<(), Er
 /// go, by the budget set as by one drawn (THREATS.md B01).
 #[test]
 fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     // 100 by 120 pixels: 48,000 bytes, 10 by 6 cells at 10 by 20.
     let one = picture(100, 120);
     p.process(b"\x1b[1;1H")?;
@@ -505,11 +509,10 @@ fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), E
 /// a cell of it covers goes (THREATS.md section 5, `overlaps`).
 #[test]
 fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
     // 20 by 40 pixels: 2 cells by 2 at 10 by 20, placed at row 5 col 5.
     let two = picture(20, 40);
     let place = |at: &[u8]| -> Result<Vec<u64>, Error> {
-        let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+        let mut p = pictured(Size::of(24, 80), 8 << 20)?;
         p.process(b"\x1b[5;5H")?;
         p.process(&two)?;
         p.process(at)?;
@@ -533,8 +536,7 @@ fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
 /// time, to 101 columns of one band (6 positions down).
 #[test]
 fn a_kept_picture_holds_just_its_pixels() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
-    let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+    let mut p = pictured(Size::of(24, 80), 8 << 20)?;
     let mut rightward = b"\x1bPq~".to_vec();
     for n in 1..=100 {
         rightward.extend(format!("$!{n}?~").bytes());
@@ -550,9 +552,8 @@ fn a_kept_picture_holds_just_its_pixels() -> Result<(), Error> {
 /// register 0 for P2 0 and 2) or clear (P2 1), when shown.
 #[test]
 fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
     for (p2, pixel) in [(0, [0, 0, 0, 255]), (1, [0, 0, 0, 0]), (2, [0, 0, 0, 255])] {
-        let mut p = crate::Parser::with_options(Size::of(24, 80), 8 << 20, options)?;
+        let mut p = pictured(Size::of(24, 80), 8 << 20)?;
         p.process(format!("\x1bP0;{p2}q\"1;1;4096;2160\x1b\\").as_bytes())?;
         assert_eq!(p.screen().picture_bytes(), 0, "P2 {p2}");
         let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
@@ -569,7 +570,6 @@ fn a_declared_extent_keeps_no_pixels() -> Result<(), Error> {
 /// them, and a cluster before doesn't take the first.
 #[test]
 fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
-    let options = crate::Options::from(crate::Feature::Pictures);
     // 20 by 20 pixels: 2 cells by 1 at 10 by 20.
     let two = picture(20, 20);
     let row = |p: &crate::Parser| {
@@ -580,7 +580,7 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
             .unwrap_or_default()
     };
     let ph = PLACEHOLDER;
-    let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
+    let mut p = pictured(Size::of(4, 10), 0)?;
     p.process(b"abcdef\r\x1b[4h\x1b[1;7m\x1b[1\"q")?;
     p.process(&two)?;
     // A picture's cells read as blanks.
@@ -589,32 +589,96 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     assert_eq!(first.map(|c| c.contents() == ph), Some(true));
     let attributes = first.map(|c| c.attributes());
     assert_eq!(attributes, Some(crate::Attributes::default()), "no pen");
-    let mut p = crate::Parser::with_options(Size::of(4, 10), 0, options)?;
+    let mut p = pictured(Size::of(4, 10), 0)?;
     p.process("\u{600}".as_bytes())?;
     p.process(&two)?;
     assert_eq!(p.screen().pictures().count(), 1, "after a prepend");
     Ok(())
 }
 
-/// A host's cell is taken as at least a sixel band, 2 by 6 pixels
-/// (THREATS.md B05).
+/// A host's cell is at least a sixel band, 2 by 6 pixels (THREATS.md
+/// B05): a smaller one is refused, not made one. With no cell size, a
+/// picture has no cells to be laid out in, and none is placed.
 #[test]
-fn a_host_cell_is_at_least_a_sixel_band() -> Result<(), Error> {
+fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
-    for (cell, taken) in [
-        ((1, 5), (2, 6)),
-        ((2, 6), (2, 6)),
-        ((3, 7), (3, 7)),
-        ((1, 9), (2, 9)),
+    for (cell, placed) in [
+        ((1, 5), false),
+        ((1, 9), false),
+        ((2, 6), true),
+        ((3, 7), true),
     ] {
         let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+        let size = crate::CellSize::new(cell.0, cell.1);
+        assert_eq!(size.is_some(), placed, "{cell:?}");
         p.set_host_graphics(crate::Graphics {
-            cell: Some(cell),
+            cell: size,
             sixel: true,
         });
         p.process(&picture(6, 12))?;
-        let shown = p.screen().pictures().next().ok_or(Error::InvalidRange)?;
-        assert_eq!(shown.cell, taken, "{cell:?}");
+        let shown = p.screen().pictures().next().map(|s| s.cell);
+        assert_eq!(shown, placed.then_some(cell), "{cell:?}");
+        assert_eq!(p.pictures_refused(), u64::from(!placed), "{cell:?}");
+    }
+    Ok(())
+}
+
+/// A picture the pictures' budget refuses room is not placed, and is
+/// counted; one that drew nothing, or that CAN ended, is no picture.
+#[test]
+fn a_picture_refused_room_is_counted() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+    p.set_host_graphics(crate::Graphics {
+        cell: crate::CellSize::new(10, 20),
+        sixel: true,
+    });
+    p.process(b"\x1bP9q\x1b\\\x1bP9q~\x18")?;
+    assert_eq!(p.pictures_refused(), 0);
+    p.set_picture_bytes(0);
+    p.process(b"\x1bP9q~\x1b\\")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(p.pictures_refused(), 1);
+    Ok(())
+}
+
+/// A picture begun while the host drew no sixel is counted as it ends,
+/// if it drew anything: one empty, or that CAN ended, is none, as on a
+/// host that draws them.
+#[test]
+fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+    p.process(b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\")?;
+    assert_eq!(p.pictures_refused(), 0);
+    p.process(b"\x1bPq~\x1b\\")?;
+    assert_eq!(p.pictures_refused(), 1);
+    assert_eq!(p.screen().pictures().count(), 0);
+    Ok(())
+}
+
+/// A picture begun while the host drew sixel and ended once it had no cell
+/// size, or drew no sixel though it has one, read across two reads, is not
+/// placed, and is counted so, once.
+#[test]
+fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let cell = crate::CellSize::new(10, 20);
+    for gone in [
+        crate::Graphics::default(),
+        crate::Graphics { cell, sixel: false },
+    ] {
+        let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+        p.set_host_graphics(crate::Graphics { cell, sixel: true });
+        let bytes = picture(6, 12);
+        let (begun, rest) = bytes
+            .split_at_checked(bytes.len() / 2)
+            .ok_or(Error::InvalidRange)?;
+        p.process(begun)?;
+        p.set_host_graphics(gone);
+        p.process(rest)?;
+        assert_eq!(p.screen().pictures().count(), 0, "{gone:?}");
+        assert_eq!(p.pictures_refused(), 1, "{gone:?}");
     }
     Ok(())
 }

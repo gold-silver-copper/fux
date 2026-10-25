@@ -151,11 +151,12 @@ fn a_resize_reaches_the_program() -> Outcome {
     client.keys("stty size\r")?;
     client.wait("the new size", |t| t.lines().any(|l| l == "19 60"))?;
     assert!(server.ok(&["ls"])?.contains("%1 sh 60x19"));
-    // Clamped to 1..=4096 each way; a one-row client has no room for panes.
-    client.resize(1, 5000)?;
-    eventually("the clamp", || {
-        Ok(server.ok(&["ls"])?.contains("client c1 4096x1"))
+    // Past 4096 a way, refused and said: the view keeps its size.
+    client.resize(20, 5000)?;
+    client.wait("the refusal", |t| {
+        t.contains("5000 columns by 20 rows: a client is")
     })?;
+    assert!(server.ok(&["ls"])?.contains("client c1 60x20"));
     Ok(())
 }
 
@@ -278,6 +279,33 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let out = server.fux_env(&["attach"], &[("FUX_PANE", "")])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
+    Ok(())
+}
+
+/// stdin and stdout must be one terminal: with stdout another, attach is
+/// refused, saying so.
+#[test]
+fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
+    let server = Server::start("")?;
+    let (_keys, keys) = fuxix::pty::open(pty_size(10, 40)?).map_err(e)?;
+    let (_shown, shown) = fuxix::pty::open(pty_size(10, 40)?).map_err(e)?;
+    let stdio = |fd: &fuxix::pty::Slave| {
+        fd.as_fd()
+            .try_clone_to_owned()
+            .map(std::process::Stdio::from)
+            .map_err(e)
+    };
+    let out = std::process::Command::new(FUX)
+        .arg("attach")
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .stdin(stdio(&keys)?)
+        .stdout(stdio(&shown)?)
+        .output()
+        .map_err(e)?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("the same one"), "{stderr}");
     Ok(())
 }
 
@@ -693,14 +721,22 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
-    server.ok(&[
+    let pane = server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
         "str",
-        "shell",
+        "/bin/sh",
+        "program",
         "str",
-        "/bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
-        "set",
+        "-c",
+        "arg",
+        "str",
+        "echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60",
+        "arg",
+        "run",
     ])?;
-    let pane = server.ok(&["opts", "new-workspace"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
@@ -777,6 +813,13 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
 #[test]
 fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     let server = Server::start("")?;
+    // The `shell` setting parts words at blanks and refuses quotes and
+    // backslashes: a path with one is none.
+    let refused = |c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '\\');
+    if server.dir.to_string_lossy().contains(refused) {
+        eprintln!("skipped: the scratch directory's path has a blank, quote or backslash");
+        return Ok(());
+    }
     let missing = server.dir.join("no-such-shell");
     let not_executable = server.dir.join("server.log");
     let script = server.dir.join("script");
@@ -790,7 +833,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     ] {
         let program = program.to_string_lossy();
         server.ok(&["str", "shell", "str", &program, "set"])?;
-        let out = server.fux(&["opts", "new-workspace"])?;
+        let out = server.fux(&["opts", "80", "24", "size", "new-workspace"])?;
         assert_eq!(out.status, 1);
         assert!(
             out.stderr
@@ -801,7 +844,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     }
     // The server is unharmed, and a good shell starts again.
     server.ok(&["str", "shell", "str", "/bin/sh", "set"])?;
-    server.ok(&["opts", "new-workspace"])?;
+    server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     Ok(())
 }
 

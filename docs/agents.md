@@ -11,7 +11,11 @@ a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
-(as `split` does): the other two start a shell.
+(as `split` does): the other two start a shell. Their tab is laid out on an
+attached client's screen, or on `COLS ROWS size`: with no client attached
+(one that only watches, or has no room for a pane below its bar, does not
+count) a size must be given, as fux makes none up: without one the request
+fails with code `size`.
 
 **Every pane has a version, and a wait waits for it to change.** A version
 is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
@@ -34,7 +38,7 @@ yours to say (recipes below).
 A=$(fux opts str web name 100 30 size str ./app program str --fast arg run)  # %2:0.0.0.0.0:RUN
 fux str "$A" changed wait                      # until it differs: %2:0.61.0.0.0:RUN screen
 A=$(fux %2 str y text str Enter key send-keys) # keys: the version from before them
-fux str "$A" changed 600 timeout wait          # 600 s at most (else 30, the server's wait-seconds)
+fux str "$A" changed 600 timeout wait          # 600 s at most (else the server's wait-seconds)
 fux %2 str y text send-keys wait               # in one program: from the answer's version
 fux %2 str y text send-keys 5 quiet            # until nothing changes there for 5 s
 fux %2 wait                                    # until it differs from now's
@@ -53,8 +57,9 @@ fux str agent workspace kill                   # at the end: everything run star
 ```
 
 A wait answers its pane's version now and what changed:
-`%2:0.61.1.4.0:RUN screen bell done`, with `exited 3` or `killed by
-SIGTERM` if its program ended since, `respawned` once started again (its
+`%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
+SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
+status lost` if its program ended since, `respawned` once started again (its
 counts then start afresh). Its first word is the version to wait from next.
 A wait from a version that already holds the end waits for something else,
 as any wait does; one from a version of a pane since closed answers
@@ -128,14 +133,14 @@ as integers: `A counts 3 at` is its `DONE`.
 
   ```fux
   %3 str 'make test; echo END-OF""-RUN $?' line
-  begin 600 timeout wait %3 screen string str END-OF-RUN contains until
-  drop %3 screen
+  begin 600 timeout wait %3 capture string str END-OF-RUN contains until
+  drop %3 capture
   ```
 - **A program's exit:** its version's `ENDED` is 1. The loop waits before
   it looks, so it wants an answer from before the end (`run`'s).
 
   ```fux
-  opts str 'cargo test' command run
+  opts 80 24 size str cargo program str test arg run
   begin 600 timeout wait dup counts 4 at 1 eq until
   str exited get
   ```
@@ -151,10 +156,12 @@ as integers: `A counts 3 at` is its `DONE`.
   A command's output alone where the shell marks commands, else the screen:
   `str no_marks try %3 last-output capture catch 2drop %3 capture end`.
 - **A shell to type into:** `shell` makes a tab with one in workspace
-  `agent`. Wait for its prompt (a text it shows) before you type: its
-  startup may drop what comes sooner. A command that must run is surer
-  started as the program: `opts str sh program str -c arg str 'make test;
-  exec "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
+  `agent`, on an attached client's screen; with none attached (but ones
+  that only watch), give it a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
+  (a text it shows) before you type: its startup may drop what comes
+  sooner. A command that must run is surer started as the program: `opts
+  80 24 size str sh program str -c arg str 'make test; exec
+  "${SHELL:-sh}"' arg run` (fux gives no `SHELL` of its own).
 - **An agent's whole answer:** on the alternate screen a TUI redraws its
   whole screen each frame and nothing scrolls off, so fux keeps no
   history of it. Run it inline (`codex --no-alt-screen`, `claude
@@ -170,8 +177,14 @@ as integers: `A counts 3 at` is its `DONE`.
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused, naming the closest), `str T paste` (bracketed if the program
-  asked), `str FILE paste-file`, `str HEX bytes` (`1b5b41`), `N times`
-  (repeats the input just before it). 900 KiB at most in all.
+  asked), `str HEX bytes` (`1b5b41`). 900 KiB at most in all. A key
+  N times is a loop: `%2 0 3 range each drop str Down key end
+  send-keys`. fuxth reads no files; the shell gives a file's text:
+
+  ```sh
+  fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, send-keys' 900 KiB at most, quoted for fuxth
+  ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program
   read them. A program that tells a lone Escape from a key's sequence by
@@ -215,7 +228,8 @@ from its program (or it started). Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
-`fux opts str agent in new-tab` gives a shell. fux starts shells as they
+`fux opts 80 24 size str agent in new-tab` gives a shell (the size may go
+with a client attached). fux starts shells as they
 are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 `D;STATUS` as it ends, `A` at a prompt) counts the commands that end in
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
@@ -254,7 +268,8 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
-for its exit: `fux opts str 'ssh -n HOST make' command run`.
+for its exit: `fux opts 80 24 size str ssh program str -n arg str HOST arg
+str make arg run`.
 
 ## programs: A program
 
@@ -263,7 +278,7 @@ names between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
-opts str tests name str 'cargo test' command run   # its answer: %2:0.0.0.0.0:RUN
+opts str tests name 80 24 size str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
 begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
@@ -273,15 +288,15 @@ then` and `begin … until` decide and repeat, `list … end` gathers what its
 body leaves, `SEQ each … end` runs once per element, `CODES try … catch …
 end` runs its handler instead of failing with one of CODES (`str timeout
 try %2 5 timeout wait catch … end`: its body starts with an empty stack;
-the handler, with the stack as at `try` and the failure's message and code
-on it); a failure it does not name goes on, its status kept. An action
+the handler, with the stack as at `try` and the failure's message, which
+says where as an uncaught one does, and code on it); a failure it does not name goes on, its status kept. An action
 leaves its answer: printed, it is the lines above; given to a word that
 wants a pane, it is its pane (an action's or wait's on a tab or workspace
 is none, however many panes it has: name the tab again, `@1 wait`), and to
 `wait`, the version it holds too (`T str y text send-keys wait` waits from
 before the keys; a name keeps that version, so `T wait` later waits from
 when `T` was made, and `T str version get changed wait` from now);
-`string` makes it text (`%2 screen string str error contains`). The
+`string` makes it text (`%2 capture string str error contains`). The
 standard library, written in fuxth, does the rest (`fux help` lists it). A
 mistake every run would make (too few values, a string given to `add` or
 `if`, a request nothing acts on: its error names the word to end it with)
@@ -292,9 +307,19 @@ stopped it.
 ## servers: Servers, sizes and more
 
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
-  first chooses another server; `start` starts one, `status` says which
+  first chooses another server; `start` starts one, with nothing in it
+  (the first client to attach starts a shell on its screen; one that only
+  watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
-  start`. Inside a person's pane, `here` is that pane. Every pane has
+  start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
+  alone): `status` each.
+
+  ```sh
+  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
+    sort -u | while read -r n; do fux str "$n" server status; done
+  ```
+  Inside a person's pane, `here` is that pane. Every pane has
   `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket, or a grant's if
   started through one), `FUX_SERVER` (which run of the server: a
   `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:
@@ -304,15 +329,19 @@ stopped it.
   `agent` alone. `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
 - A server that did not stop cleanly leaves its layout in
-  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back, each
-  program waiting for `respawn`. `kill-server` forgets it. It is another
+  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back,
+  each shell started again, each program `run` started waiting, paused,
+  for `respawn`. `kill-server` forgets it. It is another
   server run: versions from before it are refused.
 - In a sandbox that refuses Unix sockets, client and server meet through a
-  FIFO beside the socket (`NAME.door`).
-- A tab no client shows is laid out on its `size`; `TAB 40 12 resize`
-  changes it, `resize-auto` gives it back to a client's screen, `PANE 95
-  percent resize-x` sizes a pane in its tab. A size that cannot be had is
-  refused, and nothing changes.
+  FIFO beside the socket (`NAME.sock.door`).
+- A tab no client shows, or only clients that watch, is laid out on its
+  `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
+  client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A
+  size that cannot be had is refused, and nothing changes; so is a split
+  or a move that would hide a pane on the tab's own size or on a screen
+  showing it (but one that sizes nothing: that only watches, or has no
+  room below its bar).
 - `opts str FILE log-to` keeps what a program writes; `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,

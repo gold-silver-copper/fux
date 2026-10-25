@@ -130,9 +130,10 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     else {
         return Vec::new();
     };
+    let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
     for &(id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(&id) else {
+        let Some(pane) = session.parts.panes().get(&id) else {
             continue;
         };
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
@@ -240,7 +241,9 @@ impl Sixels {
 /// Grids are equal when they show the same.
 impl PartialEq for Grid {
     fn eq(&self, other: &Grid) -> bool {
-        self.head() == other.head()
+        // All the grid shows but its cells and links.
+        let head = |g: &Grid| ((g.rows, g.cols, g.cursor), (g.modes, g.underline_styles));
+        head(self) == head(other)
             && self.cells == other.cells
             && (0..self.rows).all(|y| self.links.row_eq(&other.links, y))
     }
@@ -291,7 +294,7 @@ impl Frame {
         }
         let mut panes = Vec::with_capacity(placement.panes.len());
         for (id, rect) in &placement.panes {
-            let pane = session.panes.get(id)?;
+            let pane = session.parts.panes().get(id)?;
             let screen = pane.screen();
             if own_colours(screen) {
                 return None;
@@ -313,7 +316,7 @@ impl Memo {
     /// now, the pane rows that changed since: the grid's memo then.
     fn update(mut self, grid: &mut Grid, session: &Session) -> Memo {
         for ((id, _, rect, _), keys) in self.frame.panes.iter().zip(&mut self.keys) {
-            let Some(pane) = session.panes.get(id) else {
+            let Some(pane) = session.parts.panes().get(id) else {
                 continue;
             };
             let window = pane.screen().window();
@@ -413,10 +416,6 @@ impl Links {
     fn row(&self, y: u16) -> Option<&[Link]> {
         self.0.get(usize::from(y))?.as_deref()
     }
-    fn get(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        let (pane, link) = self.row(y)?.get(usize::from(x))?.as_ref()?;
-        Some((*pane, link))
-    }
     /// Gives cell `x` of row `y`, `cols` wide, `link`.
     fn set(&mut self, y: u16, x: u16, link: Option<(PaneId, &Hyperlink)>, cols: u16) {
         let y = usize::from(y);
@@ -475,7 +474,8 @@ impl Grid {
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
     pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        self.links.get(y, x)
+        let (pane, link) = self.links.row(y)?.get(usize::from(x))?.as_ref()?;
+        Some((*pane, link))
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
@@ -532,13 +532,6 @@ impl Grid {
                 }
             }
         }
-    }
-    /// All the grid shows but its cells and links.
-    fn head(&self) -> impl PartialEq + '_ {
-        (
-            (self.rows, self.cols, self.cursor),
-            (self.modes, self.underline_styles),
-        )
     }
     /// Whether row `y` shows what `other`'s, a grid of its size, does: its
     /// cells, compared by `Cells::range_eq` without reading each one's
@@ -601,8 +594,7 @@ impl Grid {
             let i = start.saturating_add(usize::from(at));
             let gx = x.saturating_add(at);
             let Some(cell) = row.cell(col) else {
-                self.cells.set(i, CellRef::default());
-                self.links.unlink(y, gx..gx.saturating_add(1));
+                self.put(y, gx, CellRef::default());
                 continue;
             };
             // A wide glyph's two halves take the first two of its four
@@ -676,26 +668,19 @@ impl Grid {
         });
         if was_continuation
             && !cell.is_wide_continuation()
-            && let Some(leader) = index.checked_sub(1).filter(|_| x > 0)
-            && self.cells.get(leader).is_some_and(|c| c.is_wide())
+            && let Some(left) = x.checked_sub(1)
+            && self.get(y, left).is_some_and(|c| c.is_wide())
         {
-            self.cells.set(leader, CellRef::default());
-            self.links.unlink(y, x.saturating_sub(1)..x);
+            self.put(y, left, CellRef::default());
         }
         if was_wide
             && !cell.is_wide()
-            && let Some(rest) = x.checked_add(1).and_then(|x| self.index(y, x))
-            && self
-                .cells
-                .get(rest)
-                .is_some_and(|c| c.is_wide_continuation())
+            && let Some(right) = x.checked_add(1)
+            && self.get(y, right).is_some_and(|c| c.is_wide_continuation())
         {
-            self.cells.set(rest, CellRef::default());
-            let after = x.saturating_add(1);
-            self.links.unlink(y, after..after.saturating_add(1));
+            self.put(y, right, CellRef::default());
         }
-        self.cells.set(index, cell);
-        self.links.unlink(y, x..x.saturating_add(1));
+        self.put(y, x, cell);
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
@@ -708,8 +693,7 @@ impl Grid {
 
     /// Writes `text` from (y, x), a cluster a cell (`clusters`), clipped at
     /// `limit`, wide glyphs whole; the column after it is returned.
-    fn text(&mut self, y: u16, x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
-        let mut x = x;
+    fn text(&mut self, y: u16, mut x: u16, text: &str, style: Attributes, limit: u16) -> u16 {
         for (cluster, width) in clusters(text).filter(|(_, width)| *width > 0) {
             let Some(end) = x
                 .checked_add(width)
@@ -862,12 +846,14 @@ pub fn width(text: &str) -> u16 {
     // ASCII, as most of it is: a column a character.
     if text.is_ascii() {
         let printable = text.bytes().filter(|b| !b.is_ascii_control()).count();
-        return u16::try_from(printable).unwrap_or(u16::MAX).min(4096);
+        return u16::try_from(printable)
+            .unwrap_or(u16::MAX)
+            .min(crate::view::MOST);
     }
     clusters(text)
         .map(|(_, width)| width)
         .fold(0, u16::saturating_add)
-        .min(4096)
+        .min(crate::view::MOST)
 }
 
 /// Cuts `text` to `cols` cells, with an ellipsis when cut; as it is, if it
@@ -939,23 +925,21 @@ pub fn compose_held(
     placement: &mut Placement,
     painted: Option<Painted<'_>>,
 ) {
-    let area = Session::pane_area(view);
+    let area = view.pane_area();
     session.placement_into(view, placement);
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
     let focus = tab.and_then(|t| t.focus(view.id));
     // Copy mode and its positions, their rows found once for the paint.
     let copy = if let Mode::Copy(copy) = &view.mode {
-        let at = session
-            .panes
-            .get(&copy.pane)
-            .and_then(|p| copy.resolve(p.screen()));
+        let at = (session.parts.panes().get(&copy.pane)).and_then(|p| copy.resolve(p.screen()));
         at.map(|at| (copy.as_ref(), at))
     } else {
         None
     };
     put_panes(grid, session, view, placement, focus, copy);
-    let held = |id: &PaneId| (session.panes.get(id)).is_some_and(crate::pane::Pane::mid_frame);
+    let held =
+        |id: &PaneId| (session.parts.panes().get(id)).is_some_and(crate::pane::Pane::mid_frame);
     let kept = |id: PaneId, rect: Rect| painted.filter(|p| p.kept(id, rect, view.rows, view.cols));
     for &(id, rect) in placement.panes.iter().filter(|(id, _)| held(id)) {
         match kept(id, rect) {
@@ -977,7 +961,7 @@ pub fn compose_held(
     // keys are fux's.
     if let Some(focus) = focus
         && let Some(rect) = placement.rect(focus)
-        && let Some(pane) = session.panes.get(&focus)
+        && let Some(pane) = session.parts.panes().get(&focus)
     {
         let screen = pane.screen();
         match copy.filter(|(c, _)| c.pane == focus) {
@@ -1021,14 +1005,16 @@ pub fn compose_held(
         }
     }
     // The mouse: reported by the client's terminal only while the focused
-    // pane's program asked for it and nothing of fux's has the keys, so
-    // that the rest of the time the terminal selects text as it does.
-    // A client that only watches sends no clicks: its terminal selects.
+    // pane's program asked for it, still takes input, and nothing of fux's
+    // has the keys, so that the rest of the time the terminal selects text
+    // as it does. A client that only watches sends no clicks: its terminal
+    // selects.
     if view.mode.is_normal()
         && !view.read_only
         && let Some(focus) = focus
         && placement.rect(focus).is_some()
-        && let Some(pane) = session.panes.get(&focus)
+        && let Some(pane) = session.parts.panes().get(&focus)
+        && crate::session::refuses_input(pane).is_none()
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
@@ -1095,11 +1081,11 @@ fn put_panes(
     let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
-    let tiled = covered == Session::pane_area(view).area();
+    let tiled = covered == view.pane_area().area();
     grid.reset(view.rows, view.cols, !tiled);
     let mut keys = Vec::new();
     for (id, rect) in &placement.panes {
-        let Some(pane) = session.panes.get(id) else {
+        let Some(pane) = session.parts.panes().get(id) else {
             grid.blank(*rect);
             continue;
         };
@@ -1242,18 +1228,11 @@ fn separators(grid: &mut Grid, placement: &Placement, focus: Option<PaneId>) {
             b if b == LEFT | RIGHT | UP => "┴",
             _ => "┼",
         };
-        let color = Color::Idx(if focused.is_some_and(|r| r.near(y, x)) {
-            2
-        } else {
-            240
-        });
+        let near = focused.is_some_and(|r| r.near(y, x));
+        let style = Attributes::new(Color::Idx(if near { 2 } else { 240 }), Color::Default);
         // A separator's cell is no pane's, so no wide glyph has a half there
         // to repair: it is only ever drawn over.
-        grid.put(
-            y,
-            x,
-            CellRef::new(glyph, false, Attributes::new(color, Color::Default)),
-        );
+        grid.put(y, x, CellRef::new(glyph, false, style));
     };
     // Each line plain, in order, so the last one drawn at a cell is its.
     for s in lines {
@@ -1303,8 +1282,8 @@ fn bar(
         Rect::screen(view.rows, view.cols).corner(1, view.cols),
         base,
     );
-    let copy_bar =
-        copy.and_then(|(c, at)| session.panes.get(&c.pane).map(|p| c.bar(p.screen(), &at)));
+    let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
+    let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
     let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
         let colour = Color::Idx(if notice.error { 9 } else { 11 });
         Some((
@@ -1319,9 +1298,9 @@ fn bar(
         Some((bar.as_str().into(), HIGHLIGHT.with_bold(true)))
     } else {
         (session.focused(view.id))
-            .and_then(|f| session.panes.get(&f))
+            .and_then(|f| session.parts.panes().get(&f))
             .map(|p| {
-                let mut text = format!("{} {}", p.id, p.label());
+                let mut text = format!("{} {}", p.id(), p.label());
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }
@@ -1358,18 +1337,18 @@ fn bar(
             x = grid.text(y, x, &format!(" {label}"), base, left_limit);
         }
     } else if let Some(ws) = session.shown_workspace(view.id) {
-        let name = format!(" {} ", ws.name);
+        let name = format!(" {} ", ws.name());
         let bold = base.with_bold(true);
         x = grid.text(y, x, &fit(&name, left_limit), bold, left_limit);
-        let current = ws.tab_of(view.id).map(|t| t.id);
+        let current = ws.tab_of(view.id).map(|t| t.id());
         for tab in ws.tabs() {
             let Some(room) = left_limit.checked_sub(x).filter(|r| *r > 0) else {
                 break;
             };
             // A bell rang in a tab the client does not show (`outer`).
-            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id) != current;
-            let label = format!(" {}{} ", tab.name, if rang { "!" } else { "" });
-            let attrs = if Some(tab.id) == current {
+            let rang = tab.seat(view.id).is_some_and(|s| s.rang) && Some(tab.id()) != current;
+            let label = format!(" {}{} ", tab.name(), if rang { "!" } else { "" });
+            let attrs = if Some(tab.id()) == current {
                 Attributes::new(Color::Idx(0), Color::Idx(2)).with_bold(true)
             } else {
                 base
@@ -1410,7 +1389,7 @@ fn windowed<'a>(
 
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
-    let area = Session::pane_area(view);
+    let area = view.pane_area();
     if area.is_empty() || lines.is_empty() {
         return;
     }
@@ -2019,7 +1998,7 @@ mod tests {
             let mut painted = false;
             for step in 0..200 {
                 let out = typed.get(r.below(typed.len())).copied().unwrap_or(b"");
-                let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                let panes: Vec<PaneId> = s.parts.panes().keys().copied().collect();
                 if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
                     s.output(id, out);
                 }
@@ -2060,7 +2039,7 @@ mod tests {
     fn a_mark_that_joins_its_neighbour_is_not_echoed() -> Result<(), String> {
         for (typed, echoed) in [("\u{ccb}", false), ("\u{9be}", false), ("x", true)] {
             let (mut s, c) = crate::session::testing::attached(10, 40)?;
-            let id = *s.panes.keys().next().ok_or("no pane")?;
+            let id = *s.parts.panes().keys().next().ok_or("no pane")?;
             let mut placement = Placement::default();
             let (mut before, mut after) = (Grid::new(0, 0), Grid::new(0, 0));
             s.output(id, b"$ ab");
@@ -2127,13 +2106,13 @@ mod tests {
                     2 => {
                         let rows = u16::try_from(4 + r.below(12)).unwrap_or(8);
                         let cols = u16::try_from(10 + r.below(50)).unwrap_or(40);
-                        s.resize(c, rows, cols);
+                        s.resize(c, rows, cols).map_err(|e| e.to_string())?;
                     }
                     3 => {
                         crate::session::testing::run(&mut s, "str @1 tab str n rename")?;
                     }
                     _ => {
-                        let panes: Vec<PaneId> = s.panes.keys().copied().collect();
+                        let panes: Vec<PaneId> = s.parts.panes().keys().copied().collect();
                         if let Some(&id) = panes.get(r.below(panes.len().max(1))) {
                             let out = outputs.get(r.below(outputs.len())).copied().unwrap_or(b"");
                             s.output(id, out);
@@ -2254,7 +2233,7 @@ mod tests {
         );
         s.input(c, b"\x1b");
         s.escape(c);
-        s.resize(c, 10, 36);
+        s.resize(c, 10, 36)?;
         let narrow = bar(&s);
         assert!(narrow.contains("y copy  q quit"), "{narrow}");
         assert!(!narrow.contains("other end"), "{narrow}");
@@ -2404,9 +2383,13 @@ mod tests {
             cwd: "/".into(),
             env: Vec::new(),
         };
-        let pane = s.panes.get_mut(&id).ok_or("the pane")?;
-        pane.respawned(launch, crate::pane::Process::Absent, 1 << 10)
+        let runs = crate::pane::Runs::Program(launch);
+        let size = (s.parts.panes().get(&id)).ok_or("the pane")?.size();
+        let fresh = crate::pane::Pane::new(id, String::new(), runs, size, 1 << 10)
             .map_err(|e| e.to_string())?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        pane.respawned(fresh, crate::pane::Process::Absent);
+        drop(pane);
         s.output(id, b"B");
         assert!(compose_into(&s, c, &mut grid, &mut placement));
         assert_eq!(grid.row_text(0), "B");
@@ -2423,7 +2406,8 @@ mod tests {
         crate::session::testing::run(&mut s, "str %1 pane horizontal split")?;
         s.output(PaneId::of(1), &frame_past_a_budget());
         assert!(
-            s.panes
+            s.parts
+                .panes()
                 .get(&PaneId::of(1))
                 .is_some_and(crate::pane::Pane::mid_frame)
         );
@@ -2489,7 +2473,8 @@ mod tests {
         let (mut s, c) = crate::session::testing::attached(10, 40)?;
         s.output(PaneId::of(1), &frame_past_a_budget());
         assert!(
-            s.panes
+            s.parts
+                .panes()
                 .get(&PaneId::of(1))
                 .is_some_and(crate::pane::Pane::mid_frame)
         );
@@ -2653,7 +2638,7 @@ mod tests {
         // The line with its cursor `left` chars from the end.
         let line = |text: &str, left: usize| {
             let mut line: crate::view::Line = crate::view::Line::new(text.into());
-            (0..left).for_each(|_| line.edit(&crate::act::Edit::Left));
+            (0..left).for_each(|_| drop(line.edit(&crate::act::Edit::Left)));
             line
         };
         let end = text.chars().count();
@@ -2899,15 +2884,15 @@ mod tests {
             cells(&client, 1),
             Some(("D".into(), Color::Default, Color::Default))
         );
-        // Each pane answers its program with its own colours.
+        // Each pane answers its program with its own colours, and one that
+        // set none, with no terminal's to give, answers nothing.
         s.output(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
-        for (id, answer) in [(1, "0000/ffff/0000"), (2, "cdcd/0000/0000")] {
-            let pane = s.panes.get_mut(&PaneId::of(id)).ok_or("a pane")?;
+        for (id, answer) in [(1, "\x1b]4;1;rgb:0000/ffff/0000\x07"), (2, "")] {
+            let mut pane = s.parts.pane_mut(PaneId::of(id)).ok_or("a pane")?;
             pane.input.drain_all();
             pane.output(b"\x1b]4;1;?\x07");
             let asked = pane.input.drain_all();
-            let expected = format!("\x1b]4;1;rgb:{answer}\x07");
-            assert_eq!(String::from_utf8_lossy(&asked), expected, "pane {id}");
+            assert_eq!(String::from_utf8_lossy(&asked), answer, "pane {id}");
         }
         Ok(())
     }

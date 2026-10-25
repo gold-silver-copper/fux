@@ -98,9 +98,9 @@ away; infallible allocation is no safety proof.
 
 | Kind | Meaning | Rows |
 |---|---|---|
-| Clip | What fits is kept | B03, B04 |
+| Clip | What fits is kept | B03, B04, B20 |
 | Evict | The oldest, or the hidden first, goes | B01, B02, B11, B15, B17, B27 |
-| Drop to its end | A string past its limit is read to its end and dropped, alike however split | B20, B21, B23, B25 |
+| Drop to its end | A string past its limit is read to its end and dropped, alike however split | B20's rest, B21, B23, B25 |
 | Refuse | `Err` or `None`, and nothing changes | B07, B37, B38, B39 |
 | Skip work that changes nothing | Copies that can't change the result are skipped | B33, B34, B34a |
 
@@ -137,7 +137,7 @@ B26 and B41 bound host-side objects or host calls.
 | B02 | Placements, by count | ≤ 64 on both screens together (`MAX_PICTURES`) | The 65th lets one go, as B01 picks | 65 × `ESC P q @ ESC \` | `b02`; `a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go` |
 | B03 | The sixel decoder's buffer and growth | Buffer ≤ `MAX_PIXELS` × 4 = 35,389,440 B; each side doubles, clamped to `MAX_SIDE` = 4096 and `MAX_PIXELS` = 4096 × 2160; growth copies or zeroes ≤ 2 × the final buffer (`pixels` ≤ 4,096 a byte + 2 × `MAX_PIXELS` a picture). Raster attributes grow nothing | Sixels past the limits or P aren't painted; the picture keeps what fits | A picture growing a column at a time over 340 bands; width and raster ladders `"1;1;w;2160` | `b03`; `a_kept_picture_holds_just_its_pixels` |
 | B04 | Sixel decode work | `pixels` ≤ 4,096 per input byte; pixels are kept at grid resolution, the aspect applied when shown; a repeat past 4,096 counts 4,096 | — | `ESC P q "360;1` + `!4096~$` × 600 | `b04` |
-| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing (`pixels` = 0). Placement fills rows, ≤ 2,291 `cells` a byte at a 10×20 cell and 7,636 at 2×6 (landscape); 4,349 and 14,487 (portrait); host cell ≥ 2×6 | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_host_cell_is_at_least_a_sixel_band` |
+| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing (`pixels` = 0). Placement fills rows, ≤ 2,291 `cells` a byte at a 10×20 cell and 7,636 at 2×6 (landscape); 4,349 and 14,487 (portrait); a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
 | B06 | Pictures the host retains (host side) | An `Arc<Picture>` outlives eviction, outside the budget; a clone mid-picture ≤ steady + 2 × 53,084,160 B | — | A clone mid-picture; a lowered budget while the host holds one | `b06` |
 | B07 | `Picture::new` (host call) | `None` unless `rgba.len()` = w × h × 4 with no overflow and both sides ≤ 4096 | `None` | `u32::MAX` square with no pixels | `b07` |
 | B08 | `sixel::encode` (host call) | Output ≤ 12 B a crop pixel + 6 B a colour a band + colour definitions; work ≤ 3 `pixels` a crop pixel. fux caches encodings per client, ≤ 16 MiB (`SIXEL_BYTES`) | — | A 2000×1000 256-colour checkerboard | `b08` |
@@ -151,7 +151,7 @@ B26 and B41 bound host-side objects or host calls.
 | B17 | History, in bytes | `History::bytes()` counts capacities (ring, blocks, text, maps, side stores, link runs, styles), trimmed to ≤ the budget; a map gives back room past 4 × its length + 64; heap ≤ 1.1 × H + 64 KiB | The oldest rows go | Rows of 2,049 cells; 349,525 empty rows, then full ones | `b17`; `guards.rs` `history_*` |
 | B18 | Line feeds into history | `cells` ≤ C + 3 and `rows` ≤ 2 per line feed, amortized | — | 100,000 `\n` after full rows | `b18` |
 | B19 | The frame scan | `scanned` ≤ 2 × the bytes held + 16 a call | — (fux cuts a frame at 2 MiB or 1 s) | BSU, then `ESC [` + 64 Ki digits in pieces; a long DECRST | `b19`; the fuzz targets' frame-end agreement (`common.rs`) |
-| B20 | The OSC buffer | Room ≤ `OSC_PAYLOAD_LIMIT` + 1 = 65,537 B (64 B with only `PromptMarks`, else 0) | A longer string is read to its end, with no event | OSC 52 of 64 KiB + 1 | `b20`; `the_osc_buffer_takes_the_room_a_string_needs_up_to_16_kib` |
+| B20 | The OSC buffer | Room ≤ `OSC_PAYLOAD_LIMIT` + 1 = 65,537 B (64 B with only `PromptMarks`, else 0) | A longer string is read to its end, its event `cut` (`Kept`), nothing past the room kept | OSC 52 of 64 KiB + 1 | `b20`; `the_osc_buffer_takes_the_room_a_string_needs_up_to_16_kib` |
 | B21 | DECRQSS, APC, PM, SOS, ignored DCS | DECRQSS keeps ≤ 4 B (`REQUEST_LIMIT`); the rest keep 0 B; `bytes` ≤ 1 a byte | A longer request answers "not known" | 64 KiB of APC; sixel with `Pictures` off | `b21` |
 | B22 | Parameters | 32 `u16` per sequence, no heap | A 33rd isn't kept | `CSI` + `1;` × 1,000 + `m` | `b22` |
 | B23 | The paste decoder | A paste's room ≤ limit + 5 = 65,541 B; the delivered `String` ≤ 3 × limit; `keys` ≤ 2 a byte + 258 a read | `PasteTooLong`; the rest dropped to the end marker | `ESC[200~ESC[201~` × 5,461 in one 64 KiB read | `b23`; `a_paste_of_64_kib_is_kept_and_one_byte_more_is_not` |

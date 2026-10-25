@@ -4,7 +4,7 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
+use crate::events::{BACKLOG, Ending, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -179,6 +179,12 @@ enum Stage {
     /// It said hello as `fux attach`: its `Attach` is next, with the
     /// descriptor it sent, and the kind of client it is.
     Attaching(Option<OwnedFd>, ClientKind),
+    /// Its `Attach` came while a restore runs: it attaches as it says once
+    /// the restore is over (`Server::restored`), until then no screen
+    /// showing what the restore makes, laid out on the sizes saved alone.
+    /// It is read no more till then: what it sends next waits in its
+    /// socket, not in the server.
+    AttachHeld(Option<OwnedFd>, ClientKind, Box<Attach>),
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -215,7 +221,7 @@ impl Stage {
             | Stage::Held(_)
             | Stage::Waiting(_)
             | Stage::Events(_) => true,
-            Stage::Closing | Stage::Dead => false,
+            Stage::AttachHeld(..) | Stage::Closing | Stage::Dead => false,
         }
     }
 
@@ -225,6 +231,7 @@ impl Stage {
             Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => true,
             Stage::Hello(_)
             | Stage::Attaching(..)
+            | Stage::AttachHeld(..)
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -308,17 +315,12 @@ impl TakenTerminal {
             out: ByteQueue::default(),
         }
     }
-    /// Writes what waits, as far as the terminal takes it; false if it
-    /// failed, and is to be given up.
-    fn flush(&mut self) -> bool {
-        write_out(&self.fd, &mut self.out)
-    }
     /// Hands the terminal back: what waits for it written as far as it
     /// takes it at once, the rest to `out` for the client to write in paint
     /// frames, before the `Exit` that follows, and the server's descriptor
     /// for it closed.
     fn give_back(mut self, out: &mut ByteQueue) {
-        if self.flush() && !self.out.is_empty() {
+        if write_out(&self.fd, &mut self.out) && !self.out.is_empty() {
             split_into(self.out.as_slice(), ToAttached::Paint, out);
         }
     }
@@ -456,6 +458,28 @@ impl Conn {
         }
     }
 
+    /// Its client attaches as `attach` says, with the terminal it sent if
+    /// it sent one, taken or not: the client is told so, and its id,
+    /// before anything is painted; or why it cannot attach.
+    fn attach(
+        &mut self,
+        session: &mut Session,
+        (passed, kind): (Option<OwnedFd>, ClientKind),
+        attach: Attach,
+    ) {
+        match session.attach_as(kind, attach) {
+            Ok(client) => {
+                let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
+                let taken = tty.as_ref().map(Option::is_some);
+                let tty = tty.flatten().map(TakenTerminal::new);
+                let attached = Attached::new(client, tty);
+                self.enter(session, Stage::Attached(Box::new(attached)));
+                self.send(session, &ToAttached::Welcome(client, taken));
+            }
+            Err(error) => self.end(session, &ToAttached::Exit(&error.to_string())),
+        }
+    }
+
     /// Answers a request with its outcome, encoded once and sent in pieces
     /// as long as fit, then their end; and takes the next.
     fn answer(&mut self, session: &mut Session, reply: Reply) {
@@ -507,7 +531,7 @@ impl Conn {
     fn flush_tty(&mut self, session: &mut Session) {
         if let Some(attached) = self.attached()
             && let Some(tty) = &mut attached.tty
-            && !tty.flush()
+            && !write_out(&tty.fd, &mut tty.out)
         {
             attached.tty = None;
             self.end(session, &ToAttached::Exit("detached: the terminal closed"));
@@ -555,7 +579,7 @@ pub struct Server {
 }
 
 /// How long after a change the layout is saved at the latest.
-const SAVE_EVERY: Duration = Duration::from_secs(1);
+pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(1);
 
 /// The layout a server saves as it changes, for the next server on its
 /// socket to bring back after a crash or a reboot: in
@@ -569,29 +593,13 @@ struct Saved {
     at: Instant,
     /// Something changed since it was last saved.
     pending: bool,
-    /// The workspaces, tabs and panes it was last saved with.
-    shape: Shape,
+    /// How many changes to what it holds the journal had counted as it
+    /// was last saved (`Journal::shapes`).
+    saved_at: u64,
     /// The restore under way, if one is: the other end of a socket its
     /// thread closes as it ends (`Server::restored`). Meanwhile what there
     /// is is not saved over the file.
     restore: Option<UnixStream>,
-}
-
-/// Which workspaces, tabs and panes there are.
-#[derive(Default, PartialEq)]
-struct Shape(Vec<crate::id::WsId>, Vec<crate::id::TabId>, Vec<PaneId>);
-
-impl Shape {
-    fn of(session: &Session) -> Shape {
-        let workspaces = &session.workspaces;
-        Shape(
-            workspaces.iter().map(|w| w.id).collect(),
-            (workspaces.iter())
-                .flat_map(|w| w.tabs().iter().map(|t| t.id))
-                .collect(),
-            session.panes.keys().copied().collect(),
-        )
-    }
 }
 
 impl Saved {
@@ -621,7 +629,7 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
-            shape: Shape::default(),
+            saved_at: 0,
             restore: None,
         })
     }
@@ -671,19 +679,22 @@ impl Saved {
     }
 
     /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
-    /// since it was last saved; else it is saved then. A workspace, tab or
-    /// pane made or closed is saved at once: a crash must not lose a pane.
+    /// since it was last saved; else it is saved then. A change to what it
+    /// holds (a workspace, tab or pane made, closed, moved, renamed or
+    /// respawned, an order, a border, a size given) is saved at once: a
+    /// crash must not lose one. What output changes, and screens' sizes
+    /// as a terminal is resized, wait.
     fn save_by(&mut self, session: &mut Session, now: Instant) {
         self.pending |= mem::take(&mut session.edited);
         if !self.pending {
             return;
         }
-        let shape = Shape::of(session);
-        if now < self.at && shape == self.shape {
+        let journal = session.parts.journal();
+        if now < self.at && journal.shapes() == self.saved_at {
             return;
         }
+        self.saved_at = journal.shapes();
         self.save(session);
-        self.shape = shape;
         self.at = after(now, SAVE_EVERY);
     }
 
@@ -772,8 +783,6 @@ pub enum Error {
     Socket(crate::socket::Error),
     /// The listener or the signal pipes could not be set up.
     Setup(std::io::Error),
-    /// The first workspace could not be made.
-    Start(crate::session::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -781,7 +790,6 @@ impl std::fmt::Display for Error {
         match self {
             Error::Socket(error) => error.fmt(f),
             Error::Setup(error) => error.fmt(f),
-            Error::Start(error) => error.fmt(f),
         }
     }
 }
@@ -804,26 +812,22 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
             "the system clock is before 1970 or past 2554: this run cannot be told from another",
         ))
     })?;
-    let mut session = Session::new(
+    let session = Session::new(
         crate::config::Config::default(),
         socket.path().to_owned(),
         true,
         run,
     );
+    // A server starts with nothing in it, or what a restore brings back:
+    // the first client to attach starts its first shell, on its screen, and
+    // a request makes a pane only at a size it knows.
     let mut saved = Saved::of(socket);
-    let restoring = match &mut saved {
+    match &mut saved {
         Some(saved) if fresh => {
             let _ = fs::remove_file(&saved.path);
-            false
         }
-        Some(saved) => {
-            saved.restore = saved.restore(socket);
-            saved.restore.is_some()
-        }
-        None => false,
-    };
-    if !restoring {
-        session.start().map_err(Error::Start)?;
+        Some(saved) => saved.restore = saved.restore(socket),
+        None => {}
     }
     let mut server = Server {
         session,
@@ -881,13 +885,17 @@ impl Server {
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
             self.answer_waits(now);
-            self.tell_events();
+            self.tell_events(false);
             if let Some(saved) = &mut self.saved {
                 saved.save_by(&mut self.session, now);
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
-            self.session.panes.values_mut().for_each(Pane::write_input);
+            let mut wrote = false;
+            self.session
+                .parts
+                .each_pane_mut(|p| wrote |= p.write_input());
+            self.wrote_input(wrote);
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
@@ -989,17 +997,11 @@ impl Server {
         ControlFlow::Continue(())
     }
 
-    /// A restore is over: the requests held for it are answered; and if it
-    /// brought nothing back, there is a first workspace, as a fresh server
-    /// has.
+    /// A restore is over: the requests held for it are answered, and the
+    /// clients held attach.
     fn restored(&mut self) {
         if let Some(saved) = &mut self.saved {
             saved.restore = None;
-        }
-        if self.session.workspaces.is_empty()
-            && let Err(error) = self.session.start()
-        {
-            log!("starting afresh: {error}");
         }
         for index in 0..self.conns.len() {
             let Some(conn) = self.conns.get_mut(index) else {
@@ -1009,6 +1011,14 @@ impl Server {
                 && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
             {
                 self.request(index, held.request, held.context);
+            } else if let Stage::AttachHeld(..) = conn.stage
+                && let Stage::AttachHeld(passed, kind, attach) = mem::replace(
+                    &mut conn.stage,
+                    Stage::Attaching(None, ClientKind::Headless),
+                )
+            {
+                conn.attach(&mut self.session, (passed, kind), *attach);
+                self.read_conn(index);
             }
         }
     }
@@ -1025,30 +1035,25 @@ impl Server {
         }
     }
 
-    /// Tells each stream of events what changed since it last looked; one
-    /// whose reader has fallen too far behind is told it lost events, and
-    /// ends.
-    fn tell_events(&mut self) {
-        let streams = self
-            .conns
-            .iter()
-            .any(|c| matches!(c.stage, Stage::Events(_)));
-        if !streams {
-            return;
-        }
-        let now = Snapshot::of(&self.session);
+    /// Tells each stream of events what the journal holds that it has not
+    /// read, as far as its output has room (`all`: room or none): a reader
+    /// too slow is told the rest as it catches up, or how much of it the
+    /// journal let go.
+    fn tell_events(&mut self, all: bool) {
         for conn in &mut self.conns {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, gone) = subscription.told(&now, &self.session);
+            let room = match all {
+                true => usize::MAX,
+                false => BACKLOG.saturating_sub(conn.out.len()),
+            };
+            let session = &self.session;
+            let holder = |target| session.holder(target);
+            let (lines, gone) = subscription.told(session.parts.journal(), room, holder);
             let json = subscription.json;
-            // Behind with lines to tell: they are lost, and so is the stream.
-            let lost = gone.is_none() && !lines.is_empty() && conn.out.len() > BACKLOG;
-            if !lost {
-                split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
-            }
-            if let Some(ending) = gone.or(lost.then_some(Ending::Lost)) {
+            split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
+            if let Some(ending) = gone {
                 conn.ends(&mut self.session, json, &ending);
             }
         }
@@ -1058,7 +1063,9 @@ impl Server {
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
         self.conns.retain(|conn| {
-            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
+            conn.stage.reads()
+                || matches!(conn.stage, Stage::AttachHeld(..))
+                || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
         });
     }
 
@@ -1097,22 +1104,30 @@ impl Server {
             add(PollFd::new(end, PollFlags::IN), Slot::Restore);
         }
         for (i, conn) in self.conns.iter().enumerate() {
-            // A connection that is not read is open only while it has
-            // something to write.
-            let mut flags = if conn.reads() {
-                PollFlags::IN
-            } else {
-                PollFlags::OUT
+            // A connection that is not read is polled only for what it
+            // has to write. One with nothing to write either (an attach
+            // held) asks for nothing: a hang-up is told unasked (POSIX),
+            // where the system tells one at all; else it is found as the
+            // connection is read again. Asking for a hang-up would not do:
+            // macOS then wakes for each byte waiting unread, and tells a
+            // peer that shut only its side as hung up.
+            let mut flags = match conn.reads() {
+                true => PollFlags::IN,
+                false => PollFlags::NONE,
             };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
             match &conn.wire {
                 Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
-                // Each FIFO for its own way, and for its end.
+                // Each FIFO for its own way, the way in for its end too.
                 Wire::Door(fifos) => {
-                    if flags.intersects(PollFlags::IN) {
-                        add(PollFd::new(&fifos.up, PollFlags::IN), Slot::Conn(i));
+                    if conn.reads() || conn.out.is_empty() {
+                        let flags = match conn.reads() {
+                            true => PollFlags::IN,
+                            false => PollFlags::NONE,
+                        };
+                        add(PollFd::new(&fifos.up, flags), Slot::Conn(i));
                     }
                     if flags.intersects(PollFlags::OUT) {
                         add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
@@ -1130,8 +1145,8 @@ impl Server {
                 add(PollFd::new(&tty.fd, flags), Slot::Tty(i));
             }
         }
-        for (id, pane) in &self.session.panes {
-            if let Process::Reading(child) = &pane.process {
+        for (id, pane) in self.session.parts.panes() {
+            if let Process::Reading(child) = &pane.process() {
                 // Output waiting to be read (`Pane::has_unread`) is read
                 // first: until it is, no more is taken from the program.
                 let mut flags = match pane.has_unread() {
@@ -1179,21 +1194,24 @@ impl Server {
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
         self.session.grants.clear();
+        // A stream is told all the journal holds for it, and says why it
+        // ends, as one of its lines, and ends as a command that is done.
+        self.tell_events(true);
+        for conn in &mut self.conns {
+            if let Stage::Events(subscription) = &conn.stage {
+                let json = subscription.json;
+                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
+            }
+        }
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
         // left of the session.
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            // A stream says why it ends, as one of its lines, and ends as a
-            // command that is done.
-            if let Stage::Events(subscription) = &conn.stage {
-                let json = subscription.json;
-                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
-            }
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
-                Stage::Attaching(..) | Stage::Attached(_) => {
+                Stage::Attaching(..) | Stage::AttachHeld(..) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit));
                 }
                 Stage::Command | Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => {
@@ -1206,15 +1224,13 @@ impl Server {
 
     fn flush_outbox(&mut self) {
         for outgoing in mem::take(&mut self.session.outbox) {
-            let (client, frame) = match outgoing {
-                Outgoing::Shutdown { reason, keep } => {
-                    self.stop(reason, keep);
-                    continue;
+            match outgoing {
+                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
+                Outgoing::To(client, frame) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.tell(&mut self.session, &frame);
+                    }
                 }
-                Outgoing::To(client, frame) => (client, frame),
-            };
-            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                conn.tell(&mut self.session, &frame);
             }
         }
     }
@@ -1257,7 +1273,7 @@ impl Server {
         let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
         for &(id, rect) in &attached.placement.panes {
-            if session.panes.get(&id).is_some_and(Pane::mid_frame) {
+            if session.parts.panes().get(&id).is_some_and(Pane::mid_frame) {
                 pictures.retain(|p| p.pane != id);
                 let (rows, cols) = (attached.spare.rows, attached.spare.cols);
                 let painted = render::Painted {
@@ -1433,8 +1449,15 @@ impl Server {
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         let reads = conn.reads();
         // One that is not read learns that its peer is gone by writing.
+        // A hang-up says only that nothing more comes (macOS says it of a
+        // peer that shut its side): one that is read once its answer is
+        // written takes what it sent first; one that is still not read,
+        // with nothing to write, is dead.
         if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
+        }
+        if gone && !conn.reads() && conn.out.is_empty() {
+            conn.enter(&mut self.session, Stage::Dead);
         }
         // A command client whose answer is now written: its next request
         // may already wait, read before.
@@ -1521,6 +1544,7 @@ impl Server {
         index: usize,
         decoder: &mut Decoder,
     ) -> Result<bool, crate::protocol::Error> {
+        let restore_runs = self.saved.as_ref().is_some_and(|s| s.restore.is_some());
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return Ok(false);
@@ -1560,45 +1584,32 @@ impl Server {
                 }
             }
             Stage::Attaching(passed, kind) => {
-                let Some(Attach {
-                    size,
-                    workspace,
-                    read_only,
-                    env,
-                }) = decoder.frame()?
-                else {
+                let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
-                let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_ref()) {
-                    Ok(client) => {
-                        if let Some(view) = session.views.get_mut(&client) {
-                            view.read_only = read_only;
-                            view.env = env;
-                        }
-                        // The client's terminal, if it sent it, taken or
-                        // not: the client is told so, and its id, before
-                        // anything is painted.
-                        let tty = passed.map(|fd| fuxix::terminal::reopen(&fd).ok());
-                        let taken = tty.as_ref().map(Option::is_some);
-                        let tty = tty.flatten().map(TakenTerminal::new);
-                        conn.enter(
-                            session,
-                            Stage::Attached(Box::new(Attached::new(client, tty))),
-                        );
-                        conn.send(session, &ToAttached::Welcome(client, taken));
-                    }
-                    Err(error) => conn.end(session, &ToAttached::Exit(&error.to_string())),
+                let held = (passed.take(), *kind);
+                if restore_runs {
+                    let (passed, kind) = held;
+                    conn.enter(session, Stage::AttachHeld(passed, kind, Box::new(attach)));
+                } else {
+                    conn.attach(session, held, attach);
                 }
             }
+            // What came after its `Attach` waits with it, kept.
+            Stage::AttachHeld(..) => return Ok(false),
             Stage::Attached(attached) => match decoder.frame()? {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
-                // forgotten, it is repainted in full either way.
+                // forgotten, it is repainted in full either way, and its
+                // cell size, which a font zoom changes, is asked again.
                 Some(AttachedFrame::Resize(size)) => {
                     attached.known = false;
-                    session.resize(attached.client, size.rows(), size.cols());
+                    session.terminal_resized(attached.client);
+                    let resized = session.resize(attached.client, size.rows(), size.cols());
+                    if let Err(refused) = resized {
+                        session.notify_to(attached.client, refused.to_string(), true);
+                    }
                 }
                 Some(AttachedFrame::Detach) => conn.end(session, &ToAttached::Exit("detached")),
                 None => return Ok(false),
@@ -1636,16 +1647,12 @@ impl Server {
             return;
         };
         // A restore is the server's own, which no grant's socket makes.
-        let came = match conn.grant.clone() {
-            Some(socket) => Came::Grant(socket),
-            None if context.restoring && restore_runs => Came::Restore,
-            None => Came::Socket,
-        };
         // While a saved session comes back, other requests wait for it,
         // so that none takes an id it asks for.
-        let held = match came {
-            Came::Restore => false,
-            Came::Socket | Came::Grant(_) => restore_runs,
+        let (came, held) = match conn.grant.clone() {
+            Some(socket) => (Came::Grant(socket), restore_runs),
+            None if context.restoring && restore_runs => (Came::Restore, false),
+            None => (Came::Socket, restore_runs),
         };
         if held {
             conn.stage = Stage::Held(Box::new(Asked { request, context }));
@@ -1720,13 +1727,20 @@ impl Server {
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.intersects(PollFlags::OUT)
-            && let Some(pane) = self.session.panes.get_mut(&id)
-        {
-            pane.write_input();
-        }
+        let wrote = flags.intersects(PollFlags::OUT)
+            && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
+        self.wrote_input(wrote);
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_pane(id);
+        }
+    }
+
+    /// A program read input if `wrote`, making room in its queue: a scheme
+    /// report refused for want of it is sent now (`Session::tell_schemes`),
+    /// not at the next change that settles the session.
+    fn wrote_input(&mut self, wrote: bool) {
+        if wrote {
+            self.session.tell_schemes();
         }
     }
 
@@ -1737,14 +1751,14 @@ impl Server {
             if total >= PANE_READ {
                 break false;
             }
-            let Some(pane) = self.session.panes.get(&id) else {
+            let Some(pane) = self.session.parts.panes().get(&id) else {
                 return;
             };
             // Output already waits: it is read before any more is taken.
             if pane.has_unread() {
                 break false;
             }
-            let Process::Reading(child) = &pane.process else {
+            let Process::Reading(child) = &pane.process() else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
@@ -1775,10 +1789,10 @@ impl Server {
             self.reap();
             // Hung up, unless its exit is being told (the rest of its
             // output still to read): then it exited, and did not hang up.
-            if let Some(pane) = self.session.panes.get_mut(&id)
+            if let Some(mut pane) = self.session.parts.pane_mut(id)
                 && pane.exiting.is_none()
             {
-                pane.process.stop_reading();
+                pane.stop_reading();
             }
         }
     }
@@ -1789,17 +1803,14 @@ impl Server {
     fn reap(&mut self) {
         self.reap_killed();
         let session = &self.session;
-        let panes = session.panes.values().filter_map(|p| p.process.child());
+        let panes = (session.parts.panes().values()).filter_map(|p| p.process().child());
         let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
             .map(|child| child.leader.pid())
             .chain(self.killed.iter().copied())
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
-        let exited: Vec<(PaneId, crate::process::Ended)> = self
-            .session
-            .panes
-            .iter()
-            .filter_map(|(id, pane)| Some((*id, pane.process.child()?.leader.exited()?)))
+        let exited: Vec<(PaneId, crate::process::Ended)> = (self.session.parts.panes().iter())
+            .filter_map(|(id, pane)| Some((*id, pane.process().child()?.leader.exited()?)))
             .collect();
         for (id, status) in exited {
             self.session.exited(id, status);

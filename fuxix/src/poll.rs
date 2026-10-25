@@ -10,6 +10,8 @@ use std::time::Duration;
 pub struct Events(libc::c_short);
 
 impl Events {
+    /// None asked for: what is told unasked (`HUP`, `ERR`, `NVAL`) only.
+    pub const NONE: Self = Self(0);
     pub const IN: Self = Self(libc::POLLIN);
     pub const OUT: Self = Self(libc::POLLOUT);
     pub const ERR: Self = Self(libc::POLLERR);

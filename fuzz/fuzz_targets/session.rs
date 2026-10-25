@@ -24,13 +24,12 @@ use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
 use fux::keys::{Key, Keystroke};
 use fux::outer;
-use fux::protocol::{Asked, Context, Reply, ToAttached};
+use fux::protocol::{Context, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Effect, Screen};
-use fux::script::{Ask, Failed, Host, Local};
-use fux::session::{Begun, Origin, Outgoing, Session};
+use fux::script::{AsClient, Host, run_capped};
+use fux::session::{InProcess, Outgoing, Session};
 use fux::view::Mode;
-use fuxth::Outcome as Ran;
 use libfuzzer_sys::fuzz_target;
 
 /// The client's screen as it should look now, in a grid of its own.
@@ -167,7 +166,7 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
 
 /// Words that read files, which a program typed at a prompt is not run
 /// with: a fuzzer finds /dev/zero.
-const READS: &[&str] = &["check", "paste-file"];
+const READS: &[&str] = &["check"];
 
 /// How many steps a program may take: enough for any binding, few enough
 /// for a loop typed at the prompt to end.
@@ -214,13 +213,13 @@ fn defaults() -> &'static Keymap {
 impl Run {
     fn new(rows: u16, cols: u16) -> Run {
         let run = fux::command::Run::now().expect("a clock after 1970");
-        let mut s = Session::new(
+        let s = Session::new(
             Config::default(),
             "/nonexistent/fux.sock".into(),
             false,
             run,
         );
-        s.start().expect("a session starts");
+        // The client attaching starts its first shell, on its screen.
         let mut run = Run {
             s,
             keymap: defaults().clone(),
@@ -233,9 +232,9 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        if let Ok(id) = self
-            .s
-            .attach_as(fux::view::ClientKind::Terminal, rows, cols, None)
+        let kind = fux::view::ClientKind::Terminal;
+        if let Ok(size) = fux_vt::Size::new(rows, cols)
+            && let Ok(id) = self.s.attach_as(kind, fux::protocol::Attach::of(size))
         {
             self.keys.insert(id, Keys::default());
         }
@@ -254,22 +253,8 @@ impl Run {
     }
 
     fn pane(&self, pick: u8) -> Option<PaneId> {
-        let panes: Vec<PaneId> = self.s.panes.keys().copied().collect();
+        let panes: Vec<PaneId> = self.s.parts.panes().keys().copied().collect();
         panes.get(usize::from(pick) % panes.len().max(1)).copied()
-    }
-
-    /// A request of the session, as a server answers it: begun at once; a
-    /// wait not waited on, there being no programs, and no time that both
-    /// sessions share.
-    fn ask(&mut self, asked: Asked) -> Reply {
-        let origin = match asked.context.client {
-            Some(client) if self.s.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
-        };
-        match self.s.begin(asked.request, &origin) {
-            Begun::Done(outcome) => outcome,
-            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
-        }
     }
 
     /// Runs fuxth `code` as `client` (or from no client) runs it, the
@@ -298,74 +283,24 @@ impl Run {
         let mut machine = fux::script::compile(&tokens).map_err(|e| e.to_string())?;
         let mut keymap = self.keymap.clone();
         let mut out = Vec::new();
-        let mut host = Host {
-            context: Context {
-                client,
-                ..Context::default()
-            },
-            keymap: Some(&mut keymap),
-            last_bound: None,
-            out: &mut out,
+        let context = Context {
+            client,
+            ..Context::default()
         };
-        let ended = loop {
-            let ran = machine.run(&mut host, BUDGET).map_err(Failed::from);
-            match ran {
-                Err(failed) => break Err(failed.to_string()),
-                Ok(Ran::Finished) => break Ok(machine.stack().to_vec()),
-                Ok(Ran::Paused) => break Err("too long".to_owned()),
-                Ok(Ran::Suspended(Ask::Local(Local::Open(open)))) if client.is_some() => {
-                    // Built with what the session answers, as a client
-                    // builds it.
-                    let context = host.context.clone();
-                    let built = open.build(&mut |command| {
-                        Ok(self.ask(Asked {
-                            request: command.into(),
-                            context: context.clone(),
-                        }))
-                    });
-                    match built {
-                        Ok(screen) => *opened = Some(screen),
-                        Err(failed) => break Err(failed.to_string()),
-                    }
-                }
-                Ok(Ran::Suspended(Ask::Local(_))) => break Err("not in-process".to_owned()),
-                Ok(Ran::Suspended(Ask::Server {
-                    request,
-                    client,
-                    then,
-                })) => {
-                    let mut context = host.context.clone();
-                    if client.is_some() {
-                        context.client = client;
-                    }
-                    let reply = self.ask(Asked {
-                        request: *request,
-                        context,
-                    });
-                    // A failure raised in the program, for a `try` to
-                    // catch, as a client's run raises it.
-                    let values = fux::script::answered(reply, then).or_else(|failed| {
-                        let failure = fuxth::Failure::new(failed.code.into(), failed.message);
-                        machine
-                            .raise(failure)
-                            .map(|()| Vec::new())
-                            .map_err(Failed::from)
-                    });
-                    let pushed = values.and_then(|values| {
-                        values
-                            .into_iter()
-                            .try_for_each(|v| machine.push(v).map_err(Failed::from))
-                    });
-                    if let Err(failed) = pushed {
-                        break Err(failed.to_string());
-                    }
-                }
-            }
+        let mut host = Host::new(context.clone(), Some(&mut keymap), &mut out);
+        // As a client runs it: the real loop, a screen it opens built with
+        // what the session answers.
+        let mut asks = AsClient {
+            asks: &mut InProcess(&mut self.s),
+            context,
+            opened: None,
         };
+        let ended = run_capped(&mut machine, &mut host, &mut asks, Some(BUDGET), None);
+        *opened = asks.opened.filter(|_| client.is_some());
         // As a client keeps what its program did to its keymap.
         self.keymap = keymap;
         let mut text = String::from_utf8_lossy(&out).into_owned();
-        for value in &ended? {
+        for value in &ended.map_err(|failed| failed.to_string())? {
             text.push_str(&value.text());
             text.push('\n');
         }
@@ -545,54 +480,21 @@ impl Run {
         self.inputs(client, inputs);
     }
 
-    /// What a client's terminal sent, decoded, as its client takes it.
+    /// What a client's terminal sent, decoded, as its client takes it
+    /// (`Screen::input`): a key as `press` checks it.
     fn inputs(&mut self, client: ClientId, inputs: Vec<Input>) {
         for input in inputs {
-            let Some(view) = self.s.views.get(&client) else {
+            let Some(read_only) = self.s.views.get(&client).map(|v| v.read_only) else {
                 return;
             };
-            let read_only = view.read_only;
-            let act = match input {
-                Input::Key(stroke) => {
-                    self.press(client, stroke);
-                    continue;
-                }
-                Input::Reply(reply) => Act::Reply(reply),
-                Input::Paste(_)
-                | Input::PasteTooLong
-                | Input::FocusIn
-                | Input::FocusOut
-                | Input::Mouse(_)
-                    if read_only =>
-                {
-                    continue;
-                }
-                Input::Paste(text) => {
-                    let effects = match self.keys.get_mut(&client) {
-                        Some(keys) => keys.screen.paste(&text),
-                        None => Vec::new(),
-                    };
-                    self.effects(client, effects);
-                    continue;
-                }
-                Input::Mouse(_) if self.screen_open(client) => continue,
-                Input::PasteTooLong => {
-                    let limit = fux::decode::PASTE_LIMIT / 1024;
-                    let text = format!("paste exceeds {limit} KiB; discarded");
-                    Act::Notice { text, error: true }
-                }
-                Input::FocusIn => Act::Focus(true),
-                Input::FocusOut => Act::Focus(false),
-                Input::Mouse(event) => Act::Mouse(event),
-            };
-            self.s.acts(client, vec![act]);
+            if let Input::Key(stroke) = input {
+                self.press(client, stroke);
+                continue;
+            }
+            let keys = self.keys.entry(client).or_default();
+            let effects = keys.screen.input(&self.keymap, input, read_only);
+            self.effects(client, effects);
         }
-    }
-
-    fn screen_open(&self, client: ClientId) -> bool {
-        self.keys
-            .get(&client)
-            .is_some_and(|k| k.screen.kind().is_some())
     }
 
     /// What a screen's key or paste led to: actions sent, programs run.
@@ -685,30 +587,31 @@ impl Run {
         let view = self.s.views.get(&client);
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
-        for (id, pane) in &mut self.s.panes {
-            let heard = pane.input.drain_all();
+        self.s.parts.each_pane_mut(|pane| {
+            let (id, heard) = (pane.id(), pane.input.drain_all());
             let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
             assert!(
-                heard.is_empty() || (Some(*id) == focus && asked),
+                heard.is_empty() || (Some(id) == focus && asked),
                 "{id} heard {heard:?} from {report:?}"
             );
-        }
+        });
     }
 
     fn drain_panes(&mut self) {
-        for pane in self.s.panes.values_mut() {
-            pane.input.drain_all();
-        }
+        self.s
+            .parts
+            .each_pane_mut(|pane| drop(pane.input.drain_all()));
     }
 
     fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
-        for (id, pane) in &mut self.s.panes {
+        self.s.parts.each_pane_mut(|pane| {
             let queued = pane.input.drain_all();
+            let id = pane.id();
             assert!(
                 queued.is_empty(),
                 "{key} in a repeat mode reached {id}: {queued:?}"
             );
-        }
+        });
     }
 
     /// What anyone can tell apart, as `State` lists it.
@@ -755,19 +658,19 @@ fn check(run: &Run) {
     let s = &run.s;
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
-    for ws in &s.workspaces {
+    for ws in s.parts.workspaces() {
         for tab in ws.tabs() {
             for pane in tab.root().iter().flat_map(|r| r.panes()) {
                 assert!(
-                    s.panes.contains_key(&pane),
+                    s.parts.panes().contains_key(&pane),
                     "{pane} is in {} but gone",
-                    tab.id
+                    tab.id()
                 );
                 *seen.entry(pane).or_default() += 1;
             }
         }
     }
-    for pane in s.panes.keys() {
+    for pane in s.parts.panes().keys() {
         assert_eq!(
             seen.get(pane),
             Some(&1),
@@ -845,8 +748,9 @@ fuzz_target!(|data: &[u8]| {
             9 => {
                 let (pick, (rows, cols)) = (input.next(), size(input.next(), input.next()));
                 if let Some(c) = given.client(pick) {
-                    given.s.resize(c, rows, cols);
-                    bytewise.s.resize(c, rows, cols);
+                    let given_resized = given.s.resize(c, rows, cols).is_ok();
+                    let bytewise_resized = bytewise.s.resize(c, rows, cols).is_ok();
+                    assert_eq!(given_resized, bytewise_resized);
                 }
             }
             10 => {

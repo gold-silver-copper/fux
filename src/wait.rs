@@ -55,7 +55,7 @@ impl Waiting {
     /// is whole, the rest of which is read already: so it holds the
     /// answer past the limit until then, rather than say it is unchanged.
     pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
-        let pane = |id| session.panes.get(id);
+        let pane = |id| session.parts.panes().get(id);
         let told: Vec<Reply> = (self.watches.iter())
             .filter_map(|(id, since)| told(*id, pane(id), *since, self.run))
             .collect();
@@ -96,7 +96,7 @@ impl Waiting {
 
 /// What pane `id` answers, if its counts differ from `since` or it
 /// closed: `%2:0.57.1.3.0:RUN screen done`, and as JSON.
-fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Reply> {
+fn told<S>(id: PaneId, pane: Option<&Pane<S>>, since: Counts, run: Run) -> Option<Reply> {
     let Some(pane) = pane else {
         let end = End::Failed {
             code: Code::Closed,
@@ -131,7 +131,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     // Its end, if it ended since: a program started since is a new one,
     // whose end is news.
     let new = now.respawns != since.respawns || now.ended != since.ended;
-    let ended = (pane.process.exit_status()).filter(|_| new);
+    let ended = (pane.process().exit_status()).filter(|_| new);
     let ended_said = ended.map(crate::process::told);
     let version = pane.version(run);
     let line = std::iter::once(version.to_string())
@@ -149,6 +149,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     fields.extend(ended.map(|ended| match ended {
         Ended::Exited(code) => ("exited", Json::int(code)),
         Ended::Signalled(signal) => ("signal", Json::int(signal)),
+        Ended::Lost => ("exited", Json::Null),
     }));
     let changed = said(id, line, fields, End::Done);
     Some(Reply {
@@ -212,11 +213,11 @@ mod tests {
         frame.extend_from_slice(b"DONE\x1b[?2026l");
         pane.output(&frame);
         assert!(pane.mid_frame());
-        assert!(super::told(pane.id, Some(&pane), since, run).is_none());
+        assert!(super::told(pane.id(), Some(&pane), since, run).is_none());
         while pane.mid_frame() {
             pane.read_unread();
         }
-        let told = super::told(pane.id, Some(&pane), since, run).ok_or("no answer")?;
+        let told = super::told(pane.id(), Some(&pane), since, run).ok_or("no answer")?;
         assert!(told.text.ends_with(" screen\n"), "{}", told.text);
         Ok(())
     }

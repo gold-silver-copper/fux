@@ -157,12 +157,8 @@ fuzz_target!(|data: &[u8]| {
         if let Input::Mouse(event) = *input {
             // SGR carries every event any report does.
             let mut sgr = Vec::new();
-            let sent = mouse_bytes(
-                event,
-                MouseProtocolMode::AnyMotion,
-                MouseProtocolEncoding::Sgr,
-                &mut sgr,
-            );
+            let (any, encoding) = (MouseProtocolMode::AnyMotion, MouseProtocolEncoding::Sgr);
+            let sent = mouse_bytes(event, any, encoding, &mut sgr);
             // The wheel is never released or held.
             let wheel = match event.action {
                 MouseAction::Press(_) => false,

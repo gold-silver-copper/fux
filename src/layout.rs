@@ -47,15 +47,80 @@ pub enum Tree<A = Axis> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Split(Vec<(NonZeroU32, Tree<()>)>);
 
-/// The weight a new child starts with.
-const WEIGHT: NonZeroU32 = match NonZeroU32::new(1000) {
-    Some(weight) => weight,
-    None => NonZeroU32::MIN,
-};
+/// The most a split's weights make together, as `shares` takes two: a
+/// dump writes each child's weight and the rest's after it, and every
+/// split's weights are within it, so every layout there is is made again.
+pub const MOST: u32 = u32::MAX;
 
-/// `n` as a weight, which is never less than 1.
-fn weight(n: u32) -> NonZeroU32 {
-    NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN)
+/// How a pane split and the new pane divide the pane's room, A to B
+/// (`shares`).
+pub type Shares = (NonZeroU32, NonZeroU32);
+
+/// What a split divides the pane's room by unless told: in halves.
+pub const HALVED: Shares = (NonZeroU32::MIN, NonZeroU32::MIN);
+
+/// Why a layout was not changed, which is then as it was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unmade {
+    /// A pane it names is not in it.
+    NoPane,
+    /// The weights it makes, exact and at their least, are more than
+    /// [`MOST`] together.
+    Weights,
+}
+
+/// The greatest number dividing both, 0 for none.
+fn gcd(mut a: u128, mut b: u128) -> u128 {
+    while let Some(rest) = a.checked_rem(b) {
+        (a, b) = (b, rest);
+    }
+    a
+}
+
+/// `weights` at their least, each divided by what divides them all; `None`
+/// if they are then more than [`MOST`] together, or one is 0. Every
+/// split's weights are so: two splits that divide their room alike are
+/// alike.
+fn least(weights: &[u128]) -> Option<Vec<NonZeroU32>> {
+    let common = weights.iter().fold(0, |g, w| gcd(g, *w));
+    let least: Vec<u128> = (weights.iter())
+        .map(|w| w.checked_div(common))
+        .collect::<Option<_>>()?;
+    let total = least.iter().try_fold(0u128, |sum, w| sum.checked_add(*w))?;
+    if total > u128::from(MOST) {
+        return None;
+    }
+    let weight = |w: u128| NonZeroU32::new(u32::try_from(w).ok()?);
+    least.into_iter().map(weight).collect()
+}
+
+/// The weights nearest `weights` that a split holds, at their least
+/// (`least`): each divided by what brings them within [`MOST`] together,
+/// rounded down, to no less than 1.
+fn nearest(weights: &[u128]) -> Vec<NonZeroU32> {
+    let count = u128::try_from(weights.len()).unwrap_or(u128::MAX);
+    let total = weights.iter().fold(0u128, |sum, w| sum.saturating_add(*w));
+    // Each rounded up to 1 adds less than 1: room is left for that.
+    let room = u128::from(MOST).saturating_sub(count).max(1);
+    let by = total.div_ceil(room).max(1);
+    let near = |w: &u128| u32::try_from(w.checked_div(by).unwrap_or(1)).unwrap_or(MOST);
+    let near: Vec<NonZeroU32> = (weights.iter())
+        .map(|w| NonZeroU32::new(near(w)).unwrap_or(NonZeroU32::MIN))
+        .collect();
+    least(&near.iter().map(|w| u128::from(w.get())).collect::<Vec<_>>()).unwrap_or(near)
+}
+
+/// What `remove` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removed {
+    /// The pane is not in the tree, which is as it was.
+    Absent,
+    /// It is out, the others sharing its room exactly as they shared the rest.
+    Exact,
+    /// It is out, and splits it left merged with weights more than
+    /// [`MOST`] together: the merged split's are the nearest it holds
+    /// (`nearest`), which whoever removed it says.
+    Rounded,
 }
 
 /// The smallest pane, in each dimension.
@@ -230,6 +295,12 @@ impl Placement {
     }
 }
 
+/// Whether `root` placed in `area` shows every one of its panes.
+pub fn shows_all(root: &Tree, area: Rect) -> bool {
+    let placed = place(root, area);
+    root.panes().iter().all(|p| placed.rect(*p).is_some())
+}
+
 impl<A> Tree<A> {
     /// Every pane, in tree order: for when a list is needed, as to step
     /// through it by index.
@@ -282,17 +353,37 @@ impl Tree<()> {
 }
 
 impl Split {
-    /// Its children, in order.
-    pub fn children(&self) -> impl Iterator<Item = &Tree<()>> {
-        self.0.iter().map(|(_, child)| child)
+    /// Its children, in order, each with its share.
+    pub fn children(&self) -> impl Iterator<Item = (NonZeroU32, &Tree<()>)> {
+        self.0.iter().map(|(share, child)| (*share, child))
     }
-    /// `target` and `new` beside it, on `side`, sharing alike.
-    fn pair(target: PaneId, new: PaneId, side: Side) -> Split {
-        let (target, new) = ((WEIGHT, Tree::Pane(target)), (WEIGHT, Tree::Pane(new)));
-        Split(match side {
-            Side::After => vec![target, new],
-            Side::Before => vec![new, target],
-        })
+    /// Its children's weights, in order.
+    fn weights(&self) -> impl Iterator<Item = u128> + '_ {
+        self.0.iter().map(|(w, _)| u128::from(w.get()))
+    }
+    /// Gives its children `weights`, in order.
+    fn set(&mut self, weights: Vec<NonZeroU32>) {
+        for ((weight, _), w) in self.0.iter_mut().zip(weights) {
+            *weight = w;
+        }
+    }
+    /// Gives its children `weights`, in order, at their least (`least`);
+    /// refused, it is as it was.
+    fn weigh(&mut self, weights: &[u128]) -> Result<(), Unmade> {
+        self.set(least(weights).ok_or(Unmade::Weights)?);
+        Ok(())
+    }
+    /// `target` and `new` beside it, on `side`, dividing their room as
+    /// `shares` says.
+    fn pair(target: PaneId, new: PaneId, side: Side, (a, b): Shares) -> Result<Split, Unmade> {
+        let (target, new) = (Tree::Pane(target), Tree::Pane(new));
+        let (first, second, weights) = match side {
+            Side::After => (target, new, [a, b]),
+            Side::Before => (new, target, [b, a]),
+        };
+        let mut split = Split(vec![(NonZeroU32::MIN, first), (NonZeroU32::MIN, second)]);
+        split.weigh(&weights.map(|w| u128::from(w.get())))?;
+        Ok(split)
     }
     /// Puts `with` in place of the child at `at`.
     fn replace(&mut self, at: usize, with: impl IntoIterator<Item = (NonZeroU32, Tree<()>)>) {
@@ -302,19 +393,6 @@ impl Split {
         placed.extend(rest.skip(1));
         self.0 = placed;
     }
-    /// Its children, their weights scaled to make up `share` together: the
-    /// share they had as one child of a split along their axis.
-    fn scaled(self, share: NonZeroU32) -> impl Iterator<Item = (NonZeroU32, Tree<()>)> {
-        let total: u64 = self.0.iter().map(|(w, _)| u64::from(w.get())).sum();
-        let total = NonZeroU64::new(total).unwrap_or(NonZeroU64::MIN);
-        self.0.into_iter().map(move |(w, child)| {
-            // A u32 by a u32 is exact in a u64, and a part of `share` fits
-            // a u32.
-            let scaled = u64::from(share.get()).saturating_mul(u64::from(w.get())) / total;
-            let scaled = u32::try_from(scaled).unwrap_or(u32::MAX);
-            (weight(scaled), child)
-        })
-    }
     /// What is left of a split once it has one child: the child.
     fn only(&mut self) -> Option<Tree<()>> {
         if self.0.len() > 1 {
@@ -323,57 +401,111 @@ impl Split {
         self.0.pop().map(|(_, only)| only)
     }
     /// `split`, in this split, along `own`.
-    fn insert(&mut self, own: Axis, target: PaneId, new: PaneId, axis: Axis, side: Side) -> bool {
+    fn insert(
+        &mut self,
+        own: Axis,
+        (target, new): (PaneId, PaneId),
+        (axis, side): (Axis, Side),
+        shares: Shares,
+    ) -> Result<(), Unmade> {
         let Some(index) = self.0.iter().position(|(_, c)| c.is_pane(target)) else {
-            return (self.0.iter_mut()).any(|(_, c)| match c {
-                Tree::Split((), split) => split.insert(own.cross(), target, new, axis, side),
-                Tree::Pane(_) => false,
-            });
-        };
-        let Some((share, child)) = self.0.get_mut(index) else {
-            return false;
+            return match self.0.iter_mut().find(|(_, c)| c.contains(target)) {
+                Some((_, Tree::Split((), split))) => {
+                    split.insert(own.cross(), (target, new), (axis, side), shares)
+                }
+                Some((_, Tree::Pane(_))) | None => Err(Unmade::NoPane),
+            };
         };
         if own != axis {
             // Across this split, the pane becomes a split along `axis`.
-            *child = Tree::Split((), Split::pair(target, new, side));
-            return true;
+            let pair = Split::pair(target, new, side, shares)?;
+            if let Some((_, child)) = self.0.get_mut(index) {
+                *child = Tree::Split((), pair);
+            }
+            return Ok(());
         }
-        // Along it, the new pane takes half the target's share.
-        let half = weight(share.get() / 2);
-        let target = (
-            weight(share.get().saturating_sub(half.get())),
-            Tree::Pane(target),
-        );
-        let new = (half, Tree::Pane(new));
+        // Along it, the two take the pane's share as `shares` says.
+        let (a, b) = (u128::from(shares.0.get()), u128::from(shares.1.get()));
+        let parts = match side {
+            Side::After => [a, b],
+            Side::Before => [b, a],
+        };
+        let weights = least(&self.weights_with(index, &parts)).ok_or(Unmade::Weights)?;
+        let (target, new) = (Tree::Pane(target), Tree::Pane(new));
+        let one = NonZeroU32::MIN;
         match side {
-            Side::After => self.replace(index, [target, new]),
-            Side::Before => self.replace(index, [new, target]),
+            Side::After => self.replace(index, [(one, target), (one, new)]),
+            Side::Before => self.replace(index, [(one, new), (one, target)]),
         }
-        true
+        self.set(weights);
+        Ok(())
+    }
+    /// Its weights with children weighed `parts` in place of the child at
+    /// `at`, taking its share between them as `parts` says, exactly: each
+    /// part multiplied by the share, the others by the parts' total, over
+    /// what divides both (u32s, whose products fit a u128).
+    fn weights_with(&self, at: usize, parts: &[u128]) -> Vec<u128> {
+        let share = self.0.get(at).map_or(1, |(w, _)| u128::from(w.get()));
+        let total = parts.iter().fold(0u128, |sum, w| sum.saturating_add(*w));
+        let common = gcd(share, total);
+        let outer = total.checked_div(common).unwrap_or(1);
+        let within = share.checked_div(common).unwrap_or(1);
+        (self.weights().enumerate())
+            .flat_map(|(i, w)| match i == at {
+                true => parts.iter().map(|v| v.saturating_mul(within)).collect(),
+                false => vec![w.saturating_mul(outer)],
+            })
+            .collect()
+    }
+    /// Puts the children of `inner` in place of the child at `at`, sharing
+    /// its share as they shared it (`weights_with`). Weights so more than
+    /// `MOST` together are the nearest a split holds (`nearest`): a close
+    /// merges splits so, and is not refused, but says so.
+    fn merge(&mut self, at: usize, inner: Split) -> Removed {
+        let weights = self.weights_with(at, &inner.weights().collect::<Vec<_>>());
+        let (weights, removed) = match least(&weights) {
+            Some(weights) => (weights, Removed::Exact),
+            None => (nearest(&weights), Removed::Rounded),
+        };
+        self.replace(at, inner.0);
+        self.set(weights);
+        removed
     }
     /// `remove`, in this split, along `own`: a child split left with one
     /// child gives way to it, merging into this one if it is a split.
-    fn remove(&mut self, own: Axis, pane: PaneId) -> bool {
+    fn remove(&mut self, own: Axis, pane: PaneId) -> Removed {
         if let Some(index) = self.0.iter().position(|(_, c)| c.is_pane(pane)) {
             self.replace(index, []);
-            return true;
+            // The rest may have more in common; at their least, they are
+            // within `MOST` still.
+            let weights: Vec<u128> = self.weights().collect();
+            if let Some(weights) = least(&weights) {
+                self.set(weights);
+            }
+            return Removed::Exact;
         }
         for index in 0..self.0.len() {
             let Some((share, Tree::Split((), split))) = self.0.get_mut(index) else {
                 continue;
             };
-            if !split.remove(own.cross(), pane) {
+            let removed = split.remove(own.cross(), pane);
+            if removed == Removed::Absent {
                 continue;
             }
             let share = *share;
-            match split.only() {
-                Some(Tree::Pane(p)) => self.replace(index, [(share, Tree::Pane(p))]),
-                Some(Tree::Split((), inner)) => self.replace(index, inner.scaled(share)),
-                None => {}
-            }
-            return true;
+            return match split.only() {
+                Some(Tree::Pane(p)) => {
+                    self.replace(index, [(share, Tree::Pane(p))]);
+                    removed
+                }
+                Some(Tree::Split((), inner)) => match self.merge(index, inner) {
+                    Removed::Rounded => Removed::Rounded,
+                    Removed::Exact | Removed::Absent => removed,
+                },
+                None => removed,
+            };
         }
-        false
+        Removed::Absent
     }
 }
 
@@ -396,77 +528,104 @@ impl Side {
 }
 
 impl Tree {
-    /// Adds `new` beside `target`, on `side` of it, along `axis`. A split
-    /// already along `axis` takes it as a sibling sharing the target's
-    /// weight; otherwise the target becomes a new split of the two. False if
-    /// `target` is not in the tree.
-    pub fn split(&mut self, target: PaneId, new: PaneId, axis: Axis, side: Side) -> bool {
+    /// Adds `new` beside `target`, on `side` of it, along `axis`, the two
+    /// dividing what the target had as `shares` says. A split already
+    /// along `axis` takes it as a sibling, the others keeping theirs;
+    /// otherwise the target becomes a new split of the two.
+    pub fn split(
+        &mut self,
+        (target, new): (PaneId, PaneId),
+        (axis, side): (Axis, Side),
+        shares: Shares,
+    ) -> Result<(), Unmade> {
         match self {
             Tree::Pane(p) if *p == target => {
-                *self = Tree::Split(axis, Split::pair(target, new, side));
-                true
+                *self = Tree::Split(axis, Split::pair(target, new, side, shares)?);
+                Ok(())
             }
-            Tree::Pane(_) => false,
-            Tree::Split(own, split) => split.insert(*own, target, new, axis, side),
+            Tree::Pane(_) => Err(Unmade::NoPane),
+            Tree::Split(own, split) => split.insert(*own, (target, new), (axis, side), shares),
         }
     }
 }
 
 /// Moves `pane` beside `target`, on the side `direction` points to, as
-/// `Tree::split` puts a new one, in a tree holding both. False, the tree as
-/// it was, otherwise.
+/// `Tree::split` puts a new one, in a tree holding both; refused, the tree
+/// is as it was.
 pub fn move_beside(
     root: &mut Option<Tree>,
     pane: PaneId,
     target: PaneId,
     direction: Direction,
-) -> bool {
+) -> Result<(), Unmade> {
     let both = root
         .as_ref()
         .is_some_and(|r| r.contains(pane) && r.contains(target));
     if !both || pane == target {
-        return false;
+        return Err(Unmade::NoPane);
     }
-    // `target` is left, so the tree is too.
-    remove(root, pane);
-    root.as_mut()
-        .is_some_and(|r| r.split(target, pane, Axis::of(direction), Side::of(direction)))
+    // `target` is left, so the tree is too. A move that would round the
+    // shares it leaves is refused, as a split past them is.
+    let mut moved = root.clone();
+    if remove(&mut moved, pane) == Removed::Rounded {
+        return Err(Unmade::Weights);
+    }
+    let way = (Axis::of(direction), Side::of(direction));
+    (moved.as_mut().ok_or(Unmade::NoPane)?).split((target, pane), way, HALVED)?;
+    *root = moved;
+    Ok(())
 }
 
 /// Removes a pane. A split left with one child becomes that child, merging
 /// into the split around it when that is along its axis. The tree is `None`
 /// once its last pane is gone.
-pub fn remove(root: &mut Option<Tree>, pane: PaneId) -> bool {
+pub fn remove(root: &mut Option<Tree>, pane: PaneId) -> Removed {
     match root {
         Some(Tree::Pane(p)) if *p == pane => *root = None,
-        None | Some(Tree::Pane(_)) => return false,
+        None | Some(Tree::Pane(_)) => return Removed::Absent,
         Some(Tree::Split(axis, split)) => {
-            if !split.remove(*axis, pane) {
-                return false;
+            let removed = split.remove(*axis, pane);
+            if removed == Removed::Absent {
+                return removed;
             }
             match split.only() {
                 Some(Tree::Pane(p)) => *root = Some(Tree::Pane(p)),
                 Some(Tree::Split((), inner)) => *root = Some(Tree::Split(axis.cross(), inner)),
                 None => {}
             }
+            return removed;
         }
     }
-    true
+    Removed::Exact
 }
 
-/// Adds `pane` after the whole tree, side by side with it, as one more
-/// child of a split along `Horizontal` or with the tree's weight.
-pub fn append(root: &mut Option<Tree>, pane: PaneId) {
-    let new = (WEIGHT, Tree::Pane(pane));
-    let children = match root.take() {
-        None => return *root = Some(Tree::Pane(pane)),
-        Some(Tree::Pane(p)) => vec![(WEIGHT, Tree::Pane(p)), new],
-        Some(Tree::Split(Axis::Horizontal, split)) => {
-            split.scaled(WEIGHT).chain(std::iter::once(new)).collect()
-        }
-        Some(Tree::Split(Axis::Vertical, split)) => vec![(WEIGHT, Tree::Split((), split)), new],
+/// Adds `pane` after the whole tree, side by side with it, taking as much
+/// as all the rest: one more child of a split along `Horizontal`, or beside
+/// the tree in a new one. Refused, the tree is as it was.
+pub fn append(root: &mut Option<Tree>, pane: PaneId) -> Result<(), Unmade> {
+    let one = NonZeroU32::MIN;
+    if let Some(Tree::Split(Axis::Horizontal, split)) = root {
+        let mut weights: Vec<u128> = split.weights().collect();
+        weights.push(weights.iter().fold(0, |sum, w| sum.saturating_add(*w)));
+        let weights = least(&weights).ok_or(Unmade::Weights)?;
+        split.0.push((one, Tree::Pane(pane)));
+        split.set(weights);
+        return Ok(());
+    }
+    let whole = match root.take() {
+        None => None,
+        Some(Tree::Pane(p)) => Some(Tree::Pane(p)),
+        // Along `Vertical`: one along `Horizontal` took it above.
+        Some(Tree::Split(_, split)) => Some(Tree::Split((), split)),
     };
-    *root = Some(Tree::Split(Axis::Horizontal, Split(children)));
+    *root = Some(match whole {
+        None => Tree::Pane(pane),
+        Some(whole) => Tree::Split(
+            Axis::Horizontal,
+            Split(vec![(one, whole), (one, Tree::Pane(pane))]),
+        ),
+    });
+    Ok(())
 }
 
 /// Swaps two panes' places in one tree, or, given two trees in turn, each
@@ -805,10 +964,10 @@ impl Split {
             return Some(false);
         };
         *grown = grown.saturating_add(moved);
-        for ((share, _), size) in children.iter_mut().zip(&sizes) {
-            *share = weight(u32::from(*size));
-        }
-        Some(true)
+        // A child shown nowhere keeps a weight of 1. Lengths of a screen,
+        // they are within `MOST` together.
+        let weights: Vec<u128> = sizes.iter().map(|s| u128::from(*s).max(1)).collect();
+        Some(self.weigh(&weights).is_ok())
     }
 }
 
@@ -845,7 +1004,10 @@ mod tests {
     /// `0 | 1`.
     fn tree() -> Tree {
         let mut root = Tree::Pane(p(0));
-        root.split(p(0), p(1), Axis::Horizontal, Side::After);
+        assert!(
+            root.split((p(0), p(1)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         root
     }
 
@@ -853,7 +1015,10 @@ mod tests {
     #[test]
     fn a_middle_pane_shrinks_to_a_length() {
         let mut root = tree();
-        root.split(p(1), p(2), Axis::Horizontal, Side::After);
+        assert!(
+            root.split((p(1), p(2)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         let area = area(90, 20);
         let width = |t: &Tree| place(t, area).rect(p(1)).map(|r| r.w);
         assert!(width(&root).is_some_and(|w| w > 12));
@@ -903,9 +1068,12 @@ mod tests {
                 }
             }]
         );
-        // A second split of the right pane shares its weight: 1000:500:500.
+        // A second split of the right pane halves its weight: 2:1:1.
         let mut root = tree();
-        assert!(root.split(p(1), p(2), Axis::Horizontal, Side::After));
+        assert!(
+            root.split((p(1), p(2)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         let node = &root;
         let widths: Vec<u16> = place(node, area(80, 24))
             .panes
@@ -918,9 +1086,18 @@ mod tests {
     #[test]
     fn nested_splits_place_every_pane_without_overlap() {
         let mut root = tree();
-        root.split(p(1), p(2), Axis::Horizontal, Side::After);
-        root.split(p(2), p(3), Axis::Vertical, Side::After);
-        root.split(p(1), p(4), Axis::Vertical, Side::Before);
+        assert!(
+            root.split((p(1), p(2)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            root.split((p(2), p(3)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            root.split((p(1), p(4)), (Axis::Vertical, Side::Before), HALVED)
+                .is_ok()
+        );
         let node = &root;
         assert_eq!(node.panes(), vec![p(0), p(4), p(1), p(2), p(3)]);
         let placed = place(node, area(81, 25));
@@ -944,8 +1121,14 @@ mod tests {
     #[test]
     fn placing_into_a_used_placement_is_placing_afresh() {
         let mut root = tree();
-        root.split(p(0), p(1), Axis::Horizontal, Side::After);
-        root.split(p(1), p(2), Axis::Vertical, Side::After);
+        assert!(
+            root.split((p(0), p(1)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            root.split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
         let node = &root;
         let mut used = place(node, area(120, 40));
         for (w, h) in [(80, 24), (3, 3), (0, 9), (200, 60)] {
@@ -961,7 +1144,10 @@ mod tests {
     fn a_small_area_keeps_minimums_and_hides_what_does_not_fit() {
         let mut root = tree();
         for n in 2..10 {
-            root.split(p(n - 1), p(n), Axis::Horizontal, Side::After);
+            assert!(
+                root.split((p(n - 1), p(n)), (Axis::Horizontal, Side::After), HALVED)
+                    .is_ok()
+            );
         }
         let node = &root;
         let placed = place(node, area(10, 3));
@@ -980,18 +1166,119 @@ mod tests {
     #[test]
     fn removal_collapses_and_merges() {
         let mut tree = tree();
-        tree.split(p(1), p(2), Axis::Vertical, Side::After);
-        tree.split(p(2), p(3), Axis::Horizontal, Side::After);
+        assert!(
+            tree.split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            tree.split((p(2), p(3)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         let mut root = Some(tree);
-        assert!(remove(&mut root, p(1)));
+        assert_eq!(remove(&mut root, p(1)), Removed::Exact);
         // (0 | (1 / (2 | 3))) minus 1 is (0 | 2 | 3), merged along one axis.
         assert!(matches!(&root, Some(Tree::Split(Axis::Horizontal, Split(c))) if c.len() == 3));
         remove(&mut root, p(2));
         remove(&mut root, p(3));
         assert_eq!(root, Some(Tree::Pane(p(0))));
-        assert!(remove(&mut root, p(0)));
+        assert_eq!(remove(&mut root, p(0)), Removed::Exact);
         assert_eq!(root, None);
-        assert!(!remove(&mut root, p(0)));
+        assert_eq!(remove(&mut root, p(0)), Removed::Absent);
+    }
+
+    /// Splits and closes keep every share exact: a split's weights are
+    /// multiplied as far as dividing one takes, and a split merged into
+    /// the one around it takes the share it had, as its children shared it.
+    #[test]
+    fn weights_stay_exact_through_splits_and_merges() {
+        let weights = |t: &Option<Tree>| match t {
+            Some(Tree::Split(_, split)) => split.children().map(|(w, _)| w.get()).collect(),
+            Some(Tree::Pane(_)) | None => Vec::new(),
+        };
+        let two = |n| NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN);
+        // `0 | (1 / (2 | 3))`, 2 and 3 2:1; then 1 goes.
+        let mut tree = tree();
+        assert!(
+            tree.split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
+        let shares = (two(2), NonZeroU32::MIN);
+        assert!(
+            tree.split((p(2), p(3)), (Axis::Horizontal, Side::After), shares)
+                .is_ok()
+        );
+        let mut root = Some(tree);
+        assert_eq!(remove(&mut root, p(1)), Removed::Exact);
+        assert_eq!(weights(&root), [3, 2, 1]);
+        // 2's weight, 2, divided 1:2 multiplies the rest by 3.
+        let mut tree = root.clone().unwrap_or(Tree::Pane(p(0)));
+        let shares = (NonZeroU32::MIN, two(2));
+        assert!(
+            tree.split((p(2), p(4)), (Axis::Horizontal, Side::After), shares)
+                .is_ok()
+        );
+        assert_eq!(weights(&Some(tree.clone())), [9, 2, 4, 3]);
+        let unheld = (two(MOST), NonZeroU32::MIN);
+        let refused = tree.split((p(0), p(5)), (Axis::Horizontal, Side::After), unheld);
+        assert_eq!(refused, Err(Unmade::Weights));
+        assert_eq!(weights(&Some(tree)), [9, 2, 4, 3]);
+    }
+
+    /// Halving the newest pane of a row doubles the others' weights: the
+    /// split past `MOST` together is refused, the row as it was. A close
+    /// that merges past it rounds the merged weights to the nearest a split
+    /// holds, at their least, and says so.
+    #[test]
+    fn weights_past_the_most_are_refused_or_rounded_and_said() {
+        let mut row = Tree::Pane(p(0));
+        let mut made = 0;
+        while row
+            .split(
+                (p(made), p(made + 1)),
+                (Axis::Horizontal, Side::After),
+                HALVED,
+            )
+            .is_ok()
+        {
+            made += 1;
+        }
+        assert_eq!(made, 31, "the 32nd split is refused");
+        let two = |n| NonZeroU32::new(n).unwrap_or(NonZeroU32::MIN);
+        // `1 | (2 / (3 | 4))`, 1:65535, 1:1 and 1:65536; then 2 goes.
+        let mut tree = Tree::Pane(p(1));
+        let ways = [
+            (
+                (p(1), p(2)),
+                Axis::Horizontal,
+                (NonZeroU32::MIN, two(65535)),
+            ),
+            ((p(2), p(3)), Axis::Vertical, HALVED),
+            (
+                (p(3), p(4)),
+                Axis::Horizontal,
+                (NonZeroU32::MIN, two(65536)),
+            ),
+        ];
+        for (pair, axis, shares) in ways {
+            assert!(tree.split(pair, (axis, Side::After), shares).is_ok());
+        }
+        let mut root = Some(tree);
+        assert_eq!(remove(&mut root, p(2)), Removed::Rounded);
+        let weights: Vec<u128> = match &root {
+            Some(Tree::Split(_, split)) => split.weights().collect(),
+            Some(Tree::Pane(_)) | None => Vec::new(),
+        };
+        let total = weights.iter().sum::<u128>();
+        assert!(
+            weights.len() == 3 && total <= u128::from(MOST),
+            "{weights:?}"
+        );
+        assert_eq!(
+            weights.iter().fold(0, |g, w| gcd(g, *w)),
+            1,
+            "at their least"
+        );
+        assert_eq!(nearest(&[1 << 40, 1 << 40]), [NonZeroU32::MIN; 2]);
     }
 
     /// A pane moves only within a tree holding both it and its target;
@@ -999,15 +1286,15 @@ mod tests {
     #[test]
     fn moving_beside_needs_both_panes_in_the_tree() {
         let mut root = Some(tree());
-        assert!(move_beside(&mut root, p(0), p(1), Direction::Down));
+        assert!(move_beside(&mut root, p(0), p(1), Direction::Down).is_ok());
         assert_eq!(root.as_ref().map(Tree::panes), Some(vec![p(1), p(0)]));
         let before = root.clone();
-        assert!(!move_beside(&mut root, p(0), p(9), Direction::Down));
-        assert!(!move_beside(&mut root, p(9), p(0), Direction::Down));
-        assert!(!move_beside(&mut root, p(0), p(0), Direction::Down));
+        assert!(move_beside(&mut root, p(0), p(9), Direction::Down).is_err());
+        assert!(move_beside(&mut root, p(9), p(0), Direction::Down).is_err());
+        assert!(move_beside(&mut root, p(0), p(0), Direction::Down).is_err());
         assert_eq!(root, before);
         let mut empty = None;
-        assert!(!move_beside(&mut empty, p(0), p(1), Direction::Down));
+        assert!(move_beside(&mut empty, p(0), p(1), Direction::Down).is_err());
         assert_eq!(empty, None);
     }
 
@@ -1015,7 +1302,10 @@ mod tests {
     fn directional_neighbours_prefer_alignment_then_distance_then_id() {
         // 0 | (1 / 2)
         let mut root = tree();
-        root.split(p(1), p(2), Axis::Vertical, Side::After);
+        assert!(
+            root.split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
         let node = &root;
         let placed = place(node, area(80, 24));
         assert_eq!(neighbor(&placed, p(0), Direction::Right), Some(p(1)));
@@ -1052,8 +1342,14 @@ mod tests {
     #[test]
     fn resizing_in_nested_splits_moves_the_border_on_that_side() {
         let mut root = tree();
-        root.split(p(1), p(2), Axis::Vertical, Side::After);
-        root.split(p(2), p(3), Axis::Horizontal, Side::After);
+        assert!(
+            root.split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            root.split((p(2), p(3)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         let node = &mut root;
         let a = area(81, 24);
         let before = place(node, a);
@@ -1083,14 +1379,25 @@ mod tests {
         let width = |t: &Tree, a, n| place(t, a).rect(p(n)).map(|r| r.w);
         let a = area(100, 24);
         let mut row = tree();
-        row.split(p(1), p(2), Axis::Horizontal, Side::After);
+        assert!(
+            row.split((p(1), p(2)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         let wide = resize_to(&row, a, p(2), Axis::Horizontal, 80);
         let widths = wide.map(|t| [0, 1, 2].map(|n| width(&t, a, n)));
         assert_eq!(widths, Some([Some(16), Some(MIN), Some(80)]));
         // `0 | (1 / (2 | 3))`, 2 at its least: left from 3 moves 0's border.
         let mut nested = tree();
-        nested.split(p(1), p(2), Axis::Vertical, Side::After);
-        nested.split(p(2), p(3), Axis::Horizontal, Side::After);
+        assert!(
+            nested
+                .split((p(1), p(2)), (Axis::Vertical, Side::After), HALVED)
+                .is_ok()
+        );
+        assert!(
+            nested
+                .split((p(2), p(3)), (Axis::Horizontal, Side::After), HALVED)
+                .is_ok()
+        );
         assert!(resize(&mut nested, a, p(3), Direction::Left, 100));
         let before = [0, 3].map(|n| width(&nested, a, n));
         assert!(resize(&mut nested, a, p(3), Direction::Left, 10));

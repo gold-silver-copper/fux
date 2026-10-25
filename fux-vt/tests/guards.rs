@@ -454,13 +454,14 @@ fn grown(f: impl FnOnce() -> Result) -> Result<usize> {
     Ok(ALLOCATOR.live().saturating_sub(before))
 }
 
-/// B05, `cell_too_small`'s `cell.1 < 6` (parser.rs, `==` and `>`): a host cell wide enough but under 6 pixels high is taken as 6 high.
+/// B05, `CellSize::new`'s `height >= 6` (pictures.rs, `>` and `<`): a host cell wide enough but under 6 pixels high is refused, and one 6 high is taken as it is.
 #[test]
-fn a_host_cell_under_a_band_high_is_taken_as_a_band_high() -> Result {
+fn a_host_cell_under_a_band_high_is_refused() -> Result {
+    assert_eq!(fux_vt::CellSize::new(3, 5), None);
     let options = Options::new().with(Feature::Pictures);
     let mut p = Parser::with_options(Size::new(24, 80)?, 0, options)?;
     p.set_host_graphics(Graphics {
-        cell: Some((3, 5)),
+        cell: fux_vt::CellSize::new(3, 6),
         sixel: true,
     });
     // 6 pixels wide and 12 high, two bands.
@@ -696,7 +697,7 @@ fn picturing(rows: u16, cols: u16) -> Result<Parser> {
     let options = Options::new().with(Feature::Pictures);
     let mut p = Parser::with_options(Size::new(rows, cols)?, 0, options)?;
     p.set_host_graphics(Graphics {
-        cell: Some((8, 16)),
+        cell: fux_vt::CellSize::new(8, 16),
         sixel: true,
     });
     Ok(p)

@@ -299,7 +299,7 @@ fn a_hidden_tab_goes_back_to_its_own_size() -> Outcome {
     eventually("its own size", || sized("100x40"))?;
     server.ok(&["str", "c1", "client", pane, "tab", "show-tab"])?;
     eventually("the client's size", || sized("84x24"))?;
-    let other = server.ok(&["opts", "str", "sleep 60", "command", "run"])?;
+    let other = server.ok(&["opts", "str", "sleep", "program", "str", "60", "arg", "run"])?;
     let other = other.split(':').next().unwrap_or_default();
     server.ok(&["str", "c1", "client", other, "tab", "show-tab"])?;
     eventually("its own size, another tab shown", || sized("100x40"))?;

@@ -16,6 +16,11 @@ keywords = ["terminal", "multiplexer", "pty", "tmux"]
 categories = ["command-line-utilities"]
 include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/LICENSE"]
 
+[features]
+# `session::InProcess`, a session asked in-process as the tests ask it, for
+# the fuzz targets.
+in-process = []
+
 [dependencies]
 fux-vt = { path = "fux-vt", version = "0.14.0" }
 signal-hook = "0.4"

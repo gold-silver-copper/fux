@@ -1,6 +1,6 @@
 //! A step of a walk, as it was taken: concrete ids and bytes, never the
 //! choices that produced it, so a trace replays the same steps whatever the
-//! seed. Each is one line of a trace, in fux's word grammar.
+//! seed. Each is one line of a trace, read as fuxth reads a file.
 use fux::words;
 
 /// What a pane's program does of its own accord, through the fixture's
@@ -62,8 +62,8 @@ pub enum Step {
     Signal { pane: String, stop: Stop },
     /// The configuration rewritten, for the clients that attach after.
     Config(Config),
-    /// A client that asks for 9000 by 9000 and must get 4096 by 4096.
-    Clamp,
+    /// A client that asks for 9000 by 9000 and must be refused.
+    TooBig,
 }
 
 /// Bytes as a word: printable ASCII as it is, a backslash doubled, and
@@ -144,14 +144,14 @@ impl Step {
                     Config::PrefixB => "prefix-b",
                 }
             ),
-            Step::Clamp => "clamp".to_owned(),
+            Step::TooBig => "too-big".to_owned(),
         }
     }
 
     /// A trace line as a step.
     pub fn parse(line: &str) -> Result<Step, String> {
-        let words = words::split(line).map_err(|e| e.to_string())?;
-        let text: Vec<&str> = words.iter().map(String::as_str).collect();
+        let tokens = fuxth::token::source("trace", line).map_err(|e| e.to_string())?;
+        let text: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
         let number = |w: &str| w.parse::<u16>().map_err(|e| format!("{w:?}: {e}"));
         Ok(match text.as_slice() {
             ["keys", client, bytes] => Step::Keys {
@@ -200,7 +200,7 @@ impl Step {
             ["config", "invalid"] => Step::Config(Config::Invalid),
             ["config", "prefix-a"] => Step::Config(Config::PrefixA),
             ["config", "prefix-b"] => Step::Config(Config::PrefixB),
-            ["clamp"] => Step::Clamp,
+            ["too-big"] => Step::TooBig,
             other => return Err(format!("an unknown step {other:?}")),
         })
     }
@@ -209,5 +209,34 @@ impl Step {
     /// close an overlay by design.
     pub fn types(&self) -> bool {
         matches!(self, Step::Keys { .. })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A trace line reads back as the step it was written from, quotes,
+    /// comment marks and escapes included.
+    #[test]
+    fn a_line_reads_back_as_its_step() {
+        for step in [
+            Step::Keys {
+                client: "c1".to_owned(),
+                bytes: b"#x 'y'\\\x1b\r".to_vec(),
+            },
+            Step::Cli(["str", "a b", "it's", "#c", ""].map(str::to_owned).to_vec()),
+            Step::Child {
+                pane: "%1".to_owned(),
+                act: Act::Stty(24, 80),
+            },
+        ] {
+            assert_eq!(
+                Step::parse(&step.line()),
+                Ok(step.clone()),
+                "{}",
+                step.line()
+            );
+        }
     }
 }

@@ -21,12 +21,12 @@ impl Session {
             None | Some(AnyRef::Workspace(_)) => true,
             Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => false,
         };
-        for ws in &self.workspaces {
+        for ws in self.parts.workspaces() {
             // The first tab written opens its workspace: one before it may
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
             for tab in ws.tabs() {
-                if !self.takes_in(only, ws.id, tab.id) || tab.root().is_none() {
+                if !self.takes_in(only, ws.id(), tab.id()) || tab.root().is_none() {
                     continue;
                 }
                 self.dump_tab(ws, tab, whole, opens, ids, &mut out);
@@ -58,26 +58,25 @@ impl Session {
         let makes = opens && ids && program.is_none();
         let mut line = vec!["opts".to_owned()];
         match (makes, whole && !opens) {
-            (true, _) => line.extend(string(&ws.name).chain(["name".to_owned()])),
-            (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
-            (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
+            (true, _) => line.extend(string(ws.name()).chain(["name".to_owned()])),
+            (false, true) => line.extend([workspace(ws.id()), "in".to_owned()]),
+            (false, false) => line.extend(string(ws.name()).chain(["in".to_owned()])),
         }
         // A name fux gave (`main`, `tab-N`, the program's) it gives again.
-        if tab.given && !makes {
-            line.extend(string(&tab.name).chain(["name".to_owned()]));
+        if tab.given() && !makes {
+            line.extend(string(tab.name()).chain(["name".to_owned()]));
         }
-        if let Fit::Fixed(size) = tab.fit() {
-            line.extend([
-                size.cols().to_string(),
-                size.rows().to_string(),
-                "size".to_owned(),
-            ]);
-        }
+        // Its size, which a server with no client attached needs to make
+        // it: one that fits clients is made at the size it has, then fits
+        // clients again (`resize-auto`).
+        let size = tab.fit().size();
+        let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
+        line.extend([cols, rows, "size".to_owned()]);
         if ids {
             if opens {
-                line.extend(asked(&ws.id.to_string()));
+                line.extend(asked(&ws.id().to_string()));
             }
-            line.extend(asked(&tab.id.to_string()));
+            line.extend(asked(&tab.id().to_string()));
         }
         self.pane_words(first, ids, &mut line);
         line.push(match (program.is_some(), makes) {
@@ -85,65 +84,60 @@ impl Session {
             (false, true) => "new-workspace".to_owned(),
             (false, false) => "new-tab".to_owned(),
         });
-        line.extend(["let".to_owned(), pane_name(first)]);
+        let named = pane_name(first);
+        line.extend(["let".to_owned(), named.clone()]);
         push(out, &line);
         if opens {
-            push(
-                out,
-                &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
-            );
+            push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
         }
-        if tab.given && makes {
-            push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
+        if tab.given() && makes {
+            push(out, &[&named, "tab", "str", tab.name(), "rename"]);
+        }
+        if matches!(tab.fit(), Fit::Clients(_)) {
+            push(out, &[&named, "tab", "resize-auto"]);
         }
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
         }
-        // Each pane's size, for the shares of its splits, the last taking
-        // what is left: in a tab of a fixed size, the only one whose panes'
-        // sizes stay as they are wherever it is made.
-        let panes = root.panes();
-        let fixed = matches!(tab.fit(), Fit::Fixed(_));
-        if let (Some((_, sized)), true) = (panes.split_last(), fixed) {
-            for pane in sized {
-                let Some(size) = self.panes.get(pane).map(|p| p.size()) else {
-                    continue;
-                };
-                let name = pane_name(*pane);
-                push(out, &[&name, &size.cols().to_string(), "resize-x"]);
-                push(out, &[&name, &size.rows().to_string(), "resize-y"]);
-            }
-        }
         // Panes renamed keep their names.
         for pane in root.panes() {
-            let Some(p) = self.panes.get(&pane) else {
+            let Some(p) = self.parts.panes().get(&pane) else {
                 continue;
             };
             let shell = || pane::basename(self.config.shell.program());
             let default = self
                 .program(pane)
                 .map_or_else(shell, |l| pane::named(&l.argv));
-            if default != p.name {
-                push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
+            if default != p.name() {
+                push(out, &[&pane_name(pane), "str", p.name(), "rename"]);
             }
         }
     }
 
     /// The `split` lines that make `split`'s children beside its first,
-    /// along `axis`, and then each child's own.
+    /// along `axis`, and then each child's own: each line divides what the
+    /// child before had between it and the rest (`Tree::split`), so each
+    /// has its weight, and the layout made again is the one there is, at
+    /// every size. A split's weights are within `layout::MOST` together,
+    /// as two shares are.
     fn dump_split(&self, axis: Axis, split: &Split, ids: bool, out: &mut String) {
-        let firsts: Vec<PaneId> = split.children().filter_map(Tree::first_pane).collect();
+        let firsts: Vec<_> = (split.children())
+            .filter_map(|(share, child)| Some((child.first_pane()?, u64::from(share.get()))))
+            .collect();
         let way = match axis {
             Axis::Horizontal => "horizontal",
             Axis::Vertical => "vertical",
         };
-        for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
+        let mut rest = (firsts.iter()).fold(0u64, |sum, (_, share)| sum.saturating_add(*share));
+        for ((before, theirs), (pane, _)) in firsts.iter().zip(firsts.iter().skip(1)) {
+            rest = rest.saturating_sub(*theirs);
             let mut line = vec![pane_name(*before), way.into()];
+            line.extend([theirs.to_string(), rest.to_string(), "shares".to_owned()]);
             self.pane_words(*pane, ids, &mut line);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
         }
-        for child in split.children() {
+        for (_, child) in split.children() {
             if let Tree::Split((), inner) = child {
                 self.dump_split(axis.cross(), inner, ids, out);
             }
@@ -153,7 +147,7 @@ impl Session {
     /// The program `run` started in pane `id`, if it runs one: its words,
     /// where, and the variables it was given.
     fn program(&self, id: PaneId) -> Option<&Launch> {
-        match &self.panes.get(&id)?.runs {
+        match &self.parts.panes().get(&id)?.runs {
             Runs::Program(launch) => Some(launch),
             Runs::Shell => None,
         }

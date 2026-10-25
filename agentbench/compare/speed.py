@@ -34,7 +34,7 @@ def jobs(bin_, tag):
     out = {}
     out["start"] = ms(lambda: run(bin_, e, "start"))
     out["ls (round trip)"] = ms(lambda: run(bin_, e, "ls"))
-    start = lambda: run(bin_, e, "opts", "str", "sh", "program", "str", "-c", "arg",
+    start = lambda: run(bin_, e, "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg",
                         "str", "sleep 0.2; echo READY; exec cat", "arg", "run").stdout
     panes = []
     # Started and waited for in one measure: the start is part of the work.
@@ -44,14 +44,14 @@ def jobs(bin_, tag):
     out["capture all-history json"] = ms(lambda: run(bin_, e, pane, "all-history", "capture", "json"))
     def fan():
         for i in range(30):
-            until_text(bin_, e, run(bin_, e, "opts", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c",
+            until_text(bin_, e, run(bin_, e, "opts", "80", "24", "size", "str", f"f{i}", "name", "str", "sh", "program", "str", "-c",
                                     "arg", "str", f"echo up-{i}; exec cat", "arg", "run").stdout, f"up-{i}")
     out["30 panes started, each waited for its text"] = ms(fan)
     command = "echo 'the quick brown fox jumps over 42'"  # 40 characters
     assert len(command) == 40
-    sh = run(bin_, e, "opts", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split(":")[0]
+    sh = run(bin_, e, "opts", "80", "24", "size", "str", "bash", "program", "str", "--norc", "arg", "str", "-i", "arg", "run").stdout.split(":")[0]
     out["40-char command + Enter, bash"] = ms(lambda: run(bin_, e, sh, "str", command, "text", "str", "Enter", "key", "send-keys"))
-    py = until_text(bin_, e, run(bin_, e, "opts", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "run").stdout, ">>>")
+    py = until_text(bin_, e, run(bin_, e, "opts", "80", "24", "size", "str", "python3", "program", "str", "-q", "arg", "str", "-i", "arg", "run").stdout, ">>>")
     line = "x = 'the quick brown fox jumps over 42'"
     line = line + " " * (40 - len(line))
     out["40-char line + Enter, python REPL (raw)"] = ms(lambda: run(bin_, e, py, "str", line, "text", "str", "Enter", "key", "send-keys"))

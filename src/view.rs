@@ -2,11 +2,46 @@
 use crate::act::{Edit, Panel};
 use crate::copy::Copy;
 use crate::id::ClientId;
+use crate::layout::Rect;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
     pub text: String,
     pub error: bool,
+}
+
+/// The most rows, and columns, a client's view has.
+pub const MOST: u16 = 4096;
+
+/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
+/// each way; else why not.
+pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
+    let fits = |n: u16| (1..=MOST).contains(&n);
+    match fits(rows) && fits(cols) {
+        true => Ok((rows, cols)),
+        false => Err(format!(
+            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+        )),
+    }
+}
+
+/// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
+/// columns. Every size a request gives is one, so each size the server
+/// holds is one a saved session writes (`COLS ROWS size`) and makes again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Screen(fux_vt::Size);
+
+impl Screen {
+    /// `rows` by `cols`, if a screen can be that size; else why not.
+    pub fn new(rows: u16, cols: u16) -> Result<Screen, String> {
+        let (rows, cols) = size(rows, cols)?;
+        fux_vt::Size::new(rows, cols)
+            .map(Screen)
+            .map_err(|e| e.to_string())
+    }
+    pub fn size(self) -> fux_vt::Size {
+        self.0
+    }
 }
 
 /// The most bytes a prompt's line holds.
@@ -45,20 +80,26 @@ impl<const MAX: usize> Line<MAX> {
         self.before + &self.after
     }
 
-    /// An edit of the line: typed text (one line of it, nothing that
-    /// controls, unless the line would pass `MAX` bytes), or a move or a
-    /// deletion.
-    pub fn edit(&mut self, edit: &Edit) {
+    /// An edit of the line: typed text (its control characters, and the
+    /// line end a pasted line ends in, left out), or a move or a deletion.
+    /// Text of more than one line, or that would take the line past `MAX`
+    /// bytes, is refused whole, saying why.
+    pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
             Edit::Insert(text) => {
-                let typed: String = (text.chars())
-                    .take_while(|c| *c != '\n' && *c != '\r')
-                    .filter(|c| !c.is_control())
-                    .collect();
-                let len = self.before.len().saturating_add(self.after.len());
-                if len.saturating_add(typed.len()) <= MAX {
-                    self.before.push_str(&typed);
+                let text = (text
+                    .strip_suffix("\r\n")
+                    .or_else(|| text.strip_suffix(['\n', '\r'])))
+                .unwrap_or(text);
+                if text.contains(['\n', '\r']) {
+                    return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
+                let typed: String = text.chars().filter(|c| !c.is_control()).collect();
+                let len = self.before.len().saturating_add(self.after.len());
+                if len.saturating_add(typed.len()) > MAX {
+                    return Err(format!("a line holds {MAX} bytes: nothing was typed"));
+                }
+                self.before.push_str(&typed);
             }
             Edit::Backspace => drop(self.before.pop()),
             Edit::Delete => self.after = self.after.chars().skip(1).collect(),
@@ -80,6 +121,7 @@ impl<const MAX: usize> Line<MAX> {
             }
             Edit::End => self.before.push_str(&std::mem::take(&mut self.after)),
         }
+        Ok(())
     }
 }
 
@@ -156,6 +198,18 @@ impl View {
             read_only: false,
             env: Vec::new(),
         }
+    }
+
+    /// The area panes share on its screen: all but the bar.
+    pub fn pane_area(&self) -> Rect {
+        Rect::screen(self.rows.saturating_sub(1), self.cols)
+    }
+
+    /// Whether it sizes the panes of the tab it shows: one that only
+    /// watches shows them as they are, and a screen with no room below its
+    /// bar shows none.
+    pub fn sizes(&self) -> bool {
+        !self.read_only && !self.pane_area().is_empty()
     }
 
     /// Shows a notice, an error's if `error`.

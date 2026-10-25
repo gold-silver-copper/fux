@@ -178,8 +178,9 @@ impl Copy {
     }
 }
 
-/// The most bytes a search holds.
-const SEARCH_MAX: usize = 1024;
+/// The most bytes a search holds: the line its client types it in
+/// (`screens`) holds no more, and one longer is refused.
+pub const SEARCH_MAX: usize = 1024;
 
 /// What copy mode's bar says it is doing: a label, or the search being
 /// typed after its prompt, which the bar scrolls as a prompt's line.
@@ -506,11 +507,8 @@ fn start(session: &mut Session, client: ClientId) {
 fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
     let pane = (place.pane)
         .ok_or_else(|| session::fail(crate::code::Code::NoPane, "no pane to copy from"))?;
-    let screen = session
-        .panes
-        .get(&pane)
-        .ok_or(Error::NoPane(pane))?
-        .screen();
+    let screen = session.parts.panes().get(&pane);
+    let screen = screen.ok_or(Error::NoPane(pane))?.screen();
     let (cy, cx) = screen.cursor_position();
     let window = screen.window();
     let row = window.row(cy).ok_or(Error::NoRows)?;
@@ -534,12 +532,11 @@ fn leave(session: &mut Session, client: ClientId) {
     }
 }
 
-/// `text` as a search: no control characters, and at most `SEARCH_MAX`.
-fn clean(text: &str) -> String {
-    text.chars()
-        .filter(|c| !c.is_control())
-        .take(SEARCH_MAX)
-        .collect()
+/// `text` as a search: no control characters; none past `SEARCH_MAX`
+/// bytes, which no client's line holds.
+fn clean(text: &str) -> Option<String> {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    (text.len() <= SEARCH_MAX).then_some(text)
 }
 
 /// An action in copy mode, its keys the client's (`keymap::copy_act`).
@@ -560,7 +557,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     // The key may move the rows it holds.
     copy.held_at = None;
     let pane_id = copy.pane;
-    let Some(pane) = session.panes.get(&pane_id) else {
+    let Some(pane) = session.parts.panes().get(&pane_id) else {
         return;
     };
     let screen = pane.screen();
@@ -591,12 +588,19 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
         CopyAct::Enter => return,
         // The search line the client types, shown; the search it asks for.
         CopyAct::Typing(line) => {
-            copy.typing = line.map(|(seek, before, after)| (seek, clean(&before), clean(&after)));
+            copy.typing = line.and_then(|(seek, before, after)| {
+                let (before, after) = (clean(&before)?, clean(&after)?);
+                (before.len().saturating_add(after.len()) <= SEARCH_MAX)
+                    .then_some((seek, before, after))
+            });
             return;
         }
         CopyAct::Find { query, seek } => {
             copy.typing = None;
-            let query = clean(&query);
+            let Some(query) = clean(&query) else {
+                view.notify(format!("a search is at most {SEARCH_MAX} bytes"), true);
+                return;
+            };
             if !query.is_empty() {
                 let search = Search { query, seek };
                 jump(copy, screen, height, at, &search, &mut view.notice);
@@ -846,7 +850,7 @@ mod tests {
         }
         output.push_str("\x1b]133;A\x07$ ");
         s.output(pane, output.as_bytes());
-        let screen = |s: &Session| s.panes.get(&pane).map(|p| p.screen().clone());
+        let screen = |s: &Session| s.parts.panes().get(&pane).map(|p| p.screen().clone());
         let first = screen(&s).ok_or("the pane")?;
         let starts: Vec<usize> = first
             .rows()
@@ -867,7 +871,7 @@ mod tests {
             let Mode::Copy(copy) = &view.mode else {
                 return None;
             };
-            let screen = s.panes.get(&pane)?.screen();
+            let screen = s.parts.panes().get(&pane)?.screen();
             let r = copy.resolve(screen)?;
             Some((r.cursor.0.index(), r.cursor.1, r.top.index()))
         };
@@ -910,6 +914,20 @@ mod tests {
         Ok(())
     }
 
+    /// A search past `SEARCH_MAX` bytes, which no client's line holds, is
+    /// refused and said, not cut.
+    #[test]
+    fn a_search_past_its_bound_is_refused() -> Result<(), String> {
+        let (mut s, c) = crate::session::testing::attached(6, 40)?;
+        s.input(c, b"\x02c");
+        let query = std::iter::repeat_n('x', SEARCH_MAX.saturating_add(1)).collect();
+        let seek = Seek::Forward;
+        act(&mut s, c, CopyAct::Find { query, seek });
+        let notice = s.views.get(&c).and_then(|v| v.notice.clone());
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("at most")));
+        Ok(())
+    }
+
     /// On a client larger than the pane (a smaller client sizes it), copy
     /// mode moves within the rows shown, not the client's room for them:
     /// its cursor stays on a row the client can see.
@@ -926,7 +944,7 @@ mod tests {
         s.input(big, b"\x02c");
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
-        let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+        let screen = s.parts.panes().get(&pane).ok_or("the pane")?.screen();
         let shown = screen.size().rows();
         let view = s.views.get(&big).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {

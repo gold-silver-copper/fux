@@ -105,10 +105,8 @@ const WHEEL_LINES: u16 = 5;
 impl crate::Screen {
     /// Appends `event`'s report to `out` as the program on this screen asked
     /// for mouse reports (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`, encoded
-    /// as `CSI ? 1005 / 1006 / 1015 / 1016 h` say), and returns whether there
-    /// was one ([`mouse_bytes`]). SGR with pixels (1016) reports the middle
-    /// of the event's cell, the host's cell size (`Parser::set_host_graphics`)
-    /// or else 10 by 20 pixels. With no mouse reporting asked for, on the
+    /// as `CSI ? 1005 / 1006 / 1015 h` say), and returns whether there
+    /// was one ([`mouse_bytes`]). With no mouse reporting asked for, on the
     /// alternate screen, with alternate scroll set (`CSI ? 1007 h`), a wheel
     /// turn sends the cursor keys instead (xterm 411's `AlternateScroll`,
     /// scrollbar.c): Up or Down, in the cursor key mode, 5 times, or half
@@ -118,9 +116,7 @@ impl crate::Screen {
         if mode == MouseProtocolMode::None && self.alternate_scroll(event, out) {
             return true;
         }
-        let (width, height) = self.cell_pixels();
-        let pixel = (middle(event.col, width), middle(event.row, height));
-        report(event, pixel, mode, self.mouse_protocol_encoding(), out)
+        mouse_bytes(event, mode, self.mouse_protocol_encoding(), out)
     }
 
     /// A wheel turn as cursor keys, with alternate scroll set and the
@@ -154,14 +150,6 @@ impl crate::Screen {
     }
 }
 
-/// The pixel in the middle of cell `n`, cells `size` pixels apart, from
-/// zero.
-fn middle(n: u16, size: u16) -> u32 {
-    u32::from(n)
-        .saturating_mul(u32::from(size))
-        .saturating_add(u32::from(size / 2))
-}
-
 /// Appends `event`'s report to `out` in `mode` and `encoding`, as xterm
 /// reports it, and returns whether there was one:
 /// - with no mode, nothing is reported;
@@ -180,25 +168,9 @@ fn middle(n: u16, size: u16) -> u32 {
 ///   for a position past 2015 (xterm 411's past-end marker); SGR (1006) sends
 ///   `CSI < code ; column ; row M`, or `m` for a release, which names its
 ///   button, for any position; urxvt (1015) `CSI code ; column ; row M`, the
-///   code plus 32 and a release unnamed (xterm 411's `EditorButton`); SGR
-///   with pixels (1016) SGR's form, the position the middle of the cell in
-///   10 by 20 pixels.
+///   code plus 32 and a release unnamed (xterm 411's `EditorButton`).
 pub fn mouse_bytes(
     event: MouseEvent,
-    mode: MouseProtocolMode,
-    encoding: MouseProtocolEncoding,
-    out: &mut Vec<u8>,
-) -> bool {
-    let (width, height) = crate::screen::CELL;
-    let pixel = (middle(event.col, width), middle(event.row, height));
-    report(event, pixel, mode, encoding, out)
-}
-
-/// [`mouse_bytes`] with the pointer at `pixel` (column, row, from zero),
-/// which SGR with pixels (1016) reports, from one.
-fn report(
-    event: MouseEvent,
-    pixel: (u32, u32),
     mode: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
     out: &mut Vec<u8>,
@@ -225,10 +197,7 @@ fn report(
         return false;
     }
     // The button the report names, its motion bit, and SGR's final byte.
-    let names_release = matches!(
-        encoding,
-        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels
-    );
+    let names_release = encoding == MouseProtocolEncoding::Sgr;
     let (button, motion, last) = match event.action {
         MouseAction::Press(button) => (Some(button), 0, 'M'),
         MouseAction::Release(button) => (button.filter(|_| names_release), 0, 'm'),
@@ -238,17 +207,11 @@ fn report(
     if mode != MouseProtocolMode::Press {
         code |= u32::from(event.mods.bits()) << MODIFIERS_AT;
     }
-    let (x, y) = (
-        u32::from(event.col).saturating_add(1),
-        u32::from(event.row).saturating_add(1),
-    );
+    let (x, y) = (u32::from(event.col), u32::from(event.row));
+    let (x, y) = (x.saturating_add(1), y.saturating_add(1));
     match encoding {
         // Writing to a Vec cannot fail.
         MouseProtocolEncoding::Sgr => {
-            let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
-        }
-        MouseProtocolEncoding::SgrPixels => {
-            let (x, y) = (pixel.0.saturating_add(1), pixel.1.saturating_add(1));
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
         MouseProtocolEncoding::Urxvt => {

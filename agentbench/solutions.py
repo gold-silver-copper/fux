@@ -67,7 +67,7 @@ def first_of(d, a, fx):
 
     def any_done():
         for name, p in panes.items():
-            if d.exit_status(p) is not None:
+            if d.has_ended(p):
                 finished.append(name)
                 return True
         return False
@@ -92,7 +92,7 @@ def find_by_name(d, a, fx):
         return
     d.text(p, "quit")
     d.keys(p, "Enter")
-    d.poll(lambda: d.exit_status(p) is not None, 5)
+    d.poll(lambda: d.has_ended(p), 5)
 
 
 def stop_stubborn(d, a, fx):
@@ -609,7 +609,7 @@ def count_running(d, a, fx):
     panes = [d.spawn(argv(fx, a["prog"])) for _ in range(a["count"])]
     for p in panes:
         d.wait_text(p, "loading")
-    return str(sum(1 for p in panes if d.exit_status(p) is None))
+    return str(sum(1 for p in panes if not d.has_ended(p)))
 
 
 def _exists(path):

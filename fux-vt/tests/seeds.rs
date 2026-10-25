@@ -396,8 +396,9 @@ fn seeds() -> Vec<Seed> {
                 out.extend(b"\x07");
                 out
             },
-            // Past the payload limit: read to its end, no event.
-            reaches: |r| ensure(r.events == 0, || format!("{} events", r.events)),
+            // Past the payload limit: read to its end, one event, which
+            // says it was cut (`Kept::cut`).
+            reaches: |r| ensure(r.events == 1, || format!("{} events", r.events)),
             fuzz: Fuzz::Terminal,
         },
         Seed {
@@ -1127,13 +1128,18 @@ fn pieces(mut rest: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-/// Replays `seed` on its screen, every feature on, in
+/// Replays `seed` on its screen, every feature on and the host's cells 10
+/// by 20 pixels (pictures are placed only in a cell size the host gave), in
 /// 4 KiB pieces after its prefix; a key seed through the key decoder, in
 /// 4 KiB reads too.
 fn replay(seed: &Seed) -> Result<Replayed> {
     let (rows, cols, history) = seed.size;
     let options: Options = Feature::ALL.into_iter().collect();
     let mut parser = Parser::with_options(Size::new(rows, cols)?, history, options)?;
+    parser.set_host_graphics(fux_vt::Graphics {
+        cell: fux_vt::CellSize::new(10, 20),
+        sixel: true,
+    });
     let prefix = match seed.prefix {
         Prefix::None => Vec::new(),
         Prefix::EmptyHistory => repeat(b"\n", 349_600),
