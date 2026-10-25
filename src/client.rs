@@ -503,16 +503,11 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// A program a client's key or prompt runs, on its worker, in order.
-struct Job {
-    code: String,
-    keymap: Keymap,
-}
-
-/// What a job came to: the keymap, if its program changed it (`bind`
-/// typed at the prompt), what to say of it, and the screen it opened.
+/// What a program on the worker came to: the worker's keymap after it
+/// (`bind` typed at the prompt changes it), what to say of it, and the
+/// screen it opened.
 struct Ran {
-    keymap: Option<Keymap>,
+    keymap: Keymap,
     notice: Option<(String, bool)>,
     opened: Option<Screen>,
 }
@@ -520,8 +515,9 @@ struct Ran {
 /// An attached client's own keys: its keymap, the screen it has open or
 /// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
-/// give, one after another, as the client. What each takes, it turns into
-/// the actions to send the server.
+/// give, one after another, as the client. The worker owns the keymap: a
+/// program changes the worker's, and its keymap here follows. What each
+/// takes, it turns into the actions to send the server.
 ///
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
@@ -531,7 +527,7 @@ pub struct Keyboard {
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
-    jobs: std::sync::mpsc::Sender<Job>,
+    jobs: std::sync::mpsc::Sender<String>,
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
     /// Programs sent to the worker and not yet done.
@@ -551,20 +547,21 @@ impl Keyboard {
         keymap: Keymap,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
-        let (jobs, todo) = std::sync::mpsc::channel::<Job>();
+        let (jobs, todo) = std::sync::mpsc::channel::<String>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, mut poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
-        let path = socket.path().to_string_lossy().into_owned();
+        let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
+        let mut owned = keymap.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
-                for job in todo {
-                    let ran = run_job(&mut server, me, job, &stops);
+                for code in todo {
+                    let ran = run_job(&mut server, me, &mut owned, &code, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -621,27 +618,30 @@ impl Keyboard {
         self.inputs(inputs)
     }
 
-    fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
-        self.waiting.extend(inputs);
+    /// Inputs taken one at a time, as if each came alone: however the
+    /// terminal's reads split them, they come to the same.
+    fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Act> {
         let mut acts = Vec::new();
-        // The prefix, then Esc, typed while a program runs, stops it.
-        if self.running > 0 && self.held_stop() {
-            self.waiting.pop_back();
-            self.waiting.pop_back();
-            self.stop.stop();
-            let text = "stopping…".to_owned();
-            acts.push(Act::Notice { text, error: false });
+        for input in inputs {
+            // The prefix, then Esc, typed while a program runs, stops it.
+            if self.running > 0 && self.stops(&input) {
+                self.waiting.pop_back();
+                self.stop.stop();
+                let text = "stopping…".to_owned();
+                acts.push(Act::Notice { text, error: false });
+            } else {
+                self.waiting.push_back(input);
+            }
+            acts.extend(self.release());
         }
-        acts.extend(self.release());
         acts
     }
 
-    /// Whether the keys waiting end with the prefix then Esc.
-    fn held_stop(&self) -> bool {
-        let mut last = self.waiting.iter().rev();
+    /// Whether `input` is Esc after the prefix, the last key waiting.
+    fn stops(&self, input: &Input) -> bool {
         let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
         let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        is(last.next(), escape) && is(last.next(), self.keymap.prefix)
+        is(Some(input), escape) && is(self.waiting.back(), self.keymap.prefix)
     }
 
     /// What waits, taken unless a program runs.
@@ -658,12 +658,13 @@ impl Keyboard {
 
     /// A frame from the server: copy mode it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
-    /// (`send-keys` to it).
+    /// (`send-keys` to it), the prefix then Esc among them stopping a
+    /// program as typed ones do.
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
             ToAttached::Run(code) => self.run(code),
-            ToAttached::Keys(typed) => self.typed(typed),
+            ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
@@ -677,9 +678,7 @@ impl Keyboard {
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
             self.running = self.running.saturating_sub(1);
-            if let Some(keymap) = ran.keymap {
-                self.keymap = keymap;
-            }
+            self.keymap = ran.keymap;
             if let Some((text, error)) = ran.notice {
                 acts.push(Act::Notice { text, error });
             }
@@ -717,12 +716,11 @@ impl Keyboard {
     }
 
     fn run(&mut self, code: String) {
-        let keymap = self.keymap.clone();
         // A stop stops the programs queued with the one it was typed for.
         if self.running == 0 {
             self.stop.reset();
         }
-        if self.jobs.send(Job { code, keymap }).is_ok() {
+        if self.jobs.send(code).is_ok() {
             self.running = self.running.saturating_add(1);
         }
     }
@@ -732,35 +730,32 @@ impl Keyboard {
         let effects = self.screen.input(&self.keymap, input, self.read_only);
         self.apply(effects, acts);
     }
+}
 
-    /// Keys the server says were typed here (`send-keys` to this client),
-    /// in turn with what the terminal sent.
-    fn typed(&mut self, inputs: Vec<crate::command::Input>) {
-        for input in inputs {
-            match input {
-                crate::command::Input::Key(press) => {
-                    self.waiting.push_back(Input::Key(press.into()))
-                }
-                crate::command::Input::Text(text) => {
-                    let keys = text.chars().map(|c| Input::Key(KeyPress::char(c).into()));
-                    self.waiting.extend(keys);
-                }
-                crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
-                // A pane's alone: `send-keys` refuses them for a client.
-                crate::command::Input::Bytes(_) => {}
-            }
-        }
+/// A key the server says was typed here (`send-keys` to this client), as
+/// its terminal would have sent it.
+fn decoded(input: crate::command::Input) -> Vec<Input> {
+    match input {
+        crate::command::Input::Key(press) => vec![Input::Key(press.into())],
+        crate::command::Input::Text(text) => text
+            .chars()
+            .map(|c| Input::Key(KeyPress::char(c).into()))
+            .collect(),
+        crate::command::Input::Paste(text) => vec![Input::Paste(text)],
+        // A pane's alone: `send-keys` refuses them for a client.
+        crate::command::Input::Bytes(_) => Vec::new(),
     }
 }
 
-/// Runs a key's or a screen's program as client `me`.
+/// Runs a key's or a screen's program as client `me`, on the worker's
+/// `keymap`. A program that fails changes no keys: half a change is none.
 fn run_job(
     server: &mut script::Server,
     me: crate::id::ClientId,
-    job: Job,
+    keymap: &mut Keymap,
+    code: &str,
     stop: &script::Stop,
 ) -> Ran {
-    let Job { code, keymap } = job;
     let mut changed = keymap.clone();
     let mut out = Vec::new();
     let mut context = context();
@@ -771,7 +766,7 @@ fn run_job(
         opened: None,
     };
     let result = (|| {
-        let tokens = fuxth::token::source("key", &code)?;
+        let tokens = fuxth::token::source("key", code)?;
         let mut machine = script::compiled(keymap.config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
@@ -782,6 +777,9 @@ fn run_job(
             Some(stop),
         )
     })();
+    if result.is_ok() {
+        *keymap = changed;
+    }
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
@@ -797,7 +795,7 @@ fn run_job(
         }
     };
     Ran {
-        keymap: (changed != keymap).then_some(changed),
+        keymap: keymap.clone(),
         notice,
         opened: asks.opened,
     }
@@ -1111,6 +1109,72 @@ mod tests {
         let acts = keyboard.ran();
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
+        Ok(())
+    }
+
+    /// What the worker's programs came to, once all are done.
+    fn all_ran(keyboard: &mut Keyboard) -> Result<Vec<Act>, Box<dyn std::error::Error>> {
+        let mut acts = Vec::new();
+        while !keyboard.idle() {
+            let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
+            if fuxix::poll::poll(&mut done, Some(ANSWER))? == 0 {
+                return Err("a program did not end".into());
+            }
+            acts.extend(keyboard.ran());
+        }
+        Ok(acts)
+    }
+
+    /// Two programs queued before either is done each change the keys
+    /// the other left: neither change is lost. One that fails changes none.
+    #[test]
+    fn queued_programs_keep_each_others_keys() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        for code in [
+            "str C-a prefix",
+            "str F5 str ls bind-root",
+            "str F6 str ls bind-root str Nope prefix",
+        ] {
+            assert!(keyboard.frame(ToAttached::Run(code.into())).is_empty());
+        }
+        all_ran(&mut keyboard)?;
+        let keymap = &keyboard.keymap;
+        let root: Vec<String> = keymap.root.iter().map(|(key, _)| key.to_string()).collect();
+        assert_eq!(
+            (keymap.prefix.to_string(), root),
+            ("C-a".into(), vec!["F5".into()])
+        );
+        Ok(())
+    }
+
+    /// A binding's program, then the prefix, Esc (as `CSI 27 u`) and a key,
+    /// stop the program and leave the key for after it, however the reads
+    /// split them: the cancel is checked at each key, not at a read's end.
+    #[test]
+    fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keymap = Keymap::empty();
+        let forever = crate::keymap::Binding::new("begin false until".into(), true);
+        keymap.bind_root(KeyPress::char('y'), forever)?;
+        let typed = b"y\x02\x1b[27ux";
+        for split in 0..=typed.len() {
+            let mut keyboard = Keyboard::new(&socket, "c1".parse()?, keymap.clone(), false)?;
+            let now = Instant::now();
+            let (first, then) = typed.split_at_checked(split).ok_or("past the end")?;
+            let mut acts = keyboard.bytes(first, now);
+            acts.extend(keyboard.bytes(then, now));
+            let stopping = matches!(acts.as_slice(),
+                [Act::Notice { text, error: false }] if text == "stopping…");
+            let after = all_ran(&mut keyboard)?;
+            let x = KeyPress::char('x');
+            let stopped = matches!(after.as_slice(),
+                [Act::Notice { text, error: false }, Act::Key(key)] if text == "stopped" && key.press == x);
+            assert!(
+                stopping && stopped,
+                "split at {split}: {acts:?} then {after:?}"
+            );
+        }
         Ok(())
     }
 

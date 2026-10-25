@@ -520,9 +520,9 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
 fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
     use fux::script::Asks;
     let server = Server::start("")?;
-    let path = server.socket.to_string_lossy().into_owned();
+    let path = fux::socket::Choice::Path(server.socket.clone());
     let stop = fux::script::Stop::default();
-    let mut asks = fux::script::Server::stoppable(fux::socket::Choice::Path(path), stop.clone());
+    let mut asks = fux::script::Server::stoppable(path, stop.clone());
     let ls = fux::protocol::Asked {
         request: fux::command::Command::Ls {
             target: None,

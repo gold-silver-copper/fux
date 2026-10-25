@@ -1358,7 +1358,7 @@ impl fuxth::Host for Host<'_> {
                 string(&next()?)?,
             ))),
             "socket" => local(Local::Server(crate::socket::Choice::Path(
-                string(&next()?)?,
+                string(&next()?)?.into(),
             ))),
             "start" => local(Local::Start),
             "status" => local(Local::Status),
