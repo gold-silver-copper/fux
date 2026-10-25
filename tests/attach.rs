@@ -282,6 +282,33 @@ fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     Ok(())
 }
 
+/// stdin and stdout must be one terminal: with stdout another, attach is
+/// refused, saying so.
+#[test]
+fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
+    let server = Server::start("")?;
+    let (_keys, keys) = fuxix::pty::open(pty_size(10, 40)?).map_err(e)?;
+    let (_shown, shown) = fuxix::pty::open(pty_size(10, 40)?).map_err(e)?;
+    let stdio = |fd: &fuxix::pty::Slave| {
+        fd.as_fd()
+            .try_clone_to_owned()
+            .map(std::process::Stdio::from)
+            .map_err(e)
+    };
+    let out = std::process::Command::new(FUX)
+        .arg("attach")
+        .env("FUX_SOCKET", &server.socket)
+        .env_remove("FUX_PANE")
+        .stdin(stdio(&keys)?)
+        .stdout(stdio(&shown)?)
+        .output()
+        .map_err(e)?;
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("the same one"), "{stderr}");
+    Ok(())
+}
+
 #[test]
 fn attach_starts_a_server_when_none_answers() -> Outcome {
     let dir = fuxix::file::scratch()

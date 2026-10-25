@@ -98,7 +98,9 @@ impl std::fmt::Display for Error {
             Error::Refused(reason) => f.write_str(reason),
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
-            Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin and stdout"),
+            Error::NotATerminal => {
+                f.write_str("fux attach needs a terminal on stdin and stdout, the same one")
+            }
             Error::NoSize => f.write_str(
                 "the terminal on stdin says no size (0 rows or columns), which fux would have to make up; \
                  give it one (`stty rows 24 cols 80`)",
@@ -465,6 +467,22 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
 /// either) has no size fux could lay panes out on.
 pub(crate) fn window_size() -> Option<fux_vt::Size> {
     fuxix::terminal::window_size(io::stdin()).map(|s| (s.rows, s.cols).into())
+}
+
+/// Whether stdin and stdout are one terminal, the same device: the client
+/// reads keys from stdin, which the server paints, and sets the terminal's
+/// modes through stdout.
+pub(crate) fn on_one_terminal() -> bool {
+    use io::IsTerminal as _;
+    use std::os::fd::AsFd as _;
+    use std::os::unix::fs::MetadataExt as _;
+    let device = |fd: std::os::fd::BorrowedFd<'_>| {
+        let file = std::fs::File::from(fd.try_clone_to_owned().ok()?);
+        file.metadata().ok().map(|m| m.rdev())
+    };
+    io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
