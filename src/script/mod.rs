@@ -862,7 +862,10 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
                 return Err(Failed::new(Code::Nested, why));
             }
             // Before a server is started for it, which would be left behind.
-            if size.is_none() && !io::IsTerminal::is_terminal(&io::stdin()) {
+            // The client reads keys from stdin, which the server paints, and
+            // sets the terminal's modes through stdout: both are the terminal.
+            use io::IsTerminal as _;
+            if size.is_none() && !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
                 return Err(client_failed(client::Error::NotATerminal));
             }
             if size.is_none() && client::window_size().is_none() {
