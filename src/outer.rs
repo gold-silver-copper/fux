@@ -357,7 +357,7 @@ impl Session {
             return;
         }
         let Some(ws) =
-            (self.parts.workspaces_mut().iter_mut()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
+            (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
         else {
             return;
         };
@@ -365,7 +365,7 @@ impl Session {
         let viewers: BTreeMap<ClientId, bool> = (ws.viewers.iter())
             .map(|c| (*c, ws.tab_of(*c).is_some_and(|t| t.holds(id))))
             .collect();
-        let Some(tab) = ws.tabs_mut().iter_mut().find(|t| t.holds(id)) else {
+        let Some(tab) = (self.locate(id)).and_then(|(_, tab)| self.parts.tab_mut(tab)) else {
             return;
         };
         let mut rung = Vec::new();

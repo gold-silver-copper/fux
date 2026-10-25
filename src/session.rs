@@ -794,8 +794,8 @@ impl Session {
         self.shown_workspace(client)?.tab_of(client)
     }
     pub(crate) fn shown_tab_mut(&mut self, client: ClientId) -> Option<&mut Tab> {
-        let ws = (self.parts.workspaces_mut().iter_mut()).find(|w| w.viewers.contains(&client))?;
-        ws.tab_of_mut(client)
+        let tab = self.shown_tab(client)?.id();
+        self.parts.tab_mut(tab)
     }
     /// The pane client `client` focuses.
     pub fn focused(&self, client: ClientId) -> Option<PaneId> {
@@ -1471,7 +1471,7 @@ impl Session {
         let mut view = View::new(id, rows, cols);
         (view.kind, view.read_only, view.env) = (kind, attach.read_only, attach.env);
         self.views.insert(id, view);
-        (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.attach(id));
+        self.parts.attach(id);
         self.show(id, ws, None);
         self.ask(id, crate::outer::QUERIES);
         self.settle();
@@ -1480,21 +1480,14 @@ impl Session {
 
     pub fn detach(&mut self, id: ClientId) {
         self.views.remove(&id);
-        (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.forget(id));
+        self.parts.forget(id);
         self.settle();
     }
 
     /// Shows `client` workspace `ws`, one there is, and there the tab and
     /// pane `at` says, each if given and there.
     fn show(&mut self, client: ClientId, ws: WsId, at: Option<Spot>) {
-        for w in self.parts.workspaces_mut() {
-            if w.id() != ws {
-                w.hide(client);
-            } else {
-                w.viewers.insert(client);
-                w.show(client, at);
-            }
-        }
+        self.parts.show(client, ws, at);
     }
 
     /// The command's client, if it has one, follows what it made or moved:
@@ -1715,13 +1708,12 @@ impl Session {
                 }
             }
         }
-        for tab in tabs_mut(self.parts.workspaces_mut()) {
-            if let Some(&Some(size)) = screens.get(&tab.id()) {
+        for (&tab, &size) in &screens {
+            if let (Some(size), Some(tab)) = (size, self.parts.tab_mut(tab)) {
                 tab.shown_on(size.into());
             }
         }
-        let changed = (self.parts.workspaces_mut().iter_mut())
-            .flat_map(|w| w.changed_unshown(|tab| screens.contains_key(&tab)));
+        let changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
@@ -2534,8 +2526,10 @@ impl Session {
         }
         // With no size, back to fitting clients, at the size it has until
         // one shows it.
-        for tab in tabs_mut(self.parts.workspaces_mut()).filter(|t| tabs.contains(&t.id())) {
-            tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
+        for tab in tabs {
+            if let Some(tab) = self.parts.tab_mut(tab) {
+                tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
+            }
         }
         Ok(())
     }
@@ -2670,8 +2664,7 @@ impl Session {
         }
         self.ids = ids;
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let split = tabs_mut(self.parts.workspaces_mut()).find(|t| t.id() == tab);
-        let split = split.ok_or(Error::NoTab(tab))?;
+        let split = self.parts.tab_mut(tab).ok_or(Error::NoTab(tab))?;
         for view in (self.views.values_mut()).filter(|v| followers.contains(&v.id)) {
             split.set_focus(view.id, new);
             view.zoom = false;
@@ -2928,12 +2921,9 @@ impl Session {
                 self.parts.swap(p, other);
                 return Ok(());
             }
-            AnyRef::Tab(t) => (self.parts.workspaces_mut().iter_mut())
-                .find_map(|w| swap_sibling(w.tabs_mut(), |tab| tab.id() == t, toward))
-                .ok_or(Error::NoTab(t))?,
+            AnyRef::Tab(t) => self.parts.reorder_tab(t, toward).ok_or(Error::NoTab(t))?,
             AnyRef::Workspace(w) => {
-                swap_sibling(self.parts.workspaces_mut(), |ws| ws.id() == w, toward)
-                    .ok_or(Error::NoWorkspace(w))?
+                (self.parts.reorder_workspace(w, toward)).ok_or(Error::NoWorkspace(w))?
             }
         };
         moved.then_some(()).ok_or(Error::AtEnd(target.kind()))
@@ -3394,22 +3384,6 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
         Sibling::Previous => index.checked_sub(1).unwrap_or(len.saturating_sub(1)),
     };
     items.get(next).filter(|_| len > 1)
-}
-
-/// Swaps the item `is` picks with its sibling `toward`: none if `is` picks
-/// none, false if it has no sibling that way.
-fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) -> Option<bool> {
-    let index = items.iter().position(is)?;
-    let first = match toward {
-        Sibling::Next => Some(index),
-        Sibling::Previous => index.checked_sub(1),
-    };
-    let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
-    Some(pair.map(<[T]>::reverse).is_some())
-}
-
-fn tabs_mut(workspaces: &mut [Workspace]) -> impl Iterator<Item = &mut Tab> {
-    workspaces.iter_mut().flat_map(|w| w.tabs_mut().iter_mut())
 }
 
 /// What the other modules' tests share: a session started with the default
