@@ -1528,22 +1528,12 @@ impl Server {
             // makes, which it lays out on the sizes saved alone.
             Stage::Attaching(..) if restore_runs => return Ok(false),
             Stage::Attaching(passed, kind) => {
-                let Some(Attach {
-                    size,
-                    workspace,
-                    read_only,
-                    env,
-                }) = decoder.frame()?
-                else {
+                let Some(attach) = decoder.frame::<Attach>()? else {
                     return Ok(false);
                 };
                 let (passed, kind) = (passed.take(), *kind);
-                match session.attach_as(kind, size.rows(), size.cols(), workspace.as_ref()) {
+                match session.attach_as(kind, attach) {
                     Ok(client) => {
-                        if let Some(view) = session.views.get_mut(&client) {
-                            view.read_only = read_only;
-                            view.env = env;
-                        }
                         // The client's terminal, if it sent it, taken or
                         // not: the client is told so, and its id, before
                         // anything is painted.

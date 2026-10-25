@@ -13,7 +13,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Tree};
 use crate::pane::{self, Loose, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{End, Reply, ScreenKind, ToAttached};
+use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
 use crate::workspace::{Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
@@ -1431,21 +1431,25 @@ impl Session {
         workspace: Option<&str>,
     ) -> Result<ClientId, Error> {
         let workspace = workspace.map(command::parse_workspace).transpose();
+        let size = Size::new(rows, cols).map_err(|e| fail(Code::Size, e.to_string()))?;
         let workspace = workspace.map_err(bad_value)?;
-        self.attach_as(ClientKind::Terminal, rows, cols, workspace.as_ref())
+        self.attach_as(
+            ClientKind::Terminal,
+            Attach {
+                workspace,
+                ..Attach::of(size)
+            },
+        )
     }
 
-    /// `attach`, for a client of `kind`.
-    pub fn attach_as(
-        &mut self,
-        kind: ClientKind,
-        rows: u16,
-        cols: u16,
-        workspace: Option<&WsRef>,
-    ) -> Result<ClientId, Error> {
+    /// A client of `kind` attaches as `attach` says: one that only watches
+    /// is one from the start, and sizes nothing.
+    pub fn attach_as(&mut self, kind: ClientKind, attach: Attach) -> Result<ClientId, Error> {
         // A size no view has is refused before anything starts on it.
-        let (rows, cols) = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
-        let ws = match workspace {
+        let (rows, cols) = attach.size.nonzero();
+        let (rows, cols) =
+            view::size(rows.get(), cols.get()).map_err(|why| fail(Code::Size, why))?;
+        let ws = match &attach.workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
                 // A server with nothing in it (just started, or its session
@@ -1465,7 +1469,7 @@ impl Session {
         };
         let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols);
-        view.kind = kind;
+        (view.kind, view.read_only, view.env) = (kind, attach.read_only, attach.env);
         self.views.insert(id, view);
         (self.parts.workspaces_mut().iter_mut()).for_each(|w| w.attach(id));
         self.show(id, ws, None);
@@ -1561,9 +1565,8 @@ impl Session {
     /// showing it that sizes its panes (not one that only watches), the
     /// commanding one's first, else what its fit says.
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
-        let own = here.client().and_then(|c| self.views.get(&c));
-        let shows = |v: &&View| !v.read_only && self.shows(v.id, tab);
-        match (own.filter(shows)).or_else(|| self.views.values().find(shows)) {
+        let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
+        match own.or_else(|| self.sizing(tab).next()) {
             Some(view) => Some(Self::pane_area(view)),
             None => self.tab(tab).map(|t| t.fit().area()),
         }
@@ -1578,16 +1581,23 @@ impl Session {
             return Ok(Fit::Fixed(size));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let client = own.into_iter().chain(self.views.values()).next();
+        let client = (own.into_iter().chain(self.views.values())).find(|v| v.sizes());
         let why = match client.map(|view| Self::screen_size(view).ok_or(view.id)) {
             Some(Ok(size)) => return Ok(Fit::Clients(size)),
             Some(Err(client)) => format!("{client}'s screen has no room for a pane below its bar"),
-            None => "no client is attached to lay it out on, and no size was given".to_owned(),
+            None => "no client is attached to lay it out on (one that only watches sizes \
+                     nothing), and no size was given"
+                .to_owned(),
         };
         Err(fail(
             Code::Size,
             format!("{why}: give a size (`COLS ROWS size`)"),
         ))
+    }
+
+    /// The clients showing tab `tab` that size its panes.
+    fn sizing(&self, tab: TabId) -> impl Iterator<Item = &View> {
+        (self.views.values()).filter(move |v| v.sizes() && self.shows(v.id, tab))
     }
 
     /// The size a client's screen gives panes, below its bar, if any.
@@ -1691,26 +1701,27 @@ impl Session {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
-        // Each shown tab's smallest screen.
+        // Each tab a client sizes, and its smallest screen if it has one.
         let mut screens = BTreeMap::new();
-        // A client that only watches sizes nothing: it shows the panes as
-        // they are.
-        for view in self.views.values().filter(|v| !v.read_only) {
+        for view in self.views.values().filter(|v| v.sizes()) {
             self.placement_into(view, &mut placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
             sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
-            if let (Some(tab), Some(size)) = (self.shown_tab(view.id), Self::screen_size(view)) {
-                let (rows, cols) = size.nonzero();
-                let least = screens.entry(tab.id()).or_insert((rows, cols));
-                *least = (least.0.min(rows), least.1.min(cols));
+            if let Some(tab) = self.shown_tab(view.id) {
+                let least = screens.entry(tab.id()).or_insert(None);
+                if let Some((rows, cols)) = Self::screen_size(view).map(Size::nonzero) {
+                    let (r, c) = least.get_or_insert((rows, cols));
+                    (*r, *c) = ((*r).min(rows), (*c).min(cols));
+                }
             }
         }
         for tab in tabs_mut(self.parts.workspaces_mut()) {
-            if let Some(&size) = screens.get(&tab.id()) {
+            if let Some(&Some(size)) = screens.get(&tab.id()) {
                 tab.shown_on(size.into());
             }
         }
-        let changed = (self.parts.workspaces_mut().iter_mut()).flat_map(Workspace::changed_unshown);
+        let changed = (self.parts.workspaces_mut().iter_mut())
+            .flat_map(|w| w.changed_unshown(|tab| screens.contains_key(&tab)));
         for (root, area) in changed {
             layout::place_into(root, area, &mut placed);
             let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
@@ -2887,9 +2898,7 @@ impl Session {
             return Ok(());
         };
         let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
-        let screens = (self.views.values())
-            .filter(|v| !v.read_only && self.shows(v.id, tab))
-            .map(|v| (Some(v.id), Self::pane_area(v)));
+        let screens = (self.sizing(tab)).map(|v| (Some(v.id), Self::pane_area(v)));
         let mut sizes = std::iter::once((None, own)).chain(screens);
         let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
             return Ok(());
@@ -3771,6 +3780,41 @@ mod tests {
 
     use super::testing::{attached, output, requests, run, started};
     use super::*;
+
+    /// A client that only watches, of `rows` by `cols`, attached.
+    fn watch(s: &mut Session, rows: u16, cols: u16) -> Result<ClientId, String> {
+        let attach = Attach {
+            read_only: true,
+            ..Attach::of(sized(rows, cols)?)
+        };
+        s.attach_as(ClientKind::Terminal, attach)
+            .map_err(|e| e.to_string())
+    }
+
+    /// A client that attaches only to watch sizes nothing from its first
+    /// moment: its screen, too narrow to split, is not the tab's size.
+    #[test]
+    fn a_watcher_sizes_nothing_as_it_attaches() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        watch(&mut s, 10, 3)?;
+        let pane = s.parts.panes().get(&PaneId::of(1)).map(Pane::size);
+        assert_eq!(pane, Some(sized(24, 80)?));
+        run(&mut s, "%1 split drop")
+    }
+
+    /// A tab only a watcher shows is laid out on its own size: a resize
+    /// and a split are applied to its panes.
+    #[test]
+    fn a_tab_only_watched_is_laid_out_on_its_size() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        watch(&mut s, 30, 120)?;
+        run(&mut s, "str @1 tab 100 10 resize")?;
+        let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
+        assert_eq!(size(&s, 1), Some(sized(10, 100)?));
+        run(&mut s, "%1 split drop")?;
+        assert_eq!(size(&s, 1), Some(sized(10, 50)?));
+        Ok(())
+    }
 
     /// A run refused (its name is taken, its workspace is not there or
     /// can't be made) leaves the log file it names as it was, its contents
@@ -5033,10 +5077,7 @@ mod tests {
     {
         let (mut s, _) = attached(50, 200)?;
         s.attach(50, 30, None).map_err(|e| e.to_string())?;
-        let watcher = s.attach(50, 8, None).map_err(|e| e.to_string())?;
-        if let Some(view) = s.views.get_mut(&watcher) {
-            view.read_only = true;
-        }
+        watch(&mut s, 50, 8)?;
         // Ten panes side by side take their 2 columns each and 9 separators.
         for _ in 1..10 {
             run(&mut s, "%1 split drop")?;

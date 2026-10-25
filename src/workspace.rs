@@ -154,14 +154,16 @@ impl Workspace {
         }
     }
 
-    /// The layouts of its tabs no client shows that changed since their
-    /// panes were sized, each with the area its fit lays it out in, for
-    /// sizing them. Those are then taken as sized, as is a shown one, by
-    /// its clients.
-    pub(crate) fn changed_unshown(&mut self) -> impl Iterator<Item = (&Tree, Rect)> {
-        let (viewers, shown_to) = (&self.viewers, &self.shown);
+    /// The layouts of its tabs no client sizes (`sized` says which do)
+    /// that changed since their panes were sized, each with the area its
+    /// fit lays it out in, for sizing them. Those are then taken as sized,
+    /// as is a sized one, by its clients.
+    pub(crate) fn changed_unshown(
+        &mut self,
+        sized: impl Fn(TabId) -> bool,
+    ) -> impl Iterator<Item = (&Tree, Rect)> {
         self.tabs.iter_mut().filter_map(move |tab| {
-            let shown = viewers.iter().any(|c| shown_to.get(c) == Some(&tab.id));
+            let shown = sized(tab.id);
             let changed = std::mem::take(&mut tab.changed);
             let tab = &*tab;
             (tab.root.as_ref())

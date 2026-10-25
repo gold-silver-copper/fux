@@ -180,6 +180,12 @@ impl View {
         }
     }
 
+    /// Whether it sizes the panes of the tab it shows: one that only
+    /// watches shows them as they are.
+    pub fn sizes(&self) -> bool {
+        !self.read_only
+    }
+
     /// Shows a notice, an error's if `error`.
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();

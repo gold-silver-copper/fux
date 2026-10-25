@@ -251,9 +251,9 @@ impl Run {
     }
 
     fn attach(&mut self, rows: u16, cols: u16) {
-        if let Ok(id) = self
-            .s
-            .attach_as(fux::view::ClientKind::Terminal, rows, cols, None)
+        let kind = fux::view::ClientKind::Terminal;
+        if let Ok(size) = fux_vt::Size::new(rows, cols)
+            && let Ok(id) = self.s.attach_as(kind, fux::protocol::Attach::of(size))
         {
             self.keys.insert(id, Keys::default());
         }
