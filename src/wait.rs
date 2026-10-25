@@ -55,7 +55,7 @@ impl Waiting {
     /// is whole, the rest of which is read already: so it holds the
     /// answer past the limit until then, rather than say it is unchanged.
     pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
-        let pane = |id| session.panes.get(id);
+        let pane = |id| session.parts.panes().get(id);
         let told: Vec<Reply> = (self.watches.iter())
             .filter_map(|(id, since)| told(*id, pane(id), *since, self.run))
             .collect();
@@ -131,7 +131,7 @@ fn told(id: PaneId, pane: Option<&Pane>, since: Counts, run: Run) -> Option<Repl
     // Its end, if it ended since: a program started since is a new one,
     // whose end is news.
     let new = now.respawns != since.respawns || now.ended != since.ended;
-    let ended = (pane.process.exit_status()).filter(|_| new);
+    let ended = (pane.process().exit_status()).filter(|_| new);
     let ended_said = ended.map(crate::process::told);
     let version = pane.version(run);
     let line = std::iter::once(version.to_string())

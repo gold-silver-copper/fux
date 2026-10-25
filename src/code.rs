@@ -157,8 +157,6 @@ codes! {
     Closed "closed" CLOSED,
     /// Everything an event stream watched closed.
     Gone "gone" CLOSED,
-    /// The reader of an event stream fell too far behind.
-    Lost "lost",
     // A program of words.
     /// A run of more steps than allowed.
     Steps "steps" [run_loop],

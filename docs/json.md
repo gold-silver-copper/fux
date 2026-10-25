@@ -125,22 +125,25 @@ first failing status naming the whole.
 ## `events-json`, `X events-of-json`
 
 One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
-`pane` and `tab` only where they apply. A pane's events come in the order
-its journal recorded them, one line each.
+`pane` and `tab` only where they apply. Events come in the order they
+happened in the whole session, one line each: each is written to the
+session's journal where it happens, and a stream reads the journal from
+its own place. A reader that falls behind is told the rest as it reads.
 
 | `event` | Also |
 | --- | --- |
-| `ready` | first: nothing is missed from here on |
+| `ready` | first: from here on nothing is missed unsaid |
 | `gone` | last: everything `events-of-json` named has closed (status 4) |
-| `created`, `renamed` | `name`, for a tab or workspace |
-| `closed`, `moved`, `respawned`, `bell` | |
+| `created` | `name`, for a tab or workspace |
+| `renamed` | `name`: a pane's, tab's or workspace's new name |
+| `closed`, `respawned`, `bell` | |
+| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `status` or `signal` |
 | `done` | `status`: a shell command's |
-| `notification` | `text` (the last of a round) |
+| `notification` | `text` |
 | `title` | `title` |
 | `resized` | `cols`, `rows` |
-| `lost` | last: the reader fell behind (status 1) |
-| `missed` | a pane's events were let go before they were told (past the 1024 its journal keeps) |
+| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them; with `events-of`, some may be of other things |
 | `stopped` | last: `reason`, the server stopped |
 
 ## Errors
@@ -158,7 +161,7 @@ wait's own (above). CODE stays; every one fux gives
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
-- how a wait ends: `timeout` (124), `closed` (4), `gone` (4), `lost`;
+- how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`, `paste`;

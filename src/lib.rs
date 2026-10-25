@@ -19,7 +19,6 @@ pub mod input;
 pub mod json;
 pub mod keymap;
 pub mod layout;
-pub mod log;
 pub mod outer;
 pub mod overlay;
 pub mod pane;

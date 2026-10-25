@@ -254,7 +254,7 @@ impl Run {
     }
 
     fn pane(&self, pick: u8) -> Option<PaneId> {
-        let panes: Vec<PaneId> = self.s.panes.keys().copied().collect();
+        let panes: Vec<PaneId> = self.s.parts.panes().keys().copied().collect();
         panes.get(usize::from(pick) % panes.len().max(1)).copied()
     }
 
@@ -685,30 +685,31 @@ impl Run {
         let view = self.s.views.get(&client);
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
-        for (id, pane) in &mut self.s.panes {
-            let heard = pane.input.drain_all();
+        self.s.parts.each_pane_mut(|pane| {
+            let (id, heard) = (pane.id, pane.input.drain_all());
             let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
             assert!(
-                heard.is_empty() || (Some(*id) == focus && asked),
+                heard.is_empty() || (Some(id) == focus && asked),
                 "{id} heard {heard:?} from {report:?}"
             );
-        }
+        });
     }
 
     fn drain_panes(&mut self) {
-        for pane in self.s.panes.values_mut() {
-            pane.input.drain_all();
-        }
+        self.s
+            .parts
+            .each_pane_mut(|pane| drop(pane.input.drain_all()));
     }
 
     fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
-        for (id, pane) in &mut self.s.panes {
+        self.s.parts.each_pane_mut(|pane| {
             let queued = pane.input.drain_all();
+            let id = pane.id;
             assert!(
                 queued.is_empty(),
                 "{key} in a repeat mode reached {id}: {queued:?}"
             );
-        }
+        });
     }
 
     /// What anyone can tell apart, as `State` lists it.
@@ -755,11 +756,11 @@ fn check(run: &Run) {
     let s = &run.s;
     // Every pane is in exactly one tab's layout, and every pane there is.
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
-    for ws in &s.workspaces {
+    for ws in s.parts.workspaces() {
         for tab in ws.tabs() {
             for pane in tab.root().iter().flat_map(|r| r.panes()) {
                 assert!(
-                    s.panes.contains_key(&pane),
+                    s.parts.panes().contains_key(&pane),
                     "{pane} is in {} but gone",
                     tab.id
                 );
@@ -767,7 +768,7 @@ fn check(run: &Run) {
             }
         }
     }
-    for pane in s.panes.keys() {
+    for pane in s.parts.panes().keys() {
         assert_eq!(
             seen.get(pane),
             Some(&1),

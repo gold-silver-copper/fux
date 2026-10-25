@@ -21,7 +21,7 @@ impl Session {
             None | Some(AnyRef::Workspace(_)) => true,
             Some(AnyRef::Tab(_) | AnyRef::Pane(_)) => false,
         };
-        for ws in &self.workspaces {
+        for ws in self.parts.workspaces() {
             // The first tab written opens its workspace: one before it may
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
@@ -58,13 +58,13 @@ impl Session {
         let makes = opens && ids && program.is_none();
         let mut line = vec!["opts".to_owned()];
         match (makes, whole && !opens) {
-            (true, _) => line.extend(string(&ws.name).chain(["name".to_owned()])),
+            (true, _) => line.extend(string(ws.name()).chain(["name".to_owned()])),
             (false, true) => line.extend([workspace(ws.id), "in".to_owned()]),
-            (false, false) => line.extend(string(&ws.name).chain(["in".to_owned()])),
+            (false, false) => line.extend(string(ws.name()).chain(["in".to_owned()])),
         }
         // A name fux gave (`main`, `tab-N`, the program's) it gives again.
-        if tab.given && !makes {
-            line.extend(string(&tab.name).chain(["name".to_owned()]));
+        if tab.given() && !makes {
+            line.extend(string(tab.name()).chain(["name".to_owned()]));
         }
         if let Fit::Fixed(size) = tab.fit() {
             line.extend([
@@ -93,8 +93,11 @@ impl Session {
                 &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
             );
         }
-        if tab.given && makes {
-            push(out, &[&pane_name(first), "tab", "str", &tab.name, "rename"]);
+        if tab.given() && makes {
+            push(
+                out,
+                &[&pane_name(first), "tab", "str", tab.name(), "rename"],
+            );
         }
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
@@ -106,7 +109,7 @@ impl Session {
         let fixed = matches!(tab.fit(), Fit::Fixed(_));
         if let (Some((_, sized)), true) = (panes.split_last(), fixed) {
             for pane in sized {
-                let Some(size) = self.panes.get(pane).map(|p| p.size()) else {
+                let Some(size) = self.parts.panes().get(pane).map(|p| p.size()) else {
                     continue;
                 };
                 let name = pane_name(*pane);
@@ -116,15 +119,15 @@ impl Session {
         }
         // Panes renamed keep their names.
         for pane in root.panes() {
-            let Some(p) = self.panes.get(&pane) else {
+            let Some(p) = self.parts.panes().get(&pane) else {
                 continue;
             };
             let shell = || pane::basename(self.config.shell.program());
             let default = self
                 .program(pane)
                 .map_or_else(shell, |l| pane::named(&l.argv));
-            if default != p.name {
-                push(out, &[&pane_name(pane), "str", &p.name, "rename"]);
+            if default != p.name() {
+                push(out, &[&pane_name(pane), "str", p.name(), "rename"]);
             }
         }
     }
@@ -153,7 +156,7 @@ impl Session {
     /// The program `run` started in pane `id`, if it runs one: its words,
     /// where, and the variables it was given.
     fn program(&self, id: PaneId) -> Option<&Launch> {
-        match &self.panes.get(&id)?.runs {
+        match &self.parts.panes().get(&id)?.runs {
             Runs::Program(launch) => Some(launch),
             Runs::Shell => None,
         }

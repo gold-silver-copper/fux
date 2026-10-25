@@ -264,9 +264,7 @@ impl Session {
         else {
             return;
         };
-        let listening: Vec<PaneId> = self
-            .panes
-            .iter()
+        let listening: Vec<PaneId> = (self.parts.panes().iter())
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
             .map(|(id, _)| *id)
             .filter(|id| {
@@ -275,7 +273,7 @@ impl Session {
             })
             .collect();
         for id in listening {
-            if let Some(pane) = self.panes.get_mut(&id) {
+            if let Some(mut pane) = self.parts.pane_mut(id) {
                 // A program that does not read loses it, as a reply.
                 let _ = pane.input.push(scheme.report());
             }
@@ -324,7 +322,8 @@ impl Session {
         if !self.config.bell {
             return;
         }
-        let Some(ws) = (self.workspaces.iter_mut()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
+        let Some(ws) =
+            (self.parts.workspaces_mut().iter_mut()).find(|w| w.tabs().iter().any(|t| t.holds(id)))
         else {
             return;
         };
@@ -400,10 +399,10 @@ impl Session {
     /// tab's name, without control characters (`clean`).
     fn title_of<'a>(&'a self, view: &View) -> &'a str {
         let pane = (self.focused(view.id))
-            .and_then(|f| self.panes.get(&f))
-            .map(|p| p.title.as_str())
+            .and_then(|f| self.parts.panes().get(&f))
+            .map(|p| p.title())
             .filter(|t| !t.is_empty());
-        let tab = self.shown_tab(view.id).map(|t| t.name.as_str());
+        let tab = self.shown_tab(view.id).map(|t| t.name());
         pane.or(tab).unwrap_or_default()
     }
 }
@@ -427,10 +426,8 @@ mod tests {
 
     /// What pane `pane`'s program was answered, taken.
     fn answered(s: &mut Session, pane: u32) -> String {
-        let bytes = s
-            .panes
-            .get_mut(&PaneId::of(pane))
-            .map(|p| p.input.drain_all())
+        let bytes = (s.parts.pane_mut(PaneId::of(pane)))
+            .map(|mut p| p.input.drain_all())
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
     }
