@@ -548,6 +548,9 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// session takes them after every read, so they are fewer than the
     /// bytes it read.
     pub copied: Vec<Result<String, Uncopied>>,
+    /// Its program's copies that copied nothing, counted by why, kept until
+    /// a client showing it is told them (`Session::tell_refused`).
+    pub uncopied: std::collections::BTreeMap<Uncopied, usize>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it that events tell, in order, since the session
@@ -597,6 +600,7 @@ impl Pane<Loose> {
             scheme_told: None,
             bell: false,
             copied: Vec::new(),
+            uncopied: std::collections::BTreeMap::new(),
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
@@ -623,7 +627,8 @@ impl<S> Pane<S> {
         #[rustfmt::skip]
         let pane = moved!(
             id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
-            colours, scheme_told, bell, copied, wrote_at, said, mouse_held, respawns, alerts, log
+            colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
+            alerts, log
         );
         pane
     }
@@ -976,13 +981,15 @@ impl<S> Pane<S> {
         let runs = Runs::Program(launch);
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
-        // old one (what it said, a bell, a copy), its colours and log.
+        // old one (what it said, a bell, a copy, one refused), its colours
+        // and log.
         let Pane {
             id: _,
             name: _,
             said: _,
             bell: _,
             copied: _,
+            uncopied: _,
             colours: _,
             log: _,
             respawns: _,
