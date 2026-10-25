@@ -968,7 +968,7 @@ impl Session {
 
     /// Gives tab `id` the name `name`, checked (`Parts::give_tab_name`).
     fn give_tab_name(&mut self, id: TabId, name: String) -> Result<(), Error> {
-        (self.parts.give_tab_name(id, name).then_some(())).ok_or(Error::NoTab(id))
+        self.parts.give_tab_name(id, name).ok_or(Error::NoTab(id))
     }
 
     /// Whether a client is in copy mode on pane `pane`: keys typed there
@@ -2788,9 +2788,9 @@ impl Session {
                 self.workspace(id).ok_or(Error::NoWorkspace(id))?;
                 let others = self.parts.workspaces().iter().filter(|w| w.id != id);
                 check_workspace_name(&name, others)?;
-                if !self.parts.rename_workspace(id, name) {
-                    return Err(Error::NoWorkspace(id));
-                }
+                self.parts
+                    .rename_workspace(id, name)
+                    .ok_or(Error::NoWorkspace(id))?;
             }
         }
         Ok(())

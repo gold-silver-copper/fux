@@ -124,17 +124,6 @@ impl Workspace {
         self.tabs.iter_mut().find(|t| t.id == *shown)
     }
 
-    /// Adds an empty tab, named after its place if no name is given, with
-    /// a seat for every client that has one in the others; its name.
-    fn add_tab(&mut self, id: TabId, name: Option<String>, fit: Fit) -> String {
-        let number = self.tabs.len().saturating_add(1);
-        let name = name.unwrap_or_else(|| numbered(number));
-        let clients = self.tabs.first().map(|t| t.seats.keys().copied());
-        let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten());
-        self.tabs.push(tab);
-        name
-    }
-
     /// Shows `client` the tab `at` says here, if given and one of this
     /// workspace's, and in it focuses the pane it says, if given and there.
     pub(crate) fn show(&mut self, client: ClientId, at: Option<crate::session::Spot>) {
@@ -399,11 +388,6 @@ impl Parts {
         &self.journal
     }
 
-    /// Journals that `what` happened at `place`.
-    fn tell(&mut self, place: Place, what: What) {
-        self.journal.push(place, what);
-    }
-
     /// The workspace and tab that hold pane `pane`.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
         let mut tabs = (self.workspaces.iter()).flat_map(|w| w.tabs.iter().map(|t| (w.id, t)));
@@ -436,8 +420,10 @@ impl Parts {
         clients: impl Iterator<Item = ClientId>,
         pane: Option<Pane>,
     ) {
-        self.tell(Place::Workspace(id), What::Created(Some(name.clone())));
-        self.tell(Place::Tab(id, tab), What::Created(Some(tab_name.clone())));
+        self.journal
+            .push(Place::Workspace(id), What::Created(Some(name.clone())));
+        self.journal
+            .push(Place::Tab(id, tab), What::Created(Some(tab_name.clone())));
         let first = Tab::new(tab, tab_name, fit, clients);
         let shown = first.seats.keys().map(|c| (*c, tab)).collect();
         let viewers = BTreeSet::new();
@@ -466,8 +452,14 @@ impl Parts {
         let Some(workspace) = self.workspaces.iter_mut().find(|w| w.id == ws) else {
             return Err(pane);
         };
-        let name = workspace.add_tab(id, name, fit);
-        self.tell(Place::Tab(ws, id), What::Created(Some(name)));
+        // Named after its place if no name is given, with a seat for every
+        // client that has one in the others.
+        let name = name.unwrap_or_else(|| numbered(workspace.tabs.len().saturating_add(1)));
+        let clients = workspace.tabs.first().map(|t| t.seats.keys().copied());
+        let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten());
+        workspace.tabs.push(tab);
+        self.journal
+            .push(Place::Tab(ws, id), What::Created(Some(name)));
         self.put(ws, id, pane);
         Ok(())
     }
@@ -485,7 +477,8 @@ impl Parts {
 
     /// `pane`, new, is in tab `at` of its workspace.
     fn placed(&mut self, at: (WsId, TabId), pane: Pane) {
-        self.tell(Place::Pane(at, pane.id), What::Created(None));
+        self.journal
+            .push(Place::Pane(at, pane.id), What::Created(None));
         self.panes.insert(pane.id, pane);
     }
 
@@ -512,7 +505,7 @@ impl Parts {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
         let emptied = tab.edit(|root| layout::remove(root, id) && root.is_none());
-        self.tell(Place::Pane(at, id), What::Closed);
+        self.journal.push(Place::Pane(at, id), What::Closed);
         if emptied {
             self.remove_tab(at.1);
         }
@@ -530,15 +523,16 @@ impl Parts {
         let (id, panes) = (ws.id, ws.remove_tab(tab).map(|r| r.panes()));
         let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
         for &pane in panes.iter().flatten() {
-            self.tell(Place::Pane((id, tab), pane), What::Closed);
+            self.journal
+                .push(Place::Pane((id, tab), pane), What::Closed);
         }
-        self.tell(Place::Tab(id, tab), What::Closed);
+        self.journal.push(Place::Tab(id, tab), What::Closed);
         if let Some(viewers) = viewers {
             self.workspaces.retain(|w| w.id != id);
             if let Some(first) = self.workspaces.first_mut() {
                 first.viewers.extend(viewers);
             }
-            self.tell(Place::Workspace(id), What::Closed);
+            self.journal.push(Place::Workspace(id), What::Closed);
         }
         let gone = panes.into_iter().flatten();
         gone.filter_map(|pane| self.panes.remove(&pane)).collect()
@@ -546,28 +540,26 @@ impl Parts {
 
     /// Closes everything: the panes given back, to end.
     pub(crate) fn close_all(&mut self) -> Vec<Pane> {
-        let tabs = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.tabs.iter().map(|t| t.id));
-        let tabs: Vec<TabId> = tabs.collect();
+        let tabs: Vec<TabId> = (self.workspaces.iter())
+            .flat_map(|w| w.tabs.iter().map(|t| t.id))
+            .collect();
         tabs.into_iter()
             .flat_map(|tab| self.remove_tab(tab))
             .collect()
     }
 
-    /// Names workspace `id` `name`: whether there is one.
-    pub(crate) fn rename_workspace(&mut self, id: WsId, name: String) -> bool {
-        let ws = self.workspaces.iter_mut().find(|w| w.id == id);
-        ws.map(|ws| rename(&mut self.journal, Place::Workspace(id), &mut ws.name, name))
-            .is_some()
+    /// Names workspace `id` `name`, if there is one.
+    pub(crate) fn rename_workspace(&mut self, id: WsId, name: String) -> Option<()> {
+        let ws = self.workspaces.iter_mut().find(|w| w.id == id)?;
+        rename(&mut self.journal, Place::Workspace(id), &mut ws.name, name);
+        Some(())
     }
 
-    /// Gives tab `id` the name `name`: whether there is one. It takes it
+    /// Gives tab `id` the name `name`, if there is one. It takes it
     /// from each other tab fux named so (`tab-2`, made before a dump's line
     /// names one so): that one is named anew as fux names tabs, by its
     /// place, the next number free.
-    pub(crate) fn give_tab_name(&mut self, id: TabId, name: String) -> bool {
+    pub(crate) fn give_tab_name(&mut self, id: TabId, name: String) -> Option<()> {
         let mut taken: HashSet<String> = (self.workspaces.iter())
             .flat_map(|ws| std::iter::once(&ws.name).chain(ws.tabs.iter().map(|t| &t.name)))
             .cloned()
@@ -582,16 +574,13 @@ impl Parts {
                 }
             }
         }
-        let Some((_, tab)) = tab_mut(&mut self.workspaces, id) else {
-            return false;
-        };
-        tab.given = true;
+        tab_mut(&mut self.workspaces, id)?.1.given = true;
         for (tab, name) in names {
             if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
                 rename(&mut self.journal, Place::Tab(ws, tab), &mut t.name, name);
             }
         }
-        true
+        Some(())
     }
 
     /// Swaps two panes' places: in one tab, or each in the other's, which
@@ -604,8 +593,8 @@ impl Parts {
             tab.edit(|root| root.as_mut().map(|r| layout::swap(r, a, b)));
         }
         if was_a != was_b {
-            self.tell(Place::Pane(was_b, a), What::Moved(was_a));
-            self.tell(Place::Pane(was_a, b), What::Moved(was_b));
+            self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
+            self.journal.push(Place::Pane(was_a, b), What::Moved(was_b));
         }
     }
 
@@ -625,7 +614,8 @@ impl Parts {
                 }
             });
         }
-        self.tell(Place::Pane((ws, to), pane), What::Moved(was));
+        self.journal
+            .push(Place::Pane((ws, to), pane), What::Moved(was));
     }
 
     /// Changes the layout of `pane`'s tab with `change`, which keeps its
