@@ -253,7 +253,9 @@ pub fn controls_session(fd: impl AsFd) -> bool {
 /// nonblocking, close-on-exec, and never made this process's controlling
 /// terminal: its flags are its own, so making it nonblocking changes
 /// nothing for whoever else has the terminal open. `NOTTY` if `fd` is not a
-/// terminal, or is a PTY's master, whose name opens a new PTY.
+/// terminal, is a PTY's master, whose name opens a new PTY, or was opened as
+/// `/dev/tty`, whose name opens the controlling terminal of whoever opens
+/// it, not `fd`'s.
 pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
     // Only a master has a slave's name to give.
     if crate::pty::slave_name(&fd).is_ok() {
@@ -265,6 +267,10 @@ pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
     let failed = unsafe { libc::ttyname_r(fd.as_fd().as_raw_fd(), name.as_mut_ptr(), name.len()) };
     if failed != 0 {
         return Err(Errno::from_raw(failed));
+    }
+    let controlling = b"/dev/tty\0";
+    if (name.iter().zip(controlling)).all(|(c, b)| u8::from_ne_bytes(c.to_ne_bytes()) == *b) {
+        return Err(Errno::NOTTY);
     }
     let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_NONBLOCK | libc::O_CLOEXEC;
     // SAFETY: `name` is a NUL-terminated path.
