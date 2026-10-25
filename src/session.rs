@@ -3653,12 +3653,16 @@ impl crate::script::Asks for InProcess<'_> {
         let outcome = match session.begin(asked.request.clone(), &origin) {
             Begun::Done(outcome) => outcome,
             // As the server answers it: the panes' turns and frames come
-            // as they fall due, the soonest first, until it has an answer.
+            // as they fall due, the soonest first, each answered at its
+            // time, until it has an answer; at its deadline, once none
+            // falls due before it.
             Begun::Waiting(waiting) => loop {
-                if let Some(answer) = waiting.answer(session, waiting.due()) {
+                let soonest = session.timers().min_by_key(|(at, _)| *at);
+                let now = soonest.map_or(waiting.due(), |(at, _)| at.min(waiting.due()));
+                if let Some(answer) = waiting.answer(session, now) {
                     break answer;
                 }
-                let Some((_, timer)) = session.timers().min_by_key(|(at, _)| *at) else {
+                let Some((_, timer)) = soonest else {
                     let why = "a wait nothing due answers is answered by a real server only";
                     break Reply::failed(Code::NotHere, why);
                 };
@@ -4267,6 +4271,18 @@ mod tests {
         s.output(PaneId::of(1), &frame);
         assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
         let answer = output(&mut s, "%1 0 timeout wait")?;
+        assert!(answer.ends_with(" screen\n"), "{answer}");
+        Ok(())
+    }
+
+    /// A wait on a pane holding a frame that its time releases before the
+    /// wait's is answered in process as a server answers it: the frame
+    /// shown, its screen changed, not timed out.
+    #[test]
+    fn a_wait_in_process_sees_a_frame_released_before_its_time() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        s.output(PaneId::of(1), b"\x1b[?2026hHELLO");
+        let answer = output(&mut s, "%1 2 timeout wait")?;
         assert!(answer.ends_with(" screen\n"), "{answer}");
         Ok(())
     }
