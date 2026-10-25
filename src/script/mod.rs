@@ -689,7 +689,11 @@ pub fn run_capped(
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
             pushed(machine, Err(failed))?;
         }
-        match machine.run(host, SLICE).map_err(placed)? {
+        // A slice ends one step past the budget, never later.
+        let slice = steps.map_or(SLICE, |steps| {
+            SLICE.min(steps.saturating_sub(machine.steps()).saturating_add(1))
+        });
+        match machine.run(host, slice).map_err(placed)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
@@ -1201,6 +1205,25 @@ mod tests {
         )?;
         run("listed", &keymap.describe(), &mut again)?;
         assert_eq!(again, keymap);
+        Ok(())
+    }
+
+    /// A capped run stops one step past its cap, not at the next slice's
+    /// end.
+    #[test]
+    fn a_cap_is_met_to_the_step() -> Result<(), super::Failed> {
+        let mut machine = super::compile(&super::token::source("t", "begin false until")?)?;
+        let mut out = std::io::sink();
+        let mut host = super::Host::new(Default::default(), None, &mut out);
+        let ran = super::run_capped(
+            &mut machine,
+            &mut host,
+            &mut super::Settings(None),
+            Some(20_000),
+            None,
+        );
+        assert_eq!(ran.err().map(|f| f.code), Some(super::Code::Steps));
+        assert_eq!(machine.steps(), 20_001);
         Ok(())
     }
 
