@@ -984,15 +984,23 @@ impl Session {
             launch.env.push((key.clone(), value.clone()));
         }
         let size = (pane.size(), self.graphics(id).cell);
+        // All that can refuse it is done before its program starts, which
+        // nothing can then leave running.
+        let runs = Runs::Program(launch.clone());
+        let fresh = Pane::new(id, String::new(), runs, size.0, self.config.history_bytes)?;
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started: a start
         // refused leaves it running, nothing of it cut.
         if kill {
             self.drain(id);
         }
-        let history = self.config.history_bytes;
         let process = child.map_or(Process::Absent, Process::Reading);
-        let (old, left) = self.pane_mut(id)?.respawned(launch, process, history)?;
+        let Some(mut pane) = self.parts.pane_mut(id) else {
+            self.end(process, true);
+            return Err(Error::NoPane(id));
+        };
+        let (old, left) = pane.respawned(fresh, process);
+        drop(pane);
         self.end(old, true);
         let left = left_told(left, "the program it ran");
         if !left.is_empty() {

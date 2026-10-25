@@ -1024,21 +1024,18 @@ impl<S> Pane<S> {
         self.screen().commands().running() && self.process.exit_status().is_none()
     }
 
-    /// Starts `launch` in the pane again as `process`, on a screen as new,
-    /// its size and history kept; the process that was there, to end, and
-    /// what it left as it was respawned over: none, said, once it ended.
-    pub fn respawned(
-        &mut self,
-        launch: Launch,
-        process: Process,
-        history: usize,
-    ) -> Result<(Process, Left), Error> {
+    /// Runs `process` in the pane again, as `fresh` (made for it, at its
+    /// size, before the program started) runs it, on a screen as new, its
+    /// history kept; the process that was there, to end, and what it left
+    /// as it was respawned over: none, said, once it ended.
+    pub fn respawned(&mut self, fresh: Pane<Loose>, process: Process) -> (Process, Left) {
         // Named after its program, unless renamed.
-        let name = match &self.runs {
-            Runs::Program(old) if named(&old.argv) == self.name => named(&launch.argv),
-            Runs::Program(_) | Runs::Shell => self.name.clone(),
+        let name = match (&self.runs, &fresh.runs) {
+            (Runs::Program(old), Runs::Program(new)) if named(&old.argv) == self.name => {
+                named(&new.argv)
+            }
+            _ => self.name.clone(),
         };
-        let runs = Runs::Program(launch);
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
         // old one (what it said, a bell, a copy, one refused, input dropped;
@@ -1068,7 +1065,7 @@ impl<S> Pane<S> {
             mouse_held,
             left,
             alerts,
-        } = Pane::new(self.id, String::new(), runs, self.size(), history)?;
+        } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
         // the new program started.
@@ -1085,7 +1082,7 @@ impl<S> Pane<S> {
         self.rename(name);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
-        Ok((std::mem::replace(&mut self.process, process), over))
+        (std::mem::replace(&mut self.process, process), over)
     }
 
     pub fn id(&self) -> PaneId {

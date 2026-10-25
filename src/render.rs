@@ -2383,9 +2383,12 @@ mod tests {
             cwd: "/".into(),
             env: Vec::new(),
         };
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.respawned(launch, crate::pane::Process::Absent, 1 << 10)
+        let runs = crate::pane::Runs::Program(launch);
+        let size = (s.parts.panes().get(&id)).ok_or("the pane")?.size();
+        let fresh = crate::pane::Pane::new(id, String::new(), runs, size, 1 << 10)
             .map_err(|e| e.to_string())?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        pane.respawned(fresh, crate::pane::Process::Absent);
         drop(pane);
         s.output(id, b"B");
         assert!(compose_into(&s, c, &mut grid, &mut placement));
