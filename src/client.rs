@@ -618,27 +618,30 @@ impl Keyboard {
         self.inputs(inputs)
     }
 
-    fn inputs(&mut self, inputs: Vec<Input>) -> Vec<Act> {
-        self.waiting.extend(inputs);
+    /// Inputs taken one at a time, as if each came alone: however the
+    /// terminal's reads split them, they come to the same.
+    fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Act> {
         let mut acts = Vec::new();
-        // The prefix, then Esc, typed while a program runs, stops it.
-        if self.running > 0 && self.held_stop() {
-            self.waiting.pop_back();
-            self.waiting.pop_back();
-            self.stop.stop();
-            let text = "stopping…".to_owned();
-            acts.push(Act::Notice { text, error: false });
+        for input in inputs {
+            // The prefix, then Esc, typed while a program runs, stops it.
+            if self.running > 0 && self.stops(&input) {
+                self.waiting.pop_back();
+                self.stop.stop();
+                let text = "stopping…".to_owned();
+                acts.push(Act::Notice { text, error: false });
+            } else {
+                self.waiting.push_back(input);
+            }
+            acts.extend(self.release());
         }
-        acts.extend(self.release());
         acts
     }
 
-    /// Whether the keys waiting end with the prefix then Esc.
-    fn held_stop(&self) -> bool {
-        let mut last = self.waiting.iter().rev();
+    /// Whether `input` is Esc after the prefix, the last key waiting.
+    fn stops(&self, input: &Input) -> bool {
         let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
         let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        is(last.next(), escape) && is(last.next(), self.keymap.prefix)
+        is(Some(input), escape) && is(self.waiting.back(), self.keymap.prefix)
     }
 
     /// What waits, taken unless a program runs.
@@ -655,12 +658,13 @@ impl Keyboard {
 
     /// A frame from the server: copy mode it ended, a program to run (a
     /// screen asked of it from elsewhere), keys to take as typed
-    /// (`send-keys` to it).
+    /// (`send-keys` to it), the prefix then Esc among them stopping a
+    /// program as typed ones do.
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
             ToAttached::Run(code) => self.run(code),
-            ToAttached::Keys(typed) => self.typed(typed),
+            ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
@@ -726,24 +730,20 @@ impl Keyboard {
         let effects = self.screen.input(&self.keymap, input, self.read_only);
         self.apply(effects, acts);
     }
+}
 
-    /// Keys the server says were typed here (`send-keys` to this client),
-    /// in turn with what the terminal sent.
-    fn typed(&mut self, inputs: Vec<crate::command::Input>) {
-        for input in inputs {
-            match input {
-                crate::command::Input::Key(press) => {
-                    self.waiting.push_back(Input::Key(press.into()))
-                }
-                crate::command::Input::Text(text) => {
-                    let keys = text.chars().map(|c| Input::Key(KeyPress::char(c).into()));
-                    self.waiting.extend(keys);
-                }
-                crate::command::Input::Paste(text) => self.waiting.push_back(Input::Paste(text)),
-                // A pane's alone: `send-keys` refuses them for a client.
-                crate::command::Input::Bytes(_) => {}
-            }
-        }
+/// A key the server says was typed here (`send-keys` to this client), as
+/// its terminal would have sent it.
+fn decoded(input: crate::command::Input) -> Vec<Input> {
+    match input {
+        crate::command::Input::Key(press) => vec![Input::Key(press.into())],
+        crate::command::Input::Text(text) => text
+            .chars()
+            .map(|c| Input::Key(KeyPress::char(c).into()))
+            .collect(),
+        crate::command::Input::Paste(text) => vec![Input::Paste(text)],
+        // A pane's alone: `send-keys` refuses them for a client.
+        crate::command::Input::Bytes(_) => Vec::new(),
     }
 }
 
@@ -1145,6 +1145,36 @@ mod tests {
             (keymap.prefix.to_string(), root),
             ("C-a".into(), vec!["F5".into()])
         );
+        Ok(())
+    }
+
+    /// A binding's program, then the prefix, Esc (as `CSI 27 u`) and a key,
+    /// stop the program and leave the key for after it, however the reads
+    /// split them: the cancel is checked at each key, not at a read's end.
+    #[test]
+    fn a_stop_is_the_same_however_the_reads_split() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keymap = Keymap::empty();
+        let forever = crate::keymap::Binding::new("begin false until".into(), true);
+        keymap.bind_root(KeyPress::char('y'), forever)?;
+        let typed = b"y\x02\x1b[27ux";
+        for split in 0..=typed.len() {
+            let mut keyboard = Keyboard::new(&socket, "c1".parse()?, keymap.clone(), false)?;
+            let now = Instant::now();
+            let (first, then) = typed.split_at_checked(split).ok_or("past the end")?;
+            let mut acts = keyboard.bytes(first, now);
+            acts.extend(keyboard.bytes(then, now));
+            let stopping = matches!(acts.as_slice(),
+                [Act::Notice { text, error: false }] if text == "stopping…");
+            let after = all_ran(&mut keyboard)?;
+            let x = KeyPress::char('x');
+            let stopped = matches!(after.as_slice(),
+                [Act::Notice { text, error: false }, Act::Key(key)] if text == "stopped" && key.press == x);
+            assert!(
+                stopping && stopped,
+                "split at {split}: {acts:?} then {after:?}"
+            );
+        }
         Ok(())
     }
 
