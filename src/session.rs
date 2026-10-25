@@ -28,12 +28,15 @@ use std::time::{Duration, Instant};
 /// What the server must do outside the session.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outgoing {
-    /// A frame for a client: bytes for its terminal outside any paint (a
-    /// copy, OSC 52; questions for the terminal; the bell; the keyboard
-    /// flags pushed), fuxth to run as its own, keys to take as typed at its
-    /// terminal (`send-keys` to a client), its screen ended by the server,
-    /// or its detach, saying why.
+    /// A frame for a client: bytes for its terminal outside any paint
+    /// (questions for the terminal; the bell; the keyboard flags pushed),
+    /// fuxth to run as its own, keys to take as typed at its terminal
+    /// (`send-keys` to a client), its screen ended by the server, or its
+    /// detach, saying why.
     To(ClientId, ToAttached<'static>),
+    /// A copy for a client's clipboard, its OSC 52: refused, and said to
+    /// be, to a client too far behind (`server::OUT_MAX`).
+    Copy(ClientId, Vec<u8>),
     /// Stop the server, saying why.
     Shutdown(String),
 }
@@ -1913,10 +1916,7 @@ impl Session {
             fits = encoded.len() <= crate::copy::MAX_CLIPBOARD;
             if fits {
                 let osc = format!("\x1b]52;c;{encoded}\x07").into_bytes();
-                for &client in to {
-                    self.outbox
-                        .push(Outgoing::To(client, ToAttached::Paint(osc.clone().into())));
-                }
+                (self.outbox).extend(to.iter().map(|&client| Outgoing::Copy(client, osc.clone())));
             }
         }
         self.buffers.push_front(text);
@@ -3329,6 +3329,7 @@ pub(crate) mod testing {
                     _,
                     ToAttached::Paint(_) | ToAttached::Exit(_) | ToAttached::Welcome(..),
                 )
+                | super::Outgoing::Copy(..)
                 | super::Outgoing::Shutdown { .. }) => {
                     kept.push(other);
                 }
@@ -4346,7 +4347,7 @@ mod tests {
         let sent = |s: &Session| {
             s.outbox
                 .iter()
-                .any(|o| matches!(o, Outgoing::To(c, ToAttached::Paint(b)) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
+                .any(|o| matches!(o, Outgoing::Copy(c, b) if *c == client && **b == *b"\x1b]52;c;Zm9v\x07"))
         };
         assert!(sent(&s));
         // One longer than fux-vt keeps of a string copies nothing, said.

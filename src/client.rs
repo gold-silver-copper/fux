@@ -9,8 +9,8 @@ use crate::decode::Input;
 use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
-    Reply, Role, ToAttached, ToCommand,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, MAX_FRAME, Mismatch,
+    PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
 use crate::script;
@@ -24,6 +24,7 @@ use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// What the attach client sets on its terminal: its title saved
@@ -503,39 +504,96 @@ pub struct Attaching {
     pub problem: Option<String>,
 }
 
-/// What a program on the worker came to: the worker's keymap after it
-/// (`bind` typed at the prompt changes it), what to say of it, and the
+/// What a program on the worker came to: what to say of it, and the
 /// screen it opened.
 struct Ran {
-    keymap: Keymap,
     notice: Option<(String, bool)>,
     opened: Option<Screen>,
+}
+
+/// The longest a program's notice may be: what it prints past this fails
+/// its write, and a notice longer, made of what it left, is not shown but
+/// said not to be. Well within a frame (`protocol::MAX_FRAME`).
+const NOTICE_MAX: usize = 64 << 10;
+
+/// What a key's program prints, for its notice: `NOTICE_MAX` at most.
+#[derive(Default)]
+struct Said(Vec<u8>);
+
+impl Write for Said {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.0.len().saturating_add(bytes.len()) > NOTICE_MAX {
+            let why = format!("a key's program prints {NOTICE_MAX} bytes at most");
+            return Err(io::Error::other(why));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Programs that may wait for the worker, and the bytes of their code:
+/// one that would take them past either is not run, and said not to be.
+const JOBS: usize = 64;
+const JOB_BYTES: usize = 4 << 20;
+/// Inputs that may wait for a program, and the bytes of their pastes: those
+/// past either are not taken, and said not to be (`Keyboard::holds`).
+const HELD: usize = 1024;
+const HELD_BYTES: usize = 1 << 20;
+
+/// The bytes `input` holds beyond itself.
+fn pasted(input: &Input) -> usize {
+    match input {
+        Input::Paste(text) => text.len(),
+        Input::Key(_)
+        | Input::PasteTooLong
+        | Input::FocusIn
+        | Input::FocusOut
+        | Input::Mouse(_)
+        | Input::Reply(_) => 0,
+    }
+}
+
+/// The keymap the worker and the client share. A program changes a copy,
+/// put in its place whole (`run_job`), so one that panicked holding it
+/// left no change half made.
+fn lock(keymap: &Mutex<Keymap>) -> std::sync::MutexGuard<'_, Keymap> {
+    keymap
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// An attached client's own keys: its keymap, the screen it has open or
 /// what its keys are in the middle of, the decoder its terminal's bytes go
 /// through, and the worker that runs the programs its bindings and screens
-/// give, one after another, as the client. The worker owns the keymap: a
-/// program changes the worker's, and its keymap here follows. What each
-/// takes, it turns into the actions to send the server.
+/// give, one after another, as the client. The worker and the client share
+/// the keymap: a program changes it as it ends. What each takes, it turns
+/// into the actions to send the server.
 ///
 /// Every mode is the client's (`crate::screens`), changed here at the key
 /// that changes it. A program it runs may open a screen, so the keys typed
 /// while any runs wait for it, and go to the screen it opened, if any.
 pub struct Keyboard {
-    keymap: Keymap,
+    keymap: std::sync::Arc<Mutex<Keymap>>,
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
     jobs: std::sync::mpsc::Sender<String>,
+    /// One `Ran` for each program sent: as many as `running` holds.
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
-    /// Programs sent to the worker and not yet done.
-    running: usize,
+    /// The bytes of code of each program sent to the worker and not yet
+    /// done, in order: `JOBS` and `JOB_BYTES` at most.
+    running: VecDeque<usize>,
     /// What stops the program the worker runs (the prefix, then Esc).
     stop: script::Stop,
-    /// What was typed while a program ran, in order.
+    /// What was typed while a program ran, in order, and the bytes of its
+    /// pastes: `HELD` and `HELD_BYTES` at most.
     waiting: VecDeque<Input>,
+    held: usize,
 }
 
 impl Keyboard {
@@ -549,23 +607,27 @@ impl Keyboard {
     ) -> Result<Keyboard, Error> {
         let (jobs, todo) = std::sync::mpsc::channel::<String>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
-        let (wake, mut poke) = io::pipe()?;
+        let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
+        fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
         let path = socket.path().to_owned();
         let stop = script::Stop::default();
         let stops = stop.clone();
-        let mut owned = keymap.clone();
+        let keymap = std::sync::Arc::new(Mutex::new(keymap));
+        let shared = keymap.clone();
         let spawned = std::thread::Builder::new()
             .name("keys".into())
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
                 for code in todo {
-                    let ran = run_job(&mut server, me, &mut owned, &code, &stops);
+                    let ran = run_job(&mut server, me, &shared, &code, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
-                    let _ = poke.write_all(b"!");
+                    // A pipe too full for it is readable: the client wakes
+                    // all the same.
+                    let _ = fuxix::io::write(&poke, b"!");
                 }
             });
         spawned?;
@@ -580,15 +642,16 @@ impl Keyboard {
             jobs,
             told,
             wake,
-            running: 0,
+            running: VecDeque::new(),
             stop,
             waiting: VecDeque::new(),
+            held: 0,
         })
     }
 
     /// Whether nothing waits: no program running, no keys held for one.
     pub fn idle(&self) -> bool {
-        self.running == 0 && self.waiting.is_empty()
+        self.running.is_empty() && self.waiting.is_empty()
     }
 
     /// Readable when a program it ran is done (`Keyboard::ran`).
@@ -622,17 +685,29 @@ impl Keyboard {
     /// terminal's reads split them, they come to the same.
     fn inputs(&mut self, inputs: impl IntoIterator<Item = Input>) -> Vec<Act> {
         let mut acts = Vec::new();
+        let mut refused = 0usize;
         for input in inputs {
+            let running = !self.running.is_empty();
             // The prefix, then Esc, typed while a program runs, stops it.
-            if self.running > 0 && self.stops(&input) {
+            if running && self.stops(&input) {
                 self.waiting.pop_back();
                 self.stop.stop();
                 let text = "stopping…".to_owned();
                 acts.push(Act::Notice { text, error: false });
-            } else {
+            } else if !running || self.holds(&input) {
+                self.held = self.held.saturating_add(pasted(&input));
                 self.waiting.push_back(input);
+            } else {
+                refused = refused.saturating_add(1);
             }
             acts.extend(self.release());
+        }
+        if refused > 0 {
+            let (held, bytes) = (self.waiting.len(), self.held);
+            let text = format!(
+                "{refused} inputs not taken: {held} already wait for a program ({bytes} bytes pasted)"
+            );
+            acts.push(Act::Notice { text, error: true });
         }
         acts
     }
@@ -641,16 +716,26 @@ impl Keyboard {
     fn stops(&self, input: &Input) -> bool {
         let is = |input: Option<&Input>, key: KeyPress| matches!(input, Some(Input::Key(stroke)) if stroke.press == key);
         let escape = KeyPress::new(Key::Escape, Modifiers::NONE);
-        is(Some(input), escape) && is(self.waiting.back(), self.keymap.prefix)
+        is(Some(input), escape) && is(self.waiting.back(), lock(&self.keymap).prefix)
+    }
+
+    /// Whether `input` may wait for a program: the prefix has one place
+    /// more, so that Esc after it still stops it.
+    fn holds(&self, input: &Input) -> bool {
+        let prefix =
+            matches!(input, Input::Key(stroke) if stroke.press == lock(&self.keymap).prefix);
+        let room = HELD.saturating_add(usize::from(prefix));
+        self.waiting.len() < room && self.held.saturating_add(pasted(input)) <= HELD_BYTES
     }
 
     /// What waits, taken unless a program runs.
     fn release(&mut self) -> Vec<Act> {
         let mut acts = Vec::new();
-        while self.running == 0 {
+        while self.running.is_empty() {
             let Some(input) = self.waiting.pop_front() else {
                 break;
             };
+            self.held = self.held.saturating_sub(pasted(&input));
             self.input(input, &mut acts);
         }
         acts
@@ -661,14 +746,16 @@ impl Keyboard {
     /// (`send-keys` to it), the prefix then Esc among them stopping a
     /// program as typed ones do.
     pub fn frame(&mut self, frame: ToAttached<'_>) -> Vec<Act> {
+        let mut acts = Vec::new();
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
-            ToAttached::Run(code) => self.run(code),
+            ToAttached::Run(code) => self.run(code, &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
         }
-        self.release()
+        acts.extend(self.release());
+        acts
     }
 
     /// What the programs it ran came to, those done: a screen one opened
@@ -677,8 +764,7 @@ impl Keyboard {
         crate::drain(&self.wake);
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
-            self.running = self.running.saturating_sub(1);
-            self.keymap = ran.keymap;
+            self.running.pop_front();
             if let Some((text, error)) = ran.notice {
                 acts.push(Act::Notice { text, error });
             }
@@ -710,24 +796,36 @@ impl Keyboard {
         for effect in effects {
             match effect {
                 Effect::Send(act) => acts.push(act),
-                Effect::Run(code) => self.run(code),
+                Effect::Run(code) => self.run(code, acts),
             }
         }
     }
 
-    fn run(&mut self, code: String) {
+    /// Sends `code` to the worker, unless as many programs, or as much
+    /// code, as it may hold wait for it.
+    fn run(&mut self, code: String, acts: &mut Vec<Act>) {
         // A stop stops the programs queued with the one it was typed for.
-        if self.running == 0 {
+        if self.running.is_empty() {
             self.stop.reset();
         }
+        let (waiting, bytes) = (self.running.len(), self.running.iter().sum::<usize>());
+        if waiting >= JOBS || bytes.saturating_add(code.len()) > JOB_BYTES {
+            let text = format!(
+                "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
+            );
+            return acts.push(Act::Notice { text, error: true });
+        }
+        let len = code.len();
         if self.jobs.send(code).is_ok() {
-            self.running = self.running.saturating_add(1);
+            self.running.push_back(len);
         }
     }
 
     /// What the terminal sent, decoded (`Screen::input`).
     fn input(&mut self, input: Input, acts: &mut Vec<Act>) {
-        let effects = self.screen.input(&self.keymap, input, self.read_only);
+        let keymap = lock(&self.keymap);
+        let effects = self.screen.input(&keymap, input, self.read_only);
+        drop(keymap);
         self.apply(effects, acts);
     }
 }
@@ -747,17 +845,18 @@ fn decoded(input: crate::command::Input) -> Vec<Input> {
     }
 }
 
-/// Runs a key's or a screen's program as client `me`, on the worker's
+/// Runs a key's or a screen's program as client `me`, on the shared
 /// `keymap`. A program that fails changes no keys: half a change is none.
 fn run_job(
     server: &mut script::Server,
     me: crate::id::ClientId,
-    keymap: &mut Keymap,
+    keymap: &Mutex<Keymap>,
     code: &str,
     stop: &script::Stop,
 ) -> Ran {
-    let mut changed = keymap.clone();
-    let mut out = Vec::new();
+    let mut changed = lock(keymap).clone();
+    let config = changed.config.clone();
+    let mut out = Said::default();
     let mut context = context();
     context.client = Some(me);
     let mut asks = script::AsClient {
@@ -767,7 +866,7 @@ fn run_job(
     };
     let result = (|| {
         let tokens = fuxth::token::source("key", code)?;
-        let mut machine = script::compiled(keymap.config.as_ref(), &tokens)?;
+        let mut machine = script::compiled(config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,
@@ -778,27 +877,60 @@ fn run_job(
         )
     })();
     if result.is_ok() {
-        *keymap = changed;
+        *lock(keymap) = changed;
     }
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.to_string(), true)),
-        Ok(stack) => {
-            let mut said = String::from_utf8_lossy(&out).into_owned();
-            for value in &stack {
-                said.push_str(&value.text());
+        Ok(stack) => said(String::from_utf8_lossy(&out.0).into_owned(), &stack),
+    };
+    let notice = notice.map(|(text, error)| match text.len() {
+        0..=NOTICE_MAX => (text, error),
+        n => (
+            format!("a notice of {n} bytes, longer than {NOTICE_MAX}, was not shown"),
+            true,
+        ),
+    });
+    // Opened, a screen is sent the server in one frame: one larger was
+    // never to show.
+    let fits = |screen: &Screen| {
+        (screen.opened()).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
+    };
+    match asks.opened {
+        Some(screen) if !fits(&screen) => {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            Ran {
+                notice: Some((text, true)),
+                opened: None,
+            }
+        }
+        opened => Ran { notice, opened },
+    }
+}
+
+/// The notice a program that ended makes: what it printed, then what it
+/// left, each line that is not blank. Made only as far as `NOTICE_MAX`:
+/// one longer is said not to be shown.
+fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
+    for value in stack {
+        let room = NOTICE_MAX.saturating_sub(said.len());
+        match value.text_upto(room).filter(|text| text.len() < room) {
+            Some(text) => {
+                said.push_str(&text);
                 said.push('\n');
             }
-            let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
-            (!said.is_empty()).then(|| (said.join("  "), false))
+            None => {
+                let text = format!(
+                    "what the program left is longer than a notice ({NOTICE_MAX} bytes): not shown"
+                );
+                return Some((text, true));
+            }
         }
-    };
-    Ran {
-        keymap: keymap.clone(),
-        notice,
-        opened: asks.opened,
     }
+    let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+    (!said.is_empty()).then(|| (said.join("  "), false))
 }
 
 /// Attaches this terminal (stdin, a terminal), or a client with no
@@ -834,6 +966,7 @@ pub fn attach(
     };
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
+    let mut output = terminal.then(Output::open).transpose()?;
     let result = send(&mut stream, &attach).and_then(|()| {
         attached(
             socket,
@@ -841,11 +974,15 @@ pub fn attach(
             &mut decoder,
             &signals,
             &attaching,
-            terminal,
+            output.as_mut(),
         )
     });
+    // What the server painted until it let go is written before the
+    // terminal is put back, not after, on the shell.
+    let finished = output.as_mut().map_or(Ok(()), Output::finish);
     drop(raw);
-    let _ = writeln!(io::stdout(), "[{}]", result?);
+    let reason = result.and_then(|reason| finished.map(|()| reason))?;
+    let _ = writeln!(io::stdout(), "[{reason}]");
     Ok(())
 }
 
@@ -906,40 +1043,149 @@ impl Drop for Raw {
     }
 }
 
+/// What may wait unwritten for the terminal before the server's frames
+/// are read no more: what the server sends meanwhile waits there, within
+/// its bound.
+const OUTPUT_MAX: usize = 1 << 20;
+
+/// The paints the server relays, for the terminal: handed to a thread
+/// that writes them to stdout, waiting on the terminal as any program does,
+/// so that the client reads keys meanwhile. stdout stays as the shell left
+/// it, shared with it and its jobs.
+struct Output {
+    to: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    writer: Option<std::thread::JoinHandle<io::Result<()>>>,
+    /// The bytes handed over and not yet written.
+    unwritten: std::sync::Arc<AtomicUsize>,
+    /// Whether a write failed, which ends the writer: set before its wake.
+    failed: std::sync::Arc<AtomicBool>,
+    /// Readable once the writer wrote some, or failed.
+    wake: io::PipeReader,
+}
+
+/// Writes all of `bytes` to stdout's descriptor, not through `Stdout`,
+/// whose lock a terminal that stopped reading would hold from `restore`.
+fn write_stdout(mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match fuxix::io::write(io::stdout(), bytes) {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(Errno::INTR) => {}
+            Err(errno) => return Err(errno.into()),
+        }
+    }
+    Ok(())
+}
+
+impl Output {
+    fn open() -> Result<Output, Error> {
+        let (to, todo) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (wake, poke) = io::pipe()?;
+        fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
+        fuxix::io::set_nonblocking(&poke, true).map_err(io::Error::from)?;
+        let unwritten = std::sync::Arc::new(AtomicUsize::new(0));
+        let failed = std::sync::Arc::new(AtomicBool::new(false));
+        let (left, failing) = (unwritten.clone(), failed.clone());
+        let writer = std::thread::Builder::new()
+            .name("terminal".into())
+            .spawn(move || {
+                for bytes in todo {
+                    let wrote = write_stdout(&bytes);
+                    left.fetch_sub(bytes.len(), Ordering::Relaxed);
+                    failing.store(wrote.is_err(), Ordering::Release);
+                    // A pipe too full for it is readable: the client wakes
+                    // all the same.
+                    let _ = fuxix::io::write(&poke, b"!");
+                    wrote?;
+                }
+                Ok(())
+            })?;
+        Ok(Output {
+            to: Some(to),
+            writer: Some(writer),
+            unwritten,
+            failed,
+            wake,
+        })
+    }
+
+    /// Whether the server's frames may be read: less than `OUTPUT_MAX` is
+    /// unwritten, so a paint frame more, `MAX_FRAME` at most, may follow.
+    fn room(&self) -> bool {
+        self.unwritten.load(Ordering::Relaxed) < OUTPUT_MAX
+    }
+
+    /// Hands `bytes` to the writer: an error once it has ended.
+    fn push(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+        self.unwritten.fetch_add(bytes.len(), Ordering::Relaxed);
+        match self.to.as_ref().map(|to| to.send(bytes)) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(_)) | None => Err((self.ended().err())
+                .unwrap_or_else(|| Error::Failed("the terminal's writer ended".into()))),
+        }
+    }
+
+    /// The writer wrote some: an error if a write failed.
+    fn woke(&mut self) -> Result<(), Error> {
+        crate::drain(&self.wake);
+        match self.failed.load(Ordering::Acquire) {
+            true => self.ended(),
+            false => Ok(()),
+        }
+    }
+
+    /// Waits for the writer to end: the write that failed, if one did.
+    fn ended(&mut self) -> Result<(), Error> {
+        match self.writer.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(Err(error))) => Err(failed("writing the terminal")(error)),
+            Some(Err(_)) => Err(Error::Failed("the terminal's writer panicked".into())),
+            Some(Ok(Ok(()))) | None => Ok(()),
+        }
+    }
+
+    /// Waits for all handed over to be written, as the attachment ends:
+    /// a terminal that has stopped reading holds the client, as it would
+    /// any program that writes to it. A write that failed is said.
+    fn finish(&mut self) -> Result<(), Error> {
+        self.to = None;
+        self.ended()
+    }
+}
+
 /// Holds the attachment until the server ends it, and says why: reads the
-/// terminal's keys, with `terminal`, and runs them through the client's
-/// keys; writes the paints the server relays; passes on the terminal's new
-/// size, and a signal that detaches. Until the server says the client's id
-/// (its `Welcome`), an `Exit` is a refusal.
+/// terminal's keys, with an `output` for it, and runs them through the
+/// client's keys; writes the paints the server relays; passes on the
+/// terminal's new size, and a signal that detaches. Until the server says
+/// the client's id (its `Welcome`), an `Exit` is a refusal.
 fn attached(
     socket: &SocketPath,
     stream: &mut UnixStream,
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
-    terminal: bool,
+    mut output: Option<&mut Output>,
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
     wait_at_most(stream, None);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let terminal = output.is_some();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
     let mut acts = Vec::new();
-    const STREAM: usize = 0;
-    const WINCH: usize = 1;
-    const STOPS: usize = 2;
-    const WAKE: usize = 3;
-    const TERMINAL: usize = 4;
+    const STREAM: Option<usize> = Some(0);
+    const WINCH: Option<usize> = Some(1);
+    const STOPS: Option<usize> = Some(2);
     loop {
-        // Every whole frame the server sent.
-        while let Some(frame) = decoder.frame()? {
+        // Every whole frame the server sent, while the terminal has room
+        // for their paints.
+        while output.as_ref().is_none_or(|o| o.room())
+            && let Some(frame) = decoder.frame()?
+        {
             match (frame, &mut keyboard) {
                 (ToAttached::Paint(bytes), _) => {
-                    if terminal {
-                        stdout
-                            .write_all(&bytes)
-                            .map_err(failed("writing the terminal"))?;
+                    if let Some(output) = &mut output {
+                        output.push(bytes.into_owned())?;
                     }
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
@@ -959,62 +1205,100 @@ fn attached(
                 (_, None) => {}
             }
         }
-        stdout.flush().map_err(failed("writing the terminal"))?;
         for act in std::mem::take(&mut acts) {
             let act = AttachedFrame::Act(Box::new(act));
-            if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &act) {
+            if let Err(ended) = tell(
+                stream,
+                decoder,
+                keyboard.is_some(),
+                output.as_deref_mut(),
+                &act,
+            ) {
                 return ended;
             }
         }
+        // The server's frames only while the terminal has room for them; a
+        // hang-up is told all the same.
+        let reads = match output.as_ref().is_none_or(|o| o.room()) {
+            true => PollFlags::IN,
+            false => PollFlags::NONE,
+        };
         let mut fds = vec![
-            PollFd::new(&*stream, PollFlags::IN),
+            PollFd::new(&*stream, reads),
             PollFd::new(winch.pipe(), PollFlags::IN),
             PollFd::new(stops.pipe(), PollFlags::IN),
         ];
+        let mut add = |fd| {
+            fds.push(fd);
+            Some(fds.len().saturating_sub(1))
+        };
+        // The terminal's writer, as it writes.
+        let written = output
+            .as_ref()
+            .and_then(|o| add(PollFd::new(&o.wake, PollFlags::IN)));
         // The keys only once the client knows itself, to run them.
-        if let Some(keyboard) = &keyboard {
-            fds.push(PollFd::new(keyboard.wake(), PollFlags::IN));
-            if terminal {
-                fds.push(PollFd::new(&stdin, PollFlags::IN));
-            }
-        }
-        // A lone Escape, or an answer cut short, waits until its deadline.
+        let (wake, typed) = match &keyboard {
+            Some(keyboard) => (
+                add(PollFd::new(keyboard.wake(), PollFlags::IN)),
+                terminal
+                    .then(|| add(PollFd::new(&stdin, PollFlags::IN)))
+                    .flatten(),
+            ),
+            None => (None, None),
+        };
+        // A lone Escape, or an answer cut short, waits until its deadline;
+        // whole frames read already, held for room, not at all.
         let deadline = keyboard.as_ref().and_then(Keyboard::deadline);
-        let timeout = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+        let held = output.as_ref().is_none_or(|o| o.room()) && decoder.ready()?;
+        let timeout = match held {
+            true => Some(Duration::ZERO),
+            false => deadline.map(|at| at.saturating_duration_since(Instant::now())),
+        };
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(e) => return Err(failed("poll")(e)),
         }
         let ready: Vec<bool> = fds.iter().map(|fd| !fd.revents().is_empty()).collect();
         drop(fds);
-        let is = |i: usize| ready.get(i).copied().unwrap_or(false);
+        let is = |i: Option<usize>| i.and_then(|i| ready.get(i)).copied().unwrap_or(false);
         if is(STOPS) {
             // What the server paints until it lets go is written before the
             // terminal is put back, not after, on the shell.
-            if send(stream, &AttachedFrame::Detach).is_ok() && keyboard.is_some() {
-                let _ = last_frames(stream, decoder, true, terminal);
+            // Welcomed, its only error is the terminal's writer's.
+            if send(stream, &AttachedFrame::Detach).is_ok()
+                && keyboard.is_some()
+                && let Some(Err(error)) = last_frames(stream, decoder, true, output.as_deref_mut())
+            {
+                return Err(error);
             }
             return Ok(STOPPED.into());
+        }
+        if is(written)
+            && let Some(output) = &mut output
+        {
+            output.woke()?;
         }
         if is(WINCH) {
             crate::drain(winch.pipe());
             // A terminal that says no size now keeps the last it said.
             if terminal && let Some(size) = window_size() {
                 let resize = AttachedFrame::Resize(size);
-                if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &resize) {
+                let welcomed = keyboard.is_some();
+                if let Err(ended) = tell(stream, decoder, welcomed, output.as_deref_mut(), &resize)
+                {
                     return ended;
                 }
             }
         }
         if let Some(keyboard) = &mut keyboard {
-            if is(WAKE) {
+            if is(wake) {
                 acts.extend(keyboard.ran());
             }
             let now = Instant::now();
             if keyboard.deadline().is_some_and(|at| at <= now) {
                 acts.extend(keyboard.timeout());
             }
-            if is(TERMINAL) {
+            if is(typed) {
                 match fuxix::io::read(&stdin, &mut buffer) {
                     Ok(0) => {
                         let _ = send(stream, &AttachedFrame::Detach);
@@ -1026,8 +1310,11 @@ fn attached(
                 }
             }
         }
+        // The frames read before it closed still count: its `Exit` says why.
         if is(STREAM) && !read_more(stream, decoder)? {
-            return Ok("the server closed the connection".into());
+            let welcomed = keyboard.is_some();
+            let ended = last_frames(stream, decoder, welcomed, output.as_deref_mut());
+            return ended.unwrap_or_else(|| Ok("the server closed the connection".into()));
         }
     }
 }
@@ -1041,37 +1328,42 @@ fn tell(
     stream: &mut UnixStream,
     decoder: &mut Decoder,
     welcomed: bool,
-    terminal: bool,
+    output: Option<&mut Output>,
     frame: &AttachedFrame,
 ) -> Result<(), Result<String, Error>> {
-    let Err(error) = send(stream, frame) else {
-        return Ok(());
-    };
-    Err(last_frames(stream, decoder, welcomed, terminal).unwrap_or(Err(error)))
+    match send(stream, frame) {
+        Ok(()) => Ok(()),
+        // Not sent at all: the server goes on as it was.
+        Err(error @ Error::Protocol(_)) => Err(Err(error)),
+        Err(error) => Err(last_frames(stream, decoder, welcomed, output).unwrap_or(Err(error))),
+    }
 }
 
 /// Reads the server's frames up to its `Exit`, waiting `ANSWER` at
-/// most for each read, and writes their paints if the client has a
-/// `terminal`: how the attachment ended, the `Exit`'s reason (a refusal,
-/// before its `Welcome`), or `None` if the server said nothing more.
+/// most for each read, and hands their paints to the terminal, if there
+/// is an `output` for one: how the attachment ended, the `Exit`'s reason (a refusal, before its
+/// `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
     stream: &mut UnixStream,
     decoder: &mut Decoder,
     welcomed: bool,
-    terminal: bool,
+    mut output: Option<&mut Output>,
 ) -> Option<Result<String, Error>> {
     wait_at_most(stream, Some(ANSWER));
-    let mut stdout = io::stdout();
     loop {
         while let Some(frame) = decoder.frame().ok()? {
             match frame {
-                ToAttached::Paint(bytes) if terminal => {
-                    let _ = stdout.write_all(&bytes).and_then(|()| stdout.flush());
+                // What the server has left to send, within its bound.
+                ToAttached::Paint(bytes) => {
+                    if let Some(output) = &mut output
+                        && let Err(error) = output.push(bytes.into_owned())
+                    {
+                        return Some(Err(error));
+                    }
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
                 ToAttached::Exit(reason) => return Some(Err(Error::Refused(reason.to_owned()))),
-                ToAttached::Paint(_)
-                | ToAttached::Welcome(..)
+                ToAttached::Welcome(..)
                 | ToAttached::Ended(_)
                 | ToAttached::Run(_)
                 | ToAttached::Keys(_) => {}
@@ -1139,7 +1431,7 @@ mod tests {
             assert!(keyboard.frame(ToAttached::Run(code.into())).is_empty());
         }
         all_ran(&mut keyboard)?;
-        let keymap = &keyboard.keymap;
+        let keymap = lock(&keyboard.keymap);
         let root: Vec<String> = keymap.root.iter().map(|(key, _)| key.to_string()).collect();
         assert_eq!(
             (keymap.prefix.to_string(), root),
@@ -1175,6 +1467,66 @@ mod tests {
                 "split at {split}: {acts:?} then {after:?}"
             );
         }
+        Ok(())
+    }
+
+    /// While a program runs, what waits for it is bounded: the inputs past
+    /// `HELD` and the programs past `JOBS` are refused, and said to be;
+    /// the prefix, then Esc, still stops it.
+    #[test]
+    fn what_waits_for_a_program_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        let forever = || ToAttached::Run("begin false until".into());
+        for _ in 0..JOBS {
+            assert!(keyboard.frame(forever()).is_empty());
+        }
+        let notice = |acts: &[Act], says: &str| matches!(acts, [Act::Notice { text, error: true }] if text.starts_with(says));
+        let more = keyboard.frame(forever());
+        assert!(
+            notice(&more, "a program was not run: 64 already"),
+            "{more:?}"
+        );
+        let typed = vec![b'x'; HELD + 2];
+        let held = keyboard.bytes(&typed, Instant::now());
+        assert!(
+            notice(&held, "2 inputs not taken: 1024 already"),
+            "{held:?}"
+        );
+        let mut stopping = keyboard.bytes(b"\x02\x1b", Instant::now());
+        stopping.extend(keyboard.timeout());
+        assert!(
+            matches!(stopping.as_slice(), [Act::Notice { text, error: false }] if text == "stopping…"),
+            "{stopping:?}"
+        );
+        let after = all_ran(&mut keyboard)?;
+        let keys = after.iter().filter(|a| matches!(a, Act::Key(_))).count();
+        assert_eq!(keys, HELD);
+        Ok(())
+    }
+
+    /// A program that prints more than a notice holds fails, said; one
+    /// that leaves more is said not to be shown. Neither is kept.
+    #[test]
+    fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        let line: String = std::iter::repeat_n('x', 1000).collect();
+        let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
+        assert!(keyboard.frame(ToAttached::Run(code)).is_empty());
+        let acts = all_ran(&mut keyboard)?;
+        let failed = matches!(acts.as_slice(),
+            [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
+        assert!(failed, "{acts:?}");
+        // What it leaves, the same string thrice, is made no further than
+        // a notice holds.
+        let long: String = std::iter::repeat_n('x', 30_000).collect();
+        let left = format!("str {long} 0 pick 0 pick");
+        assert!(keyboard.frame(ToAttached::Run(left)).is_empty());
+        let acts = all_ran(&mut keyboard)?;
+        let refused = matches!(acts.as_slice(),
+            [Act::Notice { text, error: true }] if text.starts_with("what the program left"));
+        assert!(refused, "{acts:?}");
         Ok(())
     }
 

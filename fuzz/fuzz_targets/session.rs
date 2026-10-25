@@ -372,12 +372,13 @@ impl Run {
                     outer::BELL,
                 ]
                 .contains(&&*bytes) => {}
-            Outgoing::To(_, ToAttached::Paint(bytes)) => {
-                // Else OSC 52, with at most MAX_CLIPBOARD bytes of base64.
+            Outgoing::To(_, ToAttached::Paint(bytes)) => panic!("not a question: {bytes:?}"),
+            // A copy: OSC 52, with at most MAX_CLIPBOARD bytes of base64.
+            Outgoing::Copy(_, bytes) => {
                 let payload = bytes
                     .strip_prefix(b"\x1b]52;c;")
                     .and_then(|b| b.strip_suffix(b"\x07"))
-                    .unwrap_or_else(|| panic!("not a question nor OSC 52: {bytes:?}"));
+                    .unwrap_or_else(|| panic!("not OSC 52: {bytes:?}"));
                 assert!(payload.len() <= MAX_CLIPBOARD, "{} bytes", payload.len());
                 assert!(
                     payload

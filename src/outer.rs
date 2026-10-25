@@ -833,6 +833,7 @@ mod tests {
                     | ToAttached::Run(_)
                     | ToAttached::Keys(_),
                 )
+                | Outgoing::Copy(..)
                 | Outgoing::Shutdown { .. } => None,
             })
             .collect()
