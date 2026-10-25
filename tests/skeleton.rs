@@ -69,7 +69,7 @@ fn a_pane_is_told_it_runs_in_fux() -> Outcome {
     let expected = format!("is-fux-{}-xterm-256color", env!("CARGO_PKG_VERSION"));
     eventually("the pane's environment", || {
         Ok(server
-            .ok(&["str", "%1", "pane", "screen"])?
+            .ok(&["str", "%1", "pane", "capture"])?
             .lines()
             .any(|l| l == expected))
     })

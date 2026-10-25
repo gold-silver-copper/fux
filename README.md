@@ -109,14 +109,14 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P screen
+fux opts str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
 ```
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
-(a line typed and Enter), `screen` (a capture), `shell` (a tab with a shell
-in workspace `agent`), `quiet` (a wait until nothing changes for N
-seconds) and `counts` (a version's counts, as integers).
+(a line typed and Enter), `shell` (a tab with a shell in workspace
+`agent`), `quiet` (a wait until nothing changes for N seconds) and
+`counts` (a version's counts, as integers).
 
 ### Finding things
 

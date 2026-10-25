@@ -775,7 +775,7 @@ impl Server {
     /// Types a line into a pane once its shell shows a prompt.
     pub fn type_line(&self, pane: &str, line: &str) -> Outcome {
         eventually(&format!("a prompt in {pane}"), || {
-            Ok(self.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+            Ok(self.ok(&["str", pane, "pane", "capture"])?.contains('$'))
         })?;
         self.ok(&[
             "str",

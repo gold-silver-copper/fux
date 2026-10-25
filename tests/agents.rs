@@ -865,7 +865,7 @@ fn json_of_a_saved_capture_is_that_capture() -> Outcome {
         "let",
         "P",
         "P",
-        "screen",
+        "capture",
         "let",
         "C",
         "P",

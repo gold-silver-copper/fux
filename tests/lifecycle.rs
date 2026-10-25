@@ -16,7 +16,7 @@ use support::*;
 /// once.
 fn type_now(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
     })?;
     server.ok(&[
         "str",

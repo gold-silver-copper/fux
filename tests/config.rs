@@ -67,11 +67,16 @@ fn settings_reach_the_server() -> Outcome {
         "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do echo h$i; done",
     )?;
     eventually("the loop", || {
-        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains("h15"))
+        Ok(server
+            .ok(&["str", pane, "pane", "capture"])?
+            .contains("h15"))
     })?;
     let history = server.ok(&["str", pane, "pane", "100", "history", "capture"])?;
     let rows = history.lines().count();
-    let screen = server.ok(&["str", pane, "pane", "screen"])?.lines().count();
+    let screen = server
+        .ok(&["str", pane, "pane", "capture"])?
+        .lines()
+        .count();
     assert!(rows <= screen + 3, "at most 3 lines of history: {history}");
     // A new shell program applies to new panes.
     server.ok(&[
@@ -88,7 +93,7 @@ fn settings_reach_the_server() -> Outcome {
                 "str",
                 custom.split_whitespace().next().unwrap_or_default(),
                 "pane",
-                "screen",
+                "capture",
             ])?
             .contains("custom$"))
     })?;

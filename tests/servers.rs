@@ -298,7 +298,7 @@ fn a_grant_reaches_one_workspace() -> Outcome {
     let sandbox = server.ok(&["str", "sandbox", "workspace", "info", "json"])?;
     assert!(sandbox.contains(r#""name":"job""#), "{sandbox}");
     for refused in [
-        vec!["str", "%1", "pane", "screen"],
+        vec!["str", "%1", "pane", "capture"],
         vec!["force-kill-server"],
         vec!["str", "bell", "str", "off", "set"],
         vec!["opts", "80", "24", "size", "new-workspace"],

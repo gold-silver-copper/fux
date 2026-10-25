@@ -7,7 +7,7 @@ use support::*;
 fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
     eventually(&format!("{needle:?} in {pane}"), || {
         Ok(server
-            .ok(&["str", pane, "pane", "screen"])?
+            .ok(&["str", pane, "pane", "capture"])?
             .contains(needle))
     })
 }

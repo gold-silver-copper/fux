@@ -13,7 +13,7 @@ const GONE_WITHIN: Duration = Duration::from_secs(3);
 /// pane's shell shows a prompt.
 fn start_line(server: &Server, pane: &str, line: &str) -> Outcome {
     eventually(&format!("a prompt in {pane}"), || {
-        Ok(server.ok(&["str", pane, "pane", "screen"])?.contains('$'))
+        Ok(server.ok(&["str", pane, "pane", "capture"])?.contains('$'))
     })?;
     server.ok(&[
         "str",
@@ -166,7 +166,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     let (pane, leader) = server.newest_pane()?;
     // Settled: the new shell has a prompt.
     eventually("a prompt", || {
-        Ok(server.ok(&["str", &pane, "pane", "screen"])?.contains('$'))
+        Ok(server.ok(&["str", &pane, "pane", "capture"])?.contains('$'))
     })?;
     signal(leader, Signal::Stop);
     // Stopped, the kernel has sent the server SIGCHLD; two round trips
@@ -194,7 +194,7 @@ fn a_stopped_pane_stays_until_its_program_ends() -> Outcome {
     server.type_line(&pane, "echo alive-$((1+1))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "screen"])?
+            .ok(&["str", &pane, "pane", "capture"])?
             .contains("alive-2"))
     })?;
     // A kill closes it, with the signal's status: 128 + 9.
@@ -232,7 +232,7 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     server.type_line(&pane, "echo still-$((2+2))")?;
     eventually("the shell answers", || {
         Ok(server
-            .ok(&["str", &pane, "pane", "screen"])?
+            .ok(&["str", &pane, "pane", "capture"])?
             .contains("still-4"))
     })?;
     assert!(alive(job), "the stopped job ended");

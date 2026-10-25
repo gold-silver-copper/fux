@@ -130,8 +130,8 @@ as integers: `A counts 3 at` is its `DONE`.
 
   ```fux
   %3 str 'make test; echo END-OF""-RUN $?' line
-  begin 600 timeout wait %3 screen string str END-OF-RUN contains until
-  drop %3 screen
+  begin 600 timeout wait %3 capture string str END-OF-RUN contains until
+  drop %3 capture
   ```
 - **A program's exit:** its version's `ENDED` is 1. The loop waits before
   it looks, so it wants an answer from before the end (`run`'s).
@@ -291,7 +291,7 @@ is none, however many panes it has: name the tab again, `@1 wait`), and to
 `wait`, the version it holds too (`T str y text send-keys wait` waits from
 before the keys; a name keeps that version, so `T wait` later waits from
 when `T` was made, and `T str version get changed wait` from now);
-`string` makes it text (`%2 screen string str error contains`). The
+`string` makes it text (`%2 capture string str error contains`). The
 standard library, written in fuxth, does the rest (`fux help` lists it). A
 mistake every run would make (too few values, a string given to `add` or
 `if`, a request nothing acts on: its error names the word to end it with)

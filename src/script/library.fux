@@ -7,8 +7,6 @@ define type text send-keys end
 define press key send-keys end
 # pane text -- answer : in a shell: type a line and press Enter; answers as send-keys does
 define line text str Enter key send-keys end
-# pane -- capture : the pane's screen as it is now
-define screen capture end
 # -- pane : a tab with a shell, in workspace agent, on an attached client's screen (with none: opts 80 24 size str agent in new-tab)
 define shell opts str agent in new-tab end
 # version -- list : the five counts of a version, an action's or wait's answer, or its text: respawns screen bells done ended
