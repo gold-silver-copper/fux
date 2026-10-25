@@ -165,7 +165,7 @@ impl Made {
 }
 
 /// A pane's size to begin with, and the cell its program is told it
-/// starts in: none in a tab no terminal draws yet (`Session::graphics`).
+/// starts in: none in a tab with no host yet (`Session::graphics`).
 type Starts = (Size, Option<fux_vt::CellSize>);
 
 /// A pane to make: what it starts, where, what it takes of its starter,
@@ -1440,13 +1440,13 @@ impl Session {
         self.hold_copies();
     }
 
-    /// Each pane whose program was told another cell than the terminal
-    /// that draws it says now (`graphics`) is told that one: as the cell
-    /// a terminal says changes, or another terminal draws the pane (one
-    /// said it draws sixel, the one drawing it left or another typed
-    /// there). Its terminal is sized in pixels for it, which signals its
-    /// program, not left till it writes. One no terminal that said a cell
-    /// draws keeps the cell it was told (`Pane::host`).
+    /// Each pane whose program was told another cell than its host's
+    /// terminal says now (`graphics`) is told that one: as the cell a
+    /// terminal says changes, or another client hosts the pane (the host
+    /// left, or another typed there). Its terminal is sized in pixels for
+    /// it, which signals its program, not left till it writes. One whose
+    /// host said no cell, or with no host, keeps the cell it was told
+    /// (`Pane::host`).
     fn host_cells(&mut self) {
         let told = |p: &&Pane| {
             let drawn = self.graphics(p.id()).cell();

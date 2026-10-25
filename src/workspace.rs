@@ -45,8 +45,8 @@ pub struct Tab {
     changed: bool,
     fit: Fit,
     seats: BTreeMap<ClientId, Seat>,
-    /// The client that last typed into it, whose terminal answers its panes'
-    /// colour queries (`outer`).
+    /// The client that last typed into it, which hosts its panes while it
+    /// shows it (`Session::host`).
     pub(crate) typist: Option<ClientId>,
 }
 
