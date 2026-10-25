@@ -1,7 +1,6 @@
 //! The server's settings: what every pane and client of it shares, set by
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
-use crate::code::Code;
 use crate::words;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,13 +35,13 @@ macro_rules! settings {
         impl Config {
             /// Sets setting `name` to `value`, its text, as its `Reads`
             /// reads it. A setting refused says why.
-            pub fn set(&mut self, name: &str, value: &str) -> Result<(), Refused> {
-                let named = |Refused(code, why)| Refused(code, format!("{name}: {why}"));
+            pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
+                let named = |why| format!("{name}: {why}");
                 match name {
                     $($name => self.$field = <$reads as Reads>::read(value).map_err(named)?,)*
                     other => {
                         let all = words::listed(NAMES, "and");
-                        return Err(format!("no setting {other:?}; the settings are {all}").into());
+                        return Err(format!("no setting {other:?}; the settings are {all}"));
                     }
                 }
                 Ok(())
@@ -69,7 +68,7 @@ macro_rules! settings {
 pub trait Reads {
     type Value;
     fn takes() -> String;
-    fn read(text: &str) -> Result<Self::Value, Refused>;
+    fn read(text: &str) -> Result<Self::Value, String>;
     fn show(value: &Self::Value) -> String;
 }
 
@@ -97,17 +96,6 @@ settings! {
     /// which may have started long ago. One the starter lacks is unset,
     /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
     update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec();
-}
-
-/// Why a setting is refused: its code (`config`, or its value's own, as
-/// `open_quote` for a shell's line), and why.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Refused(pub Code, pub String);
-
-impl From<String> for Refused {
-    fn from(why: String) -> Self {
-        Self(Code::Config, why)
-    }
 }
 
 /// What `update-environment` names at first.
@@ -198,11 +186,11 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
     fn takes() -> String {
         format!("a number, {MIN} to {MAX}")
     }
-    fn read(text: &str) -> Result<usize, Refused> {
+    fn read(text: &str) -> Result<usize, String> {
         let n: i128 = text.parse().map_err(|_| "not a number".to_owned())?;
         (usize::try_from(n).ok())
             .filter(|n| (MIN..=MAX).contains(n))
-            .ok_or_else(|| format!("out of range, {MIN} to {MAX}").into())
+            .ok_or_else(|| format!("out of range, {MIN} to {MAX}"))
     }
     fn show(value: &usize) -> String {
         value.to_string()
@@ -215,10 +203,10 @@ impl Reads for Limit {
     fn takes() -> String {
         format!("seconds, 0 to {MAX_WAIT}")
     }
-    fn read(text: &str) -> Result<Limit, Refused> {
+    fn read(text: &str) -> Result<Limit, String> {
         let n: i128 = text.parse().map_err(|_| "not a number".to_owned())?;
         let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
-        Ok(Limit::read(secs)?)
+        Limit::read(secs)
     }
     fn show(value: &Limit) -> String {
         value.seconds().to_string()
@@ -231,11 +219,11 @@ impl Reads for bool {
     fn takes() -> String {
         "on or off".to_owned()
     }
-    fn read(text: &str) -> Result<bool, Refused> {
+    fn read(text: &str) -> Result<bool, String> {
         match text {
             "on" | "true" => Ok(true),
             "off" | "false" => Ok(false),
-            other => Err(format!("{other:?} is not on or off (true or false)").into()),
+            other => Err(format!("{other:?} is not on or off (true or false)")),
         }
     }
     fn show(value: &bool) -> String {
@@ -243,18 +231,17 @@ impl Reads for bool {
     }
 }
 
-/// A command line, split as a shell splits it.
+/// A program and its arguments, separated by blanks.
 impl Reads for Shell {
     type Value = Shell;
     fn takes() -> String {
-        "a program and its arguments".to_owned()
+        "a program and its arguments, separated by blanks".to_owned()
     }
-    fn read(text: &str) -> Result<Shell, Refused> {
+    fn read(text: &str) -> Result<Shell, String> {
         Shell::parse(text)
     }
     fn show(value: &Shell) -> String {
-        let words: Vec<String> = value.argv().iter().map(|w| words::quote(w)).collect();
-        words.join(" ")
+        value.argv().join(" ")
     }
 }
 
@@ -264,11 +251,10 @@ impl Reads for Vec<String> {
     fn takes() -> String {
         "variable names, separated by blanks".to_owned()
     }
-    fn read(text: &str) -> Result<Vec<String>, Refused> {
+    fn read(text: &str) -> Result<Vec<String>, String> {
         (text.split_whitespace())
             .map(|name| crate::command::var_name(name).map(|()| name.to_owned()))
             .collect::<Result<_, String>>()
-            .map_err(Refused::from)
     }
     fn show(value: &Vec<String>) -> String {
         value.join(" ")
@@ -284,17 +270,15 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// A command line, split as a shell splits it: a program first.
-    pub fn parse(value: &str) -> Result<Shell, Refused> {
-        let words =
-            words::split(value).map_err(|why| Refused(Code::from(fuxth::Code::OpenQuote), why))?;
-        match words.split_first() {
-            Some((program, args)) if !program.is_empty() => Ok(Shell {
-                program: program.clone(),
-                args: args.to_vec(),
-            }),
-            Some(_) | None => Err(Refused::from("a program is needed".to_owned())),
-        }
+    /// Words separated by blanks, the program first: no quoting, so no
+    /// word holds a blank.
+    pub fn parse(value: &str) -> Result<Shell, String> {
+        let mut words = value.split_whitespace().map(str::to_owned);
+        let program = words.next().ok_or("a program is needed")?;
+        Ok(Shell {
+            program,
+            args: words.collect(),
+        })
     }
 
     pub fn program(&self) -> &str {
@@ -333,7 +317,7 @@ mod tests {
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
-        let below = config.set("history-bytes", "-1").map_err(|e| e.1);
+        let below = config.set("history-bytes", "-1");
         assert!(below.is_err_and(|e| e.contains("out of range")));
         assert!(config.set("buffers", "0").is_err());
         assert!(config.set("nonsense", "1").is_err());

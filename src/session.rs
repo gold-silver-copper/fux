@@ -2323,7 +2323,7 @@ impl Session {
                 // each client's next paint.
                 self.config
                     .set(option, value)
-                    .map_err(|crate::config::Refused(code, why)| fail(code, why))?;
+                    .map_err(|why| fail(Code::Config, why))?;
                 // Every pane keeps the history they say.
                 let history = self.config.history_bytes;
                 self.parts.each_pane_mut(|p| p.set_history_bytes(history));
@@ -3334,7 +3334,7 @@ pub(crate) mod testing {
     /// named after it), started at 80 by 24.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: crate::config::Shell::parse("/bin/sh").map_err(|e| e.1)?,
+            shell: crate::config::Shell::parse("/bin/sh")?,
             ..config
         };
         let run = crate::command::Run::now().ok_or("no clock")?;
