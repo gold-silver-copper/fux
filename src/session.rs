@@ -4749,8 +4749,6 @@ mod tests {
         Ok(())
     }
 
-    /// A saved session names only the tabs given a name: one fux named by
-    /// its place (`tab-3`, its place now 2) comes back named by its place
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
@@ -4795,6 +4793,8 @@ mod tests {
         Ok(())
     }
 
+    /// A saved session names only the tabs given a name: one fux named by
+    /// its place (`tab-3`, its place now 2) comes back named by its place
     /// again, not as a name given, which a tab named so later could not
     /// take.
     #[test]
