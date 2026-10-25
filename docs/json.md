@@ -131,6 +131,10 @@ One object a line: `{"event":NAME,"pane":"%3","tab":"@2","workspace":"+2",…}`,
 happened in the whole session, one line each: each is written to the
 session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
+The journal keeps the session's last 16,384 entries, for every stream
+alike: a pane that makes many in one round (a flood of bells) can make
+even a stream that reads at once, of another pane, miss some, which
+`missed` says.
 
 | `event` | Also |
 | --- | --- |

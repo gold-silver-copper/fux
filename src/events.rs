@@ -447,7 +447,8 @@ mod tests {
 
     /// Every event's name, a pane's, a tab's or workspace's and the
     /// stream's own, is in docs/json.md's table of events, and the table
-    /// names no other.
+    /// names no other; and the docs say how many entries the journal
+    /// keeps as it does.
     #[test]
     fn every_event_is_in_the_docs() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
@@ -506,6 +507,9 @@ mod tests {
             .map(|name| name.trim_matches('`'))
             .collect();
         assert_eq!(names, documented);
+        // The bound it states is the one the journal keeps.
+        let kept = format!("last {},{:03} entries", KEPT / 1000, KEPT % 1000);
+        assert!(docs.contains(&kept), "{kept}");
         Ok(())
     }
 }
