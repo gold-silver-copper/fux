@@ -25,6 +25,7 @@ const SOURCES: &[&str] = &[
     include_str!("../../src/render.rs"),
     include_str!("../../src/script/mod.rs"),
     include_str!("../../src/script/words.rs"),
+    include_str!("../../src/screens.rs"),
     include_str!("../../src/server.rs"),
     include_str!("../../src/session.rs"),
     include_str!("../../src/socket.rs"),
