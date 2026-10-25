@@ -1283,6 +1283,9 @@ fn bar(
     );
     let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
     let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
+    // Panes this screen cuts off or hides, named before the title, and
+    // given room past the title's share of the bar.
+    let mut unseen_width = 0;
     let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
         let colour = Color::Idx(if notice.error { 9 } else { 11 });
         Some((
@@ -1300,6 +1303,7 @@ fn bar(
             .and_then(|f| session.parts.panes().get(&f))
             .map(|p| {
                 let mut text = unseen(session, view, placement);
+                unseen_width = width(&text);
                 text.push_str(&format!("{} {}", p.id(), p.label()));
                 if view.zoom {
                     text.push_str(" [zoom]");
@@ -1307,10 +1311,12 @@ fn bar(
                 (text.into(), base)
             })
     };
-    // At most three quarters of the bar, and a gap before it. Exact: the
-    // quarters of a u16 add up to less than one.
+    // At most three quarters of the bar, or what names the unseen panes if
+    // wider, and a gap before it. Exact: the quarters of a u16 add up to
+    // less than one.
     let right_width = right.as_ref().map_or(0, |(t, _)| {
-        width(t).min((view.cols / 2).saturating_add(view.cols / 4))
+        let share = (view.cols / 2).saturating_add(view.cols / 4);
+        width(t).min(share.max(unseen_width)).min(view.cols)
     });
     let left_limit = view
         .cols
