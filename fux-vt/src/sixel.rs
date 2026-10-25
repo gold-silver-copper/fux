@@ -440,11 +440,13 @@ impl Decoder {
             usize::try_from(u64::from(c).saturating_mul(u64::from(r)))
                 .is_ok_and(|pixels| pixels <= MAX_PIXELS)
         });
-        // The first that fits beside the pictures kept, else the first
-        // that fits once pictures are let go: none is let go for a try
-        // not taken (B01).
-        let kept = tries
-            .clone()
+        // The first that doubles and fits beside the pictures kept, else
+        // the first that fits once pictures are let go: none is let go for
+        // a try not taken (B01). Grown just to what it needs beside them,
+        // a picture drawn a column at a time would copy all it has for
+        // each (B03).
+        let kept = (tries.clone())
+            .filter(|&(c, r)| (c, r) != (right, bottom) || (c, r) == (cols, rows))
             .find(|&(c, r)| self.room_for(c, r, false, room));
         let chosen = kept.or_else(|| tries.find(|&(c, r)| self.room_for(c, r, true, room)));
         let Some((cols, rows)) = chosen else {
