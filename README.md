@@ -4,7 +4,7 @@ A small terminal multiplexer. One server keeps your shells running in
 workspaces, tabs and split panes; `fux` attaches a terminal to it. Every
 other `fux` command line is a short program in **fuxth**, a tiny Forth made
 for the shell, and so are fux's config, key bindings, command prompt and
-saved sessions. Several terminals can attach at once, each with its own
+dumped sessions. Several terminals can attach at once, each with its own
 view and its own keys. fux is driven from the keyboard: it has no mouse
 actions of its own, by design, and passes the mouse only to a program that
 asks for it (see [Terminal features](#terminal-features)).
@@ -69,9 +69,10 @@ fux %3 str q text send-keys                       # press q: its version from be
   command's end, an exit). A failure prints `fux: CODE: MESSAGE` on stderr,
   with the file, line and word, and exits 1; a wait exits 4 if the pane
   closed, 124 if nothing changed in time.
-- A single argument with spaces is a whole program (`fux 'ls json'`);
-  otherwise `fux FILE` runs a file (one with a `/` or ending `.fux`), and
-  `fux -` runs what stdin says. `#` starts a comment.
+- A single argument is a whole program (`fux 'ls json'`), never a file,
+  whatever it holds; `fux --file FILE` runs a file, so a script can start
+  with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin says.
+  `#` starts a comment.
 - The language's core is small on purpose: a few words and parsing words
   (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
   `fux help` and at length in [fuxth/README.md](fuxth/README.md).
@@ -124,8 +125,11 @@ each one's code): `type` and `press` (text and a key into a pane), `line`
 
 A pane is `%N`, a tab `@N`, a workspace `+N` or its name, a client `cN`:
 `str %3 pane`, `str @2 tab`, `str work workspace`, `str c1 client`. `pane`
-also takes a tab's name (`run`'s tabs are named after their program), `tab`
-and `workspace` a pane, the tab or workspace it is in. Inside a pane,
+also takes a tab's name, the tab's one pane (`run`'s tabs are named after
+their program), `tab` and `workspace` a pane, the tab or workspace it is
+in. A pane's own name (what `rename` gave it, else its program's) finds it
+through `pane-named` alone: `str logs pane-named`. A title a program sets
+finds nothing. Inside a pane,
 `here` is that pane (`FUX_PANE`, below). In a key's program or the
 prompt's, `me` is the client whose key it is, and `me focused` its focused
 pane.
@@ -283,7 +287,7 @@ prints them all.
 | `TERM` | `xterm-256color` |
 | `TERM_PROGRAM`, `TERM_PROGRAM_VERSION` | `fux` and fux's version, not the outer terminal's, whose features fux may not have |
 | `FUX_PANE` | the pane, `%N`: `here` to a fux command run there |
-| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it; a grant's socket if the pane was started through one, so what runs there stays within the grant |
+| `FUX_SOCKET` | the socket of the pane's server, so a fux command there reaches it |
 | `FUX_SERVER` | which run of which server the pane is of, the run every version names. A fux command from a pane of another server, or of an earlier run of this one, or with `FUX_PANE` and no `FUX_SERVER`, has no `here` there (`stray_pane`); `kill-server` from one of the server's own panes is refused (`own_server`) |
 | `FUX` | the fux executable the server runs, unset if the server cannot name it: what a key's program or a script in a pane runs, as `"${FUX:-fux}"`, when `fux` may not be on its PATH (a server started from a desktop launcher or a systemd unit) |
 
@@ -373,7 +377,7 @@ once you bind them.
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
-holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
+holds first): `fux str dev workspace dump-of > dev.fux; fux --file dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
 (`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
@@ -389,17 +393,20 @@ one row does. Resizing a border weighs a split's panes by their sizes, and
 makes room for more. A close is never refused: shares it merges past that
 bound are rounded to the nearest that fit, which the `rounded` event says.
 
-A **server saves its session** the same way, with the ids it had: at once
-after a change to what it holds (a workspace, tab or pane made, closed,
-moved, renamed or respawned, an order, a border, a size given), and about
-a second after what output changes (a shell's directory), in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
-written whole and moved in place, yours alone. A server started on the same
-socket after a crash, a `kill -9` or a reboot runs it to bring the session
-back with the same ids: shells start fresh in their directories; a program
-`run` started waits, saying so on its screen, until `respawn` starts it
-(`paused` in `ls json`). Each tab comes back at the size it had, as a dump
-makes it (`TAB resize-auto` lets one fit clients again); a client that
-attaches meanwhile is let in once it is back. `kill-server` and the last pane closing forget it.
+Nothing is saved on its own. To keep a session past its server (a crash, a
+`kill -9`, a reboot), dump it when you choose, and replay the dump on a
+fresh server:
+
+```sh
+fux dump > ~/session.fux              # save when you choose
+fux start && fux --file ~/session.fux # replay on a fresh server
+```
+
+A dump makes the layouts and launches again: each shell starts afresh in
+its directory, each program `run` started starts again. It never brings
+back what a process held: its screen, its history, what ran in a shell. A
+pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
+without it, and a comment line says so: it starts where the dump is run.
 
 ## Terminal features
 
@@ -470,6 +477,25 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
 
 ## Not included
 
+- **Pane logs** (tmux's `pipe-pane`): run the program under `script` in its
+  pane, so it still writes to a terminal, rather than to a pipe as with
+  `tee`. On Linux (util-linux):
+
+  ```sh
+  fux opts str script program str -q arg str -e arg str -f arg str LOG arg str -c arg str 'make test' arg run
+  ```
+
+  On macOS and the BSDs, whose `script` takes the command as its last
+  words and flushes with `-F`:
+
+  ```sh
+  fux opts str script program str -q arg str -F arg str LOG arg str sh arg str -c arg str 'make test' arg run
+  ```
+
+  LOG holds the raw bytes the program wrote to its terminal; util-linux
+  adds a first and a last line of its own, which BSD `-q` leaves out. `-e`
+  (util-linux) makes the pane's exit status the program's, which BSD
+  `script` always gives.
 - **fux's own mouse actions**: the mouse reaches only programs that ask for
   it (see [Terminal features](#terminal-features)).
 - **Mouse reports in pixels** (mode 1016): your terminal tells fux the
@@ -478,15 +504,17 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
-- **Programs that outlive their server**: a crash ends them; the next server
-  brings back the layout, and `PANE respawn` starts each again.
+- **Programs that outlive their server**, or a session saved on its own: a
+  crash ends them; replay a `dump` you saved to make the layout again.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
 - **Watching the config file**: a client runs it as it attaches.
 
 ## Security
 
-The server listens only on a Unix socket: `str PATH socket`, `str NAME
+The server listens only on a Unix socket, which is the only way to
+control it: a sandbox that denies `connect` to it cannot drive fux. The
+socket is `str PATH socket`, `str NAME
 server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
 `server.sock` there. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
 `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to
@@ -512,13 +540,19 @@ Against mistakes, rather than against a program of yours that means harm:
   terminal is attached (headless clients do not count), is refused:
   `force-kill-server` stops it anyway. `kill` takes a handle, never a
   default, so an empty variable closes nothing.
-- `fux str WS str PATH grant` makes a second socket whose requests reach
-  workspace WS alone: an agent given only it can run, read and close what is
-  there, where you can watch it in your own server, and nothing else (no
-  other workspace, the settings, the buffers, clients or the server). `fux
-  str PATH revoke` closes it. Keys it sends into a shell you started there
-  run as you, with your shell's own socket: grant a workspace of the agent's
-  own panes.
+- To keep an agent to panes of its own, give it a server of its own, a
+  session apart from yours:
+
+  ```sh
+  FUX_SOCKET=/run/user/1000/agent.sock fux start
+  FUX_SOCKET=/run/user/1000/agent.sock fux opts 120 40 size new-workspace
+  ```
+
+  An agent given only that socket reaches only what runs there; you watch
+  it by attaching to the socket (`FUX_SOCKET=… fux watch`, or `fux attach`
+  to type there too). Panes never move between servers. It keeps a mistake
+  in one session from reaching the other, nothing more: both servers run as
+  you, so neither is kept from your own processes and files.
 - `fux watch` watches without typing into anything.
 
 ## Development

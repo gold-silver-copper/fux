@@ -103,8 +103,6 @@ pub struct Opts {
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
-    pub ids: crate::id::Wanted,
-    pub log: Option<String>,
     pub kill: bool,
     /// How long a wait waits at most.
     pub timeout: Option<crate::config::Limit>,
@@ -521,20 +519,28 @@ pub struct Server {
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
-/// program): a flag it looks at between steps, and what ends its
-/// connection's reads under a request that waits.
+/// program): a flag it looks at between steps and before each request, and
+/// the connection of the request under way, if one is, which it shuts down.
 #[derive(Clone, Default)]
 pub struct Stop {
     flag: Arc<AtomicBool>,
-    stream: Arc<Mutex<Option<io::PipeWriter>>>,
+    stream: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        if let Ok(mut stream) = self.stream.lock() {
-            *stream = None;
+        if let Some(stream) = self.stream.lock().ok().and_then(|mut s| s.take()) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// `stream` is the connection of the request under way (`None`: no
+    /// request is): what a stop shuts down.
+    fn hold(&self, stream: Option<std::os::unix::net::UnixStream>) {
+        if let Ok(mut held) = self.stream.lock() {
+            *held = stream;
         }
     }
 
@@ -578,6 +584,11 @@ impl Server {
     }
 }
 
+/// A run stopped from another thread (`Stop`).
+fn cancelled() -> Failed {
+    Failed::new(Code::Cancelled, "stopped (the prefix, then Esc)")
+}
+
 fn client_failed(error: client::Error) -> Failed {
     Failed::new(error.code(), error.to_string())
 }
@@ -602,18 +613,27 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let mut opened = client::Requests::open(&socket).map_err(client_failed)?;
-                // A connection a stop can end.
-                if let Some(stop) = &self.stop
-                    && let Ok(mut held) = stop.stream.lock()
-                {
-                    *held = opened.stopper();
-                }
+                let opened = client::Requests::open(&socket).map_err(client_failed)?;
                 self.requests.insert(opened)
             }
         };
-        let reply = requests.ask(asked, out).map_err(client_failed);
-        if reply.is_err() {
+        // Held while it asks, so a stop ends a request that waits; a stop
+        // that came first is seen once it is held, so none is missed.
+        if let Some(stop) = &self.stop {
+            stop.hold(requests.stopper());
+        }
+        let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
+            true => Err(cancelled()),
+            false => requests.ask(asked, out).map_err(client_failed),
+        };
+        // Let go of before the flag is read: a stop from then on cannot
+        // shut what is kept.
+        if let Some(stop) = &self.stop {
+            stop.hold(None);
+        }
+        // A failed request's connection is not asked again, nor one a stop
+        // may have shut, however the request ended.
+        if reply.is_err() || self.stop.as_ref().is_some_and(Stop::stopped) {
             self.requests = None;
         }
         reply
@@ -681,10 +701,7 @@ pub fn run_capped(
 ) -> Result<Vec<Value<Fux>>, Failed> {
     loop {
         if stop.is_some_and(Stop::stopped) {
-            return Err(Failed::new(
-                Code::Cancelled,
-                "stopped (the prefix, then Esc)",
-            ));
+            return Err(cancelled());
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             // No try may name it: it ends the run, said at the step reached.
@@ -999,30 +1016,24 @@ struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        use crate::command::Reaches as R;
-        match asked.request.reaches() {
-            R::Settings { option, value } => match &mut self.0 {
-                Some(server) => server.ask(asked, out),
-                None => match crate::config::Config::default().set(option, value) {
-                    Ok(()) => Ok(Reply::default()),
-                    Err(why) => Err(Failed::new(Code::Config, why)),
-                },
-            },
-            R::Reads
-            | R::Shapes
-            | R::Streams
-            | R::Server
-            | R::Buffers { .. }
-            | R::Client { .. } => Err(Failed::new(
+        let Request::Do(crate::command::Command::Set { option, value }) = &asked.request else {
+            return Err(Failed::new(
                 Code::NotConfig,
                 "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
-            )),
+            ));
+        };
+        match &mut self.0 {
+            Some(server) => server.ask(asked, out),
+            None => match crate::config::Config::default().set(option, value) {
+                Ok(()) => Ok(Reply::default()),
+                Err(why) => Err(Failed::new(Code::Config, why)),
+            },
         }
     }
 }
 
-/// A program that may not do what the client does itself: a config's, a
-/// key's, a saved session's.
+/// A program that may not do what the client does itself: a config's or a
+/// key's.
 pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
@@ -1035,49 +1046,10 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     Err(Failed::new(Code::NotHere, why))
 }
 
-/// Brings back a saved session: its program run against the server on
-/// `socket`, ids asked for as saved, programs left for `respawn`.
-pub fn restore(socket: &SocketPath, path: &std::path::Path, text: &str) -> Result<(), Failed> {
-    let mut context = client::context();
-    context.restoring = true;
-    // Its panes are its own, not a pane's it runs in.
-    (context.pane, context.server) = (None, None);
-    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
-    let name = path.display().to_string();
-    run_quiet(&name, text, context, None, &mut Layout(&mut server))
-}
-
-/// The most steps a program the client runs takes (a config, a saved
-/// session, a key's or a screen's): one that loops without end fails rather
+/// The most steps a program the client runs takes (a config, a key's or a
+/// screen's): one that loops without end fails rather
 /// than spinning the client.
 pub const PROGRAM_STEPS: u64 = 10_000_000;
-
-/// What a saved session's requests go to: those that make and shape panes,
-/// tabs and workspaces, and find them; never what stops the server, grants,
-/// sets, streams events or reaches a client, whatever the file says.
-struct Layout<'a>(&'a mut Server);
-
-impl Asks for Layout<'_> {
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        use crate::command::Reaches as R;
-        let refused = match asked.request.reaches() {
-            R::Server => Some("kill-server, grant or revoke"),
-            R::Settings { .. } => Some("set"),
-            R::Client { .. } => Some("a client's words"),
-            // A stream that never ends would hold the restore, and every
-            // request waiting for it, for good.
-            R::Streams => Some("events"),
-            R::Reads | R::Shapes | R::Buffers { .. } => None,
-        };
-        match refused {
-            Some(word) => Err(Failed::new(
-                Code::NotLayout,
-                format!("{word} in a saved session: it makes and shapes, and does nothing else"),
-            )),
-            None => self.0.ask(asked, out),
-        }
-    }
-}
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
@@ -1111,17 +1083,19 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
 }
 
-/// The program `args` give: none attaches; `-` is stdin; one argument
-/// holding a blank is a whole program, as a shell passes `fux 'ls json'`;
-/// else one with a `/` or ending `.fux` names a file; else each is a word.
+/// The program `args` give: none attaches; `-` is stdin; `--file FILE`
+/// a file (`#!/usr/bin/env -S fux --file`); help as other programs give
+/// it; any other one argument a whole program, as a shell passes
+/// `fux 'ls json'`, never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
     Ok(match args {
         [] => token::arguments(&["attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => token::source("stdin", &read_text("stdin", io::stdin())?)?,
-        [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
-        [file] if file.contains('/') || file.ends_with(".fux") => {
-            token::source(file, &read_file(file.as_ref())?)?
+        [flag, file] if flag == "--file" => token::source(file, &read_file(file.as_ref())?)?,
+        [flag, ..] if flag == "--file" => {
+            let why = "--file runs one file, and takes nothing after it: fux --file FILE";
+            return Err(Failed::new(Code::Usage, why));
         }
         // Help as other programs give it: `help agents TOPIC`, `help json`,
         // `help WORD`, `--help`, `--version`.
@@ -1135,6 +1109,7 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
         },
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
+        [line] => token::source("command line", line)?,
         words => token::arguments(words),
     })
 }
@@ -1177,13 +1152,26 @@ fn read_file(path: &std::path::Path) -> Result<String, Failed> {
 
 #[cfg(test)]
 mod tests {
-    /// A whole program in one argument is a program, though a word in it
-    /// holds a `/`: never a file to read.
+    /// One argument is a whole program, though it holds a `/` or ends
+    /// `.fux`: never a file to read, which `--file` names.
     #[test]
-    fn one_argument_with_a_blank_is_a_program() -> Result<(), super::Failed> {
-        let tokens = super::program(&["%2 str \"ls /tmp\" line".to_owned()])?;
-        let words: Vec<&str> = tokens.iter().map(|t| &*t.text).collect();
-        assert_eq!(words, ["%2", "str", "ls /tmp", "line"]);
+    fn one_argument_is_a_program() -> Result<(), super::Failed> {
+        let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
+            let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            Ok(super::program(&args)?
+                .into_iter()
+                .map(|t| t.text.to_string())
+                .collect())
+        };
+        assert_eq!(
+            words(&["%2 str \"ls /tmp\" line"])?,
+            ["%2", "str", "ls /tmp", "line"]
+        );
+        assert_eq!(words(&["./no/such.fux"])?, ["./no/such.fux"]);
+        let read = words(&["--file", "./no/such.fux"]).err().map(|f| f.code);
+        assert_eq!(read, Some(super::Code::Read));
+        let more = words(&["--file", "a.fux", "b"]).err().map(|f| f.code);
+        assert_eq!(more, Some(super::Code::Usage));
         Ok(())
     }
 

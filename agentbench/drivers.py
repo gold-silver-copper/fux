@@ -388,8 +388,6 @@ class Fux(Driver):
         return self.run([self.bin, *words], check=check, timeout=timeout)
 
     def start(self):
-        # Its saved sessions stay with the run, not in the user's home.
-        self.env["XDG_STATE_HOME"] = os.path.join(self.work, ".fux-state")
         self.run([self.bin, "force-kill-server"], check=False)
         self.calls -= 1
         self.server = subprocess.Popen([self.bin, "__serve", self.env["FUX_SOCKET"]],

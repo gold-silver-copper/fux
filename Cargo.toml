@@ -27,12 +27,6 @@ signal-hook = "0.4"
 fuxix = { path = "fuxix", version = "0.7.0" }
 fuxth = { path = "fuxth", version = "0.6.0" }
 
-# The tests' sandbox (tests/support/sandbox.rs): a seccomp filter such as
-# Codex's, installed with a safe call, since the tests forbid unsafe code.
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-libc = "0.2"
-seccompiler = "0.5"
-
 [profile.dev]
 debug = 0
 
@@ -51,16 +45,24 @@ strip = true
 lto = "thin"
 codegen-units = 1
 
-[lints.rust]
+[lints]
+workspace = true
+
+# The lints fux, fux-vt and fuxth share, on every target: library,
+# binary, examples and tests. What else differs is an attribute in a
+# library's lib.rs: `missing_docs` in fux-vt, and `print_stderr` forbidden
+# in fux-vt and fuxth (fux keeps it denied: its tests' server log is printed
+# with `eprintln!`, which alone the test harness captures). fuxix, where
+# fux's `unsafe` lives, keeps its own table: Cargo cannot lift a workspace
+# lint for one crate. fux-vt/peak, which uses `unsafe`, keeps its own too.
+[workspace.lints.rust]
 unused_must_use = "forbid"
 unconditional_recursion = "forbid"
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 suspicious = { level = "forbid", priority = -1 }
 print_stdout = "forbid"
-# Denied, not forbidden: the tests' server keeps printing its log, which
-# only `eprintln!` lets the test harness capture.
 print_stderr = "deny"
 dbg_macro = "forbid"
 unwrap_used = "forbid"

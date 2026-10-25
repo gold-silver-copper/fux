@@ -9,7 +9,7 @@ use crate::command::{
     Wheel, WsRef,
 };
 use crate::help;
-use crate::id::{ClientId, PaneId, Wanted};
+use crate::id::{ClientId, PaneId};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
@@ -89,6 +89,7 @@ pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 pub const WORDS: &[Word] = &[
     // Finding
     word("Finding", "pane", "ref -- pane", "the pane ref names: a tab's name (its one pane), %N, a pane, or a tab of one pane"),
+    word("Finding", "pane-named", "name -- pane", "the pane given that name (rename, or its program's); never a title"),
     word("Finding", "tab", "ref -- tab", "the tab ref names: its name, @N, or a pane's tab"),
     word("Finding", "workspace", "ref -- workspace", "the workspace ref names: its name, +N, or a pane's or tab's workspace"),
     word("Finding", "here", "-- pane", "the pane this runs in (FUX_PANE)"),
@@ -107,8 +108,6 @@ pub const WORDS: &[Word] = &[
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
-    word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
     word("Starting", "run", "opts -- answer", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
     word("Starting", "split", "subject -- answer", "split a pane: a shell, or the program given"),
@@ -141,7 +140,7 @@ pub const WORDS: &[Word] = &[
     word("Reading", "last-output", "x -- x", "capture: the last shell command's output, or the running one's so far (a full-screen one's: its screen to the cursor); fails no_marks where no command was marked (OSC 133); one of main-screen, alt-screen and last-output at most"),
     word("Reading", "rows", "x from to -- x", "capture: those rows only, from 0, each line they touch whole (with wrapped, those rows alone)"),
     word("Reading", "cols", "x from to -- x", "capture: those columns only, from 0"),
-    word("Reading", "ls", "-- listing", "workspaces, tabs, panes, clients and grants"),
+    word("Reading", "ls", "-- listing", "workspaces, tabs, panes and clients"),
     word("Reading", "info", "handle -- record", "a pane, tab or workspace, all of it"),
     word("Reading", "get", "handle field -- value", "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd"),
     word("Reading", "json", "value -- json", "value as JSON (an answer as its JSON); a failed wait stops the program before json runs"),
@@ -167,8 +166,6 @@ pub const WORDS: &[Word] = &[
     word("Changing", "swap-panes", "pane pane --", "swap two panes"),
     word("Changing", "swap-toward", "pane way --", "swap a pane with its neighbour"),
     word("Changing", "reorder", "handle way --", "move one place: next or previous"),
-    word("Changing", "start-log", "pane file --", "keep what the pane's program writes from now on"),
-    word("Changing", "stop-log", "pane --", "stop keeping it"),
     word("Changing", "clear-history", "pane --", "drop the pane's history"),
     word("Changing", "buffers", "-- text", "the paste buffers, newest 0"),
     word("Changing", "buffer", "n -- text", "paste buffer n"),
@@ -207,8 +204,6 @@ pub const WORDS: &[Word] = &[
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
     word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
-    word("Server", "grant", "workspace socket -- path", "a socket whose requests reach that workspace alone; its path"),
-    word("Server", "revoke", "socket --", "close a grant's socket"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
     // Config
     word("Config", "prefix", "key --", "this client's prefix (config)"),
@@ -532,7 +527,6 @@ fn modify(
         "name" => built.name = Some(string(&next()?)?),
         "cwd" => built.cwd = Some(string(&next()?)?.into()),
         "in" => built.place = Some(workspace(&next()?)?),
-        "log-to" => built.log = Some(string(&next()?)?),
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
         "size" => built.size = Some(laid_out(&next()?, &next()?)?),
@@ -565,20 +559,6 @@ fn modify(
                 return Err(fail(Code::NoProgram, "comes after program"));
             }
             built.argv.push(arg);
-        }
-        "id" => {
-            let text = string(&next()?)?;
-            let bad = format!("{text:?} is not %N, @N or +N");
-            let ids = &mut built.ids;
-            let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
-                AnyRef::Pane(id) => ids.pane.replace(id).is_some(),
-                AnyRef::Tab(id) => ids.tab.replace(id).is_some(),
-                AnyRef::Workspace(id) => ids.workspace.replace(id).is_some(),
-            };
-            if given {
-                let why = format!("id {text}: one of its kind is given already");
-                return Err(fail(Code::Id, why));
-            }
         }
         "env" => {
             let (key, value) = (string(&next()?)?, next()?);
@@ -938,6 +918,12 @@ impl fuxth::Host for Host<'_> {
                     }
                 }
             }
+            "pane-named" => match string(&next()?)? {
+                name if name.trim().is_empty() => {
+                    Err(fail(Code::NoTarget, "an empty name names no pane"))
+                }
+                name => later(ask(Command::PaneNamed { name }, Then::Handle(Kind::Pane))),
+            },
             "here" => resolve(String::new(), Kind::Pane),
             "client" => {
                 let text = string(&next()?)?;
@@ -998,8 +984,6 @@ impl fuxth::Host for Host<'_> {
                             cwd: built.cwd,
                             env: built.env,
                             argv: built.argv,
-                            log: built.log,
-                            ids: built.ids,
                         };
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
@@ -1009,35 +993,24 @@ impl fuxth::Host for Host<'_> {
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
-                        ids: built.ids,
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
-                        ids: built.ids,
                     },
                 };
                 later(ask(command, Then::Handle(Kind::Pane)))
             }
             "split" => {
                 let (p, built) = request_pane(name, next()?)?;
-                let Wanted {
-                    pane: id,
-                    tab: None,
-                    workspace: None,
-                } = built.ids
-                else {
-                    return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
-                };
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
                     argv: built.argv,
                     cwd: built.cwd,
                     env: built.env,
-                    id,
                     shares: built.shares,
                 };
                 later(ask(split, Then::Handle(Kind::Pane)))
@@ -1293,14 +1266,6 @@ impl fuxth::Host for Host<'_> {
                 let toward = one_of(&next()?, &siblings)?;
                 tell(Command::Reorder { target: t, toward })
             }
-            "start-log" | "stop-log" => {
-                let target = pane(&next()?)?;
-                let file = match name {
-                    "start-log" => Some(string(&next()?)?),
-                    _ => None,
-                };
-                tell(Command::Log { target, file })
-            }
             "clear-history" => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
@@ -1404,12 +1369,6 @@ impl fuxth::Host for Host<'_> {
                 let value = text(&next()?)?;
                 tell(Command::Set { option, value })
             }
-            "grant" => {
-                let workspace = workspace(&next()?)?;
-                let socket = string(&next()?)?;
-                later(ask(Request::Grant(workspace, socket), Then::Text))
-            }
-            "revoke" => tell(Request::Revoke(string(&next()?)?)),
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------ config
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"

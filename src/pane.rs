@@ -611,8 +611,6 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// `respawned`.
     pub respawns: u64,
     pub alerts: Alerts,
-    /// Where everything the program writes is kept too (`log-to`, `start-log`).
-    pub log: Option<std::fs::File>,
     /// Whether it is in the session.
     placed: S,
 }
@@ -676,7 +674,6 @@ impl Pane<Loose> {
             left: Left::default(),
             mouse_held: None,
             alerts: Alerts::default(),
-            log: None,
             placed: Loose,
         })
     }
@@ -698,7 +695,7 @@ impl<S> Pane<S> {
         let pane = moved!(
             id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
             colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
-            left, alerts, log
+            left, alerts
         );
         pane
     }
@@ -725,12 +722,6 @@ impl<S> Pane<S> {
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
     pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
-        if let Some(log) = &mut self.log {
-            // A log that cannot be written stops; the pane goes on.
-            if std::io::Write::write_all(log, bytes).is_err() {
-                self.log = None;
-            }
-        }
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
@@ -1020,18 +1011,6 @@ impl<S> Pane<S> {
         self.parser.set_history_bytes(bytes);
     }
 
-    /// Whether its program is one a restore brought back, waiting for
-    /// `respawn`.
-    pub fn paused(&self) -> bool {
-        match self.process {
-            Process::Absent => match self.runs {
-                Runs::Program(_) => true,
-                Runs::Shell => false,
-            },
-            Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
-        }
-    }
-
     /// Where it stands now (`Version`).
     pub fn counts(&self) -> crate::command::Counts {
         crate::command::Counts {
@@ -1079,7 +1058,7 @@ impl<S> Pane<S> {
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
         // old one (what it said, a bell, a copy, one refused, input dropped;
-        // its input it let go, `InputQueue::discard`), its colours and log.
+        // its input it let go, `InputQueue::discard`), and its colours.
         let Pane {
             id: _,
             name: _,
@@ -1088,7 +1067,6 @@ impl<S> Pane<S> {
             copied: _,
             uncopied: _,
             colours: _,
-            log: _,
             respawns: _,
             placed: Loose,
             title,

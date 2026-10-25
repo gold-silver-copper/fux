@@ -457,7 +457,6 @@ pub fn environment(command: &mut Command, dir: &Path) {
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", dir)
         .env("XDG_CONFIG_HOME", dir.join("config"))
-        .env("XDG_STATE_HOME", dir.join("state"))
         .env("PS1", "$ ")
         .env("ENV", "/dev/null")
         .env("SHELL", "/bin/sh")

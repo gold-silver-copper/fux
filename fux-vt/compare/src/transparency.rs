@@ -362,7 +362,7 @@ impl Through {
                 Outgoing::To(client, ToAttached::Exit(reason)) if client == self.client => {
                     return Err(format!("fux detached the client: {reason}"));
                 }
-                Outgoing::Shutdown { reason, .. } => return Err(format!("fux stopped: {reason}")),
+                Outgoing::Shutdown(reason) => return Err(format!("fux stopped: {reason}")),
                 Outgoing::To(
                     _,
                     ToAttached::Paint(_)

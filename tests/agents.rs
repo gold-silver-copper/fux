@@ -603,18 +603,15 @@ fn pictures_reach_a_terminal_that_draws_sixel() -> Outcome {
 }
 
 /// `respawn` starts a run program again in its pane, found by its tab's
-/// name; `log-to` keeps all it wrote; `all-history` reads all history,
+/// name; `all-history` reads all history,
 /// `main-screen` what a full-screen program hides, `alt-screen` its last
 /// screen; a mistyped key name is refused.
 #[test]
-fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
+fn run_programs_are_restarted_and_read_whole() -> Outcome {
     let server = Server::start("")?;
-    let log = server.dir.join("job.log");
-    let log_arg = log.to_string_lossy().into_owned();
     let script = "echo before; seq 500; printf '\\033[?1049h'; echo \"full $V\"; read go";
     let before = [
-        "str", "job", "name", "str", "V", "str", "a", "env", "str", &log_arg, "log-to", "40", "10",
-        "size",
+        "str", "job", "name", "str", "V", "str", "a", "env", "40", "10", "size",
     ];
     let started = server.ok(&run(&before, &["sh", "-c", script]))?;
     let pane = id(&started);
@@ -650,8 +647,6 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
     let again = server.ok(&again)?;
     assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
     shows_after(&server, &again, "full b")?;
-    let kept = std::fs::read_to_string(&log).map_err(e)?;
-    assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
     // A full-screen program's last screen, after it left it and exited.
     let menu = r"printf '\033[?1049hpicked beta'; printf '\033[?1049l'";
     let menu = id(&server.ok(&run(&[], &["sh", "-c", menu]))?);
@@ -838,7 +833,11 @@ fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let text: String = std::iter::repeat_n(line, 9216).collect();
     let file = server.dir.join("paste.fux");
     std::fs::write(&file, format!("{sink} str '{text}' paste send-keys")).map_err(e)?;
-    shows_after(&server, &server.ok(&[&file.to_string_lossy()])?, "921600")?;
+    shows_after(
+        &server,
+        &server.ok(&["--file", &file.to_string_lossy()])?,
+        "921600",
+    )?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
     let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
     let refused = server.fux(&[&many])?;
@@ -935,7 +934,6 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["str", "x", "name"], "respawn"),
         (&on, &["100", "30", "size"], "respawn"),
         (&on, &["str", "/", "cwd"], "respawn"),
-        (&on, &["str", "%99", "id"], "respawn"),
         (&on, &["vertical"], "respawn"),
         (&opts, &["str", "nowhere", "in"], "new-workspace"),
         (&opts, &["5", "timeout"], "new-tab"),
@@ -1109,7 +1107,7 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     {
         let file = server.dir.join(format!("recipe-{i}.fux"));
         std::fs::write(&file, &recipe).map_err(e)?;
-        let out = server.fux(&[&file.to_string_lossy()])?;
+        let out = server.fux(&["--file", &file.to_string_lossy()])?;
         assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
         assert!(out.stdout.contains(said), "{recipe}\n{}", out.stdout);
     }

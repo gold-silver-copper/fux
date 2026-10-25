@@ -24,7 +24,7 @@ def measure(bin_):
     shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d, mode=0o700)
     e = {k: v for k, v in os.environ.items() if k not in ("FUX_SOCKET", "FUX_PANE", "FUX_SERVER")}
-    e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"), XDG_STATE_HOME=os.path.join(d, "st"))
+    e.update(XDG_RUNTIME_DIR=d, FUX_SOCKET=os.path.join(d, "s"))
     run(bin_, e, "start")
     # 50,000 rows of 79 cells: 24 bytes a row and 8 a cell; a fux before
     # history-bytes counts rows.

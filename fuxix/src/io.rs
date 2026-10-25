@@ -57,6 +57,15 @@ fn cloexec_raw(raw: libc::c_int) -> Result<()> {
     check(unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) }).map(drop)
 }
 
+/// Points this process's stdout at what `to` is open on (`dup2` onto 1),
+/// closing what it was: a daemon done with its stdout points it at
+/// `/dev/null`, so nothing later opened takes descriptor 1.
+pub fn redirect_stdout(to: impl AsFd) -> Result<()> {
+    // SAFETY: dup2 takes two descriptor numbers and touches no memory; the
+    // one it replaces is stdout, which std writes through by number.
+    check(unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDOUT_FILENO) }).map(drop)
+}
+
 /// A copy of `fd` that a program this process runs inherits, as it would
 /// any descriptor opened without close-on-exec. For tests of what a pane's
 /// program inherits.

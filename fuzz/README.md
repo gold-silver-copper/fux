@@ -85,7 +85,7 @@ the server; words that read files are not run). After every line:
   prefix; the prefix never bound without it; code compiled as it is
   bound), accepts the same ones and holds the same prefix, bindings,
   labels, groups and repeats;
-- source's tokens, quoted as a saved session quotes words, split back to
+- source's tokens, quoted as a dump quotes words, split back to
   the same tokens; a program that does not compile fails with status 1
   and a code;
 - after a change to the keymap: no empty layer, no Escape after the
@@ -102,8 +102,7 @@ its client does: by the screen it has open (`screens::Screen`: a
 chooser, prompt, confirmation or copy mode), else through its bindings
 (`keymap::Held`, one keymap the clients share). It sends the session its
 actions, and runs its programs in-process as itself, asked as the tests
-ask (`session::InProcess`: a wait answered as the session stands, a grant
-refused; a screen one opens, built with what the session answers, opens), as it does the programs the
+ask (`session::InProcess`: a wait answered as the session stands; a screen one opens, built with what the session answers, opens), as it does the programs the
 session hands it (`ToAttached::Run`) and the keys sent to it
 (`ToAttached::Keys`); `ToAttached::Ended` ends its screen of that kind. Operations: bytes a
 client types (whole or in pieces), the Escape deadline, resizes, one to

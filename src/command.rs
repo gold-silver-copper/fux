@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -251,7 +251,7 @@ wire! {
 /// Which run of a server this is: its process and the moment it started,
 /// in nanoseconds since 1970 (`48211-1867a3f9c2b8e7d6`). No two runs share
 /// both: a process id is another process's only once this one ended, and
-/// that one started at another moment. A restart, or a restore, is a run
+/// that one started at another moment. A restart is a run
 /// of its own; so is a server on another socket. Its panes' `FUX_SERVER`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Run {
@@ -495,8 +495,6 @@ wire! {
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
             env: Env,
-            /// The ids it makes, if asked for (`id`, as saved sessions have).
-            ids: Wanted,
         },
         NewTab {
             target: Option<WsRef>,
@@ -504,7 +502,6 @@ wire! {
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
-            ids: Wanted,
         },
         Split {
             axis: Axis,
@@ -515,8 +512,6 @@ wire! {
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
-            /// The id it makes the pane with, if asked for.
-            id: Option<PaneId>,
             /// The shares of their split the split pane and the new one
             /// take (`shares`), if given; else the pane's is halved.
             shares: Option<(NonZeroU32, NonZeroU32)>,
@@ -530,9 +525,6 @@ wire! {
             cwd: Option<PathBuf>,
             env: Env,
             argv: Vec<String>,
-            /// A file everything the program writes goes to too.
-            log: Option<String>,
-            ids: Wanted,
         },
         /// The program `run` started, started again in its pane.
         Respawn {
@@ -592,12 +584,6 @@ wire! {
         DumpLayout {
             target: Option<AnyRef>,
         },
-        /// What the pane's program writes, kept in a file from now on; `None`
-        /// stops it.
-        Log {
-            target: PaneId,
-            file: Option<String>,
-        },
         /// The pane's history, dropped.
         ClearHistory {
             target: PaneId,
@@ -624,6 +610,11 @@ wire! {
         Resolve {
             text: String,
             kind: Kind,
+        },
+        /// The pane given the name `name` (by `rename`, or its program's),
+        /// answered with its id.
+        PaneNamed {
+            name: String,
         },
         ListBuffers,
         ShowBuffer {
@@ -735,54 +726,22 @@ impl Env {
     }
 }
 
-/// What a command reaches, which decides where it may run (a saved
-/// session, a config) and whether a client shows anything new after it:
-/// one answer per command, so a new command must give one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reaches<'a> {
-    /// Panes, tabs and workspaces, read; or a pane's program, handed input
-    /// or a signal whose effect, if any, comes back as its output.
-    Reads,
-    /// Panes, tabs and workspaces, made, shaped, named or ended; or what
-    /// they hold changed for those who see them: a notification, a log, a
-    /// pane's history cleared.
-    Shapes,
-    /// Their events, streamed until the reader goes: never ending of itself.
-    Streams,
-    /// The server itself: stopping it, granting a socket, revoking one.
-    Server,
-    /// A setting, to `value`.
-    Settings { option: &'a str, value: &'a str },
-    /// The paste buffers; `reads` if it only reads them.
-    Buffers { reads: bool },
-    /// A client's screen; `reads` if it only reads it or types at it (the
-    /// keys take effect as the client's own).
-    Client { reads: bool },
-}
-
-impl Reaches<'_> {
-    /// Whether every client's screen is as it was after it.
-    pub fn shows_nothing_new(self) -> bool {
-        match self {
-            Self::Reads | Self::Streams => true,
-            Self::Shapes | Self::Server | Self::Settings { .. } => false,
-            Self::Buffers { reads } | Self::Client { reads } => reads,
-        }
-    }
-}
-
 impl Command {
-    /// What it reaches.
-    pub fn reaches(&self) -> Reaches<'_> {
+    /// Whether every client's screen is as it was after it: one answer per
+    /// command, so a new command must give one.
+    pub fn shows_nothing_new(&self) -> bool {
         use Command as C;
         match self {
             C::Ls { .. }
             | C::Resolve { .. }
+            | C::PaneNamed { .. }
             | C::CapturePane { .. }
             | C::DumpLayout { .. }
             | C::SendKeys { .. }
             | C::SendMouse { .. }
-            | C::Signal { .. } => Reaches::Reads,
+            | C::Signal { .. }
+            | C::ListBuffers
+            | C::ShowBuffer { .. } => true,
             C::NewWorkspace { .. }
             | C::NewTab { .. }
             | C::Split { .. }
@@ -795,23 +754,19 @@ impl Command {
             | C::MovePane { .. }
             | C::SwapPane { .. }
             | C::ResizePane { .. }
-            | C::Log { .. }
             | C::ClearHistory { .. }
-            | C::Reorder { .. } => Reaches::Shapes,
-            C::KillServer { .. } => Reaches::Server,
-            C::Set { option, value } => Reaches::Settings { option, value },
-            C::ListBuffers | C::ShowBuffer { .. } => Reaches::Buffers { reads: true },
-            C::PasteBuffer { .. } => Reaches::Buffers { reads: false },
-            C::Client { action, .. } => Reaches::Client {
-                reads: match action {
-                    ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
-                    ClientAction::Detach
-                    | ClientAction::Choices(_)
-                    | ClientAction::Zoom
-                    | ClientAction::SelectPane(_)
-                    | ClientAction::SelectTab(_)
-                    | ClientAction::SelectWorkspace(_) => false,
-                },
+            | C::Reorder { .. }
+            | C::KillServer { .. }
+            | C::Set { .. }
+            | C::PasteBuffer { .. } => false,
+            C::Client { action, .. } => match action {
+                ClientAction::Capture | ClientAction::Keys(_) | ClientAction::Run(_) => true,
+                ClientAction::Detach
+                | ClientAction::Choices(_)
+                | ClientAction::Zoom
+                | ClientAction::SelectPane(_)
+                | ClientAction::SelectTab(_)
+                | ClientAction::SelectWorkspace(_) => false,
             },
         }
     }
@@ -830,10 +785,6 @@ wire! {
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),
-        /// A socket whose commands reach workspace `workspace` alone.
-        Grant(workspace: WsRef, socket: String),
-        /// The socket a grant made, closed.
-        Revoke(socket: String),
     }
 }
 
@@ -841,17 +792,5 @@ wire! {
 impl From<Command> for Request {
     fn from(command: Command) -> Request {
         Request::Do(command)
-    }
-}
-
-impl Request {
-    /// What it reaches.
-    pub fn reaches(&self) -> Reaches<'_> {
-        match self {
-            Self::Do(command) => command.reaches(),
-            Self::Wait(..) => Reaches::Reads,
-            Self::Events(..) => Reaches::Streams,
-            Self::Grant(..) | Self::Revoke(_) => Reaches::Server,
-        }
     }
 }

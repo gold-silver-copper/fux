@@ -366,8 +366,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     Ok(())
 }
 
-/// `fux -` runs stdin, and `fux FILE` a file: a word with a `/` or ending
-/// `.fux`.
+/// `fux -` runs stdin, and `fux --file FILE` a file, whatever its name.
 #[test]
 fn programs_come_from_stdin_and_files() -> Outcome {
     use std::io::Write;
@@ -393,9 +392,9 @@ fn programs_come_from_stdin_and_files() -> Outcome {
         let file = server.dir.join(name);
         std::fs::write(&file, program).map_err(e)?;
         let path = file.to_string_lossy().into_owned();
-        assert_eq!(server.ok(&[&path])?, "42\n%1\n", "{path}");
+        assert_eq!(server.ok(&["--file", &path])?, "42\n%1\n", "{path}");
     }
-    let missing = server.fux(&["missing.fux"])?;
+    let missing = server.fux(&["--file", "missing.fux"])?;
     assert_eq!(missing.status, 1);
     assert!(
         missing.stderr.starts_with("fux: read: "),
@@ -413,7 +412,7 @@ fn ls_json_list_keys_and_help() -> Outcome {
     let json = server.ok(&["ls", "json"])?;
     for field in [
         "{\"workspaces\":[{\"id\":\"+1\",\"name\":\"main\",\"tabs\":[{\"id\":\"@1\",\"name\":\"main\",\"panes\":[{\"id\":\"%1\",\"name\":\"sh\",\"rows\":9,\"cols\":50,\"pid\":",
-        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}],\"grants\":[]}",
+        "\"clients\":[{\"id\":\"c1\",\"rows\":10,\"cols\":50,\"workspace\":\"+1\",\"tab\":\"@1\",\"pane\":\"%1\",\"zoom\":false}]}",
     ] {
         assert!(json.contains(field), "{field}\nin\n{json}");
     }
@@ -511,5 +510,31 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     eventually("events to end", || {
         Ok(events.try_wait().map_err(e)?.is_some())
     })?;
+    Ok(())
+}
+
+/// A stop between requests ends the run, not the connection: the next
+/// run's request is asked on it, as one after a stop under way is asked on
+/// a new one.
+#[test]
+fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
+    use fux::script::Asks;
+    let server = Server::start("")?;
+    let path = server.socket.to_string_lossy().into_owned();
+    let stop = fux::script::Stop::default();
+    let mut asks = fux::script::Server::stoppable(fux::socket::Choice::Path(path), stop.clone());
+    let ls = fux::protocol::Asked {
+        request: fux::command::Command::Ls {
+            target: None,
+            get: None,
+        }
+        .into(),
+        context: fux::protocol::Context::default(),
+    };
+    let mut sink = std::io::sink();
+    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
+    stop.stop();
+    stop.reset();
+    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
     Ok(())
 }

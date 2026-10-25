@@ -82,10 +82,6 @@ codes! {
     Mismatch "mismatch",
     /// The client could not do its part: its socket, its terminal.
     Client "client",
-    /// A socket `grant` made, revoked, or reaching only its workspace.
-    NotGranted "not_granted",
-    /// A grant that cannot be made or revoked.
-    Grant "grant",
     // What a command names.
     /// A pane named is not there.
     NoPane "no_pane",
@@ -110,8 +106,6 @@ codes! {
     Selection "selection",
     /// A name taken by another pane, tab or workspace.
     NameTaken "name_taken",
-    /// An id asked for that was given before.
-    Id "id",
     /// Every id of a kind has been given.
     IdsExhausted "ids_exhausted",
     /// A value out of what a word takes.
@@ -119,8 +113,8 @@ codes! {
     /// A command used wrongly.
     Usage "usage",
     // What a command meets.
-    /// A program that exited, closed its terminal, or is paused since a
-    /// restart: nothing takes input there.
+    /// A program that exited or closed its terminal: nothing takes input
+    /// there.
     NotRunning "not_running",
     /// A program still running, which a respawn would not end.
     StillRunning "still_running",
@@ -147,8 +141,6 @@ codes! {
     Mouse "mouse",
     /// A signal that could not be sent.
     Signal "signal",
-    /// A log file that could not be opened.
-    Log "log",
     /// A directory that is not one.
     NotADirectory "not_a_directory",
     /// A client with a terminal, which sets its own size.
@@ -162,8 +154,7 @@ codes! {
     Timeout "timeout" TIMED_OUT,
     /// The pane waited on closed.
     Closed "closed" CLOSED,
-    /// Everything an event stream watched closed or, through a grant,
-    /// moved out of its workspace.
+    /// Everything an event stream watched closed.
     Gone "gone" CLOSED,
     // A program of words.
     /// A run of more steps than allowed.
@@ -171,11 +162,8 @@ codes! {
     /// A run the prefix, then Esc, stopped.
     Cancelled "cancelled" [run_loop],
     /// A word the client runs itself (attach, server, start, status), which
-    /// runs from the command line only: not a key's, a config's or a saved
-    /// session's.
+    /// runs from the command line only: not a key's or a config's.
     NotHere "not_here",
-    /// A word a saved session may not hold.
-    NotLayout "not_layout",
     /// A word a config file may not hold.
     NotConfig "not_config",
     /// The config file or a setting refused.

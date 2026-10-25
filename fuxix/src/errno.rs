@@ -24,8 +24,7 @@ impl Errno {
     pub(crate) const NAMETOOLONG: Self = Self(libc::ENAMETOOLONG);
     /// What macOS's `open("/dev/ptmx")` returns when it loses a race with
     /// another process's close, as well as when every PTY is in use (see
-    /// `pty::open`); and what opening a FIFO to write without blocking
-    /// returns when no one reads it.
+    /// `pty::open`).
     pub const NXIO: Self = Self(libc::ENXIO);
 
     /// The number.

@@ -18,9 +18,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "linux")]
-pub mod sandbox;
-
 pub type Outcome = Result<(), String>;
 
 /// A size a frame carries: never zero.
@@ -153,7 +150,6 @@ impl Server {
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
                 .env("HOME", &dir)
-                .env("XDG_STATE_HOME", dir.join("state"))
                 .env_remove("FUX_PANE")
                 .env_remove("FUX_SERVER")
                 // A stale one: its panes are given the server's own.
@@ -546,7 +542,7 @@ impl Client {
                     self.terminal.process(&bytes).map_err(e)?;
                 }
                 ToAttached::Exit(reason) => self.exit = Some(reason.to_owned()),
-                ToAttached::Welcome(me, _) if self.keyboard.is_none() => {
+                ToAttached::Welcome(me) if self.keyboard.is_none() => {
                     let keymap = self.keymap.clone();
                     self.keyboard =
                         Some(Keyboard::new(&self.socket, me, keymap, self.read_only).map_err(e)?);

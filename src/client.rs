@@ -1,12 +1,11 @@
 //! The clients: an attached one, which reads its terminal's keys, runs
-//! its own bindings, and sends the server typed actions, the server
-//! painting its terminal (or relaying the paints, if it did not take it);
+//! its own bindings, and sends the server typed actions, writing the
+//! paints the server relays to its terminal;
 //! a headless one; and the connection a program's requests go over.
 use crate::act::Act;
 use crate::code::Code;
 use crate::command::{Command, Request};
 use crate::decode::Input;
-use crate::door::{self, Link};
 use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
@@ -21,7 +20,7 @@ use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::SIGWINCH;
 use std::collections::VecDeque;
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -154,31 +153,25 @@ fn restore() {
     }
 }
 
-/// The stream to the server at `socket`: its socket, once it is checked to
-/// be served by this user; or its door (`crate::door`), where the system
-/// denies sockets (a sandbox) or the server serves its door alone.
-fn open(socket: &SocketPath) -> Result<Link, Error> {
-    let door = door::path(socket.path());
+/// How long a client waits for a server's answer: its Hello, or its last
+/// frames once the client could not write.
+const ANSWER: Duration = Duration::from_secs(5);
+
+/// The socket of the server at `socket`, once it is checked to be served by
+/// this user. fux is reached through its socket alone: where the system
+/// denies `connect` (a sandbox), it cannot be.
+fn open(socket: &SocketPath) -> Result<UnixStream, Error> {
     // Said of the socket chosen, which a hint starts again.
     let failed = |source| Error::Connect {
         path: socket.path().to_owned(),
         source,
     };
-    let by_door = || door::knock(socket.path()).map_err(failed);
-    match socket::check_client_socket(socket) {
-        Err(socket::Error::NoServer(_)) if door.exists() => return by_door(),
-        Err(error) => return Err(error.into()),
-        Ok(()) => {}
-    }
-    let stream = match UnixStream::connect(socket.path()) {
-        Ok(stream) => stream,
-        Err(e) if e.kind() == ErrorKind::PermissionDenied && door.exists() => return by_door(),
-        Err(source) => return Err(failed(source)),
-    };
+    socket::check_client_socket(socket)?;
+    let stream = UnixStream::connect(socket.path()).map_err(failed)?;
     // Its server is this user's, whoever made the path's directories.
     let euid = fuxix::process::geteuid();
     match fuxix::socket::peer_uid(&stream) {
-        Ok(uid) if uid == euid => Ok(Link::socket(stream)),
+        Ok(uid) if uid == euid => Ok(stream),
         Ok(uid) => Err(io::Error::other(format!(
             "its server runs as uid {uid}, not this user's ({euid})"
         ))),
@@ -189,14 +182,14 @@ fn open(socket: &SocketPath) -> Result<Link, Error> {
 
 /// A connection to the server at `socket` as `role`, greeted, with the
 /// server's version.
-fn connect(socket: &SocketPath, role: Role) -> Result<(Link, Decoder, String), Error> {
+fn connect(socket: &SocketPath, role: Role) -> Result<(UnixStream, Decoder, String), Error> {
     let mut stream = open(socket)?;
     let ours = Hello::ours(role);
     let sent = send(&mut stream, &ours);
     let mut decoder = Decoder::default();
     // A refusal may close the connection before the Hello is written: its
     // reason is still there to read.
-    let answer = read_frame(&mut stream, &mut decoder, Some(door::ANSWER));
+    let answer = read_frame(&mut stream, &mut decoder, Some(ANSWER));
     let version = greeted(&ours, answer, sent)?;
     Ok((stream, decoder, version))
 }
@@ -221,7 +214,15 @@ fn greeted(
     }
 }
 
-fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
+/// Reads on `stream` wait `timeout` at most from now on (`None`, for
+/// ever). macOS refuses a timeout on a socket its peer has shut: a read
+/// there cannot wait, as what the server left is read at once and then its
+/// end, so the refusal changes nothing.
+fn wait_at_most(stream: &UnixStream, timeout: Option<Duration>) {
+    let _ = stream.set_read_timeout(timeout);
+}
+
+fn send<'a>(stream: &mut UnixStream, frame: &impl Frame<'a>) -> Result<(), Error> {
     let bytes = frame.encode()?;
     stream
         .write_all(&bytes)
@@ -231,11 +232,11 @@ fn send<'a>(stream: &mut Link, frame: &impl Frame<'a>) -> Result<(), Error> {
 /// The next frame the server sends, waiting `timeout` at most for each
 /// read; none once it has closed.
 fn read_frame<'d, F: Frame<'d>>(
-    stream: &mut Link,
+    stream: &mut UnixStream,
     decoder: &'d mut Decoder,
     timeout: Option<Duration>,
 ) -> Result<Option<F>, Error> {
-    stream.set_read_timeout(timeout);
+    wait_at_most(stream, timeout);
     while !decoder.ready()? {
         if !read_more(stream, decoder)? {
             return Ok(None);
@@ -246,7 +247,7 @@ fn read_frame<'d, F: Frame<'d>>(
 
 /// What the server sent next, read into `decoder`: false once it has
 /// closed.
-fn read_more(stream: &mut Link, decoder: &mut Decoder) -> Result<bool, Error> {
+fn read_more(stream: &mut UnixStream, decoder: &mut Decoder) -> Result<bool, Error> {
     let mut buffer = [0u8; 16 * 1024];
     loop {
         match stream.read(&mut buffer) {
@@ -269,7 +270,7 @@ fn read_more(stream: &mut Link, decoder: &mut Decoder) -> Result<bool, Error> {
 /// before the next. One per run of a program, made when its first request
 /// is.
 pub struct Requests {
-    stream: Link,
+    stream: UnixStream,
     decoder: Decoder,
 }
 
@@ -284,7 +285,7 @@ impl Requests {
     /// comes. A request that may start programs carries this process's
     /// environment, of which they take what `update-environment` names.
     pub fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Error> {
-        self.stream.set_read_timeout(None);
+        wait_at_most(&self.stream, None);
         if starts_programs(&asked.request) && asked.context.env.is_empty() {
             let mut asked = asked.clone();
             asked.context.env = environment();
@@ -315,10 +316,10 @@ impl Requests {
         }
     }
 
-    /// What stops it from another thread: dropped, the request under way
+    /// What stops it from another thread: shut down, the request under way
     /// ends as if the server had closed the connection.
-    pub fn stopper(&mut self) -> Option<io::PipeWriter> {
-        self.stream.stopper().ok()
+    pub fn stopper(&self) -> Option<UnixStream> {
+        self.stream.try_clone().ok()
     }
 }
 
@@ -333,7 +334,6 @@ pub fn context() -> Context {
         server: var("FUX_SERVER"),
         env: Vec::new(),
         client: None,
-        restoring: false,
     }
 }
 
@@ -366,7 +366,7 @@ pub fn environment() -> Vec<(String, std::ffi::OsString)> {
 pub fn kill_server(socket: &SocketPath) -> Result<(), Error> {
     let (mut stream, mut decoder, _) = connect(socket, Role::Kill)?;
     loop {
-        match read_frame(&mut stream, &mut decoder, Some(door::ANSWER))? {
+        match read_frame(&mut stream, &mut decoder, Some(ANSWER))? {
             Some(Greeting::Done(_)) | None => return Ok(()),
             Some(Greeting::Hello(_) | Greeting::Exit(_)) => {}
         }
@@ -397,7 +397,7 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
             Ok(Probe::Server { protocol, version })
         }
         Err(Error::Socket(socket::Error::NoServer(_))) => Ok(Probe::Absent),
-        // A socket or a door left by a server that is gone.
+        // A socket left by a server that is gone.
         Err(Error::Connect { source, .. })
             if matches!(
                 source.kind(),
@@ -410,55 +410,61 @@ pub fn probe(socket: &SocketPath) -> Result<Probe, Error> {
     }
 }
 
-/// Whether a server answers on `socket`: its socket, or, where sockets are
-/// denied, its door.
+/// Whether a server answers on `socket`.
 pub fn answers(socket: &SocketPath) -> bool {
-    UnixStream::connect(socket.path()).is_ok() || door::open_door(socket.path()).is_ok()
+    UnixStream::connect(socket.path()).is_ok()
 }
 
-/// Starts a server in the background, in a new session with its output in
-/// `fux.log` beside the socket, and waits for it to answer.
+/// Starts a server in the background, in a new session with its log in
+/// `fux.log` beside the socket, and waits for the line it writes once it
+/// listens (`server::READY`). Its stdout closing first means it failed, or
+/// found another server on the socket: one that answers, as a server that
+/// starts waits for the one starting before it (`socket::bind_socket`). A
+/// server that hangs before it listens holds the client too.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
     let log = socket.directory().join("fux.log");
-    let output = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log)
-        .map_err(failed("the log file"))?;
+    let output = open_log(&log).map_err(|e| Error::Failed(format!("{}: {e}", log.display())))?;
     let mut command = std::process::Command::new(exe);
     command
         .arg(crate::SERVE)
         .arg(socket.path())
         .current_dir("/")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(output);
     // A daemon (daemon(7)): a session of its own, no descriptors of the
     // client's but stdio, no directory kept busy.
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
-    let deadline = crate::after(Instant::now(), Duration::from_secs(2));
-    let see_log = |what: String| Error::Failed(format!("{what}; see {}", log.display()));
-    loop {
-        if answers(socket) {
-            // Dropping a `Child` neither waits for nor kills it.
-            drop(child);
-            return Ok(());
-        }
-        if let Ok(Some(status)) = child.try_wait() {
-            // It lost a race to another server, or failed: connect to the
-            // winner if there is one.
-            if answers(socket) {
-                return Ok(());
-            }
-            return Err(see_log(format!("the server exited ({status})")));
-        }
-        if Instant::now() > deadline {
-            return Err(see_log("the server did not start within 2 s".to_owned()));
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let mut said = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let line = io::BufReader::new(stdout.take(64)).read_until(b'\n', &mut said);
+        line.map_err(failed("reading the server"))?;
+    }
+    // Dropping a `Child` neither waits for nor kills it.
+    if said == crate::server::READY || answers(socket) {
+        return Ok(());
+    }
+    let status = child.wait().map_err(failed("waiting for the server"))?;
+    let why = format!("the server exited ({status}); see {}", log.display());
+    Err(Error::Failed(why))
+}
+
+/// The server's log at `path`, opened to append: a regular file alone. A
+/// link is not followed, a FIFO with no reader refused at once (`ENXIO`),
+/// not waited on, and a terminal there never becomes this process's.
+fn open_log(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let flags = fuxix::file::NOFOLLOW | fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+    let file = (std::fs::OpenOptions::new().create(true).append(true))
+        .custom_flags(flags)
+        .open(path)?;
+    // Nonblocking changes nothing for a regular file's writes.
+    match file.metadata()?.is_file() {
+        true => Ok(file),
+        false => Err(io::Error::other("not a regular file")),
     }
 }
 
@@ -828,13 +834,9 @@ pub fn attach(
         read_only: attaching.read_only,
         env: environment(),
     };
-    // The terminal goes with the `Attach`: if the server takes it, it
-    // writes the paints there itself. The keys are the client's either way.
-    let sent = match terminal {
-        true => send_with_terminal(&mut stream, &attach, &stdin),
-        false => send(&mut stream, &attach),
-    };
-    let result = sent.and_then(|()| {
+    // The server relays every paint, which the client writes to its
+    // terminal; the keys are the client's to read.
+    let result = send(&mut stream, &attach).and_then(|()| {
         attached(
             socket,
             &mut stream,
@@ -906,31 +908,6 @@ impl Drop for Raw {
     }
 }
 
-/// Sends `frame` with this process's terminal attached, its first bytes
-/// carrying it.
-fn send_with_terminal<'a>(
-    stream: &mut Link,
-    frame: &impl Frame<'a>,
-    terminal: impl std::os::fd::AsFd,
-) -> Result<(), Error> {
-    // Through a door, a FIFO, no descriptor can go: the server relays
-    // the paints instead.
-    if !stream.is_socket() {
-        return send(stream, frame);
-    }
-    let bytes = frame.encode()?;
-    let sent = loop {
-        match fuxix::socket::send_with_fd(stream.output(), &bytes, &terminal) {
-            Ok(n) => break n,
-            Err(Errno::INTR) => continue,
-            Err(errno) => return Err(failed("writing to the server")(errno)),
-        }
-    };
-    stream
-        .write_all(bytes.get(sent..).unwrap_or_default())
-        .map_err(failed("writing to the server"))
-}
-
 /// Holds the attachment until the server ends it, and says why: reads the
 /// terminal's keys, with `terminal`, and runs them through the client's
 /// keys; writes the paints the server relays; passes on the terminal's new
@@ -938,14 +915,14 @@ fn send_with_terminal<'a>(
 /// (its `Welcome`), an `Exit` is a refusal.
 fn attached(
     socket: &SocketPath,
-    stream: &mut Link,
+    stream: &mut UnixStream,
     decoder: &mut Decoder,
     signals: &Signals,
     attaching: &Attaching,
     terminal: bool,
 ) -> Result<String, Error> {
     let Signals { winch, stops } = signals;
-    stream.set_read_timeout(None);
+    wait_at_most(stream, None);
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut buffer = vec![0u8; 64 * 1024];
@@ -969,7 +946,7 @@ fn attached(
                 }
                 (ToAttached::Exit(reason), None) => return Err(Error::Refused(reason.to_owned())),
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
-                (ToAttached::Welcome(me, _), None) => {
+                (ToAttached::Welcome(me), None) => {
                     if !terminal {
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;
@@ -1063,7 +1040,7 @@ fn attached(
 /// read it, may still be writing. Only a server that said nothing makes
 /// the failed write the end.
 fn tell(
-    stream: &mut Link,
+    stream: &mut UnixStream,
     decoder: &mut Decoder,
     welcomed: bool,
     terminal: bool,
@@ -1075,17 +1052,17 @@ fn tell(
     Err(last_frames(stream, decoder, welcomed, terminal).unwrap_or(Err(error)))
 }
 
-/// Reads the server's frames up to its `Exit`, waiting `door::ANSWER` at
+/// Reads the server's frames up to its `Exit`, waiting `ANSWER` at
 /// most for each read, and writes their paints if the client has a
 /// `terminal`: how the attachment ended, the `Exit`'s reason (a refusal,
 /// before its `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
-    stream: &mut Link,
+    stream: &mut UnixStream,
     decoder: &mut Decoder,
     welcomed: bool,
     terminal: bool,
 ) -> Option<Result<String, Error>> {
-    stream.set_read_timeout(Some(door::ANSWER));
+    wait_at_most(stream, Some(ANSWER));
     let mut stdout = io::stdout();
     loop {
         while let Some(frame) = decoder.frame().ok()? {
@@ -1130,7 +1107,7 @@ mod tests {
             "{stopping:?}"
         );
         let mut done = [PollFd::new(keyboard.wake(), PollFlags::IN)];
-        fuxix::poll::poll(&mut done, Some(door::ANSWER))?;
+        fuxix::poll::poll(&mut done, Some(ANSWER))?;
         let acts = keyboard.ran();
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
@@ -1153,6 +1130,29 @@ mod tests {
         Ok(())
     }
 
+    /// The server's log is a regular file alone: a FIFO no one reads is
+    /// refused at once, not waited on, and a link is not followed.
+    #[test]
+    fn the_server_log_is_a_regular_file() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = fuxix::file::scratch()?.join(format!("fux-log-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let fifo = dir.join("fifo.log");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let link = dir.join("link.log");
+        std::os::unix::fs::symlink(dir.join("file.log"), &link)?;
+        let refused = [open_log(&fifo).is_err(), open_log(&link).is_err()];
+        let opened = open_log(&dir.join("file.log")).is_ok();
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!((refused, opened), ([true, true], true));
+        Ok(())
+    }
+
     /// Leaving sets no cursor shape: DECSCUSR 0 is a blinking block (ctlseqs),
     /// not the terminal's own, and the server gives back one a pane set.
     #[test]
@@ -1164,7 +1164,7 @@ mod tests {
     /// a socket in `wait`.
     fn answer(server: impl FnOnce(&mut UnixStream), wait: Duration) -> Result<String, Error> {
         let (client, mut peer) = UnixStream::pair()?;
-        let mut client = Link::socket(client);
+        let mut client = client;
         server(&mut peer);
         let mut decoder = Decoder::default();
         let answer = read_frame(&mut client, &mut decoder, Some(wait));

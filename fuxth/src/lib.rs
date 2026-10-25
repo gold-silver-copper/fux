@@ -36,6 +36,7 @@
 //!
 //! A call that is a definition's last step replaces its caller's frame, so
 //! recursion in last place is a loop.
+#![forbid(clippy::print_stderr)]
 mod check;
 mod compile;
 mod error;

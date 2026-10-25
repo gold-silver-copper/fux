@@ -496,7 +496,7 @@ mod tests {
     }
 
     /// A size a request gives is a screen's, read as it was written; one
-    /// past `view::MOST`, which a saved session could not write, is not
+    /// past `view::MOST`, which a dump could not write, is not
     /// read at all. Every screen fits a pane.
     #[test]
     fn a_size_past_a_screens_is_refused_as_it_is_read() -> Result<(), String> {
@@ -564,7 +564,6 @@ mod tests {
             argv: Vec::new(),
             cwd: Some(dir.clone()),
             env: Env::default(),
-            id: None,
             shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();

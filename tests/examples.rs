@@ -32,7 +32,7 @@ fn every_example_prints_what_its_header_says() -> Outcome {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         let path = file.to_string_lossy();
-        let ran = server.fux(&[&path])?;
+        let ran = server.fux(&["--file", &path])?;
         if (ran.status, ran.stdout.as_str()) != (status, expected.as_str()) {
             return Err(format!(
                 "{path}: exited {} printing {:?} ({}), expected {status} printing {expected:?}",

@@ -7,7 +7,9 @@ explains one.)
 A fux command line is a fuxth program: words run left to right, each taking
 what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
-`FUX_SOCKET`'s; `fux start` starts one if none runs. **The word that acts
+`FUX_SOCKET`'s; `fux start` starts one if none runs. It is reached through
+that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
+be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
@@ -52,6 +54,7 @@ fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
 fux %2 str TERM signal                         # signal what runs in its foreground
 fux %2 kill-first respawn                      # end its program and start it again
 fux str web pane                               # a pane by its tab's name
+fux str logs pane-named                        # a pane by its own name (rename)
 fux ls                                         # what there is: workspaces, tabs, panes
 fux str agent workspace kill                   # at the end: everything run started
 ```
@@ -76,12 +79,12 @@ Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
 
 ## recipes: Waiting for what you need
 
-Each is a fuxth program: a file `fux FILE` runs, or `fux - <<'EOF'` in a
+Each is a fuxth program: a file `fux --file FILE` runs, or `fux - <<'EOF'` in a
 script. `A wait` waits from the version answer A holds, so a change between
 two steps is never missed, and leaves the next answer; `A 600 timeout wait`
 waits 600 s at most, else fails with 124 (`timeout`). A loop of waits ends
 when its check holds; to bound the whole of it, run it under the shell's
-`timeout 600 fux FILE` (124 too). `A counts` gives a version's five counts
+`timeout 600 fux --file FILE` (124 too). `A counts` gives a version's five counts
 as integers: `A counts 3 at` is its `DONE`.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
@@ -191,8 +194,8 @@ as integers: `A counts 3 at` is its `DONE`.
   time (Vim, readline) may read Escape and a key sent soon after it, in one
   `send-keys` or two, as one key: send Escape, wait until the program shows
   it took it (its mode line), then the next key. Keys sent to a program
-  that exited, that closed its terminal (where the system says so: Linux),
-  or that is paused since a restart are refused (`not_running`).
+  that exited or that closed its terminal (where the system says so:
+  Linux) are refused (`not_running`).
 
   ```fux
   %2 str Escape key send-keys
@@ -273,8 +276,9 @@ str make arg run`.
 
 ## programs: A program
 
-A file of fuxth runs with `fux FILE` (or `fux -` from stdin), and keeps its
-names between steps:
+A file of fuxth runs with `fux --file FILE` (or `fux -` from stdin; a
+script may start `#!/usr/bin/env -S fux --file`), and keeps its names
+between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
@@ -312,29 +316,30 @@ stopped it.
   watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
   start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
-  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
-  alone): `status` each.
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files:
+  `status` each.
 
   ```sh
-  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
-    sort -u | while read -r n; do fux str "$n" server status; done
+  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' |
+    while read -r n; do fux str "$n" server status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
-  `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket, or a grant's if
-  started through one), `FUX_SERVER` (which run of the server: a
+  `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket), `FUX_SERVER` (which run of the server: a
   `FUX_PANE` of another, or with no `FUX_SERVER`, is no `here`:
   `stray_pane`) and `FUX` (the fux the server runs, for a script that may
   not find `fux` on PATH; unset if the server cannot name it). A person
-  can give you `str agent str PATH grant`: a socket that reaches workspace
-  `agent` alone. `kill-server` from inside its own server is refused;
+  who wants your panes apart from theirs gives you a server of your own
+  (`FUX_SOCKET=PATH fux start`), which they watch by attaching to it.
+  `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
-- A server that did not stop cleanly leaves its layout in
-  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back,
-  each shell started again, each program `run` started waiting, paused,
-  for `respawn`. `kill-server` forgets it. It is another
-  server run: versions from before it are refused.
-- In a sandbox that refuses Unix sockets, client and server meet through a
-  FIFO beside the socket (`NAME.sock.door`).
+- Nothing is saved on its own: a server that stops, or crashes, takes its
+  session with it. `fux dump > FILE` saves its layout and launches when you
+  choose; `fux start && fux --file FILE` makes them again on a fresh server,
+  never its processes' state. That is another server run: versions from
+  before it are refused.
+- fux is controlled through its Unix socket alone: a sandbox that denies
+  `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
+  fux commands outside such a sandbox, or allow the socket.
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
   client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A
@@ -342,7 +347,13 @@ stopped it.
   or a move that would hide a pane on the tab's own size or on a screen
   showing it (but one that sizes nothing: that only watches, or has no
   room below its bar).
-- `opts str FILE log-to` keeps what a program writes; `dump` prints the
+- To keep what a program writes, run it under `script` in its pane, so it
+  still writes to a terminal (a pipe, as with `tee`, changes what it
+  writes): `opts str script program str -q arg str -e arg str -f arg str
+  LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
+  the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
+  'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
+  first and last line of its own). `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,
   `capture-client` shows it): how to drive fux's own screens.

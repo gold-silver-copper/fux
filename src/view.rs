@@ -27,7 +27,7 @@ pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
 
 /// A size a client's screen, and so a tab, may be: 1 to `MOST` rows and
 /// columns. Every size a request gives is one, so each size the server
-/// holds is one a saved session writes (`COLS ROWS size`) and makes again.
+/// holds is one a dump writes (`COLS ROWS size`) and makes again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Screen(fux_vt::Size);
 

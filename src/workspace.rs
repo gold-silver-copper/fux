@@ -405,33 +405,20 @@ impl Parts {
     /// Swaps tab `tab` with its sibling `toward` in its workspace: none if
     /// there is no such tab, false if it has no sibling that way.
     pub(crate) fn reorder_tab(&mut self, tab: TabId, toward: Sibling) -> Option<bool> {
-        let swapped = (self.workspaces.iter_mut())
-            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward));
-        self.reordered(swapped)
+        (self.workspaces.iter_mut())
+            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward))
     }
 
     /// Swaps workspace `ws` with its sibling `toward`, as `reorder_tab`.
     pub(crate) fn reorder_workspace(&mut self, ws: WsId, toward: Sibling) -> Option<bool> {
-        let swapped = swap_sibling(&mut self.workspaces, |w| w.id == ws, toward);
-        self.reordered(swapped)
+        swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)
     }
 
-    /// A reorder done (`swapped`), which no event tells, counted as a
-    /// change a saved session holds.
-    fn reordered(&mut self, swapped: Option<bool>) -> Option<bool> {
-        if swapped == Some(true) {
-            self.journal.reshaped();
-        }
-        swapped
-    }
-
-    /// Lays tab `tab` out on what `fit` makes of its fit from now on: a
-    /// change a saved session holds.
+    /// Lays tab `tab` out on what `fit` makes of its fit from now on.
     pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
         let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
         let fit = fit(tab.fit);
         tab.set_fit(fit);
-        self.journal.reshaped();
         Some(())
     }
 
@@ -669,10 +656,8 @@ impl Parts {
                 }
             }
         }
-        // Given, its name is saved as it is, renamed or not.
-        if !std::mem::replace(&mut tab_mut(&mut self.workspaces, id)?.1.given, true) {
-            self.journal.reshaped();
-        }
+        // Given, its name is dumped as it is, renamed or not.
+        tab_mut(&mut self.workspaces, id)?.1.given = true;
         for (tab, name) in names {
             if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
                 rename(&mut self.journal, Place::Tab(ws, tab), &mut t.name, name);
@@ -696,8 +681,6 @@ impl Parts {
         if was_a != was_b {
             self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
             self.journal.push(Place::Pane(was_a, b), What::Moved(was_b));
-        } else {
-            self.journal.reshaped();
         }
     }
 
@@ -747,9 +730,6 @@ impl Parts {
         let was = tab.root.clone();
         let out = tab.edit(change);
         if sorted(&tab.root) == sorted(&was) {
-            if tab.root != was {
-                self.journal.reshaped();
-            }
             return Some(out);
         }
         tab.edit(|root| *root = was);

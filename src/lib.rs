@@ -11,7 +11,6 @@ pub mod code;
 pub mod command;
 pub mod config;
 pub mod copy;
-pub mod door;
 pub mod events;
 pub mod help;
 pub mod id;
@@ -53,9 +52,7 @@ pub(crate) const STOPS: [std::ffi::c_int; 3] = [SIGTERM, SIGINT, SIGHUP];
 
 /// A pipe that becomes readable when any of its signals arrives: each
 /// writes a byte to the other end, of which its handler holds a copy.
-/// Dropped, it unregisters them, which closes those copies. A pipe, not a
-/// socket pair: a sandbox may refuse send(2), which a signal writes a
-/// socket with.
+/// Dropped, it unregisters them, which closes those copies.
 pub(crate) struct SignalPipe {
     pipe: PipeReader,
     registered: Vec<signal_hook::SigId>,
@@ -101,8 +98,8 @@ pub(crate) fn drain(mut pipe: &PipeReader) {
 }
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
-/// fuxth on stdin; one word naming a file (with a `/`, or ending `.fux`)
-/// runs it; any other words are a fuxth program.
+/// fuxth on stdin; `--file FILE` runs a file; any other words are a fuxth
+/// program.
 pub fn main() -> ExitCode {
     // Words are text: an argument that is not is refused, not mangled.
     let args: Result<Vec<String>, _> = std::env::args_os()
@@ -129,8 +126,8 @@ pub fn main() -> ExitCode {
     ExitCode::from(status)
 }
 
-/// How a client starts a server, in the background: `fux __serve SOCKET`,
-/// with `fresh` to forget what the last one held. A client types it, the
+/// How a client starts a server, in the background: `fux __serve SOCKET`.
+/// A client types it, the
 /// server leading a session of its own (`client::start_server`); no help
 /// lists it. A person can type it too: that server stays in the
 /// terminal's session, and the terminal's hangup or Ctrl-C stops it.
@@ -145,12 +142,11 @@ fn serve(args: &[String]) -> ExitCode {
     let Some(path) = args.first() else {
         return fail("no socket".to_owned());
     };
-    let fresh = args.get(1).is_some_and(|a| a == "fresh");
     let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
-    match server::serve(&socket, fresh) {
+    match server::serve(&socket) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error.to_string()),
     }

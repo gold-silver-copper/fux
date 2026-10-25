@@ -1,5 +1,5 @@
 # Three programs at once, each exiting with its own status; once all have
-# exited, the sum of their statuses. `fux examples/jobs.fux` prints 6.
+# exited, the sum of their statuses. `fux --file examples/jobs.fux` prints 6.
 # expect: 6
 
 # n -- answer: a program that exits with status n; run answers at once,

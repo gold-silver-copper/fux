@@ -38,6 +38,7 @@ quickly, by any processes (see [the report for Apple](https://github.com/gold-si
 | --- | --- | --- | --- |
 | `io::read`, `io::write` | `read`, `write` | the same | on a borrowed descriptor, with `AGAIN` and `INTR` as values |
 | `io::set_nonblocking` | `fcntl(F_SETFL, O_NONBLOCK)` | the same | not offered on a bare descriptor |
+| `io::redirect_stdout` | `dup2(fd, 1)` | the same | not offered |
 | `io::cloexec_from` | `close_range(CLOSE_RANGE_CLOEXEC)`, else `fcntl` on each up to past the descriptors `io::open_end` listed (Android: always) | `fcntl` on each up to past the descriptors `io::open_end` listed | not offered |
 | `io::open_end` | the highest number in `/dev/fd`, before `fork` | the same | not offered |
 | `io::duplicate_inheritable` | `dup` | the same | std's copies are close-on-exec |

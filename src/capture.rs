@@ -248,7 +248,6 @@ pub fn state<S>(
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
         Some(crate::process::Ended::Lost) | None => (Json::Null, Json::Null),
     };
-    let paused = pane.paused();
     let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
@@ -266,7 +265,6 @@ pub fn state<S>(
         ("title", Json::str(pane.title().as_str().to_owned())),
         ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
-        ("paused", Json::Bool(paused)),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
         ("hung_up", Json::Bool(hung_up)),

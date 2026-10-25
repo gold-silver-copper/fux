@@ -44,7 +44,7 @@ pub fn overview() -> String {
         "\
 usage: fux                 attach, starting a server if none runs
        fux WORD...         run the words, a fuxth program (or all in one argument)
-       fux FILE            run a file of fuxth (a word with a / or ending .fux)
+       fux --file FILE     run a file of fuxth (#!/usr/bin/env -S fux --file)
        fux -               run fuxth read from stdin
 
 Words run left to right, each taking what the words before it left: a
@@ -107,7 +107,10 @@ workspace; ref a name or a handle; text a string, number or boolean.
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
-         XDG_RUNTIME_DIR unset $TMPDIR/fux.\n",
+         XDG_RUNTIME_DIR unset $TMPDIR/fux. Nothing is saved on its own:\n\
+         `fux dump > FILE` saves the layouts and launches when you choose\n\
+         (never what a process held), and `fux start && fux --file FILE` makes\n\
+         them again on a fresh server.\n",
     );
     out
 }
@@ -226,10 +229,10 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env program arg in log-to id"),
-    ("split", "horizontal vertical shares cwd env program arg id"),
-    ("new-tab", "name size cwd env in id"),
-    ("new-workspace", "name size cwd env id"),
+    ("run", "name size cwd env program arg in"),
+    ("split", "horizontal vertical shares cwd env program arg"),
+    ("new-tab", "name size cwd env in"),
+    ("new-workspace", "name size cwd env"),
     ("respawn", "kill-first env program arg"),
     (
         "capture",
@@ -254,8 +257,8 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
         "shares" => "fux %3 horizontal 2 1 shares split",
-        "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
-            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
+        "name" | "size" | "cwd" | "program" | "arg" | "in" => {
+            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg run"
         }
         "env" => "fux opts str PORT 8080 env 80 24 size str ./app program run",
         "new-tab" => "fux opts str logs name 80 24 size str agent in new-tab",
@@ -294,7 +297,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "clear-history" => "fux %3 clear-history",
         "notify" => "fux %3 str 'tests passed' notify",
         "status" => "fux status || fux start",
-        "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
+        "dump" => "fux str work workspace dump-of > work.fux; fux --file work.fux",
         "rename" => "fux %3 str editor rename",
         "kill" => "fux %3 kill",
         "resize-x" => "fux %3 30 percent resize-x",
@@ -306,7 +309,6 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "set" => "fux str history-bytes 16777216 set",
         "server" => "fux str test server start opts 80 24 size str ./app program run",
         "headless" => "fux 100 30 headless",
-        "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
         _ => return None,
     })
 }
@@ -360,8 +362,6 @@ mod tests {
         let second = std::time::Duration::from_secs(1);
         assert_eq!(crate::pane::FRAME_TIMEOUT, second);
         assert!(readme.contains("shown anyway after one second"));
-        assert_eq!(crate::server::SAVE_EVERY, second);
-        assert!(readme.contains("about a second after what output changes"));
         let longest = format!("at most {} characters", grouped(fuxth::LONGEST));
         assert!(AGENTS.contains(&longest), "agents.md: {longest}");
         let protocol = crate::protocol::PROTOCOL;
@@ -388,8 +388,6 @@ mod tests {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
         let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
-        let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
-        assert!(about("id").is_some_and(|a| a.contains(&jump)));
         let sides = format!("1 to {} each", crate::view::MOST);
         for name in ["size", "resize", "resize-client", "headless"] {
             assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");
