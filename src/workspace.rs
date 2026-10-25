@@ -659,7 +659,10 @@ impl Parts {
                 }
             }
         }
-        tab_mut(&mut self.workspaces, id)?.1.given = true;
+        // Given, its name is saved as it is, renamed or not.
+        if !std::mem::replace(&mut tab_mut(&mut self.workspaces, id)?.1.given, true) {
+            self.journal.reshaped();
+        }
         for (tab, name) in names {
             if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
                 rename(&mut self.journal, Place::Tab(ws, tab), &mut t.name, name);

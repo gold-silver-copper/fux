@@ -5744,7 +5744,8 @@ mod tests {
     }
 
     /// Each change a saved session holds is counted, so it is saved at
-    /// once: an order, a swap, a border, a size, a move; output is not.
+    /// once: a name fux gave a tab given it as its own, an order, a swap,
+    /// a border, a size, a move; output is not.
     #[test]
     fn what_a_saved_session_holds_is_counted_as_it_changes() -> Result<(), String> {
         let mut s = started(Config::default())?;
@@ -5753,6 +5754,7 @@ mod tests {
         run(&mut s, made)?;
         let shapes = |s: &Session| s.parts.journal().shapes();
         for change in [
+            "str @2 tab str tab-2 rename",
             "str @2 tab str previous reorder",
             "str +1 workspace str next reorder",
             "%1 %4 swap-panes",
