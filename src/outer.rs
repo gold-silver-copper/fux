@@ -16,8 +16,8 @@
 //!
 //! The terminal that answers for a pane is the client's that last typed
 //! into its tab, while attached; else any client's showing the tab; else
-//! the last colours any terminal gave, so that a program started in a
-//! background tab picks the theme it would in the foreground.
+//! none: a pane no attached terminal answers for is not answered colours
+//! it did not set, as no one knows what it is shown on.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -160,27 +160,21 @@ impl Session {
         };
         let terminal = &mut view.terminal;
         match reply {
-            Reply::Foreground(rgb) => {
-                terminal.colours.foreground = Some(rgb);
-                self.learned(client);
-            }
+            Reply::Foreground(rgb) => terminal.colours.foreground = Some(rgb),
             Reply::Background(rgb) => {
                 terminal.colours.background = Some(rgb);
-                self.learned(client);
                 self.tell_change(client);
             }
             Reply::Scheme(scheme) => {
                 terminal.colours.scheme = Some(scheme);
                 if terminal.asked > 0 {
                     terminal.asked = terminal.asked.saturating_sub(1);
-                    self.learned(client);
                     return;
                 }
                 // A change: the colours are asked again, and the panes told
                 // once they are in; at once if the terminal never said them.
                 let unknown = terminal.colours.background.is_none();
                 terminal.change = Some(scheme);
-                self.learned(client);
                 if unknown {
                     self.tell_change(client);
                 } else {
@@ -239,34 +233,15 @@ impl Session {
             Reply::Palette { index, rgb } => {
                 if let Some(entry) = terminal.palette.get_mut(usize::from(index)) {
                     *entry = Some(rgb);
-                    self.learned(client);
                 }
             }
             Reply::Mode { .. } | Reply::KittyFlags(_) => {}
         }
     }
 
-    /// What client `client`'s terminal said is the last known now.
-    fn learned(&mut self, client: ClientId) {
-        let Some((colours, palette)) = self
-            .views
-            .get(&client)
-            .map(|v| (v.terminal.colours, v.terminal.palette))
-        else {
-            return;
-        };
-        for (last, said) in self.last_palette.iter_mut().zip(palette) {
-            *last = said.or(*last);
-        }
-        let last = &mut self.last_colours;
-        last.foreground = colours.foreground.or(last.foreground);
-        last.background = colours.background.or(last.background);
-        last.scheme = colours.scheme.or(last.scheme);
-    }
-
-    /// Tells the panes whose colours come from client `client`, or from no
-    /// client in particular, of the scheme change it reported, if one is
-    /// waiting: each whose program set mode 2031 gets `CSI ? 997 ; n n`.
+    /// Tells the panes whose colours come from client `client` of the scheme
+    /// change it reported, if one is waiting: each whose program set mode
+    /// 2031 gets `CSI ? 997 ; n n`.
     fn tell_change(&mut self, client: ClientId) {
         let Some(scheme) = self
             .views
@@ -282,7 +257,7 @@ impl Session {
             .map(|(id, _)| *id)
             .filter(|id| {
                 let tab = self.locate(*id).map(|(_, t)| t);
-                self.colour_client(tab).is_none_or(|c| c == client)
+                self.colour_client(tab) == Some(client)
             })
             .collect();
         for id in listening {
@@ -316,14 +291,14 @@ impl Session {
     /// palette whole, so that another client's replaces it, entries it did
     /// not say cleared; and what they are told their terminal draws, which
     /// is nothing in a tab no client shows, so a program started there draws
-    /// in text, which a capture reads.
+    /// in text, which a capture reads. With no such terminal, nothing.
     pub(crate) fn host_for(&self, tab: Option<TabId>) -> (Colours, Palette, Graphics) {
         let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
         let answering = answering.map(|v| &v.terminal);
         let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
         (
-            answering.map_or(self.last_colours, |t| t.colours),
-            answering.map_or(self.last_palette, |t| t.palette),
+            answering.map_or_else(Colours::default, |t| t.colours),
+            answering.map_or([None; 16], |t| t.palette),
             (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics),
         )
     }
@@ -491,6 +466,28 @@ mod tests {
         s.input(d, b"y");
         assert_eq!(entry(&mut s, 1, 2), "\x1b]4;2;rgb:4444/5555/6666\x07");
         assert_eq!(entry(&mut s, 1, 1), "");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pane_no_terminal_answers_for_is_told_only_its_own_colours() -> Outcome {
+        let (mut s, c) = session()?;
+        s.input(
+            c,
+            b"\x1b]11;rgb:1111/2222/3333\x1b\\\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b[?62c",
+        );
+        let ask = |s: &mut Session, pane| {
+            let _ = answered(s, pane);
+            s.output(PaneId::of(pane), b"\x1b]11;?\x07\x1b]4;1;?\x07");
+            answered(s, pane)
+        };
+        let theirs = "\x1b]11;rgb:1111/2222/3333\x07\x1b]4;1;rgb:1111/2222/3333\x07";
+        assert_eq!(ask(&mut s, 1), theirs);
+        // A workspace c1 neither shows nor typed into: no terminal's.
+        run(&mut s, "opts str other name new-workspace")?;
+        assert_eq!(ask(&mut s, 2), "");
+        s.output(PaneId::of(2), b"\x1b]11;#445566\x07");
+        assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
         Ok(())
     }
 

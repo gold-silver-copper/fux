@@ -426,12 +426,6 @@ pub struct Session {
     pub outbox: Vec<Outgoing>,
     /// Closed panes' programs: a pane respawned twice in its grace has two.
     pub dying: Vec<Dying>,
-    /// The colours a client's terminal last said, for panes no attached
-    /// client answers for (`outer`).
-    pub last_colours: crate::outer::Colours,
-    /// The palette entries any client's terminal said last, each entry the
-    /// latest said (`outer`).
-    pub last_palette: crate::outer::Palette,
     /// Where `size_panes` gathers the rectangles each pane is shown in, and
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
@@ -741,8 +735,6 @@ impl Session {
             run,
             outbox: Vec::new(),
             dying: Vec::new(),
-            last_colours: crate::outer::Colours::default(),
-            last_palette: crate::outer::Palette::default(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             pane_tabs: BTreeMap::new(),
