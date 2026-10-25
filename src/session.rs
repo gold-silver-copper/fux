@@ -20,6 +20,7 @@ use crate::workspace::{Fit, PaneMut, Parts, Seat, Tab, Workspace};
 use fux_vt::Size;
 use fuxth::Code as Lang;
 use std::collections::{BTreeMap, VecDeque};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 mod layouts;
 use std::time::{Duration, Instant};
@@ -2264,12 +2265,13 @@ impl Session {
                 ref cwd,
                 ref env,
                 id,
+                shares,
             } => {
                 let start = match argv.is_empty() {
                     true => Start::Shell(env.as_slice()),
                     false => Start::Program(argv, env.as_slice()),
                 };
-                self.split(target, axis, start, cwd.as_deref(), id, origin)
+                self.split(target, (axis, shares), start, cwd.as_deref(), id, origin)
             }
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
@@ -2581,12 +2583,13 @@ impl Session {
         Ok(acted([version]))
     }
 
-    /// `split`: a new pane beside `target`, along `axis`, running `start`
-    /// in `dir`, with the id `id` asked for.
+    /// `split`: a new pane beside `target`, along `axis`, the two taking
+    /// `shares` if given, running `start` in `dir`, with the id `id` asked
+    /// for.
     fn split(
         &mut self,
         target: PaneId,
-        axis: Axis,
+        (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         start: Start<'_>,
         dir: Option<&Path>,
         id: Option<PaneId>,
@@ -2614,7 +2617,7 @@ impl Session {
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id;
-        if let Err(pane) = self.parts.split(target, pane, axis) {
+        if let Err(pane) = self.parts.split(target, pane, axis, shares) {
             self.end(pane.into_process(), true);
             return Err(Error::NoPane(target));
         }
@@ -4887,6 +4890,46 @@ mod tests {
         run(&mut s, "str c1 client zoom")?;
         s.resize(c, 2, 2).map_err(|e| e.to_string())?;
         assert_eq!(replays(&s)?, 4);
+        Ok(())
+    }
+
+    /// Tab `tab`'s panes' places on its own size, in tree order.
+    fn rects(s: &Session, tab: TabId) -> Vec<Rect> {
+        let Some((root, area)) = s.tab(tab).and_then(|t| Some((t.root()?, t.fit().area()))) else {
+            return Vec::new();
+        };
+        let placed = layout::place(root, area);
+        root.panes()
+            .iter()
+            .filter_map(|p| placed.rect(*p))
+            .collect()
+    }
+
+    /// Tab `tab` dumped and made again where no client is: its panes'
+    /// places there.
+    fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
+        let dump = s.dump_layout(Some(AnyRef::Tab(tab)), false);
+        let mut again = started(Config::default())?;
+        run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
+        let made = (again.parts.workspaces().iter())
+            .flat_map(|w| w.tabs())
+            .last();
+        Ok(made.map(|t| rects(&again, t.id)).unwrap_or_default())
+    }
+
+    /// Panes are made again at the places they had: 80, 10 and 8 of 100
+    /// columns, which giving each its width in turn makes 72, 10 and 16,
+    /// the second's growing into the first.
+    #[test]
+    fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let tab = "opts 100 10 size str +1 workspace in new-tab drop";
+        let splits = "%2 80 18 shares split drop %3 10 8 shares split drop";
+        run(&mut s, &format!("{tab} {splits}"))?;
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
+        assert_eq!(widths, [80, 10, 8]);
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
 

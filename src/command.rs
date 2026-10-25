@@ -6,6 +6,7 @@ use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::wire::wire;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 wire! {
@@ -516,6 +517,9 @@ wire! {
             env: Env,
             /// The id it makes the pane with, if asked for.
             id: Option<PaneId>,
+            /// The shares of their split the split pane and the new one
+            /// take (`shares`), if given; else the pane's is halved.
+            shares: Option<(NonZeroU32, NonZeroU32)>,
         },
         /// A program, started in place of a shell in a tab of its own, in a
         /// workspace no client is moved to.

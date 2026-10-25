@@ -494,7 +494,7 @@ fn a_crashed_server_comes_back() -> Outcome {
         Ok(saved
             .filter(|f| f.path().extension().is_some_and(|x| x == "layout"))
             .filter_map(|f| std::fs::read_to_string(f.path()).ok())
-            .any(|text| text.contains("70 resize-x")))
+            .any(|text| text.contains(" 70 29 shares ")))
     })?;
     let pid = server.pid().ok_or("the server's pid")?;
     let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
@@ -518,7 +518,6 @@ fn a_crashed_server_comes_back() -> Outcome {
         String::from_utf8_lossy(&again.stderr)
     );
     let mut after = String::new();
-    // The saved session is run line by line: its sizes come last.
     eventually("the panes back, at their sizes", || {
         after = server.ok(&["ls"])?;
         Ok(after.contains(&format!("{shell} ")) && after.contains(&format!("{app} sh 70x30")))
