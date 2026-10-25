@@ -16,7 +16,7 @@ define until-shows
 end
 
 opts str ask name 60 10 size
-str 'sh -c "printf \"name? \"; read n; echo got \${#n} letters; read n"' command
+str sh program str -c arg str 'printf "name? "; read n; echo got ${#n} letters; read n' arg
 run let ASK
 ASK str 'name?' until-shows drop
 ASK str fuxth line drop

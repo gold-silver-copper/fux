@@ -201,7 +201,7 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // A pane that never changes is waited on until the time is up.
     let timed_out = server.fux(&[
-        "opts", "str", "sleep 30", "command", "run", "1", "timeout", "wait",
+        "opts", "str", "sleep", "program", "str", "30", "arg", "run", "1", "timeout", "wait",
     ])?;
     assert_eq!(timed_out.status, 124, "{}", timed_out.stderr);
     assert!(
@@ -423,7 +423,9 @@ fn a_directory_named_in_any_bytes_is_where_a_run_starts() -> Outcome {
     let dir = server.dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
     std::fs::create_dir(&dir).map_err(e)?;
     let out = std::process::Command::new(fux())
-        .args(["opts", "str", "touch here", "command", "run"])
+        .args([
+            "opts", "str", "touch", "program", "str", "here", "arg", "run",
+        ])
         .current_dir(&dir)
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))

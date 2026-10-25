@@ -4531,9 +4531,9 @@ mod tests {
     }
 
     /// A bare id names its pane, tab or workspace, but not as `str`'s text;
-    /// `json` after a capture gives its JSON; `command` splits a line.
+    /// `json` after a capture gives its JSON.
     #[test]
-    fn ids_json_and_command_lines_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
+    fn ids_and_json_read_as_written() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, _) = attached(10, 40)?;
         assert_eq!(output(&mut s, "%1 str name get")?, "sh\n");
         assert_eq!(output(&mut s, "@1 str name get")?, "main\n");
@@ -4543,8 +4543,6 @@ mod tests {
         assert_eq!(output(&mut s, "str %1")?, "%1\n");
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.starts_with(r#"{"pane":"%1""#), "{json}");
-        let made = output(&mut s, "opts str 'sh -c \"exit 0\"' command run")?;
-        assert!(made.starts_with('%'), "{made}");
         Ok(())
     }
 

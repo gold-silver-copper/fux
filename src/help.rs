@@ -52,13 +52,13 @@ number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only run, new-tab and
-new-workspace start from opts (`opts str 'make test' command run`). An
-action answers at once, with its pane's version from before it acted, one
-word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until
-its version differs from V, {wait}s at most unless `SECS timeout` says
-(the server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on
-stderr. Driving programs from a script or an agent: `fux help-agents`; one
-word: `fux help WORD`.
+new-workspace start from opts (`opts str make program str test arg
+run`). An action answers at once, with its pane's version from before it
+acted, one word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's
+pane until its version differs from V, {wait}s at most unless `SECS
+timeout` says (the server's wait-seconds). A failure prints `fux: CODE:
+MESSAGE` on stderr. Driving programs from a script or an agent: `fux
+help-agents`; one word: `fux help WORD`.
 ",
     );
     // The language's parsing words and core, as fuxth says them: a block's
@@ -204,14 +204,11 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env command program arg in log-to id"),
-    (
-        "split",
-        "horizontal vertical cwd env command program arg id",
-    ),
+    ("run", "name size cwd env program arg in log-to id"),
+    ("split", "horizontal vertical cwd env program arg id"),
     ("new-tab", "name size cwd env in id"),
     ("new-workspace", "name size cwd env id"),
-    ("respawn", "kill-first env command program arg"),
+    ("respawn", "kill-first env program arg"),
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
@@ -234,7 +231,6 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
-        "command" => "fux opts str 'python3 -I app.py --fast' command run",
         "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
             "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }

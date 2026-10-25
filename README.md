@@ -94,10 +94,11 @@ What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet: they start from `opts`, empty options. Only `run` takes a program
-(`command`, `program`); `new-tab` and `new-workspace` start a shell.
+(`program`, then each `arg`; a shell's line is `str sh program str -c arg str
+LINE arg`); `new-tab` and `new-workspace` start a shell.
 
 ```sh
-fux opts str web name 120 40 size str './app --verbose' command run
+fux opts str web name 120 40 size str ./app program str --verbose arg run
 fux %3 200 history capture
 fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 ```
@@ -105,7 +106,7 @@ fux %3 str 'make test' text str Enter key send-keys 60 timeout wait
 A program can name what it made; a wait on an action's answer waits from the version it holds:
 
 ```sh
-fux opts str 'sh -c "echo hello; sleep 1"' command run let P   P wait drop   P screen
+fux opts str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P screen
 ```
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows

@@ -541,7 +541,7 @@ fn a_crashed_server_comes_back() -> Outcome {
         assert!(said, "{}", refused.stderr);
     }
     // Its name is taken by what came back, which the refusal says.
-    let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "command", "run"])?;
+    let taken = server.fux(&["opts", "str", "app", "name", "str", "cat", "program", "run"])?;
     assert!(
         taken.stderr.starts_with("fux: name_taken: ") && taken.stderr.contains("brought back"),
         "{}",
@@ -567,7 +567,7 @@ fn a_crashed_server_comes_back() -> Outcome {
 fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     let server = Server::start("")?;
     let run = [
-        "opts", "str", "late", "name", "str", "sleep 60", "command", "run",
+        "opts", "str", "late", "name", "str", "sleep", "program", "str", "60", "arg", "run",
     ];
     let late = server.ok(&run)?;
     let late = first_word(&late);
@@ -644,7 +644,8 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
     // A workspace `run` made: its dump takes the workspace from the answer
     // `run` leaves.
     server.ok(&[
-        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep 60", "command", "run",
+        "opts", "str", "jobs", "in", "str", "job", "name", "str", "sleep", "program", "str", "60",
+        "arg", "run",
     ])?;
     let dump = server.ok(&["str", "jobs", "workspace", "dump-of"])?;
     server.ok(&["str", "jobs", "workspace", "kill"])?;
@@ -665,7 +666,8 @@ fn a_dump_makes_its_workspace_again() -> Outcome {
 fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
     let source = Server::start("")?;
     source.ok(&[
-        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep 60", "command", "run",
+        "opts", "str", "main", "in", "str", "tab-2", "name", "str", "sleep", "program", "str",
+        "60", "arg", "run",
     ])?;
     let dump = source.ok(&["dump"])?;
     let server = Server::start("")?;
@@ -687,7 +689,7 @@ fn a_dump_runs_on_a_new_server_whatever_its_tabs_are_named() -> Outcome {
 fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     let server = Server::start("")?;
     let pane = server.ok(&[
-        "opts", "str", "moved", "in", "str", "sleep 60", "command", "run",
+        "opts", "str", "moved", "in", "str", "sleep", "program", "str", "60", "arg", "run",
     ])?;
     server.ok(&[
         "str",

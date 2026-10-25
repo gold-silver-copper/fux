@@ -1078,8 +1078,10 @@ fn the_docs_recipes_run_as_written() -> Outcome {
     let unmarked = recipe("- **A shell command's end, without marks:**")?
         .replace("%3", &pane("exec sh -i")?)
         .replace("make test", "true");
-    let exit =
-        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    let exit = recipe("- **A program's exit:**")?.replace(
+        "str cargo program str test arg",
+        "str sh program str -c arg str 'sleep 1; exit 3' arg",
+    );
     let deaf = pane("stty -echo; sleep 30")?;
     let fallback = recipe("- **A deadline, a fallback, a retry:**")?
         .replace("%2", &deaf)

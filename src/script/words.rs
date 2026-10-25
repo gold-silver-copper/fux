@@ -102,7 +102,6 @@ pub const WORDS: &[Word] = &[
     word("Starting", "env", "x key var -- x", "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)"),
     word("Starting", "program", "x path -- x", "the program to start, in place of a shell"),
     word("Starting", "arg", "x text -- x", "an argument for the program"),
-    word("Starting", "command", "x line -- x", "the program and its arguments, one line split into words as a shell splits them (quotes, backslashes); no shell runs it, so ; | && and > are words: for those, str sh program str -c arg str LINE arg"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
@@ -551,14 +550,6 @@ fn modify(
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
         "paste" => built.inputs.push(Input::Paste(text(&next()?)?)),
         "bytes" => built.inputs.push(Input::Bytes(hex(&string(&next()?)?)?)),
-        "command" => {
-            let line = string(&next()?)?;
-            let argv = crate::words::split(&line).map_err(|e| fail(Lang::OpenQuote, e))?;
-            if argv.first().is_none_or(|p| p.is_empty()) {
-                return Err(fail(Code::NoProgram, "an empty command line"));
-            }
-            built.argv = argv;
-        }
         "program" => {
             let program = string(&next()?)?;
             match built.argv.first_mut() {

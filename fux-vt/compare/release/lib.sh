@@ -41,15 +41,15 @@ fux_server() {
   fux_started=1
 }
 
-# Runs CMD in a new pane of COLSxROWS and waits up to SECONDS for it to
-# end, leaving the pane in $pane: fux_run COLS ROWS SECONDS CMD. Only
-# `run` and `str state get`, which fux has had since before BASE, so a
-# BASE build runs too.
+# Runs CMD, a line for sh -c, in a new pane of COLSxROWS and waits up to
+# SECONDS for it to end, leaving the pane in $pane: fux_run COLS ROWS
+# SECONDS CMD. It has ended once its version's last count, ENDED, is 1
+# (`%2:R.S.B.D.1:RUN`).
 fux_run() {
-  pane=$("$fux_bin" opts "$1" "$2" size str "$work" cwd str "$4" command run 2>"$work/run.err" | head -n1 | cut -d' ' -f1) || true
+  pane=$("$fux_bin" opts "$1" "$2" size str "$work" cwd str sh program str -c arg str "$4" arg run 2>"$work/run.err" | head -n1 | cut -d: -f1) || true
   [[ $pane == %* ]] || { echo "release: fux did not start $4" >&2; cat "$work/run.err" >&2; return 1; }
   local end=$((SECONDS + $3))
-  until [[ $("$fux_bin" "$pane" str state get 2>/dev/null) == exited* ]]; do
+  until [[ $("$fux_bin" "$pane" str version get 2>/dev/null) == *.1:* ]]; do
     (( SECONDS < end )) || { echo "release: $4 still runs after $3 s" >&2; return 1; }
     sleep 1
   done

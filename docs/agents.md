@@ -135,7 +135,7 @@ as integers: `A counts 3 at` is its `DONE`.
   it looks, so it wants an answer from before the end (`run`'s).
 
   ```fux
-  opts str 'cargo test' command run
+  opts str cargo program str test arg run
   begin 600 timeout wait dup counts 4 at 1 eq until
   str exited get
   ```
@@ -260,7 +260,8 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
-for its exit: `fux opts str 'ssh -n HOST make' command run`.
+for its exit: `fux opts str ssh program str -n arg str HOST arg str make
+arg run`.
 
 ## programs: A program
 
@@ -269,7 +270,7 @@ names between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
-opts str tests name str 'cargo test' command run   # its answer: %2:0.0.0.0.0:RUN
+opts str tests name str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
 begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
