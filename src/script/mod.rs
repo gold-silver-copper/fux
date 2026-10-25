@@ -1065,7 +1065,7 @@ pub fn configured(server: &mut Server) -> (Keymap, Option<String>) {
 /// The default keys: the bundled config `keys.fux`, run on no bindings.
 pub fn default_keys() -> Result<Keymap, Failed> {
     let mut keymap = Keymap::empty();
-    let dry = &mut Settings(None);
+    let dry = &mut Settings::default();
     run_quiet("keys.fux", KEYS, Context::default(), Some(&mut keymap), dry)?;
     Ok(keymap)
 }
@@ -1080,8 +1080,9 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 }
 
 /// The keymap a config file makes, its words run on the defaults, its
-/// settings sent to `server`, or with none checked and sent nowhere (a dry
-/// run); or why it fails. A config attaches nothing, and chooses no other
+/// settings sent to `server` once it has run, as one request the server
+/// puts in force whole, or with none sent (a dry run); or why it fails,
+/// when none are sent. A config attaches nothing, and chooses no other
 /// server.
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
@@ -1091,13 +1092,20 @@ pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<K
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
         ..default_keys()?
     };
+    let mut settings = Settings::default();
     run_quiet(
         &shown,
         &text,
-        context,
+        context.clone(),
         Some(&mut keymap),
-        &mut Settings(server),
+        &mut settings,
     )?;
+    if let Some(server) = server
+        && !settings.0.is_empty()
+    {
+        let request = crate::command::Command::Set(settings.0).into();
+        server.ask(&Asked { request, context }, &mut io::sink())?;
+    }
     Ok(keymap)
 }
 
@@ -1117,22 +1125,21 @@ fn run_quiet(
 }
 
 /// What a config's requests go to: settings alone, as a config runs each
-/// time a client attaches, and must make nothing. With no server, a dry
-/// run: none sent, each read as `set` was given it.
-struct Settings<'a>(Option<&'a mut Server>);
+/// time a client attaches, and must make nothing. Each is kept, in order,
+/// for the run's end: half a config is no config.
+#[derive(Default)]
+struct Settings(Vec<crate::config::Setting>);
 
-impl Asks for Settings<'_> {
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        let Request::Do(crate::command::Command::Set(_)) = &asked.request else {
+impl Asks for Settings {
+    fn ask(&mut self, asked: &Asked, _: &mut dyn Write) -> Result<Reply, Failed> {
+        let Request::Do(crate::command::Command::Set(settings)) = &asked.request else {
             return Err(Failed::new(
                 Code::NotConfig,
                 "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
             ));
         };
-        match &mut self.0 {
-            Some(server) => server.ask(asked, out),
-            None => Ok(Reply::default()),
-        }
+        self.0.extend(settings.iter().cloned());
+        Ok(Reply::default())
     }
 }
 
@@ -1323,7 +1330,7 @@ mod tests {
             "0 exit",
         ];
         for code in words {
-            let dry = &mut super::Settings(None);
+            let dry = &mut super::Settings::default();
             let ran = super::run_quiet("config", code, Default::default(), None, dry);
             assert_eq!(
                 ran.err().map(|f| f.code),
@@ -1339,7 +1346,7 @@ mod tests {
     #[test]
     fn the_default_keys_are_a_config_list_keys_prints() -> Result<(), super::Failed> {
         let run = |name: &str, text: &str, keymap: &mut super::Keymap| {
-            let dry = &mut super::Settings(None);
+            let dry = &mut super::Settings::default();
             super::run_quiet(name, text, Default::default(), Some(keymap), dry)
         };
         let mut keymap = super::default_keys()?;
@@ -1374,7 +1381,7 @@ mod tests {
         let ran = super::run_capped(
             &mut machine,
             &mut host,
-            &mut super::Settings(None),
+            &mut super::Settings::default(),
             Some(20_000),
             None,
         );

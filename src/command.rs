@@ -599,8 +599,8 @@ wire! {
             target: AnyRef,
             toward: Sibling,
         },
-        /// Server settings (`history-bytes`, `clipboard`, …), each a value
-        /// its setting takes, in force all at once.
+        /// Server settings (`history-bytes`, `clipboard`, …), in force all
+        /// at once: a config's together, as one.
         Set(settings: Vec<crate::config::Setting>),
         /// What a name or an id in text is: the pane, tab or workspace of
         /// `kind` it names (a tab's name, `%3`, …), answered with its id.

@@ -117,6 +117,27 @@ fn settings_reach_the_server() -> Outcome {
     Ok(())
 }
 
+/// Half a config is no config: one that fails after a `set` sets nothing,
+/// and says why.
+#[test]
+fn a_config_that_fails_sets_nothing() -> Outcome {
+    let server = Server::start("")?;
+    let config = server.dir.join("half.fux");
+    let text = "str shell list str /usr/bin/env str PS1=custom$ str /bin/sh end set\n\
+                str nonsense 1 set\n";
+    std::fs::write(&config, text).map_err(e)?;
+    let socket = fux::socket::Choice::Path(server.socket.clone());
+    let ran = fux::script::run_file(&config, Some(&mut fux::script::Server::new(socket)));
+    let failed = ran.err().ok_or("the config ran")?;
+    assert!(failed.to_string().contains("nonsense"), "{failed}");
+    let pane = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
+    let pane = pane.split_whitespace().next().unwrap_or_default();
+    let shown = || server.ok(&["str", pane, "pane", "capture"]);
+    eventually("a prompt", || Ok(shown()?.contains('$')))?;
+    assert!(!shown()?.contains("custom$"), "the shell was set");
+    Ok(())
+}
+
 /// A config that fails is reported to the client attaching with it, which
 /// keeps the default keys; `check` finds its mistakes without running it.
 #[test]

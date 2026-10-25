@@ -335,9 +335,11 @@ interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
 
 The optional config is `$XDG_CONFIG_HOME/fux/config.fux`, else
 `~/.config/fux/config.fux`: fuxth, which each client runs as it attaches.
-Its `set` words change the server for everyone; its key words change that
-client's keys alone. `fux str FILE check` reads a file without running it
-and says what is wrong.
+Its `set` words change the server for everyone, all at once when it has
+run; its key words change that client's keys alone. Half a config is no
+config: one that fails sets nothing, the client keeps the default keys,
+and it says why. `fux str FILE check` reads a file without running it and
+says what is wrong.
 
 ```sh
 # ~/.config/fux/config.fux

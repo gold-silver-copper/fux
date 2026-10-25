@@ -1640,7 +1640,7 @@ mod tests {
                 config,
                 crate::client::context(),
                 None,
-                &mut super::super::Settings(None),
+                &mut super::super::Settings::default(),
             )
             .map_err(|failed| failed.code)
         };
