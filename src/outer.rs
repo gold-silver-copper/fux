@@ -311,12 +311,11 @@ impl Session {
 
     /// Pane `id`'s program is told the scheme is `scheme`, if it takes
     /// input (`refuses_input`) and its queue takes the report; one refused
-    /// is told lost (`InputQueue`), and sent again once there is room
-    /// (`tell_schemes`).
+    /// is sent again once there is room (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
             && crate::session::refuses_input(&pane).is_none()
-            && pane.input.push(scheme.report()).is_ok()
+            && pane.offer(scheme.report())
         {
             pane.scheme_told = Some(scheme);
         }
@@ -739,7 +738,7 @@ mod tests {
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let refused = |s: &mut Session| {
             s.output(PaneId::of(1), picture);
-            (s.parts.panes().get(&PaneId::of(1))).map(crate::pane::Pane::pictures_refused)
+            (s.parts.panes().get(&PaneId::of(1))).map(|p| p.lost().pictures)
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
@@ -791,7 +790,7 @@ mod tests {
     }
 
     /// A scheme report a full input queue refuses is not taken as told: it
-    /// is sent once the program reads, and the loss in between is told.
+    /// is sent once the program reads, late, and nothing is lost.
     #[test]
     fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
         let (mut s, c) = session()?;
@@ -800,13 +799,10 @@ mod tests {
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        p.input.push(full).map_err(|e| e.to_string())?;
+        p.push(full).map_err(|e| e.to_string())?;
         s.input(c, b"\x1b[?997;2n");
         let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
-        assert!(
-            notice.is_some_and(|n| n.text.contains("%1")),
-            "the loss is told"
-        );
+        assert!(notice.is_none(), "nothing is lost: {notice:?}");
         assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
         s.settle();
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");

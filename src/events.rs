@@ -409,7 +409,10 @@ mod tests {
         journal.push(bell);
         assert_eq!(stream.told(&journal, 0, |_| Some(ws)).0, "");
         let (lines, _) = stream.told(&journal, usize::MAX, |_| Some(ws));
-        assert!(lines.starts_with("missed count=2\nbell %1 @1 +1\n"), "{lines}");
+        assert!(
+            lines.starts_with("missed count=2\nbell %1 @1 +1\n"),
+            "{lines}"
+        );
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| Some(ws)).0, "");
         Ok(())
@@ -440,14 +443,20 @@ mod tests {
             Event::Pane(at, PaneEvent::Title(Said::default())),
             Event::Pane(at, PaneEvent::Done(None)),
             Event::Pane(at, PaneEvent::Resized(size)),
-            Event::Pane(at, PaneEvent::Exited(End {
+            Event::Pane(
+                at,
+                PaneEvent::Exited(End {
                     ended: Ended::Exited(0),
                     left: Left::default(),
-                })),
-            Event::Pane(at, PaneEvent::Exited(End {
+                }),
+            ),
+            Event::Pane(
+                at,
+                PaneEvent::Exited(End {
                     ended: Ended::Signalled(9),
                     left: cut,
-                })),
+                }),
+            ),
             Event::Tab((ws, tab), Change::Created(String::new())),
             Event::Tab((ws, tab), Change::Renamed(String::new())),
             Event::Workspace(ws, Change::Closed),

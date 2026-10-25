@@ -95,15 +95,14 @@ fn key(r: &mut Rng) -> String {
 /// pane's key mode. `stack!(cur, fux, |press, application, out| ..., |input|
 /// ...)` expands to `mod cur`: `Decoding`
 /// (each piece's inputs, shown, and the decoder's deadline), `key` (a
-/// named key's bytes in both cursor modes), `paste` and `Queue` (an
-/// input queue), all over the crate `fux`.
+/// named key's bytes in both cursor modes) and `paste`, all over the
+/// crate `fux`.
 macro_rules! stack {
     ($name:ident, $fux:ident, $key_bytes:expr, $shown:expr) => {
         mod $name {
             use std::time::Instant;
             use $fux::decode::Decoder;
             use $fux::keys::KeyPress;
-            use $fux::pane::InputQueue;
 
             #[derive(Default)]
             pub struct Decoding(Decoder);
@@ -159,39 +158,6 @@ macro_rules! stack {
                 $fux::encode::paste(text, true, &mut bracketed);
                 (plain, bracketed)
             }
-
-            #[derive(Default)]
-            pub struct Queue(InputQueue);
-
-            impl Queue {
-                pub fn push(&mut self, bytes: &[u8], with: bool) -> String {
-                    let result = if with {
-                        self.0.push_with(|out| out.extend_from_slice(bytes))
-                    } else {
-                        self.0.push(bytes)
-                    };
-                    format!("{:?} {}", result.map_err(|e| e.to_string()), self.shown())
-                }
-
-                pub fn advance(&mut self, n: usize) -> String {
-                    self.0.advance(n);
-                    self.shown()
-                }
-
-                pub fn drain(&mut self) -> String {
-                    format!("{} {}", self.0.drain_all().len(), self.shown())
-                }
-
-                fn shown(&self) -> String {
-                    let front = self.0.front().unwrap_or_default();
-                    format!(
-                        "empty {} front {} bytes {:?}",
-                        self.0.is_empty(),
-                        front.len(),
-                        front.get(..16.min(front.len()))
-                    )
-                }
-            }
         }
     };
 }
@@ -239,6 +205,84 @@ stack!(
         format!("{input:?}")
     }
 );
+
+/// An input queue, as each version is driven: the baseline's alone, the
+/// current one through its pane, which alone queues input and counts what
+/// the queue refuses (`Pane::push`).
+trait Queue {
+    fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String>;
+    fn advance(&mut self, n: usize);
+    fn front(&self) -> Option<&[u8]>;
+}
+
+impl Queue for baseline::pane::InputQueue {
+    fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
+        let result = match with {
+            true => self.push_with(|out| out.extend_from_slice(bytes)),
+            false => baseline::pane::InputQueue::push(self, bytes),
+        };
+        result.map_err(|e| e.to_string())
+    }
+    fn advance(&mut self, n: usize) {
+        baseline::pane::InputQueue::advance(self, n);
+    }
+    fn front(&self) -> Option<&[u8]> {
+        baseline::pane::InputQueue::front(self)
+    }
+}
+
+impl Queue for fux::pane::Pane {
+    fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
+        let result = match with {
+            true => self.push_with(|_, out| out.extend_from_slice(bytes)),
+            false => fux::pane::Pane::push(self, bytes),
+        };
+        result.map_err(|e| e.to_string())
+    }
+    fn advance(&mut self, n: usize) {
+        self.input.advance(n);
+    }
+    fn front(&self) -> Option<&[u8]> {
+        self.input.front()
+    }
+}
+
+/// What a queue holds, after a step: whether it is empty, and its front.
+fn shown(queue: &impl Queue) -> String {
+    let front = queue.front().unwrap_or_default();
+    format!(
+        "empty {} front {} bytes {:?}",
+        queue.front().is_none(),
+        front.len(),
+        front.get(..16.min(front.len()))
+    )
+}
+
+/// One step of a queue's: `push` bytes (with `push_with` or not), let the
+/// program `advance` past some, or `drain` it; what it says, and holds.
+fn step(queue: &mut impl Queue, step: &Step) -> String {
+    match step {
+        Step::Push(bytes, with) => {
+            let result = queue.push(bytes, *with);
+            format!("{result:?} {}", shown(queue))
+        }
+        Step::Advance(n) => {
+            queue.advance(*n);
+            shown(queue)
+        }
+        Step::Drain => {
+            let n = queue.front().map_or(0, <[u8]>::len);
+            queue.advance(n);
+            format!("{n} {}", shown(queue))
+        }
+    }
+}
+
+enum Step {
+    Push(Vec<u8>, bool),
+    Advance(usize),
+    Drain,
+}
 
 fn decoding(r: &mut Rng, cases: usize) -> Result<(u64, u64), String> {
     let (mut streams, mut timeouts) = (0u64, 0u64);
@@ -308,10 +352,13 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
     }
     let mut ops = 0u64;
     for case in 0..times(500, scale) {
-        let (mut a, mut b) = (base::Queue::default(), cur::Queue::default());
+        let mut a = baseline::pane::InputQueue::default();
+        let (id, runs) = ("%1".parse().map_err(|_| "%1")?, fux::pane::Runs::Shell);
+        let b = fux::pane::Pane::new(id, String::new(), runs, crate::size(24, 80), 0);
+        let mut b = b.map_err(|e| e.to_string())?;
         let mut log = Vec::new();
         for _ in 0..r.below(60) {
-            let (ra, rb) = match r.below(10) {
+            let next = match r.below(10) {
                 0..=5 => {
                     let len = match r.below(4) {
                         0 => 65_548,
@@ -321,18 +368,19 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
                     let bytes: Vec<u8> = std::iter::repeat_n(b'q', len).collect();
                     let with = r.chance(50);
                     log.push(format!("push {len} with {with}"));
-                    (a.push(&bytes, with), b.push(&bytes, with))
+                    Step::Push(bytes, with)
                 }
                 6..=8 => {
                     let n = r.below(200_000);
                     log.push(format!("advance {n}"));
-                    (a.advance(n), b.advance(n))
+                    Step::Advance(n)
                 }
                 _ => {
                     log.push("drain".to_owned());
-                    (a.drain(), b.drain())
+                    Step::Drain
                 }
             };
+            let (ra, rb) = (step(&mut a, &next), step(&mut b, &next));
             same(&format!("queue {case}, after {log:?}"), ra, rb)?;
             bump(&mut ops);
         }

@@ -481,15 +481,6 @@ fn acted(versions: impl IntoIterator<Item = command::Version>) -> Reply {
     reply
 }
 
-/// What a client showing pane `id` is told of input it dropped.
-pub(crate) fn lost(id: PaneId) -> String {
-    format!(
-        "input to {id} was dropped: its input queue was full, and takes nothing until its \
-         program reads, or one read of its output asked for more than {} bytes of replies",
-        crate::pane::REPLIES_MAX
-    )
-}
-
 /// A command that failed, told with its code (its status: 1, 4 or 124).
 fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
@@ -996,11 +987,11 @@ impl Session {
         for id in self.panes_of(target)? {
             let mut pane = self.live_pane_mut(id)?;
             let bytes = bytes(&pane, inputs);
-            pane.input.fits(bytes.len())?;
+            pane.fits(bytes.len())?;
             each.push((pane.version(run), bytes));
         }
         for (version, bytes) in &each {
-            self.pane_mut(version.pane)?.input.push(bytes)?;
+            self.pane_mut(version.pane)?.push(bytes)?;
         }
         Ok(acted(each.into_iter().map(|(version, _)| version)))
     }
@@ -1847,11 +1838,11 @@ impl Session {
         {
             match copy {
                 Ok(text) => copies.push(text),
-                Err(why) => {
-                    pane.alerts.uncopied(why);
-                    let n = pane.uncopied.entry(why).or_default();
-                    *n = n.saturating_add(1);
-                }
+                Err(why) => pane.lose(pane::Losses {
+                    copies_cut: u64::from(why == pane::Uncopied::Cut),
+                    copies_not_text: u64::from(why == pane::Uncopied::NotText),
+                    ..pane::Losses::default()
+                }),
             }
         }
         if bell {
@@ -1871,7 +1862,7 @@ impl Session {
     /// tells it once one does.
     pub(crate) fn tell_lost(&mut self) -> bool {
         let untold: Vec<PaneId> = (self.parts.panes().iter())
-            .filter(|(_, p)| p.input.loses() || !p.uncopied.is_empty())
+            .filter(|(_, p)| p.loses())
             .map(|(id, _)| *id)
             .collect();
         let mut told = false;
@@ -1882,30 +1873,16 @@ impl Session {
         told
     }
 
-    /// Tells `viewers`, the clients showing pane `id`, what it refused and
-    /// has not told: its program's copies (OSC 52) that copied nothing,
-    /// counted by why, and input it dropped since its run of drops began
-    /// (`InputQueue`); whether there was any. With no client showing it,
-    /// it is kept for one that does.
+    /// Tells `viewers`, the clients showing pane `id`, what it let go of
+    /// and has not told, each kind with how many (`Pane::take_untold`);
+    /// whether there was any. With no client showing it, it is kept for
+    /// one that does.
     fn tell_refused(&mut self, id: PaneId, viewers: &[ClientId]) -> bool {
-        let Some(mut pane) = self.parts.pane_mut(id).filter(|_| !viewers.is_empty()) else {
+        let pane = self.parts.pane_mut(id);
+        let Some(mut pane) = pane.filter(|p| p.loses() && !viewers.is_empty()) else {
             return false;
         };
-        let refused = std::mem::take(&mut pane.uncopied);
-        let dropped = pane.input.tell_lost();
-        let mut told: Vec<String> = (refused.into_iter())
-            .map(|(why, n)| match n {
-                1 => format!("{id}'s copy (OSC 52) {why}: nothing was copied"),
-                n => format!("{n} of {id}'s copies (OSC 52) each {why}: none of them was copied"),
-            })
-            .collect();
-        if dropped {
-            told.push(lost(id));
-        }
-        if told.is_empty() {
-            return false;
-        }
-        let told = told.join("; ");
+        let told = pane.take_untold().told(id).join("; ");
         for client in viewers {
             self.notify_to(*client, told.clone(), true);
         }
@@ -2440,7 +2417,7 @@ impl Session {
             return Err(fail(Raise::Mouse, message));
         }
         let version = p.version(run);
-        p.input.push(report)?;
+        p.push(report)?;
         p.mouse_held = held;
         Ok(acted([version]))
     }
@@ -4024,7 +4001,7 @@ mod tests {
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
         let queue = |s: &mut Session, bytes: &[u8]| {
             let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-            pane.input.push(bytes).map_err(|e| e.to_string())
+            pane.push(bytes).map_err(|e| e.to_string())
         };
         queue(&mut s, b"abc")?;
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(0)));
@@ -4313,7 +4290,7 @@ mod tests {
         let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
         // Its program reads nothing, and its queue is full.
         let full = vec![0; crate::pane::INPUT_BYTES];
-        second.input.push(full).map_err(|e| e.to_string())?;
+        second.push(full).map_err(|e| e.to_string())?;
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
         let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
@@ -4322,9 +4299,7 @@ mod tests {
         // after them, until the program reads: none lands past a hole.
         let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         let room = pane.input.room();
-        pane.input
-            .push(vec![0; room.saturating_sub(4)])
-            .map_err(|e| e.to_string())?;
+        (pane.push(vec![0; room.saturating_sub(4)])).map_err(|e| e.to_string())?;
         assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
         assert!(
             run(&mut s, "%1 str x text send-keys").is_err(),
@@ -4379,7 +4354,7 @@ mod tests {
         );
         s.output(PaneId::of(1), long.as_bytes());
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.error && n.text.contains("nothing was copied")));
+        assert!(notice.is_some_and(|n| n.error && n.text.contains("copies (OSC 52) not made (1)")));
         assert_eq!(s.buffers.front().map(String::as_str), Some("foo"));
         // In one read: each copy made, in order, and the refusal between them told.
         if let Some(view) = s.views.get_mut(&client) {
@@ -4403,11 +4378,11 @@ mod tests {
         assert!(s.views.get(&client).is_some_and(|v| v.notice.is_none()));
         run(&mut s, "str c1 client str main workspace show-workspace")?;
         let notice = s.views.get(&client).and_then(|v| v.notice.clone());
-        assert!(notice.is_some_and(|n| n.text.contains("2 of %1's copies")));
+        assert!(notice.is_some_and(|n| n.text.contains("%1: copies (OSC 52) not made (2)")));
         // Counted in its JSON too, for a reader no notice reaches.
         let json = output(&mut s, "%1 capture json")?;
         assert!(
-            json.contains(r#""copies_refused":{"cut":1,"not_text":3}"#),
+            json.contains(r#""copies_cut":1,"copies_not_text":3,"#),
             "{json}"
         );
         s.outbox.clear();
@@ -4434,23 +4409,21 @@ mod tests {
             .collect();
         s.output(id, &queries);
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies_dropped":1,"#), "{json}");
+        assert!(json.contains(r#""replies":1,"#), "{json}");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let room = pane.input.room();
-        pane.input
-            .push(vec![b'x'; room])
-            .map_err(|e| e.to_string())?;
+        pane.push(vec![b'x'; room]).map_err(|e| e.to_string())?;
         s.output(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies_dropped":3,"#), "{json}");
+        assert!(json.contains(r#""replies":3,"#), "{json}");
         // In-band resize reports the full queue refuses are counted: the
         // one setting mode 2048 answers, and the one a resize sends.
         s.output(id, b"\x1b[?2048h");
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies_dropped":4,"#), "{json}");
+        assert!(json.contains(r#""replies":4,"#), "{json}");
         run(&mut s, "@1 30 6 resize")?;
         let json = output(&mut s, "%1 capture json")?;
-        assert!(json.contains(r#""replies_dropped":5,"#), "{json}");
+        assert!(json.contains(r#""replies":5,"#), "{json}");
         Ok(())
     }
 
