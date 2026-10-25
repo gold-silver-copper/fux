@@ -151,10 +151,6 @@ impl InputQueue {
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
-    /// Whether input is refused until its terminal takes some.
-    pub fn refusing(&self) -> bool {
-        self.refusing
-    }
     /// The bytes to write next: every piece queued.
     pub fn front(&self) -> Option<&[u8]> {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
@@ -1147,7 +1143,7 @@ pub(crate) mod tests {
         let refusal = queue.fits(INPUT_BYTES + 1);
         assert!(matches!(refusal, Err(Error::TooLong(_))), "{refusal:?}");
         assert!(queue.push(vec![0; INPUT_BYTES + 1]).is_err());
-        assert!(!queue.refusing() && !queue.loses());
+        assert!(queue.room() == INPUT_BYTES && !queue.loses());
         assert!(queue.push(vec![b'k']).is_ok());
     }
 

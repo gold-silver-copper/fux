@@ -118,10 +118,7 @@ impl Session {
     }
 
     /// Types into the client's focused pane what `write` makes for its
-    /// screen: a key or a paste, as its program asked. Refused already
-    /// (`InputQueue`): nothing more goes in, so a client typing into a pane
-    /// whose input queue is full costs nothing per key but its notice,
-    /// shown again for each key or paste refused; whether it was.
+    /// screen: a key or a paste, as its program asked (`put_in`).
     fn type_in(
         &mut self,
         client: ClientId,
@@ -131,16 +128,28 @@ impl Session {
             return false;
         };
         self.typed(client);
+        self.put_in(client, pane, write)
+    }
+
+    /// Queues for pane `pane`'s program what `write` makes for its screen.
+    /// Each piece its input queue refuses (`InputQueue`) is told to
+    /// `client`, which sent it, the first of a run too; whether one was.
+    fn put_in(
+        &mut self,
+        client: ClientId,
+        pane: crate::id::PaneId,
+        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
+    ) -> bool {
         let Some(mut p) = self.parts.pane_mut(pane) else {
             return false;
         };
-        // Refused, it is told as the acts are done (`Session::acts`).
-        if !p.input.refusing() {
-            let _ = p.push_with(write);
-            return false;
-        }
+        let why = match p.push_with(write) {
+            Ok(()) => return false,
+            Err(crate::pane::Error::InputFull) => crate::session::lost(pane),
+            Err(refused) => refused.to_string(),
+        };
         drop(p);
-        self.notify_to(client, crate::session::lost(pane), true);
+        self.notify_to(client, why, true);
         true
     }
 
@@ -903,6 +912,29 @@ mod tests {
             let told = notice(&mut s);
             assert!(told.is_some_and(|n| n.contains("input to %1 was dropped")));
         }
+        Ok(())
+    }
+
+    /// The first key a full queue refuses is told, though a run of drops
+    /// before it, of replies, was told already.
+    #[test]
+    fn the_first_key_refused_is_told() -> Outcome {
+        let (mut s, c) = session()?;
+        let queries: Vec<u8> = std::iter::repeat_n(*b"\x1b[6n", crate::pane::REPLIES_MAX)
+            .flatten()
+            .collect();
+        s.output(PaneId::of(1), &queries);
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        let room = p.input.room();
+        p.input.push(vec![0; room]).map_err(|e| e.to_string())?;
+        drop(p);
+        let notice = |s: &mut Session| {
+            let view = s.views.get_mut(&c);
+            view.and_then(|v| v.notice.take()).map(|n| n.text)
+        };
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        s.input(c, b"x");
+        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
         Ok(())
     }
 
