@@ -694,14 +694,22 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
     // stdin, with the program's own group in the foreground. (Without one,
     // macOS names some other terminal, and Linux none.)
     let server = Server::start("")?;
-    server.ok(&[
+    let pane = server.ok(&[
+        "opts",
+        "80",
+        "24",
+        "size",
         "str",
-        "shell",
+        "/bin/sh",
+        "program",
         "str",
-        "/bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
-        "set",
+        "-c",
+        "arg",
+        "str",
+        "echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60",
+        "arg",
+        "run",
     ])?;
-    let pane = server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
