@@ -190,8 +190,6 @@ codes! {
     NoKeys "no_keys",
     /// A value that is not a client.
     NotAClient "not_a_client",
-    /// A paste that could not be read.
-    Paste "paste",
 }
 
 impl Code {
