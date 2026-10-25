@@ -1040,9 +1040,9 @@ impl Session {
             (AnyRef::Tab(_) | AnyRef::Workspace(_), Kind::Pane) => {
                 one(&self.panes_of(id)?, many(Kind::Pane)).map(AnyRef::Pane)
             }
-            (AnyRef::Workspace(w), Kind::Tab) => {
+            (AnyRef::Workspace(_), Kind::Tab) => {
                 self.there(id)?;
-                one(&self.tab_ids(w), many(Kind::Tab)).map(AnyRef::Tab)
+                one(&self.tabs_of(id), many(Kind::Tab)).map(AnyRef::Tab)
             }
         }
     }
@@ -1128,7 +1128,10 @@ impl Session {
     fn tabs_of(&self, target: AnyRef) -> Vec<TabId> {
         match target {
             AnyRef::Tab(tab) => vec![tab],
-            AnyRef::Workspace(ws) => self.tab_ids(ws),
+            AnyRef::Workspace(ws) => {
+                let ws = self.workspace(ws).into_iter();
+                ws.flat_map(|w| w.tabs().iter().map(|t| t.id)).collect()
+            }
             AnyRef::Pane(pane) => self.locate(pane).map(|(_, tab)| tab).into_iter().collect(),
         }
     }
@@ -1766,12 +1769,6 @@ impl Session {
         for gone in self.parts.remove_tab(tab) {
             self.end(gone.into_process(), true);
         }
-    }
-
-    /// The tabs of workspace `ws`, in order.
-    fn tab_ids(&self, ws: WsId) -> Vec<TabId> {
-        let ws = self.workspace(ws).into_iter();
-        ws.flat_map(|w| w.tabs().iter().map(|t| t.id)).collect()
     }
 
     /// The clients showing tab `tab`.
@@ -2616,9 +2613,10 @@ impl Session {
         }
         self.ids = ids;
         let (ws, tab) = self.locate(new).ok_or(Error::NoPane(new))?;
-        let tab_of = tab_of(self.parts.workspaces_mut(), new)?;
+        let split = tabs_mut(self.parts.workspaces_mut()).find(|t| t.id == tab);
+        let split = split.ok_or(Error::NoTab(tab))?;
         for view in (self.views.values_mut()).filter(|v| followers.contains(&v.id)) {
-            tab_of.set_focus(view.id, new);
+            split.set_focus(view.id, new);
             view.zoom = false;
         }
         let version = self.pane(new)?.version(self.run);
@@ -3323,13 +3321,6 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
 
 fn tabs_mut(workspaces: &mut [Workspace]) -> impl Iterator<Item = &mut Tab> {
     workspaces.iter_mut().flat_map(|w| w.tabs_mut().iter_mut())
-}
-
-/// The tab pane `id` is in: a pane in no tab is no pane.
-fn tab_of(workspaces: &mut [Workspace], id: PaneId) -> Result<&mut Tab, Error> {
-    tabs_mut(workspaces)
-        .find(|t| t.holds(id))
-        .ok_or(Error::NoPane(id))
 }
 
 /// What the other modules' tests share: a session started with the default
