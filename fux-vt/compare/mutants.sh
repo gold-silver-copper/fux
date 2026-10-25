@@ -52,9 +52,9 @@ mkdir -p "$out"
 tests=${FUX_MUTANTS_TESTS:-'package(fux-vt) | (package(fux) & kind(lib))'}
 if [[ ${1-} == guards ]]; then
   # Not the `_10x` and `_100x` bounds rows (minutes a mutant), nor the
-  # ignored tests that fetch, need a harness or write files, nor fux's
-  # one that makes a 1 GiB buffer; fux's journal tests need no server.
-  tests=${FUX_MUTANTS_TESTS:-'(package(fux-vt) & !test(/_10x$/) & !test(/_100x$/) & !test(=write_the_seeds) & !test(=moshs_fuzz_corpus_replays_with_no_fault) & !test(=libvterm_passes_its_own_tests)) | (package(fux) & (kind(lib) | binary(journal)) & !test(=session::tests::keys_for_several_panes_go_to_all_or_none))'}
+  # ignored tests that fetch, need a harness or write files; fux's journal
+  # tests need no server.
+  tests=${FUX_MUTANTS_TESTS:-'(package(fux-vt) & !test(/_10x$/) & !test(/_100x$/) & !test(=write_the_seeds) & !test(=moshs_fuzz_corpus_replays_with_no_fault) & !test(=libvterm_passes_its_own_tests)) | (package(fux) & (kind(lib) | binary(journal)))'}
   export CARGO_PROFILE_DEV_OPT_LEVEL=${CARGO_PROFILE_DEV_OPT_LEVEL:-1}
   if [[ $(uname) == Linux ]]; then
     export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-prlimit --data=2147483648 --}

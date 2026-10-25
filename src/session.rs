@@ -367,6 +367,7 @@ impl From<pane::Error> for Error {
     fn from(error: pane::Error) -> Self {
         let code = match error {
             pane::Error::InputFull => Code::InputFull,
+            pane::Error::TooLong(_) => Lang::TooLong.into(),
             pane::Error::Terminal { .. } => Code::Start,
         };
         fail(code, error.to_string())
@@ -4251,8 +4252,9 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "%1 split drop")?;
         let mut second = s.parts.pane_mut(PaneId::of(2)).ok_or("no %2")?;
-        // Its program reads nothing: the queue refuses everything now.
-        assert!(second.input.push(vec![0; 1 << 30]).is_err());
+        // Its program reads nothing, and its queue is full.
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        second.input.push(full).map_err(|e| e.to_string())?;
         drop(second);
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");

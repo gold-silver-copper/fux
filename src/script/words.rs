@@ -762,8 +762,10 @@ fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
 
 /// The most input one send-keys sends: a request holds it whole.
 const INPUT_MAX: usize = 900 * 1024;
-// A frame holds it, with room for the rest of its request.
+// A frame holds it, with room for the rest of its request; and an empty
+// input queue its text and bytes, which go in as they are (`Pane::input`).
 const _: () = assert!(INPUT_MAX < crate::protocol::MAX_PAYLOAD);
+const _: () = assert!(INPUT_MAX <= crate::pane::INPUT_BYTES);
 
 /// `inputs`, refused past what one send-keys sends. What they take is
 /// what the request carries, which must fit in one frame: text and pastes

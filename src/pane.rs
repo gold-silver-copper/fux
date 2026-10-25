@@ -29,6 +29,8 @@ pub const FRAME_LIMIT: usize = 2 << 20;
 pub enum Error {
     /// The queue is full, or refusing until its terminal takes some.
     InputFull,
+    /// A piece of this many bytes, more than the queue ever holds.
+    TooLong(usize),
     /// No terminal of this size.
     Terminal { size: Size, source: fux_vt::Error },
 }
@@ -38,6 +40,10 @@ impl std::fmt::Display for Error {
         match self {
             Error::InputFull => f.write_str(
                 "the pane's input queue is full; nothing more is queued until its terminal takes some",
+            ),
+            Error::TooLong(len) => write!(
+                f,
+                "{len} bytes of input, more than the {INPUT_BYTES} a pane's input queue holds"
             ),
             Error::Terminal { size, source } => {
                 write!(f, "a {}x{} terminal: {source}", size.cols(), size.rows())
@@ -82,16 +88,16 @@ impl InputQueue {
     /// takes it back and refuses it whole, as `push` does.
     pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
         let room = self.room();
-        let fits = self.bytes.push_with(|out| {
+        let len = self.bytes.push_with(|out| {
             let start = out.len();
             write(out);
-            let fits = out.len().saturating_sub(start) <= room;
-            if !fits {
+            let len = out.len().saturating_sub(start);
+            if len > room {
                 out.truncate(start);
             }
-            fits
+            len
         });
-        self.refuse(!fits)
+        self.refuse(len, room)
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -101,12 +107,17 @@ impl InputQueue {
     /// is everything after them until its terminal takes some, as `push`
     /// refuses.
     pub fn fits(&mut self, len: usize) -> Result<(), Error> {
-        self.refuse(len > self.room())
+        self.refuse(len, self.room())
     }
-    /// Refuses input from now on if `refused`, and takes it as a drop.
-    fn refuse(&mut self, refused: bool) -> Result<(), Error> {
-        if !refused {
+    /// Refuses a piece of `len` bytes past `room`, a drop, and input from
+    /// then on till its terminal takes some; one more than the queue ever
+    /// holds, which no wait makes room for, alone, to its sender only.
+    fn refuse(&mut self, len: usize, room: usize) -> Result<(), Error> {
+        if len <= room {
             return Ok(());
+        }
+        if len > INPUT_BYTES {
+            return Err(Error::TooLong(len));
         }
         self.refusing = true;
         self.dropped();
@@ -1124,6 +1135,19 @@ pub(crate) mod tests {
         // Some of the front written, its terminal took it: input is taken
         // again.
         queue.advance(1);
+        assert!(queue.push(vec![b'k']).is_ok());
+    }
+
+    /// A piece more than the queue ever holds is refused alone, told only
+    /// to its sender: an empty queue, which no write empties more, still
+    /// takes what comes after.
+    #[test]
+    fn a_piece_past_what_the_queue_holds_is_refused_alone() {
+        let mut queue = InputQueue::default();
+        let refusal = queue.fits(INPUT_BYTES + 1);
+        assert!(matches!(refusal, Err(Error::TooLong(_))), "{refusal:?}");
+        assert!(queue.push(vec![0; INPUT_BYTES + 1]).is_err());
+        assert!(!queue.refusing() && !queue.loses());
         assert!(queue.push(vec![b'k']).is_ok());
     }
 
