@@ -887,7 +887,11 @@ impl Server {
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
-            self.session.parts.each_pane_mut(Pane::write_input);
+            let mut wrote = false;
+            self.session
+                .parts
+                .each_pane_mut(|p| wrote |= p.write_input());
+            self.wrote_input(wrote);
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
@@ -1706,13 +1710,20 @@ impl Server {
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.intersects(PollFlags::OUT)
-            && let Some(mut pane) = self.session.parts.pane_mut(id)
-        {
-            pane.write_input();
-        }
+        let wrote = flags.intersects(PollFlags::OUT)
+            && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
+        self.wrote_input(wrote);
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_pane(id);
+        }
+    }
+
+    /// A program read input if `wrote`, making room in its queue: a scheme
+    /// report refused for want of it is sent now (`Session::tell_schemes`),
+    /// not at the next change that settles the session.
+    fn wrote_input(&mut self, wrote: bool) {
+        if wrote {
+            self.session.tell_schemes();
         }
     }
 

@@ -60,17 +60,17 @@ fn a_server_out_of_descriptors_recovers() -> Outcome {
     Ok(())
 }
 
-/// A pane whose `cat` writes what it reads, raw, into a file; the pid of
-/// `cat`, and the file. `cat` replaces the shell: a job-control shell would
-/// take the terminal back from a stopped job, and the job would then read
-/// in the background.
-fn recorder(server: &Server) -> Result<(i32, std::path::PathBuf), String> {
+/// A pane whose `cat` writes what it reads, raw, into a file, after the
+/// shell writes `first` to the terminal; the pid of `cat`, and the file.
+/// `cat` replaces the shell: a job-control shell would take the terminal
+/// back from a stopped job, and the job would then read in the background.
+fn recorder(server: &Server, first: &str) -> Result<(i32, std::path::PathBuf), String> {
     let pid_file = server.dir.join("cat.pid");
     let out = server.dir.join("received");
     server.type_line(
         "%1",
         &format!(
-            "stty raw -echo; exec sh -c 'echo $$ > \"$0\"; exec cat > \"$1\"' '{}' '{}'",
+            "stty raw -echo; printf '{first}'; exec sh -c 'echo $$ > \"$0\"; exec cat > \"$1\"' '{}' '{}'",
             pid_file.display(),
             out.display()
         ),
@@ -132,7 +132,7 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 100)?;
     client.ready()?;
-    let (cat, out) = recorder(&server)?;
+    let (cat, out) = recorder(&server, "")?;
     let _reap = Reap(vec![cat]);
     let mut expected = Vec::new();
 
@@ -221,6 +221,45 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     expected.push(b'Y');
     received(&out, &expected)?;
     Ok(())
+}
+
+/// A scheme report (mode 2031) a full input queue refused is sent once its
+/// program reads again, with nothing else happening in the session.
+#[test]
+fn a_scheme_report_refused_is_sent_as_its_program_reads_again() -> Outcome {
+    let server = Server::start("")?;
+    let mut client = server.attach(20, 100)?;
+    client.ready()?;
+    // The terminal's scheme is dark; the program takes reports.
+    client.send(b"\x1b[?997;1n")?;
+    let (cat, out) = recorder(&server, "\\033[?2031h")?;
+    let _reap = Reap(vec![cat]);
+    let has = |what: &str| {
+        String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()).contains(what)
+    };
+    // Told as a request settles the session, once the mode is read.
+    eventually("the scheme told", || {
+        server.ok(&["ls"])?;
+        Ok(has("\x1b[?997;1n"))
+    })?;
+    signal(cat, fuxix::process::Signal::Stop);
+    for i in 0..20 {
+        client.send(&paste(&pasted(i, 60_000)))?;
+    }
+    client.wait("the notice", |t| {
+        t.lines()
+            .last()
+            .is_some_and(|b| b.contains("input queue was full"))
+    })?;
+    // Light now: refused, as the queue refuses everything.
+    client.send(b"\x1b[?997;2n")?;
+    std::thread::sleep(Duration::from_millis(200));
+    signal(cat, fuxix::process::Signal::Cont);
+    eventually("the refused report sent", || {
+        Ok(std::fs::read(&out)
+            .unwrap_or_default()
+            .ends_with(b"\x1b[?997;2n"))
+    })
 }
 
 /// A program that closes its terminal but keeps running leaves its PTY

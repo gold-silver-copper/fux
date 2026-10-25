@@ -267,7 +267,8 @@ impl Session {
     /// scheme of the terminal that answers for it, if it was told another
     /// or none, with no change of its own waiting (`tell_change`): it was
     /// shown on another terminal, or on none, when its own changed or it
-    /// asked; or its report was refused. Run as the session settles.
+    /// asked; or its report was refused. Run as the session settles, and
+    /// as a program reads its input, which makes room for a refused one.
     pub(crate) fn tell_schemes(&mut self) {
         let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
@@ -286,7 +287,7 @@ impl Session {
 
     /// Pane `id`'s program is told the scheme is `scheme`, if its input
     /// queue takes the report; one refused is told lost (`InputQueue`), and
-    /// sent again as the session settles (`tell_schemes`).
+    /// sent again once there is room (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
             && pane.input.push(scheme.report()).is_ok()

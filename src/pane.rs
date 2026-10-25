@@ -830,19 +830,25 @@ impl<S> Pane<S> {
         begun
     }
 
-    /// Writes the waiting input, as far as the program's terminal takes it.
-    pub fn write_input(&mut self) {
+    /// Writes the waiting input, as far as the program's terminal takes it;
+    /// whether it took any, which makes room in the queue.
+    pub fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
-            return;
+            return false;
         };
+        let mut wrote = false;
         while let Some(bytes) = self.input.front() {
             match fuxix::io::write(&child.master, bytes) {
                 Ok(0) => break,
-                Ok(n) => self.input.advance(n),
+                Ok(n) => {
+                    self.input.advance(n);
+                    wrote = true;
+                }
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }
         }
+        wrote
     }
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
