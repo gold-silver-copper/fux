@@ -1081,9 +1081,10 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 
 /// The keymap a config file makes, its words run on the defaults, its
 /// settings sent to `server` once it has run, as one request the server
-/// puts in force whole, or with none sent (a dry run); or why it fails,
-/// when none are sent. A config attaches nothing, and chooses no other
-/// server.
+/// puts in force whole, or with none sent (a dry run); or why it fails. A
+/// config that fails as it runs sends none; one whose answer is lost may
+/// have been put in force, whole. A config attaches nothing, and chooses
+/// no other server.
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
     let text = read_file(path)?;

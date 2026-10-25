@@ -213,6 +213,14 @@ fn wrong(takes: &str, value: &Value<Fux>) -> String {
     format!("takes {takes}, not {}", value.kind())
 }
 
+/// An integer.
+fn int(value: &Value<Fux>) -> Result<i64, String> {
+    let Value::Int(n) = value else {
+        return Err(wrong("a number", value));
+    };
+    Ok(*n)
+}
+
 /// A list of strings, each as it is.
 fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
     let takes = "a list of strings";
@@ -257,10 +265,8 @@ impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
         format!("a number, {MIN} to {MAX}")
     }
     fn read(value: &Value<Fux>) -> Result<Self, String> {
-        let Value::Int(n) = value else {
-            return Err(wrong("a number", value));
-        };
-        (usize::try_from(*n).ok().and_then(Number::new))
+        let n = int(value)?;
+        (usize::try_from(n).ok().and_then(Number::new))
             .ok_or_else(|| format!("{n} is out of range, {MIN} to {MAX}"))
     }
     fn show(&self) -> String {
@@ -283,10 +289,8 @@ impl Reads for Limit {
         format!("seconds, 0 to {MAX_WAIT}")
     }
     fn read(value: &Value<Fux>) -> Result<Limit, String> {
-        let Value::Int(n) = value else {
-            return Err(wrong("a number", value));
-        };
-        let secs = u64::try_from(*n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
+        let n = int(value)?;
+        let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
         Limit::read(secs)
     }
     fn show(&self) -> String {
@@ -477,13 +481,18 @@ mod tests {
             assert!(Setting::read(name, &value).is_err(), "{name} {value:?}");
         }
         // Nor does the wire carry what `read` refuses: a count is sent
-        // big-endian, so its last byte is its lowest. The defaults, built
-        // unchecked, are each read back.
-        let defaults = Config::default();
+        // big-endian, so its last byte is its lowest. The defaults, some
+        // built unchecked, are each read back.
+        let d = Config::default();
         for setting in [
-            Setting::HistoryBytes(defaults.history_bytes),
-            Setting::Buffers(defaults.buffers),
-            Setting::Shell(defaults.shell),
+            Setting::Shell(d.shell),
+            Setting::HistoryBytes(d.history_bytes),
+            Setting::Wait(d.wait),
+            Setting::Clipboard(d.clipboard),
+            Setting::Buffers(d.buffers),
+            Setting::Bell(d.bell),
+            Setting::Titles(d.titles),
+            Setting::UpdateEnvironment(d.update_environment),
         ] {
             let bytes = crate::wire::encode(&setting);
             assert_eq!(Reader::new(&bytes).whole::<Setting>(), Ok(setting));
