@@ -76,7 +76,7 @@ impl Session {
             let Some(p) = self.parts.panes().get(&pane) else {
                 continue;
             };
-            let shell = || pane::basename(self.config.shell.program());
+            let shell = || pane::basename(&self.config.shell.program);
             let default = self
                 .program(pane)
                 .map_or_else(shell, |l| pane::named(&l.argv));

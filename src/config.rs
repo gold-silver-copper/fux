@@ -203,7 +203,10 @@ fn default_shell() -> Shell {
         .filter(|s| !s.is_empty())
         .or_else(login_shell)
         .unwrap_or_else(|| "/bin/sh".into());
-    Shell::alone(program)
+    Shell {
+        program,
+        args: Vec::new(),
+    }
 }
 
 /// Why `value` is not what a setting takes.
@@ -313,24 +316,12 @@ wire! {
     /// a word as it is, blanks, quotes and all.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Shell {
-        program: String,
-        args: Vec<String>,
+        pub program: String,
+        pub args: Vec<String>,
     }
 }
 
 impl Shell {
-    /// `program`, with no arguments.
-    pub fn alone(program: impl Into<String>) -> Shell {
-        Shell {
-            program: program.into(),
-            args: Vec::new(),
-        }
-    }
-
-    pub fn program(&self) -> &str {
-        &self.program
-    }
-
     /// Its command line, the program first.
     pub fn argv(&self) -> Vec<String> {
         let all = std::iter::once(&self.program).chain(&self.args);

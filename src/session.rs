@@ -1226,7 +1226,7 @@ impl Session {
             ),
         };
         let id = ids.pane()?;
-        let name = basename(named.unwrap_or(config.shell.program()));
+        let name = basename(named.unwrap_or(&config.shell.program));
         let pane = Pane::new(id, name, runs, new.size, config.history_bytes.get())?;
         let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
@@ -3216,7 +3216,10 @@ pub(crate) mod testing {
     /// named after it), started at 80 by 24.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: crate::config::Shell::alone("/bin/sh"),
+            shell: crate::config::Shell {
+                program: "/bin/sh".to_owned(),
+                args: Vec::new(),
+            },
             ..config
         };
         let run = crate::command::Run::now().ok_or("no clock")?;
