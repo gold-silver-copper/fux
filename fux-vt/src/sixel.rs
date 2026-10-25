@@ -232,6 +232,9 @@ struct Covered {
     right: u32,
     top: u32,
     left: u64,
+    /// The words of its rows made, so that its bytes are read at once,
+    /// however many rows it has.
+    words: usize,
 }
 
 impl Covered {
@@ -251,6 +254,7 @@ impl Covered {
             right,
             top,
             left,
+            words: 0,
         })
     }
 
@@ -288,7 +292,13 @@ impl Covered {
         let Some(row) = row else {
             return;
         };
-        let row = row.get_or_insert_with(|| vec![0; stride].into_boxed_slice());
+        let row = match row {
+            Some(row) => row,
+            None => {
+                self.words = self.words.saturating_add(stride);
+                row.insert(vec![0; stride].into_boxed_slice())
+            }
+        };
         let shift = start % 64;
         let carried = bits
             .checked_shr(64_u32.saturating_sub(shift))
@@ -313,10 +323,8 @@ impl Covered {
 
     /// The bytes it takes.
     fn bytes(&self) -> usize {
-        let words = (self.rows.iter().flatten())
-            .map(|row| row.len())
-            .fold(0, usize::saturating_add);
-        (self.rows.capacity().saturating_mul(Self::ROW)).saturating_add(words.saturating_mul(8))
+        (self.rows.capacity().saturating_mul(Self::ROW))
+            .saturating_add(self.words.saturating_mul(8))
     }
 }
 
