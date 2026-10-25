@@ -234,6 +234,17 @@ fn a_pane_runs_shell_else_the_login_shell_else_bin_sh() -> Outcome {
                 .output()
                 .map_err(e)
         };
+        // A server starts with nothing in it: its first shell, once it
+        // answers.
+        eventually("the first shell made", || {
+            let made = Command::new(FUX)
+                .args(["opts", "80", "24", "size", "new-workspace"])
+                .env("FUX_SOCKET", &socket)
+                .env_remove("FUX_PANE")
+                .output()
+                .map_err(e)?;
+            Ok(made.status.success())
+        })?;
         // The name, not the title a shell's startup files may set.
         let shown = eventually(&format!("a pane running {name}"), || {
             let ls = ls()?;

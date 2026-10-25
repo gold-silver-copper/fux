@@ -29,9 +29,15 @@ fn program<'a>(argv: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// `run`'s words: `opts`, then `before` (name, size, waits…), then the
-/// program, then `run`.
+/// program, then `run`; at 80 by 24 unless `before` gives a size, as no
+/// client is attached to lay it out on.
 fn run<'a>(before: &[&'a str], argv: &[&'a str]) -> Vec<&'a str> {
-    [&["opts"][..], before, &program(argv), &["run"]].concat()
+    let size: &[&str] = if before.contains(&"size") {
+        &[]
+    } else {
+        &["80", "24", "size"]
+    };
+    [&["opts"][..], size, before, &program(argv), &["run"]].concat()
 }
 
 /// `send-keys` to `pane` typing `line`, then Enter.

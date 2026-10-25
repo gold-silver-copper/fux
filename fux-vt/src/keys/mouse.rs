@@ -107,8 +107,9 @@ impl crate::Screen {
     /// for mouse reports (`CSI ? 9 / 1000 / 1001 / 1002 / 1003 h`, encoded
     /// as `CSI ? 1005 / 1006 / 1015 / 1016 h` say), and returns whether there
     /// was one ([`mouse_bytes`]). SGR with pixels (1016) reports the middle
-    /// of the event's cell, the host's cell size (`Parser::set_host_graphics`)
-    /// or else 10 by 20 pixels. With no mouse reporting asked for, on the
+    /// of the event's cell in the host's cell size
+    /// (`Parser::set_host_graphics`), and nothing while it gave none: a
+    /// pixel no one knows is not made up. With no mouse reporting asked for, on the
     /// alternate screen, with alternate scroll set (`CSI ? 1007 h`), a wheel
     /// turn sends the cursor keys instead (xterm 411's `AlternateScroll`,
     /// scrollbar.c): Up or Down, in the cursor key mode, 5 times, or half
@@ -118,9 +119,8 @@ impl crate::Screen {
         if mode == MouseProtocolMode::None && self.alternate_scroll(event, out) {
             return true;
         }
-        let (width, height) = self.cell_pixels();
-        let pixel = (middle(event.col, width), middle(event.row, height));
-        report(event, pixel, mode, self.mouse_protocol_encoding(), out)
+        let cell = self.cell_size();
+        mouse_bytes(event, mode, self.mouse_protocol_encoding(), cell, out)
     }
 
     /// A wheel turn as cursor keys, with alternate scroll set and the
@@ -182,25 +182,12 @@ fn middle(n: u16, size: u16) -> u32 {
 ///   button, for any position; urxvt (1015) `CSI code ; column ; row M`, the
 ///   code plus 32 and a release unnamed (xterm 411's `EditorButton`); SGR
 ///   with pixels (1016) SGR's form, the position the middle of the cell in
-///   10 by 20 pixels.
+///   `cell`'s pixels, and nothing without a cell size.
 pub fn mouse_bytes(
     event: MouseEvent,
     mode: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
-    out: &mut Vec<u8>,
-) -> bool {
-    let (width, height) = crate::screen::CELL;
-    let pixel = (middle(event.col, width), middle(event.row, height));
-    report(event, pixel, mode, encoding, out)
-}
-
-/// [`mouse_bytes`] with the pointer at `pixel` (column, row, from zero),
-/// which SGR with pixels (1016) reports, from one.
-fn report(
-    event: MouseEvent,
-    pixel: (u32, u32),
-    mode: MouseProtocolMode,
-    encoding: MouseProtocolEncoding,
+    cell: Option<crate::CellSize>,
     out: &mut Vec<u8>,
 ) -> bool {
     let reported = match (mode, event.action) {
@@ -248,7 +235,11 @@ fn report(
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
         MouseProtocolEncoding::SgrPixels => {
-            let (x, y) = (pixel.0.saturating_add(1), pixel.1.saturating_add(1));
+            let Some(cell) = cell else {
+                return false;
+            };
+            let x = middle(event.col, cell.width()).saturating_add(1);
+            let y = middle(event.row, cell.height()).saturating_add(1);
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
         MouseProtocolEncoding::Urxvt => {

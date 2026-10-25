@@ -294,7 +294,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
         }));
     let mut parser = Parser::with_options(Size::new(6, 12)?, 1 << 16, options)?;
     parser.set_host_graphics(Graphics {
-        cell: Some((10, 20)),
+        cell: fux_vt::CellSize::new(10, 20),
         sixel: true,
     });
     let text = b"\x1b[Habcdefghijk\r\nlmnopqrstuv\r\nwxyzABCDEFG\r\nHIJKLMNOPQR\x1b[3;5H\x1b[m";

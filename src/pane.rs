@@ -539,12 +539,6 @@ pub struct Pane {
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
                             `fux help agents shells` says how to turn marks on";
 
-/// `rows` by `cols`, a zero taken as one: a pane always has a cell.
-pub fn size(rows: u16, cols: u16) -> Size {
-    let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
-    Size::from((one(rows), one(cols)))
-}
-
 impl Pane {
     pub fn new(
         id: PaneId,
@@ -967,6 +961,12 @@ impl Pane {
 pub(crate) mod tests {
     use super::*;
     use fux_vt::Mode;
+
+    /// `rows` by `cols`, each at least one.
+    pub(crate) fn size(rows: u16, cols: u16) -> Size {
+        let one = |n| std::num::NonZeroU16::new(n).unwrap_or(std::num::NonZeroU16::MIN);
+        Size::from((one(rows), one(cols)))
+    }
 
     /// Once input is refused, nothing more is queued until the program
     /// reads, as the notice says: accepting a later key would deliver it

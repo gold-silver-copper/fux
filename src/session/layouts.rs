@@ -8,7 +8,7 @@ use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
 use crate::layout::{Axis, Split, Tree};
 use crate::pane::{self, Launch, Runs};
-use crate::workspace::{Fit, Tab, Workspace};
+use crate::workspace::{Tab, Workspace};
 
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
@@ -66,13 +66,12 @@ impl Session {
         if tab.given() && !makes {
             line.extend(string(tab.name()).chain(["name".to_owned()]));
         }
-        if let Fit::Fixed(size) = tab.fit() {
-            line.extend([
-                size.cols().to_string(),
-                size.rows().to_string(),
-                "size".to_owned(),
-            ]);
-        }
+        // Its size, which a server with no client attached needs to make
+        // it: one that fits clients is made again fixed at the size it has,
+        // the only one it has.
+        let size = tab.fit().size();
+        let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
+        line.extend([cols, rows, "size".to_owned()]);
         if ids {
             if opens {
                 line.extend(asked(&ws.id.to_string()));
@@ -103,11 +102,9 @@ impl Session {
             self.dump_split(*axis, split, ids, out);
         }
         // Each pane's size, for the shares of its splits, the last taking
-        // what is left: in a tab of a fixed size, the only one whose panes'
-        // sizes stay as they are wherever it is made.
+        // what is left, in the tab of the size given above.
         let panes = root.panes();
-        let fixed = matches!(tab.fit(), Fit::Fixed(_));
-        if let (Some((_, sized)), true) = (panes.split_last(), fixed) {
+        if let Some((_, sized)) = panes.split_last() {
             for pane in sized {
                 let Some(size) = self.parts.panes().get(pane).map(|p| p.size()) else {
                     continue;

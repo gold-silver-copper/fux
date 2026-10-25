@@ -122,9 +122,17 @@ impl Setup {
     pub fn cells(&self) -> usize {
         usize::from(self.rows).saturating_mul(usize::from(self.cols))
     }
+    /// A parser of these, its host's cells 10 by 20 pixels, as a terminal
+    /// that says its cell size gives fux: without one, no picture is placed.
     fn parser(&self) -> Result<Parser, String> {
         let size = Size::new(self.rows, self.cols).map_err(|e| e.to_string())?;
-        Parser::with_options(size, self.history, self.options).map_err(|e| e.to_string())
+        let mut parser =
+            Parser::with_options(size, self.history, self.options).map_err(|e| e.to_string())?;
+        parser.set_host_graphics(fux_vt::Graphics {
+            cell: fux_vt::CellSize::new(10, 20),
+            sixel: true,
+        });
+        Ok(parser)
     }
 }
 

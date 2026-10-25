@@ -44,7 +44,7 @@ values from a stack and leaving its own.
 
 ```sh
 fux ls                                            # what there is
-A=$(fux opts str htop program run)                # start htop: %3:0.0.0.0.0:RUN, its version
+A=$(fux opts 80 24 size str htop program run)     # start htop: %3:0.0.0.0.0:RUN, its version
 fux str "$A" changed wait                         # until it differs: %3:0.412.0.0.0:RUN screen
 fux %3 capture                                    # its screen
 fux %3 str q text send-keys                       # press q: its version from before
@@ -95,7 +95,10 @@ on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
 no pane yet: they start from `opts`, empty options. Only `run` takes a program
 (`program`, then each `arg`; a shell's line is `str sh program str -c arg str
-LINE arg`); `new-tab` and `new-workspace` start a shell.
+LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
+out on an attached client's screen, or on `COLS ROWS size`; with no client
+attached a size must be given: fux makes none up, where it once took 80 by
+24.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run
@@ -133,8 +136,8 @@ without either, `FUX_SOCKET`, else the default. A private server for a test
 or an agent:
 
 ```sh
-fux str test server start                         # returns once it answers
-fux str test server opts str ./app program run
+fux str test server start                         # returns once it answers: nothing in it yet
+fux str test server opts 80 24 size str ./app program run
 fux str test server kill-server
 ```
 
@@ -367,7 +370,9 @@ once you bind them.
 pane a `let` name later lines use; `X dump-of` one tab or workspace. Run it
 to make it again on a running server, each tab in the workspace of its
 name (made if missing; a tab's name is the server's alone, so close what it
-holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`.
+holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
+tab is made at the size it has (`size`), which a server with no client
+needs: one that fitted clients' screens is made fixed at its size.
 
 A **server saves its session** the same way, with the ids it had, about a
 second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
@@ -375,7 +380,8 @@ written whole and moved in place, yours alone. A server started on the same
 socket after a crash, a `kill -9` or a reboot runs it to bring the session
 back with the same ids: shells start fresh in their directories; a program
 `run` started waits, saying so on its screen, until `respawn` starts it
-(`paused` in `ls json`). `kill-server` and the last pane closing forget it.
+(`paused` in `ls json`). Each tab comes back at the size it had, as a dump
+makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the last pane closing forget it.
 
 ## Terminal features
 
@@ -401,7 +407,11 @@ back with the same ids: shells start fresh in their directories; a program
   dark/light changes (mode 2031) if it reports them. With several terminals
   attached, a pane is answered from the one that typed into its tab last.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
-  win over your terminal's; your terminal's palette is never changed.
+  win over your terminal's; your terminal's palette is never changed. A
+  colour no one knows is not answered: one your terminal didn't say,
+  palette entries past 15 the program didn't set (before, xterm's
+  defaults), and every colour in a tab no attached terminal answers for
+  (before, the last colours any terminal gave).
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `set bell off` silences both.
@@ -415,7 +425,13 @@ back with the same ids: shells start fresh in their directories; a program
   pane; they scroll with the text, and text over one, or an overlay, takes
   it away. A pane no sixel-drawing terminal shows is told none, so its
   programs draw in text (half blocks), which captures read; `json` says
-  where pictures are. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
+  where pictures are, and the cell size (`cell`, `null` while unknown).
+  fux never makes a cell size up: without one (no terminal showing the
+  pane said it, or it said one smaller than a sixel band, 2 by 6 pixels,
+  which fux tells you), a sixel picture is not placed, `CSI 14 t` and
+  `CSI 16 t` go unanswered, and a program that asked for mouse reports in
+  pixels (mode 1016) is sent none (`send-mouse` fails saying why). Before,
+  a 10 by 20 pixel cell stood in. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
   mlterm and others; not by kitty, whose graphics protocol fux does not
   speak, nor Ghostty, Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal

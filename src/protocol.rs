@@ -650,7 +650,7 @@ mod tests {
         };
         round_trip!(Hello, 1, hello(Role::Attach));
         round_trip!(Greeting, 1, Greeting::Hello(hello(Role::Kill)));
-        let size = crate::session::default_size();
+        let size = fux_vt::Size::from((std::num::NonZeroU16::MIN, std::num::NonZeroU16::MAX));
         let workspace = Some(crate::command::WsRef::Name("main".to_owned()));
         round_trip!(
             Attach,

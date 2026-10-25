@@ -99,19 +99,20 @@ fn urxvt_sends_the_code_plus_32_and_decimal_positions() -> Result {
 }
 
 /// SGR with pixels (1016): SGR's form, the pointer's pixel from one: the
-/// middle of the cell, in the host's cell size, or 10 by 20.
+/// middle of the cell, in the host's cell size; nothing while the host
+/// gave none, as no pixel is known.
 #[test]
 fn sgr_pixels_reports_the_pointers_pixel() -> Result {
     let mut p = parser(b"\x1b[?1000h\x1b[?1016h")?;
     let press = event(MouseAction::Press(MouseButton::Left), 1, 2);
     let release = event(MouseAction::Release(Some(MouseButton::Left)), 1, 2);
-    assert_eq!(sent(&p, press).as_deref(), Some("^[[<0;26;31M"));
-    assert_eq!(sent(&p, release).as_deref(), Some("^[[<0;26;31m"));
+    assert_eq!(sent(&p, press), None);
     p.set_host_graphics(Graphics {
-        cell: Some((8, 16)),
+        cell: fux_vt::CellSize::new(8, 16),
         sixel: false,
     });
     assert_eq!(sent(&p, press).as_deref(), Some("^[[<0;21;25M"));
+    assert_eq!(sent(&p, release).as_deref(), Some("^[[<0;21;25m"));
     Ok(())
 }
 

@@ -11,7 +11,9 @@ a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
-(as `split` does): the other two start a shell.
+(as `split` does): the other two start a shell. Their tab is laid out on an
+attached client's screen, or on `COLS ROWS size`: with no client attached a
+size must be given, as fux makes none up (`size` fails without one).
 
 **Every pane has a version, and a wait waits for it to change.** A version
 is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
@@ -135,7 +137,7 @@ as integers: `A counts 3 at` is its `DONE`.
   it looks, so it wants an answer from before the end (`run`'s).
 
   ```fux
-  opts str cargo program str test arg run
+  opts 80 24 size str cargo program str test arg run
   begin 600 timeout wait dup counts 4 at 1 eq until
   str exited get
   ```
@@ -221,7 +223,8 @@ from its program (or it started). Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
-`fux opts str agent in new-tab` gives a shell. fux starts shells as they
+`fux opts 80 24 size str agent in new-tab` gives a shell (the size may go
+with a client attached). fux starts shells as they
 are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 `D;STATUS` as it ends, `A` at a prompt) counts the commands that end in
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
@@ -260,8 +263,8 @@ function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end
 In bash, a hook after `mark_end` sees the command's `$?`, though
 `PIPESTATUS` then holds `$?` alone. A remote shell (`ssh`) marks commands if
 its startup does. Or run a remote command in a pane of its own, and wait
-for its exit: `fux opts str ssh program str -n arg str HOST arg str make
-arg run`.
+for its exit: `fux opts 80 24 size str ssh program str -n arg str HOST arg
+str make arg run`.
 
 ## programs: A program
 
@@ -270,7 +273,7 @@ names between steps:
 
 ```fux
 # test.fux: run the tests, wait until they end, read what they printed
-opts str tests name str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
+opts str tests name 80 24 size str cargo program str test arg run   # its answer: %2:0.0.0.0.0:RUN
 begin 600 timeout wait dup counts 4 at 1 eq until  # ENDED, its last count, is 1
 all-history capture
 ```
@@ -299,7 +302,8 @@ stopped it.
 ## servers: Servers, sizes and more
 
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
-  first chooses another server; `start` starts one, `status` says which
+  first chooses another server; `start` starts one, with nothing in it
+  (the first client to attach starts a shell on its screen), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
   start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux`, else
   `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`

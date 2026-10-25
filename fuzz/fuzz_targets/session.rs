@@ -232,13 +232,13 @@ fn defaults() -> &'static Keymap {
 impl Run {
     fn new(rows: u16, cols: u16) -> Run {
         let run = fux::command::Run::now().expect("a clock after 1970");
-        let mut s = Session::new(
+        let s = Session::new(
             Config::default(),
             "/nonexistent/fux.sock".into(),
             false,
             run,
         );
-        s.start().expect("a session starts");
+        // The client attaching starts its first shell, on its screen.
         let mut run = Run {
             s,
             keymap: defaults().clone(),

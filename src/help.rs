@@ -53,12 +53,14 @@ WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
 text send-keys`, `%2 all-history capture`); only run, new-tab and
 new-workspace start from opts (`opts str make program str test arg
-run`). An action answers at once, with its pane's version from before it
-acted, one word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's
-pane until its version differs from V, {wait}s at most unless `SECS
-timeout` says (the server's wait-seconds). A failure prints `fux: CODE:
-MESSAGE` on stderr. Driving programs from a script or an agent: `fux
-help-agents`; one word: `fux help WORD`.
+run`), laid out on an attached client's screen, or with none on a size
+given (`opts 80 24 size …`): fux makes none up. An action answers at once,
+with its pane's version from before it acted, one word
+(`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
+version differs from V, {wait}s at most unless `SECS timeout` says (the
+server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on stderr.
+Driving programs from a script or an agent: `fux help-agents`; one word:
+`fux help WORD`.
 ",
     );
     // The language's parsing words and core, as fuxth says them: a block's
@@ -299,7 +301,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "bind-root" => "str M-n str 'me next-tab' bind-root",
         "prefix" => "str C-a prefix",
         "set" => "fux str history-bytes 16777216 set",
-        "server" => "fux str test server start opts str ./app program run",
+        "server" => "fux str test server start opts 80 24 size str ./app program run",
         "headless" => "fux 100 30 headless",
         "grant" => "fux str agent workspace str /run/user/1000/agent.sock grant",
         _ => return None,

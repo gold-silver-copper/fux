@@ -701,7 +701,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
         "/bin/sh -c 'echo $(tty) $(ps -o tty=,tpgid=,pgid= -p $$); echo checked; exec sleep 60'",
         "set",
     ])?;
-    let pane = server.ok(&["opts", "new-workspace"])?;
+    let pane = server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
@@ -791,7 +791,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     ] {
         let program = program.to_string_lossy();
         server.ok(&["str", "shell", "str", &program, "set"])?;
-        let out = server.fux(&["opts", "new-workspace"])?;
+        let out = server.fux(&["opts", "80", "24", "size", "new-workspace"])?;
         assert_eq!(out.status, 1);
         assert!(
             out.stderr
@@ -802,7 +802,7 @@ fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     }
     // The server is unharmed, and a good shell starts again.
     server.ok(&["str", "shell", "str", "/bin/sh", "set"])?;
-    server.ok(&["opts", "new-workspace"])?;
+    server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     Ok(())
 }
 

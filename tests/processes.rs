@@ -61,7 +61,16 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         if how == "workspace kill" {
-            server.ok(&["opts", "str", "doomed", "name", "new-workspace"])?;
+            server.ok(&[
+                "opts",
+                "80",
+                "24",
+                "size",
+                "str",
+                "doomed",
+                "name",
+                "new-workspace",
+            ])?;
         } else {
             server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
         }
@@ -245,8 +254,8 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     let code = "mkfifo \"$0\"; (cat </dev/tty & echo $! > \"$1\"); read x <> \"$0\"";
     let (fifo, pidfile) = (fifo.to_string_lossy(), pidfile.to_string_lossy());
     let answer = server.ok(&[
-        "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "str", &fifo,
-        "arg", "str", &pidfile, "arg", "run",
+        "opts", "80", "24", "size", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg",
+        "str", &fifo, "arg", "str", &pidfile, "arg", "run",
     ])?;
     let pane = answer
         .split_whitespace()

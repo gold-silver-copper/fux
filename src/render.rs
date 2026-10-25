@@ -130,6 +130,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     else {
         return Vec::new();
     };
+    let cell = (cell.width(), cell.height());
     let mut visible = Vec::new();
     for &(id, rect) in &placement.panes {
         let Some(pane) = session.parts.panes().get(&id) else {
@@ -2900,15 +2901,15 @@ mod tests {
             cells(&client, 1),
             Some(("D".into(), Color::Default, Color::Default))
         );
-        // Each pane answers its program with its own colours.
+        // Each pane answers its program with its own colours, and one that
+        // set none, with no terminal's to give, answers nothing.
         s.output(PaneId::of(1), b"\x1b]4;1;#00ff00\x07");
-        for (id, answer) in [(1, "0000/ffff/0000"), (2, "cdcd/0000/0000")] {
+        for (id, answer) in [(1, "\x1b]4;1;rgb:0000/ffff/0000\x07"), (2, "")] {
             let mut pane = s.parts.pane_mut(PaneId::of(id)).ok_or("a pane")?;
             pane.input.drain_all();
             pane.output(b"\x1b]4;1;?\x07");
             let asked = pane.input.drain_all();
-            let expected = format!("\x1b]4;1;rgb:{answer}\x07");
-            assert_eq!(String::from_utf8_lossy(&asked), expected, "pane {id}");
+            assert_eq!(String::from_utf8_lossy(&asked), answer, "pane {id}");
         }
         Ok(())
     }

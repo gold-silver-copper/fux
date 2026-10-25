@@ -243,7 +243,7 @@ pub fn state(
     let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
-        None => (Json::Null, Json::Null),
+        Some(crate::process::Ended::Lost) | None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
     let hung_up = matches!(pane.process(), Process::HungUp(_));
@@ -284,6 +284,15 @@ pub fn state(
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
+        (
+            "cell",
+            screen.cell_size().map_or(Json::Null, |cell| {
+                Json::Object(vec![
+                    ("width", Json::int(cell.width())),
+                    ("height", Json::int(cell.height())),
+                ])
+            }),
+        ),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),

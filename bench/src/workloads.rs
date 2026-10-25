@@ -741,7 +741,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         "bench".into(),
         fux::pane::Runs::Shell,
-        fux::pane::size(first.rows, first.cols),
+        fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         HISTORY,
     )
     .map_err(|e| e.to_string())?;
@@ -755,7 +755,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
         });
     }
     for load in loads {
-        pane.resize(fux::pane::size(load.rows, load.cols));
+        pane.resize(fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?);
         for piece in given(&load.bytes) {
             pane.output(black_box(piece));
             // What a call's budget left is read on the pane's next turns.
@@ -786,7 +786,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
     };
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
-    s.start().map_err(|e| e.to_string())?;
+    // The client attaching starts its first shell, on its screen.
     let c = s
         .attach_as(fux::view::ClientKind::Terminal, 41, 120, None)
         .map_err(|e| e.to_string())?;
@@ -862,7 +862,6 @@ fn paint(
     };
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
-    s.start().map_err(|e| e.to_string())?;
     let first = recordings.first().ok_or("no recordings")?;
     // The bar takes a row: the pane is the recording's size.
     let c = s
@@ -1061,7 +1060,8 @@ fn session(panes: usize) -> Result<fux::session::Session, String> {
     };
     let mut s =
         fux::session::Session::new(config, "/nonexistent/fux.sock".into(), false, server_run()?);
-    s.start().map_err(|e| e.to_string())?;
+    s.start(fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
     for _ in 1..panes {
         let split = fux::command::Command::Split {
             axis: fux::layout::Axis::Horizontal,
