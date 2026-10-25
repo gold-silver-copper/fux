@@ -247,10 +247,13 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     pumped(&mut client, "the edited command ran", || {
         Ok(server.ok(&["ls"])?.contains("edited"))
     })?;
-    // A paste goes into the prompt, one line of it, never run by itself.
+    // A paste of more lines than one is refused whole, and said; one line
+    // goes into the prompt, its line end left out, never run by itself.
     client.keys(&format!("{PREFIX}e"))?;
     client.wait_for("Enter accepts")?;
     client.keys("\x1b[200~str %1 pane str pasted rename\nkill-server\x1b[201~")?;
+    client.wait_for("nothing was typed")?;
+    client.keys("\x1b[200~str %1 pane str pasted rename\n\x1b[201~")?;
     client.wait_for("str %1 pane str pasted rename▏")?;
     assert!(server.ok(&["ls"])?.contains("%1 left"), "nothing ran yet");
     client.keys("\r")?;
