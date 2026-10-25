@@ -270,8 +270,8 @@ type RowKey = Option<(fux_vt::RowId, u64)>;
 
 /// Everything about a grid composed in normal mode but its panes' rows: its
 /// size, each pane's place, program (`Pane::starts`) and window size, the
-/// separators, and the focused pane, which colours them. None for a tab
-/// with no panes, or with a pane in colours of its own (`recolour`), whose
+/// separators, and the focused pane, which colours them. None for a client
+/// shown no tab, or with a pane in colours of its own (`recolour`), whose
 /// rows depend on more than their keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
@@ -925,7 +925,6 @@ pub fn compose_held(
     placement: &mut Placement,
     painted: Option<Painted<'_>>,
 ) {
-    let area = view.pane_area();
     session.placement_into(view, placement);
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
@@ -947,14 +946,6 @@ pub fn compose_held(
             None => grid.blank(rect),
         }
         grid.memo = None;
-    }
-    if tab.is_some_and(|t| t.root().is_none()) && area.h() > 0 {
-        // Its keys are the client's: the server names what to do.
-        let hint = "empty tab: split it or close it";
-        let y = area.h() / 2;
-        let x = area.w().saturating_sub(width(hint)) / 2;
-        let dim = Attributes::new(Color::Idx(244), Color::Default);
-        grid.text(y, x, hint, dim, area.w());
     }
     // The cursor: copy mode's in its pane, else the focused pane's, but only
     // in normal mode: none under an overlay, nor in a repeat mode, whose

@@ -180,27 +180,27 @@ fn a_pty_is_the_smallest_rectangle_among_the_clients_showing_it() -> Outcome {
     Ok(())
 }
 
+/// A tab closes as its last pane moves out, as it does when its last pane
+/// closes, and its client is shown the tab beside it.
 #[test]
-fn moving_a_panes_out_leaves_an_empty_tab_with_a_hint() -> Outcome {
+fn moving_a_tabs_last_pane_out_closes_the_tab() -> Outcome {
     let server = Server::start("")?;
     let mut client = server.attach(20, 80)?;
     client.wait_for("$")?;
     server.ok(&["opts", "str", "+1", "workspace", "in", "new-tab"])?;
     server.ok(&["str", "c1", "client", "str", "@1", "tab", "show-tab"])?;
     server.ok(&["str", "%1", "pane", "str", "@2", "tab", "move-to"])?;
-    client.wait("the empty tab's hint", |t| {
-        t.contains("empty tab: split it or close it")
-    })?;
-    assert!(server.ok(&["ls"])?.contains("@1 main (empty)"));
-    // Moving to a new tab and a new workspace creates them.
+    let ls = server.ok(&["ls"])?;
+    assert!(
+        !ls.contains("@1 ") && ls.contains("client c1 80x20 +1 @2 "),
+        "{ls}"
+    );
+    // Moving to a new tab and a new workspace creates them; the tab and
+    // the workspace each leaves with nothing in them close.
     server.ok(&["str", "%2", "pane", "str", "new-tab", "move-to"])?;
     server.ok(&["str", "%1", "pane", "str", "new-workspace", "move-to"])?;
     let ls = server.ok(&["ls"])?;
-    assert!(ls.contains("+2 workspace-2"), "{ls}");
-    // A split in the empty tab seeds it: it needs a pane to split, so the
-    // tab chooser and moves are the way in; kill closes it.
-    server.ok(&["str", "@1", "tab", "kill"])?;
-    assert!(!server.ok(&["ls"])?.contains("@1 main"));
+    assert!(ls.contains("+2 workspace-2") && !ls.contains("@2 "), "{ls}");
     Ok(())
 }
 

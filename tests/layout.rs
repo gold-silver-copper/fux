@@ -1,5 +1,5 @@
-//! Milestone 3: splits, focus (next, previous, last, directional), resize by
-//! weight, zoom, and the bar.
+//! Milestone 3: splits, focus (next, previous, last, directional), resizes,
+//! zoom, and the bar.
 mod support;
 use support::*;
 
@@ -122,10 +122,13 @@ fn resizing_moves_the_border_and_reaches_the_programs() -> Outcome {
     let stuck = server.fux(&["str", "%1", "pane", "str", "up", "1", "move-border"])?;
     assert_eq!(stuck.status, 1);
     assert!(
-        stuck.stderr.contains("no border to move up"),
+        stuck.stderr.contains("it has no border there"),
         "{}",
         stuck.stderr
     );
+    // A move of 0 moves nothing, and is not refused.
+    server.ok(&["str", "%1", "pane", "str", "right", "0", "move-border"])?;
+    assert_eq!(size(&server, "%1")?.1, 2);
     Ok(())
 }
 

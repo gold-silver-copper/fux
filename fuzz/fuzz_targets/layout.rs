@@ -4,7 +4,7 @@
 //! from one pane, then two-byte resizes.
 use fux::id::PaneId;
 use fux::keys::Direction;
-use fux::layout::{self, Axis, MIN, Placement, Rect, Side, Tree};
+use fux::layout::{self, Axis, MIN, Placement, Rect, Shares, Side, Tree};
 use libfuzzer_sys::fuzz_target;
 
 struct Bytes<'a> {
@@ -45,9 +45,9 @@ impl Bytes<'_> {
             } else {
                 Side::Before
             };
-            // Halving 16 panes' weights, exact, fits.
-            let split = root.split((target, pane(new)), (axis, side), layout::HALVED);
-            split.expect("halved weights fit");
+            // The target is one of the tree's.
+            let split = root.split((target, pane(new)), (axis, side), Shares::HALVED);
+            split.expect("a pane of the tree");
         }
         root
     }

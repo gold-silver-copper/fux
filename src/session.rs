@@ -10,13 +10,13 @@ use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
-use crate::layout::{self, Axis, Placement, Rect, Tree};
+use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Left, Loose, Output, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
-use crate::workspace::{Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
 use fuxth::Code as Lang;
 use std::collections::{BTreeMap, VecDeque};
@@ -116,12 +116,12 @@ impl Caller {
 }
 
 /// Where an attached client is: the workspace and tab it is shown, and the
-/// pane it focuses there unless the tab is empty.
+/// pane it focuses there.
 #[derive(Clone, Copy)]
 pub struct Place {
     pub ws: WsId,
     pub tab: TabId,
-    pub pane: Option<PaneId>,
+    pub pane: PaneId,
 }
 
 /// Where a select command takes a client: a workspace, and a tab and pane
@@ -213,7 +213,7 @@ impl Here<'_> {
     }
     fn pane(self) -> Option<PaneId> {
         match self {
-            Here::Client(_, place) => place.pane,
+            Here::Client(_, place) => Some(place.pane),
             Here::Cli(pane, _) => pane.map(|(pane, _)| pane),
         }
     }
@@ -367,23 +367,6 @@ fn ended(pane: PaneId, status: Ended) -> Error {
     };
     let told = format!("the program in {pane} {was}{}", process::told(status));
     fail(Code::NotRunning, told)
-}
-
-/// A layout change about `pane` not made (`layout::Unmade`).
-fn unmade_error(unmade: layout::Unmade, pane: PaneId) -> Error {
-    match unmade {
-        layout::Unmade::NoPane => Error::NoPane(pane),
-        layout::Unmade::Weights => fail(
-            Code::Size,
-            format!(
-                "{pane}: the layout would take weights more than {} together to hold its \
-                 shares exactly, which fux never rounds (room is not what is short): resize \
-                 a border first, which weighs the panes by their sizes, or split a pane with \
-                 a larger share",
-                layout::MOST
-            ),
-        ),
-    }
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
@@ -576,9 +559,9 @@ impl Session {
     pub fn tab(&self, id: TabId) -> Option<&Tab> {
         (self.parts.workspaces().iter().flat_map(Workspace::tabs)).find(|t| t.id() == id)
     }
-    /// A tab's layout, unless it is empty.
+    /// A tab's layout.
     pub fn root(&self, tab: TabId) -> Option<&Tree> {
-        self.tab(tab)?.root()
+        self.tab(tab).map(Tab::root)
     }
     /// The workspace and tab that hold a pane.
     pub fn locate(&self, pane: PaneId) -> Option<(WsId, TabId)> {
@@ -668,7 +651,7 @@ impl Session {
     pub fn place(&self, client: ClientId) -> Option<Place> {
         let ws = self.shown_workspace(client)?;
         let tab = ws.tab_of(client)?;
-        let (ws, pane, tab) = (ws.id(), tab.focus(client), tab.id());
+        let (ws, pane, tab) = (ws.id(), tab.focus(client)?, tab.id());
         Some(Place { ws, tab, pane })
     }
 
@@ -913,7 +896,7 @@ impl Session {
             .flat_map(Workspace::tabs)
             .filter(|t| t.name() == text)
             .collect();
-        let panes_of = |tab: &Tab| tab.root().map(Tree::panes).unwrap_or_default();
+        let panes_of = |tab: &Tab| tab.root().panes();
         let named = || -> Result<&Tab, Error> {
             match tabs.as_slice() {
                 [tab] => Ok(*tab),
@@ -995,8 +978,7 @@ impl Session {
             AnyRef::Workspace(ws) => (self.workspace(ws).ok_or(Error::NoWorkspace(ws))?)
                 .tabs()
                 .iter()
-                .filter_map(Tab::root)
-                .flat_map(Tree::panes)
+                .flat_map(|t| t.root().panes())
                 .collect(),
         })
     }
@@ -1041,10 +1023,10 @@ impl Session {
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
-        let shares = shares.unwrap_or(layout::HALVED);
+        let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
         let split = (self.parts.plan_split((target, new), axis, shares))
-            .map_err(|unmade| unmade_error(unmade, target))?;
-        self.room(split.tab(), Some(split.root()), None)?;
+            .map_err(|NoPane| Error::NoPane(target))?;
+        self.room(split.tab(), split.root(), None)?;
         let seat = |view: &View, now| match followers.contains(&view.id) {
             true => (false, Some(new)),
             false => now,
@@ -1100,7 +1082,7 @@ impl Session {
         if got != Some(want) {
             return Err(refused());
         }
-        (self.parts.reshape(pane, |old| *old = Some(root))).ok_or(Error::NoPane(pane))?;
+        (self.parts.reshape(pane, |old| *old = root)).ok_or(Error::NoPane(pane))?;
         Ok(format!("{pane} {}x{}\n", want.0, want.1))
     }
 
@@ -1117,7 +1099,7 @@ impl Session {
         let near = match here {
             Here::Cli(_, Some(cwd)) => return cwd.to_owned(),
             Here::Cli(_, None) => near,
-            Here::Client(_, place) => near.or(place.pane),
+            Here::Client(_, place) => near.or(Some(place.pane)),
         };
         let leader = near.and_then(|p| self.parts.panes().get(&p)?.process().child());
         leader
@@ -1172,7 +1154,7 @@ impl Session {
         };
         let tab_name = tab_name.unwrap_or_else(|| MAIN.into());
         let clients = self.views.keys().copied();
-        (self.parts).add_workspace((id, name), (tab, tab_name, fit), clients, Some(pane));
+        (self.parts).add_workspace((id, name), (tab, tab_name, fit), clients, pane);
         Ok(made)
     }
 
@@ -1207,9 +1189,8 @@ impl Session {
             tab,
             pane: pane.id(),
         };
-        if let Err(pane) = self.parts.add_tab((id, tab), name, fit, Some(pane)) {
-            pane.into_iter()
-                .for_each(|p| self.end(p.into_process(), true));
+        if let Err(pane) = self.parts.add_tab((id, tab), name, fit, pane) {
+            self.end(pane.into_process(), true);
             return Err(Error::NoWorkspace(id));
         }
         self.ids = ids;
@@ -1370,7 +1351,7 @@ impl Session {
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
         let area = view.pane_area();
         let tab = self.shown_tab(view.id);
-        let Some(root) = tab.and_then(Tab::root) else {
+        let Some(root) = tab.map(Tab::root) else {
             return out.clear();
         };
         if view.zoom
@@ -1673,8 +1654,7 @@ impl Session {
     }
 
     /// Removes a pane and its process. A tab its closing empties closes too,
-    /// as does a workspace left with no tabs; a tab emptied by moving its
-    /// panes out stays.
+    /// as does a workspace left with no tabs.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.
@@ -2508,7 +2488,6 @@ impl Session {
         match target {
             AnyRef::Pane(pane) => self.close_pane(pane, None),
             AnyRef::Tab(_) | AnyRef::Workspace(_) => {
-                // A tab there with no panes (moved out) has none to go.
                 let panes = self.panes_of(target).unwrap_or_default();
                 may_go.extend(panes.into_iter().map(AnyRef::Pane));
                 for tab in self.tabs_of(target) {
@@ -2531,17 +2510,28 @@ impl Session {
     fn resize_pane(&mut self, pane: PaneId, by: PaneResize, here: Here) -> Result<Reply, Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let area = self.reference_area(tab, here).ok_or(Error::NoPane(pane))?;
+        // A pane hidden has no place to resize from (`layout::resize`).
+        let root = self.root(tab).ok_or(Error::NoTab(tab))?;
+        if !layout::shows_all(root, area) {
+            let (cols, rows) = (area.w(), area.h());
+            let message = format!("{tab} does not show every pane on {cols}x{rows}");
+            return Err(fail(Code::Size, message));
+        }
         match by {
             PaneResize::Border(direction, amount) => {
-                let resize = |root: &mut Option<Tree>| {
-                    let root = root.as_mut();
-                    root.is_some_and(|root| layout::resize(root, area, pane, direction, amount))
+                let resize = |root: &mut Tree| layout::resize(root, area, pane, direction, amount);
+                let way = direction.name();
+                let why = match self.parts.reshape(pane, resize) {
+                    // A move of 0 moves nothing, as asked.
+                    Some(Some(1..)) => return Ok(Reply::default()),
+                    Some(Some(0)) if amount == 0 => return Ok(Reply::default()),
+                    Some(Some(0)) => "the panes it would move are at their least",
+                    Some(None) | None => "it has no border there",
                 };
-                if self.parts.reshape(pane, resize) != Some(true) {
-                    let message = format!("{pane} has no border to move {}", direction.name());
-                    return Err(fail(Code::NothingThere, message));
-                }
-                Ok(Reply::default())
+                Err(fail(
+                    Code::NothingThere,
+                    format!("{pane} cannot move {way}: {why}"),
+                ))
             }
             PaneResize::To(axis, extent) => {
                 (self.resize_pane_to(pane, area, axis, extent)).map(Reply::from)
@@ -2650,56 +2640,51 @@ impl Session {
         // A tab made for it fits clients at its tab's size until one shows it.
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
-        let (ws, tab, made) = match to {
+        let mut ids = self.ids.clone();
+        let (ws, dest) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
-                let mut root = self.root(from).cloned();
-                layout::move_beside(&mut root, pane, destination, direction)
-                    .map_err(|unmade| unmade_error(unmade, pane))?;
-                self.room(from, root.as_ref(), None)?;
+                let root = self.root(from).ok_or(Error::NoTab(from))?;
+                let root = layout::move_beside(root, pane, destination, direction)
+                    .ok_or(Error::NoPane(pane))?;
+                self.room(from, &root, None)?;
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
-            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab, false),
+            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, Destination::Tab(tab)),
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
                 let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                (ws, first.ok_or(Error::NoWorkspace(ws))?.id(), false)
+                let tab = first.ok_or(Error::NoWorkspace(ws))?.id();
+                (ws, Destination::Tab(tab))
             }
             // A tab made for it holds it alone, which shows on every size
             // it is laid out on (each has a cell: its fit's, and a screen
             // that sizes panes, `View::sizes`): nothing after refuses the
             // move.
-            MoveTo::NewTab => {
-                let mut ids = self.ids.clone();
-                let id = ids.tab()?;
-                (self.parts.add_tab((from_ws, id), None, fit, None))
-                    .map_err(|_| Error::NoWorkspace(from_ws))?;
-                self.ids = ids;
-                (from_ws, id, true)
-            }
+            MoveTo::NewTab => (from_ws, Destination::NewTab(from_ws, ids.tab()?, fit)),
             MoveTo::NewWorkspace => {
-                // Both IDs or neither: one taken alone would be lost.
-                let mut ids = self.ids.clone();
-                let id = ids.workspace()?;
-                let tab = ids.tab()?;
-                self.ids = ids;
-                let name = self.workspace_name(id);
-                let clients = self.views.keys().copied();
+                let (id, tab) = (ids.workspace()?, ids.tab()?);
                 let first = (tab, MAIN.into(), fit);
-                (self.parts).add_workspace((id, name), first, clients, None);
-                (id, tab, true)
+                (
+                    id,
+                    Destination::NewWorkspace((id, self.workspace_name(id)), first),
+                )
             }
         };
-        if from == tab {
-            return Ok(String::new());
-        }
-        if !made {
-            let mut root = self.root(tab).cloned();
-            layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
-            self.room(tab, root.as_ref(), here.client())?;
-        }
-        (self.parts.relocate(pane, tab)).map_err(|unmade| unmade_error(unmade, pane))?;
+        let tab = match &dest {
+            Destination::Tab(tab) if *tab == from => return Ok(String::new()),
+            Destination::Tab(tab) => {
+                let mut root = self.root(*tab).ok_or(Error::NoTab(*tab))?.clone();
+                root.append(pane);
+                self.room(*tab, &root, here.client())?;
+                *tab
+            }
+            Destination::NewTab(_, tab, _) | Destination::NewWorkspace(_, (tab, ..)) => *tab,
+        };
+        (self.parts.relocate(pane, dest)).ok_or(Error::NoTab(tab))?;
+        // Both IDs or neither: one taken alone would be lost.
+        self.ids = ids;
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
@@ -2712,15 +2697,7 @@ impl Session {
     /// showing it that sizes its panes, `follower` too, which is about to.
     /// So a split or a move hides no pane, and a dump can make every
     /// layout there is again.
-    fn room(
-        &self,
-        tab: TabId,
-        root: Option<&Tree>,
-        follower: Option<ClientId>,
-    ) -> Result<(), Error> {
-        let Some(root) = root else {
-            return Ok(());
-        };
+    fn room(&self, tab: TabId, root: &Tree, follower: Option<ClientId>) -> Result<(), Error> {
         let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
         let follower = follower
             .and_then(|c| self.views.get(&c))
@@ -2767,7 +2744,7 @@ impl Session {
     fn pick_pane(&self, view: &View, at: Place, pick: PanePick) -> Result<Picked, Error> {
         let client = view.id;
         let tab = self.tab(at.tab).ok_or(Error::NoTab(at.tab))?;
-        let panes = tab.root().map_or_else(Vec::new, Tree::panes);
+        let panes = tab.root().panes();
         let (current, last) = (tab.focus(client), tab.seat(client).and_then(Seat::last));
         let target = match pick {
             PanePick::Id(p) => p,
@@ -2780,11 +2757,8 @@ impl Session {
                 last.ok_or_else(|| fail(Code::NoPane, "no previously focused pane"))?
             }
             PanePick::Toward(direction) => {
-                let (root, from) = tab
-                    .root()
-                    .zip(current)
-                    .ok_or_else(|| fail(Code::NoPane, "the tab is empty"))?;
-                let placement = layout::place(root, view.pane_area());
+                let from = current.ok_or_else(|| fail(Code::NoPane, "no pane focused"))?;
+                let placement = layout::place(tab.root(), view.pane_area());
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
             }
@@ -2841,10 +2815,8 @@ impl Session {
                 out.push_str(&format!("{} {}\n", ws.id(), ws.name()));
             }
             for tab in (ws.tabs().iter()).filter(|t| self.takes_in(only, ws.id(), t.id())) {
-                let empty = if tab.root().is_none() { " (empty)" } else { "" };
-                out.push_str(&format!("  {} {}{empty}\n", tab.id(), tab.name()));
-                let Some(root) = tab.root() else { continue };
-                root.for_each_pane(&mut |pane| {
+                out.push_str(&format!("  {} {}\n", tab.id(), tab.name()));
+                tab.root().for_each_pane(&mut |pane| {
                     if !listed_pane(pane) {
                         return;
                     }
@@ -2876,7 +2848,7 @@ impl Session {
                 view.rows,
                 shown(place.map(|p| p.ws.to_string())),
                 shown(place.map(|p| p.tab.to_string())),
-                shown(place.and_then(|p| p.pane).map(|p| p.to_string())),
+                shown(place.map(|p| p.pane.to_string())),
             ));
         }
         out
@@ -2903,7 +2875,7 @@ impl Session {
 
     /// A tab and its panes, as `ls json` has them.
     fn tab_json<'a>(&'a self, t: &'a Tab, now: Instant) -> Fields<'a> {
-        let panes = (t.root().map(Tree::panes).unwrap_or_default().into_iter())
+        let panes = (t.root().panes().into_iter())
             .filter_map(|id| self.parts.panes().get(&id))
             .map(|p| Json::Object(self.pane_json(p, now)))
             .collect();
@@ -3001,7 +2973,7 @@ impl Session {
             .values()
             .map(|v| {
                 let place = self.place(v.id);
-                let pane = place.and_then(|p| p.pane);
+                let pane = place.map(|p| p.pane);
                 Json::Object(vec![
                     ("id", Json::str(v.id.to_string())),
                     ("rows", Json::Number(i64::from(v.rows))),
@@ -3161,7 +3133,7 @@ fn no_tab_named<'a>(
     }
     // `run` with such a name: `str NAME tab` would not know which, so the
     // program is not started. The tabs, then their panes.
-    let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
+    let panes = (tabs.iter()).flat_map(|t| t.root().panes());
     let tabs = tabs.iter().map(|t| t.id()).collect();
     let panes: Vec<PaneId> = panes.collect();
     Err(Error::TabNameTaken(name.to_owned(), tabs, panes))
@@ -5313,7 +5285,7 @@ mod tests {
 
     /// Tab `tab`'s panes' places on its own size, in tree order.
     fn rects(s: &Session, tab: TabId) -> Vec<Rect> {
-        let Some((root, area)) = s.tab(tab).and_then(|t| Some((t.root()?, t.fit().area()))) else {
+        let Some((root, area)) = s.tab(tab).map(|t| (t.root(), t.fit().area())) else {
             return Vec::new();
         };
         let placed = layout::place(root, area);
@@ -5383,9 +5355,8 @@ mod tests {
         Ok(())
     }
 
-    /// Panes are made again at the places they had: 80, 10 and 8 of 100
-    /// columns, which giving each its width in turn makes 72, 10 and 16,
-    /// the second's growing into the first.
+    /// Panes are made again at the places they had: 81, 9 and 8 of 100
+    /// columns, each split's nearest to its shares.
     #[test]
     fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
         let mut s = started(Config::default())?;
@@ -5394,7 +5365,7 @@ mod tests {
         run(&mut s, &format!("{tab} {splits}"))?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [80, 10, 8]);
+        assert_eq!(widths, [81, 9, 8]);
         assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
@@ -5491,17 +5462,28 @@ mod tests {
                 "{lines}"
             );
         }
-        let empty = (s.parts.workspaces().iter())
-            .flat_map(|w| w.tabs())
-            .filter(|t| t.root().is_none());
-        assert_eq!(empty.count(), 0);
+        Ok(())
+    }
+
+    /// No border moves on a screen too small to show every pane: a hidden
+    /// pane has no place to move one from.
+    #[test]
+    fn no_border_moves_where_a_pane_is_hidden() -> Result<(), String> {
+        let (mut s, c) = attached(11, 40)?;
+        run(&mut s, "%1 split drop %2 split drop")?;
+        s.resize(c, 11, 6).map_err(|e| e.to_string())?;
+        let refused = run(&mut s, "%1 str right 1 move-border").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.starts_with("size: ") && refused.contains("every pane on 6x"),
+            "{refused}"
+        );
         Ok(())
     }
 
     /// Shares divide the room of the pane split, whatever is beside it,
-    /// exactly: the others keep theirs, and a dump makes the split again.
-    /// Weights that would be more than a u32 together are refused, the
-    /// layout kept.
+    /// exactly: the others keep theirs, and a dump makes the split again,
+    /// whatever the shares.
     #[test]
     fn shares_divide_the_split_panes_room() -> Result<(), String> {
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
@@ -5516,18 +5498,13 @@ mod tests {
         }
         let mut s = started(Config::default())?;
         run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
-        let before = s.root(tab).cloned();
-        for split in ["%3 split", "%3 vertical 4294967295 1 shares split"] {
-            let refused = run(&mut s, split).err().unwrap_or_default();
-            assert!(
-                refused.starts_with("size: ") && refused.contains("together"),
-                "{refused}"
-            );
-            assert_eq!(s.root(tab).cloned(), before);
+        for split in [
+            "%3 split drop",
+            "%3 vertical 4294967295 1 shares split drop",
+        ] {
+            run(&mut s, split)?;
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab), "{split}");
         }
-        // An even weight halves as it is.
-        run(&mut s, "%2 split drop")?;
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
 
@@ -5567,7 +5544,7 @@ mod tests {
             let made = (again.parts.workspaces().iter())
                 .flat_map(|w| w.tabs())
                 .last();
-            let (Some(root), Some(made)) = (s.root(tab), made.and_then(|t| t.root())) else {
+            let (Some(root), Some(made)) = (s.root(tab), made.map(Tab::root)) else {
                 return Err(format!("{change}: no layout"));
             };
             for area in areas {
