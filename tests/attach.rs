@@ -813,7 +813,7 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
 /// A program that cannot start is reported with the system's error as it
 /// is, and where it was started: a missing program, a missing `#!`
 /// interpreter and a missing directory are all the same `NotFound`, which
-/// fux does not guess between.
+/// fux does not guess between; a directory is not checked first.
 #[test]
 fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     let server = Server::start("")?;
@@ -830,12 +830,18 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     std::fs::write(&script, "#!/no/such/sh -e\necho hi\n").map_err(e)?;
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&script, executable).map_err(e)?;
-    let here = &server.dir;
+    let (here, nowhere) = (&server.dir, &server.dir.join("no-such-dir"));
     let not_found = "No such file or directory (os error 2)";
     for (program, cwd, error) in [
         (&missing, here, not_found),
         (&not_executable, here, "Permission denied (os error 13)"),
         (&script, here, not_found),
+        (&std::path::PathBuf::from("/bin/sh"), nowhere, not_found),
+        (
+            &std::path::PathBuf::from("/bin/sh"),
+            &not_executable,
+            "Not a directory (os error 20)",
+        ),
     ] {
         let program = program.to_string_lossy();
         server.ok(&["str", "shell", "str", &program, "set"])?;
