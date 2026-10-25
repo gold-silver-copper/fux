@@ -377,10 +377,8 @@ impl<A: AppValue> Machine<A> {
         host: &mut H,
         budget: u64,
     ) -> Result<Outcome<H::Request>, Error> {
-        if let Some(given) = self.pending.take()
-            && let Err(error) = self.given(given)
-        {
-            return Err((self.tell)(self, error));
+        if let Some(given) = self.pending.take() {
+            self.given(given).map_err(|e| (self.tell)(self, e))?;
         }
         let until = self.steps.saturating_add(budget);
         loop {
