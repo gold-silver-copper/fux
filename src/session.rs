@@ -11,7 +11,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Tree};
-use crate::pane::{self, Loose, Pane, Process, Runs, basename};
+use crate::pane::{self, Left, Loose, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
@@ -974,8 +974,15 @@ impl Session {
         let child = self.spawn(id, &launch, starting, size)?;
         let history = self.config.history_bytes;
         let process = child.map_or(Process::Absent, Process::Reading);
-        let old = self.pane_mut(id)?.respawned(launch, process, history)?;
+        let (old, left) = self.pane_mut(id)?.respawned(launch, process, history)?;
         self.end(old, true);
+        let left = left_told(left, "the program it ran");
+        if !left.is_empty() {
+            let told = format!("{id} respawned{left}");
+            for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
+                self.notify_to(client, told.clone(), true);
+            }
+        }
         self.touch();
         Ok(())
     }
@@ -1938,6 +1945,7 @@ impl Session {
         if pane.has_unread() {
             return;
         }
+        let left = left_told(pane.left, "it");
         match pane.runs {
             Runs::Shell => {
                 pane.ended(ended);
@@ -1946,7 +1954,7 @@ impl Session {
                     || process::told(ended),
                     |s| format!("exited with status {s}"),
                 );
-                self.close_pane(id, Some(why));
+                self.close_pane(id, Some(format!("{why}{left}")));
             }
             Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
@@ -1956,8 +1964,9 @@ impl Session {
                     let deadline = Instant::now();
                     self.dying.push(Dying { child, deadline });
                 }
+                let told = format!("{id} {}{left}", process::told(ended));
                 for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                    self.notify_to(client, format!("{id} {}", process::told(ended)), false);
+                    self.notify_to(client, told.clone(), !left.is_empty());
                 }
                 self.touch();
             }
@@ -1966,7 +1975,7 @@ impl Session {
 
     /// Reads what pane `id`'s program left on its terminal as it ends, or
     /// is respawned over (`unread`); what is past `LEFT_MAX` is not, which
-    /// the clients showing it are told.
+    /// the pane keeps (`Pane::left`) to say with its end.
     fn read_left(&mut self, id: PaneId) {
         let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process())) else {
             return;
@@ -1974,15 +1983,8 @@ impl Session {
         if !left.is_empty() {
             self.output(id, &left);
         }
-        if cut {
-            let why = format!(
-                "{id}'s program left more than {} MiB on its terminal as it ended: \
-                 the rest was not read",
-                LEFT_MAX >> 20
-            );
-            for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
-                self.notify_to(client, why.clone(), true);
-            }
+        if let (true, Ok(mut pane)) = (cut, self.pane_mut(id)) {
+            pane.left = Left::Cut;
         }
     }
 
@@ -3418,7 +3420,20 @@ impl Session {
 }
 
 /// The most read of what a program left on its terminal as it ends.
-const LEFT_MAX: usize = 1 << 20;
+pub(crate) const LEFT_MAX: usize = 1 << 20;
+
+/// What is said, after its end's own words, of a program that left
+/// more than `LEFT_MAX` on its terminal (`Left::Cut`), `who` naming it:
+/// nothing of one whose terminal was read whole.
+fn left_told(left: Left, who: &str) -> String {
+    match left {
+        Left::Read => String::new(),
+        Left::Cut => format!(
+            "; {who} left more than {} MiB on its terminal: the rest was not read",
+            LEFT_MAX >> 20
+        ),
+    }
+}
 
 /// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
 /// it held more: read as it ends, so that its last screen is whole.
@@ -4104,6 +4119,63 @@ mod tests {
         assert_eq!((left.len(), more), (LEFT_MAX, true));
         let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
         assert_eq!(left_on(&null), (Vec::new(), false));
+        Ok(())
+    }
+
+    /// A program that left more on its terminal than is read says so with
+    /// its end, where no later notice hides it: in `exited`, its pane's
+    /// JSON and the exit's notice; and one respawned over while it ran, in
+    /// `respawned` and the respawn's notice.
+    #[test]
+    fn output_cut_at_an_end_is_told_with_the_end() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        let id = PaneId::of(2);
+        let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
+        let cut = |s: &mut Session| s.parts.pane_mut(id).map(|mut p| p.left = Left::Cut);
+        cut(&mut s);
+        let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3)));
+        assert!(
+            lines.contains("exited %2") && lines.contains("truncated=true"),
+            "{lines}"
+        );
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.contains("%2 exited 3; it left more than 1 MiB"),
+            "{said}"
+        );
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""truncated":["output"]"#), "{json}");
+        // Respawned, its cut was the old program's, told at its exit.
+        let lines = told(&mut s, |s| _ = run(s, "%2 respawn"));
+        assert!(!lines.contains("truncated"), "{lines}");
+        let json = output(&mut s, "%2 capture json")?;
+        assert!(json.contains(r#""truncated":[]"#), "{json}");
+        // One respawned over while it runs is told so at the respawn.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        cut(&mut s);
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(
+            lines.starts_with("respawned %2 ") && lines.contains("truncated=true"),
+            "{lines}"
+        );
+        assert!(!lines.contains("exited"), "{lines}");
+        let said = notice(&s).map(|n| n.text).unwrap_or_default();
+        assert!(
+            said.contains("respawned; the program it ran left more"),
+            "{said}"
+        );
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
         Ok(())
     }
 

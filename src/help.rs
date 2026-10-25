@@ -351,6 +351,10 @@ mod tests {
             format!("its first {} characters", crate::pane::TITLE_MAX),
             format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
             format!(
+                "more than {} MiB on its terminal",
+                crate::session::LEFT_MAX >> 20
+            ),
+            format!(
                 "{} pixels a side, {} pixels in all",
                 grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),
                 grouped(fux_vt::sixel::MAX_PIXELS)

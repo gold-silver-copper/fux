@@ -566,6 +566,8 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
+    /// What its program left on its terminal as it ended, or is ending.
+    pub left: Left,
     /// How many times its program was started again (`respawn`), each on a
     /// screen of its own: a wait from the program before answers
     /// `respawned`.
@@ -575,6 +577,18 @@ pub struct Pane<S = crate::workspace::Placed> {
     pub log: Option<std::fs::File>,
     /// Whether it is in the session.
     placed: S,
+}
+
+/// What a program left on its terminal as it ended, or was respawned
+/// over: read whole, or cut at the most that is read
+/// (`Session::read_left`), the rest not read. Said with its end
+/// (`exited`, `respawned`), in its pane's JSON till it is respawned, and
+/// in the notice of its end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Left {
+    #[default]
+    Read,
+    Cut,
 }
 
 /// What is said of a pane where no shell command was ever marked.
@@ -611,6 +625,7 @@ impl Pane<Loose> {
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
+            left: Left::Read,
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
@@ -635,7 +650,7 @@ impl<S> Pane<S> {
         let pane = moved!(
             id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
             colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
-            alerts, log
+            left, alerts, log
         );
         pane
     }
@@ -973,13 +988,14 @@ impl<S> Pane<S> {
     }
 
     /// Starts `launch` in the pane again as `process`, on a screen as new,
-    /// its size and history kept; the process that was there, to end.
+    /// its size and history kept; the process that was there, to end, and
+    /// what it left as it was respawned over: none, said, once it ended.
     pub fn respawned(
         &mut self,
         launch: Launch,
         process: Process,
         history: usize,
-    ) -> Result<Process, Error> {
+    ) -> Result<(Process, Left), Error> {
         // Named after its program, unless renamed.
         let name = match &self.runs {
             Runs::Program(old) if named(&old.argv) == self.name => named(&launch.argv),
@@ -1013,17 +1029,22 @@ impl<S> Pane<S> {
             scheme_told,
             wrote_at,
             mouse_held,
+            left,
             alerts,
         } = Pane::new(self.id, String::new(), runs, self.size(), history)?;
+        let over = match self.process.exit_status() {
+            Some(_) => Left::Read,
+            None => self.left,
+        };
         (self.title, self.parser, self.input, self.runs) = (title, parser, input, runs);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
-        (self.mouse_held, self.alerts) = (mouse_held, alerts);
-        self.said.push(What::Respawned);
+        (self.mouse_held, self.left, self.alerts) = (mouse_held, left, alerts);
+        self.said.push(What::Respawned(over));
         self.rename(name);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
-        Ok(std::mem::replace(&mut self.process, process))
+        Ok((std::mem::replace(&mut self.process, process), over))
     }
 
     pub fn id(&self) -> PaneId {
@@ -1072,7 +1093,7 @@ impl<S> Pane<S> {
 
     /// Its program ended so: said, as a shell's is before its pane closes.
     pub fn ended(&mut self, ended: Ended) {
-        self.said.push(What::Exited(ended));
+        self.said.push(What::Exited(ended, self.left));
     }
 
     /// What happened in it that events tell, since last taken, oldest
