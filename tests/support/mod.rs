@@ -256,7 +256,7 @@ impl Server {
         let mut child = command.spawn();
         for _ in 0..50 {
             match &child {
-                Err(busy) if busy.raw_os_error() == Some(26) => {
+                Err(busy) if busy.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(Duration::from_millis(20));
                     child = command.spawn();
                 }
