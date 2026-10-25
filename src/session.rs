@@ -1241,7 +1241,7 @@ impl Session {
     fn split_size(&self, target: PaneId, axis: Axis, here: Here) -> Result<Size, Error> {
         let (_, tab) = self.locate(target).ok_or(Error::NoPane(target))?;
         let area = self.reference_area(tab, here);
-        let mut ids = self.ids;
+        let mut ids = self.ids.clone();
         let new = ids.pane()?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(target))?;
         root.split(target, new, axis, Side::After);
@@ -1364,7 +1364,7 @@ impl Session {
         }
         // The IDs are taken before the pane starts, so that none can run out
         // after, and are committed once it has.
-        let mut ids = self.ids;
+        let mut ids = self.ids.clone();
         let id = ids.workspace()?;
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new)?;
@@ -1407,7 +1407,7 @@ impl Session {
         // the pane.
         let at = self.workspaces.iter().position(|w| w.id == id);
         let at = at.ok_or(Error::NoWorkspace(id))?;
-        let mut ids = self.ids;
+        let mut ids = self.ids.clone();
         let tab = ids.tab()?;
         let pane = self.new_pane(&mut ids, new)?;
         let workspace = self.workspaces.get_mut(at).ok_or(Error::NoWorkspace(id))?;
@@ -2058,15 +2058,19 @@ impl Session {
     }
 
     /// The counts a wait from `since` waits to differ from: its own, if it
-    /// is a version of this server run's that its pane has had. A pane of
-    /// this run that is gone closed, as ids are never given twice in one
-    /// run, and the wait says so.
+    /// is a version of this server run's that its pane has had. A pane this
+    /// run gave that is gone closed, as ids are never given twice in one
+    /// run, and the wait says so; one it never gave is refused.
     fn counts_since(&self, since: command::Version) -> Result<command::Counts, Error> {
         if since.run != self.run {
             let why = format!(
                 "{since} is from another server run ({}), not this one ({}): a server since stopped or restored, or another socket's",
                 since.run, self.run
             );
+            return Err(fail(Code::BadValue, why));
+        }
+        if !self.ids.gave(since.pane) {
+            let why = format!("{since}: {} was never a pane of this run", since.pane);
             return Err(fail(Code::BadValue, why));
         }
         // Within one program every count only grows.
@@ -2628,7 +2632,7 @@ impl Session {
         // Its tab found (by `split_size`) before the program starts, which
         // nothing can then leave running.
         let size = self.split_size(target, axis, here)?;
-        let mut ids = self.ids;
+        let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
         let tab = tab_of(&mut self.workspaces, target)?;
@@ -2846,7 +2850,7 @@ impl Session {
                     .iter_mut()
                     .find(|w| w.tabs().iter().any(|t| t.holds(pane)));
                 let ws = ws.ok_or(Error::NoPane(pane))?;
-                let mut ids = self.ids;
+                let mut ids = self.ids.clone();
                 let id = ids.tab()?;
                 ws.add_tab(id, None, None, Fit::Clients);
                 self.ids = ids;
@@ -2854,7 +2858,7 @@ impl Session {
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
-                let mut ids = self.ids;
+                let mut ids = self.ids.clone();
                 let id = ids.workspace()?;
                 let tab = ids.tab()?;
                 self.ids = ids;
@@ -4282,6 +4286,12 @@ mod tests {
         };
         let refused = failed(&mut s, &format!("str {never} changed wait"));
         assert!(refused.contains("never had these counts"), "{refused}");
+        let unmade = command::Version {
+            pane: PaneId::of(99),
+            ..one
+        };
+        let refused = failed(&mut s, &format!("str {unmade} changed wait"));
+        assert!(refused.contains("never a pane of this run"), "{refused}");
         run(&mut s, "%2 kill")?;
         let closed = failed(&mut s, &format!("str {two} changed wait"));
         assert!(closed.starts_with("closed: "), "{closed}");
@@ -4327,7 +4337,7 @@ mod tests {
         // A move to a new workspace with no tab ID left takes no workspace
         // ID either.
         s.ids.exhaust_tabs();
-        let ids = s.ids;
+        let ids = s.ids.clone();
         assert!(run(&mut s, "str %1 pane str new-workspace move-to").is_err());
         assert_eq!(s.ids, ids);
         Ok(())
