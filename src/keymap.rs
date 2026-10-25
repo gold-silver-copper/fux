@@ -595,19 +595,23 @@ impl Held {
     }
 
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
-        if std::mem::take(self) == Held::Prefixed {
-            return match press == KeyPress::char('d') {
-                true => vec![Effect::Run("me detach".to_owned())],
-                false => Vec::new(),
-            };
+        let prefixed = std::mem::take(self) == Held::Prefixed;
+        if prefixed && press == KeyPress::char('d') {
+            return vec![Effect::Run("me detach".to_owned())];
         }
-        if press == keymap.prefix {
+        if !prefixed && press == keymap.prefix {
             *self = Held::Prefixed;
             return Vec::new();
         }
-        let text = format!("watching only: {} d detaches", keymap.prefix);
-        vec![Effect::Send(Act::Notice { text, error: false })]
+        vec![Effect::Send(watching(keymap))]
     }
+}
+
+/// What a client that only watches is told of a key or paste it takes no
+/// further: its own way out.
+pub fn watching(keymap: &Keymap) -> Act {
+    let text = format!("watching only: {} d detaches", keymap.prefix);
+    Act::Notice { text, error: false }
 }
 
 /// A key in a list: moving, choosing, leaving; `r` renames and `x` closes

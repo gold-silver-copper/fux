@@ -730,12 +730,10 @@ impl Keyboard {
                 self.apply(effects, acts);
             }
             Input::Reply(reply) => acts.push(Act::Reply(reply)),
-            Input::Paste(_)
-            | Input::PasteTooLong
-            | Input::FocusIn
-            | Input::FocusOut
-            | Input::Mouse(_)
-                if self.read_only => {}
+            Input::Paste(_) | Input::PasteTooLong if self.read_only => {
+                acts.push(crate::keymap::watching(&self.keymap));
+            }
+            Input::FocusIn | Input::FocusOut | Input::Mouse(_) if self.read_only => {}
             Input::Paste(text) => {
                 let effects = self.screen.paste(&text);
                 self.apply(effects, acts);
@@ -1161,6 +1159,22 @@ mod tests {
         let acts = keyboard.ran();
         assert!(matches!(acts.last(), Some(Act::Key(_))), "{acts:?}");
         assert!(keyboard.idle());
+        Ok(())
+    }
+
+    /// A client that only watches is told of each key and paste it takes
+    /// no further: a paste, and a key after the prefix but `d`, as a key.
+    #[test]
+    fn a_watcher_is_told_of_what_it_takes_no_further() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), true)?;
+        for typed in [&b"x"[..], b"\x1b[200~p\x1b[201~", b"\x02c"] {
+            let acts = keyboard.bytes(typed, Instant::now());
+            let notice = acts.first().filter(|_| acts.len() == 1);
+            let told =
+                matches!(notice, Some(Act::Notice { text, .. }) if text.contains("d detaches"));
+            assert!(told, "{typed:?}: {acts:?}");
+        }
         Ok(())
     }
 

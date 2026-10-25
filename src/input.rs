@@ -50,15 +50,9 @@ impl Session {
             Act::Key(stroke) => return self.key(client, stroke),
             Act::Paste(text) => self.paste(client, &text),
             // A focus change or a mouse report for the program shows
-            // nothing until it answers.
-            Act::Focus(gained) => {
-                self.focus_event(client, gained);
-                return false;
-            }
-            Act::Mouse(event) => {
-                self.mouse(client, event);
-                return false;
-            }
+            // nothing until it answers, but its refusal.
+            Act::Focus(gained) => return self.focus_event(client, gained),
+            Act::Mouse(event) => return self.mouse(client, event),
             Act::Reply(reply) => self.terminal_reply(client, reply),
             // The client's screen, drawn as it says; copy mode left, if
             // the client has moved on from it.
@@ -167,16 +161,14 @@ impl Session {
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
-    /// hears of it, if it asked.
-    fn focus_event(&mut self, client: ClientId, gained: bool) {
-        if let Some(mut p) = self
-            .focused(client)
-            .and_then(|pane| self.parts.pane_mut(pane))
-            && let Some(report) = p.screen().focus_report(gained)
-        {
-            // Refused, it is told as the acts are done (`Session::acts`).
-            let _ = p.input.push(report);
-        }
+    /// hears of it, if it asked (`put_in`).
+    fn focus_event(&mut self, client: ClientId, gained: bool) -> bool {
+        let Some(pane) = self.focused(client) else {
+            return false;
+        };
+        let asked = self.parts.panes().get(&pane);
+        let report = asked.and_then(|p| p.screen().focus_report(gained));
+        report.is_some_and(|r| self.put_in(client, pane, |_, out| out.extend_from_slice(r)))
     }
 
     /// A mouse report from the client's terminal, which reports only while
@@ -185,17 +177,18 @@ impl Session {
     /// no mouse actions of its own: a report outside the focused pane is
     /// dropped, except that the motion and release of a press made inside
     /// are kept to the pane's edge, so the program never sees a button left
-    /// down. One that arrives as an overlay opens is dropped.
-    fn mouse(&mut self, client: ClientId, event: MouseEvent) {
+    /// down. One that arrives as an overlay opens is dropped. One the
+    /// pane refuses is told (`put_in`); whether it was.
+    fn mouse(&mut self, client: ClientId, event: MouseEvent) -> bool {
         let Some(view) = self.views.get(&client) else {
-            return;
+            return false;
         };
         let Some(pane) = self.focused(client).filter(|_| view.mode.is_normal()) else {
-            return;
+            return false;
         };
         let placement = self.placement(view);
         let Some(rect) = placement.rect(pane) else {
-            return;
+            return false;
         };
         let inside = rect.contains(event.row, event.col);
         let seat = self.shown_tab(client).and_then(|t| t.seat(client));
@@ -207,7 +200,7 @@ impl Session {
             MouseAction::Motion(_) => (false, None),
         };
         if !(inside || held && !press) {
-            return;
+            return false;
         }
         if let Some(seat) = self.shown_tab_mut(client).and_then(|t| t.seat_mut(client))
             && let Some(holds) = holds
@@ -218,14 +211,10 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(mut p) = self.parts.pane_mut(pane) else {
-            return;
-        };
         let mut report = Vec::new();
-        if p.screen().encode_mouse(event, &mut report) {
-            // Refused, it is told as the acts are done (`Session::acts`).
-            let _ = p.input.push(&report);
-        }
+        let asked = self.parts.panes().get(&pane);
+        asked.is_some_and(|p| p.screen().encode_mouse(event, &mut report))
+            && self.put_in(client, pane, |_, out| out.extend_from_slice(&report))
     }
 }
 
@@ -890,12 +879,12 @@ mod tests {
     }
 
     /// A mouse report a full input queue refuses is told, and so is each
-    /// key and paste refused after it, the notice cleared by a key shown
-    /// again.
+    /// key, paste, report and focus change refused after it, the notice
+    /// cleared by a key shown again.
     #[test]
     fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
         let (mut s, c) = session()?;
-        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h");
+        s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
         p.input.push(full).map_err(|e| e.to_string())?;
@@ -906,10 +895,20 @@ mod tests {
         };
         s.input(c, b"\x1b[<0;3;2M");
         assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
-        for typed in [b"x".as_slice(), b"y", b"\x1b[200~z\x1b[201~"] {
+        let typed = [
+            b"x".as_slice(),
+            b"y",
+            b"\x1b[200~z\x1b[201~",
+            b"\x1b[<0;3;2M",
+            b"\x1b[I",
+        ];
+        for typed in typed {
             s.input(c, typed);
             let told = notice(&mut s);
-            assert!(told.is_some_and(|n| n.contains("input to %1 was dropped")));
+            assert!(
+                told.is_some_and(|n| n.contains("input to %1 was dropped")),
+                "{typed:?}"
+            );
         }
         Ok(())
     }
