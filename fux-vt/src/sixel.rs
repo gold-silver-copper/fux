@@ -1103,6 +1103,36 @@ mod tests {
         assert_eq!(picture.and_then(|p| p.pixel(4095, 11)), red);
         assert_eq!(picture.and_then(|p| p.pixel(0, 12)), None);
     }
+
+    /// The README states what a picture may keep as `MAX_SIDE` and
+    /// `MAX_PIXELS` have it: the pixels in all, as `MAX_SIDE` by the other
+    /// side, and their RGBA bytes.
+    #[test]
+    fn the_readme_states_what_a_picture_keeps() {
+        // Its words, a blank between each, as its lines wrap them.
+        let readme = include_str!("../README.md").split_whitespace();
+        let readme = readme.collect::<Vec<_>>().join(" ");
+        let side = usize::try_from(MAX_SIDE).unwrap_or_default();
+        assert_eq!(MAX_PIXELS % side, 0);
+        let other = MAX_PIXELS / side;
+        // 35,389,440: four bytes a pixel, thousands grouped.
+        let digits = (MAX_PIXELS * 4).to_string();
+        let mut bytes = String::new();
+        for (i, digit) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                bytes.push(',');
+            }
+            bytes.push(digit);
+        }
+        for said in [
+            format!("({side} positions a side, {side} by {other} in all,"),
+            format!("({side} a side, {side} by {other} in all;"),
+            format!("at most {side} by {other} positions"),
+            format!("take at most {bytes} bytes"),
+        ] {
+            assert!(readme.contains(&said), "README: {said}");
+        }
+    }
 }
 
 /// The decoder's check, shown a picture past what one may be.
