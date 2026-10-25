@@ -1407,6 +1407,7 @@ impl Grid {
         if cuts {
             cut(&mut cells);
         }
+        unpicture(&mut cells);
         cells.truncate(to.len());
         let text = self.texts.get(source);
         let texts: Vec<String> = (cells.iter())
@@ -1514,6 +1515,7 @@ impl Grid {
                 split_wide(cells, boundary);
             }
             shift(cells, col, count, insert, blank);
+            unpicture(cells.get_mut(col..).unwrap_or_default());
             repair_wide(row_cells);
             // Inserting and deleting always count as a change.
             true
@@ -2373,6 +2375,19 @@ impl Grid {
 
 fn past(col: u16, pending_wrap: bool) -> u16 {
     col.saturating_add(u16::from(pending_wrap))
+}
+
+/// Blanks the pictures' cells among cells copied or moved: a cell copy
+/// carries a cell's character and attributes (DEC STD 070, DECCRA; ICH,
+/// DCH), and a picture's cell has none, its placeholder read as a blank.
+/// Only placing a picture fills its cells (`Screen::place_picture`), so
+/// no copy or move makes another picture's, or gives back one that text
+/// or an erase took.
+fn unpicture(cells: &mut [Compact]) {
+    let placeholder = crate::PLACEHOLDER.chars().next();
+    for cell in cells.iter_mut().filter(|c| c.first() == placeholder) {
+        *cell = cell.blanked();
+    }
 }
 
 /// Blanks the halves of wide glyphs cut by the edges of a DECCRA span.

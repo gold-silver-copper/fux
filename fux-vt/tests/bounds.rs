@@ -330,6 +330,7 @@ bound!("B42", b42_1x, b42_10x, b42_100x);
 bound!("B43", b43_1x, b43_10x, b43_100x);
 bound!("B44", b44_1x, b44_10x, b44_100x);
 bound!("B45", b45_1x, b45_10x, b45_100x);
+bound!("B46", b46_1x, b46_10x, b46_100x);
 
 /// The per-call work budget (`THREATS.md` 4.4): at fux's
 /// largest pane, 4095×4096, each class of screen-wide function stops a

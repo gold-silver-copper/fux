@@ -1,4 +1,4 @@
-//! The bound rows of `THREATS.md` section 2, B01 to B45 and B34a: each a probe of
+//! The bound rows of `THREATS.md` section 2, B01 to B46 and B34a: each a probe of
 //! its reproducer at a scale and a chunking, held to the row's bound
 //! (section 2), work constants (4.2) and memory terms (3.1, 3.2), with a
 //! lower bound on each counter it names (4.3). A row whose code or API is
@@ -208,7 +208,11 @@ pub fn b04(scale: Scale, chunk: usize) -> Found {
 // 403 ÷ 19, at most 7,636 (THREATS.md 1.2); with P2 1 and 2 as with 0.
 // Portrait, 2160 by 4096, ⌈4096 ÷ the cell's height⌉ rows: 205 × 403 ÷ 19,
 // at most 4,349, and at 2×6 683 × 403 ÷ 19, at most 14,487 (THREATS.md
-// B05).
+// B05). Each lies on the last cell row of the one before, whose 20 rows of
+// 2,000 pixels it covers (B46): a list of the rows it shows, 16 bytes each
+// of at most 4,096, and 32 words for each row covered (8,832 words), and
+// the words read and written, 33 for each (660): 9,492 at most a
+// placement, and 70,656 bytes for each of 64 pictures.
 pub fn b05(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults();
     for (picture, (cell, per_byte, rows)) in [
@@ -223,8 +227,8 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
     ] {
         let input = repeat(&repeat(picture.as_bytes(), 215), scale.times());
         let bound = Bound {
-            work: &[("pixels", 0, 0, 0)],
-            heap: steady(&setup),
+            work: &[("pixels", 0, 0, 215 * 9492)],
+            heap: steady(&setup).saturating_add(64 * 70_656),
         };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
         probe.set_host_graphics(
@@ -2195,6 +2199,47 @@ pub fn b45(_: Scale, _: usize) -> Found {
     Ok(())
 }
 
+// B46: covering. 64 pictures at a 10×20 cell, each a column right of the
+// last, so that each covers part of every one before it, and none whole:
+// opaque extents 100 cells by 20 (P2 0), and pictures 50 by 11 drawn with
+// P2 1, read a row at a time, 64 of them inside the budget. Each placement
+// covers at most `COVER_WORDS` words, and notes what it covers inside the
+// budget.
+pub fn b46(scale: Scale, chunk: usize) -> Found {
+    const COVER_WORDS: u64 = 4_000_000;
+    let setup = Setup::defaults();
+    let bands: String = std::iter::repeat_n("#1!500~-", 34).collect();
+    for (picture, rows) in [
+        (String::from("\x1bPq\"1;1;1000;400\x1b\\"), 400_u64),
+        (format!("\x1bP0;1q\"1;1;500;204{bands}\x1b\\"), 204),
+    ] {
+        let one: Vec<u8> = (1..=64)
+            .flat_map(|col| format!("\x1b[1;{col}H{picture}").into_bytes())
+            .collect();
+        let bound = Bound {
+            work: &[("pixels", 4096, 0, 64 * COVER_WORDS)],
+            heap: steady(&setup).saturating_add(PICTURE_BYTES),
+        };
+        let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
+        probe.set_host_graphics(
+            fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel),
+        );
+        probe.feed(&repeat(&one, scale.times()))?;
+        let shown = probe.parser.screen().pictures().count();
+        if shown != 64 {
+            return Err(format!("{shown} pictures shown, not 64"));
+        }
+        // Each covered, at least, a column of 10 pixels on each of its
+        // rows, a word a row, of each one before it.
+        let covered = u64::try_from(scale.times())
+            .unwrap_or(0)
+            .saturating_mul(rows.saturating_mul(64 * 63 / 2));
+        probe.at_least("pixels", covered)?;
+        probe.finish()?;
+    }
+    Ok(())
+}
+
 /// Every row, by its name in `THREATS.md` 2.
 pub const ROWS: &[(&str, Row)] = &[
     ("B01", b01),
@@ -2241,6 +2286,7 @@ pub const ROWS: &[(&str, Row)] = &[
     ("B43", b43),
     ("B44", b44),
     ("B45", b45),
+    ("B46", b46),
 ];
 
 /// Runs row `name` at `scale`, at every chunking, until one finds it past
@@ -2262,7 +2308,7 @@ pub fn run(row: Row, scale: Scale) -> Result<(), Vec<String>> {
     }
 }
 
-/// How many rows `THREATS.md` 2 has: B01 to B45 but B10 and B29, and B34a.
-pub const COUNT: usize = 44;
+/// How many rows `THREATS.md` 2 has: B01 to B46 but B10 and B29, and B34a.
+pub const COUNT: usize = 45;
 
 const _: () = assert!(ROWS.len() == COUNT);
