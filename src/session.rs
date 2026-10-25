@@ -4026,6 +4026,21 @@ mod tests {
         Ok(())
     }
 
+    /// A program whose exit was told, respawned, is told exited once: its
+    /// exit is not told again before `respawned`.
+    #[test]
+    fn an_exit_told_is_not_told_again_at_a_respawn() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let lines = told(&mut s, |s| {
+            s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+            let _ = run(s, "%2 respawn");
+        });
+        let said: Vec<&str> = lines.lines().filter_map(|l| l.split(' ').next()).collect();
+        assert_eq!(said, ["exited", "respawned"], "{lines}");
+        Ok(())
+    }
+
     /// A pane respawned twice within its program's grace has both programs
     /// before dying: the second end never drops the first one's kill.
     #[test]

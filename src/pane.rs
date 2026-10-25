@@ -529,8 +529,8 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// How many of the unread bytes are the rest of a frame being read
     /// (`Pane::mid_frame`).
     frame_left: usize,
-    /// How its program exited, once told, while what it wrote is still
-    /// being read (`Session::exited`).
+    /// How its program exited, from when fux hears of it till that is
+    /// told, while what it wrote is still being read (`Session::exited`).
     pub exiting: Option<Ended>,
     /// What the program's colour queries are answered with, as the session
     /// finds them before each read of output (`outer`).
@@ -1055,10 +1055,11 @@ impl<S> Pane<S> {
         };
     }
 
-    /// Its program ended so: said, and the process that was there, to be
-    /// reaped.
+    /// Its program ended so: said, no exit waiting to be told after, and
+    /// the process that was there, to be reaped.
     pub fn exit(&mut self, ended: Ended) -> Process {
         self.ended(ended);
+        self.exiting = None;
         std::mem::replace(&mut self.process, Process::Exited(ended))
     }
 
