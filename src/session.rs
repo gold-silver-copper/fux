@@ -2478,8 +2478,8 @@ impl Session {
                 if view.source == command::Source::LastOutput && !pane.marked() {
                     return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
                 }
-                let copying = self.copying(pane.id());
-                let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
+                let shown = (self.copying(pane.id()), self.graphics(pane.id()).cell);
+                let (text, form) = crate::capture::pane(pane, self.run, history, view, shown);
                 Ok(Reply {
                     json: form,
                     ..text.into()
@@ -3183,12 +3183,8 @@ impl Session {
             ("cols", Json::Number(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
         ];
-        fields.extend(crate::capture::state(
-            p,
-            self.run,
-            now,
-            self.copying(p.id()),
-        ));
+        let shown = (self.copying(p.id()), self.graphics(p.id()).cell);
+        fields.extend(crate::capture::state(p, self.run, now, shown));
         fields
     }
 

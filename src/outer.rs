@@ -167,13 +167,10 @@ impl Session {
     }
 
     /// Client `client`'s terminal was resized, as a font zoom resizes it:
-    /// its cell size is unknown until it answers again (`CELL_QUERY`), so
-    /// no picture is laid out in, nor answered with, the old one.
+    /// its cell size is asked again (`CELL_QUERY`), the last it said kept,
+    /// the last known, till it answers. A picture laid out in a cell it
+    /// no longer says is not drawn on it (`render::pictures`).
     pub(crate) fn terminal_resized(&mut self, client: ClientId) {
-        if let Some(view) = self.views.get_mut(&client) {
-            view.terminal.cell = None;
-            view.dirty = true;
-        }
         self.ask(client, CELL_QUERY);
     }
 
@@ -340,6 +337,14 @@ impl Session {
         self.answering(tab, |t| t.cell.is_some())
     }
 
+    /// What the terminal that draws pane `id` draws (`graphics_client`):
+    /// nothing, with none.
+    pub(crate) fn graphics(&self, id: PaneId) -> Graphics {
+        let tab = self.locate(id).map(|(_, tab)| tab);
+        let view = self.graphics_client(tab).and_then(|c| self.views.get(&c));
+        view.map_or_else(Graphics::default, |v| v.terminal.graphics())
+    }
+
     /// Of the attached clients showing `tab` that `said` holds for, the one
     /// that last typed into it, else the first: one that typed there and
     /// went to another tab answers for it no more.
@@ -360,10 +365,9 @@ impl Session {
     /// program started there draws in text, which a capture reads. With no
     /// such terminal, nothing.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
+        let graphics = self.graphics(id);
         let tab = self.locate(id).map(|(_, tab)| tab);
         let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
-        let graphics =
-            terminal(self.graphics_client(tab)).map_or_else(Graphics::default, Terminal::graphics);
         let (colours, palette) = terminal(self.colour_client(tab))
             .map_or_else(Default::default, |t| (t.colours, t.palette));
         let mut pane = self.parts.pane_mut(id)?;
@@ -589,22 +593,21 @@ mod tests {
     }
 
     /// A terminal resized, as a font zoom resizes it, is asked its cell
-    /// size again, which is unknown to its panes until it answers.
+    /// size again, the last it said kept till it answers; a pane idle
+    /// since is said in JSON to be told the new one.
     #[test]
-    fn a_resized_terminals_cell_is_unknown_until_it_answers_again() -> Outcome {
+    fn a_resized_terminals_cell_is_the_last_it_said_till_it_answers() -> Outcome {
         let (mut s, c) = session()?;
-        let cell = |s: &mut Session| {
-            s.output(PaneId::of(1), b"");
-            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().cell_size())
-        };
+        let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
         s.input(c, b"\x1b[6;20;10t\x1b[?62c");
-        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
+        s.output(PaneId::of(1), b"idle from now");
+        assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
         let _ = sent(&mut s, c);
         s.terminal_resized(c);
         assert_eq!(sent(&mut s, c), [CELL_QUERY.to_vec()]);
-        assert_eq!(cell(&mut s), None);
+        assert!(cell(&mut s)?.contains(r#""cell":{"width":10,"height":20}"#));
         s.input(c, b"\x1b[6;24;12t");
-        assert_eq!(cell(&mut s), fux_vt::CellSize::new(12, 24));
+        assert!(cell(&mut s)?.contains(r#""cell":{"width":12,"height":24}"#));
         Ok(())
     }
 
