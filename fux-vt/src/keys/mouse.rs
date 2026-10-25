@@ -123,6 +123,16 @@ impl crate::Screen {
         mouse_bytes(event, mode, self.mouse_protocol_encoding(), cell, out)
     }
 
+    /// Whether `event` would be reported but for the host's cell size: the
+    /// program asked for pixels (1016), none is known, and SGR in cells
+    /// would report it.
+    pub fn mouse_needs_cell(&self, event: MouseEvent) -> bool {
+        let (mode, sgr) = (self.mouse_protocol_mode(), MouseProtocolEncoding::Sgr);
+        self.mouse_protocol_encoding() == MouseProtocolEncoding::SgrPixels
+            && self.cell_size().is_none()
+            && mouse_bytes(event, mode, sgr, None, &mut Vec::new())
+    }
+
     /// A wheel turn as cursor keys, with alternate scroll set and the
     /// alternate screen shown; whether it was one.
     fn alternate_scroll(&self, event: MouseEvent, out: &mut Vec<u8>) -> bool {

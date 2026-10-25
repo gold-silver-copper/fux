@@ -205,7 +205,7 @@ impl Session {
         let Some(mut p) = self.hosted(pane) else {
             return;
         };
-        let (mut report, unmade) = (Vec::new(), p.no_mouse_reports());
+        let (mut report, unmade) = (Vec::new(), p.no_mouse_report(event));
         if p.screen().encode_mouse(event, &mut report) {
             let _ = p.input.push(&report);
         } else if let Some(why) = unmade {
@@ -872,6 +872,27 @@ mod tests {
         s.output(PaneId::of(3), b"\x1b[?1000h\x1b[?1006h");
         s.input(c, press(below.x() + 1, below.y() + 2).as_bytes());
         assert_eq!(queued(&mut s, 3), b"\x1b[<0;2;3M");
+        Ok(())
+    }
+
+    /// Reports in pixels (mode 1016) with no cell size said: a report the
+    /// program would get is told missing; an X10 release, which it would
+    /// not get anyway, is not.
+    #[test]
+    fn a_report_in_pixels_with_no_cell_is_told_only_if_it_would_be_sent() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?9h\x1b[?1016h");
+        let notice = |s: &mut Session| {
+            let view = s.views.get_mut(&c);
+            view.and_then(|v| v.notice.take()).map(|n| n.text)
+        };
+        s.input(c, b"\x1b[<0;3;2m");
+        assert_eq!(notice(&mut s), None);
+        s.input(c, b"\x1b[<0;3;2M");
+        assert!(notice(&mut s).is_some_and(|n| n.contains("mode 1016")));
+        assert!(queued(&mut s, 1).is_empty());
+        s.input(c, b"\x1b[6;16;8t\x1b[?62c\x1b[<0;3;2M");
+        assert_eq!(queued(&mut s, 1), b"\x1b[<0;21;25M");
         Ok(())
     }
 

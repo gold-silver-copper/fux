@@ -2550,9 +2550,7 @@ impl Session {
             );
             return Err(fail(Code::Mouse, message));
         }
-        if mode != Asked::None
-            && let Some(why) = p.no_mouse_reports()
-        {
+        if let Some(why) = events.iter().find_map(|e| p.no_mouse_report(*e)) {
             return Err(fail(Code::Mouse, why));
         }
         let mut report = Vec::new();

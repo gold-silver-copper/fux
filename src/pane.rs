@@ -965,13 +965,11 @@ impl Pane {
         self.title.said()
     }
 
-    /// Why no mouse report can be made for its program, if none can: it
-    /// asked for them in pixels (mode 1016), and no terminal showing it
-    /// has said its cell size.
-    pub fn no_mouse_reports(&self) -> Option<String> {
-        let screen = self.screen();
-        let pixels = screen.mouse_protocol_encoding() == fux_vt::MouseProtocolEncoding::SgrPixels;
-        (pixels && screen.cell_size().is_none()).then(|| {
+    /// Why `event` is not reported to its program, if it would be but for
+    /// this: it asked for reports in pixels (mode 1016), and no terminal
+    /// showing it has said its cell size.
+    pub fn no_mouse_report(&self, event: fux_vt::keys::mouse::MouseEvent) -> Option<String> {
+        self.screen().mouse_needs_cell(event).then(|| {
             format!(
                 "the program in {} asked for mouse reports in pixels (mode 1016), and no terminal \
                  showing it has said its cell size",
