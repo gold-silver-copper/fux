@@ -943,21 +943,22 @@ impl<S> Pane<S> {
     /// Its program's queries are answered with `colours` and `palette`
     /// from now on, and it is told its terminal draws `graphics`: with no
     /// cell there (no terminal that said one draws it), in the cell it was
-    /// last told, which its program keeps, not signalled.
+    /// last told, which its program keeps, not signalled. Whether the cell
+    /// changed: its terminal is then to be sized (`size_terminal`), once
+    /// what is read with it, a resize among them, is read.
+    #[must_use]
     pub fn host(
         &mut self,
         colours: Colours,
         palette: crate::outer::Palette,
         mut graphics: fux_vt::Graphics,
-    ) {
+    ) -> bool {
         self.colours = colours;
         self.parser.set_host_palette(palette);
         let told = self.screen().cell_size();
         graphics.cell = graphics.cell.or(told);
         self.parser.set_host_graphics(graphics);
-        if self.screen().cell_size() != told {
-            self.size_terminal();
-        }
+        self.screen().cell_size() != told
     }
 
     /// Sizes its program's terminal as its screen is, and in pixels as the
@@ -965,7 +966,7 @@ impl<S> Pane<S> {
     /// kernel's count: a change of either signals the program (SIGWINCH),
     /// which asks again. One the system refuses leaves it as it was, the
     /// screen sized all the same, as `process::spawn` leaves its pixels.
-    fn size_terminal(&self) {
+    pub(crate) fn size_terminal(&self) {
         let Some(child) = self.process.child() else {
             return;
         };

@@ -1754,7 +1754,9 @@ impl Session {
             .map(Pane::id)
             .collect();
         for id in stale {
-            self.hosted(id);
+            if let Some((pane, true)) = self.hosted(id) {
+                pane.size_terminal();
+            }
         }
     }
 
@@ -2105,10 +2107,15 @@ impl Session {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let viewers = self.viewers(tab);
         let clipboard = self.config.clipboard;
-        let Some(mut pane) = self.hosted(id) else {
+        let Some((mut pane, retold)) = self.hosted(id) else {
             return;
         };
         read(&mut pane);
+        // Sized once for the new cell and what was read, a resize sized
+        // so already, which the system does not signal again.
+        if retold {
+            pane.size_terminal();
+        }
         let bell = std::mem::take(&mut pane.bell);
         // A program's copies, as copies in copy mode, to the clients showing
         // it; none with `set clipboard off`. Those that are no copy stay to
@@ -4468,6 +4475,42 @@ mod tests {
         };
         assert_eq!(cell(true)?, fux_vt::CellSize::new(10, 20));
         assert_eq!(cell(false)?, None);
+        Ok(())
+    }
+
+    /// A pane resized as the cell its terminal draws it in changes has its
+    /// terminal sized once, for both: not first for the cell at its old
+    /// size, which would signal its program (SIGWINCH) twice.
+    #[test]
+    fn a_resize_and_a_new_cell_size_a_panes_terminal_once() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        let id = PaneId::of(1);
+        let size = s.pane(id).map_err(|e| e.to_string())?.size();
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (size, None))?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        let pixels = |pane: &Pane| {
+            let (_, pixels) = fuxix::terminal::window_size(&pane.process().child()?.master)?;
+            pixels.map(|p| (p.width.get(), p.height.get()))
+        };
+        let view = s.views.get_mut(&c).ok_or("the view")?;
+        view.terminal.cell = fux_vt::CellSize::new(10, 20);
+        let smaller = sized(10, 40)?;
+        let mut between = None;
+        s.read_with(id, |pane| {
+            between = pixels(pane);
+            pane.resize(smaller);
+        });
+        assert_eq!(between, None, "not sized before the resize");
+        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        assert_eq!(pixels(pane), Some((400, 200)));
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        if let Process::Reading(child) = pane.set_process(Process::Absent) {
+            drop(child.master);
+            if let Err(pid) = child.leader.finish() {
+                process::reaped(pid);
+            }
+        }
         Ok(())
     }
 

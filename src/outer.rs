@@ -375,16 +375,17 @@ impl Session {
     /// did not say cleared; and what `graphics_client`'s terminal draws,
     /// which is no sixel in a tab no client shows with a cell size, so a
     /// program there draws in text, which a capture reads, in the cell it
-    /// was last told (`Pane::host`). With no such terminal, nothing.
-    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
+    /// was last told (`Pane::host`). With no such terminal, nothing; and
+    /// whether that cell is another, its terminal to be sized for it.
+    pub(crate) fn hosted(&mut self, id: PaneId) -> Option<(PaneMut<'_>, bool)> {
         let graphics = self.graphics(id);
         let tab = self.locate(id).map(|(_, tab)| tab);
         let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
         let (colours, palette) = terminal(self.colour_client(tab))
             .map_or_else(Default::default, |t| (t.colours, t.palette));
         let mut pane = self.parts.pane_mut(id)?;
-        pane.host(colours, palette, graphics);
-        Some(pane)
+        let retold = pane.host(colours, palette, graphics);
+        Some((pane, retold))
     }
 
     /// Pane `id`'s program rang the bell: each client showing its workspace
