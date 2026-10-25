@@ -1154,7 +1154,11 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 /// line. Its exit status (0, or what `exit` gave), or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let (tokens, from) = program(args)?;
-    let mut machine = compiled(None, &tokens).map_err(|e| Failed::from(a_file(e, args)))?;
+    // Only words can be a file mistaken for a program.
+    let mut machine = compiled(None, &tokens).map_err(|e| match from {
+        Given::Words => Failed::from(a_file(e, args)),
+        Given::Stdin | Given::File(_) => Failed::from(e),
+    })?;
     let mut host = Host::new(client::context(), None, out);
     let mut cli = Cli {
         server: Server::default(),
