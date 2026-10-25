@@ -925,7 +925,7 @@ pub fn compose_held(
     placement: &mut Placement,
     painted: Option<Painted<'_>>,
 ) {
-    let area = Session::pane_area(view);
+    let area = view.pane_area();
     session.placement_into(view, placement);
     let placement = &*placement;
     let tab = session.shown_tab(view.id);
@@ -1079,7 +1079,7 @@ fn put_panes(
     let covered = (placement.panes.iter().map(|(_, r)| r).chain(lines))
         .map(Rect::area)
         .fold(0u32, u32::saturating_add);
-    let tiled = covered == Session::pane_area(view).area();
+    let tiled = covered == view.pane_area().area();
     grid.reset(view.rows, view.cols, !tiled);
     let mut keys = Vec::new();
     for (id, rect) in &placement.panes {
@@ -1387,7 +1387,7 @@ fn windowed<'a>(
 
 /// A panel in the bottom-right corner, above the bar, sized to its lines.
 fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
-    let area = Session::pane_area(view);
+    let area = view.pane_area();
     if area.is_empty() || lines.is_empty() {
         return;
     }

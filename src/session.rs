@@ -1584,11 +1584,6 @@ impl Session {
 
     // -------------------------------------------------------------- layout
 
-    /// The area panes share on a client's screen: all but the bar.
-    pub fn pane_area(view: &View) -> Rect {
-        Rect::screen(view.rows.saturating_sub(1), view.cols)
-    }
-
     /// Where each pane of a view's current tab is on its screen.
     pub fn placement(&self, view: &View) -> Placement {
         let mut out = Placement::default();
@@ -1599,7 +1594,7 @@ impl Session {
     /// Where each pane of a view's current tab is on its screen, into
     /// `out`, whatever it held, reusing its buffers.
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
-        let area = Self::pane_area(view);
+        let area = view.pane_area();
         let tab = self.shown_tab(view.id);
         let Some(root) = tab.and_then(Tab::root) else {
             return out.clear();
@@ -1620,34 +1615,26 @@ impl Session {
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
         let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
         match own.or_else(|| self.sizing(tab).next()) {
-            Some(view) => Some(Self::pane_area(view)),
+            Some(view) => Some(view.pane_area()),
             None => self.tab(tab).map(|t| t.fit().area()),
         }
     }
 
     /// What a new tab is laid out on while no client shows it: `size`, if
     /// given; else the screen of the commanding client, or of any client
-    /// attached with room for a pane, which it then fits. With no client, and no size given, it
-    /// has no size, which is not made up: it is refused.
+    /// that sizes panes, which it then fits. With none, and no size given,
+    /// it has no size, which is not made up: it is refused.
     fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
             return Ok(Fit::Fixed(size.size()));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let mut sizing = (own.into_iter().chain(self.views.values()))
-            .filter(|v| v.sizes())
-            .peekable();
-        let none = sizing.peek().is_none();
+        let mut sizing = (own.into_iter().chain(self.views.values())).filter(|v| v.sizes());
         if let Some(size) = sizing.find_map(Self::screen_size) {
             return Ok(Fit::Clients(size));
         }
-        let why = match none {
-            true => {
-                "no client is attached to lay it out on (one that only watches sizes \
-                     nothing), and no size was given"
-            }
-            false => "no client's screen has room for a pane below its bar",
-        };
+        let why = "no client attached sizes it (one that only watches, or with no room for \
+                   a pane below its bar, sizes nothing), and no size was given";
         Err(fail(
             Code::Size,
             format!("{why}: give a size (`COLS ROWS size`)"),
@@ -1661,7 +1648,7 @@ impl Session {
 
     /// The size a client's screen gives panes, below its bar, if any.
     fn screen_size(view: &View) -> Option<Size> {
-        let area = Self::pane_area(view);
+        let area = view.pane_area();
         Size::new(area.h(), area.w()).ok()
     }
 
@@ -1761,19 +1748,17 @@ impl Session {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
-        // Each tab a client sizes, and its smallest screen if it has one.
+        // Each tab a client sizes, and its smallest screen.
         let mut screens = BTreeMap::new();
         for view in self.views.values().filter(|v| v.sizes()) {
-            if let Some(tab) = self.shown_tab(view.id) {
-                let least = screens.entry(tab.id()).or_insert(None);
-                if let Some((rows, cols)) = Self::screen_size(view).map(Size::nonzero) {
-                    let (r, c) = least.get_or_insert((rows, cols));
-                    (*r, *c) = ((*r).min(rows), (*c).min(cols));
-                }
+            let size = Self::screen_size(view).map(Size::nonzero);
+            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size) {
+                let (r, c) = screens.entry(tab.id()).or_insert((rows, cols));
+                (*r, *c) = ((*r).min(rows), (*c).min(cols));
             }
         }
         for (&tab, &size) in &screens {
-            if let (Some(size), Some(tab)) = (size, self.parts.tab_mut(tab)) {
+            if let Some(tab) = self.parts.tab_mut(tab) {
                 tab.shown_on(size.into());
             }
         }
@@ -1831,7 +1816,7 @@ impl Session {
                 (true, focus) => focus,
                 (false, _) => None,
             };
-            (Self::pane_area(view), zoomed)
+            (view.pane_area(), zoomed)
         });
         for (area, zoomed) in screens.chain(fit) {
             match zoomed.filter(|_| !area.is_empty()) {
@@ -3011,7 +2996,7 @@ impl Session {
         let follower = follower
             .and_then(|c| self.views.get(&c))
             .filter(|v| v.sizes());
-        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), Self::pane_area(v)));
+        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), v.pane_area()));
         let mut sizes = std::iter::once((None, own)).chain(screens);
         let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
             return Ok(());
@@ -3070,7 +3055,7 @@ impl Session {
                     .root()
                     .zip(current)
                     .ok_or_else(|| fail(Code::NoPane, "the tab is empty"))?;
-                let placement = layout::place(root, Self::pane_area(view));
+                let placement = layout::place(root, view.pane_area());
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
             }
