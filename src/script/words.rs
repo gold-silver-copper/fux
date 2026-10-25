@@ -261,12 +261,9 @@ pub fn usage(word: &str) -> Option<String> {
     // words that take it do.
     let takes = takes.trim().to_uppercase();
     let request = takes.strip_prefix('X');
-    let taken_by = |w: &str| help::options(w).is_some_and(|mut o| o.any(|o| o == word));
-    let takers = help::OPTIONS
-        .iter()
-        .map(|(w, _)| *w)
-        .filter(|w| taken_by(w));
-    let (opts, panes): (Vec<&str>, Vec<&str>) = takers.partition(|w| help::FROM_OPTS.contains(w));
+    let (opts, panes): (Vec<&str>, Vec<&str>) = taking(word)
+        .into_iter()
+        .partition(|w| help::FROM_OPTS.contains(w));
     let on = match (opts.is_empty(), panes.is_empty()) {
         (true, false) => "PANE",
         (false, true) => "OPTS",
@@ -445,8 +442,7 @@ fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
 /// Options a word would leave unused, refused rather than ignored: it
 /// takes those `help` lists for it.
 fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
-    let takes = |o: &str| help::options(word).is_some_and(|mut t| t.any(|t| t == o));
-    let Some(option) = built.given.iter().find(|o| !takes(o)) else {
+    let Some(option) = built.given.iter().find(|o| !taking(o).contains(&word)) else {
         return Ok(());
     };
     let instead = format!("takes no {option}: {option} goes on {}", takers(option));
@@ -720,10 +716,19 @@ fn closest_key(word: &str) -> Option<String> {
 /// The words that take `option`, listed; every word that takes options,
 /// for a word that is none.
 pub(super) fn takers(option: &str) -> String {
-    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
     let words: Vec<&str> = help::OPTIONS.iter().map(|(w, ..)| *w).collect();
-    let on: Vec<&str> = words.iter().copied().filter(takes).collect();
+    let on = taking(option);
     crate::words::listed(if on.is_empty() { &words } else { &on }, "or")
+}
+
+/// The words that take `option`, in `help::OPTIONS`'s order.
+fn taking(option: &str) -> Vec<&'static str> {
+    let takes = |w: &&str| help::options(w).is_some_and(|mut t| t.any(|t| t == option));
+    help::OPTIONS
+        .iter()
+        .map(|(w, ..)| *w)
+        .filter(takes)
+        .collect()
 }
 
 /// The bytes `hex` spells, two digits each (`1b5b41`, `c3 a9`; blanks
