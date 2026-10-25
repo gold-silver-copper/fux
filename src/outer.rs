@@ -195,10 +195,8 @@ impl Session {
             // DA1, the last answer to every round of questions: a change
             // waiting on colours the terminal did not give is told now.
             Reply::Attributes { sixel } => {
-                if terminal.sixel != sixel {
-                    terminal.sixel = sixel;
-                    view.dirty = true;
-                }
+                view.dirty |= terminal.sixel != sixel;
+                terminal.sixel = sixel;
                 self.tell_change(client);
             }
             // A cell smaller than a sixel band is no size a picture can be
@@ -226,10 +224,8 @@ impl Session {
             // shows already, painted plain, is painted again
             // (`render::paint_into`).
             Reply::UnderlineStyles => {
-                if !terminal.underline_styles {
-                    terminal.underline_styles = true;
-                    view.dirty = true;
-                }
+                view.dirty |= !terminal.underline_styles;
+                terminal.underline_styles = true;
             }
             Reply::Palette { index, rgb } => {
                 if let Some(entry) = terminal.palette.get_mut(usize::from(index)) {

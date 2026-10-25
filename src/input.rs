@@ -107,9 +107,7 @@ impl Session {
                 true
             }
         };
-        if shown {
-            view.dirty = true;
-        }
+        view.dirty |= shown;
         // Encoded as its program asked.
         self.type_in(client, |screen, out| {
             crate::encode::key_bytes(stroke, screen.key_mode(), out)
