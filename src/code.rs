@@ -244,22 +244,26 @@ mod tests {
         assert_eq!(Code::from(fuxth::Code::Host("closed")), Code::Closed);
     }
 
+    /// Every code has a name of its own, and docs/json.md's list of
+    /// errors names each, and no other.
     #[test]
     fn every_code_has_its_own_name_and_the_docs_list_it() {
         let docs = crate::help::JSON;
         let errors = docs.split("## Errors").nth(1).unwrap_or_default();
-        let errors = errors.split("\n## ").next().unwrap_or_default();
+        // The list: from its first item to the blank line after it.
+        let list = errors.split("\n- ").skip(1).collect::<Vec<_>>().join(" ");
+        let list = list.split("\n\n").next().unwrap_or_default();
+        // What is quoted: every other piece between backquotes.
+        let quoted = list.split('`').enumerate().filter(|(i, _)| i % 2 == 1);
+        let listed: std::collections::BTreeSet<&str> = quoted.map(|(_, name)| name).collect();
+        let mut names = std::collections::BTreeSet::new();
         for (i, code) in Code::all().enumerate() {
             assert_eq!(code.name().parse(), Ok(code), "{code:?}");
             assert_eq!(Code::from(fuxth::Code::from(code)), code);
             let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
             assert!(!named, "{code:?} shares its name");
-            let listed = errors.contains(&format!("`{}`", code.name()));
-            assert!(
-                listed,
-                "docs/json.md's Errors does not list {}",
-                code.name()
-            );
+            names.insert(code.name());
         }
+        assert_eq!(listed, names, "docs/json.md's Errors and fux's codes");
     }
 }
