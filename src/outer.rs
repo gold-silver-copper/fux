@@ -243,12 +243,6 @@ impl Session {
                     );
                 }
                 view.dirty = true;
-                // The panes it shows are told a cell that changed now, not
-                // at their next output (`Pane::host`).
-                let tab = self.shown_tab(client).and_then(crate::workspace::Tab::root);
-                for id in tab.map(crate::layout::Tree::panes).unwrap_or_default() {
-                    self.hosted(id);
-                }
             }
             // The terminal speaks the kitty protocol: its keys are read
             // exactly from now on.
@@ -657,7 +651,8 @@ mod tests {
         let id = PaneId::of(1);
         let argv = ["/bin/cat".to_owned()];
         let size = fux_vt::Size::new(4, 20).map_err(|e| e.to_string())?;
-        let child = crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), size)?;
+        let child =
+            crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), (size, None))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let _ = pane.set_process(crate::pane::Process::Reading(child));
         drop(pane);
@@ -697,6 +692,28 @@ mod tests {
                 crate::process::reaped(pid);
             }
         }
+        Ok(())
+    }
+
+    /// An idle pane is told the cell of the terminal that draws it as
+    /// another comes to: one typed there, or the one drawing it detached;
+    /// none once none does.
+    #[test]
+    fn a_pane_is_told_the_cell_of_the_terminal_drawing_it_now() -> Outcome {
+        let (mut s, c) = session()?;
+        let cell = |s: &mut Session| crate::session::testing::output(s, "%1 capture json");
+        let told = |w: u16, h: u16| format!(r#""cell":{{"width":{w},"height":{h}}}"#);
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
+        s.input(d, b"\x1b[6;24;12t\x1b[?62;4;22c");
+        s.input(d, b"x");
+        assert!(cell(&mut s)?.contains(&told(12, 24)));
+        s.input(c, b"x");
+        assert!(cell(&mut s)?.contains(&told(10, 20)));
+        s.detach(c);
+        assert!(cell(&mut s)?.contains(&told(12, 24)));
+        s.detach(d);
+        assert!(cell(&mut s)?.contains(r#""cell":null"#));
         Ok(())
     }
 

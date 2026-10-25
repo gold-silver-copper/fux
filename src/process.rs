@@ -18,17 +18,23 @@ pub struct Child {
     pub master: Master,
 }
 
-/// Starts `argv` on a new PTY of `size`, in its own session with the PTY as
-/// its controlling terminal: with `env` set and `unset` removed from the
-/// server's environment.
+/// Starts `argv` on a new PTY of `size`, in pixels as `cell` makes it
+/// (`pixels`), in its own session with the PTY as its controlling
+/// terminal: with `env` set and `unset` removed from the server's
+/// environment.
 pub fn spawn(
     argv: &[String],
     cwd: &Path,
     (env, unset): (&[(&str, std::ffi::OsString)], &[String]),
-    size: fux_vt::Size,
+    (size, cell): (fux_vt::Size, Option<fux_vt::CellSize>),
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
+    // Before the program starts, which may ask but once.
+    if let Some(pixels) = pixels(size, cell) {
+        fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels))
+            .map_err(|e| e.to_string())?;
+    }
     let (child, pid) = slave
         .spawn(argv, |command| {
             // TERM_PROGRAM is fux's, as tmux sets its own: the outer
@@ -54,6 +60,23 @@ pub fn spawn(
     Ok(Child {
         leader: Leader(pid, false),
         master,
+    })
+}
+
+/// A terminal of `size` in pixels, as `cell` makes it: unknown without a
+/// cell, or where the whole does not fit the kernel's count.
+pub fn pixels(
+    size: fux_vt::Size,
+    cell: Option<fux_vt::CellSize>,
+) -> Option<fuxix::terminal::Pixels> {
+    let side = |cells: u16, pixels: u16| {
+        let whole = u32::from(cells).checked_mul(u32::from(pixels))?;
+        std::num::NonZeroU16::new(u16::try_from(whole).ok()?)
+    };
+    let cell = cell?;
+    Some(fuxix::terminal::Pixels {
+        width: side(size.cols(), cell.width())?,
+        height: side(size.rows(), cell.height())?,
     })
 }
 

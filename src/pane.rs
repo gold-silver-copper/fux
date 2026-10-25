@@ -963,16 +963,7 @@ impl<S> Pane<S> {
             return;
         };
         let size = self.size();
-        let side = |cells: u16, pixels: u16| {
-            let whole = u32::from(cells).checked_mul(u32::from(pixels))?;
-            std::num::NonZeroU16::new(u16::try_from(whole).ok()?)
-        };
-        let pixels = self.screen().cell_size().and_then(|cell| {
-            Some(fuxix::terminal::Pixels {
-                width: side(size.cols(), cell.width())?,
-                height: side(size.rows(), cell.height())?,
-            })
-        });
+        let pixels = crate::process::pixels(size, self.screen().cell_size());
         let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
     }
 

@@ -188,6 +188,9 @@ struct NewPane<'a> {
     cwd: &'a Path,
     starting: &'a Starting,
     size: Size,
+    /// The cell its program is told it starts in: none in a tab no
+    /// terminal draws yet (`Session::graphics`).
+    cell: Option<fux_vt::CellSize>,
 }
 
 impl<'a> NewPane<'a> {
@@ -197,6 +200,7 @@ impl<'a> NewPane<'a> {
             cwd,
             starting,
             size,
+            cell: None,
         }
     }
 }
@@ -904,8 +908,8 @@ impl Session {
         self.parts.pane_mut(id).ok_or(Error::NoPane(id))
     }
 
-    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`,
-    /// if panes start real processes: told of its server (`FUX_PANE`,
+    /// Starts `argv` with `env` as pane `id`'s program, in `cwd` at `size`
+    /// in cells of `cell`, if panes start real processes: told of its server (`FUX_PANE`,
     /// `FUX_SOCKET`, a grant's socket if its starter came by one,
     /// `FUX_SERVER`, and `FUX`, the fux running it, unset if it cannot be
     /// had), given its starter's variables, and not those its starter had
@@ -915,7 +919,7 @@ impl Session {
         id: PaneId,
         launch: &pane::Launch,
         fresh: &Starting,
-        size: Size,
+        size: (Size, Option<fux_vt::CellSize>),
     ) -> Result<Option<Child>, Error> {
         let Some(socket) = &self.launch else {
             return Ok(None);
@@ -977,7 +981,7 @@ impl Session {
             launch.env.retain(|(k, _)| k != key);
             launch.env.push((key.clone(), value.clone()));
         }
-        let size = pane.size();
+        let size = (pane.size(), self.graphics(id).cell);
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started: a start
         // refused leaves it running, nothing of it cut.
@@ -1502,7 +1506,7 @@ impl Session {
         if paused {
             return Ok(pane);
         }
-        let child = self.spawn(id, &launch, new.starting, new.size)?;
+        let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
             None => pane,
@@ -1715,10 +1719,27 @@ impl Session {
         self.views = views;
         self.outbox.extend(ended);
         self.size_panes();
+        self.host_cells();
         self.tell_schemes();
         self.tell_lost();
         self.hold_copies();
         self.edited = true;
+    }
+
+    /// Each pane whose program was told another cell than the terminal
+    /// that draws it says now (`graphics`) is told that one: as the cell
+    /// a terminal says changes, or another terminal draws the pane (one
+    /// said it draws sixel, the one drawing it left or another typed
+    /// there), or none does. Its terminal is sized in pixels for it,
+    /// which signals its program, not left till it writes.
+    fn host_cells(&mut self) {
+        let told = |p: &&Pane| p.screen().cell_size() != self.graphics(p.id()).cell;
+        let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
+            .map(Pane::id)
+            .collect();
+        for id in stale {
+            self.hosted(id);
+        }
     }
 
     /// Output and sizing a pane can drop rows of its history: a copy mode
@@ -2535,8 +2556,8 @@ impl Session {
                 if view.source == command::Source::LastOutput && !pane.marked() {
                     return Err(fail(Code::NoMarks, format!("{target}: {}", pane::UNMARKED)));
                 }
-                let shown = (self.copying(pane.id()), self.graphics(pane.id()).cell);
-                let (text, form) = crate::capture::pane(pane, self.run, history, view, shown);
+                let copying = self.copying(pane.id());
+                let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
                 Ok(Reply {
                     json: form,
                     ..text.into()
@@ -2826,7 +2847,10 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(start, &cwd, &starting, size);
+        let new = NewPane {
+            cell: self.graphics(target).cell,
+            ..NewPane::new(start, &cwd, &starting, size)
+        };
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
@@ -3249,8 +3273,12 @@ impl Session {
             ("cols", Json::Number(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
         ];
-        let shown = (self.copying(p.id()), self.graphics(p.id()).cell);
-        fields.extend(crate::capture::state(p, self.run, now, shown));
+        fields.extend(crate::capture::state(
+            p,
+            self.run,
+            now,
+            self.copying(p.id()),
+        ));
         fields
     }
 
@@ -4106,7 +4134,7 @@ mod tests {
         let id = PaneId::of(2);
         // A test's session starts no program: one is put in the pane.
         let argv = ["/bin/cat".to_owned()];
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         s.output(id, b"\x1b[?1000h\x1b[?1004h");
         let mouse = |s: &Session| crate::render::compose(s, c).map(|g| g.modes.mouse);
@@ -4291,7 +4319,7 @@ mod tests {
         assert!(json.contains(r#""truncated":[]"#), "{json}");
         // One respawned over while it runs is told so at the respawn.
         let argv = ["/bin/cat".to_owned()];
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         cut(&mut s);
         let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
@@ -4340,6 +4368,38 @@ mod tests {
         Ok(())
     }
 
+    /// A program started in a tab a terminal draws starts in that
+    /// terminal's cell, its terminal sized in pixels before it can ask
+    /// (here a respawn's, before the session settles).
+    #[test]
+    fn a_program_starts_in_the_cell_of_the_terminal_drawing_it() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        s.input(c, b"\x1b[6;20;10t");
+        let id = PaneId::of(2);
+        s.launch = Some("/nonexistent/fux.sock".into());
+        (s.respawn(id, false, &[], &[], &Starting::default())).map_err(|e| e.to_string())?;
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        let size = pane.size();
+        let child = pane.set_process(Process::Absent);
+        drop(pane);
+        let Process::Reading(child) = child else {
+            return Err("no program started".into());
+        };
+        let told = fuxix::terminal::window_size(&child.master).and_then(|(_, p)| p);
+        let told = told.map(|p| (p.width.get(), p.height.get()));
+        drop(child.master);
+        if let Err(pid) = child.leader.finish() {
+            process::reaped(pid);
+        }
+        assert_eq!(told, Some((size.cols() * 10, size.rows() * 20)));
+        Ok(())
+    }
+
     /// Input queued for a program that ends without reading it is let go,
     /// and told with its end, whoever watches: at its exit, in `exited` and
     /// its pane's JSON, or at a respawn over it, in `respawned`.
@@ -4373,7 +4433,7 @@ mod tests {
         assert!(json.contains(r#""input_unread":3"#), "{json}");
         // Respawned over while it runs, with input it has not read.
         let argv = ["/bin/cat".to_owned()];
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         run(&mut s, "%2 respawn")?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         queue(&mut s, b"de")?;
@@ -4418,7 +4478,7 @@ mod tests {
         // A test's session starts no program: each is put in the pane.
         let argv = ["/bin/cat".to_owned()];
         for _ in 0..2 {
-            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
             let mut pane = s.parts.pane_mut(PaneId::of(2)).ok_or("the pane")?;
             pane.set_process(Process::Reading(child));
             drop(pane);
@@ -4461,7 +4521,7 @@ mod tests {
         let id = PaneId::of(2);
         // /bin/sh, which macOS has where it has no /bin/true.
         let argv = ["/bin/sh", "-c", "exit 0"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         let exited = |s: &Session| {
             (s.parts.panes().get(&id))
@@ -4512,7 +4572,7 @@ mod tests {
         run(&mut s, "opts str /bin/true program run")?;
         let id = PaneId::of(2);
         let argv = ["/bin/sh", "-c", "while :; do printf '\\033[2J'; done"].map(str::to_owned);
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
         let rows = s.parts.panes().get(&id).map(|p| p.screen().size().rows());
         assert!(rows.is_some_and(|r| r >= 100), "{rows:?} rows");

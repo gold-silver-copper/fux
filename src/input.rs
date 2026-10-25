@@ -16,6 +16,8 @@ impl Session {
             return;
         }
         let changes = self.changes();
+        let typist = |s: &Self| s.shown_tab(client).and_then(|t| t.typist);
+        let typed = typist(self);
         // Whether any of it may have changed what a client shows.
         let mut shown = false;
         // A client that only watches sends no other acts than its
@@ -31,12 +33,16 @@ impl Session {
         // pane's program reads show when its output does: nothing to paint
         // or settle until then.
         shown |= self.tell_lost();
-        if !shown && self.changes() == changes {
+        // Another client typing answers for the tab's panes, which the
+        // settle tells them (`Session::host_cells`), and shows nothing.
+        let answers = typist(self) != typed;
+        if !shown && !answers && self.changes() == changes {
             return;
         }
         // A command the input ran repainted every client already; else only
         // this client's screen changed: its mode, notice or overlay.
-        if self.changes() == changes
+        if shown
+            && self.changes() == changes
             && let Some(view) = self.views.get_mut(&client)
         {
             view.dirty = true;

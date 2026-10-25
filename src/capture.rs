@@ -5,7 +5,7 @@ use crate::command::{CaptureView, Run, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
-use fux_vt::{Attributes, CellSize, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
+use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
 use std::time::Instant;
 
 /// A captured line's cells, each its glyph (the second cell of a wide one
@@ -17,14 +17,13 @@ type Read = (String, String);
 
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
-/// that says a client is in copy mode on it, and `cell`, the cell its
-/// program is told now (`state`).
+/// that says a client is in copy mode on it (`state`).
 pub fn pane<S>(
     pane: &Pane<S>,
     run: Run,
     history: Option<usize>,
     view: CaptureView,
-    shown: (bool, Option<CellSize>),
+    copy_mode: bool,
 ) -> Read {
     let screen = pane.screen();
     let mut lines: Vec<Cells<'_>> = Vec::new();
@@ -105,7 +104,7 @@ pub fn pane<S>(
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let mut state = state(pane, run, Instant::now(), shown);
+    let mut state = state(pane, run, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::int)));
@@ -218,15 +217,16 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input; whether a client is in copy mode on it,
-/// and the cell its program is told now, by the terminal that draws its
-/// tab (`Session::graphics`), which its next read of output is told too.
+/// and the cell its program is told, by the terminal that draws its tab
+/// (`Session::host_cells`).
 pub fn state<S>(
     pane: &Pane<S>,
     run: Run,
     now: Instant,
-    (copy_mode, cell): (bool, Option<CellSize>),
+    copy_mode: bool,
 ) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
+    let cell = screen.cell_size();
     // What runs in the foreground: a job the shell started, else the
     // program itself; nothing, where its terminal can't tell.
     let job = pane.process().job();
@@ -510,7 +510,7 @@ mod tests {
                 crate::command::Run::now().ok_or("a clock")?,
                 None,
                 join,
-                (false, None),
+                false,
             )
             .0)
         };
@@ -540,7 +540,7 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            super::pane(&pane, run, None, view, (false, None)).0
+            super::pane(&pane, run, None, view, false).0
         };
         assert_eq!(capture((2, 2), false), "abcdefghijklm\n");
         assert_eq!(capture((0, 1), false), "top\nabcdefghijklm\n");
@@ -567,7 +567,7 @@ mod tests {
             crate::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            (false, None),
+            false,
         )
         .0;
         assert_eq!(text.lines().next(), Some("abc世"));
@@ -591,7 +591,7 @@ mod tests {
             crate::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            (false, None),
+            false,
         )
         .0;
         assert_eq!(text, "hello\n");
@@ -603,7 +603,7 @@ mod tests {
             crate::command::Run::now().ok_or("a clock")?,
             None,
             view,
-            (false, None),
+            false,
         )
         .0;
         assert_eq!(text, "step 1\n");
