@@ -410,28 +410,13 @@ impl Split {
             }
             return Ok(());
         }
-        // Along it, the pane's weight is divided as `shares` says, exact:
-        // every weight is multiplied by what makes the pane's a multiple of
-        // the shares' sum (of u32s, whose products fit a u128).
+        // Along it, the two take the pane's share as `shares` says.
         let (a, b) = (u128::from(shares.0.get()), u128::from(shares.1.get()));
-        let sum = a.saturating_add(b);
-        let had = self.0.get(index).map_or(1, |(w, _)| u128::from(w.get()));
-        let common = gcd(had, sum);
-        let by = sum.checked_div(common).unwrap_or(1);
-        let each = had.checked_div(common).unwrap_or(1);
-        let (a, b) = (each.saturating_mul(a), each.saturating_mul(b));
         let parts = match side {
-            Side::After => [Some(a), Some(b)],
-            Side::Before => [Some(b), Some(a)],
+            Side::After => [a, b],
+            Side::Before => [b, a],
         };
-        let weights: Vec<u128> = (self.weights().enumerate())
-            .flat_map(|(i, w)| match i == index {
-                true => parts,
-                false => [Some(w.saturating_mul(by)), None],
-            })
-            .flatten()
-            .collect();
-        let weights = least(&weights).ok_or(Unmade::Weights)?;
+        let weights = least(&self.weights_with(index, &parts)).ok_or(Unmade::Weights)?;
         let (target, new) = (Tree::Pane(target), Tree::Pane(new));
         let one = NonZeroU32::MIN;
         match side {
@@ -441,23 +426,29 @@ impl Split {
         self.set(weights);
         Ok(())
     }
-    /// Puts the children of `inner`, the child at `at` with `share`, in
-    /// its place, sharing it as they shared it: each multiplied by the
-    /// share, the others by their total, over what divides both. Weights
-    /// so more than `MOST` together are the nearest a split holds
-    /// (`nearest`): a close merges splits so, and is not refused.
-    fn merge(&mut self, at: usize, share: NonZeroU32, inner: Split) {
-        let total = inner.weights().fold(0, u128::saturating_add);
-        let share = u128::from(share.get());
+    /// Its weights with children weighed `parts` in place of the child at
+    /// `at`, taking its share between them as `parts` says, exactly: each
+    /// part multiplied by the share, the others by the parts' total, over
+    /// what divides both (u32s, whose products fit a u128).
+    fn weights_with(&self, at: usize, parts: &[u128]) -> Vec<u128> {
+        let share = self.0.get(at).map_or(1, |(w, _)| u128::from(w.get()));
+        let total = parts.iter().fold(0u128, |sum, w| sum.saturating_add(*w));
         let common = gcd(share, total);
         let outer = total.checked_div(common).unwrap_or(1);
         let within = share.checked_div(common).unwrap_or(1);
-        let weights: Vec<u128> = (self.weights().enumerate())
+        (self.weights().enumerate())
             .flat_map(|(i, w)| match i == at {
-                true => inner.weights().map(|v| v.saturating_mul(within)).collect(),
+                true => parts.iter().map(|v| v.saturating_mul(within)).collect(),
                 false => vec![w.saturating_mul(outer)],
             })
-            .collect();
+            .collect()
+    }
+    /// Puts the children of `inner` in place of the child at `at`, sharing
+    /// its share as they shared it (`weights_with`). Weights so more than
+    /// `MOST` together are the nearest a split holds (`nearest`): a close
+    /// merges splits so, and is not refused.
+    fn merge(&mut self, at: usize, inner: Split) {
+        let weights = self.weights_with(at, &inner.weights().collect::<Vec<_>>());
         let weights = least(&weights).unwrap_or_else(|| nearest(&weights));
         self.replace(at, inner.0);
         self.set(weights);
@@ -485,7 +476,7 @@ impl Split {
             let share = *share;
             match split.only() {
                 Some(Tree::Pane(p)) => self.replace(index, [(share, Tree::Pane(p))]),
-                Some(Tree::Split((), inner)) => self.merge(index, share, inner),
+                Some(Tree::Split((), inner)) => self.merge(index, inner),
                 None => {}
             }
             return true;
@@ -583,30 +574,28 @@ pub fn remove(root: &mut Option<Tree>, pane: PaneId) -> bool {
 /// as all the rest: one more child of a split along `Horizontal`, or beside
 /// the tree in a new one. Refused, the tree is as it was.
 pub fn append(root: &mut Option<Tree>, pane: PaneId) -> Result<(), Unmade> {
-    let (one, new) = (NonZeroU32::MIN, Tree::Pane(pane));
+    let one = NonZeroU32::MIN;
+    if let Some(Tree::Split(Axis::Horizontal, split)) = root {
+        let mut weights: Vec<u128> = split.weights().collect();
+        weights.push(weights.iter().fold(0, |sum, w| sum.saturating_add(*w)));
+        let weights = least(&weights).ok_or(Unmade::Weights)?;
+        split.0.push((one, Tree::Pane(pane)));
+        split.set(weights);
+        return Ok(());
+    }
     let whole = match root.take() {
-        None => Tree::Pane(pane),
-        Some(Tree::Split(Axis::Horizontal, mut split)) => {
-            let mut weights: Vec<u128> = split.weights().collect();
-            weights.push(weights.iter().fold(0, |sum, w| sum.saturating_add(*w)));
-            let Some(weights) = least(&weights) else {
-                *root = Some(Tree::Split(Axis::Horizontal, split));
-                return Err(Unmade::Weights);
-            };
-            split.0.push((one, new));
-            split.set(weights);
-            Tree::Split(Axis::Horizontal, split)
-        }
-        Some(Tree::Pane(p)) => Tree::Split(
-            Axis::Horizontal,
-            Split(vec![(one, Tree::Pane(p)), (one, new)]),
-        ),
-        Some(Tree::Split(Axis::Vertical, split)) => {
-            let children = vec![(one, Tree::Split((), split)), (one, new)];
-            Tree::Split(Axis::Horizontal, Split(children))
-        }
+        None => None,
+        Some(Tree::Pane(p)) => Some(Tree::Pane(p)),
+        // Along `Vertical`: one along `Horizontal` took it above.
+        Some(Tree::Split(_, split)) => Some(Tree::Split((), split)),
     };
-    *root = Some(whole);
+    *root = Some(match whole {
+        None => Tree::Pane(pane),
+        Some(whole) => Tree::Split(
+            Axis::Horizontal,
+            Split(vec![(one, whole), (one, Tree::Pane(pane))]),
+        ),
+    });
     Ok(())
 }
 
