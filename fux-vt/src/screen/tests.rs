@@ -503,29 +503,77 @@ fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), E
     Ok(())
 }
 
-/// A picture placed takes the cells it covers from those under it, and
-/// only those: one beside it on any side, its cells touching, stays; one
-/// a cell of it covers goes (THREATS.md section 5, `overlaps`).
+/// A picture placed covers the pixels of those under it that its opaque
+/// ones lie on, and no more (DEC STD 070-9, 7.2; xterm 411's
+/// `graphics.c`): one beside it, touching, keeps them all; one it overlaps
+/// keeps those it doesn't cover, whatever later hides the newer one; one
+/// under its clear pixels (P2 1) keeps those; one in another cell size
+/// keeps them all; and one it covers whole goes.
 #[test]
-fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
-    // 20 by 40 pixels: 2 cells by 2 at 10 by 20, placed at row 5 col 5.
-    let two = picture(20, 40);
-    let place = |at: &[u8]| -> Result<Vec<u64>, Error> {
+fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
+    // 20 by 40 pixels, its background all of them (P2 0): 2 cells by 2 at
+    // 10 by 20, placed at row 5 col 5.
+    let opaque = b"\x1bP0;0q\"1;1;20;40\x1b\\";
+    let place = |at: &[u8], over: &[u8]| -> Result<crate::Parser, Error> {
         let mut p = pictured(Size::of(24, 80), 8 << 20)?;
         p.process(b"\x1b[5;5H")?;
-        p.process(&two)?;
+        p.process(opaque)?;
         p.process(at)?;
-        p.process(&two)?;
-        Ok(shown(&p))
+        p.process(over)?;
+        Ok(p)
+    };
+    // The first picture's pixels still opaque, if it is shown.
+    let left = |p: &crate::Parser| {
+        let first = p.screen().pictures().find(|s| s.id == 1);
+        first.map(|s| {
+            let pixels = (0..40).flat_map(|y| (0..20).map(move |x| (x, y)));
+            pixels
+                .filter(|(x, y)| s.picture.pixel(*x, *y).is_some_and(|[.., a]| a != 0))
+                .count()
+        })
     };
     // Beside it: left, right, above and below, touching.
     for at in [&b"\x1b[5;3H"[..], b"\x1b[5;7H", b"\x1b[3;5H", b"\x1b[7;5H"] {
-        assert_eq!(place(at)?, [1, 2], "{:?}", String::from_utf8_lossy(at));
+        let p = place(at, opaque)?;
+        assert_eq!(left(&p), Some(800), "{:?}", String::from_utf8_lossy(at));
     }
-    // Over one of its cells from each side.
-    for at in [&b"\x1b[5;4H"[..], b"\x1b[5;6H", b"\x1b[4;5H", b"\x1b[6;6H"] {
-        assert_eq!(place(at)?, [2], "{:?}", String::from_utf8_lossy(at));
+    // Over a column of its cells, a row, or one cell.
+    for (at, kept) in [
+        (&b"\x1b[5;6H"[..], 400),
+        (b"\x1b[4;5H", 400),
+        (b"\x1b[6;6H", 600),
+    ] {
+        let p = place(at, opaque)?;
+        assert_eq!(shown(&p), [1, 2], "{:?}", String::from_utf8_lossy(at));
+        assert_eq!(left(&p), Some(kept), "{:?}", String::from_utf8_lossy(at));
     }
+    // Text over the newer one hides it, and gives back none of the older.
+    let mut p = place(b"\x1b[5;6H", opaque)?;
+    p.process(b"\x1b[5;7Hx")?;
+    assert_eq!(
+        (shown(&p), left(&p)),
+        (vec![1], Some(400)),
+        "text over the newer"
+    );
+    // Clear but for its bottom right pixel (P2 1): that pixel only.
+    let p = place(b"\x1b[5;5H", &picture(20, 40))?;
+    assert_eq!(left(&p), Some(799), "clear pixels cover nothing");
+    let first = p
+        .screen()
+        .pictures()
+        .next()
+        .map(|s| s.picture.pixel(19, 39));
+    assert_eq!(first, Some(Some([0; 4])));
+    // Laid out in another cell size: none.
+    let mut p = place(b"\x1b[5;5H", b"")?;
+    p.set_host_graphics(
+        crate::CellSize::new(10, 10).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
+    );
+    p.process(opaque)?;
+    assert_eq!(left(&p), Some(800), "another cell size");
+    // Over all of it.
+    let p = place(b"\x1b[5;5H", opaque)?;
+    assert_eq!(shown(&p), [2], "covered whole");
     Ok(())
 }
 

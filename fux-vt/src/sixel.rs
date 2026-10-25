@@ -4,7 +4,9 @@
 //! sixel grid, and shown as square ones at the grid's aspect. Pixels no
 //! sixel paints stay clear, or take the background, as P2 says.
 
+use std::collections::VecDeque;
 use std::io::Write;
+use std::ops::Range;
 use std::sync::Arc;
 
 /// The most pixels across or down a picture may show, and keep: a 4K
@@ -21,8 +23,9 @@ const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 10
 /// pixels of its grid, RGBA, row by row from the top, four bytes each
 /// (red, green, blue and alpha, 0 clear), each shown over as many square
 /// pixels as the grid's aspect makes it. Only what was drawn is kept: the
-/// rest of its extent reads as its background, or clear.
-#[derive(Debug)]
+/// rest of its extent reads as its background, or clear; a pixel a newer
+/// picture covers reads clear.
+#[derive(Clone, Debug)]
 pub struct Picture {
     width: u32,
     height: u32,
@@ -37,7 +40,10 @@ pub struct Picture {
     /// its vertical motion left it (DEC STD 070-9, 11.3), past the picture
     /// if a graphics new line came last.
     ended: u32,
-    rgba: Vec<u8>,
+    /// Shared with the picture it was before newer ones covered it.
+    rgba: Arc<Vec<u8>>,
+    /// The pixels newer pictures cover, once one does.
+    covered: Option<Covered>,
 }
 
 impl Picture {
@@ -53,7 +59,8 @@ impl Picture {
             aspect: (1, 1),
             background: None,
             ended: height.saturating_sub(1),
-            rgba,
+            rgba: Arc::new(rgba),
+            covered: None,
         })
     }
     /// The square pixel row its last sixel band ends on: the vertical
@@ -70,14 +77,18 @@ impl Picture {
     pub fn height(&self) -> u32 {
         self.height
     }
-    /// The bytes its pixels take.
+    /// The bytes its pixels take, and those of what covers them.
     pub(crate) fn bytes(&self) -> usize {
-        self.rgba.capacity()
+        let covered = self.covered.as_ref().map_or(0, Covered::bytes);
+        self.rgba.capacity().saturating_add(covered)
     }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
         if x >= self.width || y >= self.height {
             return None;
+        }
+        if self.covered.as_ref().is_some_and(|c| c.has(x, y)) {
+            return Some([0; 4]);
         }
         let (x, y) = grid_of(self.aspect, x, y);
         let drawn = (x < self.across && y < self.down)
@@ -87,6 +98,260 @@ impl Picture {
             .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
             .filter(|pixel| pixel[3] != 0);
         Some(drawn.or(self.background).unwrap_or([0; 4]))
+    }
+}
+
+impl Picture {
+    /// The pixels of row `y` left of `right` that it draws opaque, as
+    /// bits, the first pixel the lowest bit of the first word: all of its
+    /// extent with a background (P2 0 or 2), else those drawn, read a grid
+    /// position at a time. What newer pictures cover of it is not read:
+    /// `Screen::cover` reads the newest, which nothing covers.
+    pub(crate) fn opaque_row(&self, y: u32, right: u32, bits: &mut Vec<u64>) {
+        let right = right.min(self.width);
+        bits.clear();
+        bits.resize(usize::try_from(right.div_ceil(64)).unwrap_or(0), 0);
+        if y >= self.height {
+            return;
+        }
+        if self.background.is_some() {
+            return set_bits(bits, 0, right);
+        }
+        let (_, row) = grid_of(self.aspect, 0, y);
+        work!(pixels, self.across);
+        for x in (0..self.across).take_while(|x| shown_at(self.aspect, *x, 0).0 < right) {
+            let alpha = (row < self.down)
+                .then(|| offset(x, row, self.across))
+                .flatten()
+                .and_then(|at| self.rgba.get(at.checked_add(3)?));
+            if alpha.is_some_and(|a| *a != 0) {
+                let (start, _) = shown_at(self.aspect, x, 0);
+                let (end, _) = shown_at(self.aspect, x.saturating_add(1), 0);
+                set_bits(bits, start, end.min(right));
+            }
+        }
+    }
+
+    /// The grid row its square pixel row `y` shows: rows showing the same
+    /// one have the same pixels.
+    pub(crate) fn grid_row(&self, y: u32) -> u32 {
+        grid_of(self.aspect, 0, y).1
+    }
+
+    /// The bytes it takes for newer pictures to cover its rows `rows`, of
+    /// it the screen showing `shown` (`coverable`): its band of rows grown
+    /// to hold them, and the words of each.
+    pub(crate) fn cover_bytes(&self, shown: (u32, u32, u32), rows: &Range<u32>) -> usize {
+        let fresh;
+        let covered = match &self.covered {
+            Some(covered) => covered,
+            None => {
+                fresh = self.uncovered(shown);
+                &fresh
+            }
+        };
+        let (band, held) = match covered.grown(rows) {
+            Some(band) => (band.end.saturating_sub(band.start), covered.rows.len()),
+            None => (0, 0),
+        };
+        let band = usize::try_from(band)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(held);
+        let rows = usize::try_from(rows.end.saturating_sub(rows.start)).unwrap_or(usize::MAX);
+        (band.saturating_mul(Covered::ROW))
+            .saturating_add(rows.saturating_mul(covered.stride()).saturating_mul(8))
+    }
+
+    /// Nothing of it covered, of which the screen shows the pixels left
+    /// of `right` on rows `top` to `bottom`.
+    fn uncovered(&self, (right, top, bottom): (u32, u32, u32)) -> Covered {
+        Covered::new(right.min(self.width), top..bottom.min(self.height).max(top))
+    }
+
+    /// Makes it ready for newer pictures to cover its rows `rows`: of its
+    /// pixels, those left of `right` on rows `top` to `bottom` are what
+    /// the screen shows, which they may cover, if none covers it yet; the
+    /// others never show again. False if there is no memory for it.
+    pub(crate) fn coverable(&mut self, shown: (u32, u32, u32), rows: &Range<u32>) -> bool {
+        let uncovered = self.uncovered(shown);
+        self.covered.get_or_insert(uncovered).grow(rows)
+    }
+
+    /// Covers its pixels on row `y` from column `x` (either before its
+    /// own: a newer picture's that overlaps it) where `bits` are set, as
+    /// `opaque_row` gives them, the words past its sides left unread;
+    /// nothing unless `coverable`.
+    pub(crate) fn cover_row(&mut self, y: i64, x: i64, bits: &[u64]) {
+        let (Some(covered), Ok(y)) = (self.covered.as_mut(), u32::try_from(y)) else {
+            return;
+        };
+        // The first word that reaches its first pixel, and the first past
+        // its shown pixels.
+        let first = u64::try_from(x.saturating_neg()).map_or(0, |back| back / 64);
+        let end = (i64::from(covered.right).saturating_sub(x)).max(0);
+        let end = u64::try_from(end).map_or(0, |end| end.div_ceil(64));
+        let (first, end) = (
+            usize::try_from(first).unwrap_or(usize::MAX),
+            usize::try_from(end).unwrap_or(0),
+        );
+        for (at, word) in (0_i64..).zip(bits).take(end).skip(first) {
+            covered.put(y, x.saturating_add(at.saturating_mul(64)), *word);
+        }
+    }
+
+    /// Whether newer pictures cover all it showed when one first did.
+    pub(crate) fn covered_whole(&self) -> bool {
+        self.covered.as_ref().is_some_and(|c| c.left == 0)
+    }
+}
+
+/// Sets bits `start` to `end` of `bits`, the first the lowest of the
+/// first word, a word at a time; those past its words dropped.
+fn set_bits(bits: &mut [u64], start: u32, end: u32) {
+    let mut at = start;
+    while at < end {
+        let (word, bit) = (at / 64, at % 64);
+        let n = end.saturating_sub(at).min(64_u32.saturating_sub(bit));
+        let run = u64::MAX.checked_shr(64_u32.saturating_sub(n)).unwrap_or(0) << bit;
+        if let Some(slot) = usize::try_from(word).ok().and_then(|w| bits.get_mut(w)) {
+            *slot |= run;
+        }
+        at = at.saturating_add(n.max(1));
+    }
+}
+
+/// The pixels of a picture that newer ones cover, a bit each, of those
+/// the screen showed when the first did: left of `right` on the rows
+/// `shown`. It keeps the band of rows from `first` that newer pictures
+/// lay on, each row's words, once one of its pixels is covered, holding
+/// its pixels from the left, lowest bit first; and how many of those
+/// shown are left uncovered.
+#[derive(Clone, Debug)]
+struct Covered {
+    rows: VecDeque<Option<Box<[u64]>>>,
+    first: u32,
+    right: u32,
+    shown: Range<u32>,
+    left: u64,
+}
+
+impl Covered {
+    /// The bytes it takes a row of its band, before any of its pixels is
+    /// covered.
+    const ROW: usize = size_of::<Option<Box<[u64]>>>();
+
+    /// None of `right` pixels by the rows `shown` covered.
+    fn new(right: u32, shown: Range<u32>) -> Self {
+        let rows = u64::from(shown.end.saturating_sub(shown.start));
+        Self {
+            rows: VecDeque::new(),
+            first: shown.start,
+            right,
+            left: u64::from(right).saturating_mul(rows),
+            shown,
+        }
+    }
+
+    /// The rows its band takes on to hold `rows` too, those shown.
+    fn grown(&self, rows: &Range<u32>) -> Option<Range<u32>> {
+        let rows = rows.start.max(self.shown.start)..rows.end.min(self.shown.end);
+        if rows.is_empty() {
+            return None;
+        }
+        let end = self
+            .first
+            .saturating_add(u32::try_from(self.rows.len()).ok()?);
+        Some(match self.rows.is_empty() {
+            true => rows,
+            false => rows.start.min(self.first)..rows.end.max(end),
+        })
+    }
+
+    /// Its band grown to hold `rows`, those shown; false if there is no
+    /// memory for it.
+    fn grow(&mut self, rows: &Range<u32>) -> bool {
+        let Some(band) = self.grown(rows) else {
+            return true;
+        };
+        let len = usize::try_from(band.end.saturating_sub(band.start)).unwrap_or(usize::MAX);
+        if self
+            .rows
+            .try_reserve_exact(len.saturating_sub(self.rows.len()))
+            .is_err()
+        {
+            return false;
+        }
+        for _ in band.start..self.first.min(band.end) {
+            self.rows.push_front(None);
+        }
+        self.first = band.start;
+        self.rows.resize(len, None);
+        true
+    }
+
+    /// The words of a row once one of its pixels is covered.
+    fn stride(&self) -> usize {
+        usize::try_from(self.right.div_ceil(64)).unwrap_or(0)
+    }
+
+    /// Row `y`'s place in its band.
+    fn row(&self, y: u32) -> Option<usize> {
+        usize::try_from(y.checked_sub(self.first)?).ok()
+    }
+
+    /// Whether pixel `x`, `y` is covered.
+    fn has(&self, x: u32, y: u32) -> bool {
+        let row = self.row(y).and_then(|y| self.rows.get(y)?.as_ref());
+        let word = row
+            .zip(usize::try_from(x / 64).ok())
+            .and_then(|(row, at)| row.get(at));
+        word.is_some_and(|word| word >> (x % 64) & 1 == 1)
+    }
+
+    /// Covers row `y`'s pixels from `x` on where `bits` are set, those
+    /// outside what was shown, or its band, dropped.
+    fn put(&mut self, y: u32, x: i64, bits: u64) {
+        let (start, bits) = match u32::try_from(x) {
+            Ok(start) => (start, bits),
+            Err(_) if x <= -64 => return,
+            Err(_) => (0, bits >> x.unsigned_abs()),
+        };
+        let (right, stride) = (self.right, self.stride());
+        let row = (self.row(y))
+            .filter(|_| self.shown.contains(&y) && start < right && bits != 0)
+            .and_then(|y| self.rows.get_mut(y));
+        let Some(row) = row else {
+            return;
+        };
+        let row = row.get_or_insert_with(|| vec![0; stride].into_boxed_slice());
+        let shift = start % 64;
+        let carried = bits
+            .checked_shr(64_u32.saturating_sub(shift))
+            .filter(|_| shift > 0);
+        let first = start.saturating_sub(shift);
+        for (x, word) in [
+            (first, bits << shift),
+            (first.saturating_add(64), carried.unwrap_or(0)),
+        ] {
+            // The bits of this word's pixels left of `right`.
+            let shown = match right.saturating_sub(x) {
+                n if n >= 64 => !0,
+                n => !(!0_u64 << n),
+            };
+            if let Some(slot) = usize::try_from(x / 64).ok().and_then(|at| row.get_mut(at)) {
+                let new = word & shown & !*slot;
+                *slot |= new;
+                self.left = self.left.saturating_sub(u64::from(new.count_ones()));
+            }
+        }
+    }
+
+    /// The bytes it takes.
+    fn bytes(&self) -> usize {
+        let words = (self.rows.iter().flatten())
+            .map(|row| row.len())
+            .fold(0, usize::saturating_add);
+        (self.rows.capacity().saturating_mul(Self::ROW)).saturating_add(words.saturating_mul(8))
     }
 }
 
@@ -561,7 +826,8 @@ impl Decoder {
             ended: shown_at(self.aspect, 0, self.y.saturating_add(6))
                 .1
                 .saturating_sub(1),
-            rgba,
+            rgba: Arc::new(rgba),
+            covered: None,
         });
         (Some(picture), whole)
     }
@@ -854,7 +1120,7 @@ mod tests {
     /// (9.1): a repeat count goes on past one.
     #[test]
     fn gr_codes_are_read_as_gl_and_c1_codes_ignored() {
-        let pixels = |data: &[u8]| decode(data).map(|p| (p.width(), p.height(), p.rgba.clone()));
+        let pixels = |data: &[u8]| decode(data).map(|p| (p.width(), p.height(), p.rgba.to_vec()));
         let three = pixels(b"#1;2;100;0;0!3~");
         assert!(three.is_some());
         assert_eq!(pixels(b"#1;2;100;0;0!3\xfe"), three, "GR");

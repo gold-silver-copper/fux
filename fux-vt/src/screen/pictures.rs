@@ -19,6 +19,12 @@ pub const PLACEHOLDER: &str = "\u{80}";
 /// lets one go, those no longer shown first (`Screen::victim`).
 const MAX_PICTURES: usize = 64;
 
+/// The most words of 64 pixels one placement covers of the pictures under
+/// it, the room to note them included (`Screen::cover`, `THREATS.md` B46):
+/// 256 million pixels, a 1920 by 1080 screen's over a hundred times; past
+/// it, one under it goes whole.
+const COVER_WORDS: usize = 4_000_000;
+
 /// The most bytes of pixels a terminal's pictures hold together by
 /// default ([`crate::Parser::set_picture_bytes`]), however large their data
 /// says they are: those kept on either screen, the one being drawn, and its
@@ -168,11 +174,11 @@ impl Screen {
     /// a cell size, which nothing can stand in for): its cells take the placeholder, a
     /// row at a time down from the cursor's (scrolling at the bottom, as a
     /// terminal scrolls a sixel picture), clipped at the right edge; the
-    /// cursor ends on the row its last band ends in, in its first column. A picture of this screen
-    /// it covers goes, and so does one this screen no longer shows (text
-    /// or an erase over it, its rows gone from history), whose pixels
-    /// nothing can show again. Says whether it was placed: not without a
-    /// cell size, nor when it lost bands as it was placed.
+    /// cursor ends on the row its last band ends in, in its first column. It
+    /// covers what it lies on of the pictures of this screen, and those
+    /// this screen no longer shows go (`cover`). Says whether it was
+    /// placed: not without a cell size, nor when it lost bands as it was
+    /// placed.
     pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> bool {
         let Some(cell) = self.graphics.cell() else {
             return false;
@@ -346,19 +352,7 @@ impl Screen {
         {
             p.cropped = lost;
         }
-        // Pictures it now covers, wholly or not, are gone: their cells hold
-        // its placeholder, not theirs.
-        let placed = self.pictures.len().saturating_sub(1);
-        let mine = (self.pictures.back()).and_then(|p| Some(self.shown(p)?.area()));
-        let covered = |s: Shown<'_>| mine.is_some_and(|mine| overlaps(s.area(), mine));
-        let gone = |p: &Placement, screen: &Screen| {
-            p.alternate == alternate && screen.shown(p).is_none_or(covered)
-        };
-        let keep: Vec<bool> = (self.pictures.iter().enumerate())
-            .map(|(at, p)| at >= placed || !gone(p, self))
-            .collect();
-        let mut keep = keep.into_iter();
-        self.pictures.retain(|_| keep.next().unwrap_or(true));
+        self.cover();
         // Those of this screen kept are whole now, and this one is: what
         // changes them from here on takes a newer version.
         let whole_at = self.version;
@@ -372,6 +366,119 @@ impl Screen {
             self.pictures.remove(victim);
         }
         true
+    }
+
+    /// The newest picture lets go of those of its screen no longer shown
+    /// (text or an erase over them, their rows gone from history), whose
+    /// pixels nothing can show again, and covers those it lies on, laid
+    /// out in its cell size: of each, the pixels under its opaque ones
+    /// read clear from now on, whatever later shows or hides it, as on a
+    /// terminal's one plane of pixels, where a sixel paints over those
+    /// below and P2 1 leaves the pixels it doesn't set "unchanged" (DEC
+    /// STD 070-9, 7.2), and as xterm 411 draws pictures, in order, a clear
+    /// pixel showing those below (`graphics.c`). One covered whole goes;
+    /// so does one with no room to note what is covered, a bit for each
+    /// pixel of a row of it the screen shows, inside the budget (B01), or
+    /// past the words a placement may cover (`COVER_WORDS`, B46), the
+    /// newest covered first. Pictures laid out in other cell sizes are never
+    /// shown together, and cover none of each other.
+    fn cover(&mut self) {
+        // Itself as shown: none if it is not, which covers nothing.
+        let over = (self.pictures.back()).and_then(|p| self.shown(p));
+        let over = over.map(|s| {
+            (
+                Arc::clone(s.picture),
+                s.cell,
+                s.area(),
+                s.origin(),
+                s.pixels(),
+            )
+        });
+        let alternate = self.alternate_active;
+        let placed = self.pictures.len().saturating_sub(1);
+        // Those of its screen no longer shown go: nothing can show their
+        // pixels again. Those under it, newest first, each with its top
+        // left's pixel and what of it the screen shows.
+        let (mut gone, mut under) = (Vec::new(), Vec::new());
+        for (at, p) in (self.pictures.iter().enumerate()).take(placed).rev() {
+            match self.shown(p).filter(|_| p.alternate == alternate) {
+                Some(s)
+                    if over
+                        .as_ref()
+                        .is_some_and(|o| p.cell == o.1 && overlaps(s.area(), o.2)) =>
+                {
+                    under.push((at, s.origin(), s.pixels()));
+                }
+                None if p.alternate == alternate => gone.push(at),
+                Some(_) | None => {}
+            }
+        }
+        let Some((picture, _, _, origin, (right, top, bottom))) = over else {
+            return self.let_go(&gone);
+        };
+        let bottom = bottom.min(picture.height());
+        let (mut coverable, mut words) = (Vec::new(), 0_usize);
+        for (at, at_origin, shown) in under {
+            let Some(p) = self.pictures.get(at) else {
+                continue;
+            };
+            // The rows and columns of it it lies on; the room to note them,
+            // and the words read and written, two a row for each it lies
+            // on, as the words a row cuts across may be one more.
+            let (x, y) = (
+                at_origin.0.saturating_sub(origin.0),
+                at_origin.1.saturating_sub(origin.1),
+            );
+            let rows = (i64::from(top).saturating_sub(y))..(i64::from(bottom).saturating_sub(y));
+            let rows = clip(&rows);
+            let rows = rows.start.max(shown.1)..rows.end.min(shown.2).max(shown.1);
+            let cols = span(x, 0, shown.0, 0, right);
+            let bytes = p.picture.cover_bytes(shown, &rows);
+            let lines = rows.len();
+            let cost = (bytes / 8)
+                .saturating_add(lines.saturating_mul(cols.div_ceil(64).saturating_add(1)));
+            let ready = words.saturating_add(cost) <= COVER_WORDS
+                && !self.over_budget(bytes)
+                && (self.pictures.get_mut(at))
+                    .is_some_and(|p| Arc::make_mut(&mut p.picture).coverable(shown, &rows));
+            if ready {
+                words = words.saturating_add(cost);
+                coverable.push((at, at_origin));
+            } else {
+                gone.push(at);
+            }
+        }
+        spend!(pixels, words);
+        // A row of its pixels read once for each row of the grid it was
+        // drawn in, and laid on each picture under it.
+        let mut bits = Vec::new();
+        let mut read = None;
+        for y in top..bottom {
+            let row = Some(picture.grid_row(y));
+            if read != row {
+                picture.opaque_row(y, right, &mut bits);
+                read = row;
+            }
+            for &(at, (x, y_at)) in &coverable {
+                let dy = origin.1.saturating_add(i64::from(y)).saturating_sub(y_at);
+                if let Some(p) = self.pictures.get_mut(at) {
+                    Arc::make_mut(&mut p.picture).cover_row(dy, origin.0.saturating_sub(x), &bits);
+                }
+            }
+        }
+        gone.extend(
+            coverable
+                .iter()
+                .map(|(at, _)| *at)
+                .filter(|at| (self.pictures.get(*at)).is_some_and(|p| p.picture.covered_whole())),
+        );
+        self.let_go(&gone);
+    }
+
+    /// Lets go of the pictures at `gone`.
+    fn let_go(&mut self, gone: &[usize]) {
+        let mut at = (0..self.pictures.len()).map(|at| gone.contains(&at));
+        self.pictures.retain(|_| !at.next().unwrap_or(false));
     }
 
     /// The bytes of pixels the screen's pictures hold, on either grid.
@@ -709,6 +816,47 @@ impl Shown<'_> {
         let rows = self.rows.saturating_sub(self.cropped);
         (row, self.col, self.cols, rows)
     }
+
+    /// Where its top left pixel is on the screen, in pixels of its cells
+    /// from the screen's top left: across, then down.
+    fn origin(&self) -> (i64, i64) {
+        let (width, height) = self.cell;
+        (
+            i64::from(self.col).saturating_mul(i64::from(width)),
+            self.row.saturating_mul(i64::from(height)),
+        )
+    }
+
+    /// The pixels of it the screen shows: those left of the first, on the
+    /// rows from the second to the third, its cropped rows being others'.
+    fn pixels(&self) -> (u32, u32, u32) {
+        let (width, height) = (u32::from(self.cell.0), u32::from(self.cell.1));
+        (
+            u32::from(self.cols).saturating_mul(width),
+            u32::from(self.cropped).saturating_mul(height),
+            u32::from(self.rows).saturating_mul(height),
+        )
+    }
+}
+
+/// How many of the pixels `start` to `end` of a picture whose first is at
+/// `at` lie on `from` to `to` of another's.
+fn span(at: i64, start: u32, end: u32, from: u32, to: u32) -> usize {
+    let (start, end) = (
+        at.saturating_add(i64::from(start)),
+        at.saturating_add(i64::from(end)),
+    );
+    let n = end
+        .min(i64::from(to))
+        .saturating_sub(start.max(i64::from(from)));
+    usize::try_from(n.max(0)).unwrap_or(0)
+}
+
+/// The rows of a picture's pixels `rows` names, those before its first
+/// left out.
+fn clip(rows: &std::ops::Range<i64>) -> std::ops::Range<u32> {
+    let at = |n: i64| u32::try_from(n.max(0)).unwrap_or(u32::MAX);
+    at(rows.start)..at(rows.end)
 }
 
 /// Whether two areas of cells, each its top row, first column, columns and

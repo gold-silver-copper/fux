@@ -50,8 +50,8 @@ pub(crate) mod weight {
     pub(crate) const rows: u64 = 4;
     /// A row text byte copied or rescanned.
     pub(crate) const text: u64 = 1;
-    /// A sixel pixel painted, filled, copied or zeroed.
-    #[cfg(feature = "checks")]
+    /// A sixel pixel painted, filled, copied or zeroed, or read or covered
+    /// as a newer picture covers older ones (64 at a time a word).
     pub(crate) const pixels: u64 = 1;
     /// A cell a style sweep visited.
     pub(crate) const styles: u64 = 1;

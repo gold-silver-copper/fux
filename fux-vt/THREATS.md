@@ -4,7 +4,7 @@ What a program in a pane can make fux-vt do, and the numbers that hold
 it back: the threat model (1), every bound with its test (2), memory
 (3), work and the per-call ceiling (4), guard mutants (5) and the
 checker's invariants (6). The code and tests cite it by row (B01 to
-B45 but B10 and B29, which are gone, and B34a) and by section number.
+B46 but B10 and B29, which are gone, and B34a) and by section number.
 
 "The defaults" are fux's: a 50×200 screen (N = 10,000 cells, R = 50
 rows, C = 200 columns) and H = 8 MiB of history.
@@ -99,7 +99,7 @@ away; infallible allocation is no safety proof.
 | Kind | Meaning | Rows |
 |---|---|---|
 | Clip | What fits is kept | B03, B04, B20 |
-| Evict | The oldest, or the hidden first, goes | B01, B02, B11, B15, B17, B27 |
+| Evict | The oldest, or the hidden first, goes | B01, B02, B11, B15, B17, B27, B46 |
 | Drop to its end | A string past its limit is read to its end and dropped, alike however split | B20's rest, B21, B23, B25 |
 | Refuse | `Err` or `None`, and nothing changes | B07, B37, B38, B39 |
 | Skip work that changes nothing | Copies that can't change the result are skipped | B33, B34, B34a |
@@ -133,11 +133,11 @@ B26 and B41 bound host-side objects or host calls.
 
 | ID | What is bounded | The limit (counter) | At the limit | Input that reaches it | Test |
 |---|---|---|---|---|---|
-| B01 | Pictures kept, in bytes | Kept pictures' pixels on both screens + the picture being drawn + its growth transient ≤ P = `PICTURE_BYTES` = 96 MiB a parser (holds one 4096×2160 picture with its growth) | Pictures no longer shown go first, then the oldest; a decode alone past P clips (B03) | `ESC P q "1;1;4096;2160 ESC \` × 64 | `pictures_hold_no_more_than_their_budget`, `pictures_fill_their_budget_exactly`, `pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go`, `pictures_no_longer_shown_go_first` (`screen/tests.rs`); `b01` holds the heap with extents declared and nothing drawn, so it does not reach the budget |
+| B01 | Pictures kept, in bytes | Kept pictures' pixels on both screens, with what newer ones cover of them (B46), + the picture being drawn + its growth transient ≤ P = `PICTURE_BYTES` = 96 MiB a parser (holds one 4096×2160 picture with its growth) | Pictures no longer shown go first, then the oldest; a decode alone past P clips (B03) | `ESC P q "1;1;4096;2160 ESC \` × 64 | `pictures_hold_no_more_than_their_budget`, `pictures_fill_their_budget_exactly`, `pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go`, `pictures_no_longer_shown_go_first` (`screen/tests.rs`); `b01` holds the heap with extents declared and nothing drawn, so it does not reach the budget |
 | B02 | Placements, by count | ≤ 64 on both screens together (`MAX_PICTURES`) | The 65th lets one go, as B01 picks | 65 × `ESC P q @ ESC \` | `b02`; `a_screen_keeps_64_pictures_and_the_65th_lets_the_oldest_go` |
 | B03 | The sixel decoder's buffer and growth | Buffer ≤ `MAX_PIXELS` × 4 = 35,389,440 B; each side doubles, clamped to `MAX_SIDE` = 4096 and `MAX_PIXELS` = 4096 × 2160; growth copies or zeroes ≤ 2 × the final buffer (`pixels` ≤ 4,096 a byte + 2 × `MAX_PIXELS` a picture). Raster attributes grow nothing | Sixels past the limits or P aren't painted; the picture keeps what fits | A picture growing a column at a time over 340 bands; width and raster ladders `"1;1;w;2160` | `b03`; `a_kept_picture_holds_just_its_pixels` |
 | B04 | Sixel decode work | `pixels` ≤ 4,096 per input byte; pixels are kept at grid resolution, the aspect applied when shown; a repeat past 4,096 counts 4,096 | — | `ESC P q "360;1` + `!4096~$` × 600 | `b04` |
-| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing (`pixels` = 0). Placement fills rows, ≤ 2,291 `cells` a byte at a 10×20 cell and 7,636 at 2×6 (landscape); 4,349 and 14,487 (portrait); a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
+| B05 | A declared extent, and placement | An extent with nothing drawn allocates and paints nothing; covering the last cell row of the one before, as each does, is B46's (≤ 1,340 `pixels` and 5,440 B a picture at a 10×20 cell). Placement fills rows, ≤ 2,291 `cells` a byte at a 10×20 cell and 7,636 at 2×6 (landscape); 4,349 and 14,487 (portrait); a host cell under 2×6 refused (`CellSize::new`) | — | 215 × `ESC P q "1;1;4096;2160 ESC \` in 4 KiB, P2 = 0, 1, 2; and portrait | `b05`; `a_declared_extent_keeps_no_pixels`, `a_picture_needs_a_host_cell_of_a_sixel_band_or_more` |
 | B06 | Pictures the host retains (host side) | An `Arc<Picture>` outlives eviction, outside the budget; a clone mid-picture ≤ steady + 2 × 53,084,160 B | — | A clone mid-picture; a lowered budget while the host holds one | `b06` |
 | B07 | `Picture::new` (host call) | `None` unless `rgba.len()` = w × h × 4 with no overflow and both sides ≤ 4096 | `None` | `u32::MAX` square with no pixels | `b07` |
 | B08 | `sixel::encode` (host call) | Output ≤ 12 B a crop pixel + 6 B a colour a band + colour definitions; work ≤ 3 `pixels` a crop pixel. fux caches encodings per client, ≤ 16 MiB (`SIXEL_BYTES`) | — | A 2000×1000 256-colour checkerboard | `b08` |
@@ -177,6 +177,7 @@ B26 and B41 bound host-side objects or host calls.
 | B43 | Events | Delivered synchronously; fux-vt keeps none | — | 400 × OSC 9 | `b43` |
 | B44 | Refused allocations | Each refusal counts in `Parser::refused()` and degrades as 1.3 says; every later byte is read | 1.3's table | `ESC]133;A BEL hello` with a refusal forced (`refuse_next`) | `b44` |
 | B45 | Key and mouse encoders (host calls) | ≤ 64 B a call | A mouse position past its encoding is clamped | Every key, modifier and mode; mouse at each encoding's edges | `b45` |
+| B46 | Covering | A placement covers ≤ `COVER_WORDS` = 4,000,000 words of 64 pixels of the pictures under it, the room to note them included (a band of rows, 16 B a row, and the covered rows' words); the room is inside P (B01) | One under it past the words, or past P, goes whole, the newest covered first | 64 pictures, each a column right of the last, opaque (P2 0) and drawn (P2 1) | `b46`; `a_picture_covers_only_the_pixels_it_lies_on` |
 
 ## 3 Memory
 
@@ -260,7 +261,7 @@ differenced with `Work::since`. The counters come from one table
 | `slots` | Row slots moved |
 | `rows` | History rows pushed, popped, read or searched; rows walked by resize, reflow, lookups and `pictures()` |
 | `text` | Row text bytes copied, compacted, cloned or rescanned |
-| `pixels` | Sixel pixels painted or filled, and growth's copied or zeroed bytes ÷ 4 |
+| `pixels` | Sixel pixels painted or filled, growth's copied or zeroed bytes ÷ 4, and the words covering reads, writes and makes room for |
 | `styles` | Cells visited by style sweeps |
 | `inserts` | New styles put in a table |
 | `lookups` | Style-table finds by hash |
@@ -280,6 +281,7 @@ stated). Per call holds for each call; amortized over any run of calls.
 | Line feed into history | `cells`, `rows` | C + 3, 2 | amortized | B18 |
 | Sixel decode | `pixels` | 4,096 (+ 2 × `MAX_PIXELS` a picture for growth) | per call | B03, B04 |
 | Sixel placement | `cells` | 2,291 / 7,636 landscape, 4,349 / 14,487 portrait | per call | B05 |
+| Covering | `pixels` | `COVER_WORDS` a placement | per call | B46 |
 | Style sweep | `styles` | 7 | amortized | B13 |
 | Link sweep | `links` | 256 | amortized | B16 |
 | The frame scan | `scanned` | 2, + 16 a call | per call | B19 |
