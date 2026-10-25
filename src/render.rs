@@ -846,12 +846,14 @@ pub fn width(text: &str) -> u16 {
     // ASCII, as most of it is: a column a character.
     if text.is_ascii() {
         let printable = text.bytes().filter(|b| !b.is_ascii_control()).count();
-        return u16::try_from(printable).unwrap_or(u16::MAX).min(4096);
+        return u16::try_from(printable)
+            .unwrap_or(u16::MAX)
+            .min(crate::view::MOST);
     }
     clusters(text)
         .map(|(_, width)| width)
         .fold(0, u16::saturating_add)
-        .min(4096)
+        .min(crate::view::MOST)
 }
 
 /// Cuts `text` to `cols` cells, with an ellipsis when cut; as it is, if it
