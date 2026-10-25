@@ -13,7 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-fux = { path = ".." }
+fux = { path = "..", features = ["in-process"] }
 fux-vt = { path = "../fux-vt" }
 fuxth = { path = "../fuxth" }
 

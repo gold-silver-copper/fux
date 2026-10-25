@@ -306,7 +306,8 @@ stopped it.
 
 - `str NAME server` (`NAME.sock` in fux's directory) or `str PATH socket`
   first chooses another server; `start` starts one, with nothing in it
-  (the first client to attach starts a shell on its screen), `status` says which
+  (the first client to attach starts a shell on its screen; one that only
+  watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
   start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux`, else
   `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
@@ -326,8 +327,9 @@ stopped it.
   `agent` alone. `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
 - A server that did not stop cleanly leaves its layout in
-  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back, each
-  program waiting for `respawn`. `kill-server` forgets it. It is another
+  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back,
+  each shell started again, each program `run` started waiting, paused,
+  for `respawn`. `kill-server` forgets it. It is another
   server run: versions from before it are refused.
 - In a sandbox that refuses Unix sockets, client and server meet through a
   FIFO beside the socket (`NAME.sock.door`).
@@ -336,7 +338,8 @@ stopped it.
   client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A
   size that cannot be had is refused, and nothing changes; so is a split
   or a move that would hide a pane on the tab's own size or on a screen
-  showing it (but one that only watches).
+  showing it (but one that sizes nothing: that only watches, or has no
+  room below its bar).
 - `opts str FILE log-to` keeps what a program writes; `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,

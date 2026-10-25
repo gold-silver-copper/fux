@@ -2,6 +2,7 @@
 use crate::act::{Edit, Panel};
 use crate::copy::Copy;
 use crate::id::ClientId;
+use crate::layout::Rect;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -199,10 +200,16 @@ impl View {
         }
     }
 
+    /// The area panes share on its screen: all but the bar.
+    pub fn pane_area(&self) -> Rect {
+        Rect::screen(self.rows.saturating_sub(1), self.cols)
+    }
+
     /// Whether it sizes the panes of the tab it shows: one that only
-    /// watches shows them as they are.
+    /// watches shows them as they are, and a screen with no room below its
+    /// bar shows none.
     pub fn sizes(&self) -> bool {
-        !self.read_only
+        !self.read_only && !self.pane_area().is_empty()
     }
 
     /// Shows a notice, an error's if `error`.

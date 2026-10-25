@@ -45,7 +45,9 @@ impl Bytes<'_> {
             } else {
                 Side::Before
             };
-            root.split(target, pane(new), axis, side);
+            // Halving 16 panes' weights, exact, fits.
+            let split = root.split((target, pane(new)), (axis, side), layout::HALVED);
+            split.expect("halved weights fit");
         }
         root
     }

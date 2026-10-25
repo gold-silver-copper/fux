@@ -384,6 +384,20 @@ fn ended(pane: PaneId, status: Ended) -> Error {
     fail(Code::NotRunning, told)
 }
 
+/// A layout change about `pane` not made (`layout::Unmade`).
+fn unmade_error(unmade: layout::Unmade, pane: PaneId) -> Error {
+    match unmade {
+        layout::Unmade::NoPane => Error::NoPane(pane),
+        layout::Unmade::Weights => fail(
+            Code::Size,
+            format!(
+                "{pane}'s split would take weights more than {} together to divide its room exactly",
+                layout::MOST
+            ),
+        ),
+    }
+}
+
 /// What a command line from the CLI begins: its outcome, now, or a wait
 /// for one (`wait`, or an action given wait words).
 pub enum Begun {
@@ -1242,17 +1256,10 @@ impl Session {
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
-        // Two shares are a weight together (`Tree::divide`), as a dump
-        // writes them.
-        if let Some((a, b)) = shares
-            && a.checked_add(b.get()).is_none()
-        {
-            let why = format!("shares {a} and {b} are more than {} together", u32::MAX);
-            return Err(fail(Code::BadValue, why));
-        }
         let new = self.ids.clone().pane()?;
-        let split =
-            (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
+        let shares = shares.unwrap_or(layout::HALVED);
+        let split = (self.parts.plan_split((target, new), axis, shares))
+            .map_err(|unmade| unmade_error(unmade, target))?;
         self.room(split.tab(), Some(split.root()), None)?;
         let seat = |view: &View, now| match followers.contains(&view.id) {
             true => (false, Some(new)),
@@ -1582,11 +1589,6 @@ impl Session {
 
     // -------------------------------------------------------------- layout
 
-    /// The area panes share on a client's screen: all but the bar.
-    pub fn pane_area(view: &View) -> Rect {
-        Rect::screen(view.rows.saturating_sub(1), view.cols)
-    }
-
     /// Where each pane of a view's current tab is on its screen.
     pub fn placement(&self, view: &View) -> Placement {
         let mut out = Placement::default();
@@ -1597,7 +1599,7 @@ impl Session {
     /// Where each pane of a view's current tab is on its screen, into
     /// `out`, whatever it held, reusing its buffers.
     pub fn placement_into(&self, view: &View, out: &mut Placement) {
-        let area = Self::pane_area(view);
+        let area = view.pane_area();
         let tab = self.shown_tab(view.id);
         let Some(root) = tab.and_then(Tab::root) else {
             return out.clear();
@@ -1618,34 +1620,26 @@ impl Session {
     fn reference_area(&self, tab: TabId, here: Here) -> Option<Rect> {
         let own = (self.sizing(tab)).find(|v| Some(v.id) == here.client());
         match own.or_else(|| self.sizing(tab).next()) {
-            Some(view) => Some(Self::pane_area(view)),
+            Some(view) => Some(view.pane_area()),
             None => self.tab(tab).map(|t| t.fit().area()),
         }
     }
 
     /// What a new tab is laid out on while no client shows it: `size`, if
     /// given; else the screen of the commanding client, or of any client
-    /// attached with room for a pane, which it then fits. With no client, and no size given, it
-    /// has no size, which is not made up: it is refused.
+    /// that sizes panes, which it then fits. With none, and no size given,
+    /// it has no size, which is not made up: it is refused.
     fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
             return Ok(Fit::Fixed(size.size()));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let mut sizing = (own.into_iter().chain(self.views.values()))
-            .filter(|v| v.sizes())
-            .peekable();
-        let none = sizing.peek().is_none();
+        let mut sizing = (own.into_iter().chain(self.views.values())).filter(|v| v.sizes());
         if let Some(size) = sizing.find_map(Self::screen_size) {
             return Ok(Fit::Clients(size));
         }
-        let why = match none {
-            true => {
-                "no client is attached to lay it out on (one that only watches sizes \
-                     nothing), and no size was given"
-            }
-            false => "no client's screen has room for a pane below its bar",
-        };
+        let why = "no client attached sizes it (one that only watches, or with no room for \
+                   a pane below its bar, sizes nothing), and no size was given";
         Err(fail(
             Code::Size,
             format!("{why}: give a size (`COLS ROWS size`)"),
@@ -1659,7 +1653,7 @@ impl Session {
 
     /// The size a client's screen gives panes, below its bar, if any.
     fn screen_size(view: &View) -> Option<Size> {
-        let area = Self::pane_area(view);
+        let area = view.pane_area();
         Size::new(area.h(), area.w()).ok()
     }
 
@@ -1759,19 +1753,17 @@ impl Session {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
         sizes.clear();
-        // Each tab a client sizes, and its smallest screen if it has one.
+        // Each tab a client sizes, and its smallest screen.
         let mut screens = BTreeMap::new();
         for view in self.views.values().filter(|v| v.sizes()) {
-            if let Some(tab) = self.shown_tab(view.id) {
-                let least = screens.entry(tab.id()).or_insert(None);
-                if let Some((rows, cols)) = Self::screen_size(view).map(Size::nonzero) {
-                    let (r, c) = least.get_or_insert((rows, cols));
-                    (*r, *c) = ((*r).min(rows), (*c).min(cols));
-                }
+            let size = Self::screen_size(view).map(Size::nonzero);
+            if let (Some(tab), Some((rows, cols))) = (self.shown_tab(view.id), size) {
+                let (r, c) = screens.entry(tab.id()).or_insert((rows, cols));
+                (*r, *c) = ((*r).min(rows), (*c).min(cols));
             }
         }
         for (&tab, &size) in &screens {
-            if let (Some(size), Some(tab)) = (size, self.parts.tab_mut(tab)) {
+            if let Some(tab) = self.parts.tab_mut(tab) {
                 tab.shown_on(size.into());
             }
         }
@@ -1829,7 +1821,7 @@ impl Session {
                 (true, focus) => focus,
                 (false, _) => None,
             };
-            (Self::pane_area(view), zoomed)
+            (view.pane_area(), zoomed)
         });
         for (area, zoomed) in screens.chain(fit) {
             match zoomed.filter(|_| !area.is_empty()) {
@@ -2958,28 +2950,33 @@ impl Session {
         // A tab made for it fits clients at its tab's size until one shows it.
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let fit = Fit::Clients(self.tab(from).ok_or(Error::NoTab(from))?.fit().size());
-        let (ws, tab) = match to {
+        let (ws, tab, made) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
                 let mut root = self.root(from).cloned();
-                layout::move_beside(&mut root, pane, destination, direction);
+                layout::move_beside(&mut root, pane, destination, direction)
+                    .map_err(|unmade| unmade_error(unmade, pane))?;
                 self.room(from, root.as_ref(), None)?;
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
-            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab),
+            &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab, false),
             MoveTo::Workspace(r) => {
                 let ws = self.resolve_ws(r)?;
                 let first = self.workspace(ws).and_then(|w| w.tabs().first());
-                (ws, first.ok_or(Error::NoWorkspace(ws))?.id())
+                (ws, first.ok_or(Error::NoWorkspace(ws))?.id(), false)
             }
+            // A tab made for it holds it alone, which shows on every size
+            // it is laid out on (each has a cell: its fit's, and a screen
+            // that sizes panes, `View::sizes`): nothing after refuses the
+            // move.
             MoveTo::NewTab => {
                 let mut ids = self.ids.clone();
                 let id = ids.tab()?;
                 (self.parts.add_tab((from_ws, id), None, fit, None))
                     .map_err(|_| Error::NoWorkspace(from_ws))?;
                 self.ids = ids;
-                (from_ws, id)
+                (from_ws, id, true)
             }
             MoveTo::NewWorkspace => {
                 // Both IDs or neither: one taken alone would be lost.
@@ -2991,16 +2988,18 @@ impl Session {
                 let clients = self.views.keys().copied();
                 let first = (tab, MAIN.into(), fit);
                 (self.parts).add_workspace((id, name), first, clients, None);
-                (id, tab)
+                (id, tab, true)
             }
         };
         if from == tab {
             return Ok(String::new());
         }
-        let mut root = self.root(tab).cloned();
-        layout::append(&mut root, pane);
-        self.room(tab, root.as_ref(), here.client())?;
-        self.parts.relocate(pane, tab);
+        if !made {
+            let mut root = self.root(tab).cloned();
+            layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
+            self.room(tab, root.as_ref(), here.client())?;
+        }
+        (self.parts.relocate(pane, tab)).map_err(|unmade| unmade_error(unmade, pane))?;
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
@@ -3026,7 +3025,7 @@ impl Session {
         let follower = follower
             .and_then(|c| self.views.get(&c))
             .filter(|v| v.sizes());
-        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), Self::pane_area(v)));
+        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), v.pane_area()));
         let mut sizes = std::iter::once((None, own)).chain(screens);
         let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
             return Ok(());
@@ -3085,7 +3084,7 @@ impl Session {
                     .root()
                     .zip(current)
                     .ok_or_else(|| fail(Code::NoPane, "the tab is empty"))?;
-                let placement = layout::place(root, Self::pane_area(view));
+                let placement = layout::place(root, view.pane_area());
                 layout::neighbor(&placement, from, direction)
                     .ok_or(Error::NoNeighbor { from, direction })?
             }
@@ -3530,12 +3529,43 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
     items.get(next).filter(|_| len > 1)
 }
 
+/// A session itself, as what a program's requests go to, for the tests
+/// and the fuzz targets: each is begun at once, and a wait answered as it
+/// stands, there being no programs to wait on; an event stream and a
+/// grant, which a real server alone serves, are not.
+#[cfg(any(test, feature = "in-process"))]
+pub struct InProcess<'s>(pub &'s mut Session);
+
+#[cfg(any(test, feature = "in-process"))]
+impl crate::script::Asks for InProcess<'_> {
+    fn ask(
+        &mut self,
+        asked: &crate::protocol::Asked,
+        out: &mut dyn std::io::Write,
+    ) -> Result<Reply, crate::script::Failed> {
+        let session = &mut *self.0;
+        let origin = match asked.context.client {
+            Some(client) if session.views.contains_key(&client) => Origin::Client(client),
+            Some(_) | None => Origin::Cli(Caller::default()),
+        };
+        let outcome = match session.begin(asked.request.clone(), &origin) {
+            Begun::Done(outcome) => outcome,
+            Begun::Waiting(waiting) => waiting.answer(session, waiting.due()).unwrap_or_default(),
+            Begun::Events(_) => {
+                let _ = std::io::Write::write_all(out, b"events stream from a real server only\n");
+                Reply::default()
+            }
+            Begun::Grant(..) => Reply::failed(Code::Grant, "a grant is made by a real server only"),
+        };
+        Ok(outcome)
+    }
+}
+
 /// What the other modules' tests share: a session started with the default
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{Origin, Reply, Session};
-    use crate::code::Code;
+    use super::{InProcess, Reply, Session};
     use crate::command::{Command, Request};
     use crate::config::Config;
     use crate::id::ClientId;
@@ -3563,39 +3593,6 @@ pub(crate) mod testing {
             .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
         Ok((session, client))
-    }
-
-    /// A session itself, as what a program's requests go to: each is begun
-    /// at once, and a wait answered as it stands, there being no programs
-    /// to wait on.
-    pub(crate) struct InProcess<'s>(pub &'s mut Session);
-
-    impl crate::script::Asks for InProcess<'_> {
-        fn ask(
-            &mut self,
-            asked: &crate::protocol::Asked,
-            out: &mut dyn std::io::Write,
-        ) -> Result<Reply, crate::script::Failed> {
-            let session = &mut *self.0;
-            let origin = match asked.context.client {
-                Some(client) if session.views.contains_key(&client) => Origin::Client(client),
-                Some(_) | None => Origin::Cli(super::Caller::default()),
-            };
-            let outcome = match session.begin(asked.request.clone(), &origin) {
-                super::Begun::Done(outcome) => outcome,
-                super::Begun::Waiting(waiting) => {
-                    waiting.answer(session, waiting.due()).unwrap_or_default()
-                }
-                super::Begun::Events(_) => {
-                    let _ = writeln!(out, "events stream from a real server only");
-                    Reply::default()
-                }
-                super::Begun::Grant(..) => {
-                    Reply::failed(Code::Grant, "a grant is made by a real server only")
-                }
-            };
-            Ok(outcome)
-        }
     }
 
     /// Runs fuxth `code` as client `client` would, or from no client: what
@@ -5397,20 +5394,114 @@ mod tests {
         Ok(())
     }
 
-    /// Shares divide the room of the pane split, whatever is beside it:
-    /// the others keep theirs, and a dump makes the split again.
+    /// A screen with no room below its bar shows no layout and sizes
+    /// nothing: it refuses no split of the tab it shows, and a pane it
+    /// moves to a tab made for it is in that tab, never leaving one empty.
+    #[test]
+    fn a_screen_with_no_room_refuses_nothing() -> Result<(), String> {
+        let (mut s, _) = attached(11, 40)?;
+        let tiny = s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        run(&mut s, "%1 split drop %1 split drop")?;
+        for (pane, to) in [("%1", "new-tab"), ("%2", "new-workspace")] {
+            let lines = told(&mut s, |s| {
+                let moved = output_as(s, Some(tiny), &format!("{pane} str {to} move-to"));
+                assert!(moved.is_ok(), "{moved:?}");
+            });
+            assert!(
+                lines.contains("created") && lines.contains(&format!("moved {pane}")),
+                "{lines}"
+            );
+        }
+        let empty = (s.parts.workspaces().iter())
+            .flat_map(|w| w.tabs())
+            .filter(|t| t.root().is_none());
+        assert_eq!(empty.count(), 0);
+        Ok(())
+    }
+
+    /// Shares divide the room of the pane split, whatever is beside it,
+    /// exactly: the others keep theirs, and a dump makes the split again.
+    /// Weights that would be more than a u32 together are refused, the
+    /// layout kept.
     #[test]
     fn shares_divide_the_split_panes_room() -> Result<(), String> {
+        let tab: TabId = "@2".parse().map_err(|_| "@2")?;
+        let widths = |s: &Session| rects(s, tab).iter().map(Rect::w).collect::<Vec<u16>>();
+        let made = "opts 101 10 size str +1 workspace in new-tab drop";
+        for halved in ["", "1 1 shares"] {
+            let mut s = started(Config::default())?;
+            let split = format!("%2 {halved} split drop %3 2 1 shares split drop");
+            run(&mut s, &format!("{made} {split}"))?;
+            assert_eq!(widths(&s), [50, 33, 16], "{halved}");
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        }
         let mut s = started(Config::default())?;
-        let made = "opts 101 10 size str +1 workspace in new-tab drop \
-                    %2 split drop %3 2 1 shares split drop";
+        run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
+        let before = s.root(tab).cloned();
+        for split in ["%3 split", "%3 vertical 4294967295 1 shares split"] {
+            let refused = run(&mut s, split).err().unwrap_or_default();
+            assert!(
+                refused.starts_with("size: ") && refused.contains("together"),
+                "{refused}"
+            );
+            assert_eq!(s.root(tab).cloned(), before);
+        }
+        // An even weight halves as it is.
+        run(&mut s, "%2 split drop")?;
+        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
+        Ok(())
+    }
+
+    /// Whatever changes a layout, a dump makes it again: each pane where
+    /// it was, at every size.
+    #[test]
+    fn every_layout_change_dumps_as_it_is() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let made = "opts 100 30 size str +1 workspace in new-tab drop \
+                    opts 100 30 size str +1 workspace in new-tab drop";
         run(&mut s, made)?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
-        let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [49, 33, 17]);
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
-        let refused = run(&mut s, "%2 4294967295 1 shares split").err();
-        assert!(refused.is_some_and(|e| e.contains("together")));
+        let areas = [
+            Rect::screen(30, 100),
+            Rect::screen(11, 37),
+            Rect::screen(70, 250),
+        ];
+        for change in [
+            "%2 3 2 shares split drop",
+            "%4 vertical 1 2 shares split drop",
+            "%5 split drop",
+            "%5 vertical split drop",
+            "%2 37 resize-x",
+            "%5 7 resize-y",
+            "%6 str left 3 move-border",
+            "%2 30 percent resize-x",
+            "%2 %6 swap-panes",
+            "%4 str left move-beside",
+            "%5 kill",
+            "%3 str @2 tab move-to",
+            "%6 kill",
+        ] {
+            run(&mut s, change)?;
+            let dump = s.dump_layout(Some(AnyRef::Tab(tab)), false);
+            let mut again = started(Config::default())?;
+            run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
+            let made = (again.parts.workspaces().iter())
+                .flat_map(|w| w.tabs())
+                .last();
+            let (Some(root), Some(made)) = (s.root(tab), made.and_then(|t| t.root())) else {
+                return Err(format!("{change}: no layout"));
+            };
+            for area in areas {
+                let places = |root: &Tree| {
+                    let placed = layout::place(root, area);
+                    root.panes()
+                        .iter()
+                        .map(|p| placed.rect(*p))
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(places(made), places(root), "{change}\n{dump}");
+            }
+        }
         Ok(())
     }
 
