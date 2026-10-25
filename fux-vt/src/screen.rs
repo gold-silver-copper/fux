@@ -1538,6 +1538,13 @@ impl Screen {
         if width == 0 {
             if let Some((row, col)) = self.before_cursor() {
                 let g = self.grid();
+                // A picture's cell holds a control, which ends a cluster
+                // (UAX #29 GB4): the mark has no cell, as at a row's start.
+                if g.cell(row, col)
+                    .is_some_and(|c| c.contents() == PLACEHOLDER)
+                {
+                    return;
+                }
                 // A blank cell takes a space for the mark to follow, and
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
@@ -2768,7 +2775,8 @@ impl Screen {
     /// (`xtermCheckRect`, ctlseqs' XTCHECKSUM): each cell's character, plus
     /// 0x08 hidden, 0x10 underlined, 0x20 inverse, 0x40 blinking and 0x80
     /// bold, summed in 16 bits and negated. A character past Latin-1 or
-    /// below a space, and a wide glyph's second half, count as ESC, but for
+    /// below a space, a picture's cell (a C1 control, `PLACEHOLDER`) and a
+    /// wide glyph's second half count as ESC, but for
     /// a DEC Special Graphics or Supplemental glyph (`dec_code`); a
     /// cluster's combining marks are added as they are, as xterm counts
     /// them. An empty cell counts as a space, as on DEC's terminals. The
@@ -2795,7 +2803,7 @@ impl Screen {
                     None if cell.is_wide_continuation() => ESC,
                     None => 0x20,
                     Some(c) => match u16::try_from(u32::from(c)) {
-                        Ok(code @ 0x20..=0xff) => code,
+                        Ok(code @ (0x20..=0x7f | 0xa0..=0xff)) => code,
                         _ => dec_code(c).map_or(ESC, u16::from),
                     },
                 };

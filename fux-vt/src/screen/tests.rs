@@ -596,6 +596,25 @@ fn a_picture_s_cells_are_not_printed() -> Result<(), Error> {
     Ok(())
 }
 
+/// No text makes a picture's cells: a mark after one has no cell, and
+/// neither U+10EEEE (kitty's placeholder, plain text to fux-vt) nor U+0080
+/// printed brings a picture back.
+#[test]
+fn text_cannot_forge_a_picture_s_cells() -> Result<(), Error> {
+    let mut p = pictured(Size::of(4, 10), 0)?;
+    p.process(b"\x1b[3G")?;
+    p.process(&picture(20, 20))?;
+    p.process("\x1b[1;5H\u{301}".as_bytes())?;
+    assert_eq!(p.screen().pictures().count(), 1, "a mark after it");
+    let fourth = p.screen().cell(0, 3).map(|c| c.contents() == PLACEHOLDER);
+    assert_eq!(fourth, Some(true));
+    p.process(b"\x1b[1;3HX")?;
+    assert_eq!(p.screen().pictures().count(), 0, "text over it");
+    p.process("\x1b[1;3H\u{10EEEE}\u{80}".as_bytes())?;
+    assert_eq!(p.screen().pictures().count(), 0, "text can't bring it back");
+    Ok(())
+}
+
 /// A host's cell is at least a sixel band, 2 by 6 pixels (THREATS.md
 /// B05): a smaller one is refused, not made one. With no cell size, a
 /// picture has no cells to be laid out in, and none is placed.

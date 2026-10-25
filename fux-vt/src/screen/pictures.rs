@@ -9,10 +9,11 @@ use crate::RowId;
 use crate::sixel::Picture;
 use std::sync::Arc;
 
-/// What a picture's cells hold while it is there: the character kitty's
-/// graphics protocol keeps for cells a picture covers, one cell wide.
-/// Printed as a blank.
-pub const PLACEHOLDER: &str = "\u{10EEEE}";
+/// What a picture's cells hold while it is there, one cell wide: U+0080,
+/// a C1 control with no function in ECMA-48, which printed text never
+/// stores (a control has no width), so text can't forge a picture's
+/// cells. Read as a blank.
+pub const PLACEHOLDER: &str = "\u{80}";
 
 /// The most pictures kept, on both screens together; a new one past it
 /// lets one go, those no longer shown first (`Screen::victim`).
