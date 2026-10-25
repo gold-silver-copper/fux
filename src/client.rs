@@ -511,6 +511,30 @@ struct Ran {
     opened: Option<Screen>,
 }
 
+/// The longest a program's notice may be: what it prints past this fails
+/// its write, and a notice longer, made of what it left, is not shown but
+/// said not to be. Well within a frame (`protocol::MAX_FRAME`).
+const NOTICE_MAX: usize = 64 << 10;
+
+/// What a key's program prints, for its notice: `NOTICE_MAX` at most.
+#[derive(Default)]
+struct Said(Vec<u8>);
+
+impl Write for Said {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.0.len().saturating_add(bytes.len()) > NOTICE_MAX {
+            let why = format!("a key's program prints {NOTICE_MAX} bytes at most");
+            return Err(io::Error::other(why));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Programs that may wait for the worker, and the bytes of their code:
 /// one that would take them past either is not run, and said not to be.
 const JOBS: usize = 64;
@@ -832,7 +856,7 @@ fn run_job(
 ) -> Ran {
     let mut changed = lock(keymap).clone();
     let config = changed.config.clone();
-    let mut out = Vec::new();
+    let mut out = Said::default();
     let mut context = context();
     context.client = Some(me);
     let mut asks = script::AsClient {
@@ -860,7 +884,7 @@ fn run_job(
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.to_string(), true)),
         Ok(stack) => {
-            let mut said = String::from_utf8_lossy(&out).into_owned();
+            let mut said = String::from_utf8_lossy(&out.0).into_owned();
             for value in &stack {
                 said.push_str(&value.text());
                 said.push('\n');
@@ -869,6 +893,13 @@ fn run_job(
             (!said.is_empty()).then(|| (said.join("  "), false))
         }
     };
+    let notice = notice.map(|(text, error)| match text.len() {
+        0..=NOTICE_MAX => (text, error),
+        n => (
+            format!("a notice of {n} bytes, longer than {NOTICE_MAX}, was not shown"),
+            true,
+        ),
+    });
     Ran {
         notice,
         opened: asks.opened,
@@ -1369,6 +1400,22 @@ mod tests {
         let after = all_ran(&mut keyboard)?;
         let keys = after.iter().filter(|a| matches!(a, Act::Key(_))).count();
         assert_eq!(keys, HELD);
+        Ok(())
+    }
+
+    /// A program that prints more than a notice holds fails, said; its
+    /// output is not kept.
+    #[test]
+    fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        let line: String = std::iter::repeat_n('x', 1000).collect();
+        let code = format!("0 begin str {line} print 1 add 0 pick 100 eq until drop");
+        assert!(keyboard.frame(ToAttached::Run(code)).is_empty());
+        let acts = all_ran(&mut keyboard)?;
+        let failed = matches!(acts.as_slice(),
+            [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
+        assert!(failed, "{acts:?}");
         Ok(())
     }
 
