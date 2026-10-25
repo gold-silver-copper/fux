@@ -9,8 +9,8 @@ use crate::decode::Input;
 use crate::keymap::Keymap;
 use crate::keys::{Key, KeyPress, Modifiers};
 use crate::protocol::{
-    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, Mismatch, PROTOCOL,
-    Reply, Role, ToAttached, ToCommand,
+    Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, MAX_FRAME, Mismatch,
+    PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
 use crate::screens::{Effect, Screen};
 use crate::script;
@@ -882,15 +882,7 @@ fn run_job(
         // Stopped as asked (the prefix, then Esc): no failure of its own.
         Err(_) if stop.stopped() => Some(("stopped".to_owned(), false)),
         Err(failed) => Some((failed.to_string(), true)),
-        Ok(stack) => {
-            let mut said = String::from_utf8_lossy(&out.0).into_owned();
-            for value in &stack {
-                said.push_str(&value.text());
-                said.push('\n');
-            }
-            let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
-            (!said.is_empty()).then(|| (said.join("  "), false))
-        }
+        Ok(stack) => said(String::from_utf8_lossy(&out.0).into_owned(), &stack),
     };
     let notice = notice.map(|(text, error)| match text.len() {
         0..=NOTICE_MAX => (text, error),
@@ -899,10 +891,45 @@ fn run_job(
             true,
         ),
     });
-    Ran {
-        notice,
-        opened: asks.opened,
+    // Opened, a screen is sent the server in one frame: one larger was
+    // never to show.
+    let fits = |screen: &Screen| {
+        (screen.opened()).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
+    };
+    match asks.opened {
+        Some(screen) if !fits(&screen) => {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            Ran {
+                notice: Some((text, true)),
+                opened: None,
+            }
+        }
+        opened => Ran { notice, opened },
     }
+}
+
+/// The notice a program that ended makes: what it printed, then what it
+/// left, each line that is not blank. Made only as far as `NOTICE_MAX`:
+/// one longer is said not to be shown.
+fn said(mut said: String, stack: &[fuxth::Value<script::Fux>]) -> Option<(String, bool)> {
+    for value in stack {
+        let room = NOTICE_MAX.saturating_sub(said.len());
+        match value.text_upto(room).filter(|text| text.len() < room) {
+            Some(text) => {
+                said.push_str(&text);
+                said.push('\n');
+            }
+            None => {
+                let text = format!(
+                    "what the program left is longer than a notice ({NOTICE_MAX} bytes): not shown"
+                );
+                return Some((text, true));
+            }
+        }
+    }
+    let said: Vec<&str> = said.lines().filter(|l| !l.trim().is_empty()).collect();
+    (!said.is_empty()).then(|| (said.join("  "), false))
 }
 
 /// Attaches this terminal (stdin, a terminal), or a client with no
@@ -1424,8 +1451,8 @@ mod tests {
         Ok(())
     }
 
-    /// A program that prints more than a notice holds fails, said; its
-    /// output is not kept.
+    /// A program that prints more than a notice holds fails, said; one
+    /// that leaves more is said not to be shown. Neither is kept.
     #[test]
     fn a_notice_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
         let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
@@ -1437,6 +1464,15 @@ mod tests {
         let failed = matches!(acts.as_slice(),
             [Act::Notice { text, error: true }] if text.contains("prints 65536 bytes at most"));
         assert!(failed, "{acts:?}");
+        // What it leaves, the same string thrice, is made no further than
+        // a notice holds.
+        let long: String = std::iter::repeat_n('x', 30_000).collect();
+        let left = format!("str {long} 0 pick 0 pick");
+        assert!(keyboard.frame(ToAttached::Run(left)).is_empty());
+        let acts = all_ran(&mut keyboard)?;
+        let refused = matches!(acts.as_slice(),
+            [Act::Notice { text, error: true }] if text.starts_with("what the program left"));
+        assert!(refused, "{acts:?}");
         Ok(())
     }
 
