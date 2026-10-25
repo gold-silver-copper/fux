@@ -915,9 +915,18 @@ impl Session {
         starting: &Starting,
     ) -> Result<(), Error> {
         let pane = self.pane(id)?;
-        let Runs::Program(launch) = &pane.runs else {
+        if let Runs::Shell = pane.runs {
             let message = format!("{id} runs a shell; respawn starts again what `fux run` started");
             return Err(fail(Code::NotRun, message));
+        }
+        // What the program there left is read before another starts: an
+        // exit waiting on it is told, before `respawned`.
+        if kill || pane.exiting.is_some() {
+            self.drain(id);
+        }
+        let pane = self.pane(id)?;
+        let Runs::Program(launch) = &pane.runs else {
+            return Err(Error::NoPane(id));
         };
         if pane.process().child().is_some() && !kill {
             let message = format!("the program in {id} still runs; `kill-first` ends it first");
@@ -939,6 +948,27 @@ impl Session {
         self.end(old, true);
         self.touch();
         Ok(())
+    }
+
+    /// Reads all that pane `id`'s program left: what waits on its
+    /// terminal, a frame held, the output waiting its turns; then tells
+    /// its exit, if one waits on that.
+    fn drain(&mut self, id: PaneId) {
+        let left = self.pane(id).ok().map(|p| unread(p.process()));
+        if let Some(left) = left.filter(|l| !l.is_empty()) {
+            self.output(id, &left);
+        }
+        // Each turn reads some of it, and nothing adds more.
+        let waits = |p: &Pane| p.has_unread() || p.frame_deadline().is_some();
+        while self.pane(id).is_ok_and(waits) {
+            self.read_with(id, |p| {
+                p.release_frame();
+                p.read_unread();
+            });
+        }
+        if let Some(ended) = self.pane(id).ok().and_then(|p| p.exiting) {
+            self.exited(id, ended);
+        }
     }
 
     /// The process group `fux signal` signals in a pane: the terminal's
@@ -3886,6 +3916,28 @@ mod tests {
         s.buffers.push_front("x".into());
         let pasted = run(&mut s, "%2 0 paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    /// A program respawned over (`kill-first`) has what it wrote read
+    /// first, a frame it held too, and an exit waiting on that told before
+    /// the respawn: none of it is lost with the old screen.
+    #[test]
+    fn a_respawn_reads_what_the_old_program_left() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.output(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
+        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+        pane.exiting = Some(crate::process::Ended::Exited(3));
+        drop(pane);
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%2 kill-first respawn");
+        });
+        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        assert!(at("title")? < at("exited")?, "{lines}");
+        assert!(at("bell")? < at("exited")?, "{lines}");
+        assert!(at("exited")? < at("respawned")?, "{lines}");
         Ok(())
     }
 
