@@ -84,19 +84,14 @@ impl Session {
             (false, true) => "new-workspace".to_owned(),
             (false, false) => "new-tab".to_owned(),
         });
-        line.extend(["let".to_owned(), pane_name(first)]);
+        let named = pane_name(first);
+        line.extend(["let".to_owned(), named.clone()]);
         push(out, &line);
         if opens {
-            push(
-                out,
-                &[&pane_name(first), "workspace", "let", &workspace(ws.id)],
-            );
+            push(out, &[&named, "workspace", "let", &workspace(ws.id)]);
         }
         if tab.given() && makes {
-            push(
-                out,
-                &[&pane_name(first), "tab", "str", tab.name(), "rename"],
-            );
+            push(out, &[&named, "tab", "str", tab.name(), "rename"]);
         }
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
