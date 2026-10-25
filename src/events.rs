@@ -1,69 +1,65 @@
 //! `fux events`: what happens in the session, a line each as it happens,
-//! for a script that would otherwise poll `fux ls json`. After each
-//! round of what the server read and did, each subscriber is told what
-//! happened since it last looked: what each pane's journal recorded, in
-//! order (a bell, a notification, a title, a shell command's end, a
-//! resize); and, from the session's layout, panes, tabs and workspaces
-//! made, closed, moved or renamed, a program's restart and exit.
+//! for a script that would otherwise poll `fux ls json`. Each change to the
+//! session's workspaces, tabs and panes, and what each pane's program does
+//! that events tell (a bell, a notification, a title, a shell command's
+//! end, a resize, a respawn, an exit), is written in one journal where it
+//! happens, in the order it happens (`workspace::Parts`); each subscriber
+//! reads the journal from its own place in it, after each round of what
+//! the server read and did.
 use crate::code::Code;
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::log::{Event as Recorded, Seq};
 use crate::process::Ended;
 use crate::protocol::Reply;
-use crate::session::Session;
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 
-/// The most a subscriber's output may hold unsent before it is told it lost
-/// events, and its stream ends: a reader too slow to keep up.
+/// The most a subscriber's output may hold unsent before it is told no
+/// more for now: what it has yet to read waits in the journal.
 pub const BACKLOG: usize = 1 << 20;
 
-/// What the session holds, as far as events tell of it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Snapshot {
-    workspaces: BTreeMap<WsId, String>,
-    tabs: BTreeMap<TabId, (WsId, String)>,
-    panes: BTreeMap<PaneId, Seen>,
+/// How many entries the journal keeps: a subscriber that falls further
+/// behind is told how many it missed.
+const KEPT: usize = 1 << 14;
+
+/// A number of the journal's: the order things happened in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Seq(u64);
+
+/// What happened in the session, in order, each entry numbered: the last
+/// [`KEPT`] entries.
+#[derive(Debug, Default)]
+pub struct Journal {
+    entries: VecDeque<(Seq, Event)>,
+    /// The number the next entry is given.
+    next: Seq,
 }
 
-/// Where a pane is, how often its program started, how it ended, and the
-/// last entry of its journal: what events tell of it.
-#[derive(Clone, Debug, PartialEq)]
-struct Seen {
-    ws: WsId,
-    tab: TabId,
-    ended: Option<Ended>,
-    respawns: u64,
-    last: Seq,
-}
-
-impl Snapshot {
-    pub fn of(session: &Session) -> Snapshot {
-        let mut snapshot = Snapshot::default();
-        for ws in &session.workspaces {
-            snapshot.workspaces.insert(ws.id, ws.name.clone());
-            for tab in ws.tabs() {
-                snapshot.tabs.insert(tab.id, (ws.id, tab.name.clone()));
-                let panes = tab.root().map(crate::layout::Tree::panes);
-                for id in panes.unwrap_or_default() {
-                    let Some(pane) = session.panes.get(&id) else {
-                        continue;
-                    };
-                    snapshot.panes.insert(
-                        id,
-                        Seen {
-                            ws: ws.id,
-                            tab: tab.id,
-                            ended: pane.process.exit_status(),
-                            respawns: pane.respawns,
-                            last: pane.record.last(),
-                        },
-                    );
-                }
-            }
+impl Journal {
+    /// Records that `what` happened at `place`, numbered after the last.
+    pub(crate) fn push(&mut self, place: Place, what: What) {
+        if self.entries.len() >= KEPT {
+            self.entries.pop_front();
         }
-        snapshot
+        self.entries.push_back((self.next, Event { place, what }));
+        // 2^64 entries are never reached: the number never stands still.
+        self.next = Seq(self.next.0.saturating_add(1));
+    }
+
+    /// Where a reader starting now reads from: nothing recorded yet.
+    pub fn end(&self) -> Seq {
+        self.next
+    }
+
+    /// What came from `from` on: how many of those entries were let go,
+    /// and those kept, oldest first.
+    fn from(&self, from: Seq) -> (u64, impl Iterator<Item = &(Seq, Event)>) {
+        let first = self.entries.front().map_or(self.next, |(seq, _)| *seq);
+        let skip = self.entries.partition_point(|(seq, _)| *seq < from);
+        (
+            first.0.saturating_sub(from.0),
+            self.entries.iter().skip(skip),
+        )
     }
 }
 
@@ -71,7 +67,7 @@ impl Snapshot {
 /// and workspace, a tab in its workspace, or a workspace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Place {
-    Pane(WsId, TabId, PaneId),
+    Pane((WsId, TabId), PaneId),
     Tab(WsId, TabId),
     Workspace(WsId),
 }
@@ -81,9 +77,18 @@ impl Place {
     /// workspace.
     fn ids(self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
         match self {
-            Place::Pane(ws, tab, pane) => (Some(pane), Some(tab), Some(ws)),
+            Place::Pane((ws, tab), pane) => (Some(pane), Some(tab), Some(ws)),
             Place::Tab(ws, tab) => (None, Some(tab), Some(ws)),
             Place::Workspace(ws) => (None, None, Some(ws)),
+        }
+    }
+
+    /// What it is the place of.
+    fn thing(self) -> AnyRef {
+        match self {
+            Place::Pane(_, pane) => AnyRef::Pane(pane),
+            Place::Tab(_, tab) => AnyRef::Tab(tab),
+            Place::Workspace(ws) => AnyRef::Workspace(ws),
         }
     }
 }
@@ -96,21 +101,19 @@ pub struct Event {
 }
 
 /// What happened: to a pane, tab or workspace, or (from `Moved` on) to a
-/// pane. The type does not tie it to its `Place`: `between`, which makes
+/// pane. The type does not tie it to its `Place`: `Parts`, which records
 /// every event, gives the pane-only ones a pane's place.
 #[derive(Clone, Debug, PartialEq)]
 pub enum What {
     /// Made; a tab or workspace with its name.
     Created(Option<String>),
-    /// A tab or workspace named otherwise, its new name.
+    /// Named otherwise: its new name.
     Renamed(String),
     Closed,
-    /// To another tab or workspace.
-    Moved,
+    /// To another tab, from this workspace and tab.
+    Moved((WsId, TabId)),
     /// Its program started again (`respawn`).
     Respawned,
-    /// Entries of its journal were let go before they were told.
-    Missed,
     Bell,
     Notification(String),
     Title(String),
@@ -132,9 +135,14 @@ impl What {
             ),
             What::Renamed(name) => ("renamed", text("name", name)),
             What::Closed => ("closed", Vec::new()),
-            What::Moved => ("moved", Vec::new()),
+            What::Moved((ws, tab)) => (
+                "moved",
+                vec![
+                    ("from_tab", Json::str(tab.to_string())),
+                    ("from_workspace", Json::str(ws.to_string())),
+                ],
+            ),
             What::Respawned => ("respawned", Vec::new()),
-            What::Missed => ("missed", Vec::new()),
             What::Bell => ("bell", Vec::new()),
             What::Notification(said) => ("notification", text("text", said)),
             What::Title(title) => ("title", text("title", title)),
@@ -168,8 +176,6 @@ impl Event {
 pub enum Ending {
     /// Everything it watched has closed (status 4).
     Gone,
-    /// Its reader fell too far behind.
-    Lost,
     /// The server stopped, for this reason: a stream that is done.
     Stopped(String),
 }
@@ -179,7 +185,6 @@ impl Ending {
     pub fn line(&self, json: bool) -> String {
         let (name, fields) = match self {
             Self::Gone => ("gone", Vec::new()),
-            Self::Lost => ("lost", Vec::new()),
             Self::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason.clone()))]),
         };
         line(name, None, fields, json)
@@ -189,16 +194,21 @@ impl Ending {
     pub fn reply(&self) -> Reply {
         match self {
             Self::Gone => Reply::failed(Code::Gone, "everything it watched has closed"),
-            Self::Lost => Reply::failed(Code::Lost, "events: the reader fell too far behind"),
             Self::Stopped(_) => Reply::default(),
         }
     }
 }
 
 /// A stream's first line, once it is armed: from here on, nothing is
-/// missed.
+/// missed unsaid.
 pub fn ready(json: bool) -> String {
     line("ready", None, Vec::new(), json)
+}
+
+/// The line that says `count` entries of the journal were let go before
+/// the stream was told them: of its target or not, which is not known.
+fn missed(count: u64, json: bool) -> String {
+    line("missed", None, vec![("count", Json::int(count))], json)
 }
 
 /// The line of an event named `name` at `place` (none for the stream's
@@ -244,122 +254,99 @@ fn line(
     line
 }
 
-/// What changed from `old` to `new` in `session`, in order: what was made,
-/// what happened to each pane (what its journal recorded since, in order),
-/// then what closed.
-pub fn between(old: &Snapshot, new: &Snapshot, session: &Session) -> Vec<Event> {
-    let mut events = Vec::new();
-    // A workspace or tab made since, or named otherwise.
-    let named = |place, was: Option<&String>, name: &String| {
-        let what = match was {
-            None => What::Created(Some(name.clone())),
-            Some(was) if was != name => What::Renamed(name.clone()),
-            Some(_) => return None,
-        };
-        Some(Event { place, what })
-    };
-    for (&ws, name) in &new.workspaces {
-        events.extend(named(Place::Workspace(ws), old.workspaces.get(&ws), name));
-    }
-    for (&tab, (ws, name)) in &new.tabs {
-        let was = old.tabs.get(&tab).map(|(_, was)| was);
-        events.extend(named(Place::Tab(*ws, tab), was, name));
-    }
-    for (&pane, now) in &new.panes {
-        let place = Place::Pane(now.ws, now.tab, pane);
-        let at = |what| Event { place, what };
-        // A pane new since, or its program started again: its journal from
-        // its start.
-        let mut from = Seq(0);
-        match old.panes.get(&pane) {
-            None => events.push(at(What::Created(None))),
-            Some(was) => {
-                if (was.ws, was.tab) != (now.ws, now.tab) {
-                    events.push(at(What::Moved));
-                }
-                match now.respawns == was.respawns {
-                    true => from = was.last,
-                    false => events.push(at(What::Respawned)),
-                }
-            }
-        }
-        let pane_now = session.panes.get(&pane);
-        // Entries it had not told were let go (past what the journal
-        // keeps): said so.
-        if pane_now.is_some_and(|p| p.record.lost_after(from)) {
-            events.push(at(What::Missed));
-        }
-        let journal = pane_now.map(|p| p.record.after(from));
-        for entry in journal.into_iter().flatten() {
-            events.push(at(match &entry.event {
-                Recorded::Bell => What::Bell,
-                Recorded::Notification(text) => What::Notification(text.clone()),
-                Recorded::Title(title) => What::Title(title.clone()),
-                Recorded::Done(status) => What::Done(*status),
-                Recorded::Resize(size) => What::Resized(*size),
-            }));
-        }
-        let was = old.panes.get(&pane).and_then(|w| w.ended);
-        if let (Some(ended), true) = (now.ended, now.ended != was) {
-            events.push(at(What::Exited(ended)));
-        }
-    }
-    let panes = (old.panes.iter()).filter(|(pane, _)| !new.panes.contains_key(pane));
-    let tabs = (old.tabs.iter()).filter(|(tab, _)| !new.tabs.contains_key(tab));
-    let workspaces = (old.workspaces.keys()).filter(|ws| !new.workspaces.contains_key(ws));
-    let closed = (panes.map(|(&pane, was)| Place::Pane(was.ws, was.tab, pane)))
-        .chain(tabs.map(|(&tab, (ws, _))| Place::Tab(*ws, tab)))
-        .chain(workspaces.map(|&ws| Place::Workspace(ws)));
-    events.extend(closed.map(|place| Event {
-        place,
-        what: What::Closed,
-    }));
-    events
-}
-
 /// A connection that streams events: which pane, tab or workspace it is
-/// told of (all without one), how, and what it has seen.
+/// told of (all without one), how, and where in the journal it reads next.
 pub struct Subscription {
-    pub target: Option<AnyRef>,
+    target: Option<AnyRef>,
     pub json: bool,
-    pub seen: Snapshot,
+    next: Seq,
 }
 
 impl Subscription {
-    /// Whether it is told of `event`: where its target is or holds.
-    pub fn wants(&self, event: &Event) -> bool {
+    /// One told of what happens from now on.
+    pub fn new(target: Option<AnyRef>, json: bool, journal: &Journal) -> Self {
+        let next = journal.end();
+        Self { target, json, next }
+    }
+
+    /// Whether it is told of `event`: where its target is or holds, or a
+    /// pane's move from there.
+    fn wants(&self, event: &Event) -> bool {
         let (pane, tab, ws) = event.place.ids();
+        let from = if let What::Moved(from) = event.what {
+            Some(from)
+        } else {
+            None
+        };
         self.target.is_none_or(|target| match target {
             AnyRef::Pane(p) => pane == Some(p),
-            AnyRef::Tab(t) => tab == Some(t),
-            AnyRef::Workspace(w) => ws == Some(w),
+            AnyRef::Tab(t) => tab == Some(t) || from.is_some_and(|(_, f)| f == t),
+            AnyRef::Workspace(w) => ws == Some(w) || from.is_some_and(|(f, _)| f == w),
         })
     }
 
-    /// What it is told of what changed since it last looked, now that the
-    /// session is `now`; and its end, if everything it watched is gone.
-    pub fn told(&mut self, now: &Snapshot, session: &Session) -> (String, Option<Ending>) {
-        if *now == self.seen {
-            return (String::new(), None);
+    /// Whether `event` closes its target.
+    fn closes(&self, event: &Event) -> bool {
+        event.what == What::Closed && self.target == Some(event.place.thing())
+    }
+
+    /// The lines it is told of what the journal holds that it has not
+    /// read, until they are `room` bytes or more (the rest waits for its
+    /// next turn); and its end, once everything it watched is gone, which
+    /// `there` tells for what the journal no longer holds the close of.
+    pub fn told(
+        &mut self,
+        journal: &Journal,
+        room: usize,
+        there: impl Fn(AnyRef) -> bool,
+    ) -> (String, Option<Ending>) {
+        let (lost, entries) = journal.from(self.next);
+        let mut lines = String::new();
+        if lost > 0 {
+            lines.push_str(&missed(lost, self.json));
+            self.next = Seq(self.next.0.saturating_add(lost));
         }
-        let events = between(&self.seen, now, session);
-        self.seen = now.clone();
-        let lines: String = (events.iter())
-            .filter(|e| self.wants(e))
-            .map(|e| e.line(self.json))
-            .collect();
-        let over = self.target.is_some_and(|target| match target {
-            AnyRef::Pane(p) => !now.panes.contains_key(&p),
-            AnyRef::Tab(t) => !now.tabs.contains_key(&t),
-            AnyRef::Workspace(w) => !now.workspaces.contains_key(&w),
-        });
-        (lines, over.then_some(Ending::Gone))
+        for (seq, event) in entries {
+            if lines.len() >= room {
+                return (lines, None);
+            }
+            self.next = Seq(seq.0.saturating_add(1));
+            if self.wants(event) {
+                lines.push_str(&event.line(self.json));
+            }
+            if self.closes(event) {
+                return (lines, Some(Ending::Gone));
+            }
+        }
+        let gone = self.target.is_some_and(|target| !there(target));
+        (lines, gone.then_some(Ending::Gone))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A reader with no room left reads on from where it stopped; and one
+    /// the journal let entries go past is told how many it missed.
+    #[test]
+    fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
+        let ws: WsId = "+1".parse().map_err(|_| "+1")?;
+        let mut journal = Journal::default();
+        let mut stream = Subscription::new(None, false, &journal);
+        journal.push(Place::Workspace(ws), What::Bell);
+        journal.push(Place::Workspace(ws), What::Closed);
+        assert_eq!(stream.told(&journal, 1, |_| true).0, "bell +1\n");
+        assert_eq!(stream.told(&journal, 1, |_| true).0, "closed +1\n");
+        for _ in 0..=KEPT {
+            journal.push(Place::Workspace(ws), What::Bell);
+        }
+        let (lines, _) = stream.told(&journal, usize::MAX, |_| true);
+        assert!(lines.starts_with("missed count=1\nbell +1\n"), "{lines}");
+        assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
+        assert_eq!(stream.told(&journal, usize::MAX, |_| true).0, "");
+        Ok(())
+    }
 
     /// Every event's name, a pane's, a tab's or workspace's and the
     /// stream's own, is in docs/json.md's table of events, and the table
@@ -368,15 +355,14 @@ mod tests {
     fn every_event_is_in_the_docs() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
-        let place = Place::Pane(ws, tab, PaneId::of(1));
+        let place = Place::Pane((ws, tab), PaneId::of(1));
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         let what = [
             What::Created(None),
             What::Renamed(String::new()),
             What::Closed,
-            What::Moved,
+            What::Moved((ws, tab)),
             What::Respawned,
-            What::Missed,
             What::Bell,
             What::Notification(String::new()),
             What::Title(String::new()),
@@ -393,9 +379,8 @@ mod tests {
                 What::Created(_)
                 | What::Renamed(_)
                 | What::Closed
-                | What::Moved
+                | What::Moved(..)
                 | What::Respawned
-                | What::Missed
                 | What::Bell
                 | What::Notification(_)
                 | What::Title(_)
@@ -404,12 +389,12 @@ mod tests {
                 | What::Exited(_) => lines.push(Event { place, what }.line(false)),
             }
         }
-        for ending in [Ending::Gone, Ending::Lost, Ending::Stopped(String::new())] {
+        for ending in [Ending::Gone, Ending::Stopped(String::new())] {
             match ending {
-                Ending::Gone | Ending::Lost | Ending::Stopped(_) => lines.push(ending.line(false)),
+                Ending::Gone | Ending::Stopped(_) => lines.push(ending.line(false)),
             }
         }
-        lines.push(ready(false));
+        lines.extend([ready(false), missed(1, false)]);
         let names: std::collections::BTreeSet<&str> = (lines.iter())
             .filter_map(|line| line.split_whitespace().next())
             .collect();

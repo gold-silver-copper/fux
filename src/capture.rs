@@ -226,8 +226,8 @@ pub fn state(
     let screen = pane.screen();
     // What runs in the foreground: a job the shell started, else the
     // program itself; nothing, where its terminal can't tell.
-    let job = pane.process.job();
-    let foreground = (pane.process.child()).and_then(|child| match job {
+    let job = pane.process().job();
+    let foreground = (pane.process().child()).and_then(|child| match job {
         Ok(job) => Some(job.unwrap_or(child.leader.pid())),
         Err(_) => None,
     });
@@ -240,13 +240,13 @@ pub fn state(
         (Runs::Shell, Ok(None)) => foreground.and_then(fuxix::process::argv),
         (_, Err(_)) => None,
     };
-    let (exited, signal) = match pane.process.exit_status() {
+    let (exited, signal) = match pane.process().exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
         Some(crate::process::Ended::Signalled(signal)) => (Json::Null, Json::int(signal)),
         None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
-    let hung_up = matches!(pane.process, Process::HungUp(_));
+    let hung_up = matches!(pane.process(), Process::HungUp(_));
     let mouse = screen.mouse_protocol_mode();
     let bracketed_paste = screen.mode(Mode::BracketedPaste);
     let pictures = Json::Array(screen.pictures().map(picture).collect());

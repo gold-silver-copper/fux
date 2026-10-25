@@ -506,11 +506,8 @@ fn start(session: &mut Session, client: ClientId) {
 fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
     let pane = (place.pane)
         .ok_or_else(|| session::fail(crate::code::Code::NoPane, "no pane to copy from"))?;
-    let screen = session
-        .panes
-        .get(&pane)
-        .ok_or(Error::NoPane(pane))?
-        .screen();
+    let screen = session.parts.panes().get(&pane);
+    let screen = screen.ok_or(Error::NoPane(pane))?.screen();
     let (cy, cx) = screen.cursor_position();
     let window = screen.window();
     let row = window.row(cy).ok_or(Error::NoRows)?;
@@ -560,7 +557,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     // The key may move the rows it holds.
     copy.held_at = None;
     let pane_id = copy.pane;
-    let Some(pane) = session.panes.get(&pane_id) else {
+    let Some(pane) = session.parts.panes().get(&pane_id) else {
         return;
     };
     let screen = pane.screen();
@@ -846,7 +843,7 @@ mod tests {
         }
         output.push_str("\x1b]133;A\x07$ ");
         s.output(pane, output.as_bytes());
-        let screen = |s: &Session| s.panes.get(&pane).map(|p| p.screen().clone());
+        let screen = |s: &Session| s.parts.panes().get(&pane).map(|p| p.screen().clone());
         let first = screen(&s).ok_or("the pane")?;
         let starts: Vec<usize> = first
             .rows()
@@ -867,7 +864,7 @@ mod tests {
             let Mode::Copy(copy) = &view.mode else {
                 return None;
             };
-            let screen = s.panes.get(&pane)?.screen();
+            let screen = s.parts.panes().get(&pane)?.screen();
             let r = copy.resolve(screen)?;
             Some((r.cursor.0.index(), r.cursor.1, r.top.index()))
         };
@@ -926,7 +923,7 @@ mod tests {
         s.input(big, b"\x02c");
         s.input(big, &[b'k'; 10]);
         s.input(big, &[b'j'; 14]);
-        let screen = s.panes.get(&pane).ok_or("the pane")?.screen();
+        let screen = s.parts.panes().get(&pane).ok_or("the pane")?.screen();
         let shown = screen.size().rows();
         let view = s.views.get(&big).ok_or("the client")?;
         let Mode::Copy(copy) = &view.mode else {

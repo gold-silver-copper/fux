@@ -126,14 +126,17 @@ impl Session {
             return;
         };
         self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
+        let Some(mut p) = self.parts.pane_mut(pane) else {
             return;
         };
         if p.input.refusing() {
             return;
         }
-        let screen = p.parser.screen();
-        if let Err(error) = p.input.push_with(|out| write(screen, out)) {
+        let pane = &mut *p;
+        let screen = pane.parser.screen();
+        let pushed = pane.input.push_with(|out| write(screen, out));
+        drop(p);
+        if let Err(error) = pushed {
             self.notify_to(client, error.to_string(), true);
         }
     }
@@ -155,9 +158,9 @@ impl Session {
     /// The outer terminal gained or lost focus: the client's focused pane
     /// hears of it, if it asked.
     fn focus_event(&mut self, client: ClientId, gained: bool) {
-        if let Some(p) = self
+        if let Some(mut p) = self
             .focused(client)
-            .and_then(|pane| self.panes.get_mut(&pane))
+            .and_then(|pane| self.parts.pane_mut(pane))
             && let Some(report) = p.screen().focus_report(gained)
         {
             let _ = p.input.push(report);
@@ -203,7 +206,7 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(p) = self.panes.get_mut(&pane) else {
+        let Some(mut p) = self.parts.pane_mut(pane) else {
             return;
         };
         let mut report = Vec::new();
@@ -279,8 +282,8 @@ mod tests {
 
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
-        (s.panes.get_mut(&PaneId::of(pane)))
-            .map(|p| p.input.drain_all())
+        (s.parts.pane_mut(PaneId::of(pane)))
+            .map(|mut p| p.input.drain_all())
             .unwrap_or_default()
     }
 
@@ -291,14 +294,15 @@ mod tests {
     }
 
     fn pane_width(s: &Session, pane: u32) -> u16 {
-        s.panes
+        s.parts
+            .panes()
             .get(&PaneId::of(pane))
             .map_or(0, |p| p.screen().size().cols())
     }
 
     /// How many tabs the first workspace has.
     fn tabs(s: &Session) -> Option<usize> {
-        s.workspaces.first().map(|w| w.tabs().len())
+        s.parts.workspaces().first().map(|w| w.tabs().len())
     }
 
     /// The prefix, then `keys`.
@@ -568,7 +572,7 @@ mod tests {
         s.input(c, &prefixed("tmll"));
         assert_eq!(mode(&s, c), "repeat REORDER  h l · Esc");
         escape(&mut s, c);
-        let order: Vec<String> = (s.workspaces.first())
+        let order: Vec<String> = (s.parts.workspaces().first())
             .map(|w| w.tabs().iter().map(|t| t.id.to_string()).collect())
             .unwrap_or_default();
         assert_eq!(order, ["@2", "@3", "@1"]);
@@ -963,12 +967,12 @@ mod tests {
         run(&mut s, "str main workspace str other rename")?;
         assert_eq!(mode(&s, c), "prompt main|", "{}", notice(&s, c));
         s.input(c, b"\x7f\x7f\x7f\x7fnew\r");
-        assert_eq!(s.workspaces.first().map(|w| w.name.as_str()), Some("new"));
+        assert_eq!(s.parts.workspaces().first().map(|w| w.name()), Some("new"));
         run(&mut s, "str c1 client str new workspace confirm-close")?;
         run(&mut s, "str new workspace str again rename")?;
         assert_eq!(mode(&s, c), "confirm close workspace +1 new?");
         s.input(c, b"y");
-        assert!(s.workspaces.iter().all(|w| w.name != "again"));
+        assert!(s.parts.workspaces().iter().all(|w| w.name() != "again"));
         Ok(())
     }
 

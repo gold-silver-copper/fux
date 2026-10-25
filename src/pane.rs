@@ -1,8 +1,9 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::bytes::ByteQueue;
+use crate::events::What;
 use crate::id::PaneId;
 use crate::process::{Child, Ended, Pid};
-use crate::{after, log, outer::Colours};
+use crate::{after, outer::Colours};
 use fux_vt::{Event, Feature, Screen, Size};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -232,9 +233,9 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
-    /// The journal its bells, notifications, titles and commands' ends go
-    /// to, in order.
-    happened: &'a mut log::Log,
+    /// Where its bells, notifications, titles and commands' ends go, in
+    /// order, for the session's journal.
+    happened: &'a mut Vec<What>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -250,7 +251,7 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.as_str().to_owned();
-        self.happened.push(log::Event::Title(title));
+        self.happened.push(What::Title(title));
     }
 }
 
@@ -274,7 +275,7 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             Event::Bell => {
-                self.happened.push(log::Event::Bell);
+                self.happened.push(What::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
@@ -282,7 +283,7 @@ impl fux_vt::Sink for Sink<'_> {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = String::from_utf8_lossy(text);
                 let text: String = text.chars().filter(|c| !c.is_control()).take(500).collect();
-                self.happened.push(log::Event::Notification(text.clone()));
+                self.happened.push(What::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } if data.len() <= crate::copy::MAX_CLIPBOARD => {
@@ -291,7 +292,7 @@ impl fux_vt::Sink for Sink<'_> {
                     *self.copied = Some(text);
                 }
             }
-            Event::CommandEnded(status) => self.happened.push(log::Event::Done(status)),
+            Event::CommandEnded(status) => self.happened.push(What::Done(status)),
             Event::IconName(_) | Event::Clipboard { .. } => {}
         }
     }
@@ -367,15 +368,6 @@ impl Process {
         let group = fuxix::terminal::foreground_group(&child.master)?;
         Ok(group.filter(|group| *group != child.leader.pid()))
     }
-
-    /// The program's terminal hung up: it is read no more, and waits to be
-    /// reaped.
-    pub fn stop_reading(&mut self) {
-        *self = match std::mem::replace(self, Self::Absent) {
-            Self::Reading(child) | Self::HungUp(child) => Self::HungUp(child),
-            other @ (Self::Absent | Self::Exited(_)) => other,
-        };
-    }
 }
 
 /// What a pane runs, which says what its program's exit does.
@@ -422,13 +414,15 @@ pub struct Alerts {
 
 pub struct Pane {
     pub id: PaneId,
-    pub name: String,
-    /// Set by the program with OSC 0 or 2.
-    pub title: Title,
+    /// Changed by `rename` and `respawned`, which say so.
+    name: String,
+    /// Set by the program with OSC 0 or 2, which says so.
+    title: Title,
     /// Its screen's size is the PTY's: the smallest rectangle any client
     /// shows the pane in.
     pub parser: fux_vt::Parser,
-    pub process: Process,
+    /// Its program ends by `exit`, which says so.
+    process: Process,
     pub input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
@@ -460,9 +454,9 @@ pub struct Pane {
     pub copied: Option<String>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
-    /// What happened in it, in order: its journal (`crate::log`), which
-    /// events read.
-    pub record: log::Log,
+    /// What happened in it that events tell, in order, since the session
+    /// last took it into its journal (`workspace::PaneMut`).
+    said: Vec<What>,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
@@ -511,7 +505,7 @@ impl Pane {
             bell: false,
             copied: None,
             wrote_at: Instant::now(),
-            record: log::Log::default(),
+            said: Vec::new(),
             respawns: 0,
             mouse_held: None,
             alerts: Alerts::default(),
@@ -681,7 +675,7 @@ impl Pane {
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
         let mut sink = Sink {
             replies: Vec::new(),
-            happened: &mut self.record,
+            happened: &mut self.said,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -735,7 +729,7 @@ impl Pane {
         }
         self.release_frame();
         if self.parser.resize(size).is_ok() {
-            self.record.push(log::Event::Resize(size));
+            self.said.push(What::Resized(size));
             if let Some(child) = self.process.child() {
                 let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into());
             }
@@ -817,7 +811,10 @@ impl Pane {
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are what the session has yet to take from the old one (a bell, a
         // copy), its colours and log.
-        let mut started = Pane::new(self.id, name, runs, self.size(), history)?;
+        let mut started = Pane::new(self.id, self.name.clone(), runs, self.size(), history)?;
+        started.said = std::mem::take(&mut self.said);
+        started.said.push(What::Respawned);
+        started.rename(name);
         started.colours = std::mem::take(&mut self.colours);
         started.bell = self.bell;
         started.copied = self.copied.take();
@@ -826,6 +823,66 @@ impl Pane {
         started.respawns = self.respawns.saturating_add(1);
         started.process = process;
         Ok(std::mem::replace(self, started).process)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Names it `name`: said, if it is another.
+    pub fn rename(&mut self, name: String) {
+        if name != self.name {
+            self.said.push(What::Renamed(name.clone()));
+            self.name = name;
+        }
+    }
+
+    pub fn process(&self) -> &Process {
+        &self.process
+    }
+
+    /// A pane made with no program runs `child`: a pane not yet in the
+    /// session, which alone is had by value.
+    pub fn running(mut self, child: Child) -> Pane {
+        self.process = Process::Reading(child);
+        self
+    }
+
+    /// The program's terminal hung up: it is read no more, and waits to be
+    /// reaped.
+    pub fn stop_reading(&mut self) {
+        self.process = match std::mem::replace(&mut self.process, Process::Absent) {
+            Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
+            other @ (Process::Absent | Process::Exited(_)) => other,
+        };
+    }
+
+    /// Its program ended so: said, and the process that was there, to be
+    /// reaped.
+    pub fn exit(&mut self, ended: Ended) -> Process {
+        self.said.push(What::Exited(ended));
+        std::mem::replace(&mut self.process, Process::Exited(ended))
+    }
+
+    /// What happened in it that events tell, since last taken, oldest
+    /// first: for the session's journal.
+    pub(crate) fn said(&mut self) -> Vec<What> {
+        std::mem::take(&mut self.said)
+    }
+
+    /// Its process, as it is closed.
+    pub fn into_process(self) -> Process {
+        self.process
+    }
+
+    /// Gives it `process`, as a test's pane runs a child of the test's.
+    #[cfg(test)]
+    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+        std::mem::replace(&mut self.process, process)
+    }
+
+    pub fn title(&self) -> &str {
+        self.title.as_str()
     }
 
     pub fn label(&self) -> &str {
@@ -1270,9 +1327,7 @@ pub(crate) mod tests {
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
-        let said: Vec<String> = (pane.record.after(log::Seq(0)))
-            .map(|e| format!("{:?}", e.event))
-            .collect();
+        let said: Vec<String> = pane.said().iter().map(|what| format!("{what:?}")).collect();
         assert_eq!(
             said,
             ["Done(Some(1))", "Bell", "Done(Some(0))", "Title(\"t\")"]

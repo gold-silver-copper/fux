@@ -159,8 +159,8 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
     Ok(())
 }
 
-/// `fux events` tells what happens, a line each, from `ready` on: a pane
-/// made, a command's end, its bell, its exit, its close.
+/// `fux events` tells what happens, a line each, from `ready` on, in
+/// order: a pane made, its bell, its exit, its close.
 #[test]
 fn events_tell_what_happens() -> Outcome {
     let server = Server::start("")?;
@@ -210,17 +210,10 @@ fn events_tell_what_happens() -> Outcome {
     let created = next(r#""event":"created""#)?;
     assert!(created.contains(r#""name":"agent""#), "{created}");
     next(&format!(r#""event":"created","pane":"{pane}""#))?;
-    // The bell and the exit may come in one round, which tells them by
-    // kind rather than by time: either first.
-    let (mut bell, mut exited) = (false, None);
-    while !bell || exited.is_none() {
-        let line = next(&format!(r#""pane":"{pane}""#))?;
-        bell |= line.contains(r#""event":"bell""#);
-        if line.contains(r#""event":"exited""#) {
-            exited = Some(line);
-        }
-    }
-    let exited = exited.unwrap_or_default();
+    // The bell, then the exit, in the order they happened, one round or
+    // two: an exit told first is passed over, and never found after.
+    next(&format!(r#""event":"bell","pane":"{pane}""#))?;
+    let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
     assert!(exited.ends_with(r#""status":7}"#), "{exited}");
     server.ok(&["str", pane, "pane", "kill"])?;
     next(&format!(r#""event":"closed","pane":"{pane}""#))?;

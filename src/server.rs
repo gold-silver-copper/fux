@@ -4,7 +4,7 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Snapshot, Subscription};
+use crate::events::{BACKLOG, Ending, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -583,13 +583,13 @@ struct Shape(Vec<crate::id::WsId>, Vec<crate::id::TabId>, Vec<PaneId>);
 
 impl Shape {
     fn of(session: &Session) -> Shape {
-        let workspaces = &session.workspaces;
+        let workspaces = session.parts.workspaces();
         Shape(
             workspaces.iter().map(|w| w.id).collect(),
             (workspaces.iter())
                 .flat_map(|w| w.tabs().iter().map(|t| t.id))
                 .collect(),
-            session.panes.keys().copied().collect(),
+            session.parts.panes().keys().copied().collect(),
         )
     }
 }
@@ -881,13 +881,13 @@ impl Server {
             // What the last round read or changed may be what a wait waits
             // for, or an event to tell.
             self.answer_waits(now);
-            self.tell_events();
+            self.tell_events(false);
             if let Some(saved) = &mut self.saved {
                 saved.save_by(&mut self.session, now);
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
-            self.session.panes.values_mut().for_each(Pane::write_input);
+            self.session.parts.each_pane_mut(Pane::write_input);
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
@@ -996,7 +996,7 @@ impl Server {
         if let Some(saved) = &mut self.saved {
             saved.restore = None;
         }
-        if self.session.workspaces.is_empty()
+        if self.session.parts.workspaces().is_empty()
             && let Err(error) = self.session.start()
         {
             log!("starting afresh: {error}");
@@ -1025,30 +1025,25 @@ impl Server {
         }
     }
 
-    /// Tells each stream of events what changed since it last looked; one
-    /// whose reader has fallen too far behind is told it lost events, and
-    /// ends.
-    fn tell_events(&mut self) {
-        let streams = self
-            .conns
-            .iter()
-            .any(|c| matches!(c.stage, Stage::Events(_)));
-        if !streams {
-            return;
-        }
-        let now = Snapshot::of(&self.session);
+    /// Tells each stream of events what the journal holds that it has not
+    /// read, as far as its output has room (`all`: room or none): a reader
+    /// too slow is told the rest as it catches up, or how much of it the
+    /// journal let go.
+    fn tell_events(&mut self, all: bool) {
         for conn in &mut self.conns {
             let Stage::Events(subscription) = &mut conn.stage else {
                 continue;
             };
-            let (lines, gone) = subscription.told(&now, &self.session);
+            let room = match all {
+                true => usize::MAX,
+                false => BACKLOG.saturating_sub(conn.out.len()),
+            };
+            let session = &self.session;
+            let there = |target| session.there(target).is_ok();
+            let (lines, gone) = subscription.told(session.parts.journal(), room, there);
             let json = subscription.json;
-            // Behind with lines to tell: they are lost, and so is the stream.
-            let lost = gone.is_none() && !lines.is_empty() && conn.out.len() > BACKLOG;
-            if !lost {
-                split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
-            }
-            if let Some(ending) = gone.or(lost.then_some(Ending::Lost)) {
+            split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
+            if let Some(ending) = gone {
                 conn.ends(&mut self.session, json, &ending);
             }
         }
@@ -1130,8 +1125,8 @@ impl Server {
                 add(PollFd::new(&tty.fd, flags), Slot::Tty(i));
             }
         }
-        for (id, pane) in &self.session.panes {
-            if let Process::Reading(child) = &pane.process {
+        for (id, pane) in self.session.parts.panes() {
+            if let Process::Reading(child) = &pane.process() {
                 // Output waiting to be read (`Pane::has_unread`) is read
                 // first: until it is, no more is taken from the program.
                 let mut flags = match pane.has_unread() {
@@ -1179,17 +1174,20 @@ impl Server {
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
         self.session.grants.clear();
+        // A stream is told all the journal holds for it, and says why it
+        // ends, as one of its lines, and ends as a command that is done.
+        self.tell_events(true);
+        for conn in &mut self.conns {
+            if let Stage::Events(subscription) = &conn.stage {
+                let json = subscription.json;
+                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
+            }
+        }
         self.session.shutdown();
         // Every connection still open ends, so no command runs on what is
         // left of the session.
         let exit = format!("the fux server stopped: {reason}");
         for conn in &mut self.conns {
-            // A stream says why it ends, as one of its lines, and ends as a
-            // command that is done.
-            if let Stage::Events(subscription) = &conn.stage {
-                let json = subscription.json;
-                conn.ends(&mut self.session, json, &Ending::Stopped(reason.clone()));
-            }
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
@@ -1257,7 +1255,7 @@ impl Server {
         let mut pictures = render::pictures(session, client, &attached.placement);
         let known = attached.known;
         for &(id, rect) in &attached.placement.panes {
-            if session.panes.get(&id).is_some_and(Pane::mid_frame) {
+            if session.parts.panes().get(&id).is_some_and(Pane::mid_frame) {
                 pictures.retain(|p| p.pane != id);
                 let (rows, cols) = (attached.spare.rows, attached.spare.cols);
                 let painted = render::Painted {
@@ -1721,7 +1719,7 @@ impl Server {
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
         if flags.intersects(PollFlags::OUT)
-            && let Some(pane) = self.session.panes.get_mut(&id)
+            && let Some(mut pane) = self.session.parts.pane_mut(id)
         {
             pane.write_input();
         }
@@ -1737,14 +1735,14 @@ impl Server {
             if total >= PANE_READ {
                 break false;
             }
-            let Some(pane) = self.session.panes.get(&id) else {
+            let Some(pane) = self.session.parts.panes().get(&id) else {
                 return;
             };
             // Output already waits: it is read before any more is taken.
             if pane.has_unread() {
                 break false;
             }
-            let Process::Reading(child) = &pane.process else {
+            let Process::Reading(child) = &pane.process() else {
                 return;
             };
             match fuxix::io::read(&child.master, &mut buffer) {
@@ -1775,10 +1773,10 @@ impl Server {
             self.reap();
             // Hung up, unless its exit is being told (the rest of its
             // output still to read): then it exited, and did not hang up.
-            if let Some(pane) = self.session.panes.get_mut(&id)
+            if let Some(mut pane) = self.session.parts.pane_mut(id)
                 && pane.exiting.is_none()
             {
-                pane.process.stop_reading();
+                pane.stop_reading();
             }
         }
     }
@@ -1789,17 +1787,14 @@ impl Server {
     fn reap(&mut self) {
         self.reap_killed();
         let session = &self.session;
-        let panes = session.panes.values().filter_map(|p| p.process.child());
+        let panes = (session.parts.panes().values()).filter_map(|p| p.process().child());
         let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
             .map(|child| child.leader.pid())
             .chain(self.killed.iter().copied())
             .collect();
         fuxix::process::reap_orphans(|pid| leaders.contains(&pid));
-        let exited: Vec<(PaneId, crate::process::Ended)> = self
-            .session
-            .panes
-            .iter()
-            .filter_map(|(id, pane)| Some((*id, pane.process.child()?.leader.exited()?)))
+        let exited: Vec<(PaneId, crate::process::Ended)> = (self.session.parts.panes().iter())
+            .filter_map(|(id, pane)| Some((*id, pane.process().child()?.leader.exited()?)))
             .collect();
         for (id, status) in exited {
             self.session.exited(id, status);
