@@ -249,6 +249,7 @@ impl Through {
             fux::config::Config::default(),
             PathBuf::from("/nonexistent/fux-vt-compare.sock"),
             false,
+            fux::command::Run::now().ok_or("the clock is before 1970")?,
         );
         session.start().map_err(|e| format!("fux: {e}"))?;
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
