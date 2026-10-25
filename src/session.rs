@@ -2811,11 +2811,13 @@ impl Session {
         self.want(wanted, starting.restoring)?;
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
-        // The splitting client follows the new pane; from the CLI, the
-        // clients that focus the split one.
+        // The splitting client follows the new pane, if it shows its tab;
+        // from the CLI, the clients that focus the split one.
+        let tab = self.locate(target).map(|(_, tab)| tab);
+        let shows = |c: &ClientId| tab.is_some_and(|t| self.shows(*c, t));
         let shown = |c: &ClientId| self.focused(*c) == Some(target);
         let followers: Vec<ClientId> = match here {
-            Here::Client(client, _) => vec![client],
+            Here::Client(client, _) => [client].into_iter().filter(shows).collect(),
             Here::Cli(..) => self.views.keys().copied().filter(shown).collect(),
         };
         // Its tab found (by `split_size`) before the program starts, which
@@ -4236,6 +4238,19 @@ mod tests {
         assert!(s.pane(PaneId::of(1)).is_ok_and(Pane::mid_frame));
         let answer = output(&mut s, "%1 0 timeout wait")?;
         assert!(answer.ends_with(" screen\n"), "{answer}");
+        Ok(())
+    }
+
+    /// A client splitting a pane of a tab it does not show stays as it is:
+    /// its own tab keeps its zoom.
+    #[test]
+    fn a_split_elsewhere_leaves_the_splitters_zoom() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "%1 split drop")?;
+        run(&mut s, &format!("str {c} client zoom"))?;
+        run(&mut s, "opts 80 24 size str other name new-workspace drop")?;
+        output_as(&mut s, Some(c), "%3 split drop")?;
+        assert!(s.views.get(&c).is_some_and(|v| v.zoom), "still zoomed");
         Ok(())
     }
 
