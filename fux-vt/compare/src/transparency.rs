@@ -251,7 +251,8 @@ impl Through {
             false,
             fux::command::Run::now().ok_or("the clock is before 1970")?,
         );
-        session.start().map_err(|e| format!("fux: {e}"))?;
+        let size = fux_vt::Size::new(rows, cols).map_err(|e| format!("fux: {e}"))?;
+        session.start(size).map_err(|e| format!("fux: {e}"))?;
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
         let client = session
             .attach_as(ClientKind::Terminal, client_rows, cols, None)
@@ -296,7 +297,7 @@ impl Through {
     /// server's.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<(), String> {
         let client_rows = rows.checked_add(1).ok_or("too many rows for the bar")?;
-        self.session.resize(self.client, client_rows, cols);
+        (self.session.resize(self.client, client_rows, cols)).map_err(|e| format!("fux: {e}"))?;
         self.terminal.resize(client_rows, cols)?;
         let view = self.session.views.get(&self.client).ok_or("fux: no view")?;
         self.session.placement_into(view, &mut self.placement);
@@ -325,15 +326,17 @@ impl Through {
             self.session.output(self.pane, now);
             rest = later;
         }
-        for pane in self.session.panes.values_mut() {
-            pane.input.drain_all();
+        let panes: Vec<PaneId> = self.session.parts.panes().keys().copied().collect();
+        for id in panes {
+            if let Some(mut pane) = self.session.parts.pane_mut(id) {
+                pane.input.drain_all();
+            }
         }
     }
 
     /// Whether the pane holds a frame of synchronized output.
     pub fn held(&self) -> bool {
-        self.session
-            .panes
+        (self.session.parts.panes())
             .get(&self.pane)
             .is_some_and(|p| p.frame_deadline().is_some())
     }
