@@ -642,6 +642,21 @@ fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     Ok(())
 }
 
+/// A picture begun while the host drew no sixel is counted as it ends,
+/// if it drew anything: one empty, or that CAN ended, is none, as on a
+/// host that draws them.
+#[test]
+fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+    p.process(b"\x1bPq\x1b\\\x1bPq~\x18\x1bPq#1;2;100;0;0\x1b\\")?;
+    assert_eq!(p.pictures_refused(), 0);
+    p.process(b"\x1bPq~\x1b\\")?;
+    assert_eq!(p.pictures_refused(), 1);
+    assert_eq!(p.screen().pictures().count(), 0);
+    Ok(())
+}
+
 /// A picture begun while the host drew sixel and ended once it had no cell
 /// size, read across two reads, is not placed, and is counted so.
 #[test]

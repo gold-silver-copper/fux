@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub const MAX_SIDE: u32 = 4096;
 /// The most pixels a picture may keep in all, one a position of its grid,
 /// which bounds its memory.
-const MAX_PIXELS: usize = 4096 * 2160;
+pub const MAX_PIXELS: usize = 4096 * 2160;
 /// The pixel aspect ratio, tall to wide in hundredths, each macro parameter
 /// P1 selects (DEC STD 070, 7.1).
 const MACRO_ASPECT: [u32; 10] = [200, 200, 450, 300, 250, 200, 150, 130, 112, 100];
@@ -227,13 +227,17 @@ pub(crate) struct Decoder {
     /// Some of what it drew was not kept: past what a picture may keep, or
     /// refused room.
     cut: bool,
+    /// Whether its pixels may be given room: one no host draws is read
+    /// only to tell whether it drew anything, and keeps none.
+    keeps: bool,
 }
 
 impl Decoder {
     /// A decoder for the data of `DCS P1 ; P2 ; P3 q`. P3, the grid size,
     /// gets the device's grid that fits it best (DEC STD 070, 7.3 and its
     /// terminology): a screen has one, its pixel, so P3 changes nothing.
-    pub(crate) fn new(p1: u16, p2: u16) -> Box<Self> {
+    /// It `keeps` its pixels, or reads them only (`Self::keeps`).
+    pub(crate) fn new(p1: u16, p2: u16, keeps: bool) -> Box<Self> {
         let tall = MACRO_ASPECT.get(usize::from(p1)).copied().unwrap_or(200);
         Box::new(Self {
             palette: vt340_palette(),
@@ -256,7 +260,13 @@ impl Decoder {
             background: p2 != 1,
             begun: false,
             cut: false,
+            keeps,
         })
+    }
+
+    /// Whether it keeps its pixels: else its picture is not placed.
+    pub(crate) fn keeps(&self) -> bool {
+        self.keeps
     }
 
     /// Reads one byte of the data. Format effectors, SPACE and DELETE are
@@ -337,11 +347,9 @@ impl Decoder {
                 }
                 None
             }
-            // Past a picture's width, the rest would not be kept.
-            Command::Repeat => {
-                self.cut |= a > MAX_SIDE;
-                Some(a.min(MAX_SIDE))
-            }
+            // What it paints past a picture's width is cut as it is
+            // painted (`sixel`): a blank one cuts nothing.
+            Command::Repeat => Some(a),
             Command::Colour => {
                 // A definition in no coordinate system DEC STD 070 (8.1.3)
                 // lists, or past its ranges, is ignored whole, the colour's
@@ -497,7 +505,7 @@ impl Decoder {
             .saturating_mul(u64::from(rows))
             .saturating_mul(4);
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
-        room(self.bytes().saturating_add(bytes), evict)
+        self.keeps && room(self.bytes().saturating_add(bytes), evict)
     }
 
     /// The bytes of pixels drawn so far.
@@ -832,7 +840,7 @@ mod tests {
 
     fn decode(data: &[u8]) -> Option<Arc<Picture>> {
         // P1 9: square pixels; P2 1: pixels no sixel sets stay clear.
-        let mut decoder = Decoder::new(9, 1);
+        let mut decoder = Decoder::new(9, 1, true);
         data.iter().for_each(|b| decoder.push(*b, &mut |_, _| true));
         decoder.finish(&mut |_, _| true).0
     }
@@ -869,7 +877,7 @@ mod tests {
     fn the_first_sixel_colour_contrasts_with_the_background() -> Result<(), String> {
         let picture = decode(b"~").ok_or("no picture")?;
         assert_eq!(picture.pixel(0, 0), Some([51, 204, 51, 255]));
-        let mut decoder = Decoder::new(0, 0);
+        let mut decoder = Decoder::new(0, 0, true);
         b"~".iter().for_each(|b| decoder.push(*b, &mut |_, _| true));
         let picture = decoder.finish(&mut |_, _| true).0.ok_or("no picture")?;
         assert_ne!(picture.pixel(0, 0), picture.background);
@@ -1035,7 +1043,7 @@ mod tests {
     /// more than `MAX_PIXELS`, never 4,096 by 4,096.
     #[test]
     fn growth_stays_within_what_a_picture_may_keep() {
-        let mut decoder = Decoder::new(9, 1);
+        let mut decoder = Decoder::new(9, 1, true);
         // A sixel at the last column, its lowest bit on row 4,095.
         let mut data = b"!2048?".to_vec();
         data.extend(std::iter::repeat_n(b'-', 682));
@@ -1058,17 +1066,19 @@ mod tests {
     /// What a picture drew past what one may keep is not kept, and the
     /// picture says it is not whole: a sixel past `MAX_SIDE` columns, an
     /// extent past it, or pixels refused room. One that drew nothing is
-    /// empty, not cut.
+    /// empty, not cut, a blank repeat past `MAX_SIDE` too.
     #[test]
     fn a_picture_cut_says_so() {
         let ended = |data: &[u8], room: bool| {
-            let mut decoder = Decoder::new(9, 1);
+            let mut decoder = Decoder::new(9, 1, true);
             data.iter().for_each(|b| decoder.push(*b, &mut |_, _| room));
             let (picture, whole) = decoder.finish(&mut |_, _| room);
             (picture.map(|p| (p.width(), p.height())), whole)
         };
         assert_eq!(ended(b"!4096~", true), (Some((4096, 6)), true));
         assert_eq!(ended(b"!4097~", true), (Some((4096, 6)), false));
+        assert_eq!(ended(b"!5000?", true), (None, true));
+        assert_eq!(ended(b"!5000?~", true), (None, false));
         assert_eq!(ended(b"\"1;1;4097;6~", true), (Some((4096, 6)), false));
         assert_eq!(ended(b"~", false), (None, false));
         assert_eq!(ended(b"", true), (None, true));
@@ -1080,7 +1090,7 @@ mod tests {
     /// 4,096 by 6 pixels and show 4,096 by 12 (THREATS.md B04).
     #[test]
     fn a_grid_is_kept_at_its_resolution_and_shown_at_its_aspect() {
-        let mut decoder = Decoder::new(0, 1);
+        let mut decoder = Decoder::new(0, 1, true);
         for byte in b"#1;2;100;0;0!4096~" {
             decoder.push(*byte, &mut |_, _| true);
         }
@@ -1100,7 +1110,7 @@ mod tests {
 mod faults {
     #[test]
     fn a_picture_past_what_one_may_be_is_a_fault() {
-        let mut decoder = super::Decoder::new(0, 0);
+        let mut decoder = super::Decoder::new(0, 0, true);
         for byte in b"#1~~" {
             decoder.push(*byte, &mut |_, _| true);
         }

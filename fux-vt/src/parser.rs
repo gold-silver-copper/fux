@@ -1061,13 +1061,16 @@ impl Parser {
         self.refused
     }
     /// How many sixel pictures the program sent, with [`Feature::Pictures`],
-    /// that were not placed whole: begun while the host drew no sixel
-    /// (`set_host_graphics`), and not read; ended once it had no cell size;
-    /// lifted past a scroll region's top as it was placed; or cut, placed
-    /// or not: what it drew past what a picture may keep
-    /// ([`crate::sixel::MAX_SIDE`] a side, 4096 by 2160 in all, and the
-    /// pictures' budget, [`Parser::set_picture_bytes`]) is not kept. One
-    /// that drew nothing, or that CAN ended, is none.
+    /// that were not placed whole, each counted as it ends: begun while the
+    /// host drew no sixel (`set_host_graphics`), and not kept; ended once
+    /// it had no cell size; lifted past a scroll region's top as it was
+    /// placed; or cut, placed or not: what it drew past what a picture may
+    /// keep ([`crate::sixel::MAX_SIDE`] a side,
+    /// [`crate::sixel::MAX_PIXELS`] in all, and the pictures' budget,
+    /// [`Parser::set_picture_bytes`]) is not kept. One that drew nothing,
+    /// or that CAN ended, is none. One placed whole and let go later, the
+    /// oldest first as newer ones need the room, is not counted, as
+    /// history let go is not.
     pub fn pictures_refused(&self) -> u64 {
         self.pictures_refused
     }
@@ -1340,26 +1343,24 @@ impl Parser {
                 && self.params.is_empty()
         };
         let (decrqss, termcap) = (request(b"$"), request(b"+"));
-        // Sixel: `q` with no intermediates, read only while the host draws
-        // sixel, as DA1 says (with `Feature::Pictures` and a cell size to
-        // lay it out in, `set_host_graphics`).
-        let picture = byte == b'q' && read.as_slice().is_empty();
-        let sixel = self.screen.sixel() && picture;
+        // Sixel: `q` with no intermediates, with `Feature::Pictures`; kept
+        // only while the host draws sixel, as DA1 says (with a cell size to
+        // lay it out in, `set_host_graphics`), else read only to tell
+        // whether it drew anything, which its end counts.
+        let sixel = byte == b'q' && read.as_slice().is_empty();
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {
             self.termcap = true;
             State::IgnoreString
-        } else if sixel {
+        } else if sixel && self.options.has(Feature::Pictures) {
             self.sixel = Some(crate::sixel::Decoder::new(
                 self.params.first(0, 0),
                 self.params.first(1, 0),
+                self.screen.sixel(),
             ));
             State::Sixel
         } else {
-            if picture && self.options.has(Feature::Pictures) {
-                self.pictures_refused = self.pictures_refused.saturating_add(1);
-            }
             State::IgnoreString
         }
     }
@@ -1616,14 +1617,15 @@ impl Parser {
                 }
                 State::Sixel => {
                     let screen = &mut self.screen;
+                    let keeps = self.sixel.as_ref().is_some_and(|d| d.keeps());
                     let (picture, whole) = (self.sixel.take()).map_or((None, true), |decoder| {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
-                    // One with no host cell left to lay it out in, the
-                    // host's having gone as it was read, or that lost bands
-                    // as it was placed, is not placed; one cut is counted
-                    // too, placed or not.
-                    let placed = picture.map(|picture| self.screen.place_picture(picture));
+                    // One begun while the host drew no sixel, with no host
+                    // cell left to lay it out in, the host's having gone as
+                    // it was read, or that lost bands as it was placed, is
+                    // not placed; one cut is counted too, placed or not.
+                    let placed = picture.map(|p| keeps && self.screen.place_picture(p));
                     if !whole || placed == Some(false) {
                         self.pictures_refused = self.pictures_refused.saturating_add(1);
                     }
