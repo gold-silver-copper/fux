@@ -620,8 +620,8 @@ impl std::fmt::Display for Uncopied {
 
 /// A pane: made, in the session, or closed. What it does that events tell
 /// is journaled as it does it: each method that does any takes the
-/// journal at its place (`Teller`), which only the session's parts give
-/// (`workspace::PaneMut`).
+/// journal at its place (`Teller`), through a `PaneMut`: on the
+/// session's journal, only the session's parts give one.
 pub struct Pane {
     /// Given as it is made, and never changed: its events' place.
     id: PaneId,

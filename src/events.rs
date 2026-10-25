@@ -72,8 +72,9 @@ impl Journal {
 pub type PaneAt = ((WsId, TabId), PaneId);
 
 /// The journal at a pane's place: what a pane's methods that change what
-/// events tell write to, at once. Only the session's parts, which hold
-/// the journal, give one (`workspace::PaneMut`).
+/// events tell write to, at once, through a `pane::PaneMut`, which makes
+/// it from the pane's own id. Only the session's parts, which hold the
+/// session's journal, give one on it.
 pub struct Teller<'a> {
     at: PaneAt,
     journal: &'a mut Journal,
