@@ -105,7 +105,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
-    word("Starting", "shares", "x n n -- x", "split: the shares of their split the pane and the new one take, beside its other children's (default: the pane's halved)"),
+    word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
@@ -393,10 +393,10 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
 
 /// A size: columns and rows each 1 to `view::MOST`, as a client's screen,
 /// and so a tab that fits clients, may be.
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen, Failure> {
     let cells = 1..=i64::from(crate::view::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
+    crate::view::Screen::new(rows, cols).map_err(|e| fail(Lang::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
@@ -1335,7 +1335,7 @@ impl fuxth::Host for Host<'_> {
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
-                    size: Some(size),
+                    size: Some(size.size()),
                 })
             }
             "focus" => {

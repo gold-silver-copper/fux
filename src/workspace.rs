@@ -214,7 +214,7 @@ impl Tab {
     }
 
     /// Lays it out on what `fit` says from now on.
-    pub(crate) fn set_fit(&mut self, fit: Fit) {
+    fn set_fit(&mut self, fit: Fit) {
         self.fit = fit;
         self.changed = true;
     }
@@ -437,31 +437,44 @@ impl Parts {
     /// Swaps tab `tab` with its sibling `toward` in its workspace: none if
     /// there is no such tab, false if it has no sibling that way.
     pub(crate) fn reorder_tab(&mut self, tab: TabId, toward: Sibling) -> Option<bool> {
-        (self.workspaces.iter_mut())
-            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward))
+        let swapped = (self.workspaces.iter_mut())
+            .find_map(|w| swap_sibling(&mut w.tabs, |t| t.id == tab, toward));
+        self.reordered(swapped)
     }
 
     /// Swaps workspace `ws` with its sibling `toward`, as `reorder_tab`.
     pub(crate) fn reorder_workspace(&mut self, ws: WsId, toward: Sibling) -> Option<bool> {
-        swap_sibling(&mut self.workspaces, |w| w.id == ws, toward)
+        let swapped = swap_sibling(&mut self.workspaces, |w| w.id == ws, toward);
+        self.reordered(swapped)
     }
 
-    /// The layouts of the tabs no client sizes (`sized` says which do)
-    /// that changed since their panes were sized, each with the area its
-    /// fit lays it out in, for sizing them. Those are then taken as sized,
-    /// as is a sized one, by its clients.
-    pub(crate) fn changed_unshown(
-        &mut self,
-        sized: impl Fn(TabId) -> bool,
-    ) -> impl Iterator<Item = (&Tree, Rect)> {
+    /// A reorder done (`swapped`), which no event tells, counted as a
+    /// change a saved session holds.
+    fn reordered(&mut self, swapped: Option<bool>) -> Option<bool> {
+        if swapped == Some(true) {
+            self.journal.reshaped();
+        }
+        swapped
+    }
+
+    /// Lays tab `tab` out on what `fit` makes of its fit from now on: a
+    /// change a saved session holds.
+    pub(crate) fn set_fit(&mut self, tab: TabId, fit: impl FnOnce(Fit) -> Fit) -> Option<()> {
+        let (_, tab) = tab_mut(&mut self.workspaces, tab)?;
+        let fit = fit(tab.fit);
+        tab.set_fit(fit);
+        self.journal.reshaped();
+        Some(())
+    }
+
+    /// The tabs no client sizes (`sized` says which do) whose layout
+    /// changed since their panes were sized, for sizing them on their fit.
+    /// Those are then taken as sized, as is a sized one, by its clients.
+    pub(crate) fn changed_unshown(&mut self, sized: impl Fn(TabId) -> bool) -> Vec<TabId> {
         let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
-        tabs.filter_map(move |tab| {
-            let changed = std::mem::take(&mut tab.changed);
-            let tab = &*tab;
-            (tab.root.as_ref())
-                .filter(|_| changed && !sized(tab.id))
-                .map(|root| (root, tab.fit.area()))
-        })
+        let changed = |tab: &mut Tab| std::mem::take(&mut tab.changed) && !sized(tab.id);
+        tabs.filter_map(|tab| changed(tab).then_some(tab.id))
+            .collect()
     }
 
     pub fn panes(&self) -> &BTreeMap<PaneId, Pane> {
@@ -565,8 +578,9 @@ impl Parts {
     }
 
     /// The layout `target`'s tab takes split for pane `new` beside it,
-    /// along `axis`, after it, the two taking `shares` of their split if
-    /// given: what the new pane starts at and is put in by (`split`).
+    /// along `axis`, after it, the two dividing what the target had as
+    /// `shares` says if given (`Tree::divide`): what the new pane starts at
+    /// and is put in by (`split`).
     pub(crate) fn plan_split(
         &self,
         (target, new): (PaneId, PaneId),
@@ -578,9 +592,8 @@ impl Parts {
         let was = tabs.find(|t| t.id == tab)?.root.clone()?;
         let mut root = was.clone();
         root.split(target, new, axis, Side::After).then_some(())?;
-        if let Some((theirs, its)) = shares {
-            root.share(target, theirs);
-            root.share(new, its);
+        if let Some(shares) = shares {
+            root.divide((target, new), shares);
         }
         Some(Split { tab, was, root })
     }
@@ -693,30 +706,32 @@ impl Parts {
         let (Some(was_a), Some(was_b)) = (self.locate(a), self.locate(b)) else {
             return;
         };
-        for tab in self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut()) {
+        // Only the tabs that hold them: another, laid out anew, would lose
+        // what its panes have (a zoomed pane, its whole screen).
+        let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
+        for tab in tabs.filter(|t| t.id == was_a.1 || t.id == was_b.1) {
             tab.edit(|root| root.as_mut().map(|r| layout::swap(r, a, b)));
         }
         if was_a != was_b {
             self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
             self.journal.push(Place::Pane(was_a, b), What::Moved(was_b));
+        } else {
+            self.journal.reshaped();
         }
     }
 
-    /// Moves `pane` from its tab to the end of tab `to`, another: every tab
-    /// lets go of it, and `to` takes it.
+    /// Moves `pane` from its tab to the end of tab `to`, another: its tab
+    /// lets go of it, and `to` takes it; no other tab changes.
     pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) {
         let ws = tab_mut(&mut self.workspaces, to).map(|(ws, _)| ws);
         let (Some(was), Some(ws)) = (self.locate(pane), ws) else {
             return;
         };
-        for tab in self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut()) {
-            let takes = tab.id == to;
-            tab.edit(|root| {
-                layout::remove(root, pane);
-                if takes {
-                    layout::append(root, pane);
-                }
-            });
+        if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
+            from.edit(|root| layout::remove(root, pane));
+        }
+        if let Some((_, to)) = tab_mut(&mut self.workspaces, to) {
+            to.edit(|root| layout::append(root, pane));
         }
         self.journal
             .push(Place::Pane((ws, to), pane), What::Moved(was));
@@ -741,6 +756,9 @@ impl Parts {
         let was = tab.root.clone();
         let out = tab.edit(change);
         if sorted(&tab.root) == sorted(&was) {
+            if tab.root != was {
+                self.journal.reshaped();
+            }
             return Some(out);
         }
         tab.edit(|root| *root = was);

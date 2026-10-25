@@ -4,7 +4,7 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Seq, Subscription};
+use crate::events::{BACKLOG, Ending, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -593,8 +593,9 @@ struct Saved {
     at: Instant,
     /// Something changed since it was last saved.
     pending: bool,
-    /// Where in the session's journal it was last saved.
-    saved_at: Seq,
+    /// How many changes to what it holds the journal had counted as it
+    /// was last saved (`Journal::shapes`).
+    saved_at: u64,
     /// The restore under way, if one is: the other end of a socket its
     /// thread closes as it ends (`Server::restored`). Meanwhile what there
     /// is is not saved over the file.
@@ -628,7 +629,7 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
-            saved_at: Seq::default(),
+            saved_at: 0,
             restore: None,
         })
     }
@@ -678,18 +679,21 @@ impl Saved {
     }
 
     /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
-    /// since it was last saved; else it is saved then. A workspace, tab or
-    /// pane made or closed is saved at once: a crash must not lose a pane.
+    /// since it was last saved; else it is saved then. A change to what it
+    /// holds (a workspace, tab or pane made, closed, moved, renamed or
+    /// respawned, an order, a border, a size given) is saved at once: a
+    /// crash must not lose one. What output changes, and screens' sizes
+    /// as a terminal is resized, wait.
     fn save_by(&mut self, session: &mut Session, now: Instant) {
         self.pending |= mem::take(&mut session.edited);
         if !self.pending {
             return;
         }
         let journal = session.parts.journal();
-        if now < self.at && !journal.made_or_closed(self.saved_at) {
+        if now < self.at && journal.shapes() == self.saved_at {
             return;
         }
-        self.saved_at = journal.end();
+        self.saved_at = journal.shapes();
         self.save(session);
         self.at = after(now, SAVE_EVERY);
     }
@@ -1101,21 +1105,29 @@ impl Server {
         }
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is polled only for what it
-            // has to write, and for its end.
-            let mut flags = if conn.reads() {
-                PollFlags::IN
-            } else {
-                PollFlags::HUP
+            // has to write. One with nothing to write either (an attach
+            // held) asks for nothing: a hang-up is told unasked (POSIX),
+            // where the system tells one at all; else it is found as the
+            // connection is read again. Asking for a hang-up would not do:
+            // macOS then wakes for each byte waiting unread, and tells a
+            // peer that shut only its side as hung up.
+            let mut flags = match conn.reads() {
+                true => PollFlags::IN,
+                false => PollFlags::NONE,
             };
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
             match &conn.wire {
                 Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
-                // Each FIFO for its own way, and for its end.
+                // Each FIFO for its own way, the way in for its end too.
                 Wire::Door(fifos) => {
-                    if flags.intersects(PollFlags::IN) {
-                        add(PollFd::new(&fifos.up, PollFlags::IN), Slot::Conn(i));
+                    if conn.reads() || conn.out.is_empty() {
+                        let flags = match conn.reads() {
+                            true => PollFlags::IN,
+                            false => PollFlags::NONE,
+                        };
+                        add(PollFd::new(&fifos.up, flags), Slot::Conn(i));
                     }
                     if flags.intersects(PollFlags::OUT) {
                         add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
@@ -1436,12 +1448,15 @@ impl Server {
         };
         let gone = flags.intersects(PollFlags::HUP | PollFlags::ERR);
         let reads = conn.reads();
-        // One that is not read learns that its peer is gone by writing;
-        // one with nothing to write, that it is gone.
+        // One that is not read learns that its peer is gone by writing.
+        // A hang-up says only that nothing more comes (macOS says it of a
+        // peer that shut its side): one that is read once its answer is
+        // written takes what it sent first; one that is still not read,
+        // with nothing to write, is dead.
         if flags.intersects(PollFlags::OUT) || (gone && !reads) {
             conn.flush(&mut self.session);
         }
-        if gone && !reads && conn.out.is_empty() {
+        if gone && !conn.reads() && conn.out.is_empty() {
             conn.enter(&mut self.session, Stage::Dead);
         }
         // A command client whose answer is now written: its next request

@@ -22,8 +22,9 @@ fux                               # attach, starting a server if none runs
 none answers; `fux str work attach-to` attaches to workspace `work`, and
 `fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
 new server holds nothing: the first client to attach starts workspace
-`main`, with one tab and a shell, on its screen. `C-b d` detaches, and the
-shells keep running. Inside a fux pane, `fux` refuses to attach.
+`main`, with one tab and a shell, on its screen. `fux watch` starts
+nothing: with no server, or one holding nothing, it is refused. `C-b d`
+detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached
@@ -375,8 +376,9 @@ name (made if missing; a tab's name is the server's alone, so close what it
 holds first): `fux str dev workspace dump-of > dev.fux; fux dev.fux`. Each
 tab is made at the size it has (`size`), which a server with no client
 needs; one that fits clients' screens fits them again after
-(`resize-auto`). Each split is made with the shares its panes have
-(`2 1 shares`), so the layout comes back as it was, at every size. A split
+(`resize-auto`). Each split is made with shares (`2 1 shares`: the pane
+split keeps two thirds of its room, the new one takes a third), so the
+layout comes back as it was, at every size. A split
 or a move that would hide a pane, on its tab's size or on the screen of a
 client showing it (but one that only watches), is refused: whatever there
 is can be made again.

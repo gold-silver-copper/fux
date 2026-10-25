@@ -115,19 +115,23 @@ impl Session {
     }
 
     /// The `split` lines that make `split`'s children beside its first,
-    /// along `axis`, each with its share, and then each child's own: the
-    /// layout made again is the one there is, at every size.
+    /// along `axis`, and then each child's own: each line divides what the
+    /// child before had between it and the rest (`Tree::divide`), so each
+    /// has its weight, and the layout made again is the one there is, at
+    /// every size.
     fn dump_split(&self, axis: Axis, split: &Split, ids: bool, out: &mut String) {
         let firsts: Vec<_> = (split.children())
-            .filter_map(|(share, child)| Some((child.first_pane()?, share)))
+            .filter_map(|(share, child)| Some((child.first_pane()?, u64::from(share.get()))))
             .collect();
         let way = match axis {
             Axis::Horizontal => "horizontal",
             Axis::Vertical => "vertical",
         };
-        for ((before, theirs), (pane, its)) in firsts.iter().zip(firsts.iter().skip(1)) {
+        let mut rest = (firsts.iter()).fold(0u64, |sum, (_, share)| sum.saturating_add(*share));
+        for ((before, theirs), (pane, _)) in firsts.iter().zip(firsts.iter().skip(1)) {
+            rest = rest.saturating_sub(*theirs);
             let mut line = vec![pane_name(*before), way.into()];
-            line.extend([theirs.to_string(), its.to_string(), "shares".to_owned()]);
+            line.extend([theirs.to_string(), rest.to_string(), "shares".to_owned()]);
             self.pane_words(*pane, ids, &mut line);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
