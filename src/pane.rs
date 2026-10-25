@@ -962,7 +962,8 @@ impl<S> Pane<S> {
     /// Sizes its program's terminal as its screen is, and in pixels as the
     /// cell it is told makes it, where one is and the whole fits the
     /// kernel's count: a change of either signals the program (SIGWINCH),
-    /// which asks again.
+    /// which asks again. One the system refuses leaves it as it was, the
+    /// screen sized all the same, as `process::spawn` leaves its pixels.
     fn size_terminal(&self) {
         let Some(child) = self.process.child() else {
             return;

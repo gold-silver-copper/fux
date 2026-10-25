@@ -30,10 +30,12 @@ pub fn spawn(
 ) -> Result<Child, String> {
     let program = argv.first().ok_or("no program to run")?;
     let (master, slave) = fuxix::pty::open(size.nonzero().into()).map_err(|e| e.to_string())?;
-    // Before the program starts, which may ask but once.
+    // Before the program starts, which may ask but once. Its size in
+    // cells is set (`open`), or nothing starts; its pixels are told where
+    // the system takes them, else left unknown (0 by 0), as
+    // `Pane::size_terminal` leaves them, a program never refused for them.
     if let Some(pixels) = pixels(size, cell) {
-        fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels))
-            .map_err(|e| e.to_string())?;
+        let _ = fuxix::terminal::set_window_size(&master, size.nonzero().into(), Some(pixels));
     }
     let (child, pid) = slave
         .spawn(argv, |command| {
