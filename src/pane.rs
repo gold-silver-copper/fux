@@ -595,8 +595,9 @@ pub struct Pane<S = crate::workspace::Placed> {
 pub struct Left {
     /// What it wrote to its terminal.
     pub output: Output,
-    /// Bytes of input queued for it that it never read, let go
-    /// (`InputQueue::discard`).
+    /// Bytes of input queued for it and not yet written to its terminal,
+    /// let go (`InputQueue::discard`): what was written and not read is
+    /// not known.
     pub input: usize,
 }
 

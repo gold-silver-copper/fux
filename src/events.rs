@@ -214,7 +214,7 @@ impl What {
 
 /// `truncated` (`true`) if a program left more on its terminal as it ended
 /// than is read (`Output::Cut`), and `input_unread`, the bytes of input
-/// queued for it it never read, if any.
+/// queued for it not yet written to its terminal, if any.
 fn left_said(left: Left) -> impl Iterator<Item = (&'static str, Json<'static>)> {
     let cut = match left.output {
         Output::Read => None,

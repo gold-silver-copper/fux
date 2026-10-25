@@ -3520,7 +3520,7 @@ fn left_told(Left { output, input }: Left, who: &str) -> String {
     };
     if input > 0 {
         told.push_str(&format!(
-            "; {input} bytes of input queued for it were never read"
+            "; {input} bytes of input queued for it were never written to it"
         ));
     }
     told
@@ -4534,7 +4534,7 @@ mod tests {
         );
         let said = notice(&s).map(|n| n.text).unwrap_or_default();
         assert!(
-            said.ends_with("; 3 bytes of input queued for it were never read"),
+            said.ends_with("; 3 bytes of input queued for it were never written to it"),
             "{said}"
         );
         assert!(s.pane(id).is_ok_and(|p| p.input.is_empty()));
