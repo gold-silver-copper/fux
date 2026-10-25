@@ -766,6 +766,15 @@ impl Session {
         let ws = (self.parts.workspaces().iter()).find(|w| w.tabs().iter().any(|t| t.id == tab));
         ws.map(|w| w.id).ok_or(Error::NoTab(tab))
     }
+    /// The workspace that holds `target` (a workspace, itself), if it is
+    /// there.
+    pub fn holder(&self, target: AnyRef) -> Option<WsId> {
+        match target {
+            AnyRef::Pane(p) => self.locate(p).map(|(ws, _)| ws),
+            AnyRef::Tab(t) => self.tab_workspace(t).ok(),
+            AnyRef::Workspace(w) => self.workspace(w).map(|w| w.id),
+        }
+    }
     /// The workspace client `client` shows.
     pub fn shown_workspace(&self, client: ClientId) -> Option<&Workspace> {
         (self.parts.workspaces().iter()).find(|w| w.viewers.contains(&client))
@@ -4769,8 +4778,9 @@ mod tests {
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
         let mut stream = crate::events::Subscription::new(None, false, None, s.parts.journal());
         change(s);
-        let there = |target| s.there(target).is_ok();
-        stream.told(s.parts.journal(), usize::MAX, there).0
+        stream
+            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
+            .0
     }
 
     /// A rename and its undo in one request are both told, in order: what

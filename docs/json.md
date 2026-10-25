@@ -139,11 +139,11 @@ even a stream that reads at once, of another pane, miss some, which
 | `event` | Also |
 | --- | --- |
 | `ready` | first: from here on nothing is missed unsaid |
-| `gone` | last: everything `events-of-json` named has closed (status 4) |
+| `gone` | last: everything `events-of-json` named has closed or, through a grant, moved out of its workspace (status 4) |
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `respawned`, `bell` | |
-| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to |
+| `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
 | `exited` | `status` (`null` if it was lost) or `signal` |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |

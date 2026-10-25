@@ -1003,8 +1003,8 @@ impl Server {
                 false => BACKLOG.saturating_sub(conn.out.len()),
             };
             let session = &self.session;
-            let there = |target| session.there(target).is_ok();
-            let (lines, gone) = subscription.told(session.parts.journal(), room, there);
+            let holder = |target| session.holder(target);
+            let (lines, gone) = subscription.told(session.parts.journal(), room, holder);
             let json = subscription.json;
             split_into(lines.as_bytes(), ToCommand::Stdout, &mut conn.out);
             if let Some(ending) = gone {

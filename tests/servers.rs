@@ -351,6 +351,73 @@ fn a_revoke_ends_an_idle_connection_through_it() -> Outcome {
     Ok(())
 }
 
+/// A stream of events through a grant is told nothing of a pane once it
+/// leaves the granted workspace, but that it moved out, and then ends
+/// (`gone`); and a revoke ends every stream through the grant.
+#[test]
+fn a_grant_stream_ends_as_its_pane_leaves_and_on_revoke() -> Outcome {
+    let server = Server::start("")?;
+    let granted = server.dir.join("s").join("granted.sock");
+    let socket = granted.to_string_lossy().into_owned();
+    server.ok(&["str", "sandbox", "str", &socket, "grant"])?;
+    let job = ["opts", "80", "24", "size", "str", "sh", "program"];
+    let run = || server.fux_env(&[&job[..], &["run"]].concat(), &[("FUX_SOCKET", &socket)]);
+    let (pane, _) = (run()?, run()?);
+    let pane = first_word(&pane.stdout).to_owned();
+    // The stream's lines, a line at a time, and the stream itself.
+    let stream = |args: &[&str]| -> Result<_, String> {
+        let mut child = Command::new(FUX)
+            .args(args)
+            .env("FUX_SOCKET", &socket)
+            .env_remove("FUX_PANE")
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(e)?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let (lines, read) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let ready = read.recv_timeout(PATIENCE).map_err(e)?;
+        assert_eq!(ready, "ready");
+        Ok((child, read))
+    };
+    // Every line it is told until it ends, and how it ended.
+    let rest = |(mut child, read): (std::process::Child, std::sync::mpsc::Receiver<String>)| {
+        let deadline = after(PATIENCE);
+        let mut lines = Vec::new();
+        while let Ok(line) =
+            read.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            lines.push(line);
+        }
+        let _ = child.kill();
+        Ok::<_, String>((lines, child.wait().map_err(e)?.code()))
+    };
+    let of_pane = stream(&["str", &pane, "pane", "events-of"])?;
+    server.ok(&["str", &pane, "pane", "str", "new-workspace", "move-to"])?;
+    server.ok(&["str", &pane, "pane", "str", "away", "rename"])?;
+    let (lines, status) = rest(of_pane)?;
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    let moved = lines.first().map(String::as_str).unwrap_or_default();
+    assert!(
+        moved.starts_with(&format!("moved {pane} from_tab=")),
+        "{lines:?}"
+    );
+    assert_eq!(lines.last().map(String::as_str), Some("gone"));
+    assert_eq!(status, Some(4));
+    let all = stream(&["events"])?;
+    server.ok(&["str", &socket, "revoke"])?;
+    let (lines, status) = rest(all)?;
+    assert!(!lines.iter().any(|l| l == "ready"), "{lines:?}");
+    assert!(status.is_some_and(|s| s != 0), "{status:?}");
+    Ok(())
+}
+
 /// A command client that sends request after request without reading the
 /// answers is read no more once they back up, the requests it already sent
 /// included, so it holds no more of the server's memory than its socket
