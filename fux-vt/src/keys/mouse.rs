@@ -225,21 +225,20 @@ pub fn mouse_bytes(
     if mode != MouseProtocolMode::Press {
         code |= u32::from(event.mods.bits()) << MODIFIERS_AT;
     }
-    let (x, y) = (
-        u32::from(event.col).saturating_add(1),
-        u32::from(event.row).saturating_add(1),
-    );
+    // The position from zero: a cell's, or its middle pixel's, which no
+    // cell size known leaves none of.
+    let (x, y) = match (encoding, cell) {
+        (MouseProtocolEncoding::SgrPixels, Some(cell)) => (
+            middle(event.col, cell.width()),
+            middle(event.row, cell.height()),
+        ),
+        (MouseProtocolEncoding::SgrPixels, None) => return false,
+        _ => (u32::from(event.col), u32::from(event.row)),
+    };
+    let (x, y) = (x.saturating_add(1), y.saturating_add(1));
     match encoding {
         // Writing to a Vec cannot fail.
-        MouseProtocolEncoding::Sgr => {
-            let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
-        }
-        MouseProtocolEncoding::SgrPixels => {
-            let Some(cell) = cell else {
-                return false;
-            };
-            let x = middle(event.col, cell.width()).saturating_add(1);
-            let y = middle(event.row, cell.height()).saturating_add(1);
+        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels => {
             let _ = write!(out, "\x1b[<{code};{x};{y}{last}");
         }
         MouseProtocolEncoding::Urxvt => {
