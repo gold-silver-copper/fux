@@ -357,9 +357,8 @@ impl Session {
     /// its palette whole, so that another client's replaces it, entries it
     /// did not say cleared; and what `graphics_client`'s terminal draws,
     /// which is nothing in a tab no client shows with a cell size, so a
-    /// program started there draws in text, which a capture reads (and its
-    /// mouse reports are made in that terminal's cells). With no such
-    /// terminal, nothing.
+    /// program started there draws in text, which a capture reads. With no
+    /// such terminal, nothing.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
@@ -563,7 +562,7 @@ mod tests {
         Ok(())
     }
 
-    /// A pane's pictures and pixels are of a terminal showing its tab that
+    /// A pane's pictures and cell size are of a terminal showing its tab that
     /// said its cell size, whether or not it said its colours; not of one
     /// that typed there and went to another tab.
     #[test]

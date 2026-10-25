@@ -2559,8 +2559,6 @@ impl Session {
         use fux_vt::MouseProtocolMode as Asked;
         use fux_vt::keys::mouse::MouseAction::{Motion, Press, Release};
         let run = self.run;
-        // Made in the cell size its terminal says now.
-        self.hosted(target);
         let mut p = self.live_pane_mut(target)?;
         let size = p.size();
         if row >= size.rows() || col >= size.cols() {

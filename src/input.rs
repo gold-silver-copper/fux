@@ -210,7 +210,7 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(mut p) = self.hosted(pane) else {
+        let Some(mut p) = self.parts.pane_mut(pane) else {
             return;
         };
         let mut report = Vec::new();
