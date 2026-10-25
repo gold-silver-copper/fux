@@ -3505,12 +3505,43 @@ fn round<T>(items: &[T], index: usize, toward: Sibling) -> Option<&T> {
     items.get(next).filter(|_| len > 1)
 }
 
+/// A session itself, as what a program's requests go to, for the tests
+/// and the fuzz targets: each is begun at once, and a wait answered as it
+/// stands, there being no programs to wait on; an event stream and a
+/// grant, which a real server alone serves, are not.
+#[cfg(any(test, feature = "in-process"))]
+pub struct InProcess<'s>(pub &'s mut Session);
+
+#[cfg(any(test, feature = "in-process"))]
+impl crate::script::Asks for InProcess<'_> {
+    fn ask(
+        &mut self,
+        asked: &crate::protocol::Asked,
+        out: &mut dyn std::io::Write,
+    ) -> Result<Reply, crate::script::Failed> {
+        let session = &mut *self.0;
+        let origin = match asked.context.client {
+            Some(client) if session.views.contains_key(&client) => Origin::Client(client),
+            Some(_) | None => Origin::Cli(Caller::default()),
+        };
+        let outcome = match session.begin(asked.request.clone(), &origin) {
+            Begun::Done(outcome) => outcome,
+            Begun::Waiting(waiting) => waiting.answer(session, waiting.due()).unwrap_or_default(),
+            Begun::Events(_) => {
+                let _ = std::io::Write::write_all(out, b"events stream from a real server only\n");
+                Reply::default()
+            }
+            Begun::Grant(..) => Reply::failed(Code::Grant, "a grant is made by a real server only"),
+        };
+        Ok(outcome)
+    }
+}
+
 /// What the other modules' tests share: a session started with the default
 /// config, a client attached, and a command line run in it.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{Origin, Reply, Session};
-    use crate::code::Code;
+    use super::{InProcess, Reply, Session};
     use crate::command::{Command, Request};
     use crate::config::Config;
     use crate::id::ClientId;
@@ -3538,39 +3569,6 @@ pub(crate) mod testing {
             .attach(rows, cols, None)
             .map_err(|e| e.to_string())?;
         Ok((session, client))
-    }
-
-    /// A session itself, as what a program's requests go to: each is begun
-    /// at once, and a wait answered as it stands, there being no programs
-    /// to wait on.
-    pub(crate) struct InProcess<'s>(pub &'s mut Session);
-
-    impl crate::script::Asks for InProcess<'_> {
-        fn ask(
-            &mut self,
-            asked: &crate::protocol::Asked,
-            out: &mut dyn std::io::Write,
-        ) -> Result<Reply, crate::script::Failed> {
-            let session = &mut *self.0;
-            let origin = match asked.context.client {
-                Some(client) if session.views.contains_key(&client) => Origin::Client(client),
-                Some(_) | None => Origin::Cli(super::Caller::default()),
-            };
-            let outcome = match session.begin(asked.request.clone(), &origin) {
-                super::Begun::Done(outcome) => outcome,
-                super::Begun::Waiting(waiting) => {
-                    waiting.answer(session, waiting.due()).unwrap_or_default()
-                }
-                super::Begun::Events(_) => {
-                    let _ = writeln!(out, "events stream from a real server only");
-                    Reply::default()
-                }
-                super::Begun::Grant(..) => {
-                    Reply::failed(Code::Grant, "a grant is made by a real server only")
-                }
-            };
-            Ok(outcome)
-        }
     }
 
     /// Runs fuxth `code` as client `client` would, or from no client: what

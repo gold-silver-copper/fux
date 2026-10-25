@@ -13,7 +13,6 @@
 //! the programs the session hands a client (`ToAttached::Run`) and keys sent
 //! to it (`ToAttached::Keys`).
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::num::NonZeroUsize;
 
 use fux::act::Act;
@@ -25,31 +24,13 @@ use fux::id::{ClientId, PaneId};
 use fux::keymap::{Held, Keymap};
 use fux::keys::{Key, Keystroke};
 use fux::outer;
-use fux::protocol::{Asked, Context, Reply, ToAttached};
+use fux::protocol::{Context, ToAttached};
 use fux::render::{Grid, compose_view, paint_into};
 use fux::screens::{Effect, Screen};
-use fux::script::{AsClient, Asks, Failed, Host, run_capped};
-use fux::session::{Begun, Origin, Outgoing, Session};
+use fux::script::{AsClient, Host, run_capped};
+use fux::session::{InProcess, Outgoing, Session};
 use fux::view::Mode;
 use libfuzzer_sys::fuzz_target;
-
-/// A session asked in-process, as a server answers a request: begun at
-/// once; a wait not waited on, there being no programs, and no time that
-/// both sessions share. What the client does itself is not in-process.
-struct InSession<'a>(&'a mut Session);
-
-impl Asks for InSession<'_> {
-    fn ask(&mut self, asked: &Asked, _out: &mut dyn Write) -> Result<Reply, Failed> {
-        let origin = match asked.context.client {
-            Some(client) if self.0.views.contains_key(&client) => Origin::Client(client),
-            Some(_) | None => Origin::Cli(fux::session::Caller::default()),
-        };
-        Ok(match self.0.begin(asked.request.clone(), &origin) {
-            Begun::Done(outcome) => outcome,
-            Begun::Waiting(_) | Begun::Events(_) | Begun::Grant(..) => Reply::default(),
-        })
-    }
-}
 
 /// The client's screen as it should look now, in a grid of its own.
 fn compose(s: &Session, c: ClientId) -> Option<Grid> {
@@ -310,7 +291,7 @@ impl Run {
         // As a client runs it: the real loop, a screen it opens built with
         // what the session answers.
         let mut asks = AsClient {
-            asks: &mut InSession(&mut self.s),
+            asks: &mut InProcess(&mut self.s),
             context,
             opened: None,
         };
