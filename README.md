@@ -287,8 +287,8 @@ prints them all.
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
 `update-environment`, which a pane takes from whoever starts it, and, last,
-what a program's `env` sets (`opts str NAME str VALUE env str PROGRAM
-program run`). A name in `update-environment` that the starter lacks is
+what a program's `env` sets (`opts str NAME str VALUE env 80 24 size str
+PROGRAM program run`). A name in `update-environment` that the starter lacks is
 unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
 table's value. A starter with no environment at all, as `env -i` leaves
 one, changes none.
