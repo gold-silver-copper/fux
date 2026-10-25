@@ -1,5 +1,6 @@
 //! Bounded terminal emulation with immutable history windows and stable row IDs.
 //! See the crate README for the sequence and resource contracts.
+#![forbid(missing_docs, clippy::print_stderr)]
 
 /// Writes an enum and `Ty::ALL`, its variants in order. Given a leading
 /// `fn name(self) -> T;` and `Variant => value,` rows, it writes that
