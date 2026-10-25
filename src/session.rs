@@ -1664,8 +1664,7 @@ impl Session {
     }
 
     /// Removes a pane and its process. A tab its closing empties closes too,
-    /// as does a workspace left with no tabs; a tab emptied by moving its
-    /// panes out stays.
+    /// as does a workspace left with no tabs.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
         // Who sees the pane is known before its tab can go: a tab its
         // closing empties takes its viewers elsewhere.

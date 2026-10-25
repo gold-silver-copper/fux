@@ -660,7 +660,7 @@ fn check(run: &Run) {
     let mut seen: BTreeMap<PaneId, usize> = BTreeMap::new();
     for ws in s.parts.workspaces() {
         for tab in ws.tabs() {
-            for pane in tab.root().iter().flat_map(|r| r.panes()) {
+            for pane in tab.root().panes() {
                 assert!(
                     s.parts.panes().contains_key(&pane),
                     "{pane} is in {} but gone",

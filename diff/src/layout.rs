@@ -56,7 +56,7 @@ enum Change {
 macro_rules! stack {
     (
         $name:ident, $fux:ident, $ids:ident, $tree:ident, $area:expr, $line:expr, $split:expr,
-        $remove:expr, $pane:expr
+        $remove:expr, $swap:expr, $pane:expr
     ) => {
         mod $name {
             use super::{Change, Shape};
@@ -164,7 +164,7 @@ macro_rules! stack {
                             if let (Some(root), Some(a), Some(b)) =
                                 (&mut self.root, pane(a), pane(b))
                             {
-                                layout::swap(root, a, b);
+                                $swap(root, a, b);
                             }
                             String::new()
                         }
@@ -213,6 +213,7 @@ stack!(
             .is_some_and(|r| r.split(target, new, axis, side))
     },
     layout::remove,
+    layout::swap,
     |text| text.parse().ok()
 );
 stack!(
@@ -235,12 +236,23 @@ stack!(
     // A split needs a tree with a pane in it.
     |root: &mut Option<Tree>, target, new, axis, side| {
         root.as_mut().is_some_and(|r| {
-            r.split((target, new), (axis, side), fux::layout::HALVED)
+            r.split((target, new), (axis, side), fux::layout::Shares::HALVED)
                 .is_ok()
         })
     },
-    // Removed, rounded or not, as the baseline's true.
-    |root: &mut Option<Tree>, pane| layout::remove(root, pane) != layout::Removed::Absent,
+    // Removed, as the baseline's true; `None` once the last pane goes.
+    |root: &mut Option<Tree>, pane| match root.as_ref().map(|r| r.remove(pane)) {
+        Some(layout::Removed::Left(rest)) => {
+            *root = Some(rest);
+            true
+        }
+        Some(layout::Removed::Emptied) => {
+            *root = None;
+            true
+        }
+        Some(layout::Removed::Absent) | None => false,
+    },
+    |root: &mut Tree, a, b| root.swap(a, b),
     |text| text.parse().ok()
 );
 
