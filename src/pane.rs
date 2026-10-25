@@ -940,8 +940,8 @@ impl Pane {
     }
 
     /// What happened in it that events tell, since last taken, oldest
-    /// first: for the session's journal.
-    pub(crate) fn said(&mut self) -> Vec<What> {
+    /// first: for the session's journal, which alone gives the leave.
+    pub(crate) fn said(&mut self, _: crate::workspace::Journaling) -> Vec<What> {
         std::mem::take(&mut self.said)
     }
 
@@ -1473,7 +1473,7 @@ pub(crate) mod tests {
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
-        let said: Vec<String> = pane.said().iter().map(|what| format!("{what:?}")).collect();
+        let said: Vec<String> = pane.said.iter().map(|what| format!("{what:?}")).collect();
         assert_eq!(
             said,
             [

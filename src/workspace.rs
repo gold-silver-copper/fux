@@ -335,7 +335,14 @@ pub struct Parts {
 
 /// A pane of the session's, to change: what it says happened in it
 /// (`Pane::said`) goes in the journal, at its place, as the borrow ends.
+/// The type does not stop a whole pane being put in its place (`*pane =
+/// other`), which would lose what the old one said: no code does.
 pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
+
+/// Leave to take what a pane said (`Pane::said`), which only this module
+/// gives, as it puts what it takes in the journal: code elsewhere cannot
+/// take it and drop it.
+pub struct Journaling(());
 
 impl std::ops::Deref for PaneMut<'_> {
     type Target = Pane;
@@ -352,7 +359,7 @@ impl std::ops::DerefMut for PaneMut<'_> {
 
 impl Drop for PaneMut<'_> {
     fn drop(&mut self) {
-        for what in self.0.said() {
+        for what in self.0.said(Journaling(())) {
             self.2.push(self.1, what);
         }
     }
