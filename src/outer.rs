@@ -206,10 +206,11 @@ impl Session {
             Reply::CellSize { width, height } => {
                 terminal.cell = fux_vt::CellSize::new(width, height);
                 if terminal.cell.is_none() && width != 0 && height != 0 {
+                    let (least_width, least_height) = fux_vt::CellSize::LEAST;
                     view.notify(
                         format!(
                             "your terminal's cell, {width}x{height} pixels, is smaller than a sixel band \
-                             (2x6): no pictures"
+                             ({least_width}x{least_height}): no pictures"
                         ),
                         true,
                     );
@@ -566,7 +567,7 @@ mod tests {
     }
 
     /// A cell said 0 wide or high is no size said, which is no fault; one
-    /// under a sixel band (2 by 6) is refused, and told.
+    /// under a sixel band (`CellSize::LEAST`) is refused, and told.
     #[test]
     fn a_cell_of_0_is_no_size_and_a_small_one_is_refused() -> Outcome {
         let (mut s, c) = session()?;

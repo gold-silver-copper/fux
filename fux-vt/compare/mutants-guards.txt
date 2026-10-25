@@ -129,9 +129,9 @@ fux-vt/src/sixel.rs: replace < with == in Picture::pixel @ let drawn = (x < self
 fux-vt/src/sixel.rs: replace < with > in Picture::pixel @ let drawn = (x < self.across && y < self.down)
 fux-vt/src/sixel.rs: replace < with <= in Picture::pixel @ let drawn = (x < self.across && y < self.down)
 fux-vt/src/sixel.rs: replace && with || in Picture::pixel @ let drawn = (x < self.across && y < self.down)
-fux-vt/src/screen/pictures.rs: replace holds_a_band -> bool with true @ width >= 2 && height >= 6
-fux-vt/src/screen/pictures.rs: replace && with || in holds_a_band @ width >= 2 && height >= 6
-fux-vt/src/screen/pictures.rs: replace >= with < in holds_a_band @ width >= 2 && height >= 6
+fux-vt/src/screen/pictures.rs: replace holds_a_band -> bool with true @ width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
+fux-vt/src/screen/pictures.rs: replace && with || in holds_a_band @ width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
+fux-vt/src/screen/pictures.rs: replace >= with < in holds_a_band @ width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
 
 # B07
 fux-vt/src/sixel.rs: replace fits_rgba -> bool with true @ let bytes = (u64::from(width).checked_mul(u64::from(height)))

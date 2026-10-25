@@ -329,7 +329,9 @@ mod tests {
             out
         };
         let readme = include_str!("../README.md");
+        let (least_width, least_height) = fux_vt::CellSize::LEAST;
         for said in [
+            format!("{least_width} by {least_height} pixels"),
             format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
             format!("to {} MiB encoded", crate::copy::MAX_CLIPBOARD >> 20),
             format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
