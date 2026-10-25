@@ -70,9 +70,9 @@ fux %3 str q text send-keys                       # press q: its version from be
   with the file, line and word, and exits 1; a wait exits 4 if the pane
   closed, 124 if nothing changed in time.
 - A single argument is a whole program (`fux 'ls json'`), never a file,
-  whatever it holds; `fux --file FILE` runs a file, so a script can start
-  with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin says.
-  `#` starts a comment.
+  whatever it holds; `fux --file FILE ARGS…` runs a file, so a script can
+  start with `#!/usr/bin/env -S fux --file`; and `fux -` runs what stdin
+  says. `#` starts a comment.
 - The language's core is small on purpose: a few words and parsing words
   (`str`, `define`, `let`, `if`, `begin`, `list`, `each`, `try`), listed by
   `fux help` and at length in [fuxth/README.md](fuxth/README.md).
@@ -114,6 +114,24 @@ A program can name what it made; a wait on an action's answer waits from the ver
 ```sh
 fux opts 80 24 size str sh program str -c arg str 'echo hello; sleep 1' arg run let P   P wait drop   P capture
 ```
+
+A script plays well with the shell. `args` gives the arguments after
+`--file FILE`, `input` the rest of stdin, `read-file` a file's text (UTF-8,
+16 MiB at most), `getenv` a variable (one not set fails `unset_var`, never
+an empty string); `warn` prints on stderr, and `N exit` ends the program
+with exit status N:
+
+```sh
+$ cat greet.fux
+#!/usr/bin/env -S fux --file
+args each str 'hello ' swap cat print end
+$ ./greet.fux ann bob
+hello ann
+hello bob
+```
+
+These words are the command line's alone: a config's or a key's program is
+refused them (`not_here`).
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`

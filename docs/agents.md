@@ -276,8 +276,8 @@ str make arg run`.
 
 ## programs: A program
 
-A file of fuxth runs with `fux --file FILE` (or `fux -` from stdin; a
-script may start `#!/usr/bin/env -S fux --file`), and keeps its names
+A file of fuxth runs with `fux --file FILE ARGS…` (or `fux -` from stdin;
+a script may start `#!/usr/bin/env -S fux --file`), and keeps its names
 between steps:
 
 ```fux
@@ -306,7 +306,12 @@ mistake every run would make (too few values, a string given to `add` or
 `if`, a request nothing acts on: its error names the word to end it with)
 fails before any word acts; otherwise the words before a failing one have
 already acted. A run exits 0, or with the status of the failure that
-stopped it.
+stopped it, or the one `N exit` gives (0 to 255), what is left printed.
+From the command line alone, a script reads `args` (the strings after
+`--file FILE`), `input` (the rest of stdin; not when the program came from
+it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
+`unset_var`, never an empty string), and `X warn` prints on stderr:
+`args len 0 eq if str 'usage: job.fux PANE' warn 2 exit then`.
 
 ## servers: Servers, sizes and more
 
