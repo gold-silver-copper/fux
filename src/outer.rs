@@ -14,12 +14,11 @@
 //! popping it, the shell would be left unusable. The client pops the flags
 //! as it leaves (`client::LEAVE`).
 //!
-//! The terminal that answers for a pane is the client's that last typed
-//! into its tab, while attached; else any client's showing the tab; else
-//! none: a pane no attached terminal answers for is not answered colours
-//! it did not set, as no one knows what it is shown on. Its pictures and
-//! cell size are of a terminal showing its tab that said its cell size:
-//! the one that last typed into it, else the first; else none.
+//! The terminal that answers for a pane is, of the clients showing its tab,
+//! the one that last typed into it, else the first; else none: a pane no
+//! terminal showing it answers for is not answered colours it did not
+//! set, as no one knows what it is shown on. Its pictures and cell size
+//! are of a terminal showing its tab that said its cell size, chosen so.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -301,32 +300,30 @@ impl Session {
         }
     }
 
-    /// The client whose terminal answers for the panes of `tab`: the one that
-    /// last typed into it, while attached, if its terminal said anything;
-    /// else the first showing it whose terminal did.
+    /// The client whose terminal answers for the panes of `tab`: of those
+    /// showing it whose terminal said anything, the one that last typed
+    /// into it, else the first.
     fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        self.answering(tab, |_, t| t.said())
+        self.answering(tab, Terminal::said)
     }
 
     /// The client whose terminal draws the panes of `tab` as they are told:
-    /// the one that last typed into it if it shows it and said its cell
-    /// size; else the first showing it that said one.
+    /// of those showing it that said a cell size, the one that last typed
+    /// into it, else the first.
     fn graphics_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        let tab = tab?;
-        self.answering(Some(tab), |c, t| t.cell.is_some() && self.shows(c, tab))
+        self.answering(tab, |t| t.cell.is_some())
     }
 
-    /// Of the attached clients `said` holds for, the one that last typed
-    /// into `tab`, else the first showing it.
-    fn answering(
-        &self,
-        tab: Option<TabId>,
-        said: impl Fn(ClientId, &Terminal) -> bool,
-    ) -> Option<ClientId> {
+    /// Of the attached clients showing `tab` that `said` holds for, the one
+    /// that last typed into it, else the first: one that typed there and
+    /// went to another tab answers for it no more.
+    fn answering(&self, tab: Option<TabId>, said: impl Fn(&Terminal) -> bool) -> Option<ClientId> {
         let tab = tab?;
-        let told = |c: &ClientId| self.views.get(c).is_some_and(|v| said(*c, &v.terminal));
+        let told = |c: &ClientId| {
+            self.shows(*c, tab) && self.views.get(c).is_some_and(|v| said(&v.terminal))
+        };
         let typist = self.tab(tab)?.typist.filter(told);
-        typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
+        typist.or_else(|| self.views.keys().copied().find(told))
     }
 
     /// Pane `id`, told what the panes of its tab are answered with now: the
@@ -533,6 +530,10 @@ mod tests {
         assert_eq!(ask(&mut s, 2), "");
         s.output(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
+        // c1 typed into %1's tab and went to another: it answers no more.
+        s.input(c, b"x");
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(ask(&mut s, 1), "");
         Ok(())
     }
 

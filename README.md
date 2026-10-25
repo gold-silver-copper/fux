@@ -406,12 +406,13 @@ makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the l
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
   or palette entries 0 to 15 (OSC 4) are told your terminal's, and get its
   dark/light changes (mode 2031) if it reports them. With several terminals
-  attached, a pane is answered from the one that typed into its tab last.
+  attached, a pane is answered from the one showing its tab that typed
+  into it last, else the first showing it.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
   win over your terminal's; your terminal's palette is never changed. A
   colour no one knows is not answered: one your terminal didn't say,
   palette entries past 15 the program didn't set, and every colour in a
-  tab no attached terminal answers for.
+  tab no attached terminal shows.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `set bell off` silences both.
