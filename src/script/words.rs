@@ -813,6 +813,11 @@ fn act(client: ClientId, action: ClientAction, then: Then) -> Ask {
     ask_as(client, command, then)
 }
 
+/// An order to a client that answers nothing.
+fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
+    Ok(Done::Later(act(client, action, Then::Nothing)))
+}
+
 /// How a screen's word makes its screen from what follows the client.
 enum Opens {
     Alone(Open),
@@ -887,7 +892,7 @@ impl fuxth::Host for Host<'_> {
             };
             return match self.context.client == Some(c) {
                 true => local(Local::Open(open)),
-                false => later(act(c, ClientAction::Run(open.code()), Then::Nothing)),
+                false => order(c, ClientAction::Run(open.code())),
             };
         }
         match name {
@@ -1328,16 +1333,12 @@ impl fuxth::Host for Host<'_> {
                     ("last", PanePick::Last),
                 ];
                 let pick = one_of(&next()?, &[ways.as_slice(), &steps].concat())?;
-                later(act(c, ClientAction::SelectPane(pick), Then::Nothing))
+                order(c, ClientAction::SelectPane(pick))
             }
             "focus-pane" => {
                 let c = client(&next()?)?;
                 let p = pane(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectPane(PanePick::Id(p)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectPane(PanePick::Id(p)))
             }
             "show-tab" => {
                 let c = client(&next()?)?;
@@ -1345,20 +1346,12 @@ impl fuxth::Host for Host<'_> {
                 let Value::App(Fux::Tab(tab)) = &t else {
                     return Err(wrong("a tab", &t));
                 };
-                later(act(
-                    c,
-                    ClientAction::SelectTab(Pick::Id(*tab)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectTab(Pick::Id(*tab)))
             }
             "show-workspace" => {
                 let c = client(&next()?)?;
                 let w = workspace(&next()?)?;
-                later(act(
-                    c,
-                    ClientAction::SelectWorkspace(Pick::Id(w)),
-                    Then::Nothing,
-                ))
+                order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
             }
             "next-tab" | "previous-tab" | "next-workspace" | "previous-workspace" | "zoom"
             | "detach" => {
@@ -1373,7 +1366,7 @@ impl fuxth::Host for Host<'_> {
                     "next-tab" | "previous-tab" => ClientAction::SelectTab(Pick::Step(step)),
                     _ => ClientAction::SelectWorkspace(Pick::Step(step)),
                 };
-                later(act(c, action, Then::Nothing))
+                order(c, action)
             }
             "capture-client" => {
                 let c = client(&next()?)?;
