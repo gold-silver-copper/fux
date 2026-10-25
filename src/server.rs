@@ -21,6 +21,7 @@ use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
+use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
@@ -478,7 +479,6 @@ impl std::error::Error for Error {}
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
 pub fn serve(socket: &SocketPath) -> Result<(), Error> {
-    let listening = Listening::open(socket)?;
     let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
     if let Err(errno) = fuxix::process::adopt_orphans() {
@@ -497,6 +497,9 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         true,
         run,
     );
+    // Last of what can fail: once it listens, a server that started
+    // with it finds it there (`socket::bind_socket`).
+    let listening = Listening::open(socket)?;
     // A server starts with nothing in it: the first client to attach
     // starts its first shell, on its screen, and a request makes a pane
     // only at a size it knows.
@@ -516,9 +519,31 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
         ready: Vec::new(),
         accept_logged: None,
     };
+    ready();
     server.run();
     Ok(())
 }
+
+/// The line that says the server listens, which the client that started
+/// it waits for (`client::start_server`): written on stdout, which then
+/// points at `/dev/null`, so the client's pipe closes and no descriptor
+/// opened later is 1. Neither can fail in a way that would stop a server
+/// that already serves: a client that gave up reading has gone.
+fn ready() {
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(READY).and_then(|()| stdout.flush());
+    match fs::File::open("/dev/null") {
+        Ok(null) => {
+            if let Err(errno) = fuxix::io::redirect_stdout(&null) {
+                log!("stdout to /dev/null: {errno}");
+            }
+        }
+        Err(error) => log!("/dev/null: {error}"),
+    }
+}
+
+/// What a server says on stdout once it listens.
+pub(crate) const READY: &[u8] = b"fux server: listening\n";
 
 /// What a polled descriptor is. A connection's index into `conns` holds
 /// for the whole tick: connections are only appended during it (`accept`)

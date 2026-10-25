@@ -363,14 +363,11 @@ fn probe(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Takes ownership of `path`, binds it and listens there. Refuses a live
-/// server's socket and anything that is not a socket; replaces only a
-/// socket proven stale.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
-    let path = socket.path();
-    private_directory(socket, true)?;
+/// The lock file beside the socket at `path`, its name ending `end`, made
+/// if it is not there, and its path.
+fn lock_file(path: &Path, end: &str) -> Result<(File, PathBuf), Error> {
     let mut lock_path = path.as_os_str().to_owned();
-    lock_path.push(".lock");
+    lock_path.push(end);
     let lock_path = PathBuf::from(lock_path);
     let lock = OpenOptions::new()
         .read(true)
@@ -382,6 +379,24 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Erro
         .custom_flags(fuxix::file::NOFOLLOW)
         .open(&lock_path)
         .map_err(io(&lock_path))?;
+    Ok((lock, lock_path))
+}
+
+/// Takes ownership of `path`, binds it and listens there. Refuses a live
+/// server's socket and anything that is not a socket; replaces only a
+/// socket proven stale.
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
+    let path = socket.path();
+    private_directory(socket, true)?;
+    // One server starts at a time, held here till the one before it
+    // listens or fails (this returns, or it exits): one refused below is
+    // refused once the socket answers, which its client then finds
+    // (`client::start_server`).
+    let (starting, starting_path) = lock_file(path, ".starting")?;
+    starting
+        .lock()
+        .map_err(failed("locking ", &starting_path))?;
+    let (lock, lock_path) = lock_file(path, ".lock")?;
     lock.try_lock().map_err(|error| match error {
         fs::TryLockError::WouldBlock => Error::Refused(format!(
             "another fux server is already using {}",

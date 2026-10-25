@@ -20,7 +20,7 @@ use fuxix::poll::{Events as PollFlags, PollFd};
 use fuxix::terminal::Termios;
 use signal_hook::consts::SIGWINCH;
 use std::collections::VecDeque;
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, BufRead, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -415,8 +415,12 @@ pub fn answers(socket: &SocketPath) -> bool {
     UnixStream::connect(socket.path()).is_ok()
 }
 
-/// Starts a server in the background, in a new session with its output in
-/// `fux.log` beside the socket, and waits for it to answer.
+/// Starts a server in the background, in a new session with its log in
+/// `fux.log` beside the socket, and waits for the line it writes once it
+/// listens (`server::READY`). Its stdout closing first means it failed, or
+/// found another server on the socket: one that answers, as a server that
+/// starts waits for the one starting before it (`socket::bind_socket`). A
+/// server that hangs before it listens holds the client too.
 pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     let exe = std::env::current_exe().map_err(failed("finding the fux binary"))?;
     socket::private_directory(socket, true)?;
@@ -428,33 +432,24 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
         .arg(socket.path())
         .current_dir("/")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(output);
     // A daemon (daemon(7)): a session of its own, no descriptors of the
     // client's but stdio, no directory kept busy.
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
-    let deadline = crate::after(Instant::now(), Duration::from_secs(2));
-    let see_log = |what: String| Error::Failed(format!("{what}; see {}", log.display()));
-    loop {
-        if answers(socket) {
-            // Dropping a `Child` neither waits for nor kills it.
-            drop(child);
-            return Ok(());
-        }
-        if let Ok(Some(status)) = child.try_wait() {
-            // It lost a race to another server, or failed: connect to the
-            // winner if there is one.
-            if answers(socket) {
-                return Ok(());
-            }
-            return Err(see_log(format!("the server exited ({status})")));
-        }
-        if Instant::now() > deadline {
-            return Err(see_log("the server did not start within 2 s".to_owned()));
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let mut said = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        let line = io::BufReader::new(stdout.take(64)).read_until(b'\n', &mut said);
+        line.map_err(failed("reading the server"))?;
     }
+    // Dropping a `Child` neither waits for nor kills it.
+    if said == crate::server::READY || answers(socket) {
+        return Ok(());
+    }
+    let status = child.wait().map_err(failed("waiting for the server"))?;
+    let why = format!("the server exited ({status}); see {}", log.display());
+    Err(Error::Failed(why))
 }
 
 /// The server's log at `path`, opened to append: a regular file alone. A
