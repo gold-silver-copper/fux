@@ -30,8 +30,7 @@ The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached
 terminal why, and removes its socket.
 
-Every pane runs your shell (`str shell str /bin/zsh set`, else the
-server's `$SHELL`, else your login shell, else `/bin/sh`). A pane closes
+Every pane runs your shell (the `shell` setting: `fux help set`). A pane closes
 when its shell exits, showing its viewers the exit status; a tab closes
 with its last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
@@ -288,12 +287,11 @@ prints them all.
 
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
-`update-environment`, which a pane takes from whoever starts it, and, last,
-what a program's `env` sets (`opts str NAME str VALUE env 80 24 size str
-PROGRAM program run`). A name in `update-environment` that the starter lacks is
-unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
-table's value. A starter with no environment at all, as `env -i` leaves
-one, changes none.
+`update-environment`, which a pane takes from whoever starts it (`fux help
+set` says what one the starter lacks becomes), and, last, what a program's
+`env` sets (`opts str NAME str VALUE env 80 24 size str PROGRAM program
+run`). A starter with no environment at all, as `env -i` leaves one,
+changes none.
 
 XTVERSION (`CSI > q`) answers `fux` and its version, secondary device
 attributes (`CSI > c`) the version, and primary ones (`CSI c`) a
@@ -380,11 +378,14 @@ needs; one that fits clients' screens fits them again after
 split keeps two thirds of its room, the new one takes a third), so the
 layout comes back as it was, at every size. A split
 or a move that would hide a pane, on its tab's size or on the screen of a
-client showing it (but one that only watches), is refused: whatever there
+client showing it (but one that sizes nothing: that only watches, or has
+no room below its bar), is refused: whatever there
 is can be made again.
 
-A **server saves its session** the same way, with the ids it had, about a
-second after each change, in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
+A **server saves its session** the same way, with the ids it had: at once
+after a change to what it holds (a workspace, tab or pane made, closed,
+moved, renamed or respawned, an order, a border, a size given), and about
+a second after what output changes (a shell's directory), in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
 written whole and moved in place, yours alone. A server started on the same
 socket after a crash, a `kill -9` or a reboot runs it to bring the session
 back with the same ids: shells start fresh in their directories; a program
