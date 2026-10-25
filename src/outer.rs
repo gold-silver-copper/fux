@@ -202,10 +202,11 @@ impl Session {
                 self.tell_change(client);
             }
             // A cell smaller than a sixel band is no size a picture can be
-            // laid out in: refused, and said, not made one.
+            // laid out in: refused, and said, not made one. A 0 is no size
+            // said, as terminals that do not know theirs answer.
             Reply::CellSize { width, height } => {
                 terminal.cell = fux_vt::CellSize::new(width, height);
-                if terminal.cell.is_none() {
+                if terminal.cell.is_none() && width != 0 && height != 0 {
                     view.notify(
                         format!(
                             "your terminal's cell, {width}x{height} pixels, is smaller than a sixel band \
@@ -531,6 +532,20 @@ mod tests {
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
+        Ok(())
+    }
+
+    /// A cell said 0 wide or high is no size said, which is no fault; one
+    /// under a sixel band (2 by 6) is refused, and told.
+    #[test]
+    fn a_cell_of_0_is_no_size_and_a_small_one_is_refused() -> Outcome {
+        let (mut s, c) = session()?;
+        let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
+        s.input(c, b"\x1b[6;0;0t\x1b[?62c");
+        assert!(notice(&mut s).is_none());
+        s.input(c, b"\x1b[6;5;1t\x1b[?62c");
+        assert!(notice(&mut s).is_some_and(|n| n.text.contains("1x5")));
+        assert!(s.views.get(&c).is_some_and(|v| v.terminal.cell.is_none()));
         Ok(())
     }
 
