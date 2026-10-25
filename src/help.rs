@@ -218,7 +218,7 @@ pub(crate) const OPTIONS: [(&str, &str); 10] = [
          rows cols",
     ),
     ("wait", "changed timeout"),
-    ("send-keys", "text key paste paste-file bytes times"),
+    ("send-keys", "text key paste bytes"),
     ("send-mouse", "mouse"),
     ("signal", ""),
 ];
@@ -247,13 +247,11 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         }
         "help-agents-on" => "fux str recipes help-agents-on",
         "timeout" => "fux %3 300 timeout wait",
-        "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",
         "paste" => "fux %3 str 'a long prompt' paste str Enter key send-keys",
-        "paste-file" => "fux %3 str prompt.txt paste-file send-keys",
         "signal" => "fux %3 str TERM signal",
         "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
         "capture" | "history" => "fux %3 100 history capture",

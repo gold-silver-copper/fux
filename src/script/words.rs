@@ -122,9 +122,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "text", "x text -- x", "text, typed"),
     word("Input", "key", "x key -- x", "a key by its name: Enter, C-c, Up, F5"),
     word("Input", "paste", "x text -- x", "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is"),
-    word("Input", "paste-file", "x file -- x", "a file's text as a paste, at most 900 KiB, bracketed if the program turned that on (an end mark in it then dropped)"),
     word("Input", "bytes", "x hex -- x", "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character"),
-    word("Input", "times", "x n -- x", "the input just before it, n times (1 to 1000): str Down key 2 times"),
     word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", "subject -- answer", "send the mouse event on it"),
@@ -638,29 +636,6 @@ fn modify(
                 )
             })?;
             built.inputs.push(Input::Key(press));
-        }
-        "paste-file" => {
-            let path = string(&next()?)?;
-            let most = (INPUT_MAX, "900 KiB, the most one paste takes");
-            let text =
-                super::read_file(path.as_ref(), most).map_err(|f| fail(Code::Paste, f.message))?;
-            built.inputs.push(Input::Paste(text));
-        }
-        // The input just before it, n times in all: refused before it is
-        // copied if that is more than send-keys sends.
-        "times" => {
-            let n: usize = within(&next()?, 1..=1000)?;
-            let Some(last) = built.inputs.last().cloned() else {
-                return Err(fail(
-                    Code::NoKeys,
-                    "repeats the input before it: str Down key 3 times",
-                ));
-            };
-            let more = sent(std::slice::from_ref(&last)).saturating_add(5);
-            fits(sent(&built.inputs).saturating_add(more.saturating_mul(n.saturating_sub(1))))?;
-            built
-                .inputs
-                .extend(std::iter::repeat_n(last, n.saturating_sub(1)));
         }
         "mouse" => {
             let mouse = one_of(&next()?, &MICE)?;

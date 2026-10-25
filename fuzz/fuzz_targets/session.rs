@@ -167,7 +167,7 @@ fn size(rows: u8, cols: u8) -> (u16, u16) {
 
 /// Words that read files, which a program typed at a prompt is not run
 /// with: a fuzzer finds /dev/zero.
-const READS: &[&str] = &["check", "paste-file"];
+const READS: &[&str] = &["check"];
 
 /// How many steps a program may take: enough for any binding, few enough
 /// for a loop typed at the prompt to end.

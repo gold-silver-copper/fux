@@ -4645,17 +4645,6 @@ mod tests {
         );
         let mouse = failed(&mut s, "%1 str click -1 0 mouse send-mouse");
         assert!(mouse.contains("out of range: 0 to 65535 (use: "), "{mouse}");
-        let times = failed(&mut s, "%1 str a text str 2 times");
-        assert!(times.starts_with("type: "), "{times}");
-        // Refused by `times`, before it is repeated, past what send-keys
-        // sends.
-        let many = failed(&mut s, "%1 str x 100000 copies text 1000 times send-keys");
-        assert!(many.starts_with("too_long: test:1: times: "), "{many}");
-        let none = failed(&mut s, "%1 str a text 0 times send-keys");
-        assert!(
-            none.contains("0 is out of range: 1 to 1000 (use: "),
-            "{none}"
-        );
         // The core's words say how they are used too; a library word by
         // its own name.
         for code in ["slice", "str a 1 add"] {

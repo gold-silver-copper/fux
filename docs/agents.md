@@ -170,8 +170,14 @@ as integers: `A counts 3 at` is its `DONE`.
   key` (tmux's names: `Enter`, `Escape`, `Tab`, `BSpace`, `Up`, `PageDown`,
   `F5`, `C-c`, `M-s`, `S-Tab`; `Esc`, `Backspace`, `PgUp` too; a typo is
   refused, naming the closest), `str T paste` (bracketed if the program
-  asked), `str FILE paste-file`, `str HEX bytes` (`1b5b41`), `N times`
-  (repeats the input just before it). 900 KiB at most in all.
+  asked), `str HEX bytes` (`1b5b41`). 900 KiB at most in all. A key
+  N times is a loop: `%2 0 3 range each drop str Down key end
+  send-keys`. fuxth reads no files; the shell gives a file's text:
+
+  ```sh
+  fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, quoted for fuxth
+  ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program
   read them. A program that tells a lone Escape from a key's sequence by

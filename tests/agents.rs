@@ -401,7 +401,9 @@ while not seen.endswith(b"q"):
     sent(&["str", "a b", "paste"], "1b5b3230307e6120621b5b3230317e")?;
     sent(&["str", "c3a9", "bytes"], "c3a9")?;
     sent(
-        &["str", "BSpace", "key", "3", "times", "str", "x", "text"],
+        &[
+            "0", "3", "range", "each", "drop", "str", "BSpace", "key", "end", "str", "x", "text",
+        ],
         "7f7f7f78",
     )?;
     let click = ["str", "click", "2", "4", "mouse"];
@@ -815,49 +817,27 @@ fn an_answer_is_its_pane() -> Outcome {
 }
 
 /// Input as large as a paste may be (900 KiB) goes in one send-keys, all
-/// of it; more is refused as too long, before anything is sent.
+/// of it, from a program read from a file; more is refused as too long,
+/// before anything is sent.
 #[test]
 fn send_keys_takes_input_up_to_its_limit() -> Outcome {
     let server = Server::start("")?;
-    let file = server.dir.join("paste.txt");
-    let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
-    std::fs::write(&file, std::iter::repeat_n(line, 9216).collect::<String>()).map_err(e)?;
     let count = "stty -echo; head -c 921600 | wc -c; cat > /dev/null";
     let sink = id(&server.ok(&run(&[], &["sh", "-c", count]))?);
-    let path = file.to_string_lossy();
-    let paste = [
-        "str",
-        &sink,
-        "pane",
-        "str",
-        &path,
-        "paste-file",
-        "send-keys",
-    ];
-    shows_after(&server, &server.ok(&paste)?, "921600")?;
+    let line: String = std::iter::repeat_n('a', 99).chain(['\n']).collect();
+    let text: String = std::iter::repeat_n(line, 9216).collect();
+    let file = server.dir.join("paste.fux");
+    std::fs::write(&file, format!("{sink} str '{text}' paste send-keys")).map_err(e)?;
+    shows_after(&server, &server.ok(&[&file.to_string_lossy()])?, "921600")?;
     let long: String = std::iter::repeat_n('b', 1000).collect();
-    let many = [
-        "str",
-        &sink,
-        "pane",
-        "str",
-        &long,
-        "text",
-        "1000",
-        "times",
-        "send-keys",
-    ];
-    let refused = server.fux(&many)?;
+    let many = format!("{sink} 0 1000 range each drop str {long} text end send-keys");
+    let refused = server.fux(&[&many])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     // Keys count as the request carries them, their names and more: so
     // many that the request could not be sent are too long too.
-    let mut keys = vec!["str", &sink, "pane"];
-    for _ in 0..90 {
-        keys.extend(["str", "C-M-F12", "key", "1000", "times"]);
-    }
-    keys.push("send-keys");
-    let refused = server.fux(&keys)?;
+    let keys = format!("{sink} 0 90000 range each drop str C-M-F12 key end send-keys");
+    let refused = server.fux(&[&keys])?;
     assert_eq!(refused.status, 1);
     assert!(refused.stderr.contains("too_long"), "{}", refused.stderr);
     Ok(())
