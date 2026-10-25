@@ -1154,7 +1154,7 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 /// line. Its exit status (0, or what `exit` gave), or why it failed.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     let (tokens, from) = program(args)?;
-    let mut machine = compile(&tokens)?;
+    let mut machine = compiled(None, &tokens).map_err(|e| Failed::from(a_file(e, args)))?;
     let mut host = Host::new(client::context(), None, out);
     let mut cli = Cli {
         server: Server::default(),
@@ -1180,6 +1180,22 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
     ran?;
     printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
     Ok(cli.status.unwrap_or(0))
+}
+
+/// `error`, an unknown word that is a file's path, as the first argument or
+/// in the only one (`fux ./job.fux`, `fux 'my job.fux'`), saying how to run
+/// it: never run, as no argument is guessed to be a file.
+fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
+    let word = error.word.as_deref();
+    if error.code == Lang::UnknownWord
+        && let Some(file) = (args.first())
+            .filter(|a| args.len() == 1 || word == Some(a.as_str()))
+            .filter(|a| std::path::Path::new(a).is_file())
+    {
+        let file = crate::words::quote(file);
+        error.message += &format!("; {file} is a file, which `fux --file {file}` runs");
+    }
+    error
 }
 
 /// The program `args` give, and where it came from: none attaches; `-` is

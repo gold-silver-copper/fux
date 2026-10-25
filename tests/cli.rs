@@ -395,7 +395,7 @@ fn programs_come_from_stdin_and_files() -> Outcome {
 /// A script runs as a shell runs it: from its `#!` line, with its
 /// arguments; it reads stdin, files and the environment (a variable not
 /// set fails `unset_var`), warns on stderr, and ends with the status it
-/// gives.
+/// gives. A file given as a word is not run: the error says how.
 #[test]
 fn a_script_runs_as_the_shell_runs_it() -> Outcome {
     use std::os::unix::fs::PermissionsExt;
@@ -435,6 +435,12 @@ fn a_script_runs_as_the_shell_runs_it() -> Outcome {
         (ran.status, ran.stdout, ran.stderr),
         (3, said, "to stderr\n".into())
     );
+    let path = greet.to_string_lossy();
+    let named = server.fux(&[&path, "ann"])?;
+    assert_eq!(named.status, 1);
+    let how = format!("{path} is a file, which `fux --file {path}` runs");
+    assert!(named.stderr.contains(&how), "{}", named.stderr);
+    assert!(named.stdout.is_empty(), "{}", named.stdout);
     Ok(())
 }
 

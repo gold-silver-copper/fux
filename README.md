@@ -131,7 +131,8 @@ hello bob
 ```
 
 These words are the command line's alone: a config's or a key's program is
-refused them (`not_here`).
+refused them (`not_here`). `fux ./greet.fux` is refused as an unknown word,
+the error saying `--file` runs it: no argument is guessed to be a file.
 
 The bundled words are written in fuxth themselves (`fux help WORD` shows
 each one's code): `type` and `press` (text and a key into a pane), `line`
