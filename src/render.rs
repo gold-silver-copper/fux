@@ -1005,14 +1005,16 @@ pub fn compose_held(
         }
     }
     // The mouse: reported by the client's terminal only while the focused
-    // pane's program asked for it and nothing of fux's has the keys, so
-    // that the rest of the time the terminal selects text as it does.
-    // A client that only watches sends no clicks: its terminal selects.
+    // pane's program asked for it, still takes input, and nothing of fux's
+    // has the keys, so that the rest of the time the terminal selects text
+    // as it does. A client that only watches sends no clicks: its terminal
+    // selects.
     if view.mode.is_normal()
         && !view.read_only
         && let Some(focus) = focus
         && placement.rect(focus).is_some()
         && let Some(pane) = session.parts.panes().get(&focus)
+        && crate::session::refuses_input(pane).is_none()
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }

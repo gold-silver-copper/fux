@@ -349,6 +349,10 @@ mod tests {
             format!("at most {} MiB", whole(crate::protocol::MAX_FRAME, 20)),
             format!("past {} MiB", whole(crate::pane::FRAME_LIMIT, 20)),
             format!("at most once every {bell_gap} ms"),
+            format!(
+                "at most {} together",
+                grouped(usize::try_from(crate::layout::MOST).unwrap_or_default())
+            ),
         ] {
             assert!(readme.contains(&said), "README: {said}");
         }
@@ -366,6 +370,10 @@ mod tests {
             format!("\"server_protocol\":{protocol},"),
             format!("its first {} characters", crate::pane::TITLE_MAX),
             format!("its first {} characters", crate::pane::NOTIFICATION_MAX),
+            format!(
+                "more than {} MiB on its terminal",
+                crate::session::LEFT_MAX >> 20
+            ),
             format!(
                 "{} pixels a side, {} pixels in all",
                 grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),

@@ -161,12 +161,14 @@ impl Session {
     }
 
     /// The outer terminal gained or lost focus: the client's focused pane
-    /// hears of it, if it asked (`put_in`).
+    /// hears of it, if it asked and its program takes input (`put_in`): a
+    /// pane whose program ended is not told, nor its viewer refused.
     fn focus_event(&mut self, client: ClientId, gained: bool) -> bool {
         let Some(pane) = self.focused(client) else {
             return false;
         };
         let asked = self.parts.panes().get(&pane);
+        let asked = asked.filter(|p| crate::session::refuses_input(p).is_none());
         let report = asked.and_then(|p| p.screen().focus_report(gained));
         report.is_some_and(|r| self.put_in(client, pane, |_, out| out.extend_from_slice(r)))
     }

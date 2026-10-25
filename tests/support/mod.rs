@@ -946,7 +946,7 @@ impl Terminal {
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Outcome {
         let master = self.master.as_ref().ok_or("the terminal is closed")?;
-        fuxix::terminal::set_window_size(master, pty_size(rows, cols)?).map_err(e)?;
+        fuxix::terminal::set_window_size(master, pty_size(rows, cols)?, None).map_err(e)?;
         self.screen = terminal(rows, cols)?;
         // The kernel signals the foreground group of the PTY: the client.
         Ok(())

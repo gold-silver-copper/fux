@@ -10,7 +10,7 @@ use crate::code::Code;
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::pane::{NOTIFICATION_MAX, Said, TITLE_MAX};
+use crate::pane::{Left, NOTIFICATION_MAX, Said, TITLE_MAX};
 use crate::process::Ended;
 use crate::protocol::Reply;
 use std::collections::VecDeque;
@@ -49,7 +49,11 @@ impl Journal {
         }
         let shapes = matches!(
             what,
-            What::Created(_) | What::Closed | What::Moved(_) | What::Renamed(_) | What::Respawned
+            What::Created(_)
+                | What::Closed
+                | What::Moved(_)
+                | What::Renamed(_)
+                | What::Respawned(_)
         );
         if shapes {
             self.reshaped();
@@ -137,16 +141,22 @@ pub enum What {
     Closed,
     /// To another tab, from this workspace and tab.
     Moved((WsId, TabId)),
-    /// Its program started again (`respawn`).
-    Respawned,
+    /// A tab's: a pane's going merged splits whose exact weights are more
+    /// than `layout::MOST` together, now the nearest they hold
+    /// (`layout::Removed::Rounded`).
+    Rounded,
+    /// Its program started again (`respawn`), over one that ran: what
+    /// that one left on its terminal.
+    Respawned(Left),
     Bell,
     Notification(Said<NOTIFICATION_MAX>),
     Title(Said<TITLE_MAX>),
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
-    /// Its program ended: with a status or by a signal.
-    Exited(Ended),
+    /// Its program ended: with a status or by a signal, and what it left
+    /// on its terminal.
+    Exited(Ended, Left),
 }
 
 impl What {
@@ -175,8 +185,9 @@ impl What {
                     ("from_workspace", Json::str(ws.to_string())),
                 ],
             ),
-            What::Respawned => ("respawned", Vec::new()),
+            What::Respawned(left) => ("respawned", left_said(*left).collect()),
             What::Bell => ("bell", Vec::new()),
+            What::Rounded => ("rounded", Vec::new()),
             What::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
             What::Title(title) => ("title", said("title", title.as_str(), title.cut())),
             What::Done(status) => (
@@ -187,13 +198,29 @@ impl What {
                 let cols = ("cols", Json::int(size.cols()));
                 ("resized", vec![cols, ("rows", Json::int(size.rows()))])
             }
-            What::Exited(Ended::Exited(code)) => ("exited", vec![("status", Json::int(*code))]),
-            What::Exited(Ended::Signalled(signal)) => {
-                ("exited", vec![("signal", Json::int(*signal))])
+            What::Exited(ended, left) => {
+                let ended = match ended {
+                    Ended::Exited(code) => ("status", Json::int(*code)),
+                    Ended::Signalled(signal) => ("signal", Json::int(*signal)),
+                    Ended::Lost => ("status", Json::Null),
+                };
+                (
+                    "exited",
+                    [ended].into_iter().chain(left_said(*left)).collect(),
+                )
             }
-            What::Exited(Ended::Lost) => ("exited", vec![("status", Json::Null)]),
         }
     }
+}
+
+/// `truncated` (`true`) if a program left more on its terminal as it ended
+/// than is read (`Left::Cut`).
+fn left_said(left: Left) -> impl Iterator<Item = (&'static str, Json<'static>)> {
+    let cut = match left {
+        Left::Read => None,
+        Left::Cut => Some(("truncated", Json::Bool(true))),
+    };
+    cut.into_iter()
 }
 
 impl Event {
@@ -520,14 +547,15 @@ mod tests {
             What::Renamed(String::new()),
             What::Closed,
             What::Moved((ws, tab)),
-            What::Respawned,
+            What::Respawned(Left::Cut),
             What::Bell,
+            What::Rounded,
             What::Notification(Said::default()),
             What::Title(Said::default()),
             What::Done(None),
             What::Resized(size),
-            What::Exited(Ended::Exited(0)),
-            What::Exited(Ended::Signalled(9)),
+            What::Exited(Ended::Exited(0), Left::Read),
+            What::Exited(Ended::Signalled(9), Left::Cut),
         ];
         let mut lines = Vec::new();
         for what in what {
@@ -538,13 +566,14 @@ mod tests {
                 | What::Renamed(_)
                 | What::Closed
                 | What::Moved(..)
-                | What::Respawned
+                | What::Respawned(_)
                 | What::Bell
+                | What::Rounded
                 | What::Notification(_)
                 | What::Title(_)
                 | What::Done(_)
                 | What::Resized(_)
-                | What::Exited(_) => lines.push(Event { place, what }.line(false, None)),
+                | What::Exited(..) => lines.push(Event { place, what }.line(false, None)),
             }
         }
         for ending in [Ending::Gone, Ending::Stopped(String::new())] {

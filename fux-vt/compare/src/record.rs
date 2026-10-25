@@ -242,7 +242,7 @@ impl Session {
             .resize(crate::vt_size(rows, cols)?)
             .map_err(|e| format!("fux-vt: {e}"))?;
         let size = fuxix::terminal::Size::new(rows, cols).ok_or("a terminal of no size")?;
-        fuxix::terminal::set_window_size(&self.master, size)
+        fuxix::terminal::set_window_size(&self.master, size, None)
             .map_err(|e| format!("resizing the PTY: {e}"))?;
         if let Some(report) = self.parser.resize_report() {
             self.replies.extend_from_slice(&report);

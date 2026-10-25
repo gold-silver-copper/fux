@@ -381,7 +381,12 @@ layout comes back as it was, at every size. A split
 or a move that would hide a pane, on its tab's size or on the screen of a
 client showing it (but one that sizes nothing: that only watches, or has
 no room below its bar), is refused: whatever there
-is can be made again.
+is can be made again. Shares are held exactly, never rounded, in weights
+at most 4,294,967,295 together; a split or a move that would take more is
+refused (`size`), room or not: the 32nd split halving the newest pane of
+one row does. Resizing a border weighs a split's panes by their sizes, and
+makes room for more. A close is never refused: shares it merges past that
+bound are rounded to the nearest that fit, which the `rounded` event says.
 
 A **server saves its session** the same way, with the ids it had: at once
 after a change to what it holds (a workspace, tab or pane made, closed,
@@ -435,19 +440,23 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
 - **Hyperlinks** (OSC 8) reach your terminal as links.
 - **Pictures** (sixel). A pane's program is told your terminal draws sixel
   graphics, and the size of its cells (`CSI 16 t`, asked again each time
-  your terminal is resized, as a font zoom resizes it), if your terminal says
-  so, and the pictures it draws are shown on your terminal, clipped to the
-  pane; they scroll with the text, and text over one, or an overlay, takes
-  it away. A pane no sixel-drawing terminal shows is told none, so its
-  programs draw in text (half blocks), which captures read; `json` says
-  where pictures are, and the cell size (`cell`, `null` while unknown).
-  fux never makes a cell size up: without one (no terminal showing the
-  pane said it, a 0 saying none, or it said one smaller than a sixel band,
-  2 by 6 pixels, which fux tells you), a sixel picture is not placed,
-  and `CSI 14 t` and `CSI 16 t` go unanswered. Drawn by foot, WezTerm,
-  xterm (`-ti vt340`), Konsole, mlterm and others; not by kitty, whose
-  graphics protocol fux does not speak, nor Ghostty, Alacritty or Apple's
-  Terminal.
+  your terminal is resized, as a font zoom resizes it), if your terminal
+  says so (its terminal's size in pixels, `TIOCGWINSZ`, follows the cell,
+  and a change signals it, SIGWINCH), and the pictures it draws are shown on
+  your terminal, clipped to the pane; they scroll with the text, and text
+  over one, or an overlay, takes it away. Of the terminals showing a pane,
+  one that draws sixel and said its cell size draws it (of those, the one
+  last typed in there, else the first); with none, its cell size is of one
+  that said it, chosen so. A pane shown on no terminal that draws sixel and
+  said its cell size is told no sixel, so its programs draw in text (half
+  blocks), which captures read; `json` says where pictures are, and the cell
+  size (`cell`, `null` while unknown). fux never makes a cell size up:
+  without one (no terminal showing the pane said it, a 0 saying none, or it
+  said one smaller than a sixel band, 2 by 6 pixels, which fux tells you), a
+  sixel picture is not placed, and `CSI 14 t` and `CSI 16 t` go unanswered.
+  Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others;
+  not by kitty, whose graphics protocol fux does not speak, nor Ghostty,
+  Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.
 - **In-band resize reports** (mode 2048) are sent when a pane's size
