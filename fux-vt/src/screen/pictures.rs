@@ -64,7 +64,9 @@ impl CellSize {
     }
 }
 
-/// Whether a cell `width` by `height` pixels holds a sixel band, 2 by 6.
+/// Whether a cell `width` by `height` pixels holds a sixel band, 2 by 6:
+/// a function of its own, which the mutation guards name (cargo-mutants
+/// leaves `new` unmutated).
 fn holds_a_band(width: u16, height: u16) -> bool {
     width >= 2 && height >= 6
 }

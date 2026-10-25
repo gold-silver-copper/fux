@@ -3692,8 +3692,7 @@ impl Screen {
             // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
                 let cell = self.graphics.cell?;
-                let (width, height) = (cell.width(), cell.height());
-                Some(reply!("\x1b[6;{height};{width}t"))
+                Some(reply!("\x1b[6;{};{}t", cell.height(), cell.width()))
             }
             (b"", b't') if n == 14 => {
                 let (height, width) = self.pixel_size()?;
