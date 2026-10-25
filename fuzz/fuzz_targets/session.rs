@@ -845,8 +845,9 @@ fuzz_target!(|data: &[u8]| {
             9 => {
                 let (pick, (rows, cols)) = (input.next(), size(input.next(), input.next()));
                 if let Some(c) = given.client(pick) {
-                    given.s.resize(c, rows, cols);
-                    bytewise.s.resize(c, rows, cols);
+                    let given_resized = given.s.resize(c, rows, cols).is_ok();
+                    let bytewise_resized = bytewise.s.resize(c, rows, cols).is_ok();
+                    assert_eq!(given_resized, bytewise_resized);
                 }
             }
             10 => {

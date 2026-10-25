@@ -9,6 +9,21 @@ pub struct Notice {
     pub error: bool,
 }
 
+/// The most rows, and columns, a client's view has.
+pub const MOST: u16 = 4096;
+
+/// `rows` by `cols`, if a client's view can be that size: 1 to `MOST`
+/// each way; else why not.
+pub fn size(rows: u16, cols: u16) -> Result<(u16, u16), String> {
+    let fits = |n: u16| (1..=MOST).contains(&n);
+    match fits(rows) && fits(cols) {
+        true => Ok((rows, cols)),
+        false => Err(format!(
+            "{cols} columns by {rows} rows: a client is 1 to {MOST} each way"
+        )),
+    }
+}
+
 /// The most bytes a prompt's line holds.
 pub const LINE_MAX: usize = 4096;
 

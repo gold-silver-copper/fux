@@ -394,7 +394,7 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
 const TAB_MOST: u16 = 500;
 
 /// A size: columns and rows each 1 to `most` (a tab's laid out on,
-/// `TAB_MOST`; a client's, as many as a cell holds).
+/// `TAB_MOST`; a client's, `view::MOST`).
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
     let cells = 1..=i64::from(most);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
@@ -1229,7 +1229,7 @@ impl fuxth::Host for Host<'_> {
             }
             "resize-client" => {
                 let c = client(&next()?)?;
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1349,7 +1349,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let size = laid_out(&next()?, &next()?, u16::MAX)?;
+                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
