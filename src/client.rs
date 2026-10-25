@@ -147,7 +147,6 @@ fn restore() {
     let saved = SAVED.lock().ok().and_then(|mut s| s.take());
     if let Some(termios) = saved {
         let mut out = io::stdout();
-        let _ = fuxix::io::set_nonblocking(&out, false);
         let _ = out.write_all(LEAVE.as_bytes());
         let _ = out.flush();
         let _ = fuxix::terminal::set_attributes(io::stdin(), &termios);
@@ -939,7 +938,7 @@ pub fn attach(
     };
     // The server relays every paint, which the client writes to its
     // terminal; the keys are the client's to read.
-    let mut output = terminal.then(Output::default);
+    let mut output = terminal.then(Output::open).transpose()?;
     let result = send(&mut stream, &attach).and_then(|()| {
         attached(
             socket,
@@ -1005,9 +1004,6 @@ impl Raw {
         let mut stdout = io::stdout();
         let _ = stdout.write_all(ENTER.as_bytes());
         let _ = stdout.flush();
-        // Written to as far as it takes (`Output`), until put back.
-        fuxix::io::set_nonblocking(&stdout, true)
-            .map_err(failed("setting the terminal nonblocking"))?;
         Ok(entered)
     }
 }
@@ -1025,12 +1021,29 @@ const OUTPUT_MAX: usize = 1 << 20;
 
 /// The paints the server relays, for the terminal: written as far as it
 /// takes them, never waiting on it, so that its keys are read meanwhile.
-#[derive(Default)]
+/// Through a descriptor of its own: one nonblocking stdout would make the
+/// shell's, and its background jobs', nonblocking too.
 struct Output {
+    terminal: std::fs::File,
     waiting: crate::bytes::ByteQueue,
 }
 
 impl Output {
+    /// Opens the terminal on stdout again, nonblocking, to write to.
+    fn open() -> Result<Output, Error> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let name = fuxix::terminal::name(io::stdout()).map_err(failed("naming the terminal"))?;
+        let flags = fuxix::file::NONBLOCK | fuxix::file::NOCTTY;
+        let terminal = (std::fs::OpenOptions::new().write(true))
+            .custom_flags(flags)
+            .open(&name)
+            .map_err(|e| Error::Failed(format!("{}: {e}", name.display())))?;
+        Ok(Output {
+            terminal,
+            waiting: crate::bytes::ByteQueue::default(),
+        })
+    }
+
     /// Whether the server's frames may be read: less than `OUTPUT_MAX`
     /// waits.
     fn room(&self) -> bool {
@@ -1040,7 +1053,7 @@ impl Output {
     /// Writes what waits as far as the terminal takes it now.
     fn write(&mut self) -> Result<(), Error> {
         while !self.waiting.is_empty() {
-            match fuxix::io::write(io::stdout(), self.waiting.as_slice()) {
+            match fuxix::io::write(&self.terminal, self.waiting.as_slice()) {
                 Ok(0) | Err(Errno::AGAIN) => break,
                 Ok(n) => self.waiting.take(n),
                 Err(Errno::INTR) => {}
@@ -1056,7 +1069,6 @@ impl Output {
     /// any program that writes to it.
     fn finish(&mut self) {
         let mut stdout = io::stdout();
-        let _ = fuxix::io::set_nonblocking(&stdout, false);
         let _ = stdout
             .write_all(self.waiting.as_slice())
             .and_then(|()| stdout.flush());
@@ -1080,7 +1092,7 @@ fn attached(
     let Signals { winch, stops } = signals;
     wait_at_most(stream, None);
     let stdin = io::stdin();
-    let stdout = io::stdout();
+    let mut stdout = io::stdout();
     let terminal = output.is_some();
     let mut buffer = vec![0u8; 64 * 1024];
     let mut keyboard: Option<Keyboard> = None;
@@ -1104,7 +1116,6 @@ fn attached(
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
                 (ToAttached::Welcome(me), None) => {
                     if !terminal {
-                        let mut stdout = stdout.lock();
                         (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
                             .map_err(Error::Output)?;
                     }
@@ -1149,8 +1160,8 @@ fn attached(
             Some(fds.len().saturating_sub(1))
         };
         // What waits for the terminal is written as it takes it.
-        if output.as_ref().is_some_and(|o| !o.waiting.is_empty()) {
-            add(PollFd::new(&stdout, PollFlags::OUT));
+        if let Some(output) = output.as_ref().filter(|o| !o.waiting.is_empty()) {
+            add(PollFd::new(&output.terminal, PollFlags::OUT));
         }
         // The keys only once the client knows itself, to run them.
         let (wake, typed) = match &keyboard {
@@ -1162,9 +1173,14 @@ fn attached(
             ),
             None => (None, None),
         };
-        // A lone Escape, or an answer cut short, waits until its deadline.
+        // A lone Escape, or an answer cut short, waits until its deadline;
+        // whole frames read already, held for room, not at all.
         let deadline = keyboard.as_ref().and_then(Keyboard::deadline);
-        let timeout = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+        let held = output.as_ref().is_none_or(|o| o.room()) && decoder.ready()?;
+        let timeout = match held {
+            true => Some(Duration::ZERO),
+            false => deadline.map(|at| at.saturating_duration_since(Instant::now())),
+        };
         match fuxix::poll::poll(&mut fds, timeout) {
             Ok(_) | Err(Errno::INTR) => {}
             Err(e) => return Err(failed("poll")(e)),
@@ -1233,16 +1249,18 @@ fn tell(
     output: Option<&mut Output>,
     frame: &AttachedFrame,
 ) -> Result<(), Result<String, Error>> {
-    let Err(error) = send(stream, frame) else {
-        return Ok(());
-    };
-    Err(last_frames(stream, decoder, welcomed, output).unwrap_or(Err(error)))
+    match send(stream, frame) {
+        Ok(()) => Ok(()),
+        // Not sent at all: the server goes on as it was.
+        Err(error @ Error::Protocol(_)) => Err(Err(error)),
+        Err(error) => Err(last_frames(stream, decoder, welcomed, output).unwrap_or(Err(error))),
+    }
 }
 
 /// Reads the server's frames up to its `Exit`, waiting `ANSWER` at
-/// most for each read, and keeps their paints for the terminal, if there is
-/// an `output` for one, written as the attachment ends (`Output::finish`):
-/// how the attachment ended, the `Exit`'s reason (a refusal, before its
+/// most for each read, and writes their paints to the terminal, if there
+/// is an `output` for one, waiting on it (`Output::finish`): how the
+/// attachment ended, the `Exit`'s reason (a refusal, before its
 /// `Welcome`), or `None` if the server said nothing more.
 fn last_frames(
     stream: &mut UnixStream,
@@ -1254,9 +1272,12 @@ fn last_frames(
     loop {
         while let Some(frame) = decoder.frame().ok()? {
             match frame {
+                // Written as they come, waiting on the terminal: the
+                // attachment is ending.
                 ToAttached::Paint(bytes) => {
                     if let Some(output) = &mut output {
                         output.waiting.push(&bytes);
+                        output.finish();
                     }
                 }
                 ToAttached::Exit(reason) if welcomed => return Some(Ok(reason.to_owned())),
