@@ -49,10 +49,11 @@ fn gone(pid: i32, what: &str) -> Outcome {
 #[test]
 fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
     // dash's own way with jobs is what is tested; CI's machines all have it.
+    // The `shell` setting parts words at blanks: a path with one is none.
     let path = std::env::var_os("PATH").unwrap_or_default();
     let Some(dash) = std::env::split_paths(&path)
         .map(|dir| dir.join("dash"))
-        .find(|dash| dash.is_file())
+        .find(|dash| dash.is_file() && !dash.to_string_lossy().contains(char::is_whitespace))
     else {
         eprintln!("skipped: dash is not installed");
         return Ok(());

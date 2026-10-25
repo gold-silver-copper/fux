@@ -83,7 +83,10 @@ pub trait Reads {
 }
 
 settings! {
-    /// The program a new pane runs, and its arguments.
+    /// The program a new pane runs, and its arguments: words parted by
+    /// blanks, none quoted, so `#` is a word like any other. A program or
+    /// argument with a blank in it is run through a wrapper script, or a
+    /// symlink to it, whose path has none.
     shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and
@@ -286,7 +289,9 @@ impl Shell {
     pub fn parse(value: &str) -> Result<Shell, String> {
         if let Some(quote) = value.chars().find(|c| matches!(c, '\'' | '"' | '\\')) {
             return Err(format!(
-                "{quote} is refused: words are parted by blanks, not quoted or escaped"
+                "{quote} is refused: words are parted by blanks, not quoted or escaped; \
+                 a program or argument with a blank is run through a wrapper script, or a \
+                 symlink, whose path has none"
             ));
         }
         let mut words = value.split_whitespace().map(str::to_owned);
@@ -343,9 +348,15 @@ mod tests {
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         for quoted in ["'/bin/my shell' -l", "zsh -c \"ls\"", "my\\ shell"] {
-            assert!(config.set("shell", quoted).is_err(), "{quoted}");
+            let refused = config.set("shell", quoted);
+            assert!(
+                refused.is_err_and(|e| e.contains("wrapper script")),
+                "{quoted}"
+            );
         }
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
+        assert_eq!(config.set("shell", "/bin/zsh # -l"), Ok(()));
+        assert_eq!(config.shell.argv(), ["/bin/zsh", "#", "-l"], "# is a word");
         assert!(config.set("history-bytes", "lots").is_err());
         let below = config.set("history-bytes", "-1");
         assert!(below.is_err_and(|e| e.contains("out of range")));
