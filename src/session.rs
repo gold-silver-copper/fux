@@ -1454,7 +1454,12 @@ impl Session {
             None => {
                 // A server with nothing in it (just started, or its session
                 // did not come back) starts its first shell on this client's
-                // screen.
+                // screen; one that only watches starts and sizes nothing.
+                if self.parts.workspaces().is_empty() && attach.read_only {
+                    let why =
+                        "the server holds nothing to watch: `fux` attaches and starts a shell";
+                    return Err(fail(Code::NoWorkspace, why));
+                }
                 if self.parts.workspaces().is_empty() {
                     let size = Size::new(rows.saturating_sub(1), cols).map_err(|_| {
                         let why =
@@ -4207,14 +4212,18 @@ mod tests {
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         // Nor does a swap or a move in another tab.
-        run(&mut s, "%1 split drop %1 %4 swap-panes %4 str new-tab move-to")?;
+        run(
+            &mut s,
+            "%1 split drop %1 %4 swap-panes %4 str new-tab move-to",
+        )?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
     }
 
     /// A pane is made only at a size known: with no client attached and no
     /// size given, there is none, and the request is refused; the first
-    /// client to attach to an empty session starts its shell on its screen;
+    /// client to attach to an empty session starts its shell on its screen,
+    /// unless it only watches;
     /// a tab that fits clients keeps the last screen's size once none does.
     #[test]
     fn a_pane_is_made_only_at_a_size_known() -> Result<(), String> {
@@ -4231,8 +4240,10 @@ mod tests {
             "{refused}"
         );
         assert!(s.parts.panes().is_empty());
-        // A client of a size no view has starts nothing.
+        // A client of a size no view has starts nothing, nor does one that
+        // only watches: there is nothing to watch.
         assert!(s.attach(view::MOST.saturating_add(1), 40, None).is_err());
+        assert!(watch(&mut s, 11, 40).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
         let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;

@@ -22,8 +22,9 @@ fux                               # attach, starting a server if none runs
 none answers; `fux str work attach-to` attaches to workspace `work`, and
 `fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
 new server holds nothing: the first client to attach starts workspace
-`main`, with one tab and a shell, on its screen. `C-b d` detaches, and the
-shells keep running. Inside a fux pane, `fux` refuses to attach.
+`main`, with one tab and a shell, on its screen. `fux watch` starts
+nothing: with no server, or one holding nothing, it is refused. `C-b d`
+detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached

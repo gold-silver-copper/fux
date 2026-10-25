@@ -874,7 +874,15 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             if size.is_none() && client::window_size().is_none() {
                 return Err(client_failed(client::Error::NoSize));
             }
-            let (socket, _) = started(server)?;
+            // One that only watches starts nothing: no server for it.
+            let socket = match read_only {
+                true => server.socket()?,
+                false => started(server)?.0,
+            };
+            if *read_only && !client::answers(&socket) {
+                let why = "no server answers: there is nothing to watch";
+                return Err(Failed::new(Code::NoServer, why));
+            }
             let (keymap, problem) = configured(server);
             let attach = client::Attaching {
                 workspace: workspace.clone(),
