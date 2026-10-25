@@ -956,7 +956,7 @@ fn config_keymap(server: Option<&mut Server>) -> Result<Keymap, Failed> {
 /// server.
 pub fn run_file(path: &std::path::Path, server: Option<&mut Server>) -> Result<Keymap, Failed> {
     let shown = path.display().to_string();
-    let text = read_file(path, SOURCE_MAX)?;
+    let text = read_file(path)?;
     let context = client::context();
     let mut keymap = Keymap {
         config: Some(std::sync::Arc::new((shown.clone(), text.clone()))),
@@ -1113,12 +1113,10 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
     Ok(match args {
         [] => token::arguments(&["attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
-        [dash] if dash == "-" => {
-            token::source("stdin", &read_text("stdin", io::stdin(), SOURCE_MAX)?)?
-        }
+        [dash] if dash == "-" => token::source("stdin", &read_text("stdin", io::stdin())?)?,
         [line] if line.contains(char::is_whitespace) => token::source("command line", line)?,
         [file] if file.contains('/') || file.ends_with(".fux") => {
-            token::source(file, &read_file(file.as_ref(), SOURCE_MAX)?)?
+            token::source(file, &read_file(file.as_ref())?)?
         }
         // Help as other programs give it: `help agents TOPIC`, `help json`,
         // `help WORD`, `--help`, `--version`.
@@ -1140,32 +1138,36 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
 /// end fails rather than spinning.
 const LINE_STEPS: u64 = 1_000_000_000;
 
-/// The most a program read from a file or stdin may be, and how that is
-/// said.
-const SOURCE_MAX: (usize, &str) = (16 << 20, "16 MiB: no program is that long");
+/// The most a program read from a file or stdin may be.
+const SOURCE_MAX: usize = 16 << 20;
 
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{name}: {why}"))
 }
 
 /// The text read from `from`, which `name` names and which may be anything
-/// (`/dev/zero`): at most `limit` bytes of UTF-8, `said` saying how many.
-fn read_text(name: &str, from: impl Read, (limit, said): (usize, &str)) -> Result<String, Failed> {
+/// (`/dev/zero`): at most `SOURCE_MAX` bytes of UTF-8.
+fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
     let mut bytes = Vec::new();
-    (from.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1)))
+    let most = u64::try_from(SOURCE_MAX).unwrap_or(u64::MAX);
+    (from.take(most.saturating_add(1)))
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
-    if bytes.len() > limit {
-        return Err(read_failed(name, &format!("more than {said}")));
+    if bytes.len() > SOURCE_MAX {
+        let why = format!(
+            "more than {} MiB: no program is that long",
+            SOURCE_MAX >> 20
+        );
+        return Err(read_failed(name, &why));
     }
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
 }
 
 /// The text of the file at `path`, as `read_text` reads it.
-fn read_file(path: &std::path::Path, most: (usize, &str)) -> Result<String, Failed> {
+fn read_file(path: &std::path::Path) -> Result<String, Failed> {
     let name = path.display().to_string();
     let file = std::fs::File::open(path).map_err(|e| read_failed(&name, &e.to_string()))?;
-    read_text(&name, file, most)
+    read_text(&name, file)
 }
 
 #[cfg(test)]

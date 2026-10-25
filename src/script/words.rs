@@ -1444,8 +1444,8 @@ impl fuxth::Host for Host<'_> {
             "check" => {
                 let path = string(&next()?)?;
                 // Read as running it reads it, and refused alike.
-                let text = super::read_file(path.as_ref(), super::SOURCE_MAX)
-                    .map_err(|f| fail(Code::Read, f.message))?;
+                let text =
+                    super::read_file(path.as_ref()).map_err(|f| fail(Code::Read, f.message))?;
                 // Its mistake, with where it is, as the file's own.
                 let checked = |failed: super::Failed| fail(Code::Check, failed.message);
                 let tokens = fuxth::token::source(&path, &text)
