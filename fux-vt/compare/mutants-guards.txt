@@ -355,9 +355,9 @@ fux-vt/src/parser.rs: replace Bytes<N>::push -> Option<Self> with None @ *self.b
 fux-vt/src/parser.rs: replace Bytes<N>::push -> Option<Self> with Some(Default::default()) @ *self.bytes.get_mut(usize::from(self.len))? = byte;
 fux-vt/src/parser.rs: replace && with || in Parser::dcs_string @ let sixel = byte == b'q' && read.as_slice().is_empty();
 fux-vt/src/parser.rs: replace && with || in Parser::dcs_string @ } else if sixel && self.options.has(Feature::Pictures) {
-fux-vt/src/screen/pictures.rs: replace Screen::sixel -> bool with true @ self.graphics.sixel
-fux-vt/src/parser.rs: replace &= with |= in Parser::set_host_graphics @ graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
-fux-vt/src/parser.rs: replace && with || in Parser::set_host_graphics @ graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
+fux-vt/src/screen/pictures.rs: replace Screen::sixel -> bool with true @ matches!(self.graphics, Graphics::Sixel(_))
+fux-vt/src/parser.rs: replace match guard !self.options.has(Feature::Pictures) with false in Parser::set_host_graphics @ Graphics::Sixel(cell) if !self.options.has(Feature::Pictures) => Graphics::Cell(cell),
+fux-vt/src/parser.rs: delete ! in Parser::set_host_graphics @ Graphics::Sixel(cell) if !self.options.has(Feature::Pictures) => Graphics::Cell(cell),
 
 # B22
 fux-vt/src/parser.rs: replace <= with > in Parameters::separator @ let Some(len) = self.len.checked_add(1).filter(|n| *n <= self.values.len()) else {

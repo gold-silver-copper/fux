@@ -73,10 +73,9 @@ pub fn b01(scale: Scale, chunk: usize) -> Found {
     // 1,288 bytes at 1x: nothing is drawn).
     let bound = heap(PICTURE_BYTES.saturating_add(64 << 10));
     let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-    probe.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(4096, 2160),
-        sixel: true,
-    });
+    probe.set_host_graphics(
+        fux_vt::CellSize::new(4096, 2160).map_or(Graphics::Text, Graphics::Sixel),
+    );
     probe.feed(&input)?;
     probe.finish()?;
     let bound = heap(steady(&setup).saturating_add(PICTURE_BYTES));
@@ -228,10 +227,9 @@ pub fn b05(scale: Scale, chunk: usize) -> Found {
             heap: steady(&setup),
         };
         let mut probe = Probe::new(&setup, bound, chunk, scale.times())?;
-        probe.set_host_graphics(Graphics {
-            cell: fux_vt::CellSize::new(cell.0, cell.1),
-            sixel: true,
-        });
+        probe.set_host_graphics(
+            fux_vt::CellSize::new(cell.0, cell.1).map_or(Graphics::Text, Graphics::Sixel),
+        );
         probe.feed(&input)?;
         let most = u64::try_from(input.len())
             .unwrap_or(0)
@@ -458,10 +456,9 @@ fn tall_pictures(scale: Scale, cell: (u16, u16), chunk: usize) -> Found {
     }
     let history = empty_history();
     let mut probe = Probe::new(&setup, bound, chunk.max(4096), 1)?;
-    probe.parser.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(cell.0, cell.1),
-        sixel: true,
-    });
+    probe.parser.set_host_graphics(
+        fux_vt::CellSize::new(cell.0, cell.1).map_or(Graphics::Text, Graphics::Sixel),
+    );
     probe.feed(&history)?;
     probe.feed(&pictures)?;
     let placed: u64 = (probe.parser.screen().pictures())
@@ -2064,10 +2061,7 @@ fn refusing(n: u32) -> Result<Parser, String> {
     let size = Size::new(1, 10).map_err(|e| e.to_string())?;
     let options = Feature::ALL.into_iter().collect();
     let mut parser = Parser::with_options(size, 1 << 20, options).map_err(|e| e.to_string())?;
-    parser.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(10, 20),
-        sixel: true,
-    });
+    parser.set_host_graphics(fux_vt::CellSize::new(10, 20).map_or(Graphics::Text, Graphics::Sixel));
     parser.process(b"x").map_err(|e| e.to_string())?;
     fux_vt::refuse_next(n);
     Ok(parser)

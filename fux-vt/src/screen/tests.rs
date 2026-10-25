@@ -325,10 +325,9 @@ fn the_main_saved_cursor_is_what_leaving_the_alternate_screen_restores() -> Resu
 fn pictured(size: Size, history: usize) -> Result<crate::Parser, Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(size, history, options)?;
-    p.set_host_graphics(crate::Graphics {
-        cell: crate::CellSize::new(10, 20),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        crate::CellSize::new(10, 20).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
+    );
     Ok(p)
 }
 
@@ -630,10 +629,7 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
         let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
         let size = crate::CellSize::new(cell.0, cell.1);
         assert_eq!(size.is_some(), placed, "{cell:?}");
-        p.set_host_graphics(crate::Graphics {
-            cell: size,
-            sixel: true,
-        });
+        p.set_host_graphics(size.map_or(crate::Graphics::Text, crate::Graphics::Sixel));
         p.process(&picture(6, 12))?;
         let shown = p.screen().pictures().next().map(|s| s.cell);
         assert_eq!(shown, placed.then_some(cell), "{cell:?}");
@@ -648,10 +644,9 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
 fn a_picture_refused_room_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
     let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
-    p.set_host_graphics(crate::Graphics {
-        cell: crate::CellSize::new(10, 20),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        crate::CellSize::new(10, 20).map_or(crate::Graphics::Text, crate::Graphics::Sixel),
+    );
     p.process(b"\x1bP9q\x1b\\\x1bP9q~\x18")?;
     assert_eq!(p.pictures_refused(), 0);
     p.set_picture_bytes(0);
@@ -682,13 +677,10 @@ fn a_picture_no_host_draws_is_counted_as_it_ends() -> Result<(), Error> {
 #[test]
 fn a_picture_whose_host_went_as_it_was_read_is_counted() -> Result<(), Error> {
     let options = crate::Options::from(crate::Feature::Pictures);
-    let cell = crate::CellSize::new(10, 20);
-    for gone in [
-        crate::Graphics::default(),
-        crate::Graphics { cell, sixel: false },
-    ] {
+    let cell = crate::CellSize::new(10, 20).ok_or(Error::InvalidRange)?;
+    for gone in [crate::Graphics::Text, crate::Graphics::Cell(cell)] {
         let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
-        p.set_host_graphics(crate::Graphics { cell, sixel: true });
+        p.set_host_graphics(crate::Graphics::Sixel(cell));
         let bytes = picture(6, 12);
         let (begun, rest) = bytes
             .split_at_checked(bytes.len() / 2)

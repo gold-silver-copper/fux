@@ -123,10 +123,7 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
     let Some(view) = session.views.get(&client) else {
         return Vec::new();
     };
-    let graphics = view.terminal.graphics();
-    let Some(cell) = graphics
-        .cell
-        .filter(|_| graphics.sixel && view.mode.is_normal())
+    let (fux_vt::Graphics::Sixel(cell), true) = (view.terminal.graphics(), view.mode.is_normal())
     else {
         return Vec::new();
     };

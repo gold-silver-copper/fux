@@ -128,10 +128,9 @@ impl Setup {
         let size = Size::new(self.rows, self.cols).map_err(|e| e.to_string())?;
         let mut parser =
             Parser::with_options(size, self.history, self.options).map_err(|e| e.to_string())?;
-        parser.set_host_graphics(fux_vt::Graphics {
-            cell: fux_vt::CellSize::new(10, 20),
-            sixel: true,
-        });
+        parser.set_host_graphics(
+            fux_vt::CellSize::new(10, 20).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+        );
         Ok(parser)
     }
 }

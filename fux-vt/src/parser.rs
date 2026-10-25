@@ -4,7 +4,7 @@
 
 use crate::mode::{Mode, Modes};
 use crate::{
-    Error, Rgb, Screen, Size,
+    Error, Graphics, Rgb, Screen, Size,
     screen::{Dispatch, Setting},
 };
 
@@ -1027,11 +1027,14 @@ impl Parser {
     /// Tells the parser what the host's terminal draws: the size of a cell
     /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
     /// whether it shows sixel graphics, which primary device attributes
-    /// then say (`4`) with [`Feature::Pictures`] and a cell size. Without
-    /// a cell size no picture is placed ([`crate::Graphics`]).
-    pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
-        graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
-        self.screen.set_graphics(graphics);
+    /// then say (`4`) with [`Feature::Pictures`]; without it, sixel is not
+    /// shown ([`Graphics`]).
+    pub fn set_host_graphics(&mut self, graphics: Graphics) {
+        let shown = match graphics {
+            Graphics::Sixel(cell) if !self.options.has(Feature::Pictures) => Graphics::Cell(cell),
+            Graphics::Text | Graphics::Cell(_) | Graphics::Sixel(_) => graphics,
+        };
+        self.screen.set_graphics(shown);
     }
     /// Resizes the terminal, reflowing the primary screen with
     /// [`Feature::Reflow`].

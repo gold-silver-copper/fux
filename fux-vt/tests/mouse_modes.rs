@@ -104,10 +104,7 @@ fn urxvt_sends_the_code_plus_32_and_decimal_positions() -> Result {
 #[test]
 fn sgr_pixels_is_never_set_and_the_cell_encoding_stays() -> Result {
     let mut p = parser(b"\x1b[?1000h\x1b[?1006h\x1b[?1016h")?;
-    p.set_host_graphics(Graphics {
-        cell: fux_vt::CellSize::new(8, 16),
-        sixel: false,
-    });
+    p.set_host_graphics(fux_vt::CellSize::new(8, 16).map_or(Graphics::Text, Graphics::Cell));
     let mut out = Vec::new();
     p.process_with_replies(b"\x1b[?1016$p", |b| out.extend_from_slice(b))?;
     assert_eq!(out, b"\x1b[?1016;4$y");

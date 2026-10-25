@@ -3002,7 +3002,7 @@ impl Screen {
     /// with an identity, else a VT100 with advanced video.
     pub(crate) fn primary_attributes(&self, options: &Options) -> Reply {
         // 4: sixel graphics, when the host's terminal shows them.
-        let sixel = if self.graphics.sixel { ";4" } else { "" };
+        let sixel = if self.sixel() { ";4" } else { "" };
         if options.identity().is_some() {
             // Level 2 (DEC STD 070, DA, Table 1): selective erase (6),
             // horizontal scrolling (21), colour text (22) and rectangular
@@ -3695,7 +3695,7 @@ impl Screen {
             }
             // Cell and text area sizes in pixels, from the host's terminal.
             (b"", b't') if n == 16 => {
-                let cell = self.graphics.cell?;
+                let cell = self.graphics.cell()?;
                 Some(reply!("\x1b[6;{};{}t", cell.height(), cell.width()))
             }
             (b"", b't') if n == 14 => {
@@ -3716,7 +3716,7 @@ impl Screen {
                     (1..=3, _) => 2,
                     _ => 1,
                 };
-                let read = self.graphics.sixel && matches!(action, 1 | 2 | 4);
+                let read = self.sixel() && matches!(action, 1 | 2 | 4);
                 match n {
                     1 if read => Some(reply!("\x1b[?1;0;256S")),
                     // The screen's pixels, but no more than the decoder keeps.

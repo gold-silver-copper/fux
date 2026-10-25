@@ -87,10 +87,9 @@ const PICTURES: Options = Options::new().with(Feature::Pictures);
 /// picture is laid out only in a cell size the host gave.
 fn pictured(rows: u16, cols: u16, history: usize, options: Options) -> Result<Parser> {
     let mut p = Parser::with_options(Size::new(rows, cols)?, history, options)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(10, 20),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(10, 20).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     Ok(p)
 }
 const RATTY: Identity = Identity {
@@ -1001,10 +1000,9 @@ fn the_history_budget_changes_on_a_live_parser() -> Result {
 #[test]
 fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // 6 pixels wide and 12 high (two bands of square pixels): 2 cells by 2,
     // at row 1 col 3.
     p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\")?;
@@ -1021,10 +1019,9 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
     );
     // A graphics new line after the last band takes it below.
     let mut q = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    q.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    q.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     q.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~-\x1b\\")?;
     assert_eq!(q.screen().cursor_position(), (3, 3), "below it");
     let covered = format!("{0}{0}", fux_vt::PLACEHOLDER);
@@ -1050,10 +1047,9 @@ fn a_sixel_picture_holds_its_cells_until_text_covers_them() -> Result {
 fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are() -> Result {
     for (at, end, top) in [(4, "", 2), (3, "-", 1), (3, "---", 0)] {
         let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
-        p.set_host_graphics(fux_vt::Graphics {
-            cell: fux_vt::CellSize::new(4, 8),
-            sixel: true,
-        });
+        p.set_host_graphics(
+            fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+        );
         let sixel = format!("\x1bPq\"1;1#1;2;100;0;0!8~-!8~{end}\x1b\\");
         p.process(format!("\x1b[?69h\x1b[1;5s\x1b[{at};3H{sixel}").as_bytes())?;
         let shown: Vec<_> = p
@@ -1086,10 +1082,9 @@ fn a_sixel_picture_scrolled_inside_left_and_right_margins_is_where_its_cells_are
 #[test]
 fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
     let mut p = Parser::with_options(Size::new(1, 2)?, 0, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     p.process(b"\x1bP0;1q\"1;1;1;12~-~\x1b\\")?;
     let shown: Vec<_> = p.screen().pictures().map(|s| (s.row, s.rows)).collect();
     assert_eq!(shown, [(-1, 2)]);
@@ -1110,10 +1105,9 @@ fn a_sixel_picture_cropped_off_the_top_is_shown_and_checked_so() -> Result {
 #[test]
 fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
     let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     p.process(b"\x1b[2;4r\x1b[1;1Habcd\x1b[2;1H")?;
     p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\\n\n")?;
     let shown: Vec<_> = (p.screen().pictures())
@@ -1138,10 +1132,9 @@ fn a_picture_whose_top_scrolled_off_a_region_shows_what_is_left() -> Result {
 #[test]
 fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
     let mut p = Parser::with_options(Size::new(6, 4)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // Two rows on the screen's first two, then five from the region's
     // first, the third row of the screen, to its last: one row scrolled off.
     p.process(b"\x1b[3;6r\x1b[1;1H\x1bPq\"1;1#1;2;100;0;0~-~\x1b\\")?;
@@ -1167,10 +1160,8 @@ fn a_picture_scrolling_its_top_off_a_region_as_placed_is_cropped() -> Result {
 /// margin is set inside it later.
 #[test]
 fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
-    let graphics = fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    };
+    let graphics =
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel);
     let shown = |p: &Parser| -> Vec<(i64, u16, u16)> {
         (p.screen().pictures())
             .map(|s| (s.row, s.rows, s.cropped))
@@ -1210,10 +1201,9 @@ fn a_pictures_crop_is_the_scrolls_not_the_margins_set_after() -> Result {
 #[test]
 fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
     let mut p = Parser::with_options(Size::new(2, 4)?, 120, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     p.process(b"\x1bPq\"1;1#1;2;100;0;0~-~-~-~-~-~\x1b\\")?;
     let kept = p.screen().history_len();
     let shown: Vec<_> = (p.screen().pictures())
@@ -1240,10 +1230,9 @@ fn a_picture_cropped_above_the_oldest_row_kept_is_checked_so() -> Result {
 #[test]
 fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
     let mut p = Parser::with_options(Size::new(6, 20)?, 0, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     p.set_picture_bytes(96 + 240 + 264);
     p.process(b"\x1bPq\"1;1#1;2;100;0;0!4~\x1b\\\x1b[3;1H")?;
     p.process(b"\x1bPq\"1;1#1;2;100;0;0!10~$!11~\x1b\\")?;
@@ -1263,10 +1252,9 @@ fn a_growth_that_cannot_fit_lets_no_picture_go() -> Result {
 fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
     for (lines, row) in [(3, 2), (20, 8)] {
         let mut p = Parser::with_options(Size::new(20, 10)?, 10, PICTURES)?;
-        p.set_host_graphics(fux_vt::Graphics {
-            cell: fux_vt::CellSize::new(4, 8),
-            sixel: true,
-        });
+        p.set_host_graphics(
+            fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+        );
         let dashes: String = std::iter::repeat_n('-', lines).collect();
         let data = format!("\x1bPq\"1;1#1;2;100;0;0~{dashes}\x1b\\");
         p.process(data.as_bytes())?;
@@ -1282,10 +1270,9 @@ fn trailing_graphics_new_lines_take_the_cursor_down_8_rows_at_most() -> Result {
 #[test]
 fn a_lowered_picture_budget_holds_the_pictures_kept() -> Result {
     let mut p = Parser::with_options(Size::new(6, 60)?, 0, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(2, 6),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(2, 6).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     p.process(b"\x1bPq\"1;1!100~\x1b\\\r\n\x1bPq!100~")?;
     assert_eq!(p.screen().pictures().count(), 1);
     p.set_picture_bytes(1000);
@@ -1303,10 +1290,9 @@ fn a_picture_split_or_written_over_after_it_was_placed_is_gone() -> Result {
     // 4 pixels by 24 at 4 by 8: one cell by three, at rows 1 to 3, with
     // text in the rows below.
     let place = |p: &mut Parser, after: &[u8]| -> Result<usize> {
-        p.set_host_graphics(fux_vt::Graphics {
-            cell: fux_vt::CellSize::new(4, 8),
-            sixel: true,
-        });
+        p.set_host_graphics(
+            fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+        );
         let mut bytes =
             b"\x1b[5;1Hxxx\r\nxxx\x1b[2;1H\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~\x1b\\".to_vec();
         bytes.extend(after);
@@ -1339,10 +1325,9 @@ fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
     // 420 bytes of history: 24 a row and 8 a cell, so the 17th row the
     // line feeds below take in lets the first go.
     let mut p = Parser::with_options(Size::new(8, 10)?, 420, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // One cell by three at row 1; a last graphics new line takes the
     // cursor to row 4.
     p.process(b"\r\n\x1bPq\"1;1#1;2;100;0;0!4~-!4~-!4~-!4~-\x1b\\")?;
@@ -1365,10 +1350,9 @@ fn a_picture_scrolled_into_history_is_shown_where_it_is() -> Result {
 #[test]
 fn a_copy_over_a_picture_reads_its_cells_as_blanks() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // 2 cells by 2 at row 1 col 3, and a `z` after them on its first row.
     p.process(b"\r\n   \x1bPq\"1;1#1;2;100;0;0!6~-!6~\x1b\\\x1b[2;8Hz")?;
     assert_eq!(p.screen().pictures().count(), 1);
@@ -1502,10 +1486,9 @@ fn c0_controls_inside_sixel_are_ignored_and_bel_rings() -> Result {
 #[test]
 fn sixel_is_ignored_without_pictures() -> Result {
     let mut p = Parser::new(Size::new(6, 10)?, 10)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     let mut replies = Vec::new();
     p.process_with_replies(
         b"ab\x1bPq\"1;1;4096;2160#1;2;100;0;0!6~-!6~\x1b\\cd\x1b[c\x1b[?1;1S",
@@ -1534,25 +1517,16 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
         "no size known, none told"
     );
     assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
-    // A host that draws sixel but gave no cell size: no picture can be
-    // laid out, so none is said.
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: None,
-        sixel: true,
-    });
-    assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
     // One with a cell size that draws no sixel: none said, and none read.
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(9, 18),
-        sixel: false,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(9, 18).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Cell),
+    );
     assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2c");
     p.process(b"\x1bPq!6~\x1b\\")?;
     assert_eq!(p.screen().pictures().count(), 0);
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(9, 18),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(9, 18).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     assert_eq!(replies(&mut p, b"\x1b[c")?, "\x1b[?1;2;4c");
     assert_eq!(replies(&mut p, b"\x1b[16t")?, "\x1b[6;18;9t");
     assert_eq!(replies(&mut p, b"\x1b[14t")?, "\x1b[4;108;90t");
@@ -1571,10 +1545,9 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
     // (ctlseqs: "the minimum of the window size and the graphic size"): a
     // side at most 4096 pixels, and 4096 by 2160 in all.
     let mut wide = Parser::with_options(Size::new(200, 500)?, 10, PICTURES)?;
-    wide.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(10, 20),
-        sixel: true,
-    });
+    wide.set_host_graphics(
+        fux_vt::CellSize::new(10, 20).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     assert_eq!(replies(&mut wide, b"\x1b[?2;1;0S")?, "\x1b[?2;0;4096;2160S");
     assert_eq!(replies(&mut wide, b"\x1b[?2;4;0S")?, "\x1b[?2;0;4096;2160S");
     Ok(())
@@ -1587,10 +1560,8 @@ fn graphics_queries_are_answered_from_the_host() -> Result {
 /// at the screen's edge stays shown, as clipped, when the screen widens.
 #[test]
 fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
-    let graphics = fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    };
+    let graphics =
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel);
     let mut p = Parser::with_options(Size::new(4, 10)?, 10, PICTURES)?;
     p.set_host_graphics(graphics);
     // 24 pixels wide, 6 cells, at column 3 with the right margin at 5.
@@ -1621,10 +1592,9 @@ fn a_picture_is_clipped_at_the_right_margin_and_keeps_its_clip() -> Result {
 #[test]
 fn a_picture_whose_top_scrolled_off_shows_what_is_left() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // 4 pixels wide and 84 high (14 bands): one cell by 11, from row 3 of 6,
     // its bottom on the last row and its top 5 rows above the screen.
     let bands: String = std::iter::repeat_n("!4~-", 13).collect();
@@ -1643,10 +1613,9 @@ fn a_picture_whose_top_scrolled_off_shows_what_is_left() -> Result {
 #[test]
 fn decsdm_places_a_picture_at_the_top_left_without_scrolling() -> Result {
     let mut p = Parser::with_options(Size::new(6, 10)?, 10, PICTURES)?;
-    p.set_host_graphics(fux_vt::Graphics {
-        cell: fux_vt::CellSize::new(4, 8),
-        sixel: true,
-    });
+    p.set_host_graphics(
+        fux_vt::CellSize::new(4, 8).map_or(fux_vt::Graphics::Text, fux_vt::Graphics::Sixel),
+    );
     // 8 pixels wide and 84 high: 2 cells by 11, taller than the screen.
     let bands: String = std::iter::repeat_n("!8~-", 13).collect();
     let sixel = format!("\x1b[?80h\x1b[4;5Hx\x1bPq\"1;1#1;2;100;0;0{bands}!8~\x1b\\");

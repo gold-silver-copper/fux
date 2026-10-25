@@ -488,6 +488,18 @@ pub(crate) fn basename(program: &str) -> String {
         .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
 }
 
+/// What a pane's program is told its terminal draws: `graphics`, or text in
+/// `told`, the cell it was last told, where `graphics` has none.
+pub(crate) fn in_cell(
+    graphics: fux_vt::Graphics,
+    told: Option<fux_vt::CellSize>,
+) -> fux_vt::Graphics {
+    match graphics {
+        fux_vt::Graphics::Text => told.map_or(graphics, fux_vt::Graphics::Cell),
+        fux_vt::Graphics::Cell(_) | fux_vt::Graphics::Sixel(_) => graphics,
+    }
+}
+
 /// What a program rang or announced since it started: bells, and desktop
 /// notifications (OSC 9, 777, 99) with the last one's text; and what of
 /// its output fux dropped or refused, counted for its JSON as clients
@@ -979,13 +991,12 @@ impl<S> Pane<S> {
         &mut self,
         colours: Colours,
         palette: crate::outer::Palette,
-        mut graphics: fux_vt::Graphics,
+        graphics: fux_vt::Graphics,
     ) -> bool {
         self.colours = colours;
         self.parser.set_host_palette(palette);
         let told = self.screen().cell_size();
-        graphics.cell = graphics.cell.or(told);
-        self.parser.set_host_graphics(graphics);
+        self.parser.set_host_graphics(in_cell(graphics, told));
         self.screen().cell_size() != told
     }
 

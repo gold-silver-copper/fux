@@ -149,9 +149,10 @@ pub struct Terminal {
 impl Terminal {
     /// What it draws, as the panes it answers for are told.
     pub fn graphics(&self) -> Graphics {
-        Graphics {
-            cell: self.cell,
-            sixel: self.sixel,
+        match self.cell {
+            None => Graphics::Text,
+            Some(cell) if self.sixel => Graphics::Sixel(cell),
+            Some(cell) => Graphics::Cell(cell),
         }
     }
 
@@ -617,12 +618,11 @@ mod tests {
         let d = s.attach(24, 80, None).map_err(|e| e.to_string())?;
         s.input(d, b"\x1b[6;16;8t\x1b[?62;22c");
         s.input(d, b"x");
-        let shown = graphics(&mut s);
-        assert!(shown.sixel && shown.cell == fux_vt::CellSize::new(10, 20));
+        let cell = |w, h| fux_vt::CellSize::new(w, h).ok_or("a cell");
+        assert_eq!(graphics(&mut s), Graphics::Sixel(cell(10, 20)?));
         run(&mut s, "opts str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;
-        let shown = graphics(&mut s);
-        assert!(!shown.sixel && shown.cell == fux_vt::CellSize::new(8, 16));
+        assert_eq!(graphics(&mut s), Graphics::Cell(cell(8, 16)?));
         Ok(())
     }
 

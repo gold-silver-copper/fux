@@ -737,9 +737,8 @@ impl Session {
         }
         // The cell a terminal drawing it says, else the one its pane keeps:
         // the program it starts is told what the last was.
-        let mut graphics = self.graphics(id);
-        graphics.cell = graphics.cell.or(pane.screen().cell_size());
-        let size = (pane.size(), graphics.cell);
+        let graphics = crate::pane::in_cell(self.graphics(id), pane.screen().cell_size());
+        let size = (pane.size(), graphics.cell());
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Program(launch.clone());
@@ -1450,7 +1449,7 @@ impl Session {
     /// draws keeps the cell it was told (`Pane::host`).
     fn host_cells(&mut self) {
         let told = |p: &&Pane| {
-            let drawn = self.graphics(p.id()).cell;
+            let drawn = self.graphics(p.id()).cell();
             drawn.is_some_and(|cell| p.screen().cell_size() != Some(cell))
         };
         let stale: Vec<PaneId> = (self.parts.panes().values().filter(told))
@@ -2453,7 +2452,7 @@ impl Session {
         // nothing can then leave running.
         let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
-        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell));
+        let new = NewPane::new(start, &cwd, &starting, (size, self.graphics(target).cell()));
         let pane = self.new_pane(&mut ids, new)?;
         let new = pane.id();
         if let Err(pane) = self.parts.split(pane, split) {
