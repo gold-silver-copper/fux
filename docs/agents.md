@@ -191,8 +191,8 @@ as integers: `A counts 3 at` is its `DONE`.
   time (Vim, readline) may read Escape and a key sent soon after it, in one
   `send-keys` or two, as one key: send Escape, wait until the program shows
   it took it (its mode line), then the next key. Keys sent to a program
-  that exited, that closed its terminal (where the system says so: Linux),
-  or that is paused since a restart are refused (`not_running`).
+  that exited or that closed its terminal (where the system says so:
+  Linux) are refused (`not_running`).
 
   ```fux
   %2 str Escape key send-keys
@@ -328,11 +328,11 @@ stopped it.
   can give you `str agent str PATH grant`: a socket that reaches workspace
   `agent` alone. `kill-server` from inside its own server is refused;
   `force-kill-server` stops it.
-- A server that did not stop cleanly leaves its layout in
-  `$XDG_STATE_HOME/fux`: the next server on that socket brings it back,
-  each shell started again, each program `run` started waiting, paused,
-  for `respawn`. `kill-server` forgets it. It is another
-  server run: versions from before it are refused.
+- Nothing is saved on its own: a server that stops, or crashes, takes its
+  session with it. `fux dump > FILE` saves its layout and launches when you
+  choose; `fux start && fux FILE` makes them again on a fresh server,
+  never its processes' state. That is another server run: versions from
+  before it are refused.
 - In a sandbox that refuses Unix sockets, client and server meet through a
   FIFO beside the socket (`NAME.sock.door`).
 - A tab no client shows, or only clients that watch, is laid out on its

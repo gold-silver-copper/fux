@@ -1,7 +1,7 @@
 //! The requests a client sends the server: typed actions, each built by
 //! fuxth words in a client (`crate::script`) and carried whole over the
 //! socket (`crate::wire`). The server never reads words.
-use crate::id::{ClientId, PaneId, TabId, Wanted, WsId};
+use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::keys::mouse::MouseButton;
 use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
@@ -251,7 +251,7 @@ wire! {
 /// Which run of a server this is: its process and the moment it started,
 /// in nanoseconds since 1970 (`48211-1867a3f9c2b8e7d6`). No two runs share
 /// both: a process id is another process's only once this one ended, and
-/// that one started at another moment. A restart, or a restore, is a run
+/// that one started at another moment. A restart is a run
 /// of its own; so is a server on another socket. Its panes' `FUX_SERVER`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Run {
@@ -495,8 +495,6 @@ wire! {
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
             env: Env,
-            /// The ids it makes, if asked for (`id`, as saved sessions have).
-            ids: Wanted,
         },
         NewTab {
             target: Option<WsRef>,
@@ -504,7 +502,6 @@ wire! {
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
-            ids: Wanted,
         },
         Split {
             axis: Axis,
@@ -515,8 +512,6 @@ wire! {
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
-            /// The id it makes the pane with, if asked for.
-            id: Option<PaneId>,
             /// The shares of their split the split pane and the new one
             /// take (`shares`), if given; else the pane's is halved.
             shares: Option<(NonZeroU32, NonZeroU32)>,
@@ -532,7 +527,6 @@ wire! {
             argv: Vec<String>,
             /// A file everything the program writes goes to too.
             log: Option<String>,
-            ids: Wanted,
         },
         /// The program `run` started, started again in its pane.
         Respawn {

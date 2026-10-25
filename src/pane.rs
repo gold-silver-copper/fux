@@ -1020,18 +1020,6 @@ impl<S> Pane<S> {
         self.parser.set_history_bytes(bytes);
     }
 
-    /// Whether its program is one a restore brought back, waiting for
-    /// `respawn`.
-    pub fn paused(&self) -> bool {
-        match self.process {
-            Process::Absent => match self.runs {
-                Runs::Program(_) => true,
-                Runs::Shell => false,
-            },
-            Process::Reading(_) | Process::HungUp(_) | Process::Exited(_) => false,
-        }
-    }
-
     /// Where it stands now (`Version`).
     pub fn counts(&self) -> crate::command::Counts {
         crate::command::Counts {

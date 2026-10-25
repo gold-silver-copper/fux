@@ -333,7 +333,6 @@ pub fn context() -> Context {
         server: var("FUX_SERVER"),
         env: Vec::new(),
         client: None,
-        restoring: false,
     }
 }
 

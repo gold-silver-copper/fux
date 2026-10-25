@@ -106,7 +106,6 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
             server: None,
             env: Vec::new(),
             client: None,
-            restoring: false,
         },
     };
     stream.write_all(&hello.encode().map_err(e)?).map_err(e)?;

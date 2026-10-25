@@ -129,8 +129,8 @@ pub fn main() -> ExitCode {
     ExitCode::from(status)
 }
 
-/// How a client starts a server, in the background: `fux __serve SOCKET`,
-/// with `fresh` to forget what the last one held. A client types it, the
+/// How a client starts a server, in the background: `fux __serve SOCKET`.
+/// A client types it, the
 /// server leading a session of its own (`client::start_server`); no help
 /// lists it. A person can type it too: that server stays in the
 /// terminal's session, and the terminal's hangup or Ctrl-C stops it.
@@ -145,12 +145,11 @@ fn serve(args: &[String]) -> ExitCode {
     let Some(path) = args.first() else {
         return fail("no socket".to_owned());
     };
-    let fresh = args.get(1).is_some_and(|a| a == "fresh");
     let socket = match socket::checked(path, "socket") {
         Ok(socket) => socket,
         Err(error) => return fail(error.to_string()),
     };
-    match server::serve(&socket, fresh) {
+    match server::serve(&socket) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(error.to_string()),
     }

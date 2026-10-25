@@ -1,8 +1,6 @@
 //! What a session holds, written as the fuxth program that makes it again
 //! (`dump`): each pane made becomes a constant (`p5`) that later lines name.
-//! A server saves its whole session so, the ids asked for too, and a server
-//! started after a crash or a reboot runs it (through a client, as fuxth
-//! always runs) to bring the session back with the ids it had.
+//! Its layouts and launches, never its processes' state.
 use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
@@ -12,9 +10,8 @@ use crate::workspace::{Fit, Tab, Workspace};
 
 impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
-    /// as a fuxth program; with `ids`, the ids to ask for, as a saved
-    /// session keeps them.
-    pub(crate) fn dump_layout(&self, only: Option<AnyRef>, ids: bool) -> String {
+    /// as a fuxth program.
+    pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> String {
         let mut out = String::from("# fux: running this makes it again\n");
         // A tab's or a pane's is its tab alone, not its workspace's part.
         let whole = match only {
@@ -29,7 +26,7 @@ impl Session {
                 if !self.takes_in(only, ws.id(), tab.id()) || tab.root().is_none() {
                     continue;
                 }
-                self.dump_tab(ws, tab, whole, opens, ids, &mut out);
+                self.dump_tab(ws, tab, whole, opens, &mut out);
                 opens = false;
             }
         }
@@ -39,31 +36,20 @@ impl Session {
     /// The lines that make tab `tab` of `ws`, and its panes:
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
-    fn dump_tab(
-        &self,
-        ws: &Workspace,
-        tab: &Tab,
-        whole: bool,
-        opens: bool,
-        ids: bool,
-        out: &mut String,
-    ) {
+    fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
         let Some((root, first)) = tab.root().and_then(|r| Some((r, r.first_pane()?))) else {
             return;
         };
         let program = self.program(first);
-        // A saved session makes each workspace, with the ids it had, on a
-        // server that has none; a dump run anywhere puts each tab in the
-        // workspace of its name, made if there is none (`in`).
-        let makes = opens && ids && program.is_none();
+        // A dump run anywhere puts each tab in the workspace of its name,
+        // made if there is none (`in`).
         let mut line = vec!["opts".to_owned()];
-        match (makes, whole && !opens) {
-            (true, _) => line.extend(string(ws.name()).chain(["name".to_owned()])),
-            (false, true) => line.extend([workspace(ws.id()), "in".to_owned()]),
-            (false, false) => line.extend(string(ws.name()).chain(["in".to_owned()])),
+        match whole && !opens {
+            true => line.extend([workspace(ws.id()), "in".to_owned()]),
+            false => line.extend(string(ws.name()).chain(["in".to_owned()])),
         }
         // A name fux gave (`main`, `tab-N`, the program's) it gives again.
-        if tab.given() && !makes {
+        if tab.given() {
             line.extend(string(tab.name()).chain(["name".to_owned()]));
         }
         // Its size, which a server with no client attached needs to make
@@ -72,17 +58,10 @@ impl Session {
         let size = tab.fit().size();
         let (cols, rows) = (size.cols().to_string(), size.rows().to_string());
         line.extend([cols, rows, "size".to_owned()]);
-        if ids {
-            if opens {
-                line.extend(asked(&ws.id().to_string()));
-            }
-            line.extend(asked(&tab.id().to_string()));
-        }
-        self.pane_words(first, ids, &mut line);
-        line.push(match (program.is_some(), makes) {
-            (true, _) => "run".to_owned(),
-            (false, true) => "new-workspace".to_owned(),
-            (false, false) => "new-tab".to_owned(),
+        self.pane_words(first, &mut line, out);
+        line.push(match program {
+            Some(_) => "run".to_owned(),
+            None => "new-tab".to_owned(),
         });
         let named = pane_name(first);
         line.extend(["let".to_owned(), named.clone()]);
@@ -90,14 +69,11 @@ impl Session {
         if opens {
             push(out, &[&named, "workspace", "let", &workspace(ws.id())]);
         }
-        if tab.given() && makes {
-            push(out, &[&named, "tab", "str", tab.name(), "rename"]);
-        }
         if matches!(tab.fit(), Fit::Clients(_)) {
             push(out, &[&named, "tab", "resize-auto"]);
         }
         if let Tree::Split(axis, split) = root {
-            self.dump_split(*axis, split, ids, out);
+            self.dump_split(*axis, split, out);
         }
         // Panes renamed keep their names.
         for pane in root.panes() {
@@ -120,7 +96,7 @@ impl Session {
     /// has its weight, and the layout made again is the one there is, at
     /// every size. A split's weights are within `layout::MOST` together,
     /// as two shares are.
-    fn dump_split(&self, axis: Axis, split: &Split, ids: bool, out: &mut String) {
+    fn dump_split(&self, axis: Axis, split: &Split, out: &mut String) {
         let firsts: Vec<_> = (split.children())
             .filter_map(|(share, child)| Some((child.first_pane()?, u64::from(share.get()))))
             .collect();
@@ -133,13 +109,13 @@ impl Session {
             rest = rest.saturating_sub(*theirs);
             let mut line = vec![pane_name(*before), way.into()];
             line.extend([theirs.to_string(), rest.to_string(), "shares".to_owned()]);
-            self.pane_words(*pane, ids, &mut line);
+            self.pane_words(*pane, &mut line, out);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
         }
         for (_, child) in split.children() {
             if let Tree::Split((), inner) = child {
-                self.dump_split(axis.cross(), inner, ids, out);
+                self.dump_split(axis.cross(), inner, out);
             }
         }
     }
@@ -154,17 +130,21 @@ impl Session {
     }
 
     /// The options a line gives pane `id`: where it starts, and a program's
-    /// variables and words; with `ids`, the id it asks for.
-    fn pane_words(&self, id: PaneId, ids: bool, line: &mut Vec<String>) {
+    /// variables and words. A directory that is not text, which a fuxth
+    /// string cannot hold, is left out, never written changed: a comment
+    /// in `out` says so, and the line starts it where it runs.
+    fn pane_words(&self, id: PaneId, line: &mut Vec<String>, out: &mut String) {
         let program = self.program(id);
         let shell = || self.cwd_for(super::Here::NOWHERE, Some(id));
         let cwd = program.map_or_else(shell, |launch| launch.cwd.clone());
-        line.extend(string(&cwd.to_string_lossy()).chain(["cwd".to_owned()]));
+        match cwd.to_str() {
+            Some(cwd) => line.extend(string(cwd).chain(["cwd".to_owned()])),
+            None => out.push_str(&format!(
+                "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
+            )),
+        }
         for (key, value) in program.iter().flat_map(|launch| &launch.env) {
             line.extend(string(key).chain(string(value)).chain(["env".to_owned()]));
-        }
-        if ids {
-            line.extend(asked(&id.to_string()));
         }
         let Some(launch) = program else {
             return;
@@ -189,11 +169,6 @@ fn workspace(id: WsId) -> String {
 /// `str TEXT`, as words.
 fn string(text: &str) -> impl Iterator<Item = String> {
     ["str".to_owned(), text.to_owned()].into_iter()
-}
-
-/// The words that ask for `id`.
-fn asked(id: &str) -> impl Iterator<Item = String> {
-    string(id).chain(["id".to_owned()])
 }
 
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it

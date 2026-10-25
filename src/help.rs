@@ -107,7 +107,10 @@ workspace; ref a name or a handle; text a string, number or boolean.
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
-         XDG_RUNTIME_DIR unset $TMPDIR/fux.\n",
+         XDG_RUNTIME_DIR unset $TMPDIR/fux. Nothing is saved on its own:\n\
+         `fux dump > FILE` saves the layouts and launches when you choose\n\
+         (never what a process held), and `fux start && fux FILE` makes them\n\
+         again on a fresh server.\n",
     );
     out
 }
@@ -226,10 +229,10 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// The words that build what a word takes, its options or its input: the
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env program arg in log-to id"),
-    ("split", "horizontal vertical shares cwd env program arg id"),
-    ("new-tab", "name size cwd env in id"),
-    ("new-workspace", "name size cwd env id"),
+    ("run", "name size cwd env program arg in log-to"),
+    ("split", "horizontal vertical shares cwd env program arg"),
+    ("new-tab", "name size cwd env in"),
+    ("new-workspace", "name size cwd env"),
     ("respawn", "kill-first env program arg"),
     (
         "capture",
@@ -360,8 +363,6 @@ mod tests {
         let second = std::time::Duration::from_secs(1);
         assert_eq!(crate::pane::FRAME_TIMEOUT, second);
         assert!(readme.contains("shown anyway after one second"));
-        assert_eq!(crate::server::SAVE_EVERY, second);
-        assert!(readme.contains("about a second after what output changes"));
         let longest = format!("at most {} characters", grouped(fuxth::LONGEST));
         assert!(AGENTS.contains(&longest), "agents.md: {longest}");
         let protocol = crate::protocol::PROTOCOL;
@@ -388,8 +389,6 @@ mod tests {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
         let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
-        let jump = format!("at most {} past the last", crate::id::MAX_JUMP);
-        assert!(about("id").is_some_and(|a| a.contains(&jump)));
         let sides = format!("1 to {} each", crate::view::MOST);
         for name in ["size", "resize", "resize-client", "headless"] {
             assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");

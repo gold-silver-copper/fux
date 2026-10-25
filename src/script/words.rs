@@ -9,7 +9,7 @@ use crate::command::{
     Wheel, WsRef,
 };
 use crate::help;
-use crate::id::{ClientId, PaneId, Wanted};
+use crate::id::{ClientId, PaneId};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
@@ -107,7 +107,6 @@ pub const WORDS: &[Word] = &[
     word("Starting", "vertical", "x -- x", "split stacked"),
     word("Starting", "shares", "x n n -- x", "split: how the pane and the new one divide the pane's room, A to B (default: halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
-    word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
     word("Starting", "kill-first", "x -- x", "respawn: end the program first if it still runs"),
     word("Starting", "run", "opts -- answer", "start a program in a tab of its own, in workspace agent; its pane stays once it exits"),
@@ -566,20 +565,6 @@ fn modify(
             }
             built.argv.push(arg);
         }
-        "id" => {
-            let text = string(&next()?)?;
-            let bad = format!("{text:?} is not %N, @N or +N");
-            let ids = &mut built.ids;
-            let given = match text.parse().map_err(|()| fail(Code::BadValue, bad))? {
-                AnyRef::Pane(id) => ids.pane.replace(id).is_some(),
-                AnyRef::Tab(id) => ids.tab.replace(id).is_some(),
-                AnyRef::Workspace(id) => ids.workspace.replace(id).is_some(),
-            };
-            if given {
-                let why = format!("id {text}: one of its kind is given already");
-                return Err(fail(Code::Id, why));
-            }
-        }
         "env" => {
             let (key, value) = (string(&next()?)?, next()?);
             // A pane, tab or workspace as fux writes it (`%3`).
@@ -999,7 +984,6 @@ impl fuxth::Host for Host<'_> {
                             env: built.env,
                             argv: built.argv,
                             log: built.log,
-                            ids: built.ids,
                         };
                         return later(ask(run, Then::Handle(Kind::Pane)));
                     }
@@ -1009,35 +993,24 @@ impl fuxth::Host for Host<'_> {
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
-                        ids: built.ids,
                     },
                     _ => Command::NewWorkspace {
                         name: built.name,
                         size: built.size,
                         cwd: built.cwd,
                         env: built.env,
-                        ids: built.ids,
                     },
                 };
                 later(ask(command, Then::Handle(Kind::Pane)))
             }
             "split" => {
                 let (p, built) = request_pane(name, next()?)?;
-                let Wanted {
-                    pane: id,
-                    tab: None,
-                    workspace: None,
-                } = built.ids
-                else {
-                    return Err(fail(Code::Id, "makes a pane alone: its id is %N"));
-                };
                 let split = Command::Split {
                     axis: built.axis.unwrap_or(Axis::Horizontal),
                     target: p,
                     argv: built.argv,
                     cwd: built.cwd,
                     env: built.env,
-                    id,
                     shares: built.shares,
                 };
                 later(ask(split, Then::Handle(Kind::Pane)))

@@ -110,8 +110,6 @@ codes! {
     Selection "selection",
     /// A name taken by another pane, tab or workspace.
     NameTaken "name_taken",
-    /// An id asked for that was given before.
-    Id "id",
     /// Every id of a kind has been given.
     IdsExhausted "ids_exhausted",
     /// A value out of what a word takes.
@@ -119,8 +117,8 @@ codes! {
     /// A command used wrongly.
     Usage "usage",
     // What a command meets.
-    /// A program that exited, closed its terminal, or is paused since a
-    /// restart: nothing takes input there.
+    /// A program that exited or closed its terminal: nothing takes input
+    /// there.
     NotRunning "not_running",
     /// A program still running, which a respawn would not end.
     StillRunning "still_running",
@@ -171,11 +169,8 @@ codes! {
     /// A run the prefix, then Esc, stopped.
     Cancelled "cancelled" [run_loop],
     /// A word the client runs itself (attach, server, start, status), which
-    /// runs from the command line only: not a key's, a config's or a saved
-    /// session's.
+    /// runs from the command line only: not a key's or a config's.
     NotHere "not_here",
-    /// A word a saved session may not hold.
-    NotLayout "not_layout",
     /// A word a config file may not hold.
     NotConfig "not_config",
     /// The config file or a setting refused.

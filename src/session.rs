@@ -7,13 +7,13 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::id::{ClientId, Ids, PaneId, TabId, Wanted, WsId};
+use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, Placement, Rect, Tree};
 use crate::pane::{self, Left, Loose, Output, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
+use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
 use crate::workspace::{Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
@@ -34,9 +34,8 @@ pub enum Outgoing {
     /// terminal (`send-keys` to a client), its screen ended by the server,
     /// or its detach, saying why.
     To(ClientId, ToAttached<'static>),
-    /// Stop the server, saying why; with `keep`, its layout is kept for
-    /// the next server to bring back, as after a crash.
-    Shutdown { reason: String, keep: bool },
+    /// Stop the server, saying why.
+    Shutdown(String),
 }
 
 /// A closed pane's program, hung up and given until the deadline to exit;
@@ -101,9 +100,6 @@ pub enum Came {
     /// By the socket of a grant: what panes it starts are told to reach
     /// the server by, so that what runs there is held to the grant too.
     Grant(PathBuf),
-    /// It is the server's own restore of a saved session: the ids asked for
-    /// are the ones it had, and programs wait for `respawn`.
-    Restore,
 }
 
 /// The server whose pane a caller on the CLI runs in, as its
@@ -254,8 +250,6 @@ pub enum Error {
     NoPane(PaneId),
     NoTab(TabId),
     NoWorkspaceGiven,
-    /// `id` asked for an id given before, or one there is.
-    IdTaken(AnyRef),
     NoClient(ClientId),
     NoBuffer(usize),
     /// A pane, tab or workspace alone of its kind, with nothing to move to.
@@ -271,10 +265,8 @@ pub enum Error {
     SelectionTooLarge,
     // A name that cannot be given.
     NameTaken(String),
-    /// A tab name given before: those tabs, then their panes.
-    /// A tab has the name: those tabs and their panes, and whether a
-    /// restore brought one of them back.
-    TabNameTaken(String, Vec<TabId>, Vec<PaneId>, bool),
+    /// A tab has the name: those tabs, then their panes.
+    TabNameTaken(String, Vec<TabId>, Vec<PaneId>),
     /// A workspace name a target would read as a number, not a name.
     NameReadAsTarget(String),
     /// Any other failure, made in one place and told apart by its code
@@ -302,7 +294,6 @@ impl Error {
             Self::NoPane(_) => Code::NoPane,
             Self::NoTab(_) => Code::NoTab,
             Self::NoPaneGiven | Self::NoWorkspaceGiven => Code::NoTarget,
-            Self::IdTaken(_) => Code::Id,
             Self::NoClient(_) => Code::NoClient,
             Self::NoBuffer(_) => Code::NoBuffer,
             Self::OnlyOne(_) | Self::AtEnd(_) | Self::NoNeighbor { .. } => Code::NothingThere,
@@ -325,10 +316,6 @@ impl std::fmt::Display for Error {
                 "no workspace given: name one (`str NAME workspace`; for new-tab, the \
                      option `str NAME in`)",
             ),
-            Self::IdTaken(id) => write!(
-                f,
-                "id {id}: that id, or a higher one, was given before, and ids are never given twice"
-            ),
             Self::NoClient(id) => write!(f, "no client {id}"),
             Self::NoBuffer(index) => write!(f, "no buffer {index}"),
             Self::OnlyOne(kind) => write!(f, "only one {}", kind.name()),
@@ -339,24 +326,14 @@ impl std::fmt::Display for Error {
             Self::NoRows => f.write_str("the pane has no rows"),
             Self::SelectionTooLarge => write!(f, "the selection is larger than {MAX_CELLS} cells"),
             Self::NameTaken(name) => write!(f, "a workspace is named {name:?}"),
-            Self::TabNameTaken(name, tabs, panes, restored) => {
+            Self::TabNameTaken(name, tabs, panes) => {
                 let ids = (tabs.iter().map(|t| AnyRef::Tab(*t)))
                     .chain(panes.iter().map(|p| AnyRef::Pane(*p)));
                 let ids = joined(ids, " ");
                 let kills = joined(tabs, " tab kill`, `fux str ");
-                // The surprise of a server that brought back what an earlier
-                // one on its socket had, which was killed or crashed.
-                let restored = match restored {
-                    true => {
-                        ", brought back from the last server on this socket, which did not \
-                         stop cleanly (killed or crashed; fux saves a server's layout in \
-                         $XDG_STATE_HOME/fux for that): its program waits for `respawn`"
-                    }
-                    false => "",
-                };
                 write!(
                     f,
-                    "a tab is named {name:?} already ({ids}){restored}; close it (`fux str {kills} tab kill`) or choose another name"
+                    "a tab is named {name:?} already ({ids}); close it (`fux str {kills} tab kill`) or choose another name"
                 )
             }
             Self::NameReadAsTarget(name) => write!(
@@ -388,9 +365,6 @@ impl From<pane::Error> for Error {
 pub(crate) fn refuses_input<S>(pane: &Pane<S>) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
-        Process::Absent if pane.paused() => {
-            "paused since the server restarted: respawn starts its program"
-        }
         Process::Exited(status) => return Some(ended(pane.id(), *status)),
         Process::Absent | Process::Reading(_) => return None,
     };
@@ -466,9 +440,6 @@ pub struct Session {
     /// The tabs clients sized at the last settle: one of a size of its own
     /// none sizes now is laid out on that size again (`size_panes`).
     sized: Vec<TabId>,
-    /// Something changed that the saved layout may show: a settle, or
-    /// output (a shell's directory). The server takes it.
-    pub(crate) edited: bool,
     ids: Ids,
     /// Commands run that may change what any client shows; input that runs
     /// one repaints every client, input that runs none only its own.
@@ -495,9 +466,6 @@ struct Starting {
     unset: Vec<String>,
     /// The socket they reach the server by, if not its own: a grant's.
     socket: Option<PathBuf>,
-    /// A restore is under way (`Session::restore`): ids come back as they
-    /// were, and programs wait for `respawn`.
-    restoring: bool,
 }
 
 /// The name of the first workspace, and of each workspace's first tab.
@@ -780,7 +748,6 @@ impl Session {
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             sized: Vec::new(),
-            edited: false,
             ids: Ids::default(),
             changes: 0,
             grants: Vec::new(),
@@ -1047,11 +1014,6 @@ impl Session {
         if let Some(status) = pane.process().exit_status() {
             return Err(ended(pane.id(), status));
         }
-        if pane.paused() {
-            let why =
-                format!("{target}: paused since the server restarted: respawn starts its program");
-            return Err(fail(Code::NotRunning, why));
-        }
         let program = match (&pane.runs, pane.process().child()) {
             (Runs::Program(_), Some(child)) => Some(child.leader.pid()),
             _ => None,
@@ -1080,8 +1042,7 @@ impl Session {
         if self.parts.workspaces().iter().any(|w| w.name() == name) {
             return Err(Error::NameTaken(name.to_owned()));
         }
-        let paused = |p: &PaneId| self.parts.panes().get(p).is_some_and(Pane::paused);
-        no_tab_named(self.parts.workspaces(), name, except, paused)
+        no_tab_named(self.parts.workspaces(), name, except)
     }
 
     /// Gives tab `id` the name `name`, checked (`Parts::give_tab_name`).
@@ -1100,21 +1061,18 @@ impl Session {
     /// What panes started for `origin` take of its environment: none of
     /// it for one that sent none (a test, a client of no terminal).
     fn starting_for(&self, origin: &Origin) -> Starting {
-        let (env, socket, restoring) = match origin {
+        let (env, socket) = match origin {
             Origin::Cli(caller) => match &caller.came {
-                Came::Socket => (caller.env.as_slice(), None, false),
-                Came::Grant(socket) => (caller.env.as_slice(), Some(socket.clone()), false),
-                Came::Restore => (caller.env.as_slice(), None, true),
+                Came::Socket => (caller.env.as_slice(), None),
+                Came::Grant(socket) => (caller.env.as_slice(), Some(socket.clone())),
             },
             Origin::Client(client) => (
                 self.views.get(client).map_or(&[][..], |v| v.env.as_slice()),
                 None,
-                false,
             ),
         };
         let mut fresh = Starting {
             socket,
-            restoring,
             ..Starting::default()
         };
         for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
@@ -1124,15 +1082,6 @@ impl Session {
             }
         }
         fresh
-    }
-
-    /// The next ids made are `wanted`'s (`id`): none that is there or
-    /// (outside a restore) was ever given.
-    fn want(&mut self, wanted: Wanted, again: bool) -> Result<(), Error> {
-        if let Some(id) = wanted.each().find(|id| self.there(*id).is_ok()) {
-            return Err(Error::IdTaken(id));
-        }
-        self.ids.want(wanted, again)
     }
 
     /// What `id`, written `text`, stands for as a `kind`: itself; a pane's
@@ -1519,11 +1468,6 @@ impl Session {
         let id = ids.pane()?;
         let name = basename(named.unwrap_or(config.shell.program()));
         let pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
-        // A program brought back by a restore waits for `respawn`.
-        let paused = new.starting.restoring && matches!(start, Start::Program(..));
-        if paused {
-            return Ok(pane);
-        }
         let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
@@ -1741,7 +1685,6 @@ impl Session {
         self.tell_schemes();
         self.tell_lost();
         self.hold_copies();
-        self.edited = true;
     }
 
     /// Each pane whose program was told another cell than the terminal
@@ -1992,10 +1935,7 @@ impl Session {
     fn after_close(&mut self) {
         let shutting = (self.outbox.iter()).any(|o| matches!(o, Outgoing::Shutdown { .. }));
         if self.parts.panes().is_empty() && !shutting {
-            self.outbox.push(Outgoing::Shutdown {
-                reason: "the last pane closed".into(),
-                keep: false,
-            });
+            (self.outbox).push(Outgoing::Shutdown("the last pane closed".into()));
         }
         self.touch();
         self.settle();
@@ -2142,7 +2082,6 @@ impl Session {
             }
         }
         drop(pane);
-        self.edited = true;
         if bell {
             self.ring(id, Instant::now());
         }
@@ -2238,22 +2177,6 @@ impl Session {
     /// events, its subscription; a grant, for the server to make; any other
     /// runs at once.
     pub fn begin(&mut self, request: Request, origin: &Origin) -> Begun {
-        // A size a saved session asks for that cannot be had here is left
-        // as it comes, so one does not keep the rest from coming back; the
-        // server's log says which.
-        if let Request::Do(command @ Command::ResizePane { .. }) = &request
-            && self.starting_for(origin).restoring
-        {
-            let outcome = self.run_command(command, origin);
-            return Begun::Done(match outcome.end {
-                End::Failed { message, .. } => {
-                    let said = format!("fux server: restoring, left as it came: {message}\n");
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
-                    Reply::default()
-                }
-                End::Done => outcome,
-            });
-        }
         self.begin_request(request, origin)
             .unwrap_or_else(|error| Begun::Done(failure(error, origin)))
     }
@@ -2306,7 +2229,7 @@ impl Session {
     fn counts_since(&self, since: command::Version) -> Result<command::Counts, Error> {
         if since.run != self.run {
             let why = format!(
-                "{since} is from another server run ({}), not this one ({}): a server since stopped or restored, or another socket's",
+                "{since} is from another server run ({}), not this one ({}): a server since stopped, or another socket's",
                 since.run, self.run
             );
             return Err(fail(Code::BadValue, why));
@@ -2374,7 +2297,6 @@ impl Session {
         let outcome = self
             .execute(command, origin)
             .unwrap_or_else(|error| failure(error, origin));
-        self.ids.unwant();
         if !command.reaches().shows_nothing_new() {
             self.changes = self.changes.wrapping_add(1);
             self.touch();
@@ -2399,10 +2321,8 @@ impl Session {
                 size,
                 cwd,
                 env,
-                ids,
             } => {
-                let (cwd, fit, sized) =
-                    self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
                 let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, sized);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
@@ -2414,10 +2334,8 @@ impl Session {
                 size,
                 cwd,
                 env,
-                ids,
             } => {
-                let (cwd, fit, sized) =
-                    self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
+                let (cwd, fit, sized) = self.opening((cwd.as_deref(), *size), (here, true))?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
@@ -2443,11 +2361,9 @@ impl Session {
                 env,
                 argv,
                 log,
-                ids,
             } => {
                 // Its place is out of every client's way: no client follows.
-                let (dir, fit, sized) =
-                    self.opening((*ids, cwd.as_deref(), *size), (here, false), &starting)?;
+                let (dir, fit, sized) = self.opening((cwd.as_deref(), *size), (here, false))?;
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
@@ -2518,7 +2434,7 @@ impl Session {
             }
             Command::DumpLayout { target } => {
                 let only = target.map(|t| self.there(t)).transpose()?;
-                Ok(self.dump_layout(only, false).into())
+                Ok(self.dump_layout(only).into())
             }
             &Command::SendMouse {
                 target,
@@ -2532,14 +2448,13 @@ impl Session {
                 ref argv,
                 ref cwd,
                 ref env,
-                id,
                 shares,
             } => {
                 let start = match argv.is_empty() {
                     true => Start::Shell(env.as_slice()),
                     false => Start::Program(argv, env.as_slice()),
                 };
-                self.split(target, (axis, shares), start, cwd.as_deref(), id, origin)
+                self.split(target, (axis, shares), start, cwd.as_deref(), origin)
             }
             &Command::Signal { target, signal } => {
                 let group = self.signalled(target)?;
@@ -2641,17 +2556,15 @@ impl Session {
     }
 
     /// What `new-workspace`, `new-tab` and `run` do before their pane
-    /// starts: the ids asked for taken, the directory it starts in found,
+    /// starts: the directory it starts in found,
     /// and its tab's fit and the size settling gives its pane: if `follows`,
     /// its client then shows it, on its screen, in the cell its terminal
     /// said; else its fit's, in no cell, as no terminal draws it.
     fn opening(
         &mut self,
-        (ids, dir, size): (Wanted, Option<&Path>, command::Size),
+        (dir, size): (Option<&Path>, command::Size),
         (here, follows): (Here, bool),
-        starting: &Starting,
     ) -> Result<(PathBuf, Fit, Starts), Error> {
-        self.want(ids, starting.restoring)?;
         let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
         let follower = (here.client().filter(|_| follows)).and_then(|c| self.views.get(&c));
@@ -2720,10 +2633,7 @@ impl Session {
             Origin::Client(_) => "stopped by kill-server, from a key or the prompt",
             Origin::Cli(_) => "stopped by fux kill-server",
         };
-        self.outbox.push(Outgoing::Shutdown {
-            reason: reason.into(),
-            keep: false,
-        });
+        self.outbox.push(Outgoing::Shutdown(reason.into()));
         Ok(Reply::default())
     }
 
@@ -2854,15 +2764,9 @@ impl Session {
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
         start: Start<'_>,
         dir: Option<&Path>,
-        id: Option<PaneId>,
         origin: &Origin,
     ) -> Result<Reply, Error> {
         let (here, starting) = (self.here(origin)?, self.starting_for(origin));
-        let wanted = Wanted {
-            pane: id,
-            ..Wanted::default()
-        };
-        self.want(wanted, starting.restoring)?;
         let target = self.pane(target)?.id();
         let cwd = self.start_dir(here, dir, Some(target))?;
         // The splitting client follows the new pane, if it shows its tab;
@@ -3620,17 +3524,15 @@ fn check_workspace_name<'a>(
         return Err(Error::NameTaken(name.to_owned()));
     }
     // A tab's name too: the workspace's would hide it from `str NAME tab`.
-    no_tab_named(others, name, None, |_| false)
+    no_tab_named(others, name, None)
 }
 
 /// That no tab of `workspaces` but `except` was given the name `name`; else
-/// why not, with those tabs and their panes, and whether one is `paused`
-/// (a restore brought it back).
+/// why not, with those tabs and their panes.
 fn no_tab_named<'a>(
     workspaces: impl IntoIterator<Item = &'a Workspace>,
     name: &str,
     except: Option<TabId>,
-    paused: impl Fn(&PaneId) -> bool,
 ) -> Result<(), Error> {
     let tabs: Vec<&Tab> = (workspaces.into_iter())
         .flat_map(Workspace::tabs)
@@ -3644,9 +3546,7 @@ fn no_tab_named<'a>(
     let panes = (tabs.iter()).flat_map(|t| t.root().map(Tree::panes).unwrap_or_default());
     let tabs = tabs.iter().map(|t| t.id()).collect();
     let panes: Vec<PaneId> = panes.collect();
-    // One a restore brought back: the surprise is said.
-    let restored = panes.iter().any(paused);
-    Err(Error::TabNameTaken(name.to_owned(), tabs, panes, restored))
+    Err(Error::TabNameTaken(name.to_owned(), tabs, panes))
 }
 
 /// The item after the one at `index` among `items`, or before it, going
@@ -4280,7 +4180,6 @@ mod tests {
             size: None,
             cwd: None,
             env: crate::command::Env::default(),
-            ids: Wanted::default(),
         };
         s.execute(&new_tab, &Origin::Cli(caller))?;
         let tab = s.tab("@3".parse()?).ok_or("the new tab")?;
@@ -4471,11 +4370,7 @@ mod tests {
         let origin = Origin::Client(c);
         let here = s.here(&origin).map_err(|e| e.to_string())?;
         let mut cell = |follows: bool| {
-            let opening = s.opening(
-                (Wanted::default(), None, None),
-                (here, follows),
-                &Starting::default(),
-            );
+            let opening = s.opening((None, None), (here, follows));
             opening
                 .map(|(_, _, (_, cell))| cell)
                 .map_err(|e| e.to_string())
@@ -5779,36 +5674,7 @@ mod tests {
         Ok(())
     }
 
-    /// Each change a saved session holds is counted, so it is saved at
-    /// once: a name fux gave a tab given it as its own, an order, a swap,
-    /// a border, a size, a move; output is not.
-    #[test]
-    fn what_a_saved_session_holds_is_counted_as_it_changes() -> Result<(), String> {
-        let mut s = started(Config::default())?;
-        let made = "opts 100 10 size str +1 workspace in new-tab drop \
-                    opts 100 10 size new-workspace drop %1 split drop";
-        run(&mut s, made)?;
-        let shapes = |s: &Session| s.parts.journal().shapes();
-        for change in [
-            "str @2 tab str tab-2 rename",
-            "str @2 tab str previous reorder",
-            "str +1 workspace str next reorder",
-            "%1 %4 swap-panes",
-            "%4 str right 2 move-border",
-            "str @2 tab 90 10 resize",
-            "%4 str @2 tab move-to",
-        ] {
-            let was = shapes(&s);
-            run(&mut s, change)?;
-            assert!(shapes(&s) > was, "{change}");
-        }
-        let was = shapes(&s);
-        s.output(PaneId::of(1), b"\x07x");
-        assert_eq!(shapes(&s), was);
-        Ok(())
-    }
-
-    /// A saved session names only the tabs given a name: one fux named by
+    /// A dump names only the tabs given a name: one fux named by
     /// its place (`tab-3`, its place now 2) comes back named by its place
     /// again, not as a name given, which a tab named so later could not
     /// take.
@@ -5818,9 +5684,44 @@ mod tests {
         let tab = "opts 80 24 size str +1 workspace in new-tab drop";
         run(&mut s, &format!("{tab} {tab} str @2 tab kill"))?;
         run(&mut s, &format!("{tab} str @4 tab str given rename"))?;
-        let dump = s.dump_layout(None, true);
+        let dump = s.dump_layout(None);
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
+        Ok(())
+    }
+
+    /// A pane whose directory is not UTF-8 text, which a fuxth string
+    /// cannot hold, is dumped without it, never with a changed path: a
+    /// comment names the pane. Linux only: macOS's file systems refuse a
+    /// name that is not UTF-8.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_dump_leaves_out_a_directory_that_is_not_text() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = (fuxix::file::scratch()?.join(format!("fux-dump-{}", std::process::id())))
+            .join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir_all(&dir)?;
+        let mut s = started(Config::default())?;
+        let program = Command::Run {
+            workspace: None,
+            name: None,
+            size: Some(crate::view::Screen::new(24, 80)?),
+            cwd: Some(dir.clone()),
+            env: crate::command::Env::default(),
+            argv: vec!["cat".into()],
+            log: None,
+        };
+        s.execute(&program, &Origin::Cli(Caller::default()))?;
+        let dump = s.dump_layout(None);
+        let _ = dir.parent().map(std::fs::remove_dir_all);
+        let told = dump.contains("# %2: its directory \"") && dump.contains("caf\\xE9");
+        let written = dump
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("caf"));
+        assert!(told && !written, "{dump}");
+        let mut again = started(Config::default())?;
+        run(&mut again, &dump)?;
+        assert_eq!(again.parts.panes().len(), 3, "{dump}");
         Ok(())
     }
 
@@ -5830,7 +5731,7 @@ mod tests {
     fn a_dump_keeps_which_tabs_fit_clients() -> Result<(), String> {
         let (mut s, _) = attached(11, 40)?;
         run(&mut s, "opts 60 20 size str +1 workspace in new-tab drop")?;
-        let dump = s.dump_layout(None, false);
+        let dump = s.dump_layout(None);
         let mut again = started(Config::default())?;
         run(&mut again, &dump)?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
@@ -5846,11 +5747,11 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
         let mut again = started(Config::default())?;
-        run(&mut again, &s.dump_layout(None, false))?;
+        run(&mut again, &s.dump_layout(None))?;
         let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
         let mut sizes = tabs.map(|t| t.fit().size());
         let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
-        assert!(wide, "{}", s.dump_layout(None, false));
+        assert!(wide, "{}", s.dump_layout(None));
         Ok(())
     }
 
@@ -5863,7 +5764,7 @@ mod tests {
         run(&mut s, "%1 split drop %1 vertical split drop")?;
         run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
         let replays = |s: &Session| {
-            let dump = s.dump_layout(None, false);
+            let dump = s.dump_layout(None);
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
@@ -5890,7 +5791,7 @@ mod tests {
     /// Tab `tab` dumped and made again where no client is: its panes'
     /// places there.
     fn replayed(s: &Session, tab: TabId) -> Result<Vec<Rect>, String> {
-        let dump = s.dump_layout(Some(AnyRef::Tab(tab)), false);
+        let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
         let mut again = started(Config::default())?;
         run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
         let made = (again.parts.workspaces().iter())
@@ -6125,7 +6026,7 @@ mod tests {
             "%6 kill",
         ] {
             run(&mut s, change)?;
-            let dump = s.dump_layout(Some(AnyRef::Tab(tab)), false);
+            let dump = s.dump_layout(Some(AnyRef::Tab(tab)));
             let mut again = started(Config::default())?;
             run(&mut again, &dump).map_err(|e| format!("{change}: {e}\n{dump}"))?;
             let made = (again.parts.workspaces().iter())

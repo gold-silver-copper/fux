@@ -443,10 +443,6 @@ fn start(
                 "XDG_CONFIG_HOME".into(),
                 config_home.to_string_lossy().into_owned(),
             ));
-            env.push((
-                "XDG_STATE_HOME".into(),
-                dir.join("state").to_string_lossy().into_owned(),
-            ));
             let log = std::fs::File::create(dir.join("server.log")).map_err(|e| e.to_string())?;
             // As a client starts one.
             let mut command = clean(&place.fux);

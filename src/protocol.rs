@@ -19,7 +19,7 @@ use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
 /// Bumped on any change to the frames below.
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 /// The largest frame, kind byte included.
 pub const MAX_FRAME: usize = 1 << 20;
 /// The largest payload one frame carries.
@@ -331,8 +331,8 @@ wire! {
     /// Where a request comes from: the caller's directory, its pane
     /// (`FUX_PANE`) and the server that pane is of (`FUX_SERVER`), its
     /// environment if the request may start programs (they take what
-    /// `update-environment` names of it), the client whose binding or prompt
-    /// runs it, and whether it brings back a saved session.
+    /// `update-environment` names of it), and the client whose binding or
+    /// prompt runs it.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Context {
         pub cwd: std::path::PathBuf,
@@ -340,7 +340,6 @@ wire! {
         pub server: Option<String>,
         pub env: Vec<(String, std::ffi::OsString)>,
         pub client: Option<ClientId>,
-        pub restoring: bool,
     }
 }
 
@@ -714,7 +713,6 @@ mod tests {
                     server: Some("1-2".into()),
                     env: vec![("K".into(), "V".into())],
                     client: "c2".parse().ok(),
-                    restoring: true,
                 },
             }
         );

@@ -935,7 +935,6 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
         (&on, &["str", "x", "name"], "respawn"),
         (&on, &["100", "30", "size"], "respawn"),
         (&on, &["str", "/", "cwd"], "respawn"),
-        (&on, &["str", "%99", "id"], "respawn"),
         (&on, &["vertical"], "respawn"),
         (&opts, &["str", "nowhere", "in"], "new-workspace"),
         (&opts, &["5", "timeout"], "new-tab"),

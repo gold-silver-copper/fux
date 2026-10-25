@@ -103,7 +103,6 @@ pub struct Opts {
     /// A split's shares (`shares`).
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
-    pub ids: crate::id::Wanted,
     pub log: Option<String>,
     pub kill: bool,
     /// How long a wait waits at most.
@@ -1021,8 +1020,8 @@ impl Asks for Settings<'_> {
     }
 }
 
-/// A program that may not do what the client does itself: a config's, a
-/// key's, a saved session's.
+/// A program that may not do what the client does itself: a config's or a
+/// key's.
 pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     let why = match what {
         Local::Open(_) => "a client's screen opens from its own keys or prompt",
@@ -1035,49 +1034,10 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
     Err(Failed::new(Code::NotHere, why))
 }
 
-/// Brings back a saved session: its program run against the server on
-/// `socket`, ids asked for as saved, programs left for `respawn`.
-pub fn restore(socket: &SocketPath, path: &std::path::Path, text: &str) -> Result<(), Failed> {
-    let mut context = client::context();
-    context.restoring = true;
-    // Its panes are its own, not a pane's it runs in.
-    (context.pane, context.server) = (None, None);
-    let mut server = Server::new(Choice::Path(socket.path().to_string_lossy().into_owned()));
-    let name = path.display().to_string();
-    run_quiet(&name, text, context, None, &mut Layout(&mut server))
-}
-
-/// The most steps a program the client runs takes (a config, a saved
-/// session, a key's or a screen's): one that loops without end fails rather
+/// The most steps a program the client runs takes (a config, a key's or a
+/// screen's): one that loops without end fails rather
 /// than spinning the client.
 pub const PROGRAM_STEPS: u64 = 10_000_000;
-
-/// What a saved session's requests go to: those that make and shape panes,
-/// tabs and workspaces, and find them; never what stops the server, grants,
-/// sets, streams events or reaches a client, whatever the file says.
-struct Layout<'a>(&'a mut Server);
-
-impl Asks for Layout<'_> {
-    fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        use crate::command::Reaches as R;
-        let refused = match asked.request.reaches() {
-            R::Server => Some("kill-server, grant or revoke"),
-            R::Settings { .. } => Some("set"),
-            R::Client { .. } => Some("a client's words"),
-            // A stream that never ends would hold the restore, and every
-            // request waiting for it, for good.
-            R::Streams => Some("events"),
-            R::Reads | R::Shapes | R::Buffers { .. } => None,
-        };
-        match refused {
-            Some(word) => Err(Failed::new(
-                Code::NotLayout,
-                format!("{word} in a saved session: it makes and shapes, and does nothing else"),
-            )),
-            None => self.0.ask(asked, out),
-        }
-    }
-}
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a

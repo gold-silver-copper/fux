@@ -21,7 +21,6 @@ for `id`, `name` and `pid` (it says `pane`):
 | `pid` | its program's process, `null` once it exited |
 | `version` | its version, `%3:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`: its pane, its counts and the server's run (`fux help-agents` says what each counts) |
 | `program` | what runs in its foreground, as the system names it (Linux keeps a name's first 15 bytes), `null` if its terminal does not say |
-| `paused` | a program a restore brought back, waiting for `respawn` |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
 | `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
@@ -149,7 +148,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
-| `respawned` | only when the program it ran over had not ended (a `kill-first` respawn, or one of a pane paused since a restart), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
+| `respawned` | only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
 | `rounded` | a tab's: a pane's going (closed, or moved to another tab) merged splits whose exact shares take weights more than 4,294,967,295 together; a close is not refused, so they are rounded to the nearest that fit |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
 | `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
@@ -171,12 +170,12 @@ wait's own (above). CODE stays; every one fux gives
   `grant`;
 - what a command names: `no_pane`, `no_tab`, `no_workspace`, `no_client`,
   `no_buffer`, `no_target`, `stray_pane`, `no_field`, `nothing_there`,
-  `selection`, `name_taken`, `id`, `ids_exhausted`, `bad_value`, `usage`;
+  `selection`, `name_taken`, `ids_exhausted`, `bad_value`, `usage`;
 - what a command meets: `not_running`, `still_running`, `not_run`, `only_shell`,
   `input_full`, `no_marks`, `start`, `size`, `mouse`, `signal`, `log`,
   `not_a_directory`, `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
-- a program of words: `steps`, `cancelled`, `not_here`, `not_layout`, `not_config`,
+- a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
   `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
@@ -190,8 +189,8 @@ help try`); a code no running word gives is refused before it runs.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":17,
- "server_version":"0.35.0","server_protocol":17,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":18,
+ "server_version":"0.35.0","server_protocol":18,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

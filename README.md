@@ -4,7 +4,7 @@ A small terminal multiplexer. One server keeps your shells running in
 workspaces, tabs and split panes; `fux` attaches a terminal to it. Every
 other `fux` command line is a short program in **fuxth**, a tiny Forth made
 for the shell, and so are fux's config, key bindings, command prompt and
-saved sessions. Several terminals can attach at once, each with its own
+dumped sessions. Several terminals can attach at once, each with its own
 view and its own keys. fux is driven from the keyboard: it has no mouse
 actions of its own, by design, and passes the mouse only to a program that
 asks for it (see [Terminal features](#terminal-features)).
@@ -389,17 +389,20 @@ one row does. Resizing a border weighs a split's panes by their sizes, and
 makes room for more. A close is never refused: shares it merges past that
 bound are rounded to the nearest that fit, which the `rounded` event says.
 
-A **server saves its session** the same way, with the ids it had: at once
-after a change to what it holds (a workspace, tab or pane made, closed,
-moved, renamed or respawned, an order, a border, a size given), and about
-a second after what output changes (a shell's directory), in `$XDG_STATE_HOME/fux` (`~/.local/state/fux`),
-written whole and moved in place, yours alone. A server started on the same
-socket after a crash, a `kill -9` or a reboot runs it to bring the session
-back with the same ids: shells start fresh in their directories; a program
-`run` started waits, saying so on its screen, until `respawn` starts it
-(`paused` in `ls json`). Each tab comes back at the size it had, as a dump
-makes it (`TAB resize-auto` lets one fit clients again); a client that
-attaches meanwhile is let in once it is back. `kill-server` and the last pane closing forget it.
+Nothing is saved on its own. To keep a session past its server (a crash, a
+`kill -9`, a reboot), dump it when you choose, and replay the dump on a
+fresh server:
+
+```sh
+fux dump > ~/session.fux       # save when you choose
+fux start && fux ~/session.fux # replay on a fresh server
+```
+
+A dump makes the layouts and launches again: each shell starts afresh in
+its directory, each program `run` started starts again. It never brings
+back what a process held: its screen, its history, what ran in a shell. A
+pane whose directory is not UTF-8 text, which fuxth cannot write, is dumped
+without it, and a comment line says so: it starts where the dump is run.
 
 ## Terminal features
 
@@ -478,8 +481,8 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
-- **Programs that outlive their server**: a crash ends them; the next server
-  brings back the layout, and `PANE respawn` starts each again.
+- **Programs that outlive their server**, or a session saved on its own: a
+  crash ends them; replay a `dump` you saved to make the layout again.
 - **A format language** for output (tmux's `#{…}`): `json`, and `X str
   FIELD get` for one value.
 - **Watching the config file**: a client runs it as it attaches.

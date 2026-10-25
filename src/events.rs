@@ -34,11 +34,6 @@ pub struct Journal {
     entries: VecDeque<(Seq, Event)>,
     /// The number the next entry is given.
     next: Seq,
-    /// How many changes there have been to what a saved session holds:
-    /// entries that made, closed, moved, renamed or respawned something,
-    /// kept or let go, and the changes to a layout no event tells
-    /// (`Journal::reshaped`).
-    shapes: u64,
 }
 
 impl Journal {
@@ -46,17 +41,6 @@ impl Journal {
     pub(crate) fn push(&mut self, place: Place, what: What) {
         if self.entries.len() >= KEPT {
             self.entries.pop_front();
-        }
-        let shapes = matches!(
-            what,
-            What::Created(_)
-                | What::Closed
-                | What::Moved(_)
-                | What::Renamed(_)
-                | What::Respawned(_)
-        );
-        if shapes {
-            self.reshaped();
         }
         self.entries.push_back((self.next, Event { place, what }));
         // 2^64 entries are never reached: the number never stands still.
@@ -66,18 +50,6 @@ impl Journal {
     /// Where a reader starting now reads from: nothing recorded yet.
     pub fn end(&self) -> Seq {
         self.next
-    }
-
-    /// A layout changed as no event tells (an order, a border, a size):
-    /// counted with the changes events tell that a saved session holds.
-    pub(crate) fn reshaped(&mut self) {
-        // 2^64 changes are never reached: the count never stands still.
-        self.shapes = self.shapes.saturating_add(1);
-    }
-
-    /// How many changes there have been to what a saved session holds.
-    pub fn shapes(&self) -> u64 {
-        self.shapes
     }
 
     /// What came from `from` on: how many of those entries were let go,
@@ -515,21 +487,6 @@ mod tests {
             (lines.as_str(), end),
             ("missed count=1\n", Some(Ending::Gone))
         );
-        Ok(())
-    }
-
-    /// What changed a saved session is known past what the journal keeps:
-    /// a flood of bells after it is not taken for a change.
-    #[test]
-    fn what_changed_a_saved_session_is_known_past_what_is_kept() -> Result<(), String> {
-        let ws: WsId = "+1".parse().map_err(|_| "+1")?;
-        let mut journal = Journal::default();
-        journal.push(Place::Workspace(ws), What::Closed);
-        let after = journal.shapes();
-        for _ in 0..=KEPT {
-            journal.push(Place::Workspace(ws), What::Bell);
-        }
-        assert_eq!((journal.shapes(), after), (1, 1));
         Ok(())
     }
 

@@ -21,14 +21,12 @@ use crate::wait::Waiting;
 use fuxix::Errno;
 use fuxix::poll::{Events as PollFlags, PollFd};
 use signal_hook::consts::SIGCHLD;
-use std::fs;
 use std::io::{ErrorKind, Write};
 use std::mem;
 use std::ops::ControlFlow;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Writes to the server's log, its stderr: `log!("…", args)` expands to
@@ -142,7 +140,7 @@ enum Wake {
     /// A connection's client may be painted (`Conn::paint_due`).
     Paint(usize),
     /// The loop runs again, which after every wake asks the waits for
-    /// their answers (`Waiting::due`) and saves the layout if it changed.
+    /// their answers (`Waiting::due`).
     Look,
 }
 
@@ -179,12 +177,6 @@ enum Stage {
     /// It said hello as `fux attach`: its `Attach` is next, with the
     /// descriptor it sent, and the kind of client it is.
     Attaching(Option<OwnedFd>, ClientKind),
-    /// Its `Attach` came while a restore runs: it attaches as it says once
-    /// the restore is over (`Server::restored`), until then no screen
-    /// showing what the restore makes, laid out on the sizes saved alone.
-    /// It is read no more till then: what it sends next waits in its
-    /// socket, not in the server.
-    AttachHeld(Option<OwnedFd>, ClientKind, Box<Attach>),
     /// Its client is attached: its input, resizes and detach come next.
     Attached(Box<Attached>),
     /// It said hello as a command client: its requests come next, each
@@ -192,10 +184,6 @@ enum Stage {
     /// (`Conn::reads`): a client that never reads its answers is read no
     /// more, and holds no more memory than one answer.
     Command,
-    /// Its request waits for the restore that runs to end, so that it takes
-    /// no id the restore asks for (`Server::request`). It is read only to
-    /// notice the client go.
-    Held(Box<Asked>),
     /// Its request waits for its pane (`wait`): it is answered once the
     /// wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
@@ -218,20 +206,18 @@ impl Stage {
             | Stage::Attaching(..)
             | Stage::Attached(_)
             | Stage::Command
-            | Stage::Held(_)
             | Stage::Waiting(_)
             | Stage::Events(_) => true,
-            Stage::AttachHeld(..) | Stage::Closing | Stage::Dead => false,
+            Stage::Closing | Stage::Dead => false,
         }
     }
 
-    /// Whether a request of its is under way: held, waiting or streaming.
+    /// Whether a request of its is under way: waiting or streaming.
     fn asked(&self) -> bool {
         match self {
-            Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => true,
+            Stage::Waiting(_) | Stage::Events(_) => true,
             Stage::Hello(_)
             | Stage::Attaching(..)
-            | Stage::AttachHeld(..)
             | Stage::Attached(_)
             | Stage::Command
             | Stage::Closing
@@ -557,9 +543,6 @@ pub struct Server {
     session: Session,
     phase: Phase,
     conns: Vec<Conn>,
-    /// Where the layout is saved, for a server after a crash to bring
-    /// back; none if there is nowhere to.
-    saved: Option<Saved>,
     children: crate::SignalPipe,
     /// Closed panes' programs killed but not yet exited, reaped once SIGCHLD
     /// says they have.
@@ -576,167 +559,6 @@ pub struct Server {
     ready: Vec<(Slot, PollFlags)>,
     /// When an `accept` failure was last logged.
     accept_logged: Option<Instant>,
-}
-
-/// How long after a change the layout is saved at the latest.
-pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(1);
-
-/// The layout a server saves as it changes, for the next server on its
-/// socket to bring back after a crash or a reboot: in
-/// `$XDG_STATE_HOME/fux` (`~/.local/state/fux`), which outlives a reboot,
-/// written whole to a file of the user's alone, then moved in place.
-struct Saved {
-    path: PathBuf,
-    /// What it holds.
-    written: String,
-    /// When it may be saved next.
-    at: Instant,
-    /// Something changed since it was last saved.
-    pending: bool,
-    /// How many changes to what it holds the journal had counted as it
-    /// was last saved (`Journal::shapes`).
-    saved_at: u64,
-    /// The restore under way, if one is: the other end of a socket its
-    /// thread closes as it ends (`Server::restored`). Meanwhile what there
-    /// is is not saved over the file.
-    restore: Option<UnixStream>,
-}
-
-impl Saved {
-    /// Where the server on `socket` saves its layout, if anywhere.
-    fn of(socket: &SocketPath) -> Option<Saved> {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| {
-                let home = std::env::var_os("HOME").map(PathBuf::from)?;
-                Some(home.join(".local").join("state"))
-            })?;
-        // Each part of the path, `%` in it written `%25`, the parts joined
-        // by `%`: no two sockets share one, and one path spelt two ways
-        // (`/run//x.sock`, `/run/./x.sock`) has one.
-        let parts: Vec<String> = (socket.path().components())
-            .filter_map(|part| match part {
-                Component::Normal(_) | Component::ParentDir => {
-                    Some(part.as_os_str().to_string_lossy().replace('%', "%25"))
-                }
-                Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
-            })
-            .collect();
-        let name = format!("{}.layout", parts.join("%"));
-        Some(Saved {
-            path: base.join("fux").join(name),
-            written: String::new(),
-            at: Instant::now(),
-            pending: false,
-            saved_at: 0,
-            restore: None,
-        })
-    }
-
-    /// Brings back the session saved, if there is one, by running it, a
-    /// fuxth program, as a client of the server on `socket` does: on a
-    /// thread of its own, as the server serves it. The socket that thread
-    /// closes as it ends, if it started.
-    fn restore(&self, socket: &SocketPath) -> Option<UnixStream> {
-        let text = match fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == ErrorKind::NotFound => return None,
-            Err(e) => {
-                log!("{}: {e}; starting afresh", self.path.display());
-                return None;
-            }
-        };
-        let (path, socket) = (self.path.clone(), socket.clone());
-        let (ends, end) = UnixStream::pair()
-            .inspect_err(|error| log!("could not bring back {}: {error}", self.path.display()))
-            .ok()?;
-        let spawned = std::thread::Builder::new()
-            .name("restore".into())
-            .spawn(move || {
-                let _ends = ends;
-                match crate::script::restore(&socket, &path, &text) {
-                    Ok(()) => log!("brought back the session in {}", path.display()),
-                    Err(error) => {
-                        // Kept aside, not saved over, for a person to look at.
-                        let aside = path.with_extension("layout.failed");
-                        let _ = fs::rename(&path, &aside);
-                        log!(
-                            "could not bring back {}: {error}; the file kept as {}",
-                            path.display(),
-                            aside.display()
-                        );
-                    }
-                }
-            });
-        match spawned {
-            Ok(_) => Some(end),
-            Err(error) => {
-                log!("could not bring back {}: {error}", self.path.display());
-                None
-            }
-        }
-    }
-
-    /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
-    /// since it was last saved; else it is saved then. A change to what it
-    /// holds (a workspace, tab or pane made, closed, moved, renamed or
-    /// respawned, an order, a border, a size given) is saved at once: a
-    /// crash must not lose one. What output changes, and screens' sizes
-    /// as a terminal is resized, wait.
-    fn save_by(&mut self, session: &mut Session, now: Instant) {
-        self.pending |= mem::take(&mut session.edited);
-        if !self.pending {
-            return;
-        }
-        let journal = session.parts.journal();
-        if now < self.at && journal.shapes() == self.saved_at {
-            return;
-        }
-        self.saved_at = journal.shapes();
-        self.save(session);
-        self.at = after(now, SAVE_EVERY);
-    }
-
-    /// Saves the layout as it is, if it changed and no restore is under
-    /// way.
-    fn save(&mut self, session: &Session) {
-        if self.restore.is_some() {
-            self.pending = true;
-            return;
-        }
-        self.pending = false;
-        // Everything, as it is now, its ids kept.
-        let text = session.dump_layout(None, true);
-        if text == self.written {
-            return;
-        }
-        match self.write(&text) {
-            Ok(()) => self.written = text,
-            Err(e) => log!("saving the layout to {}: {e}", self.path.display()),
-        }
-    }
-
-    /// Writes `text` to a file of the user's alone beside it, and moves
-    /// that in place: a crash leaves the old layout or the new, never half.
-    fn write(&self, text: &str) -> std::io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)?;
-        }
-        let temporary = self.path.with_extension("layout.new");
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, &self.path)
-    }
 }
 
 /// `fux grant`: a socket made at `socket` (from the caller's directory
@@ -798,7 +620,7 @@ impl std::error::Error for Error {}
 
 /// Runs a server on `socket` until it is told to stop or its last pane
 /// closes.
-pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
+pub fn serve(socket: &SocketPath) -> Result<(), Error> {
     let listening = Listening::open(socket)?;
     let children = crate::SignalPipe::new(&[SIGCHLD]).map_err(Error::Setup)?;
     // Orphans the panes' programs leave stay the server's to read and reap.
@@ -818,17 +640,9 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
         true,
         run,
     );
-    // A server starts with nothing in it, or what a restore brings back:
-    // the first client to attach starts its first shell, on its screen, and
-    // a request makes a pane only at a size it knows.
-    let mut saved = Saved::of(socket);
-    match &mut saved {
-        Some(saved) if fresh => {
-            let _ = fs::remove_file(&saved.path);
-        }
-        Some(saved) => saved.restore = saved.restore(socket),
-        None => {}
-    }
+    // A server starts with nothing in it: the first client to attach
+    // starts its first shell, on its screen, and a request makes a pane
+    // only at a size it knows.
     let mut server = Server {
         session,
         phase: Phase::Serving {
@@ -836,7 +650,6 @@ pub fn serve(socket: &SocketPath, fresh: bool) -> Result<(), Error> {
             resting: None,
         },
         conns: Vec::new(),
-        saved,
         children,
         killed: Vec::new(),
         stops,
@@ -862,8 +675,6 @@ enum Slot {
     Door(usize),
     Children,
     Stops,
-    /// The restore under way has ended.
-    Restore,
     Conn(usize),
     /// The terminal a client sent, which the server reads and writes.
     Tty(usize),
@@ -886,9 +697,6 @@ impl Server {
             // for, or an event to tell.
             self.answer_waits(now);
             self.tell_events(false);
-            if let Some(saved) = &mut self.saved {
-                saved.save_by(&mut self.session, now);
-            }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
             let mut wrote = false;
@@ -921,12 +729,9 @@ impl Server {
                         crate::drain(self.children.pipe());
                         self.reap();
                     }
-                    Slot::Restore => self.restored(),
                     Slot::Stops => {
                         crate::drain(self.stops.pipe());
-                        // A signal (a shutdown, a logout) keeps the layout
-                        // for the next server to bring back.
-                        self.stop("stopped by a signal".into(), true);
+                        self.stop("stopped by a signal".into());
                     }
                     Slot::Conn(i) => self.serve_conn(i, flags),
                     Slot::Tty(i) => self.serve_tty(i, flags),
@@ -947,7 +752,6 @@ impl Server {
             Phase::Serving { resting, .. } => resting.map(|at| (at, Wake::Listen)),
             Phase::Stopping(by) => Some((by, Wake::Stop)),
         };
-        let save = (self.saved.as_ref()).and_then(|s| s.pending.then_some((s.at, Wake::Look)));
         let paints = (self.conns.iter().enumerate())
             .filter_map(|(i, conn)| Some((conn.paint_due(&self.session)?, Wake::Paint(i))));
         let answers = self.conns.iter().filter_map(|conn| {
@@ -959,7 +763,6 @@ impl Server {
         session
             .chain(grace)
             .chain(phase)
-            .chain(save)
             .chain(answers)
             .chain(paints)
     }
@@ -990,37 +793,11 @@ impl Server {
                 self.flush_outbox();
                 self.paint(index, now);
             }
-            // The loop answers waits and saves after every wake: these only
-            // set when it wakes.
+            // The loop answers waits after every wake: these only set when
+            // it wakes.
             Wake::Look => {}
         }
         ControlFlow::Continue(())
-    }
-
-    /// A restore is over: the requests held for it are answered, and the
-    /// clients held attach.
-    fn restored(&mut self) {
-        if let Some(saved) = &mut self.saved {
-            saved.restore = None;
-        }
-        for index in 0..self.conns.len() {
-            let Some(conn) = self.conns.get_mut(index) else {
-                continue;
-            };
-            if let Stage::Held(_) = conn.stage
-                && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
-            {
-                self.request(index, held.request, held.context);
-            } else if let Stage::AttachHeld(..) = conn.stage
-                && let Stage::AttachHeld(passed, kind, attach) = mem::replace(
-                    &mut conn.stage,
-                    Stage::Attaching(None, ClientKind::Headless),
-                )
-            {
-                conn.attach(&mut self.session, (passed, kind), *attach);
-                self.read_conn(index);
-            }
-        }
     }
 
     /// Answers each wait that has its answer.
@@ -1063,9 +840,7 @@ impl Server {
     /// send. Neither has a client attached: it was detached as it ended.
     fn close_conns(&mut self) {
         self.conns.retain(|conn| {
-            conn.stage.reads()
-                || matches!(conn.stage, Stage::AttachHeld(..))
-                || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
+            conn.stage.reads() || matches!(conn.stage, Stage::Closing) && !conn.out.is_empty()
         });
     }
 
@@ -1100,9 +875,6 @@ impl Server {
             Slot::Children,
         );
         add(PollFd::new(self.stops.pipe(), PollFlags::IN), Slot::Stops);
-        if let Some(end) = self.saved.as_ref().and_then(|s| s.restore.as_ref()) {
-            add(PollFd::new(end, PollFlags::IN), Slot::Restore);
-        }
         for (i, conn) in self.conns.iter().enumerate() {
             // A connection that is not read is polled only for what it
             // has to write. One with nothing to write either (an attach
@@ -1172,25 +944,12 @@ impl Server {
         );
     }
 
-    /// Stops the server, saying why; with `keep`, its layout is saved for
-    /// the next server to bring back, else forgotten.
-    fn stop(&mut self, reason: String, keep: bool) {
+    /// Stops the server, saying why.
+    fn stop(&mut self, reason: String) {
         if let Phase::Stopping(_) = self.phase {
             return;
         }
         log!("{reason}");
-        // Nothing more is saved (or what was, forgotten). The last save:
-        // with `keep`, the layout as it is, before its panes end, is what
-        // the next server brings back; else none is (the server was stopped
-        // on purpose, or its last pane closed).
-        if let Some(mut saved) = self.saved.take() {
-            match keep {
-                true => saved.save(&self.session),
-                false => {
-                    let _ = fs::remove_file(&saved.path);
-                }
-            }
-        }
         // The sockets go first: from now on a client finds no server.
         self.phase = Phase::Stopping(after(Instant::now(), STOP_WAIT));
         self.session.grants.clear();
@@ -1211,10 +970,10 @@ impl Server {
             let session = &mut self.session;
             match conn.stage {
                 Stage::Hello(_) => conn.end(session, &Greeting::Exit(&exit)),
-                Stage::Attaching(..) | Stage::AttachHeld(..) | Stage::Attached(_) => {
+                Stage::Attaching(..) | Stage::Attached(_) => {
                     conn.end(session, &ToAttached::Exit(&exit));
                 }
-                Stage::Command | Stage::Held(_) | Stage::Waiting(_) | Stage::Events(_) => {
+                Stage::Command | Stage::Waiting(_) | Stage::Events(_) => {
                     conn.end(session, &ToCommand::Exit(&exit));
                 }
                 Stage::Closing | Stage::Dead => {}
@@ -1225,7 +984,7 @@ impl Server {
     fn flush_outbox(&mut self) {
         for outgoing in mem::take(&mut self.session.outbox) {
             match outgoing {
-                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
+                Outgoing::Shutdown(reason) => self.stop(reason),
                 Outgoing::To(client, frame) => {
                     if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
                         conn.tell(&mut self.session, &frame);
@@ -1544,7 +1303,6 @@ impl Server {
         index: usize,
         decoder: &mut Decoder,
     ) -> Result<bool, crate::protocol::Error> {
-        let restore_runs = self.saved.as_ref().is_some_and(|s| s.restore.is_some());
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return Ok(false);
@@ -1571,7 +1329,7 @@ impl Server {
                     }
                     (Ok(()), Role::Kill) => {
                         conn.end(session, &Greeting::Done(0));
-                        self.stop("stopped by fux force-kill-server".into(), false);
+                        self.stop("stopped by fux force-kill-server".into());
                     }
                     (Ok(()), Role::Attach) => {
                         conn.enter(session, Stage::Attaching(passed, ClientKind::Terminal));
@@ -1588,15 +1346,8 @@ impl Server {
                     return Ok(false);
                 };
                 let held = (passed.take(), *kind);
-                if restore_runs {
-                    let (passed, kind) = held;
-                    conn.enter(session, Stage::AttachHeld(passed, kind, Box::new(attach)));
-                } else {
-                    conn.attach(session, held, attach);
-                }
+                conn.attach(session, held, attach);
             }
-            // What came after its `Attach` waits with it, kept.
-            Stage::AttachHeld(..) => return Ok(false),
             Stage::Attached(attached) => match decoder.frame()? {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
                 // The client's terminal was resized, which may have moved
@@ -1626,11 +1377,7 @@ impl Server {
             // connection that is ending has had its last word: what came
             // with the Detach, Command or refused Hello that ended it is
             // dropped unread.
-            Stage::Held(_)
-            | Stage::Waiting(_)
-            | Stage::Events(_)
-            | Stage::Closing
-            | Stage::Dead => {
+            Stage::Waiting(_) | Stage::Events(_) | Stage::Closing | Stage::Dead => {
                 *decoder = Decoder::default();
                 return Ok(false);
             }
@@ -1641,23 +1388,14 @@ impl Server {
     /// A request from connection `index`: answered now, or once its wait
     /// has its answer, or streamed.
     fn request(&mut self, index: usize, request: crate::command::Request, context: Context) {
-        let restore_runs = self.saved.as_ref().is_some_and(|s| s.restore.is_some());
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return;
         };
-        // A restore is the server's own, which no grant's socket makes.
-        // While a saved session comes back, other requests wait for it,
-        // so that none takes an id it asks for.
-        let (came, held) = match conn.grant.clone() {
-            Some(socket) => (Came::Grant(socket), restore_runs),
-            None if context.restoring && restore_runs => (Came::Restore, false),
-            None => (Came::Socket, restore_runs),
+        let came = match conn.grant.clone() {
+            Some(socket) => Came::Grant(socket),
+            None => Came::Socket,
         };
-        if held {
-            conn.stage = Stage::Held(Box::new(Asked { request, context }));
-            return;
-        }
         let Context {
             cwd,
             pane,
@@ -1841,22 +1579,6 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A saved layout's file is one per socket: an escape in a path never
-    /// makes it another's, and one path spelt two ways has one.
-    #[test]
-    fn a_layout_file_is_one_per_socket() -> Result<(), String> {
-        let file = |path: &str| {
-            let socket = crate::socket::checked(path, "test").map_err(|e| e.to_string())?;
-            Saved::of(&socket)
-                .map(|s| s.path)
-                .ok_or_else(|| "no state directory".to_owned())
-        };
-        assert_ne!(file("/%41/x.sock")?, file("/2541/x.sock")?);
-        assert_eq!(file("/run//x.sock")?, file("/run/x.sock")?);
-        assert_eq!(file("/run/./x.sock")?, file("/run/x.sock")?);
-        Ok(())
-    }
 
     /// A session with a client attached on a connection whose terminal the
     /// server took, the other end of a socket pair standing in for it: the

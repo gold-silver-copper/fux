@@ -153,7 +153,6 @@ impl Server {
                 .env("SHELL", "/bin/sh")
                 .env("ENV", "/dev/null")
                 .env("HOME", &dir)
-                .env("XDG_STATE_HOME", dir.join("state"))
                 .env_remove("FUX_PANE")
                 .env_remove("FUX_SERVER")
                 // A stale one: its panes are given the server's own.

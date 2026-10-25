@@ -44,7 +44,7 @@ in `$TMPDIR` if it is short, else `~/.cache/fux` (macOS's `$TMPDIR` is
 too long for a socket path, and `/tmp` is memory on some machines), with a
 config file each client runs as it attaches, which the walk may rewrite
 (`str shell str /bin/sh set`), an environment cleared but for `PATH`,
-`HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` in the directory, and
+and `HOME` and `XDG_CONFIG_HOME` in the directory, and
 `act.sh`, the script panes act through. The first client is a plain `fux`
 (no words attaches) at 24×80,
 whose screen the walk parses with fux-vt.

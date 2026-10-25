@@ -85,7 +85,7 @@ the server; words that read files are not run). After every line:
   prefix; the prefix never bound without it; code compiled as it is
   bound), accepts the same ones and holds the same prefix, bindings,
   labels, groups and repeats;
-- source's tokens, quoted as a saved session quotes words, split back to
+- source's tokens, quoted as a dump quotes words, split back to
   the same tokens; a program that does not compile fails with status 1
   and a code;
 - after a change to the keymap: no empty layer, no Escape after the
