@@ -693,7 +693,10 @@ impl Parts {
         let (Some(was_a), Some(was_b)) = (self.locate(a), self.locate(b)) else {
             return;
         };
-        for tab in self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut()) {
+        // Only the tabs that hold them: another, laid out anew, would lose
+        // what its panes have (a zoomed pane, its whole screen).
+        let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
+        for tab in tabs.filter(|t| t.id == was_a.1 || t.id == was_b.1) {
             tab.edit(|root| root.as_mut().map(|r| layout::swap(r, a, b)));
         }
         if was_a != was_b {
@@ -702,21 +705,18 @@ impl Parts {
         }
     }
 
-    /// Moves `pane` from its tab to the end of tab `to`, another: every tab
-    /// lets go of it, and `to` takes it.
+    /// Moves `pane` from its tab to the end of tab `to`, another: its tab
+    /// lets go of it, and `to` takes it; no other tab changes.
     pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) {
         let ws = tab_mut(&mut self.workspaces, to).map(|(ws, _)| ws);
         let (Some(was), Some(ws)) = (self.locate(pane), ws) else {
             return;
         };
-        for tab in self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut()) {
-            let takes = tab.id == to;
-            tab.edit(|root| {
-                layout::remove(root, pane);
-                if takes {
-                    layout::append(root, pane);
-                }
-            });
+        if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
+            from.edit(|root| layout::remove(root, pane));
+        }
+        if let Some((_, to)) = tab_mut(&mut self.workspaces, to) {
+            to.edit(|root| layout::append(root, pane));
         }
         self.journal
             .push(Place::Pane((ws, to), pane), What::Moved(was));

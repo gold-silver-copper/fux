@@ -4206,6 +4206,9 @@ mod tests {
         run(&mut s, "str c1 client zoom")?;
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        // Nor does a swap or a move in another tab.
+        run(&mut s, "%1 split drop %1 %4 swap-panes %4 str new-tab move-to")?;
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
         Ok(())
     }
 
