@@ -15,17 +15,18 @@
 //! as it leaves (`client::LEAVE`).
 //!
 //! One terminal answers for a tab's panes, its host ([`Session::host`]): of
-//! the clients showing the tab, the one that last typed into it, else the
-//! first attached; none in a tab no client shows. Its terminal answers all
-//! of it, colours, palette, sixel and cell size, with what it said; what
-//! it did not say is unknown, never taken from another terminal showing
-//! the tab. A pane with no host is answered no colour it did not set, as
-//! no one knows what it is shown on.
+//! the terminal clients showing the tab (not headless ones), the one that
+//! last typed into it, else the first attached; none in a tab no terminal
+//! shows. Its terminal answers all of it, colours, palette, sixel and cell
+//! size, with what it said; what it did not say is unknown, never taken
+//! from another terminal showing the tab or kept from an earlier host. A
+//! pane with no host is answered no colour it did not set, as no one knows
+//! what it is shown on.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
-use crate::view::View;
+use crate::view::{ClientKind, View};
 use crate::workspace::PaneMut;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
@@ -321,20 +322,26 @@ impl Session {
         }
     }
 
-    /// Client `client` typed into the tab it shows: it hosts the tab's panes.
+    /// Client `client` typed into the tab it shows: it hosts the tab's
+    /// panes, if it is a terminal. A headless client's keys leave the
+    /// typist as it was.
     pub(crate) fn typed(&mut self, client: ClientId) {
-        if let Some(tab) = self.shown_tab_mut(client) {
+        let terminal = self.views.get(&client).map(|v| v.kind) == Some(ClientKind::Terminal);
+        if let Some(tab) = self.shown_tab_mut(client).filter(|_| terminal) {
             tab.typist = Some(client);
         }
     }
 
     /// The host of `tab`'s panes, whose terminal answers for them: of the
-    /// clients showing it, the one that last typed into it, else the first
-    /// attached. One that typed there and went to another tab hosts it no
-    /// more.
+    /// terminal clients showing it, the one that last typed into it, else
+    /// the first attached. One that typed there and went to another tab
+    /// hosts it no more; a headless client, which has no terminal, never
+    /// does.
     pub(crate) fn host(&self, tab: Option<TabId>) -> Option<ClientId> {
         let tab = tab?;
-        let shows = |c: &ClientId| self.shows(*c, tab);
+        let terminal =
+            |c: &ClientId| self.views.get(c).map(|v| v.kind) == Some(ClientKind::Terminal);
+        let shows = |c: &ClientId| terminal(c) && self.shows(*c, tab);
         let typist = self.tab(tab)?.typist.filter(shows);
         typist.or_else(|| self.views.keys().copied().find(shows))
     }
@@ -615,7 +622,14 @@ mod tests {
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         assert_eq!(background(&mut s), "");
         assert_eq!(shown_on_c(&s), 0, "kept, not shown");
-        // c types: c answers again, and goes: d does.
+        // A headless client, with no terminal, types: d still answers.
+        let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
+        let attach = crate::protocol::Attach::of(size);
+        let headless = s.attach_as(ClientKind::Headless, attach);
+        s.input(headless.map_err(|e| e.to_string())?, b"x");
+        assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
+        assert_eq!(background(&mut s), "");
+        // c types: c answers again; c goes: d answers.
         s.input(c, b"x");
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
         assert_eq!(shown_on_c(&s), 1);
