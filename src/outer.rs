@@ -353,10 +353,10 @@ impl Session {
 
     /// Pane `id`, told what its host's terminal said (see the module
     /// documentation): its colours, its palette whole, entries it did not
-    /// say cleared, and what it draws, which is no sixel with no host, so
-    /// a program there draws in text, which a capture reads, in the cell
-    /// it was last told (`Pane::host`). With no such pane, nothing; and
-    /// whether that cell is another, its terminal to be sized for it.
+    /// say cleared, and what it draws: with no host, no sixel and no cell,
+    /// so a program there draws in text, which a capture reads. With no
+    /// such pane, nothing; and whether its cell is another, its terminal
+    /// to be sized for it.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<(PaneMut<'_>, bool)> {
         let (colours, palette, graphics) = (self.host_terminal(id))
             .map_or_else(Default::default, |t| (t.colours, t.palette, t.graphics()));
@@ -557,14 +557,14 @@ mod tests {
     }
 
     /// A pane's cell size is its host's, whether or not it said its
-    /// colours; not of one that typed there and went to another tab, whose
-    /// cell it keeps till its host says another.
+    /// colours: unknown while its host said none, not kept from one that
+    /// typed there and went to another tab.
     #[test]
     fn a_panes_cell_is_its_hosts() -> Outcome {
         let (mut s, c) = session()?;
         let cell = |s: &mut Session| {
             s.output(PaneId::of(1), b"");
-            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().cell_size())
+            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().graphics().cell())
         };
         assert_eq!(cell(&mut s), None);
         // No colours said: its cell still is.
@@ -576,7 +576,7 @@ mod tests {
         run(&mut s, "opts str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
-        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
+        assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
         Ok(())
@@ -584,8 +584,9 @@ mod tests {
 
     /// One terminal answers for a tab, all it said and nothing else: the
     /// first attached until one types there, then the typist's. One that
-    /// draws no sixel tells its panes none, though another showing the tab
-    /// draws it; a colour it did not say is unknown, though another said it.
+    /// draws no sixel tells its panes none, and shows its pictures on no
+    /// terminal, though another showing the tab draws sixel; a colour it
+    /// did not say is unknown, though another said it.
     #[test]
     fn the_typists_terminal_answers_for_its_tab_alone() -> Outcome {
         let (mut s, c) = session()?;
@@ -600,12 +601,24 @@ mod tests {
         s.input(d, b"\x1b[6;16;8t\x1b[?62;22c");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Sixel(cell(10, 20)?));
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
+        s.output(PaneId::of(1), b"\x1bP9q#1;2;100;0;0!20~\x1b\\");
+        let shown_on_c = |s: &Session| {
+            let (Some(view), mut placement) = (s.views.get(&c), Default::default()) else {
+                return 0;
+            };
+            let mut grid = crate::render::Grid::new(0, 0);
+            crate::render::compose_view(s, view, &mut grid, &mut placement);
+            crate::render::pictures(s, c, &placement).len()
+        };
+        assert_eq!(shown_on_c(&s), 1);
         s.input(d, b"x");
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         assert_eq!(background(&mut s), "");
+        assert_eq!(shown_on_c(&s), 0, "kept, not shown");
         // c types: c answers again, and goes: d does.
         s.input(c, b"x");
         assert_eq!(background(&mut s), "\x1b]11;rgb:1111/2222/3333\x07");
+        assert_eq!(shown_on_c(&s), 1);
         s.detach(c);
         assert_eq!(s.graphics(PaneId::of(1)), Graphics::Cell(cell(8, 16)?));
         Ok(())
@@ -633,7 +646,7 @@ mod tests {
     /// A cell answer that changes the cell a pane's program is told sizes
     /// its terminal in pixels at once, which signals it (SIGWINCH), not at
     /// its next output; and a refused cell is told once, not again at
-    /// each asking, the program keeping the cell it was told.
+    /// each asking, the program told it has none.
     #[test]
     fn a_new_cell_is_told_at_once_and_a_refused_one_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -670,7 +683,7 @@ mod tests {
         let notice = |s: &mut Session| (s.views.get_mut(&c)).and_then(|v| v.notice.take());
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_some(), "refused, told");
-        assert_eq!(pixels(&s), whole(12, 24), "the cell it was told kept");
+        assert_eq!(pixels(&s), None, "no cell told");
         s.input(c, b"\x1b[6;5;1t");
         assert!(notice(&mut s).is_none(), "told once");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
@@ -685,8 +698,7 @@ mod tests {
     }
 
     /// An idle pane is told the cell of its host as another comes to: one
-    /// typed there, or the host detached; with none, it keeps the last it
-    /// was told.
+    /// typed there, or the host detached; with none, that it has none.
     #[test]
     fn a_pane_is_told_the_cell_of_its_host_now() -> Outcome {
         let (mut s, c) = session()?;
@@ -702,7 +714,7 @@ mod tests {
         s.detach(c);
         assert!(cell(&mut s)?.contains(&told(12, 24)));
         s.detach(d);
-        assert!(cell(&mut s)?.contains(&told(12, 24)));
+        assert!(cell(&mut s)?.contains(r#""cell":null"#));
         Ok(())
     }
 

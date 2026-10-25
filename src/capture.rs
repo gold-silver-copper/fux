@@ -217,8 +217,8 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input; whether a client is in copy mode on it,
-/// and the cell its program is told, by the terminal that draws its tab
-/// (`Session::host_cells`).
+/// and the cell its program is told, by its tab's host
+/// (`Session::host_panes`).
 pub fn state<S>(
     pane: &Pane<S>,
     run: Run,
@@ -226,7 +226,7 @@ pub fn state<S>(
     copy_mode: bool,
 ) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
-    let cell = screen.cell_size();
+    let cell = screen.graphics().cell();
     // What runs in the foreground: a job the shell started, else the
     // program itself; nothing, where its terminal can't tell.
     let job = pane.process().job();

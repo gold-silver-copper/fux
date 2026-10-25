@@ -488,18 +488,6 @@ pub(crate) fn basename(program: &str) -> String {
         .map_or_else(|| program.to_owned(), |n| n.to_string_lossy().into_owned())
 }
 
-/// What a pane's program is told its terminal draws: `graphics`, or text in
-/// `told`, the cell it was last told, where `graphics` has none.
-pub(crate) fn in_cell(
-    graphics: fux_vt::Graphics,
-    told: Option<fux_vt::CellSize>,
-) -> fux_vt::Graphics {
-    match graphics {
-        fux_vt::Graphics::Text => told.map_or(graphics, fux_vt::Graphics::Cell),
-        fux_vt::Graphics::Cell(_) | fux_vt::Graphics::Sixel(_) => graphics,
-    }
-}
-
 /// What a program rang or announced since it started: bells, and desktop
 /// notifications (OSC 9, 777, 99) with the last one's text; and what of
 /// its output fux dropped or refused, counted for its JSON as clients
@@ -968,7 +956,7 @@ impl<S> Pane<S> {
 
     /// The sixel pictures its program drew that were not kept whole, for
     /// each cause `fux_vt::Parser::pictures_refused` names: among them,
-    /// those drawn while no terminal showing it drew sixel.
+    /// those drawn while its host drew no sixel.
     pub fn pictures_refused(&self) -> u64 {
         self.parser.pictures_refused()
     }
@@ -981,11 +969,10 @@ impl<S> Pane<S> {
     }
 
     /// Its program's queries are answered with `colours` and `palette`
-    /// from now on, and it is told its terminal draws `graphics`: with no
-    /// cell there (no terminal that said one draws it), in the cell it was
-    /// last told, which its program keeps, not signalled. Whether the cell
-    /// changed: its terminal is then to be sized (`size_terminal`), once
-    /// what is read with it, a resize among them, is read.
+    /// from now on, and it is told its terminal draws `graphics`. Whether
+    /// the cell changed: its terminal is then to be sized
+    /// (`size_terminal`), once what is read with it, a resize among them,
+    /// is read.
     #[must_use]
     pub fn host(
         &mut self,
@@ -995,9 +982,9 @@ impl<S> Pane<S> {
     ) -> bool {
         self.colours = colours;
         self.parser.set_host_palette(palette);
-        let told = self.screen().cell_size();
-        self.parser.set_host_graphics(in_cell(graphics, told));
-        self.screen().cell_size() != told
+        let told = self.screen().graphics().cell();
+        self.parser.set_host_graphics(graphics);
+        self.screen().graphics().cell() != told
     }
 
     /// Sizes its program's terminal as its screen is, and in pixels as the
@@ -1010,7 +997,7 @@ impl<S> Pane<S> {
             return;
         };
         let size = self.size();
-        let pixels = crate::process::pixels(size, self.screen().cell_size());
+        let pixels = crate::process::pixels(size, self.screen().graphics().cell());
         let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
     }
 

@@ -147,10 +147,10 @@ pub struct Shown<'a> {
 }
 
 impl Screen {
-    /// A cell's size in pixels, the host's (`Parser::set_host_graphics`),
-    /// if it said.
-    pub fn cell_size(&self) -> Option<CellSize> {
-        self.graphics.cell()
+    /// What the host's terminal draws, as [`crate::Parser::set_host_graphics`]
+    /// last said: its cell size, if known, and whether it shows sixel.
+    pub fn graphics(&self) -> Graphics {
+        self.graphics
     }
 
     /// Whether the host draws sixel, as DA1 says.

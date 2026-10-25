@@ -115,9 +115,16 @@ impl PartialEq for Visible {
     }
 }
 
+/// Whether pane `id`'s pictures show at all: only while its host draws
+/// sixel (`Session::graphics`); kept, not shown, meanwhile.
+pub fn shows_pictures(session: &Session, id: PaneId) -> bool {
+    matches!(session.graphics(id), fux_vt::Graphics::Sixel(_))
+}
+
 /// The pictures client `client`'s panes, placed as `placement` has them,
-/// show on its screen: none unless its terminal draws sixel, nothing covers
-/// its panes (an overlay, copy mode), and a picture was laid out in its
+/// show on its screen: none unless its terminal draws sixel and nothing
+/// covers its panes (an overlay, copy mode); of a pane, only while its
+/// pictures show (`shows_pictures`), those laid out in this terminal's
 /// cell size. Each is clipped to its pane.
 pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> Vec<Visible> {
     let Some(view) = session.views.get(&client) else {
@@ -133,6 +140,9 @@ pub fn pictures(session: &Session, client: ClientId, placement: &Placement) -> V
         let Some(pane) = session.parts.panes().get(&id) else {
             continue;
         };
+        if !shows_pictures(session, id) {
+            continue;
+        }
         for shown in pane.screen().pictures().filter(|s| s.cell == cell) {
             // The rows of the pane it is on, and the columns.
             let end = shown

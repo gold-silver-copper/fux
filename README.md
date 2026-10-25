@@ -452,9 +452,11 @@ without it, and a comment line says so: it starts where the dump is run.
   a tab's panes are answered (colours, scheme, sixel, cell size) by one
   terminal, the tab's host: of those showing the tab, the one that last
   typed into it, else the first attached; none in a tab no terminal shows.
-  What the host didn't say is unknown, never taken from another terminal
-  showing the tab: a host that draws no sixel means no pictures, and one
-  that said no background leaves it unanswered.
+  What the host
+  didn't say is unknown, never taken from another terminal or kept from
+  an earlier host: a host that draws no sixel means no pictures, one that
+  said no background leaves it unanswered, and one that said no cell size
+  leaves `CSI 16 t` unanswered.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
   or palette entries 0 to 15 (OSC 4) are told the host's, and get its
   dark/light changes (mode 2031) if it reports them: one whose tab had
@@ -478,18 +480,19 @@ without it, and a comment line says so: it starts where the dump is run.
   and a change signals it, SIGWINCH), and the pictures it draws are shown on
   your terminal, clipped to the pane; they scroll with the text, and text
   over one, or an overlay, takes it away. A pane is told its tab's host's
-  sixel and cell size; with no host, or a host that said no cell size, it
-  keeps the cell it was last told, so its programs are not signalled,
-  though the terminal that said it may no longer draw it. A pane whose host
+  sixel and cell size, at once as they change (its terminal is sized in
+  pixels for the cell, which signals its programs): with no host, or a host
+  that said no cell size, it is told it has none. A pane whose host
   doesn't draw sixel, or said no cell size, is told no sixel, so its
-  programs draw in text (half blocks), which captures read, and it keeps no
-  new picture, though another terminal showing its tab draws sixel.
-  `json` says where pictures are, and the cell size (`cell`, `null` while
-  it was told none). fux never makes a cell size
+  programs draw in text (half blocks), which captures read; it keeps no new
+  picture, and shows those it has on no terminal until its host draws
+  sixel again, though another terminal showing its tab does. A picture
+  shows on each terminal showing it that draws sixel in the cell size it
+  was laid out in. `json` says where pictures are, and the cell size
+  (`cell`, `null` while it is told none). fux never makes a cell size
   up: a terminal says none with a 0, or with one smaller than a sixel band, 2
-  by 6 pixels, which fux tells you. A pane never told one leaves `CSI 14 t`
-  and `CSI 16 t` unanswered; once told one, it answers them with it, kept as
-  above. A sixel picture is placed only while the pane's host draws sixel
+  by 6 pixels, which fux tells you. A pane told none leaves `CSI 14 t` and
+  `CSI 16 t` unanswered; told one, it answers them with it. A sixel picture is placed only while the pane's host draws sixel
   and said its cell size.
   Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others;
   not by kitty, whose graphics protocol fux does not speak, nor Ghostty,
