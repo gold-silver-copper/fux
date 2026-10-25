@@ -622,3 +622,25 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// A picture begun while the host drew sixel and ended once it had no cell
+/// size, read across two reads, is not placed, and is counted so.
+#[test]
+fn a_picture_whose_host_cell_went_as_it_was_read_is_counted() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+    p.set_host_graphics(crate::Graphics {
+        cell: crate::CellSize::new(10, 20),
+        sixel: true,
+    });
+    let bytes = picture(6, 12);
+    let (begun, rest) = bytes
+        .split_at_checked(bytes.len() / 2)
+        .ok_or(Error::InvalidRange)?;
+    p.process(begun)?;
+    p.set_host_graphics(crate::Graphics::default());
+    p.process(rest)?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(p.pictures_refused(), 1);
+    Ok(())
+}

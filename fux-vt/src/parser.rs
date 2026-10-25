@@ -869,7 +869,7 @@ pub struct Parser {
     /// does not stop.
     end: u64,
     refused: u64,
-    /// Sixel pictures not read, the host drawing no sixel then.
+    /// Sixel pictures not placed (`Parser::pictures_refused`).
     pictures_refused: u64,
 }
 #[cfg(test)]
@@ -1061,8 +1061,9 @@ impl Parser {
         self.refused
     }
     /// How many sixel pictures the program sent, with [`Feature::Pictures`],
-    /// while the host drew no sixel (`set_host_graphics`): none of them was
-    /// read.
+    /// that were not placed: begun while the host drew no sixel
+    /// (`set_host_graphics`), and not read; ended once it had no cell size;
+    /// or lifted past a scroll region's top as it was placed.
     pub fn pictures_refused(&self) -> u64 {
         self.pictures_refused
     }
@@ -1614,8 +1615,13 @@ impl Parser {
                     let picture = (self.sixel.take()).and_then(|decoder| {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
-                    if let Some(picture) = picture {
-                        self.screen.place_picture(picture);
+                    // One with no host cell left to lay it out in, the
+                    // host's having gone as it was read, or that lost bands
+                    // as it was placed, is not placed.
+                    if let Some(picture) = picture
+                        && !self.screen.place_picture(picture)
+                    {
+                        self.pictures_refused = self.pictures_refused.saturating_add(1);
                     }
                 }
                 State::Ground

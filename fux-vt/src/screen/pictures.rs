@@ -158,17 +158,18 @@ impl Screen {
     /// cursor ends on the row its last band ends in, in its first column. A picture of this screen
     /// it covers goes, and so does one this screen no longer shows (text
     /// or an erase over it, its rows gone from history), whose pixels
-    /// nothing can show again.
-    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) {
+    /// nothing can show again. Says whether it was placed: not without a
+    /// cell size, nor when it lost bands as it was placed.
+    pub(crate) fn place_picture(&mut self, picture: Arc<Picture>) -> bool {
+        let Some(cell) = self.graphics.cell else {
+            return false;
+        };
         if self.pictures.is_empty() {
             // Nothing to follow: its rows are followed from here.
             self.primary
                 .followed()
                 .set(Some(self.primary.history_numbers().1));
         }
-        let Some(cell) = self.graphics.cell else {
-            return;
-        };
         let cell = (cell.width(), cell.height());
         self.track_pictures();
         let cells = |pixels: u32, per: u16| {
@@ -199,7 +200,7 @@ impl Screen {
         // printed"), as the line a glyph printed there would end at.
         let across = cols.min(self.grid().line_end().saturating_sub(col));
         let Some(top) = self.cursor_mark().map(|mark| mark.row) else {
-            return;
+            return false;
         };
         // Each row's cells take the placeholder as a fill, not as text: no
         // pen, mode, cluster or print reaches them (DEC STD 070-9, 11.1).
@@ -277,7 +278,7 @@ impl Screen {
         }
         // Moved with the cells, the picture's rows are the last `rows`
         // down to its last band's, if they lie inside the region; else it
-        // lost bands, and is not kept.
+        // lost bands, and is not placed.
         let top = match lifted {
             false => Some(top),
             true => {
@@ -291,7 +292,7 @@ impl Screen {
         };
         let alternate = self.alternate_active;
         let Some(top) = top else {
-            return;
+            return false;
         };
         self.picture_ids = self.picture_ids.wrapping_add(1);
         self.pictures.push_back(Placement {
@@ -344,6 +345,7 @@ impl Screen {
             let Some(victim) = self.victim() else { break };
             self.pictures.remove(victim);
         }
+        true
     }
 
     /// The bytes of pixels the screen's pictures hold, on either grid.
