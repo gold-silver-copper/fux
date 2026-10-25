@@ -82,8 +82,14 @@ fn settings_reach_the_server() -> Outcome {
     server.ok(&[
         "str",
         "shell",
+        "list",
         "str",
-        "/usr/bin/env PS1=custom$ /bin/sh",
+        "/usr/bin/env",
+        "str",
+        "PS1=custom$",
+        "str",
+        "/bin/sh",
+        "end",
         "set",
     ])?;
     let custom = server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
@@ -200,7 +206,8 @@ fn the_config_words_examples_check() -> Outcome {
 #[test]
 fn update_environment_takes_the_clients_variables_or_none() -> Outcome {
     use std::os::unix::ffi::OsStrExt;
-    let server = Server::start("str update-environment str 'ENV FUXT_GIVEN FUXT_BYTES' set")?;
+    let server =
+        Server::start("str update-environment list str ENV str FUXT_GIVEN str FUXT_BYTES end set")?;
     let shown = "echo \"[${ENV-unset}] [${FUXT_GIVEN-unset}]\"; \
                  printf %s \"${FUXT_BYTES-unset}\" | od -An -tx1";
     let out = std::process::Command::new(FUX)

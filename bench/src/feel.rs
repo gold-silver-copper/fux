@@ -436,7 +436,9 @@ fn start(
             std::fs::create_dir_all(config_home.join("fux")).map_err(|e| e.to_string())?;
             std::fs::write(
                 &config,
-                format!("str shell str /bin/sh set\nstr history-bytes {HISTORY_BYTES} set\n"),
+                format!(
+                    "str shell list str /bin/sh end set\nstr history-bytes {HISTORY_BYTES} set\n"
+                ),
             )
             .map_err(|e| e.to_string())?;
             env.push((

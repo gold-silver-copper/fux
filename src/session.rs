@@ -743,7 +743,13 @@ impl Session {
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Program(launch.clone());
-        let mut fresh = Pane::new(id, String::new(), runs, size.0, self.config.history_bytes)?;
+        let mut fresh = Pane::new(
+            id,
+            String::new(),
+            runs,
+            size.0,
+            self.config.history_bytes.get(),
+        )?;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
         let child = self.spawn(id, &launch, starting, size)?;
@@ -850,9 +856,9 @@ impl Session {
         };
         let mut fresh = Starting::default();
         for name in (self.config.update_environment.iter()).filter(|_| !env.is_empty()) {
-            match env.iter().rev().find(|(k, _)| k == name) {
+            match env.iter().rev().find(|(k, _)| k == name.as_str()) {
                 Some((k, v)) => fresh.set.push((k.clone(), v.clone())),
-                None => fresh.unset.push(name.clone()),
+                None => fresh.unset.push(name.as_str().to_owned()),
             }
         }
         fresh
@@ -1221,7 +1227,7 @@ impl Session {
         };
         let id = ids.pane()?;
         let name = basename(named.unwrap_or(config.shell.program()));
-        let pane = Pane::new(id, name, runs, new.size, config.history_bytes)?;
+        let pane = Pane::new(id, name, runs, new.size, config.history_bytes.get())?;
         let child = self.spawn(id, &launch, new.starting, (new.size, new.cell))?;
         Ok(match child {
             Some(child) => pane.running(child),
@@ -1912,7 +1918,7 @@ impl Session {
             }
         }
         self.buffers.push_front(text);
-        self.buffers.truncate(self.config.buffers);
+        self.buffers.truncate(self.config.buffers.get());
         fits
     }
 
@@ -2197,15 +2203,16 @@ impl Session {
                 let target = self.there(*target)?;
                 self.reorder(target, toward).map(|()| Reply::default())
             }
-            Command::Set { option, value } => {
+            Command::Set(settings) => {
                 // `run_command` marks every view to paint, as after any
                 // command that can show something new: `titles` shows at
-                // each client's next paint.
-                self.config
-                    .set(option, value)
-                    .map_err(|why| fail(Code::Config, why))?;
+                // each client's next paint. Each value is one its setting
+                // takes, so all are in force, or the request never came.
+                for setting in settings {
+                    self.config.apply(setting.clone());
+                }
                 // Every pane keeps the history they say.
-                let history = self.config.history_bytes;
+                let history = self.config.history_bytes.get();
                 self.parts.each_pane_mut(|p| p.set_history_bytes(history));
                 Ok(Reply::default())
             }
@@ -3209,7 +3216,7 @@ pub(crate) mod testing {
     /// named after it), started at 80 by 24.
     pub(crate) fn started(config: Config) -> Result<Session, String> {
         let config = Config {
-            shell: crate::config::Shell::parse("/bin/sh")?,
+            shell: crate::config::Shell::alone("/bin/sh"),
             ..config
         };
         let run = crate::command::Run::now().ok_or("no clock")?;
@@ -4383,7 +4390,7 @@ mod tests {
             "{json}"
         );
         s.outbox.clear();
-        run(&mut s, "str clipboard str off set")?;
+        run(&mut s, "str clipboard false set")?;
         s.output(PaneId::of(1), b"\x1b]52;c;YmFy\x07");
         assert!(!sent(&s) && s.outbox.is_empty());
         assert_eq!(s.buffers.front().map(String::as_str), Some("b"));
@@ -4810,7 +4817,7 @@ mod tests {
     fn output_that_drops_a_copy_modes_rows_ends_it() -> Result<(), Box<dyn std::error::Error>> {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_bytes: 2 * 32,
+            history_bytes: crate::config::Number::new(2 * 32).ok_or("out of range")?,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -4839,7 +4846,7 @@ mod tests {
     {
         // Two rows of a cell or none, never three: 24 bytes a row, 8 a cell.
         let mut s = started(Config {
-            history_bytes: 2 * 32,
+            history_bytes: crate::config::Number::new(2 * 32).ok_or("out of range")?,
             ..Config::default()
         })?;
         let client = s.attach(6, 20, None)?;
@@ -5617,10 +5624,6 @@ mod tests {
         assert!(matches!(
             run("me str next focus")?.as_slice(),
             [Err(Error::OnlyOne(Kind::Pane))]
-        ));
-        assert!(matches!(
-            run("str nope 1 set")?.as_slice(),
-            [Err(e)] if e.code() == Code::Config
         ));
         let kill = Command::Kill {
             target: AnyRef::Pane(PaneId::of(9)),

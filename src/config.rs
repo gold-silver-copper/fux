@@ -1,22 +1,26 @@
 //! The server's settings: what every pane and client of it shares, set by
 //! the `set` word from a client's config or command line. Key bindings and
 //! the prefix are each client's own (`crate::keymap`).
+use crate::script::Fux;
+use crate::wire::{Error, Reader, Wire, wire};
 use crate::words;
+use fuxth::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// `settings! { /// about  field "name": Reads = default; … }` expands to
-/// the struct `Config` of those fields, each of `Reads`'s value, its
-/// `Default`, `NAMES` (every setting's name, in order), `Config::set`,
-/// which reads a setting's text with its `Reads`, and `table`, every
-/// setting with what it takes, its default and its about, which `fux
-/// help set` prints. The row `/// A bell rings.  bell "bell": bool =
-/// true;` gives the field `pub bell: bool`, `true` in `Default`, `"bell"`
-/// in `NAMES`, in `set` the arm `"bell" => self.bell = bool::read(value)`,
-/// and in `table` the row `bell`, `on or off`, `on`, `A bell rings.`. A
-/// default the server reads where it runs is told by its rule, which
-/// `=> "RULE"` after it gives `table`, not by the value the process
-/// asking for help would read.
+/// `settings! { /// about  field Variant "name": Type = default; … }`
+/// expands to the struct `Config` of those fields, each of its `Type`,
+/// which `Reads`; its `Default`; `NAMES`, every setting's name, in order;
+/// `Setting`, one setting's value, which `Setting::read` reads from a
+/// fuxth value once, as `set` is given it, and `Config::apply` puts in
+/// force; and `table`, every setting with what it takes, its default and
+/// its about, which `fux help set` prints. The row `/// A bell rings.  bell
+/// Bell "bell": bool = true;` gives the field `pub bell: bool`, `true` in
+/// `Default`, `"bell"` in `NAMES`, `Setting::Bell(bool)`, read by
+/// `bool::read`, and in `table` the row `bell`, `true or false`, `true`, `A
+/// bell rings.`. A default the server reads where it runs is told by its
+/// rule, which `=> "RULE"` after it gives `table`, not by the value the
+/// process asking for help would read.
 macro_rules! settings {
     (@default $shown:literal; $value:expr) => {
         $shown.to_owned()
@@ -24,11 +28,11 @@ macro_rules! settings {
     (@default; $value:expr) => {
         $value
     };
-    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty = $default:expr
-        $(=> $shown:literal)?;)*) => {
+    ($($(#[doc = $about:literal])* $field:ident $variant:ident $name:literal: $reads:ty
+        = $default:expr $(=> $shown:literal)?;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Config {
-            $($(#[doc = $about])* pub $field: <$reads as Reads>::Value,)*
+            $($(#[doc = $about])* pub $field: $reads,)*
         }
 
         impl Default for Config {
@@ -42,75 +46,87 @@ macro_rules! settings {
         /// Every setting's name, in order.
         pub const NAMES: &[&str] = &[$($name),*];
 
-        impl Config {
-            /// Sets setting `name` to `value`, its text, as its `Reads`
-            /// reads it. A setting refused says why.
-            pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
+        /// One setting and its value, read as `set` was given it: on the
+        /// wire, each value is one its type takes.
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub enum Setting {
+            $($variant($reads),)*
+        }
+        $crate::wire::wire_enum!(Setting { $($variant(value)),* });
+
+        impl Setting {
+            /// Setting `name` given `value`, as its type reads it, or why
+            /// not.
+            pub fn read(name: &str, value: &Value<Fux>) -> Result<Setting, String> {
                 let named = |why| format!("{name}: {why}");
                 match name {
-                    $($name => self.$field = <$reads as Reads>::read(value).map_err(named)?,)*
+                    $($name => <$reads as Reads>::read(value).map(Setting::$variant).map_err(named),)*
                     other => {
                         let all = words::listed(NAMES, "and");
-                        return Err(format!("no setting {other:?}; the settings are {all}"));
+                        Err(format!("no setting {other:?}; the settings are {all}"))
                     }
                 }
-                Ok(())
+            }
+        }
+
+        impl Config {
+            /// `setting` in force.
+            pub fn apply(&mut self, setting: Setting) {
+                match setting {
+                    $(Setting::$variant(value) => self.$field = value,)*
+                }
             }
         }
 
         /// Every setting, in order, as `fux help set` tells it: its name,
-        /// what text it takes, its default as that text, and what it does.
+        /// what it takes, its default as fuxth writes it, and what it does.
         pub fn table() -> Vec<[String; 4]> {
             let defaults = Config::default();
             vec![$([
                 $name.to_owned(),
                 <$reads as Reads>::takes(),
-                settings!(@default $($shown)?; <$reads as Reads>::show(&defaults.$field)),
+                settings!(@default $($shown)?; Reads::show(&defaults.$field)),
                 [$($about.trim()),*].join(" "),
             ],)*]
         }
     };
 }
 
-/// How a setting's text is read: the value it gives (the type itself, but
-/// for `Number`'s ranges), what text it takes, and a value written back as
-/// that text.
-pub trait Reads {
-    type Value;
+/// A setting's type: what fuxth value it takes, read once, as `set` is
+/// given it, and its value written back as fuxth.
+pub trait Reads: Sized {
     fn takes() -> String;
-    fn read(text: &str) -> Result<Self::Value, String>;
-    fn show(value: &Self::Value) -> String;
+    fn read(value: &Value<Fux>) -> Result<Self, String>;
+    fn show(&self) -> String;
 }
 
 settings! {
-    /// The program a new pane runs, and its arguments: words parted by
-    /// blanks, none quoted, so `#` is a word like any other, and a quote
-    /// (`'`, `"`) or a backslash is refused. A program or argument with a
-    /// blank, quote or backslash in it is run through a wrapper script, or
-    /// a symlink to it, whose path has none.
-    shell "shell": Shell = default_shell()
+    /// The program a new pane runs, then its arguments: a list of strings,
+    /// each one word whatever it holds, as `list str /bin/zsh str -l end`.
+    shell Shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
-    history_bytes "history-bytes": Number<0, { 1 << 30 }> = 8 << 20;
+    history_bytes HistoryBytes "history-bytes": Number<0, { 1 << 30 }> = Number(8 << 20);
     /// How long a wait waits at most unless it says (`SECS timeout`).
-    wait "wait-seconds": Limit = Limit::DEFAULT;
+    wait Wait "wait-seconds": Limit = Limit::DEFAULT;
     /// Copies, fux's and programs', also reach your terminal's clipboard
     /// (OSC 52); off, a program's copy copies nothing, to the buffers
     /// either.
-    clipboard "clipboard": bool = true;
+    clipboard Clipboard "clipboard": bool = true;
     /// How many paste buffers are kept.
-    buffers "buffers": Number<1, MAX_BUFFERS> = 16;
+    buffers Buffers "buffers": Number<1, MAX_BUFFERS> = Number(16);
     /// A pane's bell rings your terminal and marks its tab.
-    bell "bell": bool = true;
+    bell Bell "bell": bool = true;
     /// Your terminal's title follows the focused pane.
-    titles "titles": bool = false;
+    titles Titles "titles": bool = false;
     /// Variables a new pane takes from whoever starts it (a request's
     /// caller, the client whose key it is) rather than from the server,
     /// which may have started long ago. One the starter lacks is unset,
     /// but for `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER`.
-    update_environment "update-environment": Vec<String> = KEPT.map(str::to_owned).to_vec();
+    update_environment UpdateEnvironment "update-environment": Vec<EnvName> =
+        KEPT.map(|name| EnvName(name.to_owned())).to_vec();
 }
 
 /// What `update-environment` names at first.
@@ -187,121 +203,128 @@ fn default_shell() -> Shell {
         .filter(|s| !s.is_empty())
         .or_else(login_shell)
         .unwrap_or_else(|| "/bin/sh".into());
-    Shell {
-        program,
-        args: Vec::new(),
-    }
+    Shell::alone(program)
+}
+
+/// Why `value` is not what a setting takes.
+fn wrong(takes: &str, value: &Value<Fux>) -> String {
+    format!("takes {takes}, not {}", value.kind())
+}
+
+/// A list of strings, each as it is.
+fn strings(value: &Value<Fux>) -> Result<Vec<String>, String> {
+    let takes = "a list of strings";
+    let Value::List(list) = value else {
+        return Err(wrong(takes, value));
+    };
+    (list.items().iter())
+        .map(|item| {
+            let Value::Str(s) = item else {
+                return Err(wrong(takes, item));
+            };
+            Ok(s.to_string())
+        })
+        .collect()
+}
+
+/// `words` as fuxth writes their list.
+fn listed<'a>(words: impl IntoIterator<Item = &'a str>) -> String {
+    let items = words
+        .into_iter()
+        .map(|w| format!("str {} ", words::quote(w)));
+    format!("list {}end", items.collect::<String>())
 }
 
 /// A whole number from `MIN` to `MAX`.
-pub struct Number<const MIN: usize, const MAX: usize>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Number<const MIN: usize, const MAX: usize>(usize);
+
+impl<const MIN: usize, const MAX: usize> Number<MIN, MAX> {
+    /// `n`, if from `MIN` to `MAX`.
+    pub fn new(n: usize) -> Option<Self> {
+        (MIN..=MAX).contains(&n).then_some(Number(n))
+    }
+
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
 
 impl<const MIN: usize, const MAX: usize> Reads for Number<MIN, MAX> {
-    type Value = usize;
     fn takes() -> String {
         format!("a number, {MIN} to {MAX}")
     }
-    fn read(text: &str) -> Result<usize, String> {
-        let n: i128 = text.parse().map_err(|_| "not a number".to_owned())?;
-        (usize::try_from(n).ok())
-            .filter(|n| (MIN..=MAX).contains(n))
-            .ok_or_else(|| format!("out of range, {MIN} to {MAX}"))
+    fn read(value: &Value<Fux>) -> Result<Self, String> {
+        let Value::Int(n) = value else {
+            return Err(wrong("a number", value));
+        };
+        (usize::try_from(*n).ok().and_then(Number::new))
+            .ok_or_else(|| format!("{n} is out of range, {MIN} to {MAX}"))
     }
-    fn show(value: &usize) -> String {
-        value.to_string()
+    fn show(&self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl<const MIN: usize, const MAX: usize> Wire for Number<MIN, MAX> {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.0.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Number::new(usize::get(r)?).ok_or(Error::Bad("setting"))
     }
 }
 
 /// A wait's limit, in seconds.
 impl Reads for Limit {
-    type Value = Limit;
     fn takes() -> String {
         format!("seconds, 0 to {MAX_WAIT}")
     }
-    fn read(text: &str) -> Result<Limit, String> {
-        let n: i128 = text.parse().map_err(|_| "not a number".to_owned())?;
-        let secs = u64::try_from(n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
+    fn read(value: &Value<Fux>) -> Result<Limit, String> {
+        let Value::Int(n) = value else {
+            return Err(wrong("a number", value));
+        };
+        let secs = u64::try_from(*n).map_err(|_| format!("{n} s: a wait waits 0 s or more"))?;
         Limit::read(secs)
     }
-    fn show(value: &Limit) -> String {
-        value.seconds().to_string()
+    fn show(&self) -> String {
+        self.seconds().to_string()
     }
 }
 
-/// `on` or `off` (or `true` or `false`).
+/// `true` or `false`.
 impl Reads for bool {
-    type Value = bool;
     fn takes() -> String {
-        "on or off".to_owned()
+        "true or false".to_owned()
     }
-    fn read(text: &str) -> Result<bool, String> {
-        match text {
-            "on" | "true" => Ok(true),
-            "off" | "false" => Ok(false),
-            other => Err(format!("{other:?} is not on or off (true or false)")),
-        }
+    fn read(value: &Value<Fux>) -> Result<bool, String> {
+        let Value::Bool(b) = value else {
+            return Err(wrong("true or false", value));
+        };
+        Ok(*b)
     }
-    fn show(value: &bool) -> String {
-        if *value { "on" } else { "off" }.to_owned()
+    fn show(&self) -> String {
+        self.to_string()
     }
 }
 
-/// A program and its arguments, separated by blanks.
-impl Reads for Shell {
-    type Value = Shell;
-    fn takes() -> String {
-        "a program and its arguments, separated by blanks, unquoted".to_owned()
+wire! {
+    /// The shell fux starts in a pane: a program, then its arguments, each
+    /// a word as it is, blanks, quotes and all.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Shell {
+        program: String,
+        args: Vec<String>,
     }
-    fn read(text: &str) -> Result<Shell, String> {
-        Shell::parse(text)
-    }
-    fn show(value: &Shell) -> String {
-        value.argv().join(" ")
-    }
-}
-
-/// Variables' names, separated by blanks.
-impl Reads for Vec<String> {
-    type Value = Vec<String>;
-    fn takes() -> String {
-        "variable names, separated by blanks".to_owned()
-    }
-    fn read(text: &str) -> Result<Vec<String>, String> {
-        (text.split_whitespace())
-            .map(|name| crate::command::var_name(name).map(|()| name.to_owned()))
-            .collect::<Result<_, String>>()
-    }
-    fn show(value: &Vec<String>) -> String {
-        value.join(" ")
-    }
-}
-
-/// The shell fux starts in a pane: a program, never empty, then its
-/// arguments.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Shell {
-    program: String,
-    args: Vec<String>,
 }
 
 impl Shell {
-    /// Words separated by blanks, the program first: no quoting, so no
-    /// word holds a blank, and a quote or backslash, which would read as
-    /// quoting it does not do, is refused.
-    pub fn parse(value: &str) -> Result<Shell, String> {
-        if let Some(quote) = value.chars().find(|c| matches!(c, '\'' | '"' | '\\')) {
-            return Err(format!(
-                "{quote} is refused: words are parted by blanks, not quoted or escaped; \
-                 a program or argument with a blank is run through a wrapper script, or a \
-                 symlink, whose path has none"
-            ));
+    /// `program`, with no arguments.
+    pub fn alone(program: impl Into<String>) -> Shell {
+        Shell {
+            program: program.into(),
+            args: Vec::new(),
         }
-        let mut words = value.split_whitespace().map(str::to_owned);
-        let program = words.next().ok_or("a program is needed")?;
-        Ok(Shell {
-            program,
-            args: words.collect(),
-        })
     }
 
     pub fn program(&self) -> &str {
@@ -312,6 +335,70 @@ impl Shell {
     pub fn argv(&self) -> Vec<String> {
         let all = std::iter::once(&self.program).chain(&self.args);
         all.cloned().collect()
+    }
+}
+
+/// The program, then its arguments: a list of strings, not empty.
+impl Reads for Shell {
+    fn takes() -> String {
+        "a list of strings: a program, then its arguments".to_owned()
+    }
+    fn read(value: &Value<Fux>) -> Result<Shell, String> {
+        let mut words = strings(value)?.into_iter();
+        let program = words.next().ok_or("a program is needed")?;
+        Ok(Shell {
+            program,
+            args: words.collect(),
+        })
+    }
+    fn show(&self) -> String {
+        listed(
+            std::iter::once(&self.program)
+                .chain(&self.args)
+                .map(String::as_str),
+        )
+    }
+}
+
+/// A variable's name a shell takes: letters, digits and `_`, not first a
+/// digit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvName(String);
+
+impl EnvName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for EnvName {
+    type Err = String;
+    fn from_str(name: &str) -> Result<EnvName, String> {
+        crate::command::var_name(name).map(|()| EnvName(name.to_owned()))
+    }
+}
+
+impl Wire for EnvName {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.0.put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        String::get(r)?
+            .parse()
+            .map_err(|_| Error::Bad("variable name"))
+    }
+}
+
+/// Variables' names: a list of strings.
+impl Reads for Vec<EnvName> {
+    fn takes() -> String {
+        "a list of variables' names".to_owned()
+    }
+    fn read(value: &Value<Fux>) -> Result<Vec<EnvName>, String> {
+        strings(value)?.iter().map(|name| name.parse()).collect()
+    }
+    fn show(&self) -> String {
+        listed(self.iter().map(EnvName::as_str))
     }
 }
 
@@ -340,31 +427,47 @@ mod tests {
         );
     }
 
+    /// A setting takes the fuxth value it is, read once, as `set` is given
+    /// it; a shell's words are each one argument, blanks, quotes and all.
     #[test]
-    fn settings_take_their_values_as_text() {
+    fn settings_take_their_values_as_fuxth_values() -> Result<(), String> {
+        let list = |words: &[&str]| {
+            let items = words.iter().map(|w| Value::str(*w)).collect();
+            fuxth::List::new(items).map(|list| Value::List(std::rc::Rc::new(list)))
+        };
+        let argv = ["/bin/my shell", "-c", "it's \"quoted\" \\ #"];
         let mut config = Config::default();
-        assert_eq!(config.set("history-bytes", "5000"), Ok(()));
-        assert_eq!(config.history_bytes, 5000);
-        assert_eq!(config.set("bell", "false"), Ok(()));
-        assert!(!config.bell);
-        assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
-        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
-        for quoted in ["'/bin/my shell' -l", "zsh -c \"ls\"", "my\\ shell"] {
-            let refused = config.set("shell", quoted);
-            assert!(
-                refused.is_err_and(|e| e.contains("wrapper script")),
-                "{quoted}"
-            );
+        for (name, value) in [
+            ("history-bytes", Value::Int(5000)),
+            ("bell", Value::Bool(false)),
+            ("shell", list(&argv).ok_or("a list")?),
+        ] {
+            config.apply(Setting::read(name, &value)?);
         }
-        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
-        assert_eq!(config.set("shell", "/bin/zsh # -l"), Ok(()));
-        assert_eq!(config.shell.argv(), ["/bin/zsh", "#", "-l"], "# is a word");
-        assert!(config.set("history-bytes", "lots").is_err());
-        let below = config.set("history-bytes", "-1");
-        assert!(below.is_err_and(|e| e.contains("out of range")));
-        assert!(config.set("buffers", "0").is_err());
-        assert!(config.set("nonsense", "1").is_err());
-        assert!(config.set("update-environment", "OK BAD-NAME").is_err());
+        assert_eq!(config.history_bytes.get(), 5000);
+        assert!(!config.bell);
+        assert_eq!(config.shell.argv(), argv);
+        for (name, value) in [
+            ("history-bytes", Value::str("5000")),
+            ("history-bytes", Value::Int(-1)),
+            ("buffers", Value::Int(0)),
+            ("bell", Value::str("off")),
+            ("shell", list(&[]).ok_or("a list")?),
+            ("shell", Value::str("/bin/zsh -l")),
+            (
+                "update-environment",
+                list(&["OK", "BAD-NAME"]).ok_or("a list")?,
+            ),
+            ("nonsense", Value::Int(1)),
+        ] {
+            assert!(Setting::read(name, &value).is_err(), "{name} {value:?}");
+        }
+        // Nor does the wire carry what `read` refuses.
+        let mut zero = crate::wire::encode(&Setting::Buffers(Number(1)));
+        zero.pop();
+        zero.push(0);
+        assert!(Reader::new(&zero).whole::<Setting>().is_err());
+        Ok(())
     }
 
     /// With `SHELL` unset, the shell is the user's own line's in

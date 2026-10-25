@@ -798,7 +798,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
 /// nothing: the run is the server's whole work for the keys.
 fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Done, String> {
     let config = fux::config::Config {
-        history_bytes: HISTORY,
+        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
         ..fux::config::Config::default()
     };
     let mut s =
@@ -875,7 +875,7 @@ fn paint(
     total: usize,
 ) -> Result<Done, String> {
     let config = fux::config::Config {
-        history_bytes: HISTORY,
+        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
         ..fux::config::Config::default()
     };
     let mut s =
@@ -1071,7 +1071,7 @@ fn encode(
 /// (`Session::new(.., false)`): their output is what the workload feeds.
 fn session(panes: usize) -> Result<fux::session::Session, String> {
     let config = fux::config::Config {
-        history_bytes: HISTORY,
+        history_bytes: fux::config::Number::new(HISTORY).ok_or("history out of range")?,
         ..fux::config::Config::default()
     };
     let mut s =

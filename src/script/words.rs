@@ -70,6 +70,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
+    ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
@@ -203,7 +204,7 @@ pub const WORDS: &[Word] = &[
     word("Server", "status", "-- record", "the server that answers, and its version; with none, fails no_server"),
     word("Server", "kill-server", "--", "stop the server: not from its own panes, nor with people attached"),
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
-    word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
+    word("Server", "set", "setting new --", "a setting of the server's, for every client: `fux help set` lists them"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
     // Shell
     word("Shell", "args", "-- list", "the strings after fux --file FILE (none for any other program)"),
@@ -1372,9 +1373,11 @@ impl fuxth::Host for Host<'_> {
             "kill-server" => tell(Command::KillServer { force: false }),
             "force-kill-server" => local(Local::ForceKill),
             "set" => {
-                let option = string(&next()?)?;
-                let value = text(&next()?)?;
-                tell(Command::Set { option, value })
+                let name = string(&next()?)?;
+                let setting = crate::config::Setting::read(&name, &next()?);
+                tell(Command::Set(vec![
+                    setting.map_err(|why| fail(Code::Config, why))?,
+                ]))
             }
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
             // ------------------------------------------------------- shell
@@ -1641,7 +1644,7 @@ mod tests {
             )
             .map_err(|failed| failed.code)
         };
-        let settings: String = std::iter::repeat_n("str clipboard str off set\n", 200).collect();
+        let settings: String = std::iter::repeat_n("str clipboard false set\n", 200).collect();
         assert_eq!(run(&settings), Ok(()));
         let forever = "begin false until";
         assert_eq!(run(forever), Err(Code::Steps));

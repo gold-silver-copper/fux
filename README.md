@@ -269,7 +269,7 @@ copy is at most 262,144 cells.
 **Clipboards.** A copy goes to fux's paste buffers (as many of the newest
 as `buffers` says); `C-b p` pastes the newest, bracketed if the program asked for
 bracketed paste. It is also sent to your terminal's clipboard as OSC 52, up
-to 1 MiB encoded, unless `str clipboard str off set`; your terminal must
+to 1 MiB encoded, unless `str clipboard false set`; your terminal must
 allow OSC 52 writes. A program in a pane that copies with OSC 52, as Neovim
 and Helix do, copies the same way, up to 64 KiB encoded, but only while
 `clipboard` is on: with it off a program's copy copies nothing, to the
@@ -342,8 +342,8 @@ and says what is wrong.
 ```sh
 # ~/.config/fux/config.fux
 str C-a prefix
-str shell str '/bin/zsh -l' set                  # a program, then its arguments: blanks part them, unquoted
-str clipboard str off set
+str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
+str clipboard false set
 
 unbind-all                                        # optional: start from no bindings
 define split-right me focused horizontal split drop end   # a word of the config's
@@ -462,8 +462,8 @@ without it, and a comment line says so: it starts where the dump is run.
   tab no attached terminal shows.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
-  bar until you show it. `str bell str off set` silences both.
-- **Titles.** With `str titles str on set`, your terminal's title is the
+  bar until you show it. `str bell false set` silences both.
+- **Titles.** With `str titles true set`, your terminal's title is the
   focused pane's (or its tab's name). fux saves your terminal's own title
   first and restores it when you detach or turn titles off.
 - **Hyperlinks** (OSC 8) reach your terminal as links.

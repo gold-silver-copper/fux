@@ -194,11 +194,11 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
     Ok(())
 }
 
-/// With `str titles str on set`, the real client's terminal is given its pane's
+/// With `str titles true set`, the real client's terminal is given its pane's
 /// title, its own saved first and restored on leaving; a bell rings it.
 #[test]
 fn the_real_client_gets_titles_and_bells_and_its_title_back() -> Outcome {
-    let server = Server::start("str titles str on set")?;
+    let server = Server::start("str titles true set")?;
     let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
     terminal.wait_for("%1 sh")?;
     terminal.type_bytes(b"printf '\\033]2;my-title\\007\\007'; echo rang''-it\r")?;
@@ -817,13 +817,6 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
 #[test]
 fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     let server = Server::start("")?;
-    // The `shell` setting parts words at blanks and refuses quotes and
-    // backslashes: a path with one is none.
-    let refused = |c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '\\');
-    if server.dir.to_string_lossy().contains(refused) {
-        eprintln!("skipped: the scratch directory's path has a blank, quote or backslash");
-        return Ok(());
-    }
     let missing = server.dir.join("no-such-shell");
     let not_executable = server.dir.join("server.log");
     let script = server.dir.join("script");
@@ -845,7 +838,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
         ),
     ] {
         let program = program.to_string_lossy();
-        server.ok(&["str", "shell", "str", &program, "set"])?;
+        server.ok(&["str", "shell", "list", "str", &program, "end", "set"])?;
         let cwd_text = cwd.to_string_lossy();
         let out = server.fux(&[
             "opts",
@@ -868,7 +861,7 @@ fn a_program_that_cannot_start_is_reported_as_the_system_says() -> Outcome {
     // Nothing a failed start made is left.
     assert_eq!(server.ok(&["ls"])?, before);
     // The server is unharmed, and a good shell starts again.
-    server.ok(&["str", "shell", "str", "/bin/sh", "set"])?;
+    server.ok(&["str", "shell", "list", "str", "/bin/sh", "end", "set"])?;
     server.ok(&["opts", "80", "24", "size", "new-workspace"])?;
     Ok(())
 }

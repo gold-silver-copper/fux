@@ -185,8 +185,8 @@ help try`); a code no running word gives is refused before it runs.
 ## `status json`
 
 ```json
-{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":19,
- "server_version":"0.35.0","server_protocol":19,"compatible":true}
+{"socket":"/run/user/1000/fux/server.sock","version":"0.35.0","protocol":20,
+ "server_version":"0.35.0","server_protocol":20,"compatible":true}
 ```
 
 With no server, `status` fails (`no_server`), saying the socket and whether

@@ -60,7 +60,7 @@ fn a_closed_panes_background_jobs_end_with_it_under_dash() -> Outcome {
         eprintln!("skipped: dash is not installed");
         return Ok(());
     };
-    let server = Server::start(&format!("str shell str {} set", dash.display()))?;
+    let server = Server::start(&format!("str shell list str {} end set", dash.display()))?;
     let mut reap = Reap::default();
     for how in ["pane kill", "exit", "workspace kill"] {
         if how == "workspace kill" {

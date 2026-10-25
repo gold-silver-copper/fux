@@ -1118,12 +1118,12 @@ fn run_quiet(
 
 /// What a config's requests go to: settings alone, as a config runs each
 /// time a client attaches, and must make nothing. With no server, a dry
-/// run: each setting checked, none sent.
+/// run: none sent, each read as `set` was given it.
 struct Settings<'a>(Option<&'a mut Server>);
 
 impl Asks for Settings<'_> {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        let Request::Do(crate::command::Command::Set { option, value }) = &asked.request else {
+        let Request::Do(crate::command::Command::Set(_)) = &asked.request else {
             return Err(Failed::new(
                 Code::NotConfig,
                 "a config sets and binds: it runs each time a client attaches, so it makes and changes nothing else",
@@ -1131,10 +1131,7 @@ impl Asks for Settings<'_> {
         };
         match &mut self.0 {
             Some(server) => server.ask(asked, out),
-            None => match crate::config::Config::default().set(option, value) {
-                Ok(()) => Ok(Reply::default()),
-                Err(why) => Err(Failed::new(Code::Config, why)),
-            },
+            None => Ok(Reply::default()),
         }
     }
 }
