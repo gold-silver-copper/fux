@@ -1221,7 +1221,7 @@ impl Session {
     }
 
     /// `pane_mut`, for input: a pane whose program has exited takes none.
-    fn live_pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
+    pub(crate) fn live_pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
         let pane = self.pane_mut(id)?;
         let why = match pane.process() {
             Process::HungUp(_) => "its program closed its terminal: nothing reads input there",

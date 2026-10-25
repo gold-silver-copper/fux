@@ -131,24 +131,23 @@ impl Session {
         self.put_in(client, pane, write)
     }
 
-    /// Queues for pane `pane`'s program what `write` makes for its screen.
-    /// Each piece its input queue refuses (`InputQueue`) is told to
-    /// `client`, which sent it, the first of a run too; whether one was.
+    /// Queues for pane `pane`'s program what `write` makes for its screen,
+    /// as `send-keys` does (`live_pane_mut`). Each piece refused, its
+    /// program not running or its input queue refusing (`InputQueue`), is
+    /// told to `client`, which sent it, the first of a run too; whether
+    /// one was.
     fn put_in(
         &mut self,
         client: ClientId,
         pane: crate::id::PaneId,
         write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
     ) -> bool {
-        let Some(mut p) = self.parts.pane_mut(pane) else {
-            return false;
-        };
-        let why = match p.push_with(write) {
-            Ok(()) => return false,
-            Err(crate::pane::Error::InputFull) => crate::session::lost(pane),
+        let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
+            Ok(Ok(())) => return false,
+            Ok(Err(crate::pane::Error::InputFull)) => crate::session::lost(pane),
+            Ok(Err(refused)) => refused.to_string(),
             Err(refused) => refused.to_string(),
         };
-        drop(p);
         self.notify_to(client, why, true);
         true
     }
@@ -935,6 +934,24 @@ mod tests {
         assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
         s.input(c, b"x");
         assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        Ok(())
+    }
+
+    /// A key or paste typed into a pane whose program exited is refused,
+    /// as `send-keys` is, and told: never queued for no one to read.
+    #[test]
+    fn a_key_into_an_exited_program_is_refused_and_told() -> Outcome {
+        let (mut s, c) = session()?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(&mut s, "str c1 client str %2 pane focus-pane")?;
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(3));
+        for typed in [b"x".as_slice(), b"\x1b[200~z\x1b[201~"] {
+            s.input(c, typed);
+            let notice = s.views.get_mut(&c).and_then(|v| v.notice.take());
+            let told = notice.map(|n| n.text).unwrap_or_default();
+            assert!(told.contains("the program in %2 exited 3"), "{told}");
+            assert!(queued(&mut s, 2).is_empty());
+        }
         Ok(())
     }
 
