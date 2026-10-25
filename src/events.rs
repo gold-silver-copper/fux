@@ -34,6 +34,9 @@ pub struct Journal {
     entries: VecDeque<(Seq, Event)>,
     /// The number the next entry is given.
     next: Seq,
+    /// The number of the last entry that made or closed something, kept
+    /// or let go.
+    shaped: Option<Seq>,
 }
 
 impl Journal {
@@ -41,6 +44,9 @@ impl Journal {
     pub(crate) fn push(&mut self, place: Place, what: What) {
         if self.entries.len() >= KEPT {
             self.entries.pop_front();
+        }
+        if matches!(what, What::Created(_) | What::Closed) {
+            self.shaped = Some(self.next);
         }
         self.entries.push_back((self.next, Event { place, what }));
         // 2^64 entries are never reached: the number never stands still.
@@ -52,11 +58,9 @@ impl Journal {
         self.next
     }
 
-    /// Whether a workspace, tab or pane was made or closed from `from` on,
-    /// or may have been, in entries let go.
+    /// Whether a workspace, tab or pane was made or closed from `from` on.
     pub fn made_or_closed(&self, from: Seq) -> bool {
-        let (lost, mut entries) = self.from(from);
-        lost > 0 || entries.any(|(_, e)| matches!(e.what, What::Created(_) | What::Closed))
+        self.shaped.is_some_and(|shaped| shaped >= from)
     }
 
     /// What came from `from` on: how many of those entries were let go,
@@ -372,6 +376,22 @@ mod tests {
         assert!(lines.starts_with("missed count=2\nbell +1\n"), "{lines}");
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| true).0, "");
+        Ok(())
+    }
+
+    /// What was made or closed is known past what the journal keeps: a
+    /// flood of bells after it is not taken for one.
+    #[test]
+    fn what_was_made_or_closed_is_known_past_what_is_kept() -> Result<(), String> {
+        let ws: WsId = "+1".parse().map_err(|_| "+1")?;
+        let mut journal = Journal::default();
+        let start = journal.end();
+        journal.push(Place::Workspace(ws), What::Closed);
+        let after = journal.end();
+        for _ in 0..=KEPT {
+            journal.push(Place::Workspace(ws), What::Bell);
+        }
+        assert!(journal.made_or_closed(start) && !journal.made_or_closed(after));
         Ok(())
     }
 
