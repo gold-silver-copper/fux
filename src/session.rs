@@ -374,6 +374,21 @@ impl From<pane::Error> for Error {
     }
 }
 
+/// Why `pane`'s program takes no input, if it takes none: the one check
+/// of input typed or sent, and of the reports (mouse, focus) a terminal
+/// is asked to make for it, so that a pane none could reach asks for none.
+pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
+    let why = match pane.process() {
+        Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
+        Process::Absent if pane.paused() => {
+            "paused since the server restarted: respawn starts its program"
+        }
+        Process::Exited(status) => return Some(ended(pane.id(), *status)),
+        Process::Absent | Process::Reading(_) => return None,
+    };
+    Some(fail(Code::NotRunning, format!("{}: {why}", pane.id())))
+}
+
 /// `pane`'s program has ended, with `status`: it takes no input.
 fn ended(pane: PaneId, status: Ended) -> Error {
     let was = match status {
@@ -1231,18 +1246,14 @@ impl Session {
         Ok(acted(each.into_iter().map(|(version, _)| version)))
     }
 
-    /// `pane_mut`, for input: a pane whose program has exited takes none.
+    /// `pane_mut`, for input: a pane whose program takes none is refused
+    /// (`refuses_input`).
     pub(crate) fn live_pane_mut(&mut self, id: PaneId) -> Result<PaneMut<'_>, Error> {
         let pane = self.pane_mut(id)?;
-        let why = match pane.process() {
-            Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
-            Process::Absent if pane.paused() => {
-                "paused since the server restarted: respawn starts its program"
-            }
-            Process::Exited(status) => return Err(ended(id, *status)),
-            Process::Absent | Process::Reading(_) => return Ok(pane),
-        };
-        Err(fail(Code::NotRunning, format!("{id}: {why}")))
+        match refuses_input(&pane) {
+            Some(refused) => Err(refused),
+            None => Ok(pane),
+        }
     }
 
     /// The split of `target` along `axis`, the two taking `shares` if
@@ -4022,6 +4033,43 @@ mod tests {
         s.buffers.push_front("x".into());
         let pasted = run(&mut s, "%2 0 paste-buffer");
         assert!(pasted.is_err_and(|e| e.contains("exited")), "refused");
+        Ok(())
+    }
+
+    /// A pane whose program ended asks its client's terminal for no mouse
+    /// or focus reports, which nothing would read: a click or a focus
+    /// change is not refused, while a key still is.
+    #[test]
+    fn an_ended_pane_asks_for_no_reports_and_refuses_keys() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        let id = PaneId::of(2);
+        // A test's session starts no program: one is put in the pane.
+        let argv = ["/bin/cat".to_owned()];
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), sized(4, 20)?)?;
+        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
+        s.output(id, b"\x1b[?1000h\x1b[?1004h");
+        let mouse = |s: &Session| crate::render::compose(s, c).map(|g| g.modes.mouse);
+        assert_eq!(mouse(&s), Some(1000), "asked while it runs");
+        s.exited(id, Ended::Signalled(9));
+        assert_eq!(mouse(&s), Some(0), "asked for none once it ended");
+        let notice = |s: &mut Session, typed: &[u8]| {
+            let view = s.views.get_mut(&c).map(|v| v.notice = None);
+            s.input(c, typed);
+            view.and(s.views.get(&c)).and_then(|v| v.notice.clone())
+        };
+        assert_eq!(notice(&mut s, b"\x1b[I").map(|n| n.text), None);
+        let key = notice(&mut s, b"x").map(|n| n.text).unwrap_or_default();
+        assert!(key.contains("was killed by SIGKILL"), "{key}");
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
         Ok(())
     }
 
