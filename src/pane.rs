@@ -65,9 +65,11 @@ impl std::error::Error for Error {}
 pub struct InputQueue {
     bytes: ByteQueue,
     /// Input was refused, and the program has not read since: everything
-    /// is refused, so none arrives with a hole before it, while this run
-    /// of refusals goes on.
-    refusing: Run,
+    /// is refused, so none arrives with a hole before it.
+    refusing: bool,
+    /// Its run of input lost (`Run`): begun by input refused, not by a
+    /// reply refused, and over as it stops refusing.
+    run: Run,
 }
 
 /// A run of one kind of drop: none going on; going on and not yet told;
@@ -138,14 +140,14 @@ impl InputQueue {
         if len > INPUT_BYTES {
             return Err(Error::TooLong(len));
         }
-        self.refusing.dropped();
+        self.refusing = true;
         Err(Error::InputFull)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
         match self.refusing {
-            Run::Untold | Run::Told => 0,
-            Run::Over => INPUT_BYTES.saturating_sub(self.len()),
+            true => 0,
+            false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -158,7 +160,7 @@ impl InputQueue {
     /// `n` bytes of the front were written: its terminal took them.
     pub fn advance(&mut self, n: usize) {
         if n > 0 {
-            self.refusing = Run::Over;
+            (self.refusing, self.run) = (false, Run::Over);
         }
         self.bytes.take(n);
     }
@@ -167,7 +169,7 @@ impl InputQueue {
     pub fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
-        self.refusing = Run::Over;
+        (self.refusing, self.run) = (false, Run::Over);
         queued
     }
     /// Everything queued, for tests and for a pane with no process.
@@ -517,25 +519,42 @@ pub struct Losses {
 impl Losses {
     /// These and `more`.
     fn add(&mut self, more: Losses) {
+        // Every kind named: one more does not compile till it is added.
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = more;
         let add = |a: &mut u64, b| *a = a.saturating_add(b);
-        add(&mut self.input, more.input);
-        add(&mut self.replies, more.replies);
-        add(&mut self.copies_cut, more.copies_cut);
-        add(&mut self.copies_not_text, more.copies_not_text);
-        add(&mut self.pictures, more.pictures);
-        add(&mut self.memory, more.memory);
+        add(&mut self.input, input);
+        add(&mut self.replies, replies);
+        add(&mut self.copies_cut, copies_cut);
+        add(&mut self.copies_not_text, copies_not_text);
+        add(&mut self.pictures, pictures);
+        add(&mut self.memory, memory);
     }
 
     /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
     pub fn json(self) -> crate::json::Json<'static> {
         use crate::json::Json;
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = self;
         Json::Object(vec![
-            ("input", Json::int(self.input)),
-            ("replies", Json::int(self.replies)),
-            ("copies_cut", Json::int(self.copies_cut)),
-            ("copies_not_text", Json::int(self.copies_not_text)),
-            ("pictures", Json::int(self.pictures)),
-            ("memory", Json::int(self.memory)),
+            ("input", Json::int(input)),
+            ("replies", Json::int(replies)),
+            ("copies_cut", Json::int(copies_cut)),
+            ("copies_not_text", Json::int(copies_not_text)),
+            ("pictures", Json::int(pictures)),
+            ("memory", Json::int(memory)),
         ])
     }
 
@@ -551,13 +570,21 @@ impl Losses {
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
         let pictures = "`fux help-json` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
+        let Losses {
+            input: n,
+            replies: r,
+            copies_cut: c,
+            copies_not_text: t,
+            pictures: p,
+            memory: m,
+        } = self;
         let each: [(u64, &str, &str); 6] = [
-            (self.input, "input dropped", input),
-            (self.replies, "replies to its program dropped", &replies),
-            (self.copies_cut, copies, &cut),
-            (self.copies_not_text, copies, &not_text),
-            (self.pictures, "sixel pictures not kept whole", pictures),
-            (self.memory, "memory refused", memory),
+            (n, "input dropped", input),
+            (r, "replies to its program dropped", &replies),
+            (c, copies, &cut),
+            (t, copies, &not_text),
+            (p, "sixel pictures not kept whole", pictures),
+            (m, "memory refused", memory),
         ];
         (each.into_iter())
             .filter(|(n, ..)| *n > 0)
@@ -1026,12 +1053,13 @@ impl Pane {
         if let Some(scheme) = sink.told.filter(|_| !full) {
             self.scheme_told = Some(scheme);
         }
-        match replies {
-            0 => self.replies = Run::Over,
-            _ => self.replies.dropped(),
+        // A run of dropped replies ends at a read that drops none while
+        // the queue takes input.
+        if replies == 0 && !self.input.refusing {
+            self.replies = Run::Over;
         }
+        self.lose_replies(replies);
         self.lose(Losses {
-            replies,
             memory: self.parser.refused().saturating_sub(refused.0),
             pictures: self.parser.pictures_refused().saturating_sub(refused.1),
             ..Losses::default()
@@ -1093,10 +1121,7 @@ impl Pane {
         if let Some(report) = self.parser.resize_report().filter(|_| takes)
             && self.input.push(report).is_err()
         {
-            self.lose(Losses {
-                replies: 1,
-                ..Losses::default()
-            });
+            self.lose_replies(1);
         }
     }
 
@@ -1118,13 +1143,25 @@ impl Pane {
     /// (`Run`).
     pub(crate) fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
-        if self.input.refusing == Run::Told {
+        if self.input.run == Run::Told {
             losses.input = 0;
         }
         if self.replies == Run::Told {
             losses.replies = 0;
         }
         self.untold.add(losses);
+    }
+
+    /// `n` replies were dropped, in a run of them.
+    fn lose_replies(&mut self, n: u64) {
+        if n > 0 {
+            self.replies.dropped();
+            let replies = n;
+            self.lose(Losses {
+                replies,
+                ..Losses::default()
+            });
+        }
     }
 
     /// Whether it let go of anything not yet told.
@@ -1135,7 +1172,7 @@ impl Pane {
     /// What it let go of and has not told, which it then has: the rest of
     /// each run of drops going on is not told (`Run`).
     pub fn take_untold(&mut self) -> Losses {
-        self.input.refusing.told();
+        self.input.run.told();
         self.replies.told();
         std::mem::take(&mut self.untold)
     }
@@ -1166,6 +1203,7 @@ impl Pane {
     /// refused is lost.
     fn refused(&mut self, pushed: Result<(), Error>) -> Result<(), Error> {
         if let Err(Error::InputFull) = pushed {
+            self.input.run.dropped();
             self.lose(Losses {
                 input: 1,
                 ..Losses::default()
@@ -1906,6 +1944,45 @@ pub(crate) mod tests {
         assert!(pane.take_untold().replies > 0, "told after its run ended");
         pane.output(&queries);
         assert!(pane.take_untold().replies > 0, "a later run");
+        Ok(())
+    }
+
+    /// A reply the full queue refuses starts a run of replies, not of
+    /// input: the input refused after it is told. Both runs go on while
+    /// the queue refuses, reads with no query and resize reports alike.
+    #[test]
+    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.output(b"\x1b[?2048h");
+        let room = pane.input.room();
+        pane.push(vec![0; room.saturating_sub(3)])?;
+        pane.output(b"\x1b[6n");
+        assert_eq!(pane.take_untold().replies, 1);
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold().input, 1, "input after a reply");
+        pane.output(b"no query");
+        pane.output(b"\x1b[6n");
+        pane.resize(size(4, 20));
+        pane.resize(size(5, 20));
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold(), Losses::default(), "the same runs");
+        assert_eq!((pane.lost().replies, pane.lost().input), (4, 2));
+        Ok(())
+    }
+
+    /// A resize report the full queue refuses starts a run of replies:
+    /// the next one in it is counted, not told again.
+    #[test]
+    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.output(b"\x1b[?2048h");
+        let room = pane.input.room();
+        pane.push(vec![0; room])?;
+        pane.resize(size(4, 20));
+        assert_eq!(pane.take_untold().replies, 1);
+        pane.resize(size(5, 20));
+        assert!(!pane.loses(), "the same run");
+        assert_eq!(pane.lost().replies, 2);
         Ok(())
     }
 
