@@ -3679,6 +3679,9 @@ mod tests {
         assert!(small.contains("[cut %1 %2] %1"), "{small}");
         let short = bar(&mut s, 3, 80)?.unwrap_or_default();
         assert!(short.contains("[cut %1] [hidden %2] %1"), "{short}");
+        // Named before the tabs and the title on a narrow bar.
+        let narrow = bar(&mut s, 3, 24)?.unwrap_or_default();
+        assert!(narrow.contains("[cut %1] [hidden %2]"), "{narrow}");
         Ok(())
     }
 
@@ -5440,10 +5443,11 @@ mod tests {
         Ok(())
     }
 
-    /// A client with no room for a pane lays out no new tab, nor is a
-    /// pane moved where the client following it would hide one.
+    /// A client with no room for a pane sizes no new tab it makes: its
+    /// tab does; nor is a pane moved where the client following it would
+    /// hide one.
     #[test]
-    fn a_screen_with_no_room_lays_out_no_pane() -> Result<(), String> {
+    fn a_screen_with_no_room_sizes_no_pane() -> Result<(), String> {
         let mut s = started(Config::default())?;
         let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
         // A client of one row has no room: its tab, which the other

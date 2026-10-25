@@ -15,7 +15,7 @@ pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
 (as `split` does): the other two start a shell. Their tab is laid out on
 `COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
-smallest screen showing it, else its own size), never on another client's
+smallest screen that sizes it, else its own size), never on another client's
 screen: run from outside fux, a size must be given, as fux makes none up:
 without one the request fails with code `size`.
 
@@ -231,8 +231,8 @@ from its program (or it started). Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
-`fux opts 80 24 size str agent in new-tab` gives a shell (the size may go
-with a client attached). fux starts shells as they
+`fux opts 80 24 size str agent in new-tab` gives a shell (run in a fux
+pane, the size may go: the tab is then laid out on that pane's tab). fux starts shells as they
 are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 `D;STATUS` as it ends, `A` at a prompt) counts the commands that end in
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
