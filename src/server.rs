@@ -308,17 +308,12 @@ impl TakenTerminal {
             out: ByteQueue::default(),
         }
     }
-    /// Writes what waits, as far as the terminal takes it; false if it
-    /// failed, and is to be given up.
-    fn flush(&mut self) -> bool {
-        write_out(&self.fd, &mut self.out)
-    }
     /// Hands the terminal back: what waits for it written as far as it
     /// takes it at once, the rest to `out` for the client to write in paint
     /// frames, before the `Exit` that follows, and the server's descriptor
     /// for it closed.
     fn give_back(mut self, out: &mut ByteQueue) {
-        if self.flush() && !self.out.is_empty() {
+        if write_out(&self.fd, &mut self.out) && !self.out.is_empty() {
             split_into(self.out.as_slice(), ToAttached::Paint, out);
         }
     }
@@ -507,7 +502,7 @@ impl Conn {
     fn flush_tty(&mut self, session: &mut Session) {
         if let Some(attached) = self.attached()
             && let Some(tty) = &mut attached.tty
-            && !tty.flush()
+            && !write_out(&tty.fd, &mut tty.out)
         {
             attached.tty = None;
             self.end(session, &ToAttached::Exit("detached: the terminal closed"));
@@ -1173,15 +1168,13 @@ impl Server {
 
     fn flush_outbox(&mut self) {
         for outgoing in mem::take(&mut self.session.outbox) {
-            let (client, frame) = match outgoing {
-                Outgoing::Shutdown { reason, keep } => {
-                    self.stop(reason, keep);
-                    continue;
+            match outgoing {
+                Outgoing::Shutdown { reason, keep } => self.stop(reason, keep),
+                Outgoing::To(client, frame) => {
+                    if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
+                        conn.tell(&mut self.session, &frame);
+                    }
                 }
-                Outgoing::To(client, frame) => (client, frame),
-            };
-            if let Some(conn) = self.conns.iter_mut().find(|c| c.serves(client)) {
-                conn.tell(&mut self.session, &frame);
             }
         }
     }
@@ -1606,16 +1599,12 @@ impl Server {
             return;
         };
         // A restore is the server's own, which no grant's socket makes.
-        let came = match conn.grant.clone() {
-            Some(socket) => Came::Grant(socket),
-            None if context.restoring && restore_runs => Came::Restore,
-            None => Came::Socket,
-        };
         // While a saved session comes back, other requests wait for it,
         // so that none takes an id it asks for.
-        let held = match came {
-            Came::Restore => false,
-            Came::Socket | Came::Grant(_) => restore_runs,
+        let (came, held) = match conn.grant.clone() {
+            Some(socket) => (Came::Grant(socket), restore_runs),
+            None if context.restoring && restore_runs => (Came::Restore, false),
+            None => (Came::Socket, restore_runs),
         };
         if held {
             conn.stage = Stage::Held(Box::new(Asked { request, context }));
