@@ -560,6 +560,13 @@ fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
     // placeholder again, but it stays gone.
     let p = place(b"\x1b[5;5HX\x1b[5;5H", b"\x1bP0;1q\"1;1;20;40\x1b\\")?;
     assert_eq!(shown(&p), [2], "a clear picture over one text took");
+    // Between left and right margins on the bottom row, a clear picture two
+    // rows tall lifts the cells there, and the first's with them, which
+    // land blank: its rows filled again, the first stays gone.
+    let mut p = pictured(Size::of(4, 30), 0)?;
+    p.process(b"\x1b[?69h\x1b[1;20s\x1b[4;5H\x1bP0;0q\"1;1;20;20\x1b\\")?;
+    p.process(b"\x1b[4;5H\x1bP0;1q\"1;1;20;40\x1b\\")?;
+    assert_eq!(shown(&p), [2], "a margin scroll as it is placed");
     // Clear but for its bottom right pixel (P2 1): that pixel only.
     let p = place(b"\x1b[5;5H", &picture(20, 40))?;
     assert_eq!(left(&p), Some(799), "clear pixels cover nothing");

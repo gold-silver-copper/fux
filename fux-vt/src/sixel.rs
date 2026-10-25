@@ -147,13 +147,14 @@ impl Picture {
         (right, top, bottom): (u32, u32, u32),
         rows: usize,
     ) -> (usize, usize) {
-        let list = match self.covered {
-            Some(_) => 0,
-            None => {
-                usize::try_from(bottom.min(self.height).saturating_sub(top)).unwrap_or(usize::MAX)
-            }
+        // Rows are made as wide as the first cover found it shown.
+        let (list, stride) = match &self.covered {
+            Some(covered) => (0, covered.stride()),
+            None => (
+                usize::try_from(bottom.min(self.height).saturating_sub(top)).unwrap_or(usize::MAX),
+                usize::try_from(right.min(self.width).div_ceil(64)).unwrap_or(usize::MAX),
+            ),
         };
-        let stride = usize::try_from(right.min(self.width).div_ceil(64)).unwrap_or(usize::MAX);
         (
             list.saturating_mul(Covered::ROW),
             rows.saturating_mul(stride).saturating_mul(8),

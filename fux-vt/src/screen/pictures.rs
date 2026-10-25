@@ -194,11 +194,7 @@ impl Screen {
         // Those of this screen no longer shown go before its cells are
         // filled, which would read as theirs again.
         let alternate = self.alternate_active;
-        let hidden: Vec<usize> = (self.pictures.iter().enumerate())
-            .filter(|(_, p)| p.alternate == alternate && self.shown(p).is_none())
-            .map(|(at, _)| at)
-            .collect();
-        self.let_go(&hidden);
+        self.let_go_hidden();
         let cells = |pixels: u32, per: u16| {
             u16::try_from(pixels.div_ceil(u32::from(per)))
                 .unwrap_or(u16::MAX)
@@ -257,6 +253,10 @@ impl Screen {
             } else if row > 0 {
                 let g = self.grid();
                 let at_bottom = g.lr() && g.cursor.row() == g.lines.last();
+                if at_bottom && g.in_columns() && !lifted {
+                    self.let_go_scrolled();
+                }
+                let g = self.grid();
                 lifted |= at_bottom;
                 stacked |= at_bottom && !g.in_columns();
                 self.linefeed();
@@ -294,6 +294,9 @@ impl Screen {
             for _ in 0..down.saturating_sub(rows.saturating_sub(1)).min(8) {
                 let g = self.grid();
                 if g.lr() && g.in_columns() && g.cursor.row() == g.lines.last() {
+                    if !lifted {
+                        self.let_go_scrolled();
+                    }
                     lifted = true;
                     last = last.and_then(|last| last.checked_sub(1));
                     let row = last.and_then(|last| self.grid().live_row(last));
@@ -491,6 +494,38 @@ impl Screen {
                 .map(|(at, _, _)| *at)
                 .filter(|at| (self.pictures.get(*at)).is_some_and(|p| p.picture.covered_whole())),
         );
+        self.let_go(&gone);
+    }
+
+    /// Lets go of the pictures of the screen in use no longer shown.
+    fn let_go_hidden(&mut self) {
+        let alternate = self.alternate_active;
+        let hidden: Vec<usize> = (self.pictures.iter().enumerate())
+            .filter(|(_, p)| p.alternate == alternate && self.shown(p).is_none())
+            .map(|(at, _)| at)
+            .collect();
+        self.let_go(&hidden);
+    }
+
+    /// Lets go, at a placement's first scroll inside left and right
+    /// margins, of the pictures of the screen in use with a cell in the
+    /// region it scrolls: their cells move, and land blank
+    /// (`grid::unpicture`), and the placement's fills, which follow, could
+    /// make them read as theirs again.
+    fn let_go_scrolled(&mut self) {
+        let g = self.grid();
+        let region = (
+            i64::from(g.lines.first()),
+            g.columns().first(),
+            g.columns().len(),
+            g.lines.len(),
+        );
+        let alternate = self.alternate_active;
+        let gone: Vec<usize> = (self.pictures.iter().enumerate())
+            .filter(|(_, p)| p.alternate == alternate)
+            .filter(|(_, p)| self.shown(p).is_none_or(|s| overlaps(s.area(), region)))
+            .map(|(at, _)| at)
+            .collect();
         self.let_go(&gone);
     }
 
