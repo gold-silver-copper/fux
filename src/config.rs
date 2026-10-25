@@ -84,9 +84,10 @@ pub trait Reads {
 
 settings! {
     /// The program a new pane runs, and its arguments: words parted by
-    /// blanks, none quoted, so `#` is a word like any other. A program or
-    /// argument with a blank in it is run through a wrapper script, or a
-    /// symlink to it, whose path has none.
+    /// blanks, none quoted, so `#` is a word like any other, and a quote
+    /// (`'`, `"`) or a backslash is refused. A program or argument with a
+    /// blank, quote or backslash in it is run through a wrapper script, or
+    /// a symlink to it, whose path has none.
     shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and

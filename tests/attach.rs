@@ -813,9 +813,11 @@ fn a_panes_shell_has_the_pty_as_its_terminal_and_job_control() -> Outcome {
 #[test]
 fn a_program_that_cannot_start_is_reported_as_before() -> Outcome {
     let server = Server::start("")?;
-    // The `shell` setting parts words at blanks: a path with one is none.
-    if server.dir.to_string_lossy().contains(char::is_whitespace) {
-        eprintln!("skipped: the scratch directory's path has a blank");
+    // The `shell` setting parts words at blanks and refuses quotes and
+    // backslashes: a path with one is none.
+    let refused = |c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '\\');
+    if server.dir.to_string_lossy().contains(refused) {
+        eprintln!("skipped: the scratch directory's path has a blank, quote or backslash");
         return Ok(());
     }
     let missing = server.dir.join("no-such-shell");
