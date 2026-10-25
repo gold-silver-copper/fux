@@ -447,13 +447,15 @@ fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
 /// A single shift is spent on the next graphic character; another function
 /// cancels it, but SO and SI, which "may occur between the Single Shift
 /// and the subsequent graphic character" (DEC STD 070, 3.8.3.2): a C0
-/// control, an escape or control sequence, a string.
+/// control, CR LF as one or not, an escape or control sequence, a string.
 #[test]
 fn a_single_shift_is_cancelled_by_any_function_but_so_and_si() -> Result {
     assert_eq!(row(6, b"\x1b*0\x1bN\x0e\x0fq")?, "\u{2500}");
+    // NUL and DEL are "Ignored on input" (5.9.1): no function at all.
+    assert_eq!(row(6, b"\x1b*0\x1bN\x00\x7fq")?, "\u{2500}");
     for between in [
         &b"\x07"[..],
-        b"\x00",
+        b"\r\n",
         b"\x1b[C",
         b"\x1b=",
         b"\x1b]2;t\x07",

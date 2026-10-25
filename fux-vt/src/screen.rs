@@ -167,13 +167,14 @@ impl Printed {
 
 /// The character sets a program designates and shifts between (ECMA-35;
 /// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII, DEC
-/// Special Graphics or DEC Supplemental Graphics, the one in GL, and the
-/// one a single shift invokes for the next character. The national sets
-/// and the other sets ctlseqs lists are not kept: each is ASCII, as xterm
-/// reads one in UTF-8; a designation of no set is ignored (DEC STD 070,
-/// 3.5.1.3: "Unimplemented functions shall be ignored as if they were not
-/// received"). At level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
-/// STD 070, 3.6.4.2), G0 and G1 ASCII.
+/// Special Graphics or DEC Supplemental Graphics, and the one in GL; a
+/// single shift is no part of them, nor of what DECSC saves
+/// (`Screen::single`). The national sets and the other sets ctlseqs lists
+/// are not kept: each is ASCII, as xterm reads one in UTF-8; a designation
+/// of no set is ignored (DEC STD 070, 3.5.1.3: "Unimplemented functions
+/// shall be ignored as if they were not received"). At level 2, G2 and G3
+/// are DEC Supplemental at power-up and soft reset (DEC STD 070, 3.6.4.2),
+/// G0 and G1 ASCII.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
 pub(crate) struct Charsets {
@@ -183,11 +184,6 @@ pub(crate) struct Charsets {
     graphics: u8,
     /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
     gl: Set,
-    /// G2 after SS2, G3 after SS3: the set of the next graphic character,
-    /// cancelled by any other function but SO and SI (DEC STD 070,
-    /// 3.8.3.2), so none is pending as an escape or control sequence, a
-    /// string or another control begins (`Screen::cancel_single_shift`).
-    single: Option<Set>,
 }
 
 /// One of the four sets a program designates (ECMA-35, 6.3).
@@ -269,18 +265,14 @@ impl Charsets {
         Self {
             graphics: supplemental | supplemental << 4,
             gl: Set::G0,
-            single: None,
         }
     }
-    /// Whether text needs mapping: a single shift waits, or GL's set is
-    /// not ASCII.
+    /// Whether GL's set is not ASCII.
     fn graphics(self) -> bool {
-        self.single.is_some() || self.graphics & self.gl.bit() != 0
+        self.graphics & self.gl.bit() != 0
     }
-    /// The character `raw` prints as, in the set a single shift invokes,
-    /// which it spends, or else the set in GL.
-    fn map(&mut self, raw: char) -> char {
-        let set = self.single.take().unwrap_or(self.gl);
+    /// The character `raw` prints as in `set`.
+    fn map(self, set: Set, raw: char) -> char {
         if self.graphics & set.bit() == 0 {
             raw
         } else if self.graphics & set.bit() << 4 != 0 {
@@ -597,6 +589,11 @@ pub struct Screen {
     pen_style: u32,
     blank_style: u32,
     charsets: Charsets,
+    /// G2 after SS2, G3 after SS3: the set of the next graphic character,
+    /// which spends it. Any other function but SO and SI cancels it (DEC
+    /// STD 070, 3.8.3.2), so none is pending as a control or sequence runs
+    /// (`cancel_single_shift`).
+    single: Option<Set>,
     /// The modes kept as bits (`Kind::Flag`, `Margins`, `Frame`,
     /// `SizeReport`) that are set.
     modes: Modes,
@@ -833,6 +830,7 @@ impl Screen {
             pen_style: 0,
             blank_style: 0,
             charsets: Charsets::default(),
+            single: None,
             modes: Modes::DEFAULT,
             saved_modes: Modes::default(),
             protect: 0,
@@ -1495,21 +1493,18 @@ impl Screen {
     }
 
     /// Cancels a pending single shift, as a function other than a graphic
-    /// character, SO or SI begins: "If the next character in the received
-    /// data stream is not a graphic character [...], the single shift
-    /// function is ignored" (DEC STD 070, 3.8.3.2, SS2 and SS3). SS2 and
-    /// SS3 then set it again.
+    /// character, SO or SI begins (NUL and DEL are none, `control`): "If
+    /// the next character in the received data stream is not a graphic
+    /// character [...], the single shift function is ignored" (DEC STD 070,
+    /// 3.8.3.2, SS2 and SS3). SS2 and SS3 then set it again.
     pub(crate) fn cancel_single_shift(&mut self) {
-        self.charsets.single = None;
+        self.single = None;
     }
 
     #[inline(never)]
     pub(crate) fn print(&mut self, raw: char) {
-        let c = if self.charsets.graphics() {
-            self.charsets.map(raw)
-        } else {
-            raw
-        };
+        let set = self.single.take().unwrap_or(self.charsets.gl);
+        let c = self.charsets.map(set, raw);
         self.print_as(c, Properties::of(c))
     }
 
@@ -2161,7 +2156,7 @@ impl Screen {
     pub(crate) fn ascii(&mut self, mut bytes: &[u8]) -> usize {
         let all = bytes.len();
         // Character sets and insert mode take `print`, a glyph at a time.
-        if self.charsets.graphics() || self.mode(Mode::Insert) {
+        if self.single.is_some() || self.charsets.graphics() || self.mode(Mode::Insert) {
             for (i, &byte) in bytes.iter().enumerate() {
                 if self.stopped {
                     return i;
@@ -2220,6 +2215,7 @@ impl Screen {
     /// the pair that ends most lines, in one call.
     pub(crate) fn carriage_return_line_feed(&mut self) {
         self.break_cluster();
+        self.cancel_single_shift();
         let new_line = self.mode(Mode::NewLine);
         let g = self.grid_mut();
         g.cursor.pending_wrap = false;
@@ -2234,7 +2230,9 @@ impl Screen {
         if (8..=13).contains(&byte) {
             self.break_cluster();
         }
-        if !matches!(byte, 14 | 15) {
+        // NUL and DEL are "Ignored on input (not stored in input buffer)"
+        // (DEC STD 070, 5.9.1): no function, as SO and SI cancel none.
+        if !matches!(byte, 0x00 | 0x0e | 0x0f | 0x7f) {
             self.cancel_single_shift();
         }
         if byte == 8 && self.reverse_wraps() {
@@ -2387,7 +2385,6 @@ impl Screen {
         g.fit_cursor();
         self.attributes = saved.attributes;
         self.pen_changed();
-        // No single shift was pending as DECSC or DECRC began.
         self.charsets = saved.charsets;
         self.protect = saved.protect;
     }
@@ -2427,8 +2424,8 @@ impl Screen {
             // (9.4): either for the next graphic character alone.
             b'n' => self.charsets.gl = Set::G2,
             b'o' => self.charsets.gl = Set::G3,
-            b'N' => self.charsets.single = Some(Set::G2),
-            b'O' => self.charsets.single = Some(Set::G3),
+            b'N' => self.single = Some(Set::G2),
+            b'O' => self.single = Some(Set::G3),
             // LS1R, LS2R and LS3R (ECMA-35, 9.3.2): GR, which no byte
             // reaches in UTF-8 (15.4), so no state is kept.
             b'~' | b'}' | b'|' => {}
@@ -2883,8 +2880,7 @@ impl Screen {
             // another is ignored.
             b'x' => {
                 let c = match u8::try_from(p.first(0, 32)) {
-                    // No single shift is pending as a CSI ends.
-                    Ok(byte @ 32..=126) => self.charsets.map(char::from(byte)),
+                    Ok(byte @ 32..=126) => self.charsets.map(self.charsets.gl, char::from(byte)),
                     Ok(byte @ 160..=255) => char::from(byte),
                     _ => return,
                 };
