@@ -162,7 +162,7 @@ pub struct Decoder {
     /// Rounds of questions asked of the terminal whose last answer, DA1's,
     /// has not come.
     expecting: Option<Expecting>,
-    /// The terminal said its kitty flags hold disambiguate: it sends
+    /// The terminal's latest kitty flags hold disambiguate: it sends
     /// Escape as `CSI 27 u`, so a bare ESC is a sequence begun, and waits
     /// for the rest of it however long it takes, never taken for Escape.
     escape_said: bool,
@@ -458,10 +458,20 @@ impl Decoder {
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
         let from = out.len();
         self.feed(bytes, false, out);
-        let disambiguates = |input: &Input| matches!(input, Input::Reply(Reply::KittyFlags(flags)) if flags & DISAMBIGUATE != 0);
-        self.escape_said |= out
-            .get(from..)
-            .is_some_and(|new| new.iter().any(disambiguates));
+        let flags = |input: &Input| match *input {
+            Input::Reply(Reply::KittyFlags(flags)) => Some(flags),
+            Input::Key(_)
+            | Input::Paste(_)
+            | Input::PasteTooLong
+            | Input::FocusIn
+            | Input::FocusOut
+            | Input::Mouse(_)
+            | Input::Reply(_) => None,
+        };
+        let new = out.get(from..).unwrap_or_default();
+        if let Some(latest) = new.iter().rev().find_map(flags) {
+            self.escape_said = latest & DISAMBIGUATE != 0;
+        }
     }
 
     /// The deadline passed (`deadline`: an Escape's, an answer's, or a
@@ -1844,17 +1854,19 @@ mod tests {
         );
     }
 
-    /// Once the terminal says its flags hold disambiguate, it sends Escape
+    /// While the terminal's latest flags hold disambiguate, it sends Escape
     /// as `CSI 27 u`: a bare ESC is a sequence begun, which waits for its
-    /// rest with no deadline, however late it comes. Flags without it say
-    /// nothing of Escape.
+    /// rest with no deadline, however late it comes. Flags without it, even
+    /// after flags with it, say nothing of Escape.
     #[test]
     fn an_escape_the_terminal_sends_as_csi_u_is_never_waited_out() {
         let t0 = Instant::now();
-        let waits = |flags: &[u8]| {
+        let waits = |answers: &[&[u8]]| {
             let mut d = Decoder::default();
             let mut out = Vec::new();
-            d.bytes(flags, &mut out);
+            for flags in answers {
+                d.bytes(flags, &mut out);
+            }
             d.bytes(b"\x1b", &mut out);
             d.mark(t0);
             let due = d.deadline();
@@ -1862,8 +1874,12 @@ mod tests {
             let escape = matches!(out.pop(), Some(Input::Key(k)) if k.press.key == Key::Escape);
             (due, escape)
         };
-        assert_eq!(waits(b"\x1b[?0u"), (Some(t0 + ESCAPE_DELAY), true));
-        assert_eq!(waits(b"\x1b[?5u"), (None, true));
+        let waited = (Some(t0 + ESCAPE_DELAY), true);
+        assert_eq!(waits(&[b"\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?5u"]), (None, true));
+        assert_eq!(waits(&[b"\x1b[?5u", b"\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?5u\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?0u\x1b[?1u"]), (None, true));
     }
 
     /// An answer cut short waits `REPLY_DELAY`, not `ESCAPE_DELAY`, for the
