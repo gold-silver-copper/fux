@@ -926,7 +926,7 @@ impl Parser {
         })
     }
     /// 1: the OSC payload held is within its limit, one byte past it
-    /// inside an OSC string, in room for no more than that.
+    /// inside an OSC string, in room for the limit and that byte alone.
     #[cfg(feature = "checks")]
     fn check_osc(&self) -> Result<(), String> {
         let inside = matches!(self.state, State::Osc { .. });
@@ -934,7 +934,7 @@ impl Parser {
         crate::check::ensure(self.osc.len() <= most, || {
             format!("{} OSC bytes held, {most} at most", self.osc.len())
         })?;
-        let room = OSC_PAYLOAD_LIMIT.saturating_add(1);
+        let room = self.osc_limit.saturating_add(1);
         crate::check::ensure(self.osc.capacity() <= room, || {
             format!(
                 "room for {} OSC bytes, {room} at most (B20)",
@@ -1483,8 +1483,8 @@ impl Parser {
     }
 
     /// Room in the OSC buffer for `more` bytes: grown by doubling up to 16
-    /// KiB, then at once to `OSC_PAYLOAD_LIMIT` and the byte that marks it
-    /// overflowed, so it never holds more than that (THREATS.md B20).
+    /// KiB, then at once to the limit the features set and the byte that
+    /// marks it overflowed, never past them (THREATS.md B20).
     #[inline]
     fn osc_room(&mut self, more: usize) {
         let need = self.osc.len().saturating_add(more);
@@ -1497,9 +1497,10 @@ impl Parser {
     fn grow_osc(&mut self, need: usize) {
         const DOUBLING: usize = 16 << 10;
         let doubled = need.max(self.osc.capacity().saturating_mul(2));
+        let most = self.osc_limit.saturating_add(1);
         let room = match doubled > DOUBLING {
-            true => OSC_PAYLOAD_LIMIT.saturating_add(1),
-            false => doubled,
+            true => most,
+            false => doubled.min(most),
         };
         self.osc.reserve_exact(room.saturating_sub(self.osc.len()));
     }

@@ -514,8 +514,9 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   some 15 M clusters, its departures aside (`unicode::tests`), and
   against NormalizationTest's canonical equivalents (`tests/ucd.rs`).
 - **An OSC string** (B20) keeps at most `OSC_PAYLOAD_LIMIT` (65,536)
-  bytes, read to its end however long; its buffer holds at most 65,537,
-  and 81,921 while it grows.
+  bytes, read to its end however long; its buffer holds at most 65,537
+  (65 with only `PromptMarks`, 1 with no feature that reads OSC), and
+  81,921 while it grows.
 - **The work of one call**: `Parser::process_until_stop` stops
   as `Stop::Budget`, once 25 M weighted units of work (THREATS.md 4.4)
   are spent since its last such stop, over as many calls as that took.
