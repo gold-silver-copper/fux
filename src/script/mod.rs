@@ -850,7 +850,7 @@ pub fn handle(id: AnyRef) -> Fux {
 }
 
 /// What a program does that the client does itself, from the command line:
-/// attaching, choosing and starting a server, and asking after servers.
+/// attaching, choosing, starting and stopping a server, and its status.
 fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
     match what {
         Local::Server(chosen) => server.choose(chosen.clone()),
@@ -895,16 +895,10 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             let probe = client::probe(&socket).map_err(client_failed)?;
             let (text, json) =
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
-            return Ok(vec![answer(&text, &json, Said::Status)]);
+            return Ok(vec![Answer::value(text, Some(json), Said::Status)]);
         }
     }
     Ok(Vec::new())
-}
-
-/// An answer the client made itself, as text and JSON.
-fn answer(text: &str, json: &str, said: Said) -> Value<Fux> {
-    let (text, json) = (text.trim_end().to_owned(), json.trim_end().to_owned());
-    Answer::value(text, Some(json), said)
 }
 
 /// The server, started in the background if none answers: its socket, and
