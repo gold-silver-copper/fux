@@ -339,6 +339,10 @@ mod tests {
             format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
             format!("at most {} MiB", crate::protocol::MAX_FRAME >> 20),
             format!("past {} MiB", crate::pane::FRAME_LIMIT >> 20),
+            format!(
+                "at most {} together",
+                grouped(usize::try_from(crate::layout::MOST).unwrap_or_default())
+            ),
         ] {
             assert!(readme.contains(&said), "README: {said}");
         }

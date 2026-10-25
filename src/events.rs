@@ -141,6 +141,10 @@ pub enum What {
     Closed,
     /// To another tab, from this workspace and tab.
     Moved((WsId, TabId)),
+    /// A tab's: a pane's going merged splits whose exact weights are more
+    /// than `layout::MOST` together, now the nearest they hold
+    /// (`layout::Removed::Rounded`).
+    Rounded,
     /// Its program started again (`respawn`), over one that ran: what
     /// that one left on its terminal.
     Respawned(Left),
@@ -183,6 +187,7 @@ impl What {
             ),
             What::Respawned(left) => ("respawned", left_said(*left).collect()),
             What::Bell => ("bell", Vec::new()),
+            What::Rounded => ("rounded", Vec::new()),
             What::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
             What::Title(title) => ("title", said("title", title.as_str(), title.cut())),
             What::Done(status) => (
@@ -544,6 +549,7 @@ mod tests {
             What::Moved((ws, tab)),
             What::Respawned(Left::Cut),
             What::Bell,
+            What::Rounded,
             What::Notification(Said::default()),
             What::Title(Said::default()),
             What::Done(None),
@@ -562,6 +568,7 @@ mod tests {
                 | What::Moved(..)
                 | What::Respawned(_)
                 | What::Bell
+                | What::Rounded
                 | What::Notification(_)
                 | What::Title(_)
                 | What::Done(_)

@@ -380,7 +380,12 @@ layout comes back as it was, at every size. A split
 or a move that would hide a pane, on its tab's size or on the screen of a
 client showing it (but one that sizes nothing: that only watches, or has
 no room below its bar), is refused: whatever there
-is can be made again.
+is can be made again. Shares are held exactly, never rounded, in weights
+at most 4,294,967,295 together; a split or a move that would take more is
+refused (`size`), room or not: the 32nd split halving the newest pane of
+one row does. Resizing a border weighs a split's panes by their sizes, and
+makes room for more. A close is never refused: shares it merges past that
+bound are rounded to the nearest that fit, which the `rounded` event says.
 
 A **server saves its session** the same way, with the ids it had: at once
 after a change to what it holds (a workspace, tab or pane made, closed,

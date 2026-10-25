@@ -406,7 +406,10 @@ fn unmade_error(unmade: layout::Unmade, pane: PaneId) -> Error {
         layout::Unmade::Weights => fail(
             Code::Size,
             format!(
-                "{pane}'s split would take weights more than {} together to divide its room exactly",
+                "{pane}: the layout would take weights more than {} together to hold its \
+                 shares exactly, which fux never rounds (room is not what is short): resize \
+                 a border first, which weighs the panes by their sizes, or split a pane with \
+                 a larger share",
                 layout::MOST
             ),
         ),

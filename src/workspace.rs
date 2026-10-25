@@ -617,8 +617,10 @@ impl Parts {
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane<Loose>> {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
-        let emptied = tab.edit(|root| layout::remove(root, id) && root.is_none());
+        let removed = tab.edit(|root| layout::remove(root, id));
+        let emptied = tab.root.is_none();
         self.journal.push(Place::Pane(at, id), What::Closed);
+        self.rounded(at, removed);
         if emptied {
             self.remove_tab(at.1);
         }
@@ -726,12 +728,22 @@ impl Parts {
         let mut root = tab.root.clone();
         layout::append(&mut root, pane)?;
         tab.edit(|r| *r = root);
-        if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
-            from.edit(|root| layout::remove(root, pane));
-        }
+        let from = tab_mut(&mut self.workspaces, was.1);
+        let removed = from.map(|(_, from)| from.edit(|root| layout::remove(root, pane)));
         self.journal
             .push(Place::Pane((ws, to), pane), What::Moved(was));
+        if let Some(removed) = removed {
+            self.rounded(was, removed);
+        }
         Ok(())
+    }
+
+    /// Tab `at`'s weights were rounded, if `removed` says so: said
+    /// (`What::Rounded`).
+    fn rounded(&mut self, (ws, tab): (WsId, TabId), removed: layout::Removed) {
+        if removed == layout::Removed::Rounded {
+            self.journal.push(Place::Tab(ws, tab), What::Rounded);
+        }
     }
 
     /// Changes the layout of `pane`'s tab with `change`, which keeps its

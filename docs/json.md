@@ -145,6 +145,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
 | `respawned` | `truncated` (`true`) if the program it ran over left more than 1 MiB on its terminal: the rest was not read |
+| `rounded` | a tab's: a pane's going (closed, or moved to another tab) merged splits whose exact shares take weights more than 4,294,967,295 together; a close is not refused, so they are rounded to the nearest that fit |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it. Through a grant, neither is said of a place outside its workspace, nor the `tab` and `workspace` a pane moved out to; nothing after that is told of the pane |
 | `exited` | `status` (`null` if it was lost) or `signal`: its program's end; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |
