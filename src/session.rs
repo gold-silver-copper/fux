@@ -1561,20 +1561,15 @@ impl Session {
         }
         let own = here.client().and_then(|c| self.views.get(&c));
         let client = own.into_iter().chain(self.views.values()).next();
-        let screen = client.map(|view| Self::screen_size(view).ok_or(view.id));
-        match screen {
-            Some(Ok(size)) => Ok(Fit::Clients(size)),
-            Some(Err(client)) => Err(fail(
-                Code::Size,
-                format!(
-                    "{client}'s screen has no room for a pane below its bar; give a size (`COLS ROWS size`)"
-                ),
-            )),
-            None => Err(fail(
-                Code::Size,
-                "no client is attached to lay it out on, and no size was given: give one (`COLS ROWS size`)",
-            )),
-        }
+        let why = match client.map(|view| Self::screen_size(view).ok_or(view.id)) {
+            Some(Ok(size)) => return Ok(Fit::Clients(size)),
+            Some(Err(client)) => format!("{client}'s screen has no room for a pane below its bar"),
+            None => "no client is attached to lay it out on, and no size was given".to_owned(),
+        };
+        Err(fail(
+            Code::Size,
+            format!("{why}: give a size (`COLS ROWS size`)"),
+        ))
     }
 
     /// The size a client's screen gives panes, below its bar, if any.
