@@ -365,7 +365,7 @@ def ended(version):
 class Fux(Driver):
     """fux, driven with fuxth: each call one program, `str` before each
     text. Every action answers its pane's version from just before it
-    acted (`%2:0.57.0.3.0:RUN`: its pane, then starts, screen, bells,
+    acted (`%2:0.57.0.3.0:RUN`: its pane, then respawns, screen, bells,
     commands done, ended, then the server's run); the one wait, `str V
     changed wait`, returns once that pane's version differs from V, its
     first word the version now. What "done" means is the driver's to

@@ -203,7 +203,7 @@ const COMPILES: usize = 2_000;
 const LINES: [&str; 4] = [
     "opts str app name str './app --fast' command run",
     "%2 str y text str Enter key send-keys",
-    "%2 str 0.57.0.3.0 changed wait",
+    "str %2:0.57.0.3.0:48211-1867a3f9c2b8e7d6 changed wait",
     "define twice dup add end list 1 2 3 end each twice end len drop %2 all-history capture",
 ];
 /// The bytes of a pane's history fux keeps by default.
