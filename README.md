@@ -37,10 +37,10 @@ A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's number and title (the program's OSC 0/2 title,
-else the pane's name), a notice, or copy mode's position. A screen smaller
-than its tab (a watcher's, or a client's beside a bigger one, for a tab sized
-on its own) shows panes cut off at their right and bottom, or none of a pane
-it has no room for: the bar names them before the title, `[cut %2]
+else the pane's name), a notice, or copy mode's position. A screen too
+small for its tab (a watcher's, one smaller than a size the tab was given, or
+one too small for all its panes) shows panes cut off at their right and
+bottom, or none of a pane it has no room for: the bar names them before the title, `[cut %2]
 [hidden %3]`.
 
 ## fuxth
@@ -104,9 +104,9 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 (`program`, then each `arg`; a shell's line is `str sh program str -c arg str
 LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
 out on `COLS ROWS size`, else on the caller's own screen (a client's keys),
-else on the caller's tab (`fux` run in a pane): never on the screen of
-another client. Run from outside fux, a size must be given: fux makes none
-up.
+else on the caller's tab (`fux` run in a pane): never on the screen of a
+client that does not show the caller's tab. Run from outside fux, a size
+must be given: fux makes none up.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run

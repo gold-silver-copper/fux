@@ -15,8 +15,8 @@ pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
 (as `split` does): the other two start a shell. Their tab is laid out on
 `COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
-smallest screen that sizes it, else its own size), never on another client's
-screen: run from outside fux, a size must be given, as fux makes none up:
+smallest screen that sizes it, else its own size), never on the screen of
+a client that does not show it: run from outside fux, a size must be given, as fux makes none up:
 without one the request fails with code `size`.
 
 **Every pane has a version, and a wait waits for it to change.** A version
