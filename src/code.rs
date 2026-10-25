@@ -29,7 +29,8 @@ pub const RAISED: [fuxth::Code; 3] = [
 /// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
 /// as for the language's; `Code::raised`, whether a word a program runs
 /// can fail with it, so a `try` may catch it: not for a row marked
-/// `[run_loop]`, which only the loop running the program gives; and
+/// `[run_loop]`, which only the loop running the program gives; a
+/// language's code if fuxth's words raise it, or fux's (`RAISED`); and
 /// `fuxth::Code::from`, each one as the language takes it (one of fux's as
 /// `Host`, by its name).
 macro_rules! codes {
@@ -69,7 +70,7 @@ macro_rules! codes {
             pub fn raised(self) -> bool {
                 match self {
                     $(Code::$variant => codes!(@raised $($by)?),)*
-                    Code::Lang(LangCode(code)) => code.raised(),
+                    Code::Lang(LangCode(code)) => code.raised() || RAISED.contains(&code),
                 }
             }
         }

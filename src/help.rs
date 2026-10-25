@@ -389,11 +389,8 @@ mod tests {
             ),
             // The language's codes fux's words raise, which a try catches.
             {
-                let raised = crate::code::RAISED.map(|c| format!("`{}`", c.name()));
-                match raised.split_last() {
-                    Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-                    None => String::new(),
-                }
+                let [a, b, c] = crate::code::RAISED.map(|c| format!("`{}`", c.name()));
+                format!("{a}, {b} and {c}")
             },
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
