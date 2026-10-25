@@ -233,8 +233,10 @@ stack!(
     },
     // A split needs a tree with a pane in it.
     |root: &mut Option<Tree>, target, new, axis, side| {
-        root.as_mut()
-            .is_some_and(|r| r.split(target, new, axis, side))
+        root.as_mut().is_some_and(|r| {
+            r.split((target, new), (axis, side), fux::layout::HALVED)
+                .is_ok()
+        })
     },
     |text| text.parse().ok()
 );
