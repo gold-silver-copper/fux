@@ -1426,6 +1426,8 @@ impl Session {
         cols: u16,
         workspace: Option<&WsRef>,
     ) -> Result<ClientId, Error> {
+        // A size no view has is refused before anything starts on it.
+        let (rows, cols) = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
         let ws = match workspace {
             Some(workspace) => self.resolve_ws(workspace)?,
             None => {
@@ -1444,7 +1446,6 @@ impl Session {
                     .ok_or_else(|| fail(Code::NoWorkspace, "the server has no workspace"))?
             }
         };
-        let (rows, cols) = view::size(rows, cols).map_err(|why| fail(Code::Size, why))?;
         let id = self.ids.client()?;
         let mut view = View::new(id, rows, cols);
         view.kind = kind;
@@ -4136,6 +4137,9 @@ mod tests {
             refused.starts_with("size: ") && refused.contains("no client"),
             "{refused}"
         );
+        assert!(s.parts.panes().is_empty());
+        // A client of a size no view has starts nothing.
+        assert!(s.attach(view::MOST.saturating_add(1), 40, None).is_err());
         assert!(s.parts.panes().is_empty());
         let size = |s: &Session, p| s.parts.panes().get(&PaneId::of(p)).map(|p| p.size().into());
         let c = s.attach(11, 40, None).map_err(|e| e.to_string())?;
