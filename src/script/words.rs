@@ -127,7 +127,7 @@ pub const WORDS: &[Word] = &[
     word("Input", "send-keys", "target -- answer", "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all"),
     word("Input", "mouse", "x action row col -- x", "click right middle press release wheel-up wheel-down or move, at a cell from 0"),
     word("Input", "send-mouse", "subject -- answer", "send the mouse event on it"),
-    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM, to the pane's foreground"),
+    word("Input", "signal", "subject name -- answer", "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground"),
     // Reading
     word("Reading", "capture", "subject -- capture", "the screen, as the words on the pane say"),
     word("Reading", "history", "x lines -- x", "capture: lines of history first"),

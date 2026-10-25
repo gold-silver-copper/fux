@@ -57,7 +57,7 @@ fux str agent workspace kill                   # at the end: everything run star
 
 A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
-SIGTERM` (`killed by signal 64` for one with no name) or `ended, its
+SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
 status lost` if its program ended since, `respawned` once started again (its
 counts then start afresh). Its first word is the version to wait from next.
 A wait from a version that already holds the end waits for something else,

@@ -87,8 +87,10 @@ signals! {
     /// The signals fux and its tests and walk send (fux itself: `Hup`, `Term`,
     /// `Kill`, and any of these for `fux signal`), and `Tstp`, which a
     /// client sends itself to suspend: a shell reports a job `Tstp` stopped
-    /// as "Stopped", and one `Stop` stopped as "Stopped (signal)". The last six are those a
-    /// program dies of on its own, which fux names when it tells a death.
+    /// as "Stopped", and one `Stop` stopped as "Stopped (signal)". From
+    /// `Ill` on, the rest of POSIX's, each numbered as the system numbers
+    /// it: those a program may die of on its own, which fux names when it
+    /// tells a death.
     Hup "HUP" SIGHUP,
     Int "INT" SIGINT,
     Term "TERM" SIGTERM,
@@ -106,6 +108,17 @@ signals! {
     Segv "SEGV" SIGSEGV,
     Pipe "PIPE" SIGPIPE,
     Alrm "ALRM" SIGALRM,
+    Bus "BUS" SIGBUS,
+    Trap "TRAP" SIGTRAP,
+    Sys "SYS" SIGSYS,
+    Xcpu "XCPU" SIGXCPU,
+    Xfsz "XFSZ" SIGXFSZ,
+    Vtalrm "VTALRM" SIGVTALRM,
+    Prof "PROF" SIGPROF,
+    Ttin "TTIN" SIGTTIN,
+    Ttou "TTOU" SIGTTOU,
+    Urg "URG" SIGURG,
+    Chld "CHLD" SIGCHLD,
 }
 
 /// Sends `signal` to the process `pid`.

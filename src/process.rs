@@ -180,7 +180,7 @@ pub fn reaped(pid: Pid) -> bool {
 }
 
 /// How an end is told: `exited 3`, `killed by SIGSEGV` (`killed by
-/// signal 64` for one with no name), or `ended, its status lost`.
+/// signal 64` for one POSIX does not name), or `ended, its status lost`.
 pub fn told(ended: Ended) -> String {
     match ended {
         Ended::Lost => "ended, its status lost".to_owned(),
