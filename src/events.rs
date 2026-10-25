@@ -459,6 +459,9 @@ mod tests {
             ),
             Event::Tab((ws, tab), Change::Created(String::new())),
             Event::Tab((ws, tab), Change::Renamed(String::new())),
+            Event::Tab((ws, tab), Change::Closed),
+            Event::Workspace(ws, Change::Created(String::new())),
+            Event::Workspace(ws, Change::Renamed(String::new())),
             Event::Workspace(ws, Change::Closed),
         ];
         let mut lines = Vec::new();

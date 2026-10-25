@@ -1,8 +1,8 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
 use crate::bytes::ByteQueue;
-use crate::events::{PaneEvent, Teller};
-use crate::id::PaneId;
+use crate::events::{Journal, PaneEvent, Teller};
+use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
@@ -639,6 +639,62 @@ pub struct Pane {
     untold: Losses,
 }
 
+/// A pane to change, with a journal at its place: what its methods do
+/// that events tell is journaled as they do it, at its own id, and the
+/// pane's methods that tell are reached through it alone. A pane of the
+/// session's is had only from the session's parts, which alone hold the
+/// session's journal (`Parts::pane_mut`); one made on another journal
+/// (a bench's) tells only that one.
+pub struct PaneMut<'a> {
+    pane: &'a mut Pane,
+    tell: Teller<'a>,
+}
+
+impl<'a> PaneMut<'a> {
+    /// `pane`, in tab `at`, telling `journal`.
+    pub fn new(pane: &'a mut Pane, at: (WsId, TabId), journal: &'a mut Journal) -> Self {
+        let tell = journal.teller((at, pane.id));
+        Self { pane, tell }
+    }
+    pub fn output(&mut self, bytes: &[u8]) {
+        self.pane.output(bytes, &mut self.tell);
+    }
+    pub fn read_unread(&mut self) {
+        self.pane.read_unread(&mut self.tell);
+    }
+    pub fn release_frame(&mut self) {
+        self.pane.release_frame(&mut self.tell);
+    }
+    pub fn resize(&mut self, size: Size) {
+        self.pane.resize(size, &mut self.tell);
+    }
+    pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
+        self.pane.respawned(fresh, process, &mut self.tell)
+    }
+    pub fn rename(&mut self, name: String) {
+        self.pane.rename(name, &mut self.tell);
+    }
+    pub fn exit(&mut self, ended: Ended) -> (End, Process) {
+        self.pane.exit(ended, &mut self.tell)
+    }
+    pub fn ended(&mut self, ended: Ended) -> End {
+        self.pane.ended(ended, &mut self.tell)
+    }
+}
+
+impl std::ops::Deref for PaneMut<'_> {
+    type Target = Pane;
+    fn deref(&self) -> &Pane {
+        self.pane
+    }
+}
+
+impl std::ops::DerefMut for PaneMut<'_> {
+    fn deref_mut(&mut self) -> &mut Pane {
+        self.pane
+    }
+}
+
 /// What a program left as it ended, or was respawned over: said with its
 /// end (`exited`, `respawned`), in its pane's JSON till it is respawned,
 /// and in the notice of its end.
@@ -756,7 +812,7 @@ impl Pane {
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
-    pub fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
+    fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
         self.output_at(bytes, Instant::now(), tell)
     }
 
@@ -765,7 +821,7 @@ impl Pane {
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
-    pub fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
+    fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
@@ -804,7 +860,7 @@ impl Pane {
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
-    pub fn read_unread(&mut self, tell: &mut Teller<'_>) {
+    fn read_unread(&mut self, tell: &mut Teller<'_>) {
         let unread = std::mem::take(&mut self.unread.0);
         // Only the work of a sequence read already: a call of no bytes does
         // it, and stops again if that spends its budget.
@@ -879,7 +935,7 @@ impl Pane {
     }
 
     /// Reads the held frame now, ended or not.
-    pub fn release_frame(&mut self, tell: &mut Teller<'_>) {
+    fn release_frame(&mut self, tell: &mut Teller<'_>) {
         if let Some((held, ..)) = self.frame.take()
             && let Some((taken, _)) = self.parse(&held, false, tell)
         {
@@ -978,7 +1034,7 @@ impl Pane {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
+    fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
         if self.size() == size {
             return;
         }
@@ -1162,7 +1218,7 @@ impl Pane {
     /// size, before the program started) runs it, on a screen as new, its
     /// history kept; the process that was there, to end, and what it left
     /// as it was respawned over: none, said, once it ended.
-    pub fn respawned(
+    fn respawned(
         &mut self,
         fresh: Pane,
         process: Process,
@@ -1231,7 +1287,7 @@ impl Pane {
     }
 
     /// Names it `name`: said, if it is another.
-    pub fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
+    fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
         if name != self.name {
             tell.tell(PaneEvent::Renamed(name.clone()));
             self.name = name;
@@ -1260,7 +1316,7 @@ impl Pane {
 
     /// Its program ended so: said, no exit waiting to be told after; its
     /// end, and the process that was there, to be reaped.
-    pub fn exit(&mut self, ended: Ended, tell: &mut Teller<'_>) -> (End, Process) {
+    fn exit(&mut self, ended: Ended, tell: &mut Teller<'_>) -> (End, Process) {
         let end = self.ended(ended, tell);
         self.exiting = None;
         (
@@ -1271,7 +1327,7 @@ impl Pane {
 
     /// Its program ended so, the input queued for it let go: its end,
     /// said, as a shell's is before its pane closes.
-    pub fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
+    fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
         self.left.input = self.input.discard();
         let end = End {
             ended,
@@ -1497,8 +1553,7 @@ pub(crate) mod tests {
     /// its own, at a place of its own.
     pub(crate) struct Lone {
         pub pane: Pane,
-        pub journal: crate::events::Journal,
-        at: crate::events::PaneAt,
+        pub journal: Journal,
     }
 
     impl std::ops::Deref for Lone {
@@ -1516,24 +1571,28 @@ pub(crate) mod tests {
 
     impl Lone {
         pub(crate) fn new(pane: Pane) -> Self {
-            let at = ((crate::id::WsId::of(1), crate::id::TabId::of(1)), pane.id());
-            let journal = crate::events::Journal::default();
-            Self { pane, journal, at }
+            let journal = Journal::default();
+            Self { pane, journal }
+        }
+        pub(crate) fn placed(&mut self) -> PaneMut<'_> {
+            let at = (WsId::of(1), TabId::of(1));
+            PaneMut::new(&mut self.pane, at, &mut self.journal)
         }
         pub(crate) fn output(&mut self, bytes: &[u8]) {
-            (self.pane).output(bytes, &mut self.journal.teller(self.at));
+            self.placed().output(bytes);
         }
         pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
-            (self.pane).output_at(bytes, now, &mut self.journal.teller(self.at));
+            let mut placed = self.placed();
+            placed.pane.output_at(bytes, now, &mut placed.tell);
         }
         pub(crate) fn read_unread(&mut self) {
-            (self.pane).read_unread(&mut self.journal.teller(self.at));
+            self.placed().read_unread();
         }
         pub(crate) fn release_frame(&mut self) {
-            (self.pane).release_frame(&mut self.journal.teller(self.at));
+            self.placed().release_frame();
         }
         pub(crate) fn resize(&mut self, size: Size) {
-            (self.pane).resize(size, &mut self.journal.teller(self.at));
+            self.placed().resize(size);
         }
     }
 

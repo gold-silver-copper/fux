@@ -24,10 +24,10 @@
 //! what it is shown on.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
+use crate::pane::PaneMut;
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
-use crate::workspace::PaneMut;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::{Graphics, ModeStatus};
@@ -731,7 +731,7 @@ mod tests {
     }
 
     /// A picture drawn while its pane's host draws no sixel is not kept,
-    /// and counted (`pictures_refused`).
+    /// and counted (`Losses::pictures`).
     #[test]
     fn a_picture_its_host_does_not_draw_is_counted() -> Outcome {
         let (mut s, c) = session()?;

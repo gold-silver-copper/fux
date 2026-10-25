@@ -7,17 +7,16 @@ use crate::command::{
 };
 use crate::config::Config;
 use crate::copy::MAX_CELLS;
-use crate::events::Teller;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
-use crate::pane::{self, Output, Pane, Process, Runs, basename};
+use crate::pane::{self, Output, Pane, PaneMut, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
-use crate::workspace::{Destination, Fit, PaneMut, Parts, Seat, Split, Tab, Workspace};
+use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
 use fux_vt::Size;
 use std::collections::{BTreeMap, VecDeque};
 use std::num::NonZeroU32;
@@ -752,8 +751,7 @@ impl Session {
             self.end(process, true);
             return Err(Error::NoPane(id));
         };
-        let (pane, tell) = pane.telling();
-        let (old, left) = pane.respawned(fresh, process, tell);
+        let (old, left) = pane.respawned(fresh, process);
         self.end(old, true);
         let left = left.told("the program it ran");
         if !left.is_empty() {
@@ -774,9 +772,9 @@ impl Session {
         // Each turn reads some of it, and nothing adds more.
         let waits = |p: &Pane| p.has_unread() || p.frame_deadline().is_some();
         while self.pane(id).is_ok_and(waits) {
-            self.read_with(id, |p, tell| {
-                p.release_frame(tell);
-                p.read_unread(tell);
+            self.read_with(id, |p| {
+                p.release_frame();
+                p.read_unread();
             });
         }
         if let Some(ended) = self.pane(id).ok().and_then(|p| p.exiting) {
@@ -1596,7 +1594,7 @@ impl Session {
             if let Ok(size) = Size::new(rows, cols)
                 && self.pane(id).is_ok_and(|p| p.size() != size)
             {
-                self.read_with(id, |pane, tell| pane.resize(size, tell));
+                self.read_with(id, |pane| pane.resize(size));
                 resized = true;
             }
         }
@@ -1723,7 +1721,7 @@ impl Session {
         if first {
             self.read_left(id);
         }
-        self.read_with(id, Pane::release_frame);
+        self.read_with(id, |p| p.release_frame());
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
@@ -1733,8 +1731,7 @@ impl Session {
         }
         match pane.runs {
             Runs::Shell => {
-                let (pane, tell) = pane.telling();
-                let left = pane.ended(ended, tell).left.told("it");
+                let left = pane.ended(ended).left.told("it");
                 let why = process::shell_status(ended).map_or_else(
                     || process::told(ended),
                     |s| format!("exited with status {s}"),
@@ -1743,8 +1740,7 @@ impl Session {
             }
             Runs::Program(_) => {
                 // Its leader, exited and unreaped, is reaped with the dying.
-                let (pane, tell) = pane.telling();
-                let (end, gone) = pane.exit(ended, tell);
+                let (end, gone) = pane.exit(ended);
                 if let Process::Reading(child) | Process::HungUp(child) = gone {
                     let deadline = Instant::now();
                     self.dying.push(Dying { child, deadline });
@@ -1776,7 +1772,7 @@ impl Session {
 
     /// Output from a pane's program.
     pub fn output(&mut self, id: PaneId, bytes: &[u8]) {
-        self.read_with(id, |pane, tell| pane.output(bytes, tell));
+        self.read_with(id, |pane| pane.output(bytes));
     }
 
     /// Everything the session waits for, each with when it is due: the
@@ -1795,9 +1791,9 @@ impl Session {
     /// What `timer` waited for is done, now that it is due.
     pub fn fire(&mut self, timer: Timer) {
         match timer {
-            Timer::Frame(id) => self.read_with(id, Pane::release_frame),
+            Timer::Frame(id) => self.read_with(id, |p| p.release_frame()),
             Timer::Unread(id) => {
-                self.read_with(id, Pane::read_unread);
+                self.read_with(id, |p| p.read_unread());
                 // A program that exited with output unread exits now, if
                 // the last of it is read.
                 let pane = self.parts.panes().get(&id).filter(|p| !p.has_unread());
@@ -1812,15 +1808,14 @@ impl Session {
     /// does: its tab's host colours and palette given it first; after, its
     /// bell rung, its copies made in order, and the views showing it
     /// repainted and told what it refused (`tell_refused`).
-    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane, &mut Teller<'_>)) {
+    fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut PaneMut<'_>)) {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let viewers = self.viewers(tab);
         let clipboard = self.config.clipboard;
         let Some((mut pane, retold)) = self.hosted(id) else {
             return;
         };
-        let (read_into, tell) = pane.telling();
-        read(read_into, tell);
+        read(&mut pane);
         // Sized once for the new cell and what was read, a resize sized
         // so already, which the system does not signal again.
         if retold {
@@ -2603,11 +2598,7 @@ impl Session {
     fn rename(&mut self, target: AnyRef, name: String) -> Result<(), Error> {
         check_name(&name)?;
         match target {
-            AnyRef::Pane(p) => {
-                let mut pane = self.pane_mut(p)?;
-                let (pane, tell) = pane.telling();
-                pane.rename(name, tell);
-            }
+            AnyRef::Pane(p) => self.pane_mut(p)?.rename(name),
             AnyRef::Tab(t) => {
                 self.check_tab_name(&name, Some(t))?;
                 self.give_tab_name(t, name)?;
@@ -3913,9 +3904,9 @@ mod tests {
         view.terminal.cell = fux_vt::CellSize::new(10, 20);
         let smaller = sized(10, 40)?;
         let mut between = None;
-        s.read_with(id, |pane, tell| {
+        s.read_with(id, |pane| {
             between = pixels(pane);
-            pane.resize(smaller, tell);
+            pane.resize(smaller);
         });
         assert_eq!(between, None, "not sized before the resize");
         let pane = s.pane(id).map_err(|e| e.to_string())?;
@@ -4054,9 +4045,7 @@ mod tests {
         let queued = |s: &Session| s.pane(id).map(|p| p.input.len()).map_err(|e| e.to_string());
         s.output(id, b"\x1b[?2048h\x1b[?2031h");
         s.exited(id, Ended::Exited(0));
-        let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let (pane, tell) = pane.telling();
-        pane.resize(sized(10, 40)?, tell);
+        (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?);
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(queued(&s)?, 0);
         run(&mut s, "%2 respawn")?;

@@ -2425,8 +2425,7 @@ mod tests {
         let fresh = crate::pane::Pane::new(id, String::new(), runs, size, 1 << 10)
             .map_err(|e| e.to_string())?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let (pane, tell) = pane.telling();
-        pane.respawned(fresh, crate::pane::Process::Absent, tell);
+        pane.respawned(fresh, crate::pane::Process::Absent);
         s.output(id, b"B");
         assert!(compose_into(&s, c, &mut grid, &mut placement));
         assert_eq!(grid.row_text(0), "B");
@@ -2927,8 +2926,7 @@ mod tests {
         for (id, answer) in [(1, "\x1b]4;1;rgb:0000/ffff/0000\x07"), (2, "")] {
             let mut pane = s.parts.pane_mut(PaneId::of(id)).ok_or("a pane")?;
             pane.input.drain_all();
-            let (pane, tell) = pane.telling();
-            pane.output(b"\x1b]4;1;?\x07", tell);
+            pane.output(b"\x1b]4;1;?\x07");
             let asked = pane.input.drain_all();
             assert_eq!(String::from_utf8_lossy(&asked), answer, "pane {id}");
         }

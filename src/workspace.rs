@@ -10,10 +10,10 @@
 //! as they make it, and by a pane's own, which a [`PaneMut`] gives the
 //! journal at the pane's place.
 use crate::command::Sibling;
-use crate::events::{Change, Event, Journal, PaneEvent, Teller};
+use crate::events::{Change, Event, Journal, PaneEvent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
-use crate::pane::Pane;
+use crate::pane::{Pane, PaneMut};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -288,10 +288,6 @@ pub struct Parts {
     journal: Journal,
 }
 
-/// A pane of the session's, to change, with the journal at its place:
-/// what its methods do that events tell is journaled as they do it.
-pub struct PaneMut<'a>(&'a mut Pane, Teller<'a>);
-
 /// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
 /// the one it takes, holding the new pane too.
 pub struct Split {
@@ -317,27 +313,6 @@ pub enum Destination {
     NewTab(WsId, TabId, Fit),
     /// A new workspace, named, and its one tab, named and laid out so.
     NewWorkspace((WsId, String), (TabId, String, Fit)),
-}
-
-impl std::ops::Deref for PaneMut<'_> {
-    type Target = Pane;
-    fn deref(&self) -> &Pane {
-        self.0
-    }
-}
-
-impl std::ops::DerefMut for PaneMut<'_> {
-    fn deref_mut(&mut self) -> &mut Pane {
-        self.0
-    }
-}
-
-impl<'a> PaneMut<'a> {
-    /// The pane, and the journal at its place, which its methods that
-    /// change what events tell take.
-    pub fn telling(&mut self) -> (&mut Pane, &mut Teller<'a>) {
-        (self.0, &mut self.1)
-    }
 }
 
 /// Tab `id` of `workspaces`, and its workspace's id.
@@ -471,8 +446,12 @@ impl Parts {
 
     /// Pane `id`, to change.
     pub fn pane_mut(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
-        let at = (self.locate(id)?, id);
-        Some(PaneMut(self.panes.get_mut(&id)?, self.journal.teller(at)))
+        let at = self.locate(id)?;
+        Some(PaneMut::new(
+            self.panes.get_mut(&id)?,
+            at,
+            &mut self.journal,
+        ))
     }
 
     /// Changes each pane with `change`, tab by tab: each at the place it
@@ -487,8 +466,7 @@ impl Parts {
             for tab in &ws.tabs {
                 for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
-                        let at = ((ws.id, tab.id), id);
-                        change(&mut PaneMut(pane, journal.teller(at)));
+                        change(&mut PaneMut::new(pane, (ws.id, tab.id), journal));
                     }
                 }
             }

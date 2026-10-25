@@ -771,6 +771,13 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             painted: 0,
         });
     }
+    // What it tells goes in a journal of its own, as in a session.
+    let mut journal = fux::events::Journal::default();
+    let at = (
+        "+1".parse().map_err(|_| "+1")?,
+        "@1".parse().map_err(|_| "@1")?,
+    );
+    let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
     for load in loads {
         pane.resize(fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?);
         for piece in given(&load.bytes) {
