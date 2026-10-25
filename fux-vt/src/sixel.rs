@@ -77,8 +77,7 @@ impl Picture {
     }
     /// The bytes its pixels take, and those of what covers them.
     pub(crate) fn bytes(&self) -> usize {
-        let covered = self.covered.as_ref().map_or(0, Covered::bytes);
-        self.rgba.capacity().saturating_add(covered)
+        self.rgba.capacity().saturating_add(self.covered_bytes())
     }
     /// The RGBA of the pixel at `x`, `y`, if it is in the picture.
     pub fn pixel(&self, x: u32, y: u32) -> Option<[u8; 4]> {
@@ -116,12 +115,15 @@ impl Picture {
             return set_bits(bits, 0, right);
         }
         let (_, row) = grid_of(self.aspect, 0, y);
-        work!(pixels, self.across);
+        if row >= self.down {
+            return;
+        }
+        // A grid position read each, which a few bytes may ask for again
+        // on each placement (B46).
+        spend!(pixels, self.across);
         for x in (0..self.across).take_while(|x| shown_at(self.aspect, *x, 0).0 < right) {
-            let alpha = (row < self.down)
-                .then(|| offset(x, row, self.across))
-                .flatten()
-                .and_then(|at| self.rgba.get(at.checked_add(3)?));
+            let alpha =
+                offset(x, row, self.across).and_then(|at| self.rgba.get(at.checked_add(3)?));
             if alpha.is_some_and(|a| *a != 0) {
                 let (start, _) = shown_at(self.aspect, x, 0);
                 let (end, _) = shown_at(self.aspect, x.saturating_add(1), 0);
@@ -138,8 +140,13 @@ impl Picture {
 
     /// The bytes it takes for newer pictures to cover `rows` of its rows,
     /// of it the screen showing `shown` (`coverable`): a list of the rows
-    /// shown, if none is covered yet, and the words of each covered.
-    pub(crate) fn cover_bytes(&self, (right, top, bottom): (u32, u32, u32), rows: usize) -> usize {
+    /// shown, if none is covered yet, which `coverable` makes, and the
+    /// words of each row covered, made as they are covered.
+    pub(crate) fn cover_bytes(
+        &self,
+        (right, top, bottom): (u32, u32, u32),
+        rows: usize,
+    ) -> (usize, usize) {
         let list = match self.covered {
             Some(_) => 0,
             None => {
@@ -147,8 +154,15 @@ impl Picture {
             }
         };
         let stride = usize::try_from(right.min(self.width).div_ceil(64)).unwrap_or(usize::MAX);
-        (list.saturating_mul(Covered::ROW))
-            .saturating_add(rows.saturating_mul(stride).saturating_mul(8))
+        (
+            list.saturating_mul(Covered::ROW),
+            rows.saturating_mul(stride).saturating_mul(8),
+        )
+    }
+
+    /// The bytes what newer pictures cover of it takes.
+    pub(crate) fn covered_bytes(&self) -> usize {
+        self.covered.as_ref().map_or(0, Covered::bytes)
     }
 
     /// Makes it ready for newer pictures to cover, if none covers it yet:

@@ -191,6 +191,14 @@ impl Screen {
         }
         let cell = (cell.width(), cell.height());
         self.track_pictures();
+        // Those of this screen no longer shown go before its cells are
+        // filled, which would read as theirs again.
+        let alternate = self.alternate_active;
+        let hidden: Vec<usize> = (self.pictures.iter().enumerate())
+            .filter(|(_, p)| p.alternate == alternate && self.shown(p).is_none())
+            .map(|(at, _)| at)
+            .collect();
+        self.let_go(&hidden);
         let cells = |pixels: u32, per: u16| {
             u16::try_from(pixels.div_ceil(u32::from(per)))
                 .unwrap_or(u16::MAX)
@@ -322,7 +330,6 @@ impl Screen {
                 top
             }
         };
-        let alternate = self.alternate_active;
         let Some(top) = top else {
             return false;
         };
@@ -378,10 +385,11 @@ impl Screen {
     /// STD 070-9, 7.2), and as xterm 411 draws pictures, in order, a clear
     /// pixel showing those below (`graphics.c`). One covered whole goes;
     /// so does one with no room to note what is covered, a bit for each
-    /// pixel of a row of it covered and 16 bytes a row it shows, inside the budget (B01), or
-    /// past the words a placement may cover (`COVER_WORDS`, B46), the
-    /// newest covered first. Pictures laid out in other cell sizes are never
-    /// shown together, and cover none of each other.
+    /// pixel of a row of it covered and 16 bytes a row it shows, inside
+    /// the budget (B01), or past the words a placement may cover
+    /// (`COVER_WORDS`, B46), the newest covered first. Pictures laid out in
+    /// other cell sizes are never shown together, and cover none of each
+    /// other.
     fn cover(&mut self) {
         // Itself as shown: none if it is not, which covers nothing.
         let over = (self.pictures.back()).and_then(|p| self.shown(p));
@@ -417,56 +425,70 @@ impl Screen {
             return self.let_go(&gone);
         };
         let bottom = bottom.min(picture.height());
-        let (mut coverable, mut words) = (Vec::new(), 0_usize);
+        // The words promised to those taken, not yet made.
+        let (mut coverable, mut words, mut promised) = (Vec::new(), 0_usize, 0_usize);
         for (at, at_origin, shown) in under {
             let Some(p) = self.pictures.get(at) else {
                 continue;
             };
             // The rows and columns of it it lies on; the room to note them,
-            // and the words read and written, two a row for each it lies
-            // on, as the words a row cuts across may be one more.
+            // a copy of what is noted if the host holds it too, and the
+            // words read and written, two a row for each it lies on, as the
+            // words a row cuts across may be one more.
             let (x, y) = (
                 at_origin.0.saturating_sub(origin.0),
                 at_origin.1.saturating_sub(origin.1),
             );
             let rows = span(y, shown.1, shown.2, top, bottom);
             let cols = span(x, 0, shown.0, 0, right);
-            let bytes = p.picture.cover_bytes(shown, rows);
-            let cost = (bytes / 8)
+            let (list, row_words) = p.picture.cover_bytes(shown, rows);
+            let copied = match Arc::strong_count(&p.picture) {
+                1 => 0,
+                _ => p.picture.covered_bytes(),
+            };
+            let cost = (list.saturating_add(row_words).saturating_add(copied) / 8)
                 .saturating_add(rows.saturating_mul(cols.div_ceil(64).saturating_add(1)));
             let ready = words.saturating_add(cost) <= COVER_WORDS
-                && !self.over_budget(bytes)
+                && !self.over_budget(promised.saturating_add(list).saturating_add(row_words))
                 && (self.pictures.get_mut(at))
                     .is_some_and(|p| Arc::make_mut(&mut p.picture).coverable(shown));
             if ready {
                 words = words.saturating_add(cost);
-                coverable.push((at, at_origin));
+                promised = promised.saturating_add(row_words);
+                // Its rows among the newest's.
+                let first = i64::from(shown.1).saturating_add(y).max(i64::from(top));
+                let first = u32::try_from(first).unwrap_or(u32::MAX);
+                let end = first.saturating_add(u32::try_from(rows).unwrap_or(u32::MAX));
+                coverable.push((at, at_origin, first..end));
             } else {
                 gone.push(at);
             }
         }
         spend!(pixels, words);
         // A row of its pixels read once for each row of the grid it was
-        // drawn in, and laid on each picture under it.
+        // drawn in, on the rows some picture under it has, and laid on
+        // each picture with that row.
+        let rows = (coverable.iter().map(|c| c.2.start).min().unwrap_or(0))
+            ..(coverable.iter().map(|c| c.2.end).max().unwrap_or(0));
         let mut bits = Vec::new();
         let mut read = None;
-        for y in top..bottom {
+        for y in rows {
             let row = Some(picture.grid_row(y));
             if read != row {
                 picture.opaque_row(y, right, &mut bits);
                 read = row;
             }
-            for &(at, (x, y_at)) in &coverable {
-                let dy = origin.1.saturating_add(i64::from(y)).saturating_sub(y_at);
-                if let Some(p) = self.pictures.get_mut(at) {
-                    Arc::make_mut(&mut p.picture).cover_row(dy, origin.0.saturating_sub(x), &bits);
+            for (at, (x, y_at), _) in coverable.iter().filter(|c| c.2.contains(&y)) {
+                let dy = origin.1.saturating_add(i64::from(y)).saturating_sub(*y_at);
+                if let Some(p) = self.pictures.get_mut(*at) {
+                    Arc::make_mut(&mut p.picture).cover_row(dy, origin.0.saturating_sub(*x), &bits);
                 }
             }
         }
         gone.extend(
             coverable
                 .iter()
-                .map(|(at, _)| *at)
+                .map(|(at, _, _)| *at)
                 .filter(|at| (self.pictures.get(*at)).is_some_and(|p| p.picture.covered_whole())),
         );
         self.let_go(&gone);

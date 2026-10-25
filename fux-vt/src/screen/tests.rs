@@ -507,8 +507,9 @@ fn pictures_at_the_budget_are_kept_and_a_byte_past_lets_one_go() -> Result<(), E
 /// ones lie on, and no more (DEC STD 070-9, 7.2; xterm 411's
 /// `graphics.c`): one beside it, touching, keeps them all; one it overlaps
 /// keeps those it doesn't cover, whatever later hides the newer one; one
-/// under its clear pixels (P2 1) keeps those; one in another cell size
-/// keeps them all; and one it covers whole goes.
+/// text took stays gone under it; one under its clear pixels (P2 1) keeps
+/// those; one in another cell size keeps them all; and one it covers whole
+/// goes.
 #[test]
 fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
     // 20 by 40 pixels, its background all of them (P2 0): 2 cells by 2 at
@@ -555,6 +556,10 @@ fn a_picture_covers_only_the_pixels_it_lies_on() -> Result<(), Error> {
         (vec![1], Some(400)),
         "text over the newer"
     );
+    // Text over it, then a clear picture over it: its cells hold the
+    // placeholder again, but it stays gone.
+    let p = place(b"\x1b[5;5HX\x1b[5;5H", b"\x1bP0;1q\"1;1;20;40\x1b\\")?;
+    assert_eq!(shown(&p), [2], "a clear picture over one text took");
     // Clear but for its bottom right pixel (P2 1): that pixel only.
     let p = place(b"\x1b[5;5H", &picture(20, 40))?;
     assert_eq!(left(&p), Some(799), "clear pixels cover nothing");
