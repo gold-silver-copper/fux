@@ -1903,16 +1903,11 @@ impl Session {
         let viewers = self.viewers(tab);
         // A program's copy, as a copy in copy mode, to the clients showing
         // it; none with `set clipboard off`. One that is no copy is told.
-        let uncopied = match copied.filter(|_| self.config.clipboard) {
-            // It fits the clipboard: fux-vt keeps less of a string.
-            Some(Ok(text)) => {
-                const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
-                self.copied(text, &viewers);
-                None
-            }
-            Some(Err(why)) => Some(why),
-            None => None,
-        };
+        // A copy fits the clipboard: fux-vt keeps less of a string.
+        const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
+        let uncopied = copied
+            .filter(|_| self.config.clipboard)
+            .and_then(|copy| copy.map(|text| self.copied(text, &viewers)).err());
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
             view.dirty = true;
             if let Some(why) = uncopied {
