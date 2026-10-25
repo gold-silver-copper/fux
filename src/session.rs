@@ -2562,9 +2562,8 @@ impl Session {
         // With no size, back to fitting clients, at the size it has until
         // one shows it.
         for tab in tabs {
-            if let Some(tab) = self.parts.tab_mut(tab) {
-                tab.set_fit(size.map_or(Fit::Clients(tab.fit().size()), Fit::Fixed));
-            }
+            let fit = |fit: Fit| size.map_or(Fit::Clients(fit.size()), Fit::Fixed);
+            self.parts.set_fit(tab, fit);
         }
         Ok(())
     }
@@ -4990,6 +4989,33 @@ mod tests {
         let said =
             "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 status=0\nclosed %2 @1 +1\n";
         assert!(lines.starts_with(said), "{lines}");
+        Ok(())
+    }
+
+    /// Each change a saved session holds is counted, so it is saved at
+    /// once: an order, a swap, a border, a size, a move; output is not.
+    #[test]
+    fn what_a_saved_session_holds_is_counted_as_it_changes() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let made = "opts 100 10 size str +1 workspace in new-tab drop \
+                    opts 100 10 size new-workspace drop %1 split drop";
+        run(&mut s, made)?;
+        let shapes = |s: &Session| s.parts.journal().shapes();
+        for change in [
+            "str @2 tab str previous reorder",
+            "str +1 workspace str next reorder",
+            "%1 %4 swap-panes",
+            "%4 str right 2 move-border",
+            "str @2 tab 90 10 resize",
+            "%4 str @2 tab move-to",
+        ] {
+            let was = shapes(&s);
+            run(&mut s, change)?;
+            assert!(shapes(&s) > was, "{change}");
+        }
+        let was = shapes(&s);
+        s.output(PaneId::of(1), b"\x07x");
+        assert_eq!(shapes(&s), was);
         Ok(())
     }
 

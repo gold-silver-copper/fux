@@ -4,7 +4,7 @@
 use crate::after;
 use crate::bytes::ByteQueue;
 use crate::code::Code;
-use crate::events::{BACKLOG, Ending, Seq, Subscription};
+use crate::events::{BACKLOG, Ending, Subscription};
 use crate::id::{ClientId, PaneId};
 use crate::layout::Placement;
 use crate::pane::{Pane, Process};
@@ -593,8 +593,9 @@ struct Saved {
     at: Instant,
     /// Something changed since it was last saved.
     pending: bool,
-    /// Where in the session's journal it was last saved.
-    saved_at: Seq,
+    /// How many changes to what it holds the journal had counted as it
+    /// was last saved (`Journal::shapes`).
+    saved_at: u64,
     /// The restore under way, if one is: the other end of a socket its
     /// thread closes as it ends (`Server::restored`). Meanwhile what there
     /// is is not saved over the file.
@@ -628,7 +629,7 @@ impl Saved {
             written: String::new(),
             at: Instant::now(),
             pending: false,
-            saved_at: Seq::default(),
+            saved_at: 0,
             restore: None,
         })
     }
@@ -678,18 +679,21 @@ impl Saved {
     }
 
     /// Saves the layout if it may have changed and `SAVE_EVERY` has passed
-    /// since it was last saved; else it is saved then. A workspace, tab or
-    /// pane made or closed is saved at once: a crash must not lose a pane.
+    /// since it was last saved; else it is saved then. A change to what it
+    /// holds (a workspace, tab or pane made, closed, moved, renamed or
+    /// respawned, an order, a border, a size given) is saved at once: a
+    /// crash must not lose one. What output changes, and screens' sizes
+    /// as a terminal is resized, wait.
     fn save_by(&mut self, session: &mut Session, now: Instant) {
         self.pending |= mem::take(&mut session.edited);
         if !self.pending {
             return;
         }
         let journal = session.parts.journal();
-        if now < self.at && !journal.made_or_closed(self.saved_at) {
+        if now < self.at && journal.shapes() == self.saved_at {
             return;
         }
-        self.saved_at = journal.end();
+        self.saved_at = journal.shapes();
         self.save(session);
         self.at = after(now, SAVE_EVERY);
     }
