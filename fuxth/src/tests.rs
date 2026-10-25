@@ -5,7 +5,8 @@ use crate::*;
 /// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
 /// for the host to answer (with a failure, `negative`, for n below 0);
-/// `nope`, which fails; and `liar`, which says it gives a value and gives
+/// `nope`, which fails with `unused`, a code of the language's it declares
+/// its words raise; and `liar`, which says it gives a value and gives
 /// none.
 #[derive(Clone, Debug, PartialEq)]
 struct Ticket(i64);
@@ -34,6 +35,7 @@ impl Host for Toy {
         assert_eq!(told, args.len(), "an exact count of the values taken");
         match (word, args.as_slice()) {
             (3, []) => Ok(Done::Now),
+            (2, []) => Err(Failure::new(Code::Unused, "nothing uses it")),
             (0, []) => {
                 out.push(Value::App(Ticket(7)));
                 Ok(Done::Now)
@@ -71,9 +73,10 @@ fn vocabulary() -> Vocabulary {
         .and_then(|_| words.add("ask", "any -- any"))
         .and_then(|_| words.add("nope", "--"))
         .and_then(|_| words.add("liar", "-- any"))
-        .and_then(|_| words.code("not_a_number"))
-        .and_then(|()| words.code("refused"))
-        .and_then(|()| words.code("negative"));
+        .and_then(|_| words.raises(Code::Host("not_a_number")))
+        .and_then(|()| words.raises(Code::Host("refused")))
+        .and_then(|()| words.raises(Code::Host("negative")))
+        .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
     words
 }
@@ -1391,6 +1394,11 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
         "a host word's failure at once"
     );
     assert_eq!(
+        run("str unused try nope catch nip end")?,
+        strs(&["unused"]),
+        "a code of the language's that the host's words raise"
+    );
+    assert_eq!(
         run("str div_by_zero try 1 0 div catch nip end")?,
         strs(&["div_by_zero"])
     );
@@ -1488,8 +1496,8 @@ fn a_try_is_checked_before_it_runs() {
             "bad_codes: t:1: try: contract is found",
         ),
         (
-            "str unused try 1 catch end",
-            "bad_codes: t:1: try: unused is found",
+            "str 'fail unclosed' try 1 catch end",
+            "bad_codes: t:1: try: unclosed is found",
         ),
         (
             "str '' try 1 catch end",
@@ -1521,7 +1529,12 @@ fn a_try_is_checked_before_it_runs() {
     // A handler's message is a string, as is its code; either way joins.
     assert_eq!(refused("str fail try 1 catch drop drop 2 end 1 add"), None);
     assert_eq!(refused("str fail try 1 catch drop end 1 add"), None);
+    // One the host's words raise is caught, though plain fuxth's never is.
+    assert_eq!(refused("str unused try 1 catch end"), None);
+    let plain = token::source("t", "str unused try 1 catch end")
+        .and_then(|tokens| Compiler::<Ticket>::new(Vocabulary::default()).add(&tokens));
+    assert_eq!(plain.err().map(|e| e.code), Some(Code::BadCodes));
     let mut words = Vocabulary::default();
-    assert!(words.code("fail").is_err(), "the language's own");
-    assert!(words.code("two words").is_err());
+    assert!(words.raises(Code::Host("fail")).is_err(), "the language's own");
+    assert!(words.raises(Code::Host("two words")).is_err());
 }

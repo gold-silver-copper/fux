@@ -66,7 +66,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. The message says where and why, `PLACE: WORD: MESSAGE`, as a failure that ends the program does (`Error::located`, after the host's `Machine::telling`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs. Checked as `if … else … then`: the two ways join after `end` |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. The message says where and why, `PLACE: WORD: MESSAGE`, as a failure that ends the program does (`Error::located`, after the host's `Machine::telling`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`, unless the application's words raise it) is refused before the program runs. Checked as `if … else … then`: the two ways join after `end` |
 
 | Word | Stack | |
 |---|---|---|
@@ -101,13 +101,13 @@ comments at a word's start.
 ## Embedding
 
 ```rust
-use fuxth::{Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
+use fuxth::{Code, Compiler, Done, Failure, Host, Limits, Machine, Outcome, STDLIB, Value, Vocabulary, token};
 
 let mut words = Vocabulary::default();
 words.kind("ticket", "a ticket")?;               // a kind of the application's values
 words.name("n", "integer", "an integer")?;       // a name effects use, for kinds
 let ask = words.add("ask", "n -- ticket")?;       // takes an integer, gives a ticket
-words.code("refused")?;                          // a failure of its words, for `try`
+words.raises(Code::Host("refused"))?;            // a failure of its words, for `try`
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -138,8 +138,9 @@ The host implements [`Host`]: `call(word, args, out)` gets the word's values
 host pushes before running the machine again, or its failure is what the
 host raises there (`machine.raise(failure)`), caught by a `try` as one at
 once would be; `machine.at()` is the token of the word it stopped at. The
-codes of its words' failures (`Code::Host`) are the vocabulary's (`code`),
-for a `try` to name. A `Failure` may name a word of its own, one in a
+codes of its words' failures are the vocabulary's (`raises`), for a `try` to
+name: its own (`Code::Host`), and any of the language's found only compiling
+or at a program's end that its words raise as they run (`Code::Unused`). A `Failure` may name a word of its own, one in a
 program the word was given. `print(line)` prints. A word
 gives as many values as its vocabulary says, of the kinds it says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise, when it returns or resumes. A word that is one step (`dup`
