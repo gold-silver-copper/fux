@@ -1808,18 +1808,20 @@ impl Session {
 
     /// A pane's program exited with `status`: a shell's pane closes, and a
     /// program's stays, the status kept, for its last screen to be read.
-    /// What a program wrote as it exited may still be on its terminal, or
+    /// What either wrote as it exited may still be on its terminal, or
     /// read and waiting for the pane's next turns (`Pane::has_unread`): it
-    /// is told exited once all of it is on its screen, from the turn that
-    /// reads the last of it (`Session::fire`).
+    /// is told exited once all of it is on its screen, its bells, titles
+    /// and notifications journaled, from the turn that reads the last of
+    /// it (`Session::fire`); a shell's pane then closes.
     pub fn exited(&mut self, id: PaneId, ended: Ended) {
-        let program = (self.parts.panes().get(&id)).filter(|p| matches!(p.runs, Runs::Program(_)));
-        let program = program.map(|p| p.exiting.is_none());
+        let Some(first) = self.parts.panes().get(&id).map(|p| p.exiting.is_none()) else {
+            return;
+        };
         // Once, at the first word of the exit, its terminal drained (what
-        // a program left writing there is not waited for), and the status
-        // kept till the last of it is read; at each, a frame it holds read,
-        // one begun in output read since too.
-        if program == Some(true) {
+        // it left writing there is not waited for), and the status kept
+        // till the last of it is read; at each, a frame it holds read, one
+        // begun in output read since too.
+        if first {
             let left = (self.parts.panes().get(&id))
                 .map(|p| unread(p.process()))
                 .unwrap_or_default();
@@ -1827,17 +1829,13 @@ impl Session {
                 self.output(id, &left);
             }
         }
-        if program.is_some() {
-            self.read_with(id, Pane::release_frame);
-        }
+        self.read_with(id, Pane::release_frame);
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
-        if program.is_some() {
-            pane.exiting = Some(ended);
-            if pane.has_unread() {
-                return;
-            }
+        pane.exiting = Some(ended);
+        if pane.has_unread() {
+            return;
         }
         match pane.runs {
             Runs::Shell => {
@@ -4892,6 +4890,22 @@ mod tests {
         let lines = told(&mut s, |s| s.exited(PaneId::of(2), Ended::Signalled(9)));
         let said = "exited %2 @1 +1 signal=9\nclosed %2 @1 +1\nresized %1 @1 +1 cols=80 rows=24\n";
         assert_eq!(lines, said);
+        Ok(())
+    }
+
+    /// What a shell wrote as it exited, a frame it held too, is read
+    /// before its exit is told: its bell and title are not lost.
+    #[test]
+    fn a_shells_last_output_is_told_before_its_exit() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "%1 split drop")?;
+        let lines = told(&mut s, |s| {
+            s.output(PaneId::of(2), b"\x1b[?2026h\x07\x1b]2;bye\x07");
+            s.exited(PaneId::of(2), Ended::Exited(0));
+        });
+        let said =
+            "bell %2 @1 +1\ntitle %2 @1 +1 title=bye\nexited %2 @1 +1 status=0\nclosed %2 @1 +1\n";
+        assert!(lines.starts_with(said), "{lines}");
         Ok(())
     }
 
