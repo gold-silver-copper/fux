@@ -406,7 +406,11 @@ back with the same ids: shells start fresh in their directories; a program
   dark/light changes (mode 2031) if it reports them. With several terminals
   attached, a pane is answered from the one that typed into its tab last.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
-  win over your terminal's; your terminal's palette is never changed.
+  win over your terminal's; your terminal's palette is never changed. A
+  colour no one knows is not answered: one your terminal didn't say,
+  palette entries past 15 the program didn't set (before, xterm's
+  defaults), and every colour in a tab no attached terminal answers for
+  (before, the last colours any terminal gave).
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `set bell off` silences both.

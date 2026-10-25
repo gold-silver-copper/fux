@@ -20,11 +20,11 @@
 //! terminal shows for palette entries 0 to 15 ([`crate::Parser::set_host_palette`]):
 //! the colours themselves are the terminal's. A palette entry the program
 //! has not set is answered with the host's colour for it, if the host gave
-//! one, else with xterm's default, which is what `TERM=xterm-256color`
-//! means by it (see `DEFAULT`); a dynamic colour it has not set is asked of the host
-//! ([`crate::Event::ColorQuery`], as without the palette), which knows its
-//! terminal's; a special colour it has not set is not answered, xterm's
-//! default being the terminal's foreground, which fux-vt does not know.
+//! one, else not at all: what the terminal shows for it is not known, and
+//! xterm's default is no answer for another terminal; a dynamic colour it
+//! has not set is asked of the host ([`crate::Event::ColorQuery`], as
+//! without the palette), which knows its terminal's; a special colour it
+//! has not set is not answered either.
 use crate::parser::{Event, Sink};
 use crate::{Reply, Rgb};
 
@@ -33,61 +33,6 @@ use crate::{Reply, Rgb};
 const SPECIALS: u16 = 5;
 /// The first OSC 4 colour number past the palette: the special colours.
 const PAST_PALETTE: u16 = 256;
-
-/// xterm's colours 0 to 15 (its resources `color0` to `color15`, compiled
-/// in: black, red3, green3, yellow3, blue2, magenta3, cyan3, gray90,
-/// gray50, red, green, yellow, rgb:5c/5c/ff, magenta, cyan and white), as
-/// xterm 411 reports them.
-const SIXTEEN: [[u8; 3]; 16] = [
-    [0x00, 0x00, 0x00],
-    [0xcd, 0x00, 0x00],
-    [0x00, 0xcd, 0x00],
-    [0xcd, 0xcd, 0x00],
-    [0x00, 0x00, 0xee],
-    [0xcd, 0x00, 0xcd],
-    [0x00, 0xcd, 0xcd],
-    [0xe5, 0xe5, 0xe5],
-    [0x7f, 0x7f, 0x7f],
-    [0xff, 0x00, 0x00],
-    [0x00, 0xff, 0x00],
-    [0xff, 0xff, 0x00],
-    [0x5c, 0x5c, 0xff],
-    [0xff, 0x00, 0xff],
-    [0x00, 0xff, 0xff],
-    [0xff, 0xff, 0xff],
-];
-
-/// The default of palette entry `index`, as xterm 411 reports it: the 16
-/// colours above; 16 to 231 the 6×6×6 cube, each channel 0 or 55 + 40 n;
-/// 232 to 255 the grey ramp, 8 + 10 n. Ghostty's cube and ramp are the
-/// same; its 16 are its own theme's.
-pub(crate) fn default(index: u8) -> Rgb {
-    let level = |n: u8| {
-        if n == 0 {
-            0
-        } else {
-            n.saturating_mul(40).saturating_add(55)
-        }
-    };
-    match index {
-        0..=15 => SIXTEEN
-            .get(usize::from(index))
-            .copied()
-            .unwrap_or_default()
-            .into(),
-        16..=231 => {
-            let n = index.saturating_sub(16);
-            [level(n / 36), level(n / 6 % 6), level(n % 6)].into()
-        }
-        _ => {
-            let grey = index
-                .saturating_sub(232)
-                .saturating_mul(10)
-                .saturating_add(8);
-            [grey, grey, grey].into()
-        }
-    }
-}
 
 /// The colours a program set, each `None` while it is the terminal's own,
 /// and the host's colours for palette entries 0 to 15.
@@ -328,16 +273,11 @@ fn pairs(
         };
         if spec == b"?" {
             let set = colours.as_mut().and_then(|c| *c.slot(n)?);
-            let colour = match (set, u8::try_from(n)) {
-                (Some(colour), _) => colour,
-                // The host's terminal's colour, if it said; else xterm's.
-                (None, Ok(index)) => colours
-                    .as_ref()
-                    .and_then(|c| c.host.get(usize::from(index)).copied().flatten())
-                    .unwrap_or_else(|| default(index)),
-                // A special colour the program has not set: fux-vt does
-                // not know the terminal's foreground, xterm's default.
-                (None, Err(_)) => continue,
+            // The program's colour, else the host's terminal's, if it said;
+            // else none is known, and none is answered.
+            let host = |c: &Colours| c.host.get(usize::from(n)).copied().flatten();
+            let Some(colour) = set.or_else(|| colours.as_deref().and_then(host)) else {
+                continue;
             };
             // Answered in the form it was asked: OSC 5 by its own number.
             let asked = n.saturating_sub(offset);
@@ -425,7 +365,7 @@ pub(crate) fn dynamic(
 
 #[cfg(test)]
 mod tests {
-    use super::{atoi, default};
+    use super::atoi;
     use crate::Rgb;
 
     #[test]
@@ -463,31 +403,6 @@ mod tests {
         ] {
             assert_eq!(parse(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
-    }
-
-    #[test]
-    fn the_default_palette_is_xterms() {
-        // xterm 411's answers to `OSC 4 ; n ; ?`.
-        let expected = [
-            (0, [0, 0, 0]),
-            (1, [0xcd, 0, 0]),
-            (4, [0, 0, 0xee]),
-            (7, [0xe5, 0xe5, 0xe5]),
-            (8, [0x7f, 0x7f, 0x7f]),
-            (12, [0x5c, 0x5c, 0xff]),
-            (15, [0xff, 0xff, 0xff]),
-            (16, [0, 0, 0]),
-            (17, [0, 0, 0x5f]),
-            (231, [0xff, 0xff, 0xff]),
-            (232, [8, 8, 8]),
-            (255, [0xee, 0xee, 0xee]),
-        ];
-        for (index, rgb) in expected {
-            assert_eq!(<[u8; 3]>::from(default(index)), rgb, "{index}");
-        }
-        // The cube's levels.
-        assert_eq!(default(16 + 36 + 2 * 6 + 5), [0x5f, 0x87, 0xff].into());
-        assert_eq!(default(16 + 4 * 36 + 3 * 6), [0xd7, 0xaf, 0].into());
     }
 
     #[test]

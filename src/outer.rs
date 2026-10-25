@@ -456,16 +456,17 @@ mod tests {
     #[test]
     fn a_panes_palette_query_is_answered_with_its_clients_palette() -> Outcome {
         let (mut s, c) = session()?;
-        // Nothing said yet: xterm's red.
-        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:cdcd/0000/0000\x07");
+        // Nothing said yet: no answer.
+        assert_eq!(entry(&mut s, 1, 1), "");
         s.input(
             c,
             b"\x1b]4;1;rgb:1111/2222/3333\x1b\\\x1b]4;12;rgb:ff/80/00\x1b\\\x1b[?62c",
         );
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
         assert_eq!(entry(&mut s, 1, 12), "\x1b]4;12;rgb:ffff/8080/0000\x07");
-        // Entries the terminal did not say, and those past 15: xterm's.
-        assert_eq!(entry(&mut s, 1, 2), "\x1b]4;2;rgb:0000/cdcd/0000\x07");
+        // Entries the terminal did not say, and those past 15: none.
+        assert_eq!(entry(&mut s, 1, 2), "");
+        assert_eq!(entry(&mut s, 1, 17), "");
         // The program's own colour wins, and nothing the host gave is
         // painted.
         let before = crate::render::compose(&s, c);
@@ -486,10 +487,10 @@ mod tests {
         s.input(c, b"x");
         assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:1111/2222/3333\x07");
         // d types: its palette, whole; entry 1, which it did not say, is
-        // xterm's again.
+        // not answered.
         s.input(d, b"y");
         assert_eq!(entry(&mut s, 1, 2), "\x1b]4;2;rgb:4444/5555/6666\x07");
-        assert_eq!(entry(&mut s, 1, 1), "\x1b]4;1;rgb:cdcd/0000/0000\x07");
+        assert_eq!(entry(&mut s, 1, 1), "");
         Ok(())
     }
 

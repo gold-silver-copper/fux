@@ -60,29 +60,17 @@ fn said(list: &[&str]) -> Heard {
     Heard(list.iter().map(|s| (*s).to_owned()).collect())
 }
 
-/// An entry not set is answered with xterm's default; a set entry with its
-/// colour, each channel's byte twice, in the query's form and with its
-/// terminator.
+/// A set entry is answered with its colour, each channel's byte twice, in
+/// the query's form and with its terminator; one neither the program nor
+/// the host set is not answered, as no one knows it.
 #[test]
-fn palette_queries_are_answered_with_the_colour_or_xterms_default() -> Result {
+fn palette_queries_are_answered_with_the_colour_set_alone() -> Result {
     let (heard, parser) = run(
         PALETTE,
         b"\x1b]4;0;?;1;?;4;?;12;?\x1b\\\x1b]4;17;?;232;?;255;?\x07\
           \x1b]4;1;#123456\x1b\\\x1b]4;1;?\x1b\\",
     )?;
-    assert_eq!(
-        heard,
-        said(&[
-            "^[]4;0;rgb:0000/0000/0000^[\\",
-            "^[]4;1;rgb:cdcd/0000/0000^[\\",
-            "^[]4;4;rgb:0000/0000/eeee^[\\",
-            "^[]4;12;rgb:5c5c/5c5c/ffff^[\\",
-            "^[]4;17;rgb:0000/0000/5f5f^G",
-            "^[]4;232;rgb:0808/0808/0808^G",
-            "^[]4;255;rgb:eeee/eeee/eeee^G",
-            "^[]4;1;rgb:1212/3434/5656^[\\",
-        ])
-    );
+    assert_eq!(heard, said(&["^[]4;1;rgb:1212/3434/5656^[\\"]));
     assert_eq!(
         parser.screen().palette_color(1),
         Some([0x12, 0x34, 0x56].into())
@@ -155,10 +143,7 @@ fn a_list_of_colours_is_read_as_xterm_reads_it() -> Result {
         assert!(!parser.screen().colors_changed(), "{list:?}");
     }
     let (heard, _) = run(PALETTE, b"\x1b]4;1;?;2;#00ff00;2;?\x07")?;
-    assert_eq!(
-        heard,
-        said(&["^[]4;1;rgb:cdcd/0000/0000^G", "^[]4;2;rgb:0000/ffff/0000^G"])
-    );
+    assert_eq!(heard, said(&["^[]4;2;rgb:0000/ffff/0000^G"]));
     Ok(())
 }
 
@@ -192,7 +177,7 @@ fn osc_104_resets_entries() -> Result {
     );
     let (heard, parser) = run(PALETTE, &[&set[..], b"\x1b]104\x07\x1b]4;3;?\x07"].concat())?;
     assert!(!parser.screen().colors_changed());
-    assert_eq!(heard, said(&["^[]4;3;rgb:cdcd/cdcd/0000^G"]));
+    assert_eq!(heard, said(&[]));
     Ok(())
 }
 
@@ -285,7 +270,7 @@ fn dynamic_colours_are_set_queried_and_reset() -> Result {
 
 /// RIS and DECSTR reset the palette, and leave the dynamic and special
 /// colours, as xterm 411 does (`OSC 4;1;#123456`, `ESC c` or `CSI ! p`,
-/// `OSC 4;1;?` answers `cdcd/0000/0000`; `OSC 10;#123456` and
+/// `OSC 4;1;?` is not answered, its colour the terminal's; `OSC 10;#123456` and
 /// `OSC 5;0;#654321` survive both).
 #[test]
 fn ris_and_decstr_reset_the_palette_alone() -> Result {
@@ -299,11 +284,7 @@ fn ris_and_decstr_reset_the_palette_alone() -> Result {
         let (heard, parser) = run(BOTH, &input)?;
         assert_eq!(
             heard,
-            said(&[
-                "^[]4;1;rgb:cdcd/0000/0000^G",
-                "^[]10;rgb:1212/3434/5656^G",
-                "^[]5;0;rgb:6565/4343/2121^G",
-            ])
+            said(&["^[]10;rgb:1212/3434/5656^G", "^[]5;0;rgb:6565/4343/2121^G",])
         );
         assert_eq!(parser.screen().palette_color(1), None);
     }
@@ -333,7 +314,7 @@ fn an_overlong_colour_request_is_ignored() -> Result {
     input.extend(b"\x07\x1b]4;1;?\x07");
     let (heard, parser) = run(PALETTE, &input)?;
     assert_eq!(parser.screen().palette_color(1), None);
-    assert_eq!(heard, said(&["^[]4;1;rgb:cdcd/0000/0000^G"]));
+    assert_eq!(heard, said(&[]));
     Ok(())
 }
 
@@ -356,7 +337,7 @@ fn run_hosted(
 }
 
 /// An entry the program has not set is answered with the host's colour for
-/// it, if the host gave one; xterm's default otherwise, and past 15 always.
+/// it, if the host gave one; otherwise, and past 15 always, not at all.
 #[test]
 fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
     let host = [(1, [0xbf, 0x61, 0x6a]), (15, [0xec, 0xef, 0xf4])];
@@ -365,9 +346,7 @@ fn an_entry_not_set_is_answered_with_the_hosts_colour() -> Result {
         heard,
         said(&[
             "^[]4;1;rgb:bfbf/6161/6a6a^[\\",
-            "^[]4;2;rgb:0000/cdcd/0000^[\\",
             "^[]4;15;rgb:ecec/efef/f4f4^[\\",
-            "^[]4;17;rgb:0000/0000/5f5f^[\\",
         ])
     );
     // Nothing drawn changes: the program set no colour.
@@ -404,15 +383,15 @@ fn the_programs_colour_wins_and_resets_bring_back_the_hosts() -> Result {
     Ok(())
 }
 
-/// A cleared host colour is answered with xterm's default again; without
-/// the option nothing is answered.
+/// A cleared host colour is not answered any more; without the option
+/// nothing is answered.
 #[test]
 fn host_colours_are_cleared_and_need_the_option() -> Result {
     let (_, mut parser) = run_hosted(PALETTE, &[(1, [1, 2, 3])], b"")?;
     parser.set_host_palette([None; 16]);
     let mut heard = Heard::default();
     parser.process_with(b"\x1b]4;1;?\x07", &mut heard)?;
-    assert_eq!(heard, said(&["^[]4;1;rgb:cdcd/0000/0000^G"]));
+    assert_eq!(heard, said(&[]));
     // Clearing what was never set keeps no colours at all.
     let mut fresh = Parser::with_options(Size::new(25, 80)?, 0, PALETTE)?;
     fresh.set_host_palette([None; 16]);
