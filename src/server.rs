@@ -58,17 +58,19 @@ const CONN_READ: usize = 256 * 1024;
 /// What a connection's buffers keep once they empty; beyond it, the memory
 /// a large frame or paint took is given back.
 const CONN_KEEP: usize = 64 * 1024;
-/// What may wait unwritten for an attached client, a paint included,
-/// before what others send it in any number is refused, and said to be
-/// (`Refused`): a copy, a program, keys. A paint is made only once all
-/// that waited is written (`Conn::paint_due`), so none is ever refused,
-/// nor the state it shows moved on without it.
+/// What may wait unwritten for an attached client, its paint aside
+/// (`Conn::backlog`), before what others send it in any number is refused,
+/// and said to be (`Refused`): a copy, a program, keys. A paint is made
+/// only once all that waited is written (`Conn::paint_due`), so none is
+/// ever refused, nor the state it shows moved on without it.
 const OUT_MAX: usize = 4 << 20;
-/// What the client's own conversation with the server may take past
-/// `OUT_MAX`: questions for its terminal, the bell, its screen ended. Each
-/// is small, and one refused would leave the session and the terminal
-/// disagreeing, so a client this far behind is detached instead, told why.
-const TALK_MAX: usize = OUT_MAX + (64 << 10);
+/// How far behind the client's own conversation with the server may go:
+/// questions for its terminal, the bell, its screen ended. Each is small,
+/// and one refused would leave the session and the terminal disagreeing,
+/// so a client this far behind is detached instead, told why. One frame of
+/// theirs, `MAX_FRAME` at most, may take the backlog past `OUT_MAX`; a
+/// frame's room more is the conversation's.
+const TALK_MAX: usize = OUT_MAX + 2 * crate::protocol::MAX_FRAME;
 /// How long a stopping server waits for its clients and processes.
 const STOP_WAIT: Duration = Duration::from_millis(500);
 /// A condition that persists is logged once, then at most this often.
@@ -136,6 +138,9 @@ struct Conn {
     stream: UnixStream,
     decoder: Decoder,
     out: ByteQueue,
+    /// Where the last paint is in `out`: the bytes ahead of it, and its
+    /// own, not yet written.
+    paint: (usize, usize),
     stage: Stage,
 }
 
@@ -348,8 +353,14 @@ impl Conn {
             stream,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
+            paint: (0, 0),
             stage: Stage::Hello,
         }
+    }
+
+    /// What waits unwritten for the client, but for its paint.
+    fn backlog(&self) -> usize {
+        self.out.len().saturating_sub(self.paint.1)
     }
 
     /// Whether what the client sends is read: by its stage, and for a
@@ -464,7 +475,7 @@ impl Conn {
         let Some(client) = self.attached().map(|a| a.client) else {
             return Ok(());
         };
-        let waiting = self.out.len();
+        let waiting = self.backlog();
         match theirs {
             Some(theirs) if waiting >= OUT_MAX => {
                 return Err(Refused {
@@ -473,7 +484,8 @@ impl Conn {
                     waiting,
                 });
             }
-            None if waiting >= TALK_MAX => {
+            // A last frame lets the queue grow no more: it keeps its reason.
+            None if waiting >= TALK_MAX && !matches!(frame, ToAttached::Exit(_)) => {
                 log!("{client} detached: {waiting} bytes waited unwritten for it");
                 let why = format!("detached: {waiting} bytes waited unwritten for this terminal");
                 self.end(session, &ToAttached::Exit(&why));
@@ -495,9 +507,14 @@ impl Conn {
     /// Writes what waits for the client until it is all written or the
     /// socket takes no more; a connection that fails is dead.
     fn flush(&mut self, session: &mut Session) {
+        let before = self.out.len();
         if !write_out(&self.stream, &mut self.out) {
             self.enter(session, Stage::Dead);
         }
+        let written = before.saturating_sub(self.out.len());
+        let (ahead, paint) = self.paint;
+        let painted = written.saturating_sub(ahead);
+        self.paint = (ahead.saturating_sub(written), paint.saturating_sub(painted));
     }
 }
 
@@ -954,6 +971,7 @@ impl Server {
             return;
         };
         let client = attached.client;
+        let ahead = conn.out.len();
         // The title and bell marks first: the bar shows the marks.
         let before = session.before_paint(client);
         let Some(view) = session.views.get(&client) else {
@@ -1012,6 +1030,7 @@ impl Server {
         // cursor.
         self.paint_buffer.clear();
         let shown = &attached.shown;
+        let mut written = 0;
         if render::paint_into(shown, known, &attached.spare, &mut self.paint_buffer) {
             Attached::paint(&mut conn.out, &self.paint_buffer);
             mem::swap(&mut attached.shown, &mut attached.spare);
@@ -1019,7 +1038,9 @@ impl Server {
             attached.clock.painted(now);
             // Written now rather than when the next poll says it can be: a
             // keystroke's echo goes out a round sooner.
+            let before = conn.out.len();
             conn.flush(session);
+            written = before.saturating_sub(conn.out.len());
         }
         let Stage::Attached(attached) = &mut conn.stage else {
             return;
@@ -1033,6 +1054,12 @@ impl Server {
         }
         attached.sixels.keep(&pictures);
         attached.pictures = pictures;
+        // The paint, sixels and all, is no backlog of the client's.
+        let paint = conn.out.len().saturating_add(written).saturating_sub(ahead);
+        conn.paint = (
+            ahead.saturating_sub(written),
+            paint.saturating_sub(written.saturating_sub(ahead)),
+        );
         if let Some(view) = session.views.get_mut(&client) {
             view.dirty = false;
         }
@@ -1507,12 +1534,18 @@ mod tests {
     /// until it is detached, told why.
     #[test]
     fn a_client_behind_is_refused_what_others_send_it() -> Result<(), String> {
+        // A paint, however large, is no backlog: the client is not behind.
+        let (mut session, mut conn, _peer) = attached()?;
+        conn.out.push(&vec![0; 2 * TALK_MAX]);
+        conn.paint = (0, conn.out.len());
+        let bell = ToAttached::Paint(crate::outer::BELL.into());
+        assert!(conn.tell(&mut session, &bell, None).is_ok());
+        assert!(matches!(conn.stage, Stage::Attached(_)), "detached");
         let (mut session, mut conn, _peer) = attached()?;
         conn.out.push(&vec![0; OUT_MAX]);
         let run = ToAttached::Run("me zoom".into());
         let refused = conn.tell(&mut session, &run, Some(Theirs::Program)).err();
         assert_eq!(refused.map(|r| r.waiting), Some(OUT_MAX));
-        let bell = ToAttached::Paint(crate::outer::BELL.into());
         assert!(conn.tell(&mut session, &bell, None).is_ok());
         assert!(conn.out.len() > OUT_MAX, "the bell was sent");
         conn.out.push(&vec![0; TALK_MAX - OUT_MAX]);
