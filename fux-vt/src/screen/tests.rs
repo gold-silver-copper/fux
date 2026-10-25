@@ -529,6 +529,37 @@ fn a_picture_takes_only_the_pictures_it_covers() -> Result<(), Error> {
     Ok(())
 }
 
+/// A cell copy carries a cell's character and attributes, and a picture's
+/// cell has none (DEC STD 070, DECCRA, ICH, DCH): copied or moved, it is a
+/// blank, so a copy of a shown picture's cells over one that text took
+/// doesn't give it back, and neither does moving another's beside it.
+#[test]
+fn a_cell_copy_carries_no_picture() -> Result<(), Error> {
+    // 20 by 20 pixels: 2 cells by 1, at row 1 and at row 3.
+    let two = picture(20, 20);
+    let mut p = pictured(Size::of(6, 20), 0)?;
+    p.process(b"\x1b[1;1H")?;
+    p.process(&two)?;
+    p.process(b"\x1b[3;1H")?;
+    p.process(&two)?;
+    p.process(b"\x1b[1;2HX")?;
+    assert_eq!(shown(&p), [2], "text over the first");
+    // DECCRA: row 3's two cells to row 1.
+    p.process(b"\x1b[3;1;3;2;1;1;1;1$v")?;
+    assert_eq!(shown(&p), [2], "the second's cells copied");
+    let copied = p.screen().cell(0, 1).map(|c| c.contents() == PLACEHOLDER);
+    assert_eq!(copied, Some(false));
+    // Side by side on row 5: text over the first's second cell, then DCH
+    // there, which moves the second's cells into it.
+    p.process(b"\x1b[5;1H")?;
+    p.process(&two)?;
+    p.process(b"\x1b[5;3H")?;
+    p.process(&two)?;
+    p.process(b"\x1b[5;2HX\x1b[5;2H\x1b[P")?;
+    assert_eq!(shown(&p), [2], "DCH");
+    Ok(())
+}
+
 /// A kept picture holds just its pixels, though its room grew by doubling
 /// as it was drawn (THREATS.md B03): the budget counts its room,
 /// which is then its size. Drawn a column further right a sixel at a

@@ -271,7 +271,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | 5-159 DECSEL | DECSEL (SELECTIVE ERASE IN LINE) | implemented | `protection::dec_protection_keeps_glyphs_from_selective_erase`, `protection::selective_erase_leaves_each_position_its_rendition` |  |
 | 5-162 DECSED | DECSED (SELECTIVE ERASE IN DISPLAY) | implemented | `protection::dec_protection_keeps_glyphs_from_selective_erase`, `protection::selective_erase_leaves_each_position_its_rendition`, `renditions::decsed_and_an_ed_sparing_guarded_glyphs_keep_the_renditions` |  |
 | 5-166 DECSCA | DECSCA (SELECT CHARACTER ATTRIBUTE) | implemented | `protection::dec_protection_keeps_glyphs_from_selective_erase` |  |
-| 5-169 DECCRA | DECCRA (COPY RECTANGULAR AREA) | implemented | `rectangles::deccra_copies_a_rectangle` |  |
+| 5-169 DECCRA | DECCRA (COPY RECTANGULAR AREA) | implemented | `rectangles::deccra_copies_a_rectangle`, `screen::tests::a_cell_copy_carries_no_picture` | copies characters and attributes: a picture's cell, which has neither, lands as a blank |
 | 5-170 DECFRA | DECFRA (FILL RECTANGULAR AREA) | implemented | `rectangles::decfra_fills_a_rectangle`, `renditions::rectangles_stop_at_a_double_width_lines_end` |  |
 | 5-171 DECERA | DECERA (ERASE RECTANGULAR AREA) | implemented | `rectangles::decera_and_decsera_erase_a_rectangle` |  |
 | 5-172 DECSERA | DECSERA (SELECTIVE ERASE RECTANGULAR AREA) | implemented | `rectangles::decera_and_decsera_erase_a_rectangle` |  |
@@ -481,7 +481,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | CSI & u | CSI & u (User-Preferred Supplemental Set (DECRQUPSS), VT320, VT510.) | not implemented |  | not implemented |
 | CSI Ps SP u | CSI Ps SP u (Set margin-bell volume (DECSMBV), VT520.) | not applicable |  | the bell's volume is the host's |
 | CSI " v | CSI " v (Request Displayed Extent (DECRQDE), VT340, VT420.) | not implemented |  | a windowing extension (DEC STD 070, 5.4.7): fux-vt has one page, as large as its screen |
-| CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v | CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v (Copy Rectangular Area (DECCRA), VT400 and up.) | implemented | `rectangles::deccra_copies_a_rectangle` |  |
+| CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v | CSI Pt ; Pl ; Pb ; Pr ; Pp ; Pt ; Pl ; Pp $ v (Copy Rectangular Area (DECCRA), VT400 and up.) | implemented | `rectangles::deccra_copies_a_rectangle`, `screen::tests::a_cell_copy_carries_no_picture` | copies characters and attributes: a picture's cell, which has neither, lands as a blank |
 | CSI Ps $ w | CSI Ps $ w (Request presentation state report (DECRQPSR), VT320 and up.) | not implemented |  | a terminal state report (TSI extension) fux-vt does not give |
 | CSI Pt ; Pl ; Pb ; Pr ' w | CSI Pt ; Pl ; Pb ; Pr ' w (Enable Filter Rectangle (DECEFR), VT420 and up.) | not applicable |  | fux-vt has no locator (DEC STD 070, chapter 13): mouse reports are xterm's (CSI ? 1000 h and the others) |
 | CSI Ps x | CSI Ps x (Request Terminal Parameters (DECREQTPARM).) | implemented | `conformance::decreqtparm_is_answered_as_a_vt100_answers_it` | without an identity, as the VT100 DA claims; with one, unanswered, as xterm's VT220 |

@@ -296,11 +296,24 @@ impl Screen {
             false => Some(top),
             true => {
                 let g = self.grid();
-                let first = last.and_then(|last| last.checked_sub(rows.saturating_sub(1)));
-                first
-                    .filter(|first| !stacked && *first >= g.lines.first())
+                let first = (last.and_then(|last| last.checked_sub(rows.saturating_sub(1))))
+                    .filter(|first| !stacked && *first >= g.lines.first());
+                let top = first
                     .and_then(|first| g.live_row(first))
-                    .map(|row| row.id())
+                    .map(|row| row.id());
+                // The scrolls that lifted its bands moved their cells,
+                // which leaves them blank (`grid::unpicture`): its rows
+                // take the placeholder again.
+                if let Some((first, last)) = first.zip(last).filter(|_| top.is_some()) {
+                    self.with_grid(|g, _, v| {
+                        for y in first..=last {
+                            let wrapped = g.live_wrapped(y);
+                            g.fill(y, span, placeholder, 0, v);
+                            g.wrap(y, wrapped, v);
+                        }
+                    });
+                }
+                top
             }
         };
         let alternate = self.alternate_active;
