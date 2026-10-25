@@ -731,7 +731,7 @@ fn a_dump_opens_its_workspace_with_the_first_tab_written() -> Outcome {
     Ok(())
 }
 
-/// A server opens a door beside its socket (`NAME.door`): a client that
+/// A server opens a door beside its socket (`NAME.sock.door`): a client that
 /// cannot use the socket (a sandbox that denies sockets; here, the socket
 /// file gone) reaches the server through it, FIFOs of its own relayed to a
 /// connection as the socket's.
@@ -767,7 +767,7 @@ fn a_client_reaches_the_server_through_its_door() -> Outcome {
 
 /// A server is found by its door alone, as one that serves through it
 /// alone (a sandbox that denies sockets) is: `start` starts no second one,
-/// `servers` lists it, and a grant has a door too. A door no server holds
+/// `status` answers through it, and a grant has a door too. A door no server holds
 /// open, left by one that stopped, is no server: `status` says so, and the
 /// next server takes it.
 #[test]

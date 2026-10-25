@@ -24,14 +24,14 @@ for `id`, `name` and `pid` (it says `pane`):
 | `paused` | a program a restore brought back, waiting for `respawn` |
 | `hung_up` | its program closed its terminal and runs on: keys are refused (Linux says so; macOS, where fux holds the terminal open, does not) |
 | `exited` | the status its program exited with (a pane whose program is no shell: `run`'s, or a `split` with a program), else `null` |
-| `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost, where `-1` once stood in |
+| `signal` | the signal that killed it (its number), else `null`; both `null` for a program that ended (its version's ENDED is 1) whose status was lost |
 | `idle_ms` | how long since fux last read output from its program (or it started) |
 | `alt_screen` | its program holds the full screen |
 | `mouse` | its program asked for mouse reports |
 | `mouse_mode` | which: `"press"`, `"press_release"`, `"button_motion"`, `"any_motion"`, `"highlight"`, or `null` |
 | `bracketed_paste` | its program asked for bracketed paste |
 | `pictures` | the pictures it shows (sixel), each at cell `row`, `col`, over `rows` by `cols` cells, the first `cropped` rows gone (scrolled off the top of a screen or region that keeps no history), `width` by `height` pixels |
-| `cell` | the size of a cell in pixels its program was last told, `{"width":10,"height":20}`, from a terminal showing it that said one (`CSI 16 t`); `null` while none is known: then it places no pictures and gets no mouse reports in pixels (mode 1016) |
+| `cell` | the size of a cell in pixels its program was last told, `{"width":9,"height":18}`, from a terminal showing it that said one (`CSI 16 t`); `null` while none is known: then it places no pictures and gets no mouse reports in pixels (mode 1016) |
 | `cursor_visible` | the cursor shows |
 | `history_lines` | lines of history the screen shown holds: 0 on the alternate screen, though the main screen's is kept (`main-screen all-history capture` reads it) |
 | `copy_mode` | a client has it in copy mode |
@@ -141,7 +141,7 @@ its own place. A reader that falls behind is told the rest as it reads.
 | `closed`, `respawned`, `bell` | |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `status` (`null` if it was lost) or `signal` |
-| `done` | `status`: a shell command's |
+| `done` | `status`: a shell command's, `null` if the shell gave none |
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
 | `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
 | `resized` | `cols`, `rows` |

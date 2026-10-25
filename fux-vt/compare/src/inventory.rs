@@ -609,11 +609,11 @@ fn osc(body: &[u8]) -> (String, Does) {
         "0" | "1" | "2" => Does::Implemented("an event; fux sets the pane title"),
         "52" if rest.ends_with('?') => Does::Ignored("a query, dropped unanswered"),
         "10" | "11" if rest == "?" => Does::Implemented(
-            "a ColorQuery event; fux answers with its client terminal's colour (src/outer.rs)",
+            "a ColorQuery event; fux answers with the colour the program set, else that of a terminal showing it, else not at all (src/pane.rs)",
         ),
         "52" => Does::Implemented("a clipboard event"),
         "4" | "5" if rest.ends_with('?') => Does::Implemented(
-            "answered (Feature::Palette): the colour the program set, or xterm's default",
+            "answered (Feature::Palette): the colour the program set, else the host's, else not at all",
         ),
         "4" | "5" | "104" | "105" => Does::Implemented(
             "the palette kept (Feature::Palette); fux paints a changed entry's cells in its colour",

@@ -21,7 +21,8 @@ fux                               # attach, starting a server if none runs
 `fux` alone attaches this terminal, starting a server in the background if
 none answers; `fux str work attach-to` attaches to workspace `work`, and
 `fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
-new server has one workspace, tab and shell. `C-b d` detaches, and the
+new server holds nothing: the first client to attach starts workspace
+`main`, with one tab and a shell, on its screen. `C-b d` detaches, and the
 shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
@@ -97,8 +98,7 @@ no pane yet: they start from `opts`, empty options. Only `run` takes a program
 (`program`, then each `arg`; a shell's line is `str sh program str -c arg str
 LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
 out on an attached client's screen, or on `COLS ROWS size`; with no client
-attached a size must be given: fux makes none up, where it once took 80 by
-24.
+attached a size must be given: fux makes none up.
 
 ```sh
 fux opts str web name 120 40 size str ./app program str --verbose arg run
@@ -410,9 +410,8 @@ makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the l
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
   win over your terminal's; your terminal's palette is never changed. A
   colour no one knows is not answered: one your terminal didn't say,
-  palette entries past 15 the program didn't set (before, xterm's
-  defaults), and every colour in a tab no attached terminal answers for
-  (before, the last colours any terminal gave).
+  palette entries past 15 the program didn't set, and every colour in a
+  tab no attached terminal answers for.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `set bell off` silences both.
@@ -431,10 +430,10 @@ makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the l
   pane said it, or it said one smaller than a sixel band, 2 by 6 pixels,
   which fux tells you), a sixel picture is not placed, `CSI 14 t` and
   `CSI 16 t` go unanswered, and a program that asked for mouse reports in
-  pixels (mode 1016) is sent none (`send-mouse` fails saying why). Before,
-  a 10 by 20 pixel cell stood in. Drawn by foot, WezTerm, xterm (`-ti vt340`), Konsole,
-  mlterm and others; not by kitty, whose graphics protocol fux does not
-  speak, nor Ghostty, Alacritty or Apple's Terminal.
+  pixels (mode 1016) is sent none (`send-mouse` fails saying why). Drawn
+  by foot, WezTerm, xterm (`-ti vt340`), Konsole, mlterm and others; not
+  by kitty, whose graphics protocol fux does not speak, nor Ghostty,
+  Alacritty or Apple's Terminal.
 - **Underline styles** (curly, dotted, dashed, double) reach your terminal
   if it draws them, else a plain underline.
 - **In-band resize reports** (mode 2048) are sent when a pane's size
