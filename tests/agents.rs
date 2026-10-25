@@ -352,7 +352,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
         let words = [
-            "opts", "str", shell, "name", "str", home, "str", &dir, "env",
+            "opts", "80", "24", "size", "str", shell, "name", "str", home, "str", &dir, "env",
         ];
         server.ok(&[&words[..], &program(&[shell, "-i"]), &["run"]].concat())?;
         check(shell)?;
@@ -679,8 +679,12 @@ fn names_clicks_and_signals_are_checked() -> Outcome {
         server.fux(&run(&["str", "@1", "name"], &["cat"]))?.status,
         1
     );
-    let taken = server.fux(&["opts", "str", "ed", "name", "new-tab"])?;
-    assert_eq!(taken.status, 1, "a name taken");
+    let taken = server.fux(&["opts", "80", "24", "size", "str", "ed", "name", "new-tab"])?;
+    assert!(
+        taken.stderr.starts_with("fux: name_taken: "),
+        "{}",
+        taken.stderr
+    );
     // A common spelling is a key's name too; a typo is told the closest.
     server.ok(&["str", "ed", "pane", "str", "Backspace", "key", "send-keys"])?;
     let typo = server.fux(&["str", "ed", "pane", "str", "C-Bakspace", "key", "send-keys"])?;
