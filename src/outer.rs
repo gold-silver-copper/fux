@@ -552,7 +552,7 @@ mod tests {
         let theirs = "\x1b]11;rgb:1111/2222/3333\x07\x1b]4;1;rgb:1111/2222/3333\x07";
         assert_eq!(ask(&mut s, 1), theirs);
         // A workspace c1 neither shows nor typed into: no terminal's.
-        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other name new-workspace")?;
         assert_eq!(ask(&mut s, 2), "");
         s.output(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
@@ -580,7 +580,7 @@ mod tests {
         // c typed here and shows another tab; d shows this one with no cell.
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         s.input(c, b"x");
-        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "opts 80 24 size str +1 workspace in new-tab")?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
         assert_eq!(cell(&mut s), None);
@@ -744,7 +744,7 @@ mod tests {
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
-        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;
         assert_eq!(refused(&mut s), Some(1));
         Ok(())
@@ -773,7 +773,7 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b[?2031h");
         s.input(c, b"\x1b[?997;1n");
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
-        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "opts 80 24 size str other name new-workspace")?;
         run(&mut s, "str c1 client str other workspace show-workspace")?;
         s.input(c, b"\x1b[?997;2n");
         assert_eq!(answered(&mut s, 1), "");
@@ -864,7 +864,10 @@ mod tests {
         s.output(PaneId::of(1), b"\x07");
         assert_eq!(sent(&mut s, c), [BELL.to_vec()]);
         // In a tab the client does not show: its tab is marked until shown.
-        run(&mut s, "opts str +1 workspace in str other name new-tab")?;
+        run(
+            &mut s,
+            "opts 80 24 size str +1 workspace in str other name new-tab",
+        )?;
         run(&mut s, "str c1 client str @2 tab show-tab")?;
         s.settle();
         let _ = s.before_paint(c);
@@ -880,7 +883,7 @@ mod tests {
         // A client on another workspace is not rung.
         run(&mut s, "str c1 client str @1 tab show-tab")?;
         let _ = s.before_paint(c);
-        run(&mut s, "opts str elsewhere name new-workspace")?;
+        run(&mut s, "opts 80 24 size str elsewhere name new-workspace")?;
         let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
         run(
             &mut s,

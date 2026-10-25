@@ -146,7 +146,8 @@ codes! {
     /// A size no pane or tab can have: a client's screen past 4096
     /// (`view::MOST`) a side (`attach`, its terminal resized), or with
     /// no room for a pane below its bar as it starts a server's first
-    /// shell; a new tab or workspace no client sizes, given none; a pane's
+    /// shell; a new tab or workspace given none, whose caller has no
+    /// screen that sizes panes and no tab; a pane's
     /// `resize-x` or `resize-y` the layout cannot give; a tab resized, a
     /// split or a pane moved where its tab's panes would not all show.
     Size "size",

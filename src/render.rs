@@ -1016,7 +1016,7 @@ pub fn compose_held(
     {
         grid.modes.mouse = mouse_level(pane.screen().mouse_protocol_mode());
     }
-    bar(grid, session, view, copy);
+    bar(grid, session, view, placement, copy);
     match &view.mode {
         Mode::Panel(Panel::Column(c)) => column(grid, view, c),
         Mode::Panel(Panel::List(list)) => list_panel(grid, view, list),
@@ -1270,6 +1270,7 @@ fn bar(
     grid: &mut Grid,
     session: &Session,
     view: &View,
+    placement: &Placement,
     copy: Option<(&crate::copy::Copy, crate::copy::Resolved)>,
 ) {
     let Some(y) = view.rows.checked_sub(1) else {
@@ -1282,6 +1283,9 @@ fn bar(
     );
     let pane = |c: &crate::copy::Copy| session.parts.panes().get(&c.pane);
     let copy_bar = copy.and_then(|(c, at)| pane(c).map(|p| c.bar(p.screen(), &at)));
+    // Panes this screen cuts off or hides, named before the title, and
+    // given room past the title's share of the bar.
+    let mut unseen_width = 0;
     let right: Option<(Cow<'_, str>, Attributes)> = if let Some(notice) = &view.notice {
         let colour = Color::Idx(if notice.error { 9 } else { 11 });
         Some((
@@ -1298,17 +1302,21 @@ fn bar(
         (session.focused(view.id))
             .and_then(|f| session.parts.panes().get(&f))
             .map(|p| {
-                let mut text = format!("{} {}", p.id(), p.label());
+                let mut text = unseen(session, view, placement);
+                unseen_width = width(&text);
+                text.push_str(&format!("{} {}", p.id(), p.label()));
                 if view.zoom {
                     text.push_str(" [zoom]");
                 }
                 (text.into(), base)
             })
     };
-    // At most three quarters of the bar, and a gap before it. Exact: the
-    // quarters of a u16 add up to less than one.
+    // At most three quarters of the bar, or what names the unseen panes if
+    // wider, and a gap before it. Exact: the quarters of a u16 add up to
+    // less than one.
     let right_width = right.as_ref().map_or(0, |(t, _)| {
-        width(t).min((view.cols / 2).saturating_add(view.cols / 4))
+        let share = (view.cols / 2).saturating_add(view.cols / 4);
+        width(t).min(share.max(unseen_width)).min(view.cols)
     });
     let left_limit = view
         .cols
@@ -1360,6 +1368,37 @@ fn bar(
         let start = view.cols.saturating_sub(width(&text).saturating_add(1));
         grid.text(y, start, &text, attrs, view.cols);
     }
+}
+
+/// What of the tab `view` shows its screen does not: `[hidden %3]` for each
+/// pane it has no room for (when zoomed, the focus alone is shown), first,
+/// as nothing of it shows; then `[cut %2]` for each placed in less room
+/// than its size; each followed by a space; empty if it shows them all
+/// whole.
+fn unseen(session: &Session, view: &View, placement: &Placement) -> String {
+    let Some(tab) = session.shown_tab(view.id) else {
+        return String::new();
+    };
+    let panes = match tab.focus(view.id).filter(|_| view.zoom) {
+        Some(focus) => vec![focus],
+        None => tab.root().panes(),
+    };
+    let (mut cut, mut hidden) = (String::new(), String::new());
+    for id in panes {
+        let size = session.parts.panes().get(&id).map(|p| p.size());
+        match placement.rect(id) {
+            None => hidden.push_str(&format!(" {id}")),
+            Some(r) if size.is_some_and(|s| r.h() < s.rows() || r.w() < s.cols()) => {
+                cut.push_str(&format!(" {id}"));
+            }
+            Some(_) => {}
+        }
+    }
+    [("hidden", hidden), ("cut", cut)]
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .map(|(word, ids)| format!("[{word}{ids}] "))
+        .collect()
 }
 
 /// A line of a panel: its text, borrowed where it can be, and its style.

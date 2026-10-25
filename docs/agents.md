@@ -13,11 +13,11 @@ be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
-(as `split` does): the other two start a shell. Their tab is laid out on an
-attached client's screen, or on `COLS ROWS size`: with no client attached
-(one that only watches, or has no room for a pane below its bar, does not
-count) a size must be given, as fux makes none up: without one the request
-fails with code `size`.
+(as `split` does): the other two start a shell. Their tab is laid out on
+`COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
+smallest screen that sizes it, else its own size), never on the screen of
+a client that does not show it: run from outside fux, a size must be given, as fux makes none up:
+without one the request fails with code `size`.
 
 **Every pane has a version, and a wait waits for it to change.** A version
 is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
@@ -159,8 +159,8 @@ as integers: `A counts 3 at` is its `DONE`.
   A command's output alone where the shell marks commands, else the screen:
   `str no_marks try %3 last-output capture catch 2drop %3 capture end`.
 - **A shell to type into:** `shell` makes a tab with one in workspace
-  `agent`, on an attached client's screen; with none attached (but ones
-  that only watch), give it a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
+  `agent`, on the size of the tab `fux` runs in; from outside fux, give it
+  a size: `opts 80 24 size str agent in new-tab`. Wait for its prompt
   (a text it shows) before you type: its startup may drop what comes
   sooner. A command that must run is surer started as the program: `opts
   80 24 size str sh program str -c arg str 'make test; exec
@@ -231,8 +231,8 @@ from its program (or it started). Rows and columns count from 0.
 
 ## shells: Shells and their marks
 
-`fux opts 80 24 size str agent in new-tab` gives a shell (the size may go
-with a client attached). fux starts shells as they
+`fux opts 80 24 size str agent in new-tab` gives a shell (run in a fux
+pane, the size may go: the tab is then laid out on that pane's tab). fux starts shells as they
 are; a shell that sends OSC 133 marks (`C` as a command's output begins,
 `D;STATUS` as it ends, `A` at a prompt) counts the commands that end in
 its pane's version (`recipes`), gives `last_status`, lets `last-output`
