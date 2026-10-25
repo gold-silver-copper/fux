@@ -169,8 +169,10 @@ impl Printed {
 /// DEC STD 070, ch. 3; the VT520 manual's SCS): G0 to G3, each ASCII, DEC
 /// Special Graphics or DEC Supplemental Graphics, the one in GL, and the
 /// one a single shift invokes for the next character. The national sets
-/// are not kept: another set is ASCII, as xterm reads one in UTF-8. At
-/// level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
+/// and the other sets ctlseqs lists are not kept: each is ASCII, as xterm
+/// reads one in UTF-8; a designation of no set is ignored (DEC STD 070,
+/// 3.5.1.3: "Unimplemented functions shall be ignored as if they were not
+/// received"). At level 2, G2 and G3 are DEC Supplemental at power-up and soft reset (DEC
 /// STD 070, 3.6.4.2), G0 and G1 ASCII.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C, align(4))]
@@ -181,7 +183,10 @@ pub(crate) struct Charsets {
     graphics: u8,
     /// The set in GL: G0 after SI, G1 after SO, G2 after LS2, G3 after LS3.
     gl: Set,
-    /// G2 after SS2, G3 after SS3: the set of the next graphic character.
+    /// G2 after SS2, G3 after SS3: the set of the next graphic character,
+    /// cancelled by any other function but SO and SI (DEC STD 070,
+    /// 3.8.3.2), so none is pending as an escape or control sequence, a
+    /// string or another control begins (`Screen::cancel_single_shift`).
     single: Option<Set>,
 }
 
@@ -201,11 +206,11 @@ impl Set {
     }
     /// The set an SCS's first intermediate names: `(` G0, `)` G1, `*` G2
     /// and `+` G3.
-    fn of(intermediates: &[u8]) -> Self {
-        match intermediates.first() {
-            Some(b')') => Set::G1,
-            Some(b'*') => Set::G2,
-            Some(b'+') => Set::G3,
+    fn of(intermediate: u8) -> Self {
+        match intermediate {
+            b')' => Set::G1,
+            b'*' => Set::G2,
+            b'+' => Set::G3,
             _ => Set::G0,
         }
     }
@@ -224,14 +229,24 @@ enum Designated {
 }
 
 impl Designated {
-    /// The set a final alone designates (SCS): `0` DEC Special Graphics,
-    /// `<` DEC Supplemental, any other ASCII.
-    #[inline]
-    fn of(byte: u8) -> Self {
-        match byte {
-            b'0' => Self::Graphics,
-            b'<' => Self::Supplemental,
-            _ => Self::Ascii,
+    /// The 94-character set an SCS's final `byte` designates, after the
+    /// intermediate naming G0 to G3 and `intermediate`, its own if it has
+    /// one (ctlseqs, "Designate G0 Character Set"): `0` DEC Special
+    /// Graphics, `<` and `% 5` DEC Supplemental, the other sets listed
+    /// there ASCII; none for a combination that names no set.
+    fn of(intermediate: &[u8], byte: u8) -> Option<Self> {
+        match (intermediate, byte) {
+            ([], b'0') => Some(Self::Graphics),
+            ([], b'<') | (b"%", b'5') => Some(Self::Supplemental),
+            (
+                [],
+                b'4'..=b'7' | b'9' | b'=' | b'>' | b'A'..=b'C' | b'E' | b'H' | b'I' | b'J' | b'K',
+            )
+            | ([], b'Q' | b'R' | b'Y' | b'Z' | b'`' | b'f')
+            | (b"\"", b'4' | b'>' | b'?')
+            | (b"%", b'0' | b'2' | b'3' | b'6' | b'=')
+            | (b"&", b'4' | b'5') => Some(Self::Ascii),
+            _ => None,
         }
     }
 }
@@ -273,17 +288,6 @@ impl Charsets {
         } else {
             special_graphics(raw)
         }
-    }
-    /// SCS of a set with an intermediate of its own (`ESC ( % 5`): DEC
-    /// Supplemental for `% 5`, else ASCII.
-    #[cold]
-    #[inline(never)]
-    fn scs(&mut self, intermediates: &[u8], byte: u8) {
-        let kind = match (intermediates.get(1), byte) {
-            (Some(b'%'), b'5') => Designated::Supplemental,
-            _ => Designated::Ascii,
-        };
-        self.designate(Set::of(intermediates), kind);
     }
     fn designate(&mut self, set: Set, kind: Designated) {
         let bits = match kind {
@@ -1483,13 +1487,20 @@ impl Screen {
     }
 
     /// SUB (DEC STD 070, p. 5-132): the error character (U+2426), printed
-    /// in no character set: a single shift waits on.
+    /// in no character set.
     #[cold]
     #[inline(never)]
     pub(crate) fn substitute(&mut self) {
-        let single = self.charsets.single;
-        self.print('\u{2426}');
-        self.charsets.single = single;
+        self.print_as('\u{2426}', Properties::of('\u{2426}'));
+    }
+
+    /// Cancels a pending single shift, as a function other than a graphic
+    /// character, SO or SI begins: "If the next character in the received
+    /// data stream is not a graphic character [...], the single shift
+    /// function is ignored" (DEC STD 070, 3.8.3.2, SS2 and SS3). SS2 and
+    /// SS3 then set it again.
+    pub(crate) fn cancel_single_shift(&mut self) {
+        self.charsets.single = None;
     }
 
     #[inline(never)]
@@ -2223,6 +2234,9 @@ impl Screen {
         if (8..=13).contains(&byte) {
             self.break_cluster();
         }
+        if !matches!(byte, 14 | 15) {
+            self.cancel_single_shift();
+        }
         if byte == 8 && self.reverse_wraps() {
             let pending = self.grid().cursor.pending_wrap;
             self.cursor_back(1, pending);
@@ -2373,26 +2387,21 @@ impl Screen {
         g.fit_cursor();
         self.attributes = saved.attributes;
         self.pen_changed();
-        // A single shift is no state DECSC saves (DEC STD 070, DECSC and
-        // DECRC; ECMA-35, 9.4): the one pending stays, spent or not.
-        self.charsets = Charsets {
-            single: self.charsets.single,
-            ..saved.charsets
-        };
+        // No single shift was pending as DECSC or DECRC began.
+        self.charsets = saved.charsets;
         self.protect = saved.protect;
     }
     /// Carries out an escape sequence; whether fux-vt implements it.
     pub(crate) fn escape(&mut self, intermediates: &[u8], byte: u8) -> bool {
         // SCS (DEC STD 070, SCS): ESC ( F designates G0, ESC ) F G1, ESC * F
         // G2 and ESC + F G3; F `0` is DEC Special Graphics, `<` (the
-        // user-preferred supplemental set) and `% 5` DEC Supplemental, and
-        // any other set is ASCII here.
+        // user-preferred supplemental set) and `% 5` DEC Supplemental, any
+        // other set ctlseqs lists is ASCII here, and no set is ignored.
         match intermediates {
-            [b'(' | b')' | b'*' | b'+'] => {
-                self.charsets
-                    .designate(Set::of(intermediates), Designated::of(byte));
-            }
-            [b'(' | b')' | b'*' | b'+', _] => self.charsets.scs(intermediates, byte),
+            [g @ (b'(' | b')' | b'*' | b'+'), set @ ..] => match Designated::of(set, byte) {
+                Some(kind) => self.charsets.designate(Set::of(*g), kind),
+                None => return false,
+            },
             b"#" if byte == b'8' => {
                 self.alignment();
                 return true;
@@ -2874,11 +2883,8 @@ impl Screen {
             // another is ignored.
             b'x' => {
                 let c = match u8::try_from(p.first(0, 32)) {
-                    Ok(byte @ 32..=126) => {
-                        let mut gl = self.charsets;
-                        gl.single = None;
-                        gl.map(char::from(byte))
-                    }
+                    // No single shift is pending as a CSI ends.
+                    Ok(byte @ 32..=126) => self.charsets.map(char::from(byte)),
                     Ok(byte @ 160..=255) => char::from(byte),
                     _ => return,
                 };

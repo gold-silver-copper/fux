@@ -427,13 +427,13 @@ fn row(cols: u16, bytes: &[u8]) -> Result<String> {
 /// them; SS2 (`ESC N`) and SS3 (`ESC O`) invoke G2 or G3 for the next
 /// graphic character alone. DECSC saves them with G0 and G1, and RIS
 /// designates ASCII again. A single shift is no state DECSC saves (DEC STD
-/// 070, DECSC: the designations and the sets in GL and GR; ECMA-35, 9.4: it
-/// applies to the next graphic character only), so DECRC neither brings a
-/// spent one back nor takes a pending one away.
+/// 070, DECSC: the designations and the sets in GL and GR), and any
+/// function but a graphic character, SO or SI cancels it (3.8.3.2: "the
+/// single shift function is ignored"), DECSC and DECRC among them.
 #[test]
 fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
     assert_eq!(row(6, b"\x1b*0\x1bN\x1b7q\x1b8q")?, "q");
-    assert_eq!(row(6, b"\x1b*0\x1b7\x1bN\x1b8q")?, "\u{2500}");
+    assert_eq!(row(6, b"\x1b*0\x1b7\x1bN\x1b8q")?, "q");
     assert_eq!(row(6, b"\x1b*0\x1bnqq\x0fq")?, "\u{2500}\u{2500}q");
     assert_eq!(row(6, b"\x1b+0\x1boxx\x0ex")?, "\u{2502}\u{2502}x");
     assert_eq!(row(6, b"\x1b*0\x1bNqq")?, "\u{2500}q");
@@ -441,6 +441,42 @@ fn g2_and_g3_are_shifted_in_locked_or_for_one_character() -> Result {
     assert_eq!(row(6, b"\x1b(0\x1b*B\x1bNqq")?, "q\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bn\x1b7\x0f\x1b8q")?, "\u{2500}");
     assert_eq!(row(6, b"\x1b*0\x1bn\x1bcq")?, "q");
+    Ok(())
+}
+
+/// A single shift is spent on the next graphic character; another function
+/// cancels it, but SO and SI, which "may occur between the Single Shift
+/// and the subsequent graphic character" (DEC STD 070, 3.8.3.2): a C0
+/// control, an escape or control sequence, a string.
+#[test]
+fn a_single_shift_is_cancelled_by_any_function_but_so_and_si() -> Result {
+    assert_eq!(row(6, b"\x1b*0\x1bN\x0e\x0fq")?, "\u{2500}");
+    for between in [
+        &b"\x07"[..],
+        b"\x00",
+        b"\x1b[C",
+        b"\x1b=",
+        b"\x1b]2;t\x07",
+        b"\x1bP$qm\x1b\\",
+    ] {
+        let bytes = [&b"\x1b*0\x1bN"[..], between, b"q"].concat();
+        assert_eq!(row(6, &bytes)?.trim_start(), "q", "{between:?}");
+    }
+    // SS3 after SS2 is the one pending.
+    assert_eq!(row(6, b"\x1b*0\x1b+B\x1bN\x1bOq")?, "q");
+    Ok(())
+}
+
+/// SCS designates what ctlseqs lists for its final and intermediates (the
+/// national sets and the others as ASCII); a combination that names no
+/// set is not implemented, ignored "as if [it] were not received" (DEC
+/// STD 070, 3.5.1.3), the set designated before staying.
+#[test]
+fn scs_of_no_set_is_ignored() -> Result {
+    assert_eq!(row(6, b"\x1b(0\x1b(Wq")?, "\u{2500}");
+    assert_eq!(row(6, b"\x1b(0\x1b(%9q")?, "\u{2500}");
+    assert_eq!(row(6, b"\x1b(0\x1b(Aq")?, "q");
+    assert_eq!(row(6, b"\x1b(0\x1b(%6q")?, "q");
     Ok(())
 }
 
@@ -1338,11 +1374,9 @@ fn sub_is_displayed_as_the_error_character() -> Result {
         lines(&run(1, 4, b"\x1b(0\x1aq")?),
         [format!("{sub}\u{2500}")]
     );
-    // A single shift waits on past it, for the next graphic character.
-    assert_eq!(
-        lines(&run(1, 4, b"\x1b*0\x1bN\x1aq")?),
-        [format!("{sub}\u{2500}")]
-    );
+    // It cancels a single shift, as any control but SO and SI does (DEC
+    // STD 070, 3.8.3.2).
+    assert_eq!(lines(&run(1, 4, b"\x1b*0\x1bN\x1aq")?), [format!("{sub}q")]);
     // REP after it repeats nothing.
     assert_eq!(lines(&run(1, 6, b"X\x1a\x1b[3b")?), [format!("X{sub}")]);
     Ok(())

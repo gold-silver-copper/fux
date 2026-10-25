@@ -1230,6 +1230,7 @@ impl Parser {
                 remaining = remaining.get(length..).unwrap_or_default();
                 (UNTIL_STOP && std::mem::take(&mut self.screen.stopped)).then_some(Stop::Budget)
             } else if ground && byte == 0x1b && remaining.get(1) == Some(&b'[') {
+                self.screen.cancel_single_shift();
                 let (length, framed) = self.csi_sequence(remaining, sink);
                 remaining = remaining.get(length..).unwrap_or_default();
                 framed.or_else(|| self.over_after::<UNTIL_STOP>(true, false))
@@ -1505,7 +1506,10 @@ impl Parser {
 
     fn ground(&mut self, byte: u8, sink: &mut impl Sink) {
         match byte {
-            0x1b => self.state = State::Escape(Intermediates::default()),
+            0x1b => {
+                self.screen.cancel_single_shift();
+                self.state = State::Escape(Intermediates::default());
+            }
             0x00..=0x1f | 0x7f => {
                 self.control(byte, sink);
                 self.screen.forget_repeat();
