@@ -307,7 +307,7 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
 /// changed"), and its revision, which counts the bytes read.
 fn state(parser: &Parser) -> String {
     let text = format!("{:#?}", parser.screen());
-    let counts = ["    version: ", "    revision: ", "    unfinished: "];
+    let counts = ["    version: ", "    revision: "];
     let lines = text
         .lines()
         .filter(|l| !counts.iter().any(|c| l.starts_with(c)));

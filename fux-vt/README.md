@@ -359,10 +359,10 @@ whether the screen may have changed (any processing counts);
 `full_refresh_since` whether something structural did (scroll, resize,
 reset, screen switch, history eviction); `dirty_rows_since` yields retained
 rows newer than the mark. A stale mark forces a refresh; it never hides an update.
-`Screen::revision` counts the bytes of output read, each once its work
-is done, and the resizes to another size and changes to history: the same
-however the output was cut into calls, where marks and `Screen::version`
-move on with each call.
+`Screen::revision` counts the bytes of output read, one held back while
+work is left over, and the resizes to another size and changes to
+history: with no work left, the same however the output was cut into
+calls, where marks and `Screen::version` move on with each call.
 
 ## Bounds
 

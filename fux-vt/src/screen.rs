@@ -586,9 +586,10 @@ pub struct Screen {
     next_id: u64,
     version: u64,
     structural: u64,
-    /// `revision`'s count, and the bytes read whose work is left over.
+    /// `revision`'s count, and whether a byte read is held from it while
+    /// its work is left over.
     revision: u64,
-    unfinished: u64,
+    held: bool,
     alternate_active: bool,
     attributes: Attributes,
     /// The pen's style, and the style of its colours alone (what erasing
@@ -830,7 +831,7 @@ impl Screen {
             version: 1,
             structural: 1,
             revision: 0,
-            unfinished: 0,
+            held: false,
             alternate_active: false,
             attributes: Attributes::default(),
             pen_style: 0,
@@ -933,15 +934,14 @@ impl Screen {
     pub(crate) fn begin(&mut self) {
         self.version = self.version.saturating_add(1);
     }
-    /// Counts `bytes` read by a call in `revision`, once their work is
-    /// done: with work left over, when the call that finishes it ends.
+    /// Counts `bytes` read by a call in `revision`, which holds one byte
+    /// read back while work is left over: each call that reads moves it on,
+    /// and once none is left it counts every byte.
     pub(crate) fn read(&mut self, bytes: usize) {
         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
-        self.unfinished = self.unfinished.saturating_add(bytes);
-        if !self.left_over() {
-            let done = mem::take(&mut self.unfinished);
-            self.revise(done);
-        }
+        let read = bytes.saturating_add(u64::from(self.held));
+        self.held = self.left_over() && read > 0;
+        self.revise(read.saturating_sub(u64::from(self.held)));
     }
     /// `revision` moves on by `n`. A u64 of bytes read is never reached,
     /// so it saturates rather than wrap.
@@ -1231,13 +1231,13 @@ impl Screen {
     pub fn version(&self) -> u64 {
         self.version
     }
-    /// The screen's revision: the bytes of output read, each counted once
-    /// its work is done (a call that stops at its budget with work left
-    /// counts its bytes when the call that finishes the work ends), plus
-    /// one for each resize to another size and each change to its history
+    /// The screen's revision: the bytes of output read, one held back
+    /// while a call has stopped at its budget with work left, plus one for
+    /// each resize to another size and each change to its history
     /// (`clear_history`, also `CSI 3 J`; `set_history_bytes` to another
-    /// limit). It is the same however the output was cut into calls, and
-    /// moves on after anything that changes the screen.
+    /// limit). With no work left it is the same however the output was cut
+    /// into calls; it moves on with each call that reads output, and after
+    /// anything else that changes the screen.
     pub fn revision(&self) -> u64 {
         self.revision
     }
