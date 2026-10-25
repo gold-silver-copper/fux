@@ -180,7 +180,9 @@ wait's own (above). CODE stays; every one fux gives
   `unset`, `unused`, `range`, `fail`, `too_long`, `bad_codes`, `contract`.
 
 A program catches the failures its words give, by code, with `try` (`fux
-help try`); a code no running word gives is refused before it runs.
+help try`); a code no running word gives is refused before it runs. Of the
+language's own, fux's words give `unused`, `unknown_word` and `bad_name` as
+they run, so a `try` may name them too.
 
 ## `status json`
 
