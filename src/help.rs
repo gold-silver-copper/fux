@@ -225,7 +225,7 @@ pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
 /// words each uses, which `explain` prints and the word refuses others of.
 pub(crate) const OPTIONS: [(&str, &str); 10] = [
     ("run", "name size cwd env program arg in log-to id"),
-    ("split", "horizontal vertical cwd env program arg id"),
+    ("split", "horizontal vertical shares cwd env program arg id"),
     ("new-tab", "name size cwd env in id"),
     ("new-workspace", "name size cwd env id"),
     ("respawn", "kill-first env program arg"),
@@ -251,6 +251,7 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
     Some(match name {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
+        "shares" => "fux %3 horizontal 2 1 shares split",
         "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
             "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }

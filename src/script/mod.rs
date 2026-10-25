@@ -100,6 +100,8 @@ pub struct Opts {
     pub env: crate::command::Env,
     pub argv: Vec<String>,
     pub axis: Option<Axis>,
+    /// A split's shares (`shares`).
+    pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
     pub log: Option<String>,

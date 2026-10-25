@@ -333,7 +333,9 @@ stopped it.
 - A tab no client shows is laid out on its `size`; `TAB 40 12 resize`
   changes it, `resize-auto` gives it back to a client's screen, `PANE 95
   percent resize-x` sizes a pane in its tab. A size that cannot be had is
-  refused, and nothing changes.
+  refused, and nothing changes; so is a split or a move that would hide a
+  pane on the tab's own size or on a screen showing it (but one that only
+  watches).
 - `opts str FILE log-to` keeps what a program writes; `dump` prints the
   layout as a program that makes it again; `100 30 headless` is a client
   with no terminal (`str c2 client … send-keys` types at it,

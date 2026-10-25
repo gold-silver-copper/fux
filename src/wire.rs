@@ -92,6 +92,15 @@ macro_rules! int_wire {
 }
 int_wire!(u8, u16, u32, u64, i64);
 
+impl Wire for std::num::NonZeroU32 {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.get().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Self::new(u32::get(r)?).ok_or(Error::Bad("share"))
+    }
+}
+
 /// Nothing: a value of no bytes, as an empty frame's payload.
 impl Wire for () {
     fn put(&self, _: &mut Vec<u8>) {}
@@ -529,6 +538,7 @@ mod tests {
             cwd: Some(dir.clone()),
             env: Env::default(),
             id: None,
+            shares: None,
         };
         let read = Command::get(&mut Reader::new(&encode(&split))).ok();
         assert!(matches!(read, Some(Command::Split { cwd: Some(cwd), .. }) if cwd == dir));

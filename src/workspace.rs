@@ -14,6 +14,7 @@ use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, Rect, Side, Tree};
 use crate::pane::{Loose, Pane};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::num::NonZeroU32;
 
 /// A workspace and its tabs, of which it always has one or more: each is
 /// made with one, and the session removes a workspace its last tab leaves.
@@ -505,20 +506,30 @@ impl Parts {
         self.panes.insert(pane.id(), pane.placed(Placed(())));
     }
 
-    /// Puts `pane`, new, beside `target`, along `axis`, after it; the pane
-    /// given back if `target` is in no tab.
+    /// Puts `pane`, new, beside `target`, along `axis`, after it, the two
+    /// taking `shares` of their split if given; the pane given back if
+    /// `target` is in no tab.
     #[expect(clippy::result_large_err, reason = "a pane given back")]
     pub(crate) fn split(
         &mut self,
         target: PaneId,
         pane: Pane<Loose>,
         axis: Axis,
+        shares: Option<(NonZeroU32, NonZeroU32)>,
     ) -> Result<(), Pane<Loose>> {
         let (Some(at), new) = (self.locate(target), pane.id()) else {
             return Err(pane);
         };
         let split = |root: &mut Option<Tree>| {
-            (root.as_mut()).is_some_and(|r| r.split(target, new, axis, Side::After))
+            let Some(r) = root.as_mut() else {
+                return false;
+            };
+            let split = r.split(target, new, axis, Side::After);
+            if let (true, Some((theirs, its))) = (split, shares) {
+                r.share(target, theirs);
+                r.share(new, its);
+            }
+            split
         };
         if !tab_mut(&mut self.workspaces, at.1).is_some_and(|(_, t)| t.edit(split)) {
             return Err(pane);

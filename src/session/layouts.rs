@@ -6,7 +6,7 @@
 use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
-use crate::layout::{self, Axis, Split, Tree};
+use crate::layout::{Axis, Split, Tree};
 use crate::pane::{self, Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
@@ -99,22 +99,6 @@ impl Session {
         if let Tree::Split(axis, split) = root {
             self.dump_split(*axis, split, ids, out);
         }
-        // Each pane's place in the tab laid out on the size given above,
-        // for the shares of its splits, the last taking what is left: not
-        // its program's size, which a client's zoom, or clients' screens
-        // of other sizes, make one the layout cannot give.
-        let placed = layout::place(root, tab.fit().area());
-        let panes = root.panes();
-        if let Some((_, sized)) = panes.split_last() {
-            for pane in sized {
-                let Some(rect) = placed.rect(*pane) else {
-                    continue;
-                };
-                let name = pane_name(*pane);
-                push(out, &[&name, &rect.w().to_string(), "resize-x"]);
-                push(out, &[&name, &rect.h().to_string(), "resize-y"]);
-            }
-        }
         // Panes renamed keep their names.
         for pane in root.panes() {
             let Some(p) = self.parts.panes().get(&pane) else {
@@ -131,20 +115,24 @@ impl Session {
     }
 
     /// The `split` lines that make `split`'s children beside its first,
-    /// along `axis`, and then each child's own.
+    /// along `axis`, each with its share, and then each child's own: the
+    /// layout made again is the one there is, at every size.
     fn dump_split(&self, axis: Axis, split: &Split, ids: bool, out: &mut String) {
-        let firsts: Vec<PaneId> = split.children().filter_map(Tree::first_pane).collect();
+        let firsts: Vec<_> = (split.children())
+            .filter_map(|(share, child)| Some((child.first_pane()?, share)))
+            .collect();
         let way = match axis {
             Axis::Horizontal => "horizontal",
             Axis::Vertical => "vertical",
         };
-        for (before, pane) in firsts.iter().zip(firsts.iter().skip(1)) {
+        for ((before, theirs), (pane, its)) in firsts.iter().zip(firsts.iter().skip(1)) {
             let mut line = vec![pane_name(*before), way.into()];
+            line.extend([theirs.to_string(), its.to_string(), "shares".to_owned()]);
             self.pane_words(*pane, ids, &mut line);
             line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
             push(out, &line);
         }
-        for child in split.children() {
+        for (_, child) in split.children() {
             if let Tree::Split((), inner) = child {
                 self.dump_split(axis.cross(), inner, ids, out);
             }

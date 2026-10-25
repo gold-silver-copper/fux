@@ -14,6 +14,7 @@ use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
 use fuxth::{Code as Lang, Done, Failure, Value};
+use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 
 /// A word of fux's vocabulary.
@@ -104,6 +105,7 @@ pub const WORDS: &[Word] = &[
     word("Starting", "arg", "x text -- x", "an argument for the program"),
     word("Starting", "horizontal", "x -- x", "split side by side"),
     word("Starting", "vertical", "x -- x", "split stacked"),
+    word("Starting", "shares", "x n n -- x", "split: the shares of their split the pane and the new one take, beside its other children's (default: the pane's halved)"),
     word("Starting", "in", "x workspace -- x", "the workspace for run or new-tab (a name not there is made)"),
     word("Starting", "id", "x id -- x", "the id to make it with (%N, @N, +N): above every id of its kind given, and at most 65536 past the last"),
     word("Starting", "log-to", "x file -- x", "keep everything the program writes in a file too"),
@@ -359,6 +361,12 @@ fn int(value: &Value<Fux>) -> Result<i64, Failure> {
 const CELL: RangeInclusive<i64> = 0..=u16::MAX as i64;
 const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 
+/// A share of a split (`shares`): 1 or more, in a u32.
+fn share(value: &Value<Fux>) -> Result<NonZeroU32, Failure> {
+    let n = within(value, 1..=i64::from(u32::MAX))?;
+    NonZeroU32::new(n).ok_or_else(|| fail(Lang::Range, "a share is 1 or more"))
+}
+
 /// An integer within `range`, as the type it goes in.
 fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Result<T, Failure> {
     let n = int(value)?;
@@ -530,6 +538,7 @@ fn modify(
         "size" => built.size = Some(laid_out(&next()?, &next()?)?),
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
+        "shares" => built.shares = Some((share(&next()?)?, share(&next()?)?)),
         "kill-first" => built.kill = true,
         "wrapped" => built.view.wrapped = true,
         "full" => built.view.full = true,
@@ -1025,6 +1034,7 @@ impl fuxth::Host for Host<'_> {
                     cwd: built.cwd,
                     env: built.env,
                     id,
+                    shares: built.shares,
                 };
                 later(ask(split, Then::Handle(Kind::Pane)))
             }

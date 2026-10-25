@@ -269,6 +269,17 @@ impl<A> Tree<A> {
     fn is_pane(&self, pane: PaneId) -> bool {
         matches!(self, Tree::Pane(p) if *p == pane)
     }
+    /// Gives `pane` `share` of the split it is a child of, if it is in one.
+    pub fn share(&mut self, pane: PaneId, share: NonZeroU32) {
+        if let Tree::Split(_, Split(children)) = self {
+            for (weight, child) in children {
+                match child.is_pane(pane) {
+                    true => *weight = share,
+                    false => child.share(pane, share),
+                }
+            }
+        }
+    }
 }
 
 impl Tree<()> {
@@ -288,9 +299,9 @@ impl Tree<()> {
 }
 
 impl Split {
-    /// Its children, in order.
-    pub fn children(&self) -> impl Iterator<Item = &Tree<()>> {
-        self.0.iter().map(|(_, child)| child)
+    /// Its children, in order, each with its share.
+    pub fn children(&self) -> impl Iterator<Item = (NonZeroU32, &Tree<()>)> {
+        self.0.iter().map(|(share, child)| (*share, child))
     }
     /// `target` and `new` beside it, on `side`, sharing alike.
     fn pair(target: PaneId, new: PaneId, side: Side) -> Split {
