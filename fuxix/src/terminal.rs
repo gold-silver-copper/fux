@@ -5,17 +5,13 @@ use crate::process::Pid;
 use std::num::NonZeroU16;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 
-/// The type of an `ioctl` request, which differs between C libraries.
+/// The type of an `ioctl` request, which differs between C libraries; on
+/// macOS some request constants are typed narrower, and `Request::from`
+/// widens them.
 #[cfg(target_os = "macos")]
-type Request = libc::c_ulong;
+pub(crate) type Request = libc::c_ulong;
 #[cfg(not(target_os = "macos"))]
-type Request = libc::Ioctl;
-
-/// A request constant as the C library's `ioctl` takes it: on macOS, some
-/// are typed narrower.
-pub(crate) fn request(value: impl Into<Request>) -> Request {
-    value.into()
-}
+pub(crate) type Request = libc::Ioctl;
 
 /// A terminal's modes.
 #[derive(Clone)]
@@ -210,7 +206,7 @@ pub fn window_size(fd: impl AsFd) -> Option<Size> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let get = request(libc::TIOCGWINSZ);
+    let get = Request::from(libc::TIOCGWINSZ);
     // SAFETY: TIOCGWINSZ writes one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), get, &mut size) }).ok()?;
     Size::new(size.ws_row, size.ws_col)
@@ -225,23 +221,33 @@ pub fn set_window_size(fd: impl AsFd, size: Size) -> Result<()> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let set = request(libc::TIOCSWINSZ);
+    let set = Request::from(libc::TIOCSWINSZ);
     // SAFETY: TIOCSWINSZ reads one winsize, and `size` is one.
     check(unsafe { libc::ioctl(fd.as_fd().as_raw_fd(), set, &size) }).map(drop)
 }
 
-/// The foreground process group of the terminal `fd`, if it has one.
-pub fn foreground_group(fd: impl AsFd) -> Option<Pid> {
+/// The foreground process group of the terminal `fd`: none if it has
+/// none (Linux answers 0) or no session has it as its terminal (`NOTTY`),
+/// else why it can't be told.
+pub fn foreground_group(fd: impl AsFd) -> Result<Option<Pid>> {
     // SAFETY: tcgetpgrp takes a descriptor and touches no memory.
-    Pid::from_raw(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) })
+    match check(unsafe { libc::tcgetpgrp(fd.as_fd().as_raw_fd()) }) {
+        Ok(group) => Ok(Pid::from_raw(group)),
+        Err(Errno::NOTTY) => Ok(None),
+        Err(errno) => Err(errno),
+    }
 }
 
 /// A new open file for the terminal `fd` is open on, read-write,
 /// nonblocking, close-on-exec, and never made this process's controlling
 /// terminal: its flags are its own, so making it nonblocking changes
 /// nothing for whoever else has the terminal open. `NOTTY` if `fd` is not a
-/// terminal.
+/// terminal, or is a PTY's master, whose name opens a new PTY.
 pub fn reopen(fd: impl AsFd) -> Result<OwnedFd> {
+    // Only a master has a slave's name to give.
+    if crate::pty::slave_name(&fd).is_ok() {
+        return Err(Errno::NOTTY);
+    }
     let mut name = [0 as libc::c_char; 256];
     // SAFETY: the buffer is whole, of the length given, and ttyname_r
     // NUL-terminates what it writes there.
@@ -266,8 +272,8 @@ mod tests {
     }
 
     /// A terminal reopened is the same terminal, through an open file of
-    /// its own: nonblocking without making the original so. A socket is
-    /// no terminal.
+    /// its own: nonblocking without making the original so. A master, and
+    /// a socket, are refused.
     #[test]
     fn a_terminal_reopens_nonblocking_on_its_own() -> std::result::Result<(), String> {
         let (master, slave) = pty::open(size(10, 20)?).map_err(|e| e.to_string())?;
@@ -279,6 +285,7 @@ mod tests {
         crate::io::write(&master, b"hi\n").map_err(|e| e.to_string())?;
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(crate::io::read(&again, &mut buffer).is_ok_and(|n| n > 0));
+        assert_eq!(reopen(&master).err(), Some(Errno::NOTTY));
         let (a, _b) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
         assert!(reopen(&a).is_err());
         Ok(())
@@ -308,7 +315,7 @@ mod tests {
         set_attributes(&slave, &termios).map_err(|e| e.to_string())?;
         assert_eq!(attributes(&slave).map_err(|e| e.to_string())?.modes(), echo);
         // No session has it as its terminal: no foreground group.
-        assert_eq!(foreground_group(&master), None);
+        assert_eq!(foreground_group(&master), Ok(None));
         assert!(attributes(std::fs::File::open("/dev/null").map_err(|e| e.to_string())?).is_err());
         Ok(())
     }

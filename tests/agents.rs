@@ -11,7 +11,8 @@ use support::*;
 
 /// The pane an answer is about: the first word of its first line.
 fn id(out: &str) -> String {
-    out.split_whitespace().next().unwrap_or_default().to_owned()
+    let first = out.split_whitespace().next().unwrap_or_default();
+    first.split(':').next().unwrap_or_default().to_owned()
 }
 
 /// `argv` as options words: its program, then each argument.
@@ -49,13 +50,11 @@ fn typed<'a>(pane: &'a str, line: &'a str) -> Vec<&'a str> {
     ]
 }
 
-/// The version an action's answer gives, from before it acted.
+/// The version an action's answer gives, from before it acted: its
+/// first word.
 fn version(answer: &str) -> String {
-    answer
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or_default()
-        .to_owned()
+    let first = answer.split_whitespace().next();
+    first.unwrap_or_default().to_owned()
 }
 
 /// Waits from the version an action answered (`answer`) until its pane
@@ -64,21 +63,34 @@ fn shows_after(server: &Server, answer: &str, text: &str) -> Result<String, Stri
     server.until(&id(answer), &version(answer), |c| c.contains(text))
 }
 
-/// The marks the README shows for bash, which a bash pane here sends.
-const BASH_MARKS: &str = r#"PS0='\e]133;C\a'
-PROMPT_COMMAND='printf "\e]133;D;%s\a\e]133;A\a" "$?"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}"#;
+/// The block of `docs/agents.md` fenced as `lang` first after `after`: as
+/// written, its indent taken off.
+fn block(after: &str, lang: &str) -> Result<String, String> {
+    let docs = include_str!("../docs/agents.md");
+    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
+    let fence = format!("```{lang}\n");
+    let (_, block) = from.split_once(&fence).ok_or(format!("no {lang} block"))?;
+    let (block, _) = block.split_once("```").ok_or("no end")?;
+    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
+    Ok(lines.map(|l| format!("{l}\n")).collect())
+}
 
-/// The marks the README shows for zsh.
-const ZSH_MARKS: &str = r#"autoload -Uz add-zsh-hook
-mark_start() { print -n '\e]133;C\a' }
-mark_end() { print -n "\e]133;D;$?\a\e]133;A\a" }
-add-zsh-hook preexec mark_start
-precmd_functions=(mark_end $precmd_functions)  # first, so $? is the command's"#;
+/// The marks `docs/agents.md` shows for `shell`, in its startup file.
+fn marks(shell: &str) -> Result<String, String> {
+    block("## shells:", shell)
+}
 
-/// The marks the README shows for fish.
-const FISH_MARKS: &str = r#"function mark_start --on-event fish_preexec; printf '\e]133;C\a'; end
-function mark_end --on-event fish_postexec; printf '\e]133;D;%s\a' $status; end
-function mark_prompt --on-event fish_prompt; printf '\e]133;A\a'; end"#;
+/// A prompt hook of a user's own, for `shell`, run after the marks' end:
+/// it says the status it sees.
+fn later_hook(shell: &str) -> &'static str {
+    match shell {
+        "bash" => "after() { echo \"hook saw $?\"; }\nPROMPT_COMMAND=after\n",
+        "zsh" => "after() { echo \"hook saw $?\" }\nprecmd_functions=(after)\n",
+        // At its prompt: fish runs its handlers of one event in no order
+        // it promises, and the marks end a command at fish_postexec.
+        _ => "function after --on-event fish_prompt; echo \"hook saw $status\"; end\n",
+    }
+}
 
 /// Whether the `bash` here is 4.4 or later, which has `PS0`, as the
 /// README's marks need (macOS's own is 3.2).
@@ -94,10 +106,12 @@ fn bash_has_ps0() -> Result<bool, String> {
     Ok(version >= 404)
 }
 
-/// A bash pane named `name` that marks its commands as the README says.
+/// A bash pane named `name` that marks its commands as the docs say, after
+/// a prompt hook of its own.
 fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
     let rc = server.dir.join(format!("{name}.bashrc"));
-    std::fs::write(&rc, format!("PS1='$ '\n{BASH_MARKS}\n")).map_err(e)?;
+    let (hook, marks) = (later_hook("bash"), marks("bash")?);
+    std::fs::write(&rc, format!("PS1='$ '\n{hook}{marks}")).map_err(e)?;
     let rc = rc.to_string_lossy().into_owned();
     let argv = ["bash", "--noprofile", "--rcfile", &rc, "-i"];
     let made = server.ok(&run(&["str", name, "name"], &argv))?;
@@ -110,7 +124,7 @@ fn marked_bash(server: &Server, name: &str) -> Result<(), String> {
 /// `DONE`, grows.
 fn line_done(server: &Server, pane: &str, line: &str) -> Outcome {
     let since = version(&server.ok(&typed(pane, line))?);
-    let done = |v: &str| v.split('.').nth(3).and_then(|d| d.parse::<u64>().ok());
+    let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
     let (before, deadline) = (done(&since), after(PATIENCE));
     let mut at = since;
     while done(&at) <= before {
@@ -133,9 +147,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     // Waited on from its start, it has exited: answered at once; from now,
     // nothing changes.
     let since = version(&started);
-    let from_start = [
-        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
-    ];
+    let from_start = ["str", &since, "changed", "wait", "json"];
     let json = server.ok(&from_start)?;
     assert!(json.contains(r#""exited":3,"status":0"#), "{json}");
     let now = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
@@ -168,7 +180,7 @@ fn a_run_program_keeps_its_pane_screen_and_status() -> Outcome {
     server.ok(&["str", &pane, "pane", "str", "KILL", "signal"])?;
     server.exits(&pane)?;
     let since = version(&started);
-    let waited = ["str", &pane, "pane", "str", &since, "changed", "wait"];
+    let waited = ["str", &since, "changed", "wait"];
     let text = server.ok(&waited)?;
     assert!(text.ends_with(" killed by SIGKILL\n"), "{text}");
     let json = server.ok(&[&waited[..], &["json"]].concat())?;
@@ -197,17 +209,16 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
         began.elapsed()
     );
     let since = version(&sent);
-    assert_eq!(sent, format!("{pane} {since}\n"));
+    assert_eq!(sent, format!("{since}\n"));
+    assert!(since.starts_with(&format!("{pane}:")), "{since}");
     // Asked once the program answered: met at once, from the version held.
     server.until(&pane, &since, |c| c.contains("got"))?;
-    let changed = server.ok(&["str", &pane, "pane", "str", &since, "changed", "wait"])?;
+    let changed = server.ok(&["str", &since, "changed", "wait"])?;
     assert!(
-        changed.starts_with(&format!("{pane} ")) && changed.ends_with(" screen\n"),
+        changed.starts_with(&format!("{pane}:")) && changed.ends_with(" screen\n"),
         "{changed}"
     );
-    let json = server.ok(&[
-        "str", &pane, "pane", "str", &since, "changed", "wait", "json",
-    ])?;
+    let json = server.ok(&["str", &since, "changed", "wait", "json"])?;
     assert!(
         json.contains(r#""changed":["screen"],"status":0"#),
         "{json}"
@@ -215,12 +226,17 @@ fn a_wait_from_an_action_s_version_misses_nothing() -> Outcome {
     let still = server.fux(&["str", &pane, "pane", "1", "timeout", "wait"])?;
     assert_eq!(still.status, 124, "{}{}", still.stdout, still.stderr);
     assert!(still.stdout.ends_with(" timeout\n"), "{}", still.stdout);
-    let bad = server.fux(&["str", &pane, "pane", "str", "1.2", "changed", "wait"])?;
+    let bad = server.fux(&["str", "0.1.2.0.0", "changed", "wait"])?;
     assert!(bad.stderr.starts_with("fux: bad_value: "), "{}", bad.stderr);
-    // A version with a count above this pane's (a program started more
-    // often, or more output read) is another pane's, or made up.
-    for other in ["3.0.0.0.0", "0.99999.0.0.0"] {
-        let other = server.fux(&["str", &pane, "pane", "str", other, "changed", "wait"])?;
+    // Counts this pane never had (a program started more often, or more
+    // output read), or another server run's, are refused.
+    let server_run = since.rsplit(':').next().unwrap_or_default();
+    for other in [
+        format!("{pane}:3.0.0.0.0:{server_run}"),
+        format!("{pane}:0.99999.0.0.0:{server_run}"),
+        format!("{pane}:0.1.0.0.0:1-0"),
+    ] {
+        let other = server.fux(&["str", &other, "changed", "wait"])?;
         let refused = other.stderr.starts_with("fux: bad_value: ");
         assert!(refused, "{}", other.stderr);
     }
@@ -246,34 +262,30 @@ fn bells_and_respawns_change_the_version() -> Outcome {
     let pane = id(&server.ok(&run(&[], &["sh", "-c", script]))?);
     let mut at = version(&server.ok(&typed(&pane, ""))?);
     loop {
-        let waited = [
-            "str", &pane, "pane", "str", &at, "changed", "10", "timeout", "wait",
-        ];
+        let waited = ["str", &at, "changed", "10", "timeout", "wait"];
         let out = server.ok(&waited)?;
         if out.contains(" bell") {
             break;
         }
         at = version(&out);
     }
-    assert_eq!(server.version(&pane)?.split('.').nth(2), Some("1"));
+    assert_eq!(count(&server.version(&pane)?, 2), Some("1"));
     let at = server.version(&pane)?;
     let respawned = server.ok(&["str", &pane, "pane", "kill-first", "respawn"])?;
-    assert!(version(&respawned).starts_with("1."), "{respawned}");
-    let answer = server.ok(&["str", &pane, "pane", "str", &at, "changed", "wait"])?;
+    assert_eq!(count(&respawned, 0), Some("1"), "{respawned}");
+    let answer = server.ok(&["str", &at, "changed", "wait"])?;
     assert!(answer.contains(" respawned"), "{answer}");
     Ok(())
 }
 
 /// A shell's OSC 133 marks count the commands that end in its pane's
 /// version, `last_status` says how the last ended and `last-output` reads
-/// its output alone; where no command was marked, `last-output` says so
-/// and the count stays. The marks are the README's, for each shell here.
+/// its output alone; a prompt hook after the marks sees the command's
+/// status; a line that runs nothing ends no command. Where no command was
+/// marked, `last-output` says so and the count stays. The marks are the
+/// docs', for each shell here.
 #[test]
 fn shell_marks_count_commands_and_give_their_output() -> Outcome {
-    let readme = include_str!("../README.md");
-    for marks in [BASH_MARKS, ZSH_MARKS, FISH_MARKS] {
-        assert!(readme.contains(marks), "the README shows {marks}");
-    }
     let server = Server::start("")?;
     let bash = bash_has_ps0()?;
     if bash {
@@ -285,27 +297,53 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         assert_eq!(status(pane)?, "1\n");
         let output = server.ok(&["str", pane, "pane", "last-output", "capture"])?;
         assert_eq!(output, "one\n");
-        line_done(&server, pane, "echo two")?;
+        server.shows(pane, "hook saw 1")?;
+        // An empty line and a syntax error (in bash and zsh) run nothing:
+        // the next command is the one that ends. A comment runs nothing in bash; interactive
+        // zsh runs `#` as a command (unless interactive_comments), and fish
+        // marks a comment line as a command.
+        let done = |v: &str| count(v, 3).and_then(|d| d.parse::<u64>().ok());
+        let mut ended = Vec::new();
+        // fish, given `)`, does not end the command typed after it as the
+        // others do: its syntax errors are left unsaid.
+        let lines: &[&str] = match pane {
+            "fish" => &["", "# nothing"],
+            _ => &["", "# nothing", ")"],
+        };
+        for &nothing in lines {
+            let before = done(&server.version(pane)?);
+            server.ok(&typed(pane, nothing))?;
+            line_done(&server, pane, "echo two")?;
+            let after = done(&server.version(pane)?);
+            if after != before.map(|d| d.saturating_add(1)) {
+                ended.push(nothing);
+            }
+        }
+        let comment: &[&str] = match pane {
+            "zsh" | "fish" => &["# nothing"],
+            _ => &[],
+        };
+        assert_eq!(ended, comment, "{pane}: the lines that ended a command");
         assert_eq!(status(pane)?, "0\n");
         Ok(())
     };
     if bash {
         check("b")?;
     }
-    // A shell the tests may have: its marks as the README has them, each
-    // read from its own startup file, where the README puts them.
+    // A shell the tests may have: its marks as the docs have them, each
+    // read from its own startup file, where the docs put them.
     let shells = [
-        ("zsh", ZSH_MARKS, "ZDOTDIR", ".zshrc"),
-        ("fish", FISH_MARKS, "XDG_CONFIG_HOME", "fish/config.fish"),
+        ("zsh", "ZDOTDIR", ".zshrc"),
+        ("fish", "XDG_CONFIG_HOME", "fish/config.fish"),
     ];
-    for (shell, marks, home, rc) in shells {
+    for (shell, home, rc) in shells {
         if std::env::var_os("FUX_TEST_SHELLS").is_none() {
             break;
         }
         let dir = server.dir.join(shell);
         let rc = dir.join(rc);
         std::fs::create_dir_all(rc.parent().ok_or("a directory")?).map_err(e)?;
-        std::fs::write(&rc, format!("{marks}\n")).map_err(e)?;
+        std::fs::write(&rc, format!("{}{}", later_hook(shell), marks(shell)?)).map_err(e)?;
         let dir = dir.to_string_lossy().into_owned();
         let words = [
             "opts", "str", shell, "name", "str", home, "str", &dir, "env",
@@ -323,7 +361,7 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
     let echoed = server.ok(&typed(&id(&plain), "echo un''marked"))?;
     shows_after(&server, &echoed, "unmarked")?;
     let done = server.version(&id(&plain))?;
-    assert_eq!(done.split('.').nth(3), Some("0"), "{done}");
+    assert_eq!(count(&done, 3), Some("0"), "{done}");
     Ok(())
 }
 
@@ -406,7 +444,8 @@ fn sizes_are_set_as_asked() -> Outcome {
         "tab",
     ])?;
     let (left, tab) = made.trim().split_once('\n').ok_or("a pane and its tab")?;
-    let left = left.split_whitespace().next().ok_or("a pane")?;
+    let left = id(left);
+    let left = left.as_str();
     let size = |pane: &str| -> Result<String, String> {
         let ls = server.ok(&["ls"])?;
         let line = ls
@@ -601,7 +640,7 @@ fn run_programs_are_restarted_logged_and_read_whole() -> Outcome {
         "respawn",
     ];
     let again = server.ok(&again)?;
-    assert!(again.starts_with(&format!("{pane} 1.")), "{again}");
+    assert!(again.starts_with(&format!("{pane}:1.")), "{again}");
     shows_after(&server, &again, "full b")?;
     let kept = std::fs::read_to_string(&log).map_err(e)?;
     assert!(kept.contains("full a") && kept.contains("full b"), "{kept}");
@@ -725,10 +764,9 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
 }
 
 /// A wait on a workspace waits on each of its panes, and answers a line for
-/// each: here none changed, so each timed out, the whole 124. A version is
-/// one pane's, so a wait on several takes none. (`session`'s tests begin a
-/// wait before what it waits for: the answer of the pane that changed, and
-/// of one that closed.)
+/// each: here none changed, so each timed out, the whole 124. (`session`'s
+/// tests begin a wait before what it waits for: the answer of the pane
+/// that changed, and of one that closed.)
 #[test]
 fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
     let server = Server::start("")?;
@@ -740,34 +778,18 @@ fn a_wait_on_a_workspace_answers_each_of_its_panes() -> Outcome {
         let line = timed
             .stdout
             .lines()
-            .find(|l| l.starts_with(&format!("{pane} ")));
+            .find(|l| l.starts_with(&format!("{pane}:")));
         assert!(
             line.is_some_and(|l| l.ends_with(" timeout")),
             "{}",
             timed.stdout
         );
     }
-    let since = server.version(&one)?;
-    let given = server.fux(&["str", "g", "workspace", "str", &since, "changed", "wait"])?;
-    assert!(given.stderr.starts_with("fux: usage: "), "{}", given.stderr);
-    // A tab of one pane takes its pane's version.
-    let before = version(&server.ok(&typed(&one, "x"))?);
-    let on_tab = [
-        "str", &one, "pane", "tab", "str", &before, "changed", "wait",
-    ];
-    let answer = server.ok(&on_tab)?;
-    assert!(answer.starts_with(&format!("{one} ")), "{answer}");
-    // A tab's answer is no pane, though one pane answered: not waited on
-    // again, and an array as JSON.
-    let again = server.fux(&[&on_tab[..], &["wait"]].concat())?;
-    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
-    let json = server.ok(&[&on_tab[..], &["json"]].concat())?;
-    assert!(
-        json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
-        "{json}"
-    );
-    // So is a tab's action's.
+    // A tab's action's answer holds no one pane's version, though it has
+    // one pane: not waited on, and an array as JSON.
     let keys = ["str", &one, "pane", "tab", "str", "y", "text", "send-keys"];
+    let again = server.fux(&[&keys[..], &["wait"]].concat())?;
+    assert!(again.stderr.starts_with("fux: type: "), "{}", again.stderr);
     let json = server.ok(&[&keys[..], &["json"]].concat())?;
     assert!(
         json.starts_with(&format!("[{{\"pane\":\"{one}\"")),
@@ -787,9 +809,7 @@ fn an_answer_is_its_pane() -> Outcome {
     let sent = [&typed(&pane, "go")[..], &["str", "name", "get"]];
     assert_eq!(server.ok(&sent.concat())?.trim(), "sh");
     server.shows(&pane, "%13 fake")?;
-    let waited = [
-        "str", &pane, "pane", "str", &since, "changed", "wait", "str", "name", "get",
-    ];
+    let waited = ["str", &since, "changed", "wait", "str", "name", "get"];
     assert_eq!(server.ok(&waited)?.trim(), "sh");
     Ok(())
 }
@@ -913,8 +933,9 @@ fn words_refuse_options_they_do_not_use() -> Outcome {
     let on = ["str", &pane, "pane"];
     let opts = ["opts"];
     let cat = ["str", "cat", "program"];
+    let since = server.version(&pane)?;
     for (before, unused, word) in [
-        (&on[..], &["str", "0.1.0.0.0", "changed"][..], "capture"),
+        (&[][..], &["str", &since, "changed"][..], "capture"),
         (&on, &["5", "timeout"], "capture"),
         (&on, &["100", "40", "size"], "capture"),
         (&on, &["str", "x", "name"], "wait"),
@@ -971,7 +992,7 @@ fn a_failed_wait_answers_as_text() -> Outcome {
     let p = ["str", pane.as_str(), "pane"];
     let out = server.fux(&[&p[..], &["1", "timeout", "wait", "json"]].concat())?;
     assert_eq!(out.status, 124, "{}", out.stderr);
-    assert!(out.stdout.starts_with(&format!("{pane} ")) && out.stdout.ends_with(" timeout\n"));
+    assert!(out.stdout.starts_with(&format!("{pane}:")) && out.stdout.ends_with(" timeout\n"));
     assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
     assert!(out.stderr.starts_with("fux: timeout: "), "{}", out.stderr);
     // The same when the wait is a defined word's last step.
@@ -1017,7 +1038,7 @@ fn respawn_keeps_a_rename() -> Outcome {
     let name = server.ok(&["str", &pane, "pane", "str", "name", "get"])?;
     assert_eq!(name, "keepme\n");
     server.exits(&pane)?;
-    let answer = server.ok(&["str", &pane, "pane", "str", &ended, "changed", "wait"])?;
+    let answer = server.ok(&["str", &ended, "changed", "wait"])?;
     assert!(answer.ends_with(" respawned exited 0\n"), "{answer}");
     Ok(())
 }
@@ -1054,67 +1075,60 @@ fn a_pane_gets_the_fux_running_it() -> Outcome {
     Ok(())
 }
 
-/// The code block of `docs/agents.md` after `after`: as written, its
-/// indent taken off.
-fn recipe(after: &str) -> Result<String, String> {
-    let docs = include_str!("../docs/agents.md");
-    let (_, from) = docs.split_once(after).ok_or(format!("no {after:?}"))?;
-    let (_, block) = from.split_once("```sh\n").ok_or("no block")?;
-    let (block, _) = block.split_once("```").ok_or("no end")?;
-    let lines = block.lines().map(|l| l.strip_prefix("  ").unwrap_or(l));
-    Ok(lines.map(|l| format!("{l}\n")).collect())
-}
-
-/// The docs' recipes run as written, under bash, with their helpers: a
-/// reply's text, a program's exit, a command's end that comes with its
-/// program's, and quiet.
+/// The docs' recipes run as written, as programs: a quiet screen, a
+/// reply's text, a shell command's end and a program's exit, and a
+/// deadline's fallback, each in a pane of its own; and every program the
+/// guide shows checks.
 #[test]
 fn the_docs_recipes_run_as_written() -> Outcome {
     let server = Server::start("")?;
-    let step = recipe("## recipes: Waiting for what you need")?;
-    let answers = "read q; sleep 1; echo the answer is 42; sleep 30";
-    let asks = id(&server.ok(&run(&[], &["sh", "-c", answers]))?);
-    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
-    let exit =
-        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
-    // A command's end, marked, that comes with its program's own.
-    let marked = r#"opts str sh program str -c arg str 'sleep 1; printf "\033]133;C\007hi\n\033]133;D;5\007"' arg run"#;
-    let ended = recipe("- **A shell command's end, with marks**")?
-        .replace("%3 str 'make test' line", marked);
-    let bin = std::path::Path::new(fux())
-        .parent()
-        .ok_or("fux's directory")?;
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let talks = "read x; echo one; sleep 0.3; echo two; sleep 30";
-    let talks = id(&server.ok(&run(&[], &["sh", "-c", talks]))?);
+    let pane = |script: &str| -> Result<String, String> {
+        Ok(id(&server.ok(&run(&[], &["sh", "-c", script]))?))
+    };
+    let recipe = |after: &str| block(after, "fux");
+    let talks = pane("read x; echo one; sleep 0.3; echo two; sleep 30")?;
     let quiet = recipe("- **Quiet for N seconds**")?
         .replace("%2", &talks)
-        .replace("quiet 600 5", "quiet 600 1");
-    let recipes = [
-        (text, "answered\n"),
-        (exit, "3\n"),
-        (ended, "5\nhi\n"),
+        .replace("5 quiet", "1 quiet");
+    let asks = pane("read q; sleep 1; echo the answer is 42; sleep 30")?;
+    let text = recipe("- **A text the reply writes:**")?.replace("%2", &asks);
+    // A command's end, marked, once a line comes.
+    let marks = r#"read x; printf '\033]133;C\007hi\n\033]133;D;5\007'; sleep 30"#;
+    let ended = recipe("- **A shell command's end, with marks**")?.replace("%3", &pane(marks)?);
+    let unmarked = recipe("- **A shell command's end, without marks:**")?
+        .replace("%3", &pane("exec sh -i")?)
+        .replace("make test", "true");
+    let exit =
+        recipe("- **A program's exit:**")?.replace("'cargo test'", r#"'sh -c "sleep 1; exit 3"'"#);
+    let deaf = pane("stty -echo; sleep 30")?;
+    let fallback = recipe("- **A deadline, a fallback, a retry:**")?
+        .replace("%2", &deaf)
+        .replace("10 timeout", "1 timeout");
+    for (i, (recipe, said)) in [
         (quiet, "two\n"),
-    ];
-    for (recipe, said) in recipes {
-        let script = format!("{step}{recipe}");
-        // With `set -e`, as scripts often are: a recipe must not stop on a
-        // status it expects.
-        let out = std::process::Command::new("bash")
-            .args(["-e", "-c", &script])
-            .env("PATH", &path)
-            .env("FUX_SOCKET", &server.socket)
-            .env("XDG_CONFIG_HOME", server.dir.join("config"))
-            .env_remove("FUX_PANE")
-            .output()
-            .map_err(e)?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stdout.ends_with(said), "{script}\n{stdout}{stderr}");
+        (text, "answered\n"),
+        (ended, "5\nhi\n"),
+        (unmarked, "END-OF-RUN 0\n"),
+        (exit, "3\n"),
+        (fallback, ""),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = server.dir.join(format!("recipe-{i}.fux"));
+        std::fs::write(&file, &recipe).map_err(e)?;
+        let out = server.fux(&[&file.to_string_lossy()])?;
+        assert_eq!(out.status, 0, "{recipe}\n{}{}", out.stdout, out.stderr);
+        assert!(out.stdout.contains(said), "{recipe}\n{}", out.stdout);
+    }
+    // C-c after nothing came of the key.
+    server.exits(&deaf)?;
+    let docs = include_str!("../docs/agents.md");
+    for (i, program) in docs.split("```fux\n").skip(1).enumerate() {
+        let program = program.split("```").next().unwrap_or_default();
+        let file = server.dir.join(format!("shown-{i}.fux"));
+        std::fs::write(&file, program).map_err(e)?;
+        server.ok(&["str", &file.to_string_lossy(), "check"])?;
     }
     Ok(())
 }

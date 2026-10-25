@@ -1,6 +1,5 @@
 //! The command line: a fuxth program, its words' errors and statuses, what
-//! it leaves printed, `json`, programs from stdin and files, and a command
-//! line typed into a new shell.
+//! it leaves printed, `json`, and programs from stdin and files.
 mod support;
 use support::*;
 
@@ -14,67 +13,6 @@ fn shows(server: &Server, pane: &str, needle: &str) -> Outcome {
 }
 
 #[test]
-fn a_typed_command_runs_in_the_new_shell_and_leaves_its_prompt() -> Outcome {
-    let server = Server::start("")?;
-    // The line arrives as written: spaces and quotes intact.
-    let line = "printf '[%s]\\n' 'a b' \"it's\" '$HOME'";
-    let pane = server.ok(&[
-        "str",
-        "%1",
-        "pane",
-        "horizontal",
-        "str",
-        line,
-        "typed",
-        "split",
-    ])?;
-    assert!(pane.starts_with("%2 "), "{pane}");
-    shows(&server, "%2", "[a b]")?;
-    shows(&server, "%2", "[it's]")?;
-    shows(&server, "%2", "[$HOME]")?;
-    // The command ended; the shell is still there and takes more input.
-    server.type_line("%2", "echo still-here")?;
-    shows(&server, "%2", "\nstill-here")?;
-    // new-tab and new-workspace type theirs too.
-    server.ok(&[
-        "opts",
-        "str",
-        "+1",
-        "workspace",
-        "in",
-        "str",
-        "echo tab-cmd",
-        "typed",
-        "new-tab",
-    ])?;
-    shows(&server, "%3", "\ntab-cmd")?;
-    // Named after its shell, not the line typed into it.
-    let name = server.ok(&["str", "%3", "pane", "str", "name", "get"])?;
-    assert!(!name.contains("echo"), "{name}");
-    server.ok(&["opts", "str", "echo ws-cmd", "typed", "new-workspace"])?;
-    shows(&server, "%4", "\nws-cmd")?;
-    // The terminal takes the line before the shell reads: a control
-    // character would act as a key there, so it is refused, no pane made.
-    let refused = server.fux(&["str", "%1", "pane", "str", "echo a\nb", "typed", "split"])?;
-    assert!(
-        refused.stderr.starts_with("fux: bad_value: "),
-        "{}",
-        refused.stderr
-    );
-    assert!(!server.ok(&["ls"])?.contains("%5"));
-    // So is a line longer than the terminal keeps (1023 bytes, macOS's).
-    let long: String = std::iter::repeat_n('x', 1024).collect();
-    let refused = server.fux(&["str", "%1", "pane", "str", &long, "typed", "split"])?;
-    assert!(
-        refused.stderr.starts_with("fux: bad_value: "),
-        "{}",
-        refused.stderr
-    );
-    assert!(!server.ok(&["ls"])?.contains("%5"));
-    Ok(())
-}
-
-#[test]
 fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let server = Server::start("")?;
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
@@ -82,11 +20,20 @@ fn targets_are_named_or_here_and_never_guessed() -> Outcome {
     let out = server.fux(&["here", "horizontal", "split"])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.starts_with("fux: no_target: "), "{}", out.stderr);
-    // FUX_PANE is the caller's pane, and its tab and workspace.
-    let env = [("FUX_PANE", "%2")];
+    // FUX_PANE, of the server FUX_SERVER says, is the caller's pane, and
+    // its tab and workspace; with no FUX_SERVER, no one's.
+    let alone = server.fux_env(&["here", "kill"], &[("FUX_PANE", "%2")])?;
+    assert!(
+        alone.stderr.starts_with("fux: stray_pane: "),
+        "{}",
+        alone.stderr
+    );
+    let version = server.version("%1")?;
+    let run = version.rsplit(':').next().unwrap_or_default();
+    let env = [("FUX_PANE", "%2"), ("FUX_SERVER", run)];
     let out = server.fux_env(&["here", "vertical", "split"], &env)?;
     assert_eq!(
-        (out.status, out.stdout.split_whitespace().next()),
+        (out.status, out.stdout.split(':').next()),
         (0, Some("%3")),
         "{}",
         out.stderr
@@ -267,11 +214,19 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     let failed = server.fux(&["str", "before", "%1", "1", "timeout", "wait"])?;
     assert_eq!(failed.status, 124, "{}", failed.stderr);
     assert!(
-        failed.stdout.starts_with("before\n%1 ") && failed.stdout.ends_with(" timeout\n"),
+        failed.stdout.starts_with("before\n%1:") && failed.stdout.ends_with(" timeout\n"),
         "{}",
         failed.stdout
     );
     assert_eq!(failed.stderr.lines().count(), 1, "{}", failed.stderr);
+    // A try naming the timeout goes on after it: the wait's answer goes
+    // with the body's values, its code is left.
+    let caught = server.fux(&[
+        "str", "timeout", "try", "%1", "1", "timeout", "wait", "catch", "nip", "end", "str",
+        "after",
+    ])?;
+    assert_eq!(caught.status, 0, "{}", caught.stderr);
+    assert_eq!(caught.stdout, "timeout\nafter\n");
     let left = server.ok(&[
         "1", "2", "add", "str", "a b", "str", "%1", "pane", "dup", "tab",
     ])?;
@@ -284,10 +239,8 @@ fn errors_statuses_and_what_is_left() -> Outcome {
     );
     // An option a word would leave unused is refused, not ignored: a new
     // tab starts a shell, and waits on nothing.
-    for unused in [
-        &["str", "top", "program"][..],
-        &["str", "0.1.0.0.0", "changed"][..],
-    ] {
+    {
+        let unused = &["str", "top", "program"][..];
         let refused =
             server.fux(&[&["opts"][..], unused, &["str", "w", "in", "new-tab"]].concat())?;
         assert!(
@@ -499,5 +452,41 @@ fn an_argument_that_is_not_text_is_refused() -> Outcome {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(stderr.starts_with("fux: usage: "), "{stderr}");
+    Ok(())
+}
+
+/// Output that cannot be written fails where it is written, with
+/// `output`: what comes after it never runs, and a stream ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_that_fails_stops_the_program() -> Outcome {
+    let server = Server::start("")?;
+    let full = || -> Result<std::process::Command, String> {
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full");
+        let mut command = std::process::Command::new(fux());
+        command
+            .env("FUX_SOCKET", &server.socket)
+            .env_remove("FUX_PANE")
+            .stdout(full.map_err(e)?)
+            .stderr(std::process::Stdio::piped());
+        Ok(command)
+    };
+    let ran = full()?
+        .args([
+            "help", "opts", "str", "sleep", "program", "str", "9", "arg", "run",
+        ])
+        .output()
+        .map_err(e)?;
+    let said = String::from_utf8_lossy(&ran.stderr);
+    assert_eq!(ran.status.code(), Some(1), "{said}");
+    assert!(said.starts_with("fux: output: "), "{said}");
+    assert!(
+        !server.ok(&["ls"])?.contains("%2"),
+        "run ran after help failed"
+    );
+    let mut events = full()?.arg("events").spawn().map_err(e)?;
+    eventually("events to end", || {
+        Ok(events.try_wait().map_err(e)?.is_some())
+    })?;
     Ok(())
 }

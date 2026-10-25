@@ -343,6 +343,23 @@ fn scalar(
     until_stop: bool,
     sink: &mut impl Sink,
 ) -> Result<Option<(usize, Stop)>, Error> {
+    let ran = scalar_on(parser, bytes, until_stop, sink);
+    // Every byte is read but those after a stop, as `Parser::run` counts.
+    let read = match ran {
+        Ok(Some((taken, _))) => taken,
+        Ok(None) | Err(_) => bytes.len(),
+    };
+    parser.screen.read(read);
+    ran
+}
+
+/// `scalar`, but for counting the bytes read.
+fn scalar_on(
+    parser: &mut Parser,
+    bytes: &[u8],
+    until_stop: bool,
+    sink: &mut impl Sink,
+) -> Result<Option<(usize, Stop)>, Error> {
     if bytes.is_empty() {
         return Ok(None);
     }

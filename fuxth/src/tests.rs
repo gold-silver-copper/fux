@@ -4,8 +4,9 @@ use crate::*;
 
 /// A host with one value of its own, a ticket, and four words: `ticket`
 /// (-- t), which hands one out at once; `ask` (n -- n*10), which suspends
-/// for the host to answer; `nope`, which fails; and `liar`, which says it
-/// gives a value and gives none.
+/// for the host to answer (with a failure, `negative`, for n below 0);
+/// `nope`, which fails; and `liar`, which says it gives a value and gives
+/// none.
 #[derive(Clone, Debug, PartialEq)]
 struct Ticket(i64);
 
@@ -69,7 +70,10 @@ fn vocabulary() -> Vocabulary {
         .and_then(|()| words.add("ticket", "-- ticket"))
         .and_then(|_| words.add("ask", "any -- any"))
         .and_then(|_| words.add("nope", "--"))
-        .and_then(|_| words.add("liar", "-- any"));
+        .and_then(|_| words.add("liar", "-- any"))
+        .and_then(|_| words.code("not_a_number"))
+        .and_then(|()| words.code("refused"))
+        .and_then(|()| words.code("negative"));
     assert!(added.is_ok(), "{added:?}");
     words
 }
@@ -81,6 +85,11 @@ const MAYBE: &str = "define maybe dup 0 gt if else drop then end ";
 /// Runs `text` (a file's), answering each `ask` with ten times its
 /// number, a step at a time to cover every pause; the stack it ends with.
 fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
+    run_by(text, 1)
+}
+
+/// `run`, `budget` steps at a time.
+fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
     let mut compiler = Compiler::new(vocabulary());
     compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
     compiler.add(&token::source("t", text)?)?;
@@ -93,8 +102,12 @@ fn run(text: &str) -> Result<Vec<Value<Ticket>>, Error> {
     );
     let mut host = Toy { asked: Vec::new() };
     loop {
-        match machine.run(&mut host, 1)? {
+        match machine.run(&mut host, budget)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
+            Outcome::Suspended(n) if n < 0 => machine.raise(Failure::new(
+                Code::Host("negative"),
+                format!("{n} is below 0"),
+            ))?,
             Outcome::Suspended(n) => machine.push(Value::Int(n.saturating_mul(10)))?,
             Outcome::Paused => {}
         }
@@ -569,7 +582,7 @@ fn the_machine_says_what_and_where() -> Result<(), Error> {
     );
     assert_eq!(
         said("1 ticket lt"),
-        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket"
+        "type: t:1: lt: lt compares two integers, two strings or two lists, not an integer and a ticket; `string` makes it text"
     );
     assert_eq!(
         said("ticket if 1 then"),
@@ -1328,4 +1341,171 @@ fn definitions_serve_a_program_of_their_own() -> Result<(), Error> {
     assert_eq!(code(ran("seven")), Some("unset"));
     assert_eq!(code(ran("n")), Some("unknown_word"));
     Ok(())
+}
+
+fn strs(values: &[&str]) -> Vec<Value<Ticket>> {
+    values.iter().map(|s| Value::str(*s)).collect()
+}
+
+/// A `try` catches the failures it names, from a word, the core, or the
+/// host when it answers: the stack as it was at `try`, the message and code
+/// on it. Through, the body's values stay.
+#[test]
+fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
+    let caught = run("1 str fail try 2 str no fail catch end")?;
+    assert_eq!(caught, [ints(&[1]), strs(&["no", "fail"])].concat());
+    // A reason a try keeps is a string: one longer than a string may be
+    // fails as too long, which `fail` does not name.
+    let long = run("str fail try 0 300000 range fail catch end").err();
+    assert_eq!(long.map(|e| e.code), Some(Code::TooLong));
+    // A try's codes are written in its own source, not the one before.
+    let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
+    compiler.add(&token::source("one", "str fail")?)?;
+    let refused = compiler
+        .add(&token::source("two", "try 1 catch end")?)
+        .err();
+    assert_eq!(refused.map(|e| e.code), Some(Code::BadCodes));
+    assert_eq!(
+        run("1 str fail try 2 3 catch drop drop 0 end")?,
+        ints(&[1, 2, 3])
+    );
+    assert_eq!(
+        run("str 'fail negative' try -1 ask catch end 5")?,
+        [strs(&["-1 is below 0", "negative"]), ints(&[5])].concat(),
+        "a suspended word's failure, answered"
+    );
+    assert_eq!(
+        run("str not_a_number try str x ask catch nip end")?,
+        strs(&["not_a_number"]),
+        "a host word's failure at once"
+    );
+    assert_eq!(
+        run("str div_by_zero try 1 0 div catch nip end")?,
+        strs(&["div_by_zero"])
+    );
+    // Not named, a failure goes through untouched: its code, its place.
+    let through = run("str fail try\n  -1 ask\ncatch drop drop end").err();
+    assert_eq!(
+        through.map(|e| e.to_string()).as_deref(),
+        Some("negative: t:2: ask: -1 is below 0")
+    );
+    // Nested: the innermost that names it; a failure in a handler goes out.
+    let nested = "str div_by_zero try str fail try 1 0 div catch drop drop 5 end catch nip end";
+    assert_eq!(run(nested)?, strs(&["div_by_zero"]));
+    let again =
+        "str fail try str fail try str a fail catch drop drop str b fail end catch drop end";
+    assert_eq!(run(again)?, strs(&["b"]));
+    assert_eq!(
+        code(run("str fail try 1 catch end str c fail")),
+        Some("fail")
+    );
+    Ok(())
+}
+
+/// What a failing body began is undone however deep: its calls, a loop of
+/// them in last place, its `list`s and `each`es; the program goes on.
+#[test]
+fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
+    let deep = "define deep dup 0 eq if str bottom fail then 1 sub deep end
+        define safe let n str fail try n deep catch drop end end";
+    assert_eq!(
+        run(&format!("{deep} 50 safe 7 3 safe"))?,
+        [strs(&["bottom"]), ints(&[7]), strs(&["bottom"])].concat(),
+        "the body's call is not in its definition's last place"
+    );
+    let recursion = "define down 1 add down 1 end str call_depth try 0 down catch nip end";
+    assert_eq!(run(recursion)?, strs(&["call_depth"]));
+    let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
+        catch drop end 5 end list 6 7 end each end";
+    let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
+    let list = list.map(|l| Value::List(std::rc::Rc::new(l)));
+    assert_eq!(run(blocks)?, [Vec::from_iter(list), ints(&[6, 7])].concat());
+    let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
+    assert_eq!(
+        run(names)?,
+        ints(&[2]),
+        "a let name keeps what the body set"
+    );
+    Ok(())
+}
+
+/// Run in one go or paused every few steps, a run through `try`s ends the
+/// same.
+#[test]
+fn a_try_ends_the_same_however_paused() -> Result<(), Error> {
+    let program =
+        "define f let n str 'fail negative' try n ask n 0 eq if str z fail then catch end end
+        list -1 f 0 f 2 f end str fail try 1 2 3 str a fail catch end";
+    let whole = run_by(program, u64::MAX)?;
+    for budget in 1..=12 {
+        assert_eq!(run_by(program, budget)?, whole, "{budget}");
+    }
+    Ok(())
+}
+
+/// A `try` is checked as `if … else … then` is: its body from an empty
+/// stack, its handler from the stack at `try` and two strings, joined
+/// after. Its codes are a string just before it, each one a running word
+/// may raise.
+#[test]
+fn a_try_is_checked_before_it_runs() {
+    let refused = |text: &str| {
+        let mut compiler = with_stdlib();
+        let compiled = token::source("t", text)
+            .and_then(|tokens| compiler.add(&tokens))
+            .and_then(|()| compiler.finish().map(|_| ()));
+        compiled.err().map(|e| e.to_string())
+    };
+    for (text, said) in [
+        ("try 1 catch end", "bad_codes: t:1: try: takes the codes"),
+        ("1 try 1 catch end", "bad_codes: t:1: try: takes the codes"),
+        (
+            "str negativ try 1 catch end",
+            "bad_codes: t:1: try: negativ is no code a word raises; did you mean negative?",
+        ),
+        (
+            "str unknown_word try 1 catch end",
+            "bad_codes: t:1: try: unknown_word is found",
+        ),
+        (
+            "str 'fail contract' try 1 catch end",
+            "bad_codes: t:1: try: contract is found",
+        ),
+        (
+            "str unused try 1 catch end",
+            "bad_codes: t:1: try: unused is found",
+        ),
+        (
+            "str '' try 1 catch end",
+            "bad_codes: t:1: try: names no code",
+        ),
+        (
+            "1 str fail try drop catch end",
+            "stack_underflow: t:1: drop: takes 1 value, and the stack has 0 here (inside try … catch",
+        ),
+        (
+            "str fail try 1 catch drop drop end add",
+            "stack_underflow: t:1: add: takes 2 values, and the stack has at most 1",
+        ),
+        ("str fail try str a catch drop end 1 add", "type: t:1: add:"),
+        ("catch", "unmatched: t:1: catch: no try is open"),
+        (
+            "str fail try 1 end",
+            "unmatched: t:1: end: the open block is try … catch",
+        ),
+        (
+            "str fail try 1 catch",
+            "unclosed: t:1: try: this try … catch … end is never closed",
+        ),
+        ("define try end", "bad_name"),
+    ] {
+        let error = refused(text).unwrap_or_default();
+        assert!(error.starts_with(said), "{text}: {error}");
+    }
+    // A handler's message is a string, as is its code; either way joins.
+    assert_eq!(refused("str fail try 1 catch drop drop 2 end 1 add"), None);
+    assert_eq!(refused("str fail try 1 catch drop end 1 add"), None);
+    let mut words = Vocabulary::default();
+    assert!(words.code("fail").is_err(), "the language's own");
+    assert!(words.code("two words").is_err());
 }

@@ -10,9 +10,6 @@
 
 opts str 'sh -c "for i in 1 2 3; do echo tick \$i; sleep 0.1; done; echo done"' command
 run
-begin
-  dup string str ' ' split-on 1 at str . split-on last str 1 eq
-  if true else 600 timeout wait false then
-until
+begin 600 timeout wait dup counts 4 at 1 eq until
 let W
 W capture W str exited get

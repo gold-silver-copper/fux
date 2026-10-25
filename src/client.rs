@@ -54,6 +54,8 @@ pub enum Error {
     Mismatch(Mismatch),
     Protocol(crate::protocol::Error),
     NotATerminal,
+    /// What a request streamed could not be written out.
+    Output(io::Error),
     /// Anything else that failed: why.
     Failed(String),
 }
@@ -64,6 +66,7 @@ impl Error {
         match self {
             Error::Socket(socket::Error::NoServer(_)) | Error::Connect { .. } => Code::NoServer,
             Error::Mismatch(_) => Code::Mismatch,
+            Error::Output(_) => Code::Output,
             Error::Socket(_)
             | Error::Refused(_)
             | Error::Protocol(_)
@@ -93,6 +96,7 @@ impl std::fmt::Display for Error {
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => f.write_str("fux attach needs a terminal on stdin"),
+            Error::Output(error) => write!(f, "writing the output: {error}"),
             Error::Failed(why) => f.write_str(why),
         }
     }
@@ -285,7 +289,8 @@ impl Requests {
             while let Some(frame) = self.decoder.frame()? {
                 match frame {
                     ToCommand::Stdout(bytes) => {
-                        let _ = out.write_all(&bytes).and_then(|()| out.flush());
+                        (out.write_all(&bytes).and_then(|()| out.flush()))
+                            .map_err(Error::Output)?;
                     }
                     ToCommand::Part(bytes) => parts.extend_from_slice(&bytes),
                     ToCommand::PartsEnd => {
@@ -427,6 +432,7 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
     fuxix::process::lead_session(&mut command, false);
     let mut child = command.spawn().map_err(failed("starting a server"))?;
     let deadline = crate::after(Instant::now(), Duration::from_secs(2));
+    let see_log = |what: String| Error::Failed(format!("{what}; see {}", log.display()));
     loop {
         if answers(socket) {
             // Dropping a `Child` neither waits for nor kills it.
@@ -439,16 +445,10 @@ pub fn start_server(socket: &SocketPath) -> Result<(), Error> {
             if answers(socket) {
                 return Ok(());
             }
-            let log = log.display();
-            return Err(Error::Failed(format!(
-                "the server exited ({status}); see {log}"
-            )));
+            return Err(see_log(format!("the server exited ({status})")));
         }
         if Instant::now() > deadline {
-            let log = log.display();
-            return Err(Error::Failed(format!(
-                "the server did not start within 2 s; see {log}"
-            )));
+            return Err(see_log("the server did not start within 2 s".to_owned()));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -767,7 +767,7 @@ fn run_job(
     };
     let result = (|| {
         let tokens = fuxth::token::source("key", &code)?;
-        let mut machine = script::compile_in(keymap.config.as_ref(), &tokens)?;
+        let mut machine = script::compiled(keymap.config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
             &mut machine,
@@ -972,22 +972,20 @@ fn attached(
                 (ToAttached::Exit(reason), Some(_)) => return Ok(reason.to_owned()),
                 (ToAttached::Welcome(me, _), None) => {
                     if !terminal {
-                        let _ = writeln!(stdout, "{me}").and_then(|()| stdout.flush());
+                        (writeln!(stdout, "{me}").and_then(|()| stdout.flush()))
+                            .map_err(Error::Output)?;
                     }
                     let keymap = attaching.keymap.clone();
                     keyboard = Some(Keyboard::new(socket, me, keymap, attaching.read_only)?);
-                    if let Some(problem) = &attaching.problem {
-                        acts.push(Act::Notice {
-                            text: problem.clone(),
-                            error: true,
-                        });
+                    if let Some(text) = attaching.problem.clone() {
+                        acts.push(Act::Notice { text, error: true });
                     }
                 }
                 (frame, Some(keyboard)) => acts.extend(keyboard.frame(frame)),
                 (_, None) => {}
             }
         }
-        let _ = stdout.flush();
+        stdout.flush().map_err(failed("writing the terminal"))?;
         for act in std::mem::take(&mut acts) {
             let act = AttachedFrame::Act(Box::new(act));
             if let Err(ended) = tell(stream, decoder, keyboard.is_some(), terminal, &act) {

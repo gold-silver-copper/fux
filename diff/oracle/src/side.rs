@@ -692,10 +692,14 @@ macro_rules! side {
                             }
                         }
                         Edit::Collect => {
-                            let collected: vt::Cells = run.iter().collect();
-                            let equal = collected == *run;
-                            *run = collected;
-                            format!("{equal}")
+                            match vt::Cells::try_from_iter(run.iter()) {
+                                Ok(collected) => {
+                                    let equal = collected == *run;
+                                    *run = collected;
+                                    format!("{equal}")
+                                }
+                                Err(error) => format!("{error}"),
+                            }
                         }
                     }
                 }

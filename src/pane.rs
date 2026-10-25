@@ -232,9 +232,9 @@ impl Title {
 struct Sink<'a> {
     /// The replies to one read, queued together after it: at most 4 KiB.
     replies: Vec<u8>,
-    /// Its bells, notifications, titles and commands' ends, in order, for
-    /// the journal.
-    happened: &'a mut Vec<log::Event>,
+    /// The journal its bells, notifications, titles and commands' ends go
+    /// to, in order.
+    happened: &'a mut log::Log,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -358,11 +358,14 @@ impl Process {
     }
 
     /// The terminal's foreground process group, if it is not the
-    /// program's own: a job the shell runs.
-    pub fn job(&self) -> Option<Pid> {
-        let child = self.child()?;
+    /// program's own: a job the shell runs; or why the terminal can't
+    /// tell.
+    pub fn job(&self) -> Result<Option<Pid>, fuxix::Errno> {
+        let Some(child) = self.child() else {
+            return Ok(None);
+        };
         let group = fuxix::terminal::foreground_group(&child.master)?;
-        (group != child.leader.pid()).then_some(group)
+        Ok(group.filter(|group| *group != child.leader.pid()))
     }
 
     /// The program's terminal hung up: it is read no more, and waits to be
@@ -466,7 +469,7 @@ pub struct Pane {
     /// How many times its program was started again (`respawn`), each on a
     /// screen of its own: a wait from the program before answers
     /// `respawned`.
-    pub starts: u64,
+    pub respawns: u64,
     pub alerts: Alerts,
     /// Where everything the program writes is kept too (`log-to`, `start-log`).
     pub log: Option<std::fs::File>,
@@ -509,7 +512,7 @@ impl Pane {
             copied: None,
             wrote_at: Instant::now(),
             record: log::Log::default(),
-            starts: 0,
+            respawns: 0,
             mouse_held: None,
             alerts: Alerts::default(),
             log: None,
@@ -676,10 +679,9 @@ impl Pane {
     /// parser's loop compiles tighter on its own.
     #[inline(never)]
     fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
-        let mut happened = Vec::new();
         let mut sink = Sink {
             replies: Vec::new(),
-            happened: &mut happened,
+            happened: &mut self.record,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -707,9 +709,6 @@ impl Pane {
         if !replies.is_empty() {
             self.input.reply(&replies);
         }
-        happened
-            .into_iter()
-            .for_each(|event| self.record.push(event));
         begun
     }
 
@@ -770,13 +769,22 @@ impl Pane {
     }
 
     /// Where it stands now (`Version`).
-    pub fn version(&self) -> crate::command::Version {
-        crate::command::Version {
-            starts: self.starts,
-            screen: self.screen().version(),
+    pub fn counts(&self) -> crate::command::Counts {
+        crate::command::Counts {
+            respawns: self.respawns,
+            screen: self.screen().revision(),
             bells: self.alerts.rung,
             done: self.screen().commands().finished,
-            ended: u64::from(self.process.exit_status().is_some()),
+            ended: self.process.exit_status().is_some(),
+        }
+    }
+
+    /// Its version in the server run `run`.
+    pub fn version(&self, run: crate::command::Run) -> crate::command::Version {
+        crate::command::Version {
+            pane: self.id,
+            counts: self.counts(),
+            run,
         }
     }
 
@@ -806,7 +814,7 @@ impl Pane {
             Runs::Program(_) | Runs::Shell => self.name.clone(),
         };
         let runs = Runs::Program(launch);
-        // A new program, its own pane, its counts afresh but `starts`. Kept
+        // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are what the session has yet to take from the old one (a bell, a
         // copy), its colours and log.
         let mut started = Pane::new(self.id, name, runs, self.size(), history)?;
@@ -814,7 +822,8 @@ impl Pane {
         started.bell = self.bell;
         started.copied = self.copied.take();
         started.log = self.log.take();
-        started.starts = self.starts.wrapping_add(1);
+        // 2^64 respawns are never reached: the count never stands still.
+        started.respawns = self.respawns.saturating_add(1);
         started.process = process;
         Ok(std::mem::replace(self, started).process)
     }

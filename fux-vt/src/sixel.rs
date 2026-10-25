@@ -381,10 +381,7 @@ impl Decoder {
                 let at = offset(left, y, self.room.0).unwrap_or(usize::MAX);
                 let span = at.saturating_add(run.saturating_mul(4));
                 if let Some(row) = self.pixels.get_mut(at..span) {
-                    row.as_chunks_mut::<4>()
-                        .0
-                        .iter_mut()
-                        .for_each(|pixel| *pixel = [r, g, b, 255]);
+                    row.as_chunks_mut::<4>().0.fill([r, g, b, 255]);
                 }
             }
         }
@@ -403,6 +400,7 @@ impl Decoder {
         room: &mut impl FnMut(usize, bool) -> bool,
     ) -> (u32, u32) {
         let (right, bottom) = self.kept(right, bottom);
+        // The pixels it has hold the grid.
         if !self.needs_growth(right, bottom) {
             (self.across, self.down) = (right, bottom);
             return (right, bottom);
@@ -461,18 +459,18 @@ impl Decoder {
         (right, bottom)
     }
 
+    /// Whether a grid of `right` columns and `bottom` rows needs more room
+    /// than its pixels have.
+    fn needs_growth(&self, right: u32, bottom: u32) -> bool {
+        right > self.room.0 || bottom > self.room.1
+    }
+
     /// The grid's size grown to `right` columns and `bottom` rows, as much
     /// of it as a picture may keep: each side, and the pixels in all, the
     /// rows taken first, as a band paints nothing without its rows.
     fn kept(&self, right: u32, bottom: u32) -> (u32, u32) {
         let bottom = bottom.min(most_beside(self.across)).max(self.down);
         (right.min(most_beside(bottom)).max(self.across), bottom)
-    }
-
-    /// Whether a grid of `right` columns and `bottom` rows needs more room
-    /// than its pixels have.
-    fn needs_growth(&self, right: u32, bottom: u32) -> bool {
-        right > self.room.0 || bottom > self.room.1
     }
 
     /// Whether `room` has the bytes for pixels `cols` by `rows` beside

@@ -533,8 +533,13 @@ impl<'a> Window<'a> {
         }
         self.grid.row_at(self.start.checked_add(usize::from(row))?)
     }
-    /// Where `row` is in the window, if it shows there.
+    /// Where `row` is in the window, if it shows there: never, for a row
+    /// of another grid (the other screen's, or another parser's). Both
+    /// borrow their grid, so the same address is the same grid.
     pub fn place(&self, row: &Row<'_>) -> Option<u16> {
+        if !std::ptr::eq(self.grid, row.grid) {
+            return None;
+        }
         let y = u16::try_from(row.index.checked_sub(self.start)?).ok()?;
         (y < self.rows()).then_some(y)
     }
@@ -545,11 +550,9 @@ impl<'a> Window<'a> {
             return None;
         }
         let cell = self.row(row)?.cell(usize::from(col))?;
-        if cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols()) {
-            None
-        } else {
-            Some(cell)
-        }
+        // A wide glyph's second half past the last column is clipped.
+        let clipped = cell.is_wide() && col.checked_add(1).is_none_or(|next| next >= self.cols());
+        (!clipped).then_some(cell)
     }
     /// Whether row `row` of the window is soft-wrapped.
     pub fn row_wrapped(&self, row: u16) -> bool {

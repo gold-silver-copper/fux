@@ -1,13 +1,13 @@
 //! Running a compiled program. All its state is data: the stack, a frame
 //! for each call (the code and the step it is at), the `let` names, the
-//! open `list` and `each` blocks. So it can stop anywhere and go on later:
-//! after a budget of steps, so its host can look for Ctrl-C, and at an
-//! application word that needs its host to do something first. It never
+//! open `list`, `each` and `try` blocks. So it can stop anywhere and go on
+//! later: after a budget of steps, so its host can look for Ctrl-C, and at
+//! an application word that needs its host to do something first. It never
 //! runs a program as Rust recursion, so no program can overflow the Rust
 //! stack, and stopping is just dropping it.
 use crate::check::{ANY, INT, Kinds, LIST, SEQ, STR};
 use crate::compile::{Op, Program};
-use crate::error::{Code, Error, Failure, Wants, underflow};
+use crate::error::{Code, Error, Failure, Floor, Wants, underflow};
 use crate::token::Token;
 use crate::value::{AppValue, List, NESTING, TOTAL, Text, Value};
 use crate::vocabulary::through;
@@ -22,8 +22,8 @@ pub trait Host {
     /// Runs application word `word` (its id in the vocabulary) on `args`,
     /// as many values as it takes, the deepest first. What it gives goes in
     /// `out`, and it says whether it is done, or the machine is to wait
-    /// while the host does `Request` (then the host pushes its results and
-    /// runs the machine again).
+    /// while the host does `Request` (then the host pushes its results, or
+    /// raises its failure, and runs the machine again).
     fn call(
         &mut self,
         word: usize,
@@ -37,7 +37,8 @@ pub trait Host {
 
 /// Whether the code returns from step `at` doing nothing more: it is past
 /// the last step, or jumps there, through any number of jumps (the ends of
-/// nested `if`s).
+/// nested `if`s). A `try`'s body ends with a step of its own, so a call
+/// last in it keeps the frame the `try` is in.
 fn returns_from<A>(ops: &[Op<A>], mut at: usize) -> bool {
     // Each jump is followed once at most: a chain can't be longer.
     for _ in 0..=ops.len() {
@@ -146,6 +147,19 @@ struct Frame {
     locals: usize,
 }
 
+/// An open block whose body starts with an empty stack: a `list`, or a
+/// `try` with the codes it catches, its handler's step, and the frames
+/// and `each` loops there were at it, to go back to.
+enum Body {
+    List,
+    Try {
+        codes: Rc<Vec<Code>>,
+        handler: usize,
+        frames: usize,
+        iters: usize,
+    },
+}
+
 /// A program being run.
 pub struct Machine<A> {
     program: Rc<Program<A>>,
@@ -154,9 +168,9 @@ pub struct Machine<A> {
     /// Every frame's `let` names, each frame's from its `locals`.
     locals: Vec<Option<Value<A>>>,
     globals: Vec<Option<Value<A>>>,
-    /// Where each open `list` began on the stack: nothing below may be
-    /// taken inside it.
-    marks: Vec<usize>,
+    /// Where each open `list` or `try` body began on the stack, and which:
+    /// nothing below may be taken inside it.
+    marks: Vec<(usize, Body)>,
     /// Each open `each`: what it walks, and where its next element is: an
     /// index in a list, a byte in a string (so each step finds it at once).
     iters: Vec<(Sequence<A>, usize)>,
@@ -215,6 +229,63 @@ impl<A: AppValue> Machine<A> {
         }
         self.stack.push(value);
         Ok(())
+    }
+
+    /// Raises a suspended word's failure at it, as if the word had failed
+    /// when called: a `try` around it that catches its code goes on at its
+    /// handler, when the machine runs again; else its error, said at the
+    /// word, ends the run.
+    pub fn raise(&mut self, failure: Failure) -> Result<(), Error> {
+        self.pending = None;
+        let error = self.failed(failure);
+        self.recover(error)
+    }
+
+    /// An application word's failure, said at the word, or the word it
+    /// names.
+    fn failed(&self, failure: Failure) -> Error {
+        let mut error = self.fail(failure.code, failure.message);
+        error.word = failure.word.or(error.word);
+        error
+    }
+
+    /// `error` caught by the innermost `try` that names its code: what the
+    /// body began undone (its calls, `let` frames, blocks and values), its
+    /// message and code pushed, the handler next. Else `error`.
+    fn recover(&mut self, mut error: Error) -> Result<(), Error> {
+        loop {
+            let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
+            let Some(caught) = self.marks.iter().rposition(catches) else {
+                return Err(error);
+            };
+            // Those inside it end with it.
+            self.marks.truncate(caught.saturating_add(1));
+            let Some((
+                depth,
+                Body::Try {
+                    handler,
+                    frames,
+                    iters,
+                    ..
+                },
+            )) = self.marks.pop()
+            else {
+                return Err(error);
+            };
+            while self.frames.len() > frames {
+                self.leave();
+            }
+            self.stack.truncate(depth);
+            self.iters.truncate(iters);
+            self.jump(handler);
+            let code = Value::str(error.code.name());
+            // A stack full to its limit fails again, for a `try` further
+            // out to catch.
+            match (self.push(Value::str(error.message))).and_then(|()| self.push(code)) {
+                Ok(()) => return Ok(()),
+                Err(again) => error = again,
+            }
+        }
     }
 
     /// The step each call under way is at, the outermost first: the word
@@ -294,8 +365,22 @@ impl<A: AppValue> Machine<A> {
         if let Some(given) = self.pending.take() {
             self.given(given)?;
         }
-        let program = Rc::clone(&self.program);
         let until = self.steps.saturating_add(budget);
+        loop {
+            match self.steps_until(host, until) {
+                Err(error) => self.recover(error)?,
+                ran => return ran,
+            }
+        }
+    }
+
+    /// Runs until `until` steps are taken in all, or a step fails.
+    fn steps_until<H: Host<Value = A>>(
+        &mut self,
+        host: &mut H,
+        until: u64,
+    ) -> Result<Outcome<H::Request>, Error> {
+        let program = Rc::clone(&self.program);
         loop {
             if self.steps >= until {
                 return Ok(Outcome::Paused);
@@ -355,9 +440,8 @@ impl<A: AppValue> Machine<A> {
                 }
                 Op::Jump(to) => frame.step = *to,
                 Op::JumpUnless(to) => {
-                    let to = *to;
                     if !self.flag()? {
-                        self.jump(to);
+                        self.jump(*to);
                     }
                 }
                 Op::SetLocal(slot) => {
@@ -382,9 +466,13 @@ impl<A: AppValue> Machine<A> {
                     let value = self.globals.get(*slot).cloned().flatten();
                     self.named(value)?;
                 }
-                Op::Mark => self.marks.push(self.stack.len()),
+                Op::Mark => self.marks.push((self.stack.len(), Body::List)),
                 Op::Gather => {
-                    let from = self.marks.pop().unwrap_or(0).min(self.stack.len());
+                    let from = self
+                        .marks
+                        .pop()
+                        .map_or(0, |(at, _)| at)
+                        .min(self.stack.len());
                     let mut items = Vec::with_capacity(self.stack.len().saturating_sub(from));
                     while self.stack.len() > from {
                         items.extend(self.stack.pop());
@@ -393,20 +481,36 @@ impl<A: AppValue> Machine<A> {
                     let list = self.list(items)?;
                     self.push(list)?;
                 }
-                Op::EachStart => match Seq::of(self.pop()?) {
-                    Ok(seq) => self.iters.push((seq, 0)),
-                    Err(kind) => return Err(self.type_error(Wants::Each.not(kind))),
-                },
+                Op::EachStart => {
+                    let walked = self.pop()?;
+                    let app = matches!(walked, Value::App(_));
+                    match Seq::of(walked) {
+                        Ok(seq) => self.iters.push((seq, 0)),
+                        Err(kind) => return Err(self.fail(Code::Type, Wants::Each.not(kind, app))),
+                    }
+                }
                 Op::EachNext(out) => {
-                    let out = *out;
                     let next = (self.iters.last_mut()).and_then(|(seq, at)| next(seq, at));
                     match next {
                         Some(item) => self.push(item)?,
                         None => {
                             self.iters.pop();
-                            self.jump(out);
+                            self.jump(*out);
                         }
                     }
+                }
+                Op::Try(handler, codes) => {
+                    let body = Body::Try {
+                        codes: Rc::clone(codes),
+                        handler: *handler,
+                        frames: depth,
+                        iters: self.iters.len(),
+                    };
+                    self.marks.push((self.stack.len(), body));
+                }
+                Op::Tried(out) => {
+                    self.marks.pop();
+                    frame.step = *out;
                 }
             }
         }
@@ -435,11 +539,7 @@ impl<A: AppValue> Machine<A> {
             from,
             at: from,
         };
-        let done = host.call(id, args, &mut out).map_err(|f| {
-            let mut error = self.fail(f.code, f.message);
-            error.word = f.word.or(error.word);
-            error
-        })?;
+        let done = host.call(id, args, &mut out).map_err(|f| self.failed(f))?;
         let given = Given {
             depth: self.stack.len(),
             word: id,
@@ -464,10 +564,7 @@ impl<A: AppValue> Machine<A> {
     fn named(&mut self, value: Option<Value<A>>) -> Result<(), Error> {
         match value {
             Some(value) => self.push(value),
-            None => {
-                let message = "read before its let ran".to_owned();
-                Err(self.fail(Code::Unset, message))
-            }
+            None => Err(self.fail(Code::Unset, "read before its let ran")),
         }
     }
 
@@ -547,12 +644,16 @@ impl<A: AppValue> Machine<A> {
     /// Where the top `n` values start, if the stack has them: inside a
     /// `list`, only those above where it began.
     fn depth(&self, n: usize) -> Result<usize, Error> {
-        let floor = self.marks.last().copied().unwrap_or(0);
+        let floor = self.marks.last().map_or(0, |(at, _)| *at);
         let has = self.stack.len().saturating_sub(floor);
         if has >= n {
             return Ok(self.stack.len().saturating_sub(n));
         }
-        let message = underflow("takes", n, &has.to_string(), !self.marks.is_empty());
+        let inside = self.marks.last().map(|(_, body)| match body {
+            Body::List => Floor::List,
+            Body::Try { .. } => Floor::Try,
+        });
+        let message = underflow("takes", n, &has.to_string(), inside);
         Err(self.fail(Code::StackUnderflow, message))
     }
 
@@ -566,42 +667,37 @@ impl<A: AppValue> Machine<A> {
         match self.pop()? {
             Value::Bool(flag) => Ok(flag),
             other @ (Value::Int(_) | Value::Str(_) | Value::List(_) | Value::App(_)) => {
-                Err(self.type_error(Wants::Flag.not(other.kind())))
+                Err(self.fail(Code::Type, Wants::Flag.not(other.kind(), false)))
             }
         }
     }
 
-    fn type_error(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::Type, message)
-    }
-
-    fn range_error(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::Range, message)
-    }
-
-    fn too_long(&self, message: impl Into<String>) -> Error {
-        self.fail(Code::TooLong, message)
-    }
-
     /// `n` as `word`'s count: 0 or more.
     fn count(&self, word: Builtin, n: i64) -> Result<usize, Error> {
-        usize::try_from(n)
-            .map_err(|_| self.range_error(format!("{} takes a count from 0, not {n}", word.name())))
+        usize::try_from(n).map_err(|_| {
+            self.fail(
+                Code::Range,
+                format!("{} takes a count from 0, not {n}", word.name()),
+            )
+        })
     }
 
     /// `n` as an index into something `len` long.
     fn index(&self, n: i64, len: usize) -> Result<usize, Error> {
         (usize::try_from(n).ok())
             .filter(|i| *i < len)
-            .ok_or_else(|| self.range_error(format!("index {n}, and it has {len}")))
+            .ok_or_else(|| self.fail(Code::Range, format!("index {n}, and it has {len}")))
     }
 
     /// `word` given `got` in a place that takes `arg`'s kinds.
     #[cold]
-    fn refused(&self, word: Builtin, arg: Arg, got: &str) -> Error {
+    fn refused(&self, word: Builtin, arg: Arg, got: &str, app: bool) -> Error {
         // A place that takes any value refuses none.
         let wants = arg.wants.map(|wants| wants(word));
-        self.type_error(wants.map_or_else(|| got.to_owned(), |wants| wants.not(got)))
+        self.fail(
+            Code::Type,
+            wants.map_or_else(|| got.to_owned(), |wants| wants.not(got, app)),
+        )
     }
 
     /// A built-in's `N` values off the stack, the deepest first. Too few
@@ -629,7 +725,10 @@ impl<A: AppValue> Machine<A> {
             .built
             .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         if self.built > BUILT {
-            return Err(self.too_long(format!("built more than {BUILT} elements in all")));
+            return Err(self.fail(
+                Code::TooLong,
+                format!("built more than {BUILT} elements in all"),
+            ));
         }
         Ok(())
     }
@@ -644,7 +743,7 @@ impl<A: AppValue> Machine<A> {
     }
 
     fn nested(&self) -> Error {
-        self.too_long(format!(
+        self.fail(Code::TooLong, format!(
             "lists nest at most {} deep, and hold at most {} in all, through the lists and strings in them",
             NESTING,
             TOTAL
@@ -699,14 +798,20 @@ impl<A: AppValue> Machine<A> {
                     items.extend(l.items().iter().cloned());
                 }
                 Value::Int(_) | Value::Bool(_) | Value::App(_) => {
-                    return Err(self.type_error(format!(
-                        "concat takes a list of strings or of lists, and this one holds {}",
-                        item.kind()
-                    )));
+                    return Err(self.fail(
+                        Code::Type,
+                        format!(
+                            "concat takes a list of strings or of lists, and this one holds {}",
+                            item.kind()
+                        ),
+                    ));
                 }
             }
             if strings && lists {
-                return Err(self.type_error("concat takes a list of strings or of lists, not both"));
+                return Err(self.fail(
+                    Code::Type,
+                    "concat takes a list of strings or of lists, not both",
+                ));
             }
         }
         if strings {
@@ -735,16 +840,20 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).append(&x);
                 Ok(Value::Str(s))
             }
-            (Sequence::Str(_), x) => Err(self.type_error(Wants::PushText.not(x.kind()))),
+            (Sequence::Str(_), x) => {
+                let app = matches!(x, Value::App(_));
+                Err(self.fail(Code::Type, Wants::PushText.not(x.kind(), app)))
+            }
         }
     }
 
     /// Whether a string or list `n` elements long may be.
     fn fits(&self, n: usize) -> Result<(), Error> {
         if n > LONGEST {
-            return Err(self.too_long(format!(
-                "{n} elements, and a string or list holds at most {LONGEST}"
-            )));
+            return Err(self.fail(
+                Code::TooLong,
+                format!("{n} elements, and a string or list holds at most {LONGEST}"),
+            ));
         }
         Ok(())
     }
@@ -772,7 +881,10 @@ impl<A: AppValue> Machine<A> {
                 Rc::make_mut(&mut s).replace(i, &x);
                 Ok(Value::Str(s))
             }
-            (Sequence::Str(_), x) => Err(self.type_error(Wants::PutText.not(x.kind()))),
+            (Sequence::Str(_), x) => {
+                let app = matches!(x, Value::App(_));
+                Err(self.fail(Code::Type, Wants::PutText.not(x.kind(), app)))
+            }
         }
     }
 }
@@ -817,7 +929,8 @@ fn unordered<A: AppValue>(a: &Value<A>, b: &Value<A>) -> String {
         (a, b) = (p, q);
     }
     if path.is_empty() {
-        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()))
+        let app = matches!(a, Value::App(_)) || matches!(b, Value::App(_));
+        Wants::Ordered.not(format_args!("{} and {}", a.kind(), b.kind()), app)
     } else {
         format!(
             "lt compares lists element by element, and at {} it finds {} and {}",
@@ -1040,8 +1153,9 @@ macro_rules! builtins {
                 match word {
                     $(Builtin::$variant => {
                         let [$($arg),*] = $m.take()?;
-                        $(let $arg = $ty::of($arg)
-                            .map_err(|got| $m.refused(word, $ty::ARG, got))?;)*
+                        $(let app = matches!($arg, Value::App(_));
+                        let $arg = $ty::of($arg)
+                            .map_err(|got| $m.refused(word, $ty::ARG, got, app))?;)*
                         $body
                     })*
                 }
@@ -1081,7 +1195,7 @@ builtins! { m host;
         m.walk(if a.weight() < b.weight() { &a } else { &b });
         match compare(&a, &b) {
             Some(order) => m.push(Value::Bool(order == Ordering::Less)),
-            None => Err(m.type_error(unordered(&a, &b))),
+            None => Err(m.fail(Code::Type, unordered(&a, &b))),
         }
     }
     Eq "eq" (a: Any, b: Any) "a b -- a=b" "whether two values are the same, of one kind" {
@@ -1106,7 +1220,7 @@ builtins! { m host;
         };
         match item {
             Some(item) => m.push(item),
-            None => Err(m.range_error(format!("index {i}, and it has {len}"))),
+            None => Err(m.fail(Code::Range, format!("index {i}, and it has {len}"))),
         }
     }
     Slice "slice" (s: Seq, from: Int, to: Int) "seq from to -- seq"
@@ -1114,7 +1228,7 @@ builtins! { m host;
         let len = s.len();
         let bounds = usize::try_from(from).ok().zip(usize::try_from(to).ok());
         let Some((a, b)) = bounds.filter(|(a, b)| a <= b && *b <= len) else {
-            return Err(m.range_error(format!("slice from {from} to {to}, and it has {len}")));
+            return Err(m.fail(Code::Range, format!("slice from {from} to {to}, and it has {len}")));
         };
         let n = b.saturating_sub(a);
         let part = match &s {
@@ -1154,7 +1268,7 @@ builtins! { m host;
     Char "char" (n: Int) "n -- c" "the one-character string with code n" {
         match u32::try_from(n).ok().and_then(char::from_u32) {
             Some(c) => m.push(Value::str(c.to_string())),
-            None => Err(m.range_error(format!("{n} is no character code"))),
+            None => Err(m.fail(Code::Range, format!("{n} is no character code"))),
         }
     }
     Kind "kind" (x: Any) "x -- name" "integer, boolean, string, list, or the host's kind" {
@@ -1164,7 +1278,7 @@ builtins! { m host;
         m.walk(&x);
         // Made only as far as a string may be long.
         let Some(text) = x.text_upto(LONGEST) else {
-            return Err(m.too_long(format!(
+            return Err(m.fail(Code::TooLong, format!(
                 "the text is longer than a string may be ({LONGEST})"
             )));
         };
@@ -1177,6 +1291,14 @@ builtins! { m host;
         host.print(&text).map_err(|f| m.fail(f.code, f.message))
     }
     Fail "fail" (x: Any) "x --" "stop the program, with x as the reason" {
-        Err(m.fail(Code::Fail, x.text()))
+        // Its reason is a string a try may keep: made as `string` makes one.
+        m.walk(&x);
+        let Some(text) = x.text_upto(LONGEST) else {
+            return Err(m.fail(Code::TooLong, format!(
+                "the reason is longer than a string may be ({LONGEST})"
+            )));
+        };
+        m.build(text.chars_len())?;
+        Err(m.fail(Code::Fail, text.to_string()))
     }
 }

@@ -238,14 +238,19 @@ impl Session {
         match self.mux {
             Mux::Direct => Err("no multiplexer".into()),
             Mux::Fux => {
-                // `new-tab` makes a tab with a shell, and takes no program
-                // (fux 0.25): the program is typed into it, as `exec`.
-                let line = program.map(exec_line);
+                // `new-tab` makes a tab with a shell; `run` one with a
+                // program.
                 let mut args = vec!["opts", "str", "main", "workspace", "in"];
-                if let Some(line) = &line {
-                    args.extend(["str", line.as_str(), "typed"]);
+                match program {
+                    Some([first, rest @ ..]) => {
+                        args.extend(["str", first.as_str(), "program"]);
+                        for word in rest {
+                            args.extend(["str", word.as_str(), "arg"]);
+                        }
+                        args.push("run");
+                    }
+                    Some([]) | None => args.push("new-tab"),
                 }
-                args.push("new-tab");
                 self.command(place, &args).map(drop)
             }
             Mux::Tmux => {

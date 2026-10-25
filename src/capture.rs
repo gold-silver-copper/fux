@@ -1,7 +1,7 @@
 //! What `capture` and `capture-client` print: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
 //! pane's state if asked.
-use crate::command::{CaptureView, Source};
+use crate::command::{CaptureView, Run, Source};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
@@ -18,11 +18,14 @@ type Read = (String, String);
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
 /// that says a client is in copy mode on it.
-pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: bool) -> Read {
+pub fn pane(
+    pane: &Pane,
+    run: Run,
+    history: Option<usize>,
+    view: CaptureView,
+    copy_mode: bool,
+) -> Read {
     let screen = pane.screen();
-    let in_rows = |i: &usize| {
-        (view.rows).is_none_or(|(start, end)| (usize::from(start)..=usize::from(end)).contains(i))
-    };
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
     let mut wraps = false;
@@ -38,24 +41,21 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: b
     // Where it is on the screen, as a mouse event and a state line count.
     let cursor = (live && screen.mode(Mode::ShowCursor)).then(|| screen.cursor_position());
     // Joined, a line some of whose rows `rows` takes is taken whole: the
-    // line each row is part of, and the lines the range touches.
-    let line_of: Vec<usize> = read
-        .iter()
-        .scan((0usize, false), |(line, wrapped), (row, _)| {
-            if !*wrapped {
-                *line = line.saturating_add(1);
-            }
-            *wrapped = !view.wrapped && row.continues();
-            Some(*line)
-        })
-        .collect();
-    let touched: std::collections::HashSet<usize> = (line_of.iter().enumerate())
-        .filter(|(i, _)| in_rows(i))
-        .map(|(_, line)| *line)
-        .collect();
-    let taken = |i: &usize| {
-        in_rows(i) || (!view.wrapped && line_of.get(*i).is_some_and(|line| touched.contains(line)))
-    };
+    // range widened to the whole lines at its ends.
+    let continues = |i: usize| !view.wrapped && read.get(i).is_some_and(|(row, _)| row.continues());
+    let taken = view.rows.map(|(start, end)| {
+        let (mut first, mut last) = (usize::from(start), usize::from(end));
+        while let Some(before) = first.checked_sub(1)
+            && continues(before)
+        {
+            first = before;
+        }
+        while continues(last) {
+            last = last.saturating_add(1);
+        }
+        first..=last
+    });
+    let taken = |i: &usize| taken.as_ref().is_none_or(|rows| rows.contains(i));
     for (_, (row, span)) in read.into_iter().enumerate().filter(|(i, _)| taken(i)) {
         // A wide glyph's second cell is drawn as its first: the same style,
         // so a run of it is not broken in two.
@@ -104,7 +104,7 @@ pub fn pane(pane: &Pane, history: Option<usize>, view: CaptureView, copy_mode: b
         wraps = !view.wrapped && row.continues();
     }
     let (rows, cols) = screen.size().into();
-    let mut state = state(pane, Instant::now(), copy_mode);
+    let mut state = state(pane, run, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::int)));
@@ -160,19 +160,15 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
     // A start gone (history's limit cut it, or the screen was cleared or
     // switched) or below the end: from what is kept above the end, the
     // screen's top if the start was cleared.
+    let left = CommandMark { col: 0, ..start };
     let (first, start) = match screen.row_index(start.row) {
         // An ended command's end left of its start on one row (its last
         // write a `\r`): the row up to the end. A running one's cursor may
         // go back so too, its row then whole.
-        Some(first) if first == last && ended && start.col > end.col => {
-            (first, CommandMark { col: 0, ..start })
-        }
+        Some(first) if first == last && ended && start.col > end.col => (first, left),
         Some(first) if first <= last => (first, start),
-        Some(_) => (
-            screen.history_len().min(last),
-            CommandMark { col: 0, ..start },
-        ),
-        None => (0, CommandMark { col: 0, ..start }),
+        Some(_) => (screen.history_len().min(last), left),
+        None => (0, left),
     };
     let rows: Vec<Row<'_>> = screen
         .rows()
@@ -221,19 +217,28 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// What is known of a pane's program, for `json`: its foreground program,
 /// the status it exited with, how long since it last wrote, and the modes
 /// that say how it takes input.
-pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json<'static>)> {
+pub fn state(
+    pane: &Pane,
+    run: Run,
+    now: Instant,
+    copy_mode: bool,
+) -> Vec<(&'static str, Json<'static>)> {
     let screen = pane.screen();
     // What runs in the foreground: a job the shell started, else the
-    // program itself.
-    let foreground =
-        (pane.process.child()).map(|child| pane.process.job().unwrap_or(child.leader.pid()));
+    // program itself; nothing, where its terminal can't tell.
+    let job = pane.process.job();
+    let foreground = (pane.process.child()).and_then(|child| match job {
+        Ok(job) => Some(job.unwrap_or(child.leader.pid())),
+        Err(_) => None,
+    });
     let program = foreground.and_then(fuxix::process::name);
     let idle = now.saturating_duration_since(pane.wrote_at).as_millis();
-    let commands = screen.commands();
-    let argv = match (&pane.runs, pane.process.job()) {
-        (_, Some(job)) => fuxix::process::argv(job),
-        (Runs::Program(launch), None) => Some(launch.argv.clone()),
-        (Runs::Shell, None) => foreground.and_then(fuxix::process::argv),
+    let last_status = screen.commands().last_status;
+    let argv = match (&pane.runs, job) {
+        (_, Ok(Some(job))) => fuxix::process::argv(job),
+        (Runs::Program(launch), Ok(None)) => Some(launch.argv.clone()),
+        (Runs::Shell, Ok(None)) => foreground.and_then(fuxix::process::argv),
+        (_, Err(_)) => None,
     };
     let (exited, signal) = match pane.process.exit_status() {
         Some(crate::process::Ended::Exited(code)) => (Json::int(code), Json::Null),
@@ -241,28 +246,27 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
         None => (Json::Null, Json::Null),
     };
     let paused = pane.paused();
+    let hung_up = matches!(pane.process, Process::HungUp(_));
+    let mouse = screen.mouse_protocol_mode();
+    let bracketed_paste = screen.mode(Mode::BracketedPaste);
+    let pictures = Json::Array(screen.pictures().map(picture).collect());
+    let notification = pane.alerts.last.clone();
     vec![
-        ("version", Json::str(pane.version().to_string())),
+        ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         ("paused", Json::Bool(paused)),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
-        (
-            "hung_up",
-            Json::Bool(matches!(pane.process, Process::HungUp(_))),
-        ),
+        ("hung_up", Json::Bool(hung_up)),
         ("exited", exited),
         ("signal", signal),
         ("idle_ms", Json::int(idle)),
         ("alt_screen", Json::Bool(screen.mode(Mode::AlternateScreen))),
-        (
-            "mouse",
-            Json::Bool(screen.mouse_protocol_mode() != MouseProtocolMode::None),
-        ),
+        ("mouse", Json::Bool(mouse != MouseProtocolMode::None)),
         // What it asked for: whether a move without a button is reported.
         (
             "mouse_mode",
-            match screen.mouse_protocol_mode() {
+            match mouse {
                 MouseProtocolMode::None => Json::Null,
                 MouseProtocolMode::Press => Json::str("press"),
                 MouseProtocolMode::PressRelease => Json::str("press_release"),
@@ -271,27 +275,15 @@ pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, J
                 MouseProtocolMode::AnyMotion => Json::str("any_motion"),
             },
         ),
-        (
-            "bracketed_paste",
-            Json::Bool(screen.mode(Mode::BracketedPaste)),
-        ),
-        (
-            "pictures",
-            Json::Array(screen.pictures().map(picture).collect()),
-        ),
+        ("bracketed_paste", Json::Bool(bracketed_paste)),
+        ("pictures", pictures),
         ("cursor_visible", Json::Bool(screen.mode(Mode::ShowCursor))),
         ("history_lines", Json::int(screen.history_len())),
         ("copy_mode", Json::Bool(copy_mode)),
         ("command_running", Json::Bool(pane.command_running())),
-        (
-            "last_status",
-            commands.last_status.map_or(Json::Null, Json::int),
-        ),
+        ("last_status", last_status.map_or(Json::Null, Json::int)),
         ("bells", Json::int(pane.alerts.rung)),
-        (
-            "notification",
-            pane.alerts.last.clone().map_or(Json::Null, Json::str),
-        ),
+        ("notification", notification.map_or(Json::Null, Json::str)),
         (
             "cwd",
             foreground
@@ -486,7 +478,14 @@ mod tests {
             let size = fux_vt::Size::new(3, 5)?;
             let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
             pane.output(output.as_bytes());
-            Ok(super::pane(&pane, None, join, false).0)
+            Ok(super::pane(
+                &pane,
+                crate::command::Run::now().ok_or("a clock")?,
+                None,
+                join,
+                false,
+            )
+            .0)
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -497,6 +496,29 @@ mod tests {
             first("abc\x1b[41m\x1b[K\x1b[m\x1b[5G世")?.as_deref(),
             Some("abc  世")
         );
+        Ok(())
+    }
+
+    /// Rows that start or end inside a wrapped line take it whole, joined;
+    /// `wrapped`, they take the rows asked alone.
+    #[test]
+    fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
+        let size = fux_vt::Size::new(6, 5)?;
+        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        pane.output(b"top\r\nabcdefghijklm\r\nend");
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let capture = |rows, wrapped| {
+            let view = CaptureView {
+                rows: Some(rows),
+                wrapped,
+                ..CaptureView::default()
+            };
+            super::pane(&pane, run, None, view, false).0
+        };
+        assert_eq!(capture((2, 2), false), "abcdefghijklm\n");
+        assert_eq!(capture((0, 1), false), "top\nabcdefghijklm\n");
+        assert_eq!(capture((3, 4), false), "abcdefghijklm\nend\n");
+        assert_eq!(capture((2, 2), true), "fghij\n");
         Ok(())
     }
 
@@ -513,7 +535,14 @@ mod tests {
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -530,12 +559,26 @@ mod tests {
         let size = fux_vt::Size::new(3, 20)?;
         let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text, "hello\n");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
-        let text = super::pane(&pane, None, view, false).0;
+        let text = super::pane(
+            &pane,
+            crate::command::Run::now().ok_or("a clock")?,
+            None,
+            view,
+            false,
+        )
+        .0;
         assert_eq!(text, "step 1\n");
         Ok(())
     }

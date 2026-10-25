@@ -5,10 +5,10 @@
 //!
 //! The parsing words are a fixed set, the only ones that read the token
 //! after them or shape the program: `str`, `define NAME … end`,
-//! `let NAME`, `if … else … then`, `begin … until`, `list … end` and
-//! `each … end`. Control flow is compiled to jumps, its open blocks kept on
-//! a compile-time stack. Every other word takes and gives values on the
-//! stack, and nothing else.
+//! `let NAME`, `if … else … then`, `begin … until`, `list … end`,
+//! `each … end` and `try … catch … end`. Control flow is compiled to jumps,
+//! its open blocks kept on a compile-time stack. Every other word takes and
+//! gives values on the stack, and nothing else.
 use crate::error::{Code, Error};
 use crate::machine::Builtin;
 use crate::token::Token;
@@ -53,6 +53,8 @@ parsing! {
     Until "until",
     List "list",
     Each "each",
+    Try "try",
+    Catch "catch",
 }
 
 impl Builtin {
@@ -80,7 +82,7 @@ impl Parsing {
             }
             Parsing::Define | Parsing::End => (
                 "define NAME … end",
-                "a word of your own; it may call itself (end also closes list and each)",
+                "a word of your own; it may call itself (end also closes list, each and try)",
             ),
             Parsing::Let => (
                 "X let NAME",
@@ -95,6 +97,12 @@ impl Parsing {
                 "the body once per element of SEQ, a string or list, the element pushed",
             ),
             Parsing::Str => ("str WORD", "WORD as text, whatever it looks like"),
+            Parsing::Try | Parsing::Catch => (
+                "CODES try … catch … end",
+                "the body from an empty stack, its values left; if it fails with one of \
+                 CODES (str 'timeout closed' just before try), the handler instead, on \
+                 the stack as it was at try and the failure's message and code",
+            ),
         }
     }
 }
@@ -131,6 +139,13 @@ pub(crate) enum Op<A> {
     /// The head of an `each` loop: the next element pushed, or, past the
     /// last, a jump out to the step given.
     EachNext(usize),
+    /// `try`: the stack from here is the body's; a failure of one of its
+    /// codes (behind one pointer, so no step is larger for them) goes to
+    /// its handler, the step given.
+    Try(usize, Rc<Vec<Code>>),
+    /// `catch`: the body went through; on past the handler, to the step
+    /// given.
+    Tried(usize),
 }
 
 /// Steps, each with the token it came from, and how many `let` names of
@@ -159,8 +174,13 @@ impl<A> Steps<A> {
     }
     /// Points the jump at `at` to `to`.
     fn patch(&mut self, at: usize, to: usize) {
-        if let Some(Op::Jump(target) | Op::JumpUnless(target) | Op::EachNext(target)) =
-            self.ops.get_mut(at)
+        if let Some(
+            Op::Jump(target)
+            | Op::JumpUnless(target)
+            | Op::EachNext(target)
+            | Op::Tried(target)
+            | Op::Try(target, _),
+        ) = self.ops.get_mut(at)
         {
             *target = to;
         }
@@ -222,6 +242,8 @@ enum Open {
     Begin { start: usize, at: Token },
     List { at: Token },
     Each { head: usize, at: Token },
+    Try { step: usize, at: Token },
+    Catch { jump: usize, at: Token },
 }
 
 /// The definition being compiled: its steps, and its own `let` names. It
@@ -247,8 +269,9 @@ pub struct Compiler<A> {
     globals: usize,
     open: Vec<Open>,
     current: Option<Current<A>>,
-    /// Whether the last step compiled is a number written just before, so
-    /// a `pick` or `roll` after it may take it as its count.
+    /// Whether the last step compiled is a number or `str` written just
+    /// before, so a `pick` or `roll` after it may take it as its count, or
+    /// a `try` as its codes.
     literal: bool,
     /// What the checker has worked out of the definitions so far.
     known: crate::check::Known,
@@ -342,6 +365,8 @@ impl<A: Clone> Compiler<A> {
     }
 
     fn source(&mut self, tokens: &[Token]) -> Result<(), Error> {
+        // A literal is part of the step after it in the same source alone.
+        self.literal = false;
         let mut tokens = tokens.iter();
         while let Some(token) = tokens.next() {
             let text = &*token.text;
@@ -350,9 +375,13 @@ impl<A: Clone> Compiler<A> {
                 Some(Parsing::Str) => {
                     let next = tokens.next().ok_or_else(|| missing(token, "a string"))?;
                     self.code().push(Op::Push(Value::str(&*next.text)), token);
+                    self.literal = true;
                 }
                 Some(Parsing::Define) => {
-                    self.top_level(token)?;
+                    if !self.open.is_empty() {
+                        let why = "define goes at the top level, outside any definition or block";
+                        return Err(Error::new(Code::NotTopLevel, why, Some(token)));
+                    }
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
                     // Visible from here on, its own body included, and to
@@ -388,8 +417,12 @@ impl<A: Clone> Compiler<A> {
                         let out = self.code().len();
                         self.code().patch(head, out);
                     }
+                    Some(Open::Catch { jump, .. }) => {
+                        let out = self.code().len();
+                        self.code().patch(jump, out);
+                    }
                     Some(other) => return Err(mismatched(token, &other)),
-                    None => return Err(unmatched(token, "no define, list or each is open")),
+                    None => return Err(unmatched(token, "no block that end closes is open")),
                 },
                 Some(Parsing::Let) => {
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
@@ -472,6 +505,26 @@ impl<A: Clone> Compiler<A> {
                         at: token.clone(),
                     });
                 }
+                Some(Parsing::Try) => {
+                    let codes = self.codes(token, literal)?;
+                    let step = self.code().len();
+                    self.code().push(Op::Try(0, codes), token);
+                    self.open.push(Open::Try {
+                        step,
+                        at: token.clone(),
+                    });
+                }
+                Some(Parsing::Catch) => match self.open.pop() {
+                    // Said at its `try`, as an open block is.
+                    Some(Open::Try { step, at }) => {
+                        let jump = self.code().len();
+                        self.code().push(Op::Tried(0), token);
+                        self.code().patch(step, jump.saturating_add(1));
+                        self.open.push(Open::Catch { jump, at });
+                    }
+                    Some(other) => return Err(mismatched(token, &other)),
+                    None => return Err(unmatched(token, "no try is open")),
+                },
                 None => self.word(token, text, literal)?,
             }
         }
@@ -556,6 +609,28 @@ impl<A: Clone> Compiler<A> {
         Ok(())
     }
 
+    /// The codes a `try` catches: the string written just before it, the
+    /// step that pushed it taken back. Each must be one a running word may
+    /// raise: a misspelt one would catch nothing.
+    fn codes(&mut self, token: &Token, literal: bool) -> Result<Rc<Vec<Code>>, Error> {
+        let bad = |why: String| Error::new(Code::BadCodes, why, Some(token));
+        let words = Rc::clone(&self.vocabulary);
+        let Some(Op::Push(Value::Str(text))) = self.code().ops.last().filter(|_| literal) else {
+            let why = "takes the codes it catches as a string written just before it: \
+                       str timeout try, str 'timeout closed' try";
+            return Err(bad(why.to_owned()));
+        };
+        let codes = (text.split_whitespace()).map(|name| words.caught(name));
+        let codes = codes.collect::<Result<Vec<Code>, String>>().map_err(bad)?;
+        if codes.is_empty() {
+            return Err(bad("names no code to catch".to_owned()));
+        }
+        let code = self.code();
+        code.ops.pop();
+        code.tokens.pop();
+        Ok(Rc::new(codes))
+    }
+
     /// `token`, a word no one defines, told with what was likely meant:
     /// text, or a word in scope spelt nearly so.
     fn unknown(&self, token: &Token) -> Error {
@@ -570,27 +645,11 @@ impl<A: Clone> Compiler<A> {
             format!("no such word; text is `str {quoted}`")
         } else {
             let locals = self.current.iter().flat_map(|c| c.locals.keys());
-            let parsing = Parsing::ALL.map(Parsing::name);
-            let mut near: Vec<(usize, &str)> = (self.names.keys().chain(locals))
-                .map(|name| &**name)
-                .chain(parsing)
-                .filter_map(|name| {
-                    // Spelt nearly so, or begun so.
-                    let d = distance(text, name);
-                    let near = d <= 2 && d.saturating_mul(3) <= text.chars().count();
-                    (near || (text.len() >= 3 && name.starts_with(text))).then_some((d, name))
-                })
-                .collect();
-            near.sort_unstable();
-            near.dedup();
-            let near: Vec<&str> = near.into_iter().take(3).map(|(_, name)| name).collect();
-            match near.as_slice() {
-                [] => "no such word".to_owned(),
-                near => format!(
-                    "no such word; did you mean {}?",
-                    crate::vocabulary::listed(near)
-                ),
-            }
+            let names = (self.names.keys().chain(locals)).map(|name| &**name);
+            format!(
+                "no such word{}",
+                meant(text, names.chain(Parsing::ALL.map(Parsing::name)))
+            )
         };
         Error::new(Code::UnknownWord, message, Some(token))
     }
@@ -650,17 +709,6 @@ impl<A: Clone> Compiler<A> {
         Ok(program)
     }
 
-    fn top_level(&self, token: &Token) -> Result<(), Error> {
-        if self.open.is_empty() {
-            return Ok(());
-        }
-        Err(Error::new(
-            Code::NotTopLevel,
-            "define goes at the top level, outside any definition or block",
-            Some(token),
-        ))
-    }
-
     /// Whether `name` may be defined (`define`) or named (`let`): either
     /// may take a library's or the host's word's name for itself, from
     /// there on; only the core's and the parsing words are kept, and a
@@ -714,6 +762,8 @@ fn opened(open: &Open) -> (&Token, &'static str) {
         Open::Begin { at, .. } => (at, "begin … until"),
         Open::List { at } => (at, "list … end"),
         Open::Each { at, .. } => (at, "each … end"),
+        Open::Try { at, .. } => (at, "try … catch"),
+        Open::Catch { at, .. } => (at, "try … catch … end"),
     }
 }
 
@@ -733,6 +783,26 @@ fn mismatched(token: &Token, open: &Open) -> Error {
         format!("the open block is {what}, from {}", at.place),
         Some(token),
     )
+}
+
+/// What `text` likely meant, of `names`, as an error says it: "; did you
+/// mean a or b?", the nearest three spelt nearly so or begun so; else
+/// nothing.
+pub(crate) fn meant<'a>(text: &str, names: impl Iterator<Item = &'a str>) -> String {
+    let mut near: Vec<(usize, &str)> = names
+        .filter_map(|name| {
+            let d = distance(text, name);
+            let near = d <= 2 && d.saturating_mul(3) <= text.chars().count();
+            (near || (text.len() >= 3 && name.starts_with(text))).then_some((d, name))
+        })
+        .collect();
+    near.sort_unstable();
+    near.dedup();
+    let near: Vec<&str> = near.into_iter().take(3).map(|(_, name)| name).collect();
+    match near.as_slice() {
+        [] => String::new(),
+        near => format!("; did you mean {}?", crate::vocabulary::listed(near)),
+    }
 }
 
 /// How many characters must change, go, come or swap with the next to

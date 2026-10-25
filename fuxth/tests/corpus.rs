@@ -46,7 +46,7 @@ fn a_corpus_ends_the_same_every_way() -> std::io::Result<()> {
             (Ended::Endless, _) | (_, Ended::Endless) => {}
             (a, b) if limit(a) || limit(b) => {}
             (Ended::Refused(code, line), naive) => {
-                let failed = matches!(naive, Ended::Failed(..)) && trace.fails_at(*line);
+                let failed = trace.fails_at(*line);
                 if trace.reached.contains(line) && !failed {
                     wrong.push(format!(
                         "{name}: refused {code} at {line}, but the naive run {naive:?}"

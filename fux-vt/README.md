@@ -43,7 +43,7 @@ and `src/*/tests.rs`. Every mode SM, RM, DECSET and DECRST set is a
 | Sequence | Behaviour | Tests |
 | --- | --- | --- |
 | Text, UTF-8 | Printed in ground state; widths by fux-vt's width rule (below, "Width"); a character split across calls is completed. Invalid UTF-8 prints one U+FFFD, one column wide, per maximal subpart (Unicode 3.9), then rereads the byte that broke it off, and one per byte that starts no sequence (0xc0, 0xc1, 0xf5–0xff, and a continuation byte alone, 0x80–0xbf, which xterm reads as Latin-1); overlong and surrogate forms are invalid. UTF-8-encoded C1 characters are ignored. | `conformance::invalid_utf8_*` |
-| Grapheme clusters | A character that continues the grapheme cluster of the cell just printed joins that cell (UAX #29 as written, GB9b's Prepend included, one character at a time, from tables `gen/` makes). A narrow cell whose cluster becomes two columns wide is widened over the cell under the cursor, except in the last column, as a wide glyph printed there would be: under IRM what is there moves right, the second half takes the open link, and a wide glyph it cuts keeps its other half as the pen's blank. Cursor moves and row edits end the cluster; SGR, modes and queries do not. A cluster keeps at most `CLUSTER_CAPACITY` (128) bytes and what its row's text budget allows; the rest is dropped, never split into another cell. `continues_cluster` tells a host what would join. | `unicode::tests`, `ucd::every_grapheme_break_case_prints_a_cell_a_cluster`, `ucd::canonical_equivalents_take_the_same_columns`, `ucd::every_qualified_emoji_is_one_wide_cell`, `ucd::every_variation_sequence_takes_its_style_s_width`, `properties::printed_text_*`, `extended::*cluster*`, `conformance::a_prepend_*`, `conformance::a_cluster_widened_is_placed_as_a_wide_glyph`, `clusters::*` |
+| Grapheme clusters | A character that continues the grapheme cluster of the cell just printed joins that cell (UAX #29 as written, GB9b's Prepend included, one character at a time, from tables `gen/` makes). A narrow cell whose cluster becomes two columns wide is widened over the cell under the cursor, as a wide glyph printed there would be: under IRM what is there moves right, the second half takes the open link, and a wide glyph it cuts keeps its other half as the pen's blank. In the line's last column it moves as a wide glyph printed there does, with its style and link: with autowrap on to the next line (mode 2027's spec, "Variation Selector 16"), the column it left a spacer; with autowrap off it is not printed (the spec leaves it undefined). Cursor moves and row edits end the cluster; SGR, modes and queries do not. A cluster keeps at most `CLUSTER_CAPACITY` (128) bytes and what its row's text budget allows; the rest is dropped, never split into another cell. `continues_cluster` tells a host what would join. | `unicode::tests`, `ucd::every_grapheme_break_case_prints_a_cell_a_cluster`, `ucd::canonical_equivalents_take_the_same_columns`, `ucd::every_qualified_emoji_is_one_wide_cell`, `ucd::every_variation_sequence_takes_its_style_s_width`, `properties::printed_text_*`, `extended::*cluster*`, `conformance::a_prepend_*`, `conformance::a_cluster_widened_is_placed_as_a_wide_glyph`, `clusters::*` |
 | C0 controls | BS: back a column, stopping at the left margin unless already left of it (see CSI ? 45). HT: the next tab stop, else the right margin (the last column without DECLRMM); from right of the margin, or on a line outside the scrolling region, the next stop or the last column (DEC STD 070, HT, note 1); CHT as that many HTs. LF, VT, FF: down a line, scrolling at the bottom margin (between left and right margins only), CR too under LNM. CR: column 0, or the left margin if the cursor is at or right of it, or in origin mode. SO, SI: G1, G0 into GL. SUB: the error character, U+2426, placed as a glyph is, in no character set (DEC STD 070, SUBSTITUTE, p. 5-132). BEL and the rest: nothing visible. BS, HT, LF, VT, FF and CR end a pending wrap (see CSI ? 7). | `semantics::text_controls_*`, `conformance::a_tab_from_*`, `conformance::sub_is_displayed_as_the_error_character` |
 | ESC 7 / 8, CSI s / u | DECSC/SCOSC save and DECRC/SCORC restore the position with its pending wrap, origin mode, the pen, protection and the character sets. `CSI s` is DECSLRM while DECLRMM is set. With origin mode restored, the cursor comes back inside all four margins: a line above the top margin goes to it, below the bottom margin to it, and a column left or right of the margins to the nearer (DEC STD 070, DECRC, note 3 and its algorithm). Each screen has its own saved position, pen, protection and character sets, as each of xterm's screens has; the position is clamped by a resize. | `extended::scosc_*`, `conformance::each_screen_saves_*` |
 | ESC = / > | DECKPAM, DECKPNM: `Mode::ApplicationKeypad`, off; RIS and DECSTR reset it. Read by `Screen::key_mode`: set, the keypad keys a terminal speaking the kitty protocol names (its codes 57399 to 57416) send ctlseqs' application sequences ("VT220-Style Function Keys": Enter `SS3 M`, 0 to 9 `SS3 p` to `SS3 y`, `SS3 j k l m n o X` for `* + , - . / =`), the modifier after SS3 (`SS3 5 q`), unless Num Lock is held, which overrides the mode (ctlseqs, "PC-Style Function Keys"; Ghostty keeps the mode then); a legacy terminal's keypad arrives as the keys it types. | `modes::decrqm_*`, `keys::encode::tests::the_application_keypad_sends_its_ss3_sequences` |
@@ -266,7 +266,7 @@ A grid stores a cell in 8 bytes (`compact.rs`):
 Readers never see a stored cell: `Screen::cell`, `Window::cell`,
 `Row::cell` and `Row::cells` return `CellRef`s, which carry the cluster's
 text and the style's attributes. A host that stores screen contents uses
-`Cells` (`row.cells().collect::<Cells>()`, `Cells::set`), which stores
+`Cells` (`Cells::try_from_iter(row.cells())`, `Cells::set`), which stores
 cells as rows do, with each cell's attributes beside it in place of a
 style, so it keeps and cuts text as a row does. A host makes a cell to
 store with `CellRef::new` or `CellRef::wide_continuation`. `Cells` holds
@@ -359,6 +359,10 @@ whether the screen may have changed (any processing counts);
 `full_refresh_since` whether something structural did (scroll, resize,
 reset, screen switch, history eviction); `dirty_rows_since` yields retained
 rows newer than the mark. A stale mark forces a refresh; it never hides an update.
+`Screen::revision` counts the bytes of output read, one held back while
+work is left over, and the resizes to another size and changes to
+history: with no work left, the same however the output was cut into
+calls, where marks and `Screen::version` move on with each call.
 
 ## Bounds
 
@@ -408,8 +412,9 @@ formulas are in [`THREATS.md`](https://github.com/gold-silver-copper/fux/blob/ma
   history), and reads, copies and clears each cell about three times; a
   refused one changes nothing.
 - **`Cells`** (B39) holds at most 64 Mi cells, as a screen does:
-  `Cells::new` and `Cells::resize` refuse more with `Error::Capacity`,
-  and so does a lack of memory, the cells left as they were.
+  `Cells::new`, `Cells::resize` and `Cells::try_from_iter` refuse more
+  with `Error::Capacity`, and so does a lack of memory, the cells left
+  as they were.
 - **Listing pictures** (B09) doesn't search history: each picture's top
   row is followed into history as it scrolls there, by its number in the
   order rows came, so `Screen::pictures` reads at most the screen's rows

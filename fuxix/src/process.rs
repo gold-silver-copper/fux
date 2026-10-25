@@ -152,12 +152,6 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
     Ok(std::time::Duration::new(seconds, nanos))
 }
 
-/// Makes this process the leader of a new session, whose ID is its pid.
-fn setsid() -> Result<()> {
-    // SAFETY: setsid takes nothing and touches no memory.
-    check(unsafe { libc::setsid() }).map(drop)
-}
-
 /// Has `command`'s program, once spawned, lead a new session, holding no
 /// descriptor but its stdin, stdout and stderr: what this process holds
 /// without close-on-exec, inherited from a shell that leaks descriptors or
@@ -172,9 +166,11 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     let listed = crate::io::open_end();
     let lead = move || -> std::io::Result<()> {
         crate::io::cloexec_from(3, listed)?;
-        setsid()?;
+        // A new session, this process its leader, whose ID is its pid.
+        // SAFETY: setsid takes nothing and touches no memory.
+        check(unsafe { libc::setsid() })?;
         if terminal {
-            let set = crate::terminal::request(libc::TIOCSCTTY);
+            let set = crate::terminal::Request::from(libc::TIOCSCTTY);
             let steal: libc::c_int = 0;
             // SAFETY: TIOCSCTTY takes an int and touches no memory.
             check(unsafe { libc::ioctl(0, set, steal) })?;
@@ -278,17 +274,10 @@ pub fn reap_orphans(kept: impl Fn(Pid) -> bool) {
 
 /// The processes this one started, those they started in turn, and the
 /// orphans it adopted ([`adopt_orphans`]); not itself. A runaway tree is
-/// cut short past 4,096.
+/// cut short past 4,096. Found by each one's threads' children.
 #[cfg(not(target_os = "macos"))]
 pub fn tree() -> Vec<Pid> {
-    below("self")
-}
-
-/// The processes under `root` (or `self`), by each one's threads'
-/// children: a runaway tree is cut short past 4,096.
-#[cfg(not(target_os = "macos"))]
-fn below(root: impl fmt::Display) -> Vec<Pid> {
-    let mut found = children(root);
+    let mut found = children("self");
     let mut next = 0;
     while let Some(pid) = found.get(next).copied()
         && found.len() <= 4096
@@ -345,16 +334,21 @@ fn listed<T: Default + Clone>(
     Some(list)
 }
 
-/// `pid`'s command line, when the system says.
+/// `pid`'s command line, when the system says: each argument ended by a
+/// NUL, empty ones too. A process that wrote over its arguments, as
+/// `setproctitle` does, has what it wrote, read the same way; ending in no
+/// NUL (the kernel then stops at the first one, past the arguments), it is
+/// one argument. An empty line, as a kernel thread's or a zombie's, is not
+/// said.
 #[cfg(not(target_os = "macos"))]
 pub fn argv(pid: Pid) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let words: Vec<String> = raw
-        .split(|b| *b == 0)
-        .filter(|w| !w.is_empty())
-        .map(|w| String::from_utf8_lossy(w).into_owned())
-        .collect();
-    (!words.is_empty()).then_some(words)
+    let line = raw.strip_suffix(&[0]).unwrap_or(&raw);
+    (!raw.is_empty()).then(|| {
+        (line.split(|b| *b == 0))
+            .map(|w| String::from_utf8_lossy(w).into_owned())
+            .collect()
+    })
 }
 
 /// `pid`'s command line: macOS keeps it where only a privileged reader
@@ -494,6 +488,32 @@ mod tests {
         let pid = Pid::of(&child).ok_or("a pid")?;
         assert_eq!(wait_ended(pid), Some(Status::Exited(3)));
         assert_eq!(reap(pid), Ok(Some(Status::Exited(3))));
+        Ok(())
+    }
+
+    /// Empty arguments are arguments.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn argv_keeps_empty_arguments() -> std::result::Result<(), String> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let script = "echo; read x";
+        let mut child = Command::new("sh")
+            .args(["-c", script, "", "head", "", "tail", ""])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let pid = Pid::of(&child).ok_or("a pid")?;
+        // The shell runs, not the fork that has yet to become it.
+        let mut started = [0u8; 1];
+        let out = child.stdout.as_mut().ok_or("its stdout")?;
+        out.read_exact(&mut started).map_err(|e| e.to_string())?;
+        let read = argv(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        let words = ["sh", "-c", script, "", "head", "", "tail", ""];
+        assert_eq!(read, Some(words.map(String::from).to_vec()));
         Ok(())
     }
 

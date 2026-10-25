@@ -1,0 +1,8 @@
+# A division by zero caught: the stack as it was at try, then the
+# failure's message and code, which the handler drops for a 0.
+# expect: 3 0 -4
+define safe-div
+  let d let n
+  str div_by_zero try n d div catch drop drop 0 end
+end
+7 2 safe-div 7 0 safe-div -8 2 safe-div

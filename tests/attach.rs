@@ -180,8 +180,14 @@ fn capture_pane_shows_the_screen_and_history() -> Outcome {
         "{json}"
     );
     assert!(json.contains("\"line8\""), "{json}");
-    // From inside the pane, FUX_PANE is `here`.
-    let inside = server.fux_env(&["here", "capture"], &[("FUX_PANE", "%1")])?;
+    // From inside the pane, FUX_PANE (of the server FUX_SERVER names) is
+    // `here`.
+    let version = server.version("%1")?;
+    let run = version.rsplit(':').next().unwrap_or_default();
+    let inside = server.fux_env(
+        &["here", "capture"],
+        &[("FUX_PANE", "%1"), ("FUX_SERVER", run)],
+    )?;
     assert_eq!(inside.status, 0);
     assert!(inside.stdout.contains("line8"));
     Ok(())
@@ -695,7 +701,7 @@ fn a_panes_program_has_the_pty_as_its_controlling_terminal() -> Outcome {
         "set",
     ])?;
     let pane = server.ok(&["opts", "new-workspace"])?;
-    let pane = pane.split_whitespace().next().unwrap_or_default();
+    let pane = pane.split(':').next().unwrap_or_default();
     let mut fields = Vec::new();
     eventually("the program's report", || {
         let screen = server.ok(&["str", pane, "pane", "capture"])?;

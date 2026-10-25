@@ -26,10 +26,7 @@ impl Session {
             // be empty (its panes moved out), and is not written.
             let mut opens = whole;
             for tab in ws.tabs() {
-                if !self.takes_in(only, ws.id, tab.id) {
-                    continue;
-                }
-                if tab.root().is_none() {
+                if !self.takes_in(only, ws.id, tab.id) || tab.root().is_none() {
                     continue;
                 }
                 self.dump_tab(ws, tab, whole, opens, ids, &mut out);
@@ -178,12 +175,9 @@ impl Session {
         let Some(launch) = program else {
             return;
         };
-        let mut words = launch.argv.iter();
-        if let Some(program) = words.next() {
-            line.extend(string(program).chain(["program".to_owned()]));
-        }
-        for arg in words {
-            line.extend(string(arg).chain(["arg".to_owned()]));
+        for (i, word) in launch.argv.iter().enumerate() {
+            let what = if i == 0 { "program" } else { "arg" };
+            line.extend(string(word).chain([what.to_owned()]));
         }
     }
 }
@@ -211,10 +205,7 @@ fn asked(id: &str) -> impl Iterator<Item = String> {
 /// Appends a line of words, each quoted as fuxth's tokenizer reads it
 /// back.
 fn push(out: &mut String, line: &[impl AsRef<str>]) {
-    let words: Vec<String> = line
-        .iter()
-        .map(|w| crate::words::quote(w.as_ref()))
-        .collect();
-    out.push_str(&words.join(" "));
+    let words = line.iter().map(|w| crate::words::quote(w.as_ref()));
+    out.push_str(&super::joined(words, " "));
     out.push('\n');
 }

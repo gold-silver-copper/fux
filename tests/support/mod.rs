@@ -239,7 +239,7 @@ impl Server {
         Ok(out.stdout)
     }
 
-    /// The version of `pane` (`STARTS.SCREEN.BELLS.DONE.ENDED`).
+    /// The version of `pane` (`PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN`).
     pub fn version(&self, pane: &str) -> Result<String, String> {
         Ok(self
             .ok(&["str", pane, "pane", "str", "version", "get"])?
@@ -279,14 +279,12 @@ impl Server {
                 return Err(format!("{pane} unchanged at {since}"));
             }
             let left = left.to_string();
-            let waited = [
-                "str", pane, "pane", "str", since, "changed", &left, "timeout", "wait",
-            ];
+            let waited = ["str", since, "changed", &left, "timeout", "wait"];
             let out = self.fux(&waited)?;
             match out.status {
                 0 => {
-                    let words = out.stdout.split_whitespace();
-                    return Ok(words.into_iter().nth(1).unwrap_or_default().to_owned());
+                    let mut words = out.stdout.split_whitespace();
+                    return Ok(words.next().unwrap_or_default().to_owned());
                 }
                 124 => continue,
                 _ => return Err(format!("{pane}: {}", out.stderr)),
@@ -1005,7 +1003,12 @@ pub fn wait_painted(client: &mut Client, what: &str, count: usize) -> Outcome {
     })
 }
 
+/// The `n`th of a version's counts, from 0 (`RESPAWNS`), as it is written.
+pub fn count(version: &str, n: usize) -> Option<&str> {
+    version.split(':').nth(1)?.split('.').nth(n)
+}
+
 /// Whether `version` says its program ended (`ENDED`, its last count, 1).
 pub fn ended(version: &str) -> bool {
-    version.rsplit('.').next() == Some("1")
+    count(version, 4) == Some("1")
 }

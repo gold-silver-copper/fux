@@ -153,8 +153,8 @@ fn missing_interpreter(command: &Command, program: &OsStr) -> Option<String> {
 /// Opens a PTY of `size`: its master and its slave.
 ///
 /// macOS, when PTYs are allocated and freed quickly, by any processes, has
-/// two races this works around (`docs/apple-feedback-ptmx-eredriveopen.md` in
-/// the fux repository has the details and reproducers):
+/// two races this works around (the report for Apple, with the details and
+/// reproducers, is linked from fuxix's README):
 /// - Concurrent opens of `/dev/ptmx` can be handed the same PTY number, and
 ///   the kernel retries the loser only ten times, sleeping up to 100 ms
 ///   between tries, before it returns its own internal code, `EREDRIVEOPEN`
@@ -408,7 +408,7 @@ fn redrive<T>(
 
 /// The path of the slave of the PTY `master`, in a buffer of ours: macOS's
 /// `ptsname` returns a shared one, so it is asked by an ioctl there.
-fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
+pub(crate) fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
     let fd = master.as_fd().as_raw_fd();
     let mut buffer: [libc::c_char; 128] = [0; 128];
     #[cfg(not(target_os = "macos"))]
@@ -419,7 +419,7 @@ fn slave_name(master: impl AsFd) -> crate::Result<PathBuf> {
         error => return Err(Errno::from_raw(error)),
     }
     #[cfg(target_os = "macos")]
-    let get = terminal::request(libc::TIOCPTYGNAME);
+    let get = terminal::Request::from(libc::TIOCPTYGNAME);
     #[cfg(target_os = "macos")]
     // SAFETY: TIOCPTYGNAME writes at most 128 bytes, NUL included, and the
     // buffer is 128 bytes.

@@ -20,7 +20,6 @@ use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, V
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 pub use words::{WORDS, Word, usage};
 
@@ -90,14 +89,6 @@ impl AppValue for Fux {
     }
 }
 
-/// What a wait waits for, as words give it.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Waits {
-    /// The version it waits to differ from (`changed`).
-    pub since: Option<Version>,
-    pub timeout: Option<Duration>,
-}
-
 /// Options, keys, waits and a mouse event, as words give them, and what
 /// they are on: nothing, for `run`, `new-tab` and `new-workspace`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -108,16 +99,13 @@ pub struct Opts {
     pub cwd: Option<std::path::PathBuf>,
     pub env: crate::command::Env,
     pub argv: Vec<String>,
-    pub typed: Option<String>,
     pub axis: Option<Axis>,
     pub place: Option<WsRef>,
     pub ids: crate::id::Wanted,
     pub log: Option<String>,
     pub kill: bool,
-    pub waits: Waits,
-    /// The version an action's answer (or a wait's) held, which the request
-    /// was made from: what `wait` waits from, unless `changed` says.
-    pub held: Option<crate::command::Version>,
+    /// How long a wait waits at most.
+    pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
     pub inputs: Vec<Input>,
@@ -133,6 +121,9 @@ pub struct Opts {
 pub enum On {
     Target(AnyRef),
     Client(ClientId),
+    /// A version's pane (`changed`, or an action's or wait's answer): a
+    /// wait on it waits from that version.
+    Version(Version),
 }
 
 /// What the server answered, to print as text, or as JSON: the JSON the
@@ -149,10 +140,13 @@ pub struct Answer {
 pub enum Said {
     Capture,
     Listing,
-    /// An action's answer of one pane: a word that wants a pane takes it.
-    Action(PaneId),
-    /// An action's answer of several panes, or of none.
-    Several,
+    /// An action's or wait's answer of one pane, which holds its
+    /// version: a word that wants a pane takes it, and a wait waits from
+    /// that version.
+    Action(Version),
+    /// An answer that holds no one pane's version: a tab's or workspace's
+    /// panes', or a closed pane's.
+    Panes,
     /// JSON that is no one value of fuxth's.
     Json,
     Status,
@@ -165,7 +159,7 @@ impl Said {
         match self {
             Said::Capture => "capture",
             Said::Listing | Said::Status | Said::Servers => "listing",
-            Said::Action(_) | Said::Several => "answer",
+            Said::Action(_) | Said::Panes => "answer",
             Said::Json => "json",
         }
     }
@@ -176,20 +170,21 @@ impl Said {
             Said::Capture => "a capture",
             Said::Listing => "a listing",
             Said::Action(_) => "an action's answer",
-            Said::Several => "an answer of several panes",
+            Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
             Said::Json => "a JSON value",
             Said::Status => "a status",
             Said::Servers => "a listing of servers",
         }
     }
 
-    /// The pane it is of.
-    pub fn pane(self) -> Option<PaneId> {
+    /// The version an action's answer holds: its pane's from before what
+    /// it did.
+    pub fn version(self) -> Option<crate::command::Version> {
         match self {
-            Said::Action(pane) => Some(pane),
+            Said::Action(version) => Some(version),
             Said::Capture
             | Said::Listing
-            | Said::Several
+            | Said::Panes
             | Said::Json
             | Said::Status
             | Said::Servers => None,
@@ -210,7 +205,7 @@ pub enum Ask {
     /// A request, as the client `client` (or the caller), and what to make
     /// of its reply.
     Server {
-        request: Request,
+        request: Box<Request>,
         client: Option<ClientId>,
         then: Then,
     },
@@ -345,6 +340,7 @@ impl From<fuxth::Error> for Failed {
             | Lang::Overflow
             | Lang::Unset
             | Lang::Unused
+            | Lang::BadCodes
             | Lang::Fail
             | Lang::TooLong
             | Lang::Contract
@@ -400,21 +396,20 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
+    for code in Code::ALL.iter().filter(|c| c.raised()) {
+        vocabulary.code(code.name())?;
+    }
     Ok(vocabulary)
 }
 
 /// Compiles `tokens` after the library: a program ready to run.
 pub fn compile(tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compile_in(None, tokens)
+    compiled(None, tokens).map_err(Failed::from)
 }
 
 /// Compiles `tokens` after the library and, for a key's or the prompt's
-/// program, its client's config's definitions (`config`).
-pub fn compile_in(config: Option<&Config>, tokens: &[Token]) -> Result<Machine<Fux>, Failed> {
-    compiled(config, tokens).map_err(Failed::from)
-}
-
-/// `compile_in`, its mistake as fuxth says it.
+/// program, its client's config's definitions (`config`); its mistake as
+/// fuxth says it.
 pub(crate) fn compiled(
     config: Option<&Config>,
     tokens: &[Token],
@@ -671,20 +666,12 @@ impl Asks for AsClient<'_> {
     }
 }
 
-/// Runs `machine` to its end, asking `asks` what its words ask. Its stack
-/// at the end.
-pub fn run(
-    machine: &mut Machine<Fux>,
-    host: &mut Host<'_>,
-    asks: &mut dyn Asks,
-) -> Result<Vec<Value<Fux>>, Failed> {
-    run_capped(machine, host, asks, None, None)
-}
-
 /// The steps a run takes between looks at its budget.
 const SLICE: u64 = 100_000;
 
-/// `run`, failing once it has taken more than `steps` steps, if given.
+/// Runs `machine` to its end, asking `asks` what its words ask; its stack
+/// at the end. It fails once it has taken more than `steps` steps, if
+/// given, or once `stop` is.
 pub fn run_capped(
     machine: &mut Machine<Fux>,
     host: &mut Host<'_>,
@@ -700,8 +687,9 @@ pub fn run_capped(
             ));
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
+            // No try may name it: it ends the run, said at the step reached.
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
-            return Err(placed(machine, failed));
+            pushed(machine, Err(failed))?;
         }
         match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
@@ -713,57 +701,58 @@ pub fn run_capped(
             }) => {
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
-                let reply = asks
-                    .ask(&Asked { request, context }, host.out)
-                    .map_err(|f| placed(machine, f))?;
-                match &reply.end {
+                let asked = Asked {
+                    request: *request,
+                    context,
+                };
+                let reply = asks.ask(&asked, host.out);
+                let values = reply.and_then(|reply| {
                     // A failure that answered too (a wait's): its answer is
-                    // left, printed before why it failed.
-                    End::Failed { message, .. }
-                        if !message.trim().is_empty() && !reply.text.trim().is_empty() =>
+                    // left, printed before why it failed, unless a `try`
+                    // catches the failure.
+                    if let End::Failed { message, .. } = &reply.end
+                        && !message.trim().is_empty()
+                        && !reply.text.trim().is_empty()
                     {
                         let answer = Reply {
                             end: End::Done,
                             ..reply.clone()
                         };
-                        pushed(machine, answered(answer, then))?;
+                        // Only what it answered: its failure is raised
+                        // once, below.
+                        let answer = answered(answer, then).unwrap_or_default();
+                        pushed(machine, Ok(answer))?;
                     }
-                    End::Failed { .. } | End::Done => {}
-                }
-                pushed(machine, answered(reply, then))?;
+                    answered(reply, then)
+                });
+                pushed(machine, values)?;
             }
             Outcome::Suspended(Ask::Local(what)) => pushed(machine, asks.local(&what, host.out))?,
         }
     }
 }
 
-/// Pushes what a word asked for gave, or its failure, placed.
+/// Pushes what a word asked for gave; or raises its failure there, for a
+/// `try` to catch, else placed at the word.
 fn pushed(
     machine: &mut Machine<Fux>,
     values: Result<Vec<Value<Fux>>, Failed>,
 ) -> Result<(), Failed> {
-    for value in values.map_err(|f| placed(machine, f))? {
-        machine.push(value)?;
+    let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
+        let failure = fuxth::Failure::new(code, message);
+        machine.raise(failure).map_err(|e| ours(machine, e))
+    };
+    let values = match values {
+        Ok(values) => values,
+        Err(failed) => return raise(machine, failed.code.into(), failed.message),
+    };
+    // A stack too full for them is the word's failure too, for a `try`.
+    for value in values {
+        if let Err(full) = machine.push(value) {
+            return raise(machine, full.code, full.message);
+        }
     }
     Ok(())
-}
-
-/// A failure in doing what the word the program stopped at asks, named
-/// with that word and where it is, as the language's own errors are.
-fn placed(machine: &Machine<Fux>, failed: Failed) -> Failed {
-    let Some(at) = machine.at() else {
-        return failed;
-    };
-    let error = fuxth::Error {
-        code: failed.code.into(),
-        message: failed.message,
-        place: Some(at.place),
-        word: Some(at.text),
-    };
-    Failed {
-        message: ours(machine, error).message,
-        ..failed
-    }
 }
 
 /// An error placed where the program is: a failure inside a word of the
@@ -813,27 +802,20 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
     let reply = succeeded(reply)?;
     let text = reply.text.trim_end_matches('\n').to_owned();
     let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
-    // An action's answer is its pane's, when the reply names one pane alone
-    // (a wait on a tab's panes answers each): never read from what the
-    // program wrote.
-    let mut panes = reply.ids.iter().filter_map(|id| match id {
-        AnyRef::Pane(p) => Some(*p),
-        AnyRef::Tab(_) | AnyRef::Workspace(_) => None,
-    });
-    let pane = match (panes.next(), panes.next()) {
-        (Some(pane), None) => Some(pane),
-        (Some(_), Some(_)) | (None, _) => None,
+    // An action's answer is its pane's, when the reply holds one pane's
+    // version alone (a wait on a tab's panes answers each).
+    let version = match reply.versions.as_slice() {
+        [one] => Some(*one),
+        _ => None,
     };
     let action = |text: String, json: Option<String>| {
-        Answer::value(text, json, pane.map_or(Said::Several, Said::Action))
+        Answer::value(text, json, version.map_or(Said::Panes, Said::Action))
     };
     Ok(match then {
         Then::Nothing => Vec::new(),
+        // A pane an action started: its answer, which is its pane too.
+        Then::Handle(Kind::Pane) if version.is_some() => vec![action(text, json)],
         Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
-            // A pane an action waited on: its answer, which is its pane too.
-            Some(AnyRef::Pane(p)) if json.is_some() && pane == Some(*p) => {
-                vec![action(text, json)]
-            }
             Some(id) => vec![Value::App(handle(*id))],
             None => {
                 return Err(Failed::new(
@@ -906,7 +888,8 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Status => {
             let socket = server.socket()?;
             let probe = client::probe(&socket).map_err(client_failed)?;
-            let (text, json) = crate::status(&socket, &probe);
+            let (text, json) =
+                crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
             return Ok(vec![answer(&text, &json, Said::Status)]);
         }
         Local::Servers => {
@@ -1097,8 +1080,7 @@ impl Asks for Layout<'_> {
 /// line. Why it failed, if it did.
 pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
     let mut machine = compile(&program(args)?)?;
-    let mut out = Checked { out, failed: None };
-    let mut host = Host::new(client::context(), None, &mut out);
+    let mut host = Host::new(client::context(), None, out);
     let ran = run_capped(
         &mut machine,
         &mut host,
@@ -1107,29 +1089,22 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
         None,
     );
     // What the words before a failure left is printed too: their answers.
+    // The run's failure, if it failed, came first, and is the one told.
     let stack = match &ran {
         Ok(stack) => stack.as_slice(),
         Err(_) => machine.stack(),
     };
-    for value in stack {
+    let printed = (stack.iter())
         // An answer with nothing to say (an empty listing) prints no
         // blank line; options or a request, nothing.
-        if matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
-            || matches!(value, Value::App(Fux::Opts(_)))
-        {
-            continue;
-        }
-        let _ = writeln!(host.out, "{}", value.text());
-    }
-    let _ = host.out.flush();
+        .filter(|value| {
+            !matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
+                && !matches!(value, Value::App(Fux::Opts(_)))
+        })
+        .try_for_each(|value| writeln!(host.out, "{}", value.text()))
+        .and_then(|()| host.out.flush());
     ran?;
-    match out.failed {
-        Some(error) => Err(Failed::new(
-            Code::Output,
-            format!("writing the output: {error}"),
-        )),
-        None => Ok(()),
-    }
+    printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
 }
 
 /// The program `args` give: none attaches; `-` is stdin; one argument
@@ -1194,36 +1169,6 @@ fn read_file(path: &std::path::Path, most: (usize, &str)) -> Result<String, Fail
     read_text(&name, file, most)
 }
 
-/// Output that keeps its first failure, so that a run whose output cannot
-/// be written fails, however its words wrote it.
-struct Checked<'a> {
-    out: &'a mut dyn Write,
-    failed: Option<io::Error>,
-}
-
-impl Write for Checked<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let written = self.out.write(bytes);
-        self.keep(written)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        let flushed = self.out.flush();
-        self.keep(flushed)
-    }
-}
-
-impl Checked<'_> {
-    /// `result`, its error kept if it is the first.
-    fn keep<T>(&mut self, result: io::Result<T>) -> io::Result<T> {
-        if let Err(error) = &result
-            && self.failed.is_none()
-        {
-            self.failed = Some(io::Error::new(error.kind(), error.to_string()));
-        }
-        result
-    }
-}
-
 #[cfg(test)]
 mod tests {
     /// A whole program in one argument is a program, though a word in it
@@ -1252,7 +1197,7 @@ mod tests {
         assert_eq!(keymap.bindings.all().len(), lines);
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
-            str g str 'me focused horizontal str "echo it'\''s" typed split drop' bind
+            str g str 'me focused horizontal str sh program str "echo it'\''s" arg split drop' bind
             str "a \\ and
             a line" label"#;
         run("mine", mine, &mut keymap)?;

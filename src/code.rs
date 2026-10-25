@@ -16,8 +16,11 @@ const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 /// to the enum `Code` of those variants and `Lang`, the language's own
 /// codes; `Code::ALL`, fux's own in order; `Code::status`, each one's exit
 /// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
-/// as for the language's; and `fuxth::Code::from`, each one as the language
-/// takes it (one of fux's as `Host`, by its name).
+/// as for the language's; `Code::raised`, whether a word a program runs
+/// can fail with it, so a `try` may catch it: not for a row marked
+/// `[run_loop]`, which only the loop running the program gives; and
+/// `fuxth::Code::from`, each one as the language takes it (one of fux's as
+/// `Host`, by its name).
 macro_rules! codes {
     (@status) => {
         FAILED
@@ -25,7 +28,13 @@ macro_rules! codes {
     (@status $status:ident) => {
         $status
     };
-    ($($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)?,)*) => {
+    (@raised) => {
+        true
+    };
+    (@raised run_loop) => {
+        false
+    };
+    ($($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)? $([$by:ident])?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
@@ -42,6 +51,14 @@ macro_rules! codes {
                 match self {
                     $(Code::$variant => codes!(@status $($status)?),)*
                     Code::Lang(_) => FAILED,
+                }
+            }
+
+            /// Whether a word a program runs can fail with it.
+            pub fn raised(self) -> bool {
+                match self {
+                    $(Code::$variant => codes!(@raised $($by)?),)*
+                    Code::Lang(LangCode(code)) => code.raised(),
                 }
             }
         }
@@ -82,7 +99,7 @@ codes! {
     NoBuffer "no_buffer",
     /// Nothing to act on was named, and the caller has none.
     NoTarget "no_target",
-    /// `FUX_PANE` is another server's pane.
+    /// `FUX_PANE` is another server's pane, or comes with no `FUX_SERVER` to say whose.
     StrayPane "stray_pane",
     /// A field `get` names that the object has not.
     NoField "no_field",
@@ -144,9 +161,9 @@ codes! {
     Lost "lost",
     // A program of words.
     /// A run of more steps than allowed.
-    Steps "steps",
+    Steps "steps" [run_loop],
     /// A run the prefix, then Esc, stopped.
-    Cancelled "cancelled",
+    Cancelled "cancelled" [run_loop],
     /// A word the client runs itself (attach, server, start, status), which
     /// runs from the command line only: not a key's, a config's or a saved
     /// session's.

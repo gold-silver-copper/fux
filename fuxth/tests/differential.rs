@@ -48,7 +48,7 @@ fn fuxth_ends_as_the_naive_interpreter_does() {
                 // A refusal promises the step fails, not with which code:
                 // the run may meet another mistake there first (an index
                 // past the end before the element's kind).
-                let failed_so = matches!(naive, Ended::Failed(..)) && trace.fails_at(*line);
+                let failed_so = trace.fails_at(*line);
                 if trace.reached.contains(line) && !failed_so {
                     wrong.push(format!(
                         "seed {seed}: refused {code} at line {line}, which ran: {naive:?}\n{text}"
@@ -194,7 +194,7 @@ fn agrees(text: &str, left: &Ended) -> bool {
 fn inline(lines: &[&str]) -> Option<String> {
     let start = lines.iter().position(|l| *l == "define")?;
     let name = *lines.get(start.checked_add(1)?)?;
-    // Its own `end`: `list` and `each` inside it close with `end` too.
+    // Its own `end`: `list`, `each` and `try` inside it close with `end` too.
     let mut depth = 0usize;
     let mut quoted = false;
     let mut end = None;
@@ -204,7 +204,7 @@ fn inline(lines: &[&str]) -> Option<String> {
         }
         quoted = matches!(*l, "str" | "let" | "define");
         match *l {
-            "define" | "list" | "each" => depth = depth.saturating_add(1),
+            "define" | "list" | "each" | "try" => depth = depth.saturating_add(1),
             "end" => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {

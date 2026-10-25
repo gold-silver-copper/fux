@@ -213,7 +213,13 @@ fn defaults() -> &'static Keymap {
 
 impl Run {
     fn new(rows: u16, cols: u16) -> Run {
-        let mut s = Session::new(Config::default(), "/nonexistent/fux.sock".into(), false);
+        let run = fux::command::Run::now().expect("a clock after 1970");
+        let mut s = Session::new(
+            Config::default(),
+            "/nonexistent/fux.sock".into(),
+            false,
+            run,
+        );
         s.start().expect("a session starts");
         let mut run = Run {
             s,
@@ -332,8 +338,19 @@ impl Run {
                     if client.is_some() {
                         context.client = client;
                     }
-                    let reply = self.ask(Asked { request, context });
-                    let values = fux::script::answered(reply, then);
+                    let reply = self.ask(Asked {
+                        request: *request,
+                        context,
+                    });
+                    // A failure raised in the program, for a `try` to
+                    // catch, as a client's run raises it.
+                    let values = fux::script::answered(reply, then).or_else(|failed| {
+                        let failure = fuxth::Failure::new(failed.code.into(), failed.message);
+                        machine
+                            .raise(failure)
+                            .map(|()| Vec::new())
+                            .map_err(Failed::from)
+                    });
                     let pushed = values.and_then(|values| {
                         values
                             .into_iter()

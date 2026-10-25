@@ -49,8 +49,8 @@ use crate::keys::colour::Scheme;
 use crate::keys::encode::{CTRL_BACKSPACE, Control, PASTE_END, numbered_key};
 use crate::keys::mouse::{self, MouseEvent};
 use crate::keys::{
-    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, Direction, Function, KITTY_FLAGS, Key, KeyPress, Keystroke,
-    Kitty, Modifiers, SHIFT_BIT,
+    ALT_BIT, CAPS_LOCK_BIT, CTRL_BIT, DISAMBIGUATE, Direction, Function, KITTY_FLAGS, Key,
+    KeyPress, Keystroke, Kitty, Modifiers, SHIFT_BIT,
 };
 use crate::{ModeStatus, Rgb};
 use std::num::NonZeroU8;
@@ -162,6 +162,10 @@ pub struct Decoder {
     /// Rounds of questions asked of the terminal whose last answer, DA1's,
     /// has not come.
     expecting: Option<Expecting>,
+    /// The terminal's latest kitty flags hold disambiguate: it sends
+    /// Escape as `CSI 27 u`, so a bare ESC is a sequence begun, and waits
+    /// for the rest of it however long it takes, never taken for Escape.
+    escape_said: bool,
 }
 
 impl Default for Decoder {
@@ -212,17 +216,6 @@ enum Pasted {
     TooLong(Vec<u8>),
 }
 
-impl Pasted {
-    /// What a paste comes to when it ends: nothing more for one already
-    /// reported too long.
-    fn end(self, limit: usize) -> Option<Input> {
-        match self {
-            Self::Text(text) => Some(finished(text, limit)),
-            Self::TooLong(_) => None,
-        }
-    }
-}
-
 /// A paste's text, whole: a paste if no longer than `limit`, else too
 /// long.
 fn finished(text: Vec<u8>, limit: usize) -> Input {
@@ -262,14 +255,9 @@ fn drop_to_end(
     // again, and counted again there.
     work!(keys, bytes.len());
     // A CSI past its window ends with its final byte, as one read whole does
-    // (`long_answer`); any other byte begins what comes next.
+    // (`csi_end`); any other byte begins what comes next.
     if csi {
-        let end = bytes
-            .iter()
-            .position(|b| !(0x20..=0x3f).contains(b))
-            .ok_or(false)?;
-        let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
-        let rest = end.saturating_add(usize::from(final_byte));
+        let rest = csi_end(bytes).ok_or(false)?;
         return Ok((false, bytes.get(rest..).unwrap_or_default()));
     }
     for (i, &byte) in bytes.iter().enumerate() {
@@ -395,6 +383,7 @@ impl Decoder {
             state: State::Idle,
             paste_limit: limit,
             expecting: None,
+            escape_said: false,
         }
     }
 
@@ -416,7 +405,8 @@ impl Decoder {
     /// as marked, or `REPLY_DELAY` if what waits is an answer or a character
     /// begun, or a bare `ESC ]`, `ESC P`, `ESC P0` or `ESC P1` while an answer is
     /// expected; `PASTE_DELAY` after a paste's last bytes; none while it is
-    /// not waiting.
+    /// not waiting, nor for a key begun once the terminal said it sends
+    /// Escape as a sequence of its own.
     pub fn deadline(&self) -> Option<Instant> {
         let (since, wait) = match &self.state {
             State::Pending { held, since } => {
@@ -429,7 +419,11 @@ impl Decoder {
                         held.starts_with(b"\x1b]") || held.starts_with(b"\x1b[?") || dcs_begun(held)
                     }
                 };
-                (since, if reply { REPLY_DELAY } else { ESCAPE_DELAY })
+                match (reply, self.escape_said) {
+                    (true, _) => (since, REPLY_DELAY),
+                    (false, false) => (since, ESCAPE_DELAY),
+                    (false, true) => return None,
+                }
             }
             State::Dropping { since, .. } => (since, REPLY_DELAY),
             State::Paste { since, .. } => (since, PASTE_DELAY),
@@ -462,7 +456,22 @@ impl Decoder {
     /// Decodes `bytes`, appending what they complete to `out`; an incomplete
     /// sequence waits for more, or for [`Decoder::timeout`].
     pub fn bytes(&mut self, bytes: &[u8], out: &mut Vec<Input>) {
+        let from = out.len();
         self.feed(bytes, false, out);
+        let flags = |input: &Input| match *input {
+            Input::Reply(Reply::KittyFlags(flags)) => Some(flags),
+            Input::Key(_)
+            | Input::Paste(_)
+            | Input::PasteTooLong
+            | Input::FocusIn
+            | Input::FocusOut
+            | Input::Mouse(_)
+            | Input::Reply(_) => None,
+        };
+        let new = out.get(from..).unwrap_or_default();
+        if let Some(latest) = new.iter().rev().find_map(flags) {
+            self.escape_said = latest & DISAMBIGUATE != 0;
+        }
     }
 
     /// The deadline passed (`deadline`: an Escape's, an answer's, or a
@@ -544,10 +553,12 @@ impl Decoder {
                             bytes = rest;
                             State::Idle
                         }
-                        Err(pasted) if flush => {
-                            out.extend(pasted.end(self.paste_limit));
+                        Err(Pasted::Text(text)) if flush => {
+                            out.push(finished(text, self.paste_limit));
                             return;
                         }
+                        // One reported too long comes to nothing more.
+                        Err(Pasted::TooLong(_)) if flush => return,
                         Err(pasted) => {
                             // Bytes of it came: its wait begins again when marked.
                             let since = since.filter(|_| bytes.is_empty());
@@ -789,14 +800,12 @@ fn decode(bytes: &[u8], flush: bool, answers: bool) -> Step {
 /// `ESC O`: an SS3 key; else Alt-O, then what follows, once the deadline
 /// has passed if nothing follows yet.
 fn ss3(bytes: &[u8], flush: bool) -> Step {
-    match bytes.get(2) {
+    match bytes.get(2).map(|&last| final_key(last, Modifiers::NONE)) {
         None if !flush => Step::Incomplete,
-        None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-        // A byte no final key names: Alt-O, then the byte.
-        Some(&last) => match final_key(last, Modifiers::NONE) {
-            Some(input) => Step::Done(3, Some(input)),
-            None => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
-        },
+        Some(Some(input)) => Step::Done(3, Some(input)),
+        // A byte no final key names, or none at a flush: Alt-O, then the
+        // byte.
+        None | Some(None) => Step::Done(2, press(Key::Char('O'), Modifiers::ALT)),
     }
 }
 
@@ -1034,6 +1043,16 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
     mouse::event(code, x, y, release)
 }
 
+/// Where the rest of a CSI, `bytes`, ends: past its final byte, dropped
+/// with it; or at a byte no control sequence holds (ECMA-48 5.4, 5.5: an
+/// ESC, a control), which begins what comes next. `None` while neither has
+/// come.
+fn csi_end(bytes: &[u8]) -> Option<usize> {
+    let end = bytes.iter().position(|b| !(0x20..=0x3f).contains(b))?;
+    let final_byte = bytes.get(end).is_some_and(|b| (0x40..=0x7e).contains(b));
+    Some(end.saturating_add(usize::from(final_byte)))
+}
+
 /// A CSI longer than its window (a key's, or a `CSI ?` answer's), `body`
 /// its bytes after `ESC [`: no key nor answer, dropped through its final
 /// byte once that is here, as an over-long OSC or DCS answer is dropped
@@ -1043,14 +1062,7 @@ fn sgr_mouse(params: &[u8], last: u8) -> Option<MouseEvent> {
 #[cold]
 #[inline(never)]
 fn long_answer(body: &[u8], flush: bool) -> Step {
-    // Its end: a final byte, dropped with it; or a byte no control sequence
-    // holds (ECMA-48 5.4, 5.5: an ESC, a control), which begins what comes
-    // next.
-    let end = body.iter().position(|b| !(0x20..=0x3f).contains(b));
-    match end {
-        Some(end) if body.get(end).is_some_and(|b| (0x40..=0x7e).contains(b)) => {
-            Step::Done(end.saturating_add(3), None)
-        }
+    match csi_end(body) {
         Some(end) => Step::Done(end.saturating_add(2), None),
         None if flush => Step::Done(body.len().saturating_add(2), None),
         // Past what is held: the rest of it is dropped as it comes, to its
@@ -1272,14 +1284,8 @@ fn typed(c: char, kitty: &Kitty) -> char {
         .filter(|_| kitty.mods & (ALT_BIT | CTRL_BIT) != 0 && !c.is_ascii());
     let shift = kitty.mods & SHIFT_BIT != 0;
     // Caps Lock capitalizes a letter, as in a legacy terminal's bytes.
-    let caps = kitty.mods & CAPS_LOCK_BIT != 0;
-    let letter = |c: char| {
-        if shift != caps {
-            c.to_ascii_uppercase()
-        } else {
-            c
-        }
-    };
+    let upper = shift != (kitty.mods & CAPS_LOCK_BIT != 0);
+    let letter = |c: char| if upper { c.to_ascii_uppercase() } else { c };
     match base {
         Some(base) => letter(base),
         None if shift => kitty.shifted.and_then(char::from_u32).unwrap_or(letter(c)),
@@ -1846,6 +1852,34 @@ mod tests {
                 key("x")
             ]
         );
+    }
+
+    /// While the terminal's latest flags hold disambiguate, it sends Escape
+    /// as `CSI 27 u`: a bare ESC is a sequence begun, which waits for its
+    /// rest with no deadline, however late it comes. Flags without it, even
+    /// after flags with it, say nothing of Escape.
+    #[test]
+    fn an_escape_the_terminal_sends_as_csi_u_is_never_waited_out() {
+        let t0 = Instant::now();
+        let waits = |answers: &[&[u8]]| {
+            let mut d = Decoder::default();
+            let mut out = Vec::new();
+            for flags in answers {
+                d.bytes(flags, &mut out);
+            }
+            d.bytes(b"\x1b", &mut out);
+            d.mark(t0);
+            let due = d.deadline();
+            d.bytes(b"[27u", &mut out);
+            let escape = matches!(out.pop(), Some(Input::Key(k)) if k.press.key == Key::Escape);
+            (due, escape)
+        };
+        let waited = (Some(t0 + ESCAPE_DELAY), true);
+        assert_eq!(waits(&[b"\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?5u"]), (None, true));
+        assert_eq!(waits(&[b"\x1b[?5u", b"\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?5u\x1b[?0u"]), waited);
+        assert_eq!(waits(&[b"\x1b[?0u\x1b[?1u"]), (None, true));
     }
 
     /// An answer cut short waits `REPLY_DELAY`, not `ESCAPE_DELAY`, for the

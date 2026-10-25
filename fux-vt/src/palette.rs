@@ -191,47 +191,42 @@ impl Rgb {
     /// terminal's answer (see the module's documentation); `None` for one
     /// fux-vt does not read.
     pub fn parse(spec: &[u8]) -> Option<Self> {
-        specification(spec)
-    }
-}
-
-/// A colour specification, as [`Rgb::parse`] reads it.
-fn specification(spec: &[u8]) -> Option<Rgb> {
-    let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
-        // Three channels of 1 to 4 digits each, the digits the high bits.
-        let n = hex.len() / 3;
-        if n == 0 || hex.len() % 3 != 0 || n > 4 {
+        let sixteen: [u16; 3] = if let Some(hex) = spec.strip_prefix(b"#") {
+            // Three channels of 1 to 4 digits each, the digits the high bits.
+            let n = hex.len() / 3;
+            if n == 0 || hex.len() % 3 != 0 || n > 4 {
+                return None;
+            }
+            let shift = u32::try_from(n).ok()?.checked_mul(4)?;
+            let channel = |i: usize| -> Option<u16> {
+                let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
+                let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
+                value.checked_shl(16u32.checked_sub(shift)?)
+            };
+            [channel(0)?, channel(1)?, channel(2)?]
+        } else if spec
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"rgb:"))
+        {
+            // `rgb:`, its prefix in either case.
+            let mut channels = spec.get(4..)?.split(|b| *b == b'/');
+            let colour = [
+                scaled(channels.next()?)?,
+                scaled(channels.next()?)?,
+                scaled(channels.next()?)?,
+            ];
+            if channels.next().is_some() {
+                return None;
+            }
+            colour
+        } else {
             return None;
-        }
-        let shift = u32::try_from(n).ok()?.checked_mul(4)?;
-        let channel = |i: usize| -> Option<u16> {
-            let digits = hex.get(i.checked_mul(n)?..i.checked_add(1)?.checked_mul(n)?)?;
-            let value = u16::from_str_radix(str::from_utf8(digits).ok()?, 16).ok()?;
-            value.checked_shl(16u32.checked_sub(shift)?)
         };
-        [channel(0)?, channel(1)?, channel(2)?]
-    } else if spec
-        .get(..4)
-        .is_some_and(|p| p.eq_ignore_ascii_case(b"rgb:"))
-    {
-        // `rgb:`, its prefix in either case.
-        let mut channels = spec.get(4..)?.split(|b| *b == b'/');
-        let colour = [
-            scaled(channels.next()?)?,
-            scaled(channels.next()?)?,
-            scaled(channels.next()?)?,
-        ];
-        if channels.next().is_some() {
-            return None;
-        }
-        colour
-    } else {
-        return None;
-    };
-    Some(Rgb::from(sixteen.map(|c| {
-        let [high, _] = c.to_be_bytes();
-        high
-    })))
+        Some(Rgb::from(sixteen.map(|c| {
+            let [high, _] = c.to_be_bytes();
+            high
+        })))
+    }
 }
 
 /// xterm's answer: `OSC command ; index ; rgb:RRRR/GGGG/BBBB` (no index for
@@ -271,11 +266,6 @@ fn decimal(out: &mut Reply, n: u16) {
         out.push(&[digit(n / 10)]);
     }
     out.push(&[digit(n)]);
-}
-
-/// The parameters of an OSC string, after its command.
-fn parameters(rest: &[u8]) -> impl Iterator<Item = &[u8]> {
-    rest.split(|b| *b == b';')
 }
 
 /// Carries out the colour OSC `command` with `rest` after it, if it is
@@ -327,7 +317,7 @@ fn pairs(
     sink: &mut impl Sink,
 ) {
     let limit = PAST_PALETTE.saturating_add(SPECIALS);
-    let mut params = parameters(rest);
+    let mut params = rest.split(|b| *b == b';');
     while let (Some(number), Some(spec)) = (params.next(), params.next()) {
         let Some(n) = u16::try_from(atoi(number))
             .ok()
@@ -355,7 +345,7 @@ fn pairs(
             sink.reply(answer(command, Some(asked), colour, bel).as_bytes());
             continue;
         }
-        let Some(colour) = specification(spec) else {
+        let Some(colour) = Rgb::parse(spec) else {
             return;
         };
         if let Some(slot) = colours.get_or_insert_default().slot(n) {
@@ -382,7 +372,7 @@ fn reset(colours: &mut Option<Box<Colours>>, rest: &[u8], offset: u16) {
         }
         return;
     }
-    for item in parameters(rest) {
+    for item in rest.split(|b| *b == b';') {
         // `strtol`: white space, a sign and digits, and nothing after.
         let digits = item.trim_ascii_start();
         let digits = digits.strip_prefix(b"+").unwrap_or(digits);
@@ -414,7 +404,7 @@ pub(crate) fn dynamic(
     events: bool,
     sink: &mut impl Sink,
 ) {
-    for (i, parameter) in (first..10).zip(parameters(rest)) {
+    for (i, parameter) in (first..10).zip(rest.split(|b| *b == b';')) {
         let number = i.saturating_add(10);
         if parameter == b"?" {
             match colours.as_ref().and_then(|c| c.dynamic(number)) {
@@ -422,7 +412,7 @@ pub(crate) fn dynamic(
                 None if events => sink.event(Event::ColorQuery { number, bel }),
                 None => {}
             }
-        } else if let Some(colour) = specification(parameter)
+        } else if let Some(colour) = Rgb::parse(parameter)
             && let Some(slot) = colours
                 .get_or_insert_default()
                 .dynamic

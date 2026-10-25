@@ -200,10 +200,9 @@ pub fn keys(words: &str) -> Result<Vec<KeyPress>, String> {
         .split_whitespace()
         .map(key)
         .collect::<Result<_, _>>()?;
-    match keys.is_empty() {
-        true => Err("no keys given".to_owned()),
-        false => Ok(keys),
-    }
+    (!keys.is_empty())
+        .then_some(keys)
+        .ok_or_else(|| "no keys given".to_owned())
 }
 
 /// A client's prefix and bindings.
@@ -270,19 +269,19 @@ impl Keymap {
     }
 
     pub fn unbind(&mut self, keys: &[KeyPress]) -> Result<(), String> {
-        match self.bindings.unbind(keys) {
-            true => Ok(()),
-            false => Err(format!("{} is not bound", keys_text(keys))),
-        }
+        let unbound = self.bindings.unbind(keys);
+        unbound
+            .then_some(())
+            .ok_or_else(|| format!("{} is not bound", keys_text(keys)))
     }
 
     pub fn unbind_root(&mut self, key: KeyPress) -> Result<(), String> {
         let before = self.root.len();
         self.root.retain(|(k, _)| *k != key);
-        match self.root.len() == before {
-            true => Err(format!("{key} is not bound without the prefix")),
-            false => Ok(()),
-        }
+        let unbound = self.root.len() != before;
+        unbound
+            .then_some(())
+            .ok_or_else(|| format!("{key} is not bound without the prefix"))
     }
 
     pub fn unbind_all(&mut self) {

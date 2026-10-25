@@ -57,7 +57,7 @@ id!(
 );
 
 /// Digits only: no sign, no space.
-pub(crate) fn number(text: &str) -> Option<u32> {
+pub(crate) fn number<T: FromStr>(text: &str) -> Option<T> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -81,13 +81,16 @@ impl FromStr for ClientId {
 /// whose ids they were. One that would wrap, or jump more than `MAX_JUMP`
 /// ahead, is refused. A copy taken for something being made is committed
 /// back once it is made, so that a failure part way uses none up.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ids {
     pane: u32,
     tab: u32,
     workspace: u32,
     client: u32,
     wanted: Wanted,
+    /// The pane ids an `id` asked for jumped over, `first..=last` each,
+    /// none given yet: so whether a pane id was ever given is known.
+    skipped: Vec<(u32, u32)>,
 }
 
 wire! {
@@ -115,7 +118,29 @@ impl Wanted {
 impl Ids {
     pub(crate) fn pane(&mut self) -> Result<PaneId, Error> {
         let wanted = self.wanted.pane.take().map(PaneId::number);
-        take(&mut self.pane, wanted, "pane").map(PaneId)
+        let last = self.pane;
+        let n = take(&mut self.pane, wanted, "pane")?;
+        // Those jumped over are given to none; one given again (a
+        // restore's) is given now.
+        if let Some(skip) = last.checked_add(1).filter(|first| *first < n) {
+            self.skipped.push((skip, n.saturating_sub(1)));
+        }
+        let split = |&(first, last): &(u32, u32)| match (first..=last).contains(&n) {
+            false => vec![(first, last)],
+            true => {
+                let below = n.checked_sub(1).filter(|b| *b >= first).map(|b| (first, b));
+                let above = n.checked_add(1).filter(|a| *a <= last).map(|a| (a, last));
+                below.into_iter().chain(above).collect()
+            }
+        };
+        self.skipped = self.skipped.iter().flat_map(split).collect();
+        Ok(PaneId(n))
+    }
+
+    /// Whether pane id `id` was ever given in this run.
+    pub(crate) fn gave(&self, id: PaneId) -> bool {
+        let skipped = (self.skipped.iter()).any(|(first, last)| (*first..=*last).contains(&id.0));
+        id.0 > 0 && id.0 <= self.pane && !skipped
     }
     pub(crate) fn tab(&mut self) -> Result<TabId, Error> {
         let wanted = self.wanted.tab.take().map(TabId::number);
@@ -191,5 +216,37 @@ impl Ids {
     /// Uses up the tab IDs.
     pub(crate) fn exhaust_tabs(&mut self) {
         self.tab = u32::MAX;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Ids, PaneId, Wanted};
+
+    /// A pane id is given once counted up to, or asked for; those an `id`
+    /// jumps over are given to none, until a restore gives one again.
+    #[test]
+    fn the_pane_ids_given_are_known() -> Result<(), crate::session::Error> {
+        let mut ids = Ids::default();
+        let want = |ids: &mut Ids, n, again| {
+            let pane = Some(PaneId(n));
+            ids.want(
+                Wanted {
+                    pane,
+                    ..Wanted::default()
+                },
+                again,
+            )
+        };
+        ids.pane()?;
+        want(&mut ids, 5, false)?;
+        ids.pane()?;
+        let given = |ids: &Ids| (0..=7).filter(|n| ids.gave(PaneId(*n))).collect::<Vec<_>>();
+        assert_eq!(given(&ids), [1, 5]);
+        want(&mut ids, 3, true)?;
+        ids.pane()?;
+        ids.pane()?;
+        assert_eq!(given(&ids), [1, 3, 5, 6]);
+        Ok(())
     }
 }

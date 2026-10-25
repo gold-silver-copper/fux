@@ -83,17 +83,13 @@ fn piece(r: &mut Rng) -> String {
 }
 
 /// Every retained row by identity: its version, wrap flag and cells.
-fn retained(parser: &Parser) -> HashMap<RowId, (u64, bool, Cells)> {
-    parser
-        .screen()
-        .rows()
-        .map(|row| {
-            (
-                row.id(),
-                (row.version(), row.wrapped(), row.cells().collect()),
-            )
-        })
-        .collect()
+fn retained(parser: &Parser) -> Result<HashMap<RowId, (u64, bool, Cells)>> {
+    let rows = parser.screen().rows();
+    rows.map(|row| {
+        let cells = Cells::try_from_iter(row.cells())?;
+        Ok((row.id(), (row.version(), row.wrapped(), cells)))
+    })
+    .collect()
 }
 
 /// The SGR that sets `attributes`' underline style, kitty's `4:n`.
@@ -214,10 +210,10 @@ fn a_version_changes_with_its_row_and_only_then() -> Result {
                 let pieces = if r.below(3) == 0 { 1 } else { 1 + r.below(6) };
                 (0..pieces).map(|_| piece(&mut r)).collect()
             };
-            let before = retained(&parser);
+            let before = retained(&parser)?;
             let mark = parser.screen().mark();
             parser.process(bytes.as_bytes())?;
-            let after = retained(&parser);
+            let after = retained(&parser)?;
             let screen = parser.screen();
             let dirty: Vec<RowId> = screen.dirty_rows_since(mark).map(|r| r.id()).collect();
             let full = screen.full_refresh_since(mark);
@@ -276,5 +272,91 @@ fn the_common_redraw_changes_no_version() -> Result {
     // A real edit is still a change.
     parser.process(b"\x1b[3;1HthreE")?;
     assert_eq!(parser.screen().dirty_rows_since(mark).count(), 1);
+    Ok(())
+}
+
+/// Hears nothing.
+struct Deaf;
+impl fux_vt::Sink for Deaf {}
+
+/// `bytes` read as a host reads them, cut after each of `cuts`: each piece
+/// until it is read, as many calls as the budget takes, then the calls
+/// owed for work left over. How many calls left work over.
+fn fed(p: &mut Parser, bytes: &[u8], cuts: &[usize]) -> Result<usize> {
+    let (mut at, mut left) = (0, 0usize);
+    for &end in cuts.iter().chain([&bytes.len()]) {
+        let mut piece = bytes.get(at..end.max(at)).ok_or("a cut")?;
+        while let Some((taken, _)) = p.process_until_stop(piece, &mut Deaf)? {
+            piece = piece.get(taken..).ok_or("taken")?;
+            left = left.saturating_add(usize::from(p.has_work_left()));
+        }
+        at = end.max(at);
+    }
+    while p.has_work_left() {
+        p.process_until_stop(&[], &mut Deaf)?;
+        left = left.saturating_add(1);
+    }
+    Ok(left)
+}
+
+/// A flood of screen-wide sequences, each call stopping at the budget with
+/// the next left over, moves the revision on with each call.
+#[test]
+fn the_revision_moves_on_through_work_left_over() -> Result {
+    let mut bytes = Vec::new();
+    bytes.extend(std::iter::repeat_n(&b"\x1b#8\x1b[2J"[..], 50).flatten());
+    // So large that one sequence passes what a call that spent any work
+    // has left (`holds_back`).
+    let mut p = Parser::new(Size::new(1000, 1000)?, 0)?;
+    let (mut piece, mut left, mut revision) = (&bytes[..], 0usize, 0);
+    while let Some((taken, _)) = p.process_until_stop(piece, &mut Deaf)? {
+        piece = piece.get(taken..).ok_or("taken")?;
+        left = left.saturating_add(usize::from(p.has_work_left()));
+        assert!(
+            p.screen().revision() > revision,
+            "{} bytes left",
+            piece.len()
+        );
+        revision = p.screen().revision();
+    }
+    assert!(left > 10, "{left} calls left work over");
+    Ok(())
+}
+
+/// The revision counts the bytes read and the resizes to another size,
+/// however the output is cut: whole, a byte at a time, at random, and past
+/// the work budget, where a screen-wide sequence is left for the next call
+/// (`Parser::has_work_left`).
+#[test]
+fn the_revision_is_the_same_however_output_is_cut() -> Result {
+    let mut bytes = b"\x1b[?2026hframe\x1b[?2026l\xe2\x9d\xa4\xef\xb8\x8f\x1b[65535b".to_vec();
+    bytes.extend(std::iter::repeat_n(&b"\x1b#8\x1b[2J\x1b[3J"[..], 100).flatten());
+    // So large that one ED may pass what a call has left (`holds_back`).
+    let size = Size::new(500, 500)?;
+    let count = |cuts: &[usize]| -> Result<u64> {
+        let mut p = Parser::new(size, 1 << 12)?;
+        assert!(fed(&mut p, &bytes, cuts)? > 0, "no work was left over");
+        let read = p.screen().revision();
+        // A resize to the same size is none.
+        p.resize(size)?;
+        p.resize(Size::new(10, 20)?)?;
+        assert_eq!(p.screen().revision(), read.saturating_add(1));
+        Ok(read)
+    };
+    // Each `CSI 3 J` is a change to the history.
+    let want = u64::try_from(bytes.len())?.saturating_add(100);
+    let mut whole = Parser::new(size, 1 << 12)?;
+    whole.process(&bytes)?;
+    assert_eq!(whole.screen().revision(), want);
+    assert_eq!(count(&[])?, want);
+    assert_eq!(count(&(1..bytes.len()).collect::<Vec<_>>())?, want);
+    let mut r = Rng(0x2545_f491_4f6c_dd1d);
+    for _ in 0..4 {
+        let mut cuts: Vec<usize> = (0..r.below(40))
+            .map(|_| usize::try_from(r.below(u64::try_from(bytes.len())?)))
+            .collect::<std::result::Result<_, _>>()?;
+        cuts.sort_unstable();
+        assert_eq!(count(&cuts)?, want, "{cuts:?}");
+    }
     Ok(())
 }

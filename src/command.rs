@@ -7,7 +7,6 @@ use crate::keys::{Direction, KeyPress};
 use crate::layout::Axis;
 use crate::wire::wire;
 use std::path::PathBuf;
-use std::time::Duration;
 
 wire! {
     /// A workspace named on the command line: `+N` or its name.
@@ -248,67 +247,167 @@ wire! {
     }
 }
 
-wire! {
-    /// Where a pane stands, as counts that only grow while one program
-    /// runs (a respawn starts all but `starts` afresh, a server restart all
-    /// of them): its program's starts (`respawn`), its screen's revision
-    /// (fux-vt's: bumped by each piece of output it reads, each resize to
-    /// another size and each change to its history: cleared, or
-    /// `history-bytes` set), bells and notifications rung, shell commands
-    /// ended (OSC 133 `D`), and whether its program ended (1). Written
-    /// `STARTS.SCREEN.BELLS.DONE.ENDED`.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Version {
-        pub starts: u64,
-        pub screen: u64,
-        pub bells: u64,
-        pub done: u64,
-        pub ended: u64,
+/// Which run of a server this is: its process and the moment it started,
+/// in nanoseconds since 1970 (`48211-1867a3f9c2b8e7d6`). No two runs share
+/// both: a process id is another process's only once this one ended, and
+/// that one started at another moment. A restart, or a restore, is a run
+/// of its own; so is a server on another socket. Its panes' `FUX_SERVER`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+    pid: u32,
+    since: u64,
+}
+
+impl Run {
+    /// This process's run, started now: none on a clock before 1970 or
+    /// past 2554, whose moment it cannot say.
+    pub fn now() -> Option<Run> {
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some(Run {
+            pid: std::process::id(),
+            since: u64::try_from(since.as_nanos()).ok()?,
+        })
     }
 }
 
-impl std::fmt::Display for Version {
+impl std::fmt::Display for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Version {
-            starts,
+        write!(f, "{}-{:x}", self.pid, self.since)
+    }
+}
+
+/// `PID-SINCE`, as a run is written: digits, then lowercase hex digits.
+impl std::str::FromStr for Run {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Run, ()> {
+        let (pid, since) = text.split_once('-').ok_or(())?;
+        let run = Run {
+            pid: pid.parse().map_err(drop)?,
+            since: u64::from_str_radix(since, 16).map_err(drop)?,
+        };
+        // One spelling only, as `Display` writes it: no sign, no leading
+        // zeros, no capitals.
+        (run.to_string() == text).then_some(run).ok_or(())
+    }
+}
+
+/// What only grows while one program runs in a pane (a respawn starts all
+/// but `respawns` afresh): how often its program was respawned, its screen's
+/// revision (fux-vt's: the bytes of output read, plus one for each resize
+/// to another size and each change to its history: cleared, or
+/// `history-bytes` set; the same however the output was cut into reads),
+/// bells and notifications rung, shell commands ended (OSC 133 `D`), and
+/// whether its program ended. Written
+/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, `ENDED` 0 or 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub respawns: u64,
+    pub screen: u64,
+    pub bells: u64,
+    pub done: u64,
+    pub ended: bool,
+}
+
+impl Counts {
+    /// Whether a pane now at `self` can ever have been at `then`: an
+    /// earlier program's, or this one's with no count above its own now.
+    pub fn had(self, then: Counts) -> bool {
+        then.respawns < self.respawns
+            || then.respawns == self.respawns
+                && then.screen <= self.screen
+                && then.bells <= self.bells
+                && then.done <= self.done
+                && then.ended <= self.ended
+    }
+}
+
+impl std::fmt::Display for Counts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Counts {
+            respawns,
             screen,
             bells,
             done,
             ended,
         } = self;
-        write!(f, "{starts}.{screen}.{bells}.{done}.{ended}")
+        write!(f, "{respawns}.{screen}.{bells}.{done}.{}", u8::from(*ended))
     }
 }
 
-/// `STARTS.SCREEN.BELLS.DONE.ENDED`, as a version is written.
-impl std::str::FromStr for Version {
+/// `RESPAWNS.SCREEN.BELLS.DONE.ENDED`, as counts are written.
+impl std::str::FromStr for Counts {
     type Err = ();
-    fn from_str(text: &str) -> Result<Version, ()> {
-        let mut parts = text.split('.').map(|n| n.parse::<u64>().map_err(drop));
-        let mut next = || parts.next().ok_or(())?;
-        let version = Version {
-            starts: next()?,
+    fn from_str(text: &str) -> Result<Counts, ()> {
+        let mut parts = text.split('.');
+        let mut next = || parts.next().and_then(crate::id::number::<u64>).ok_or(());
+        let counts = Counts {
+            respawns: next()?,
             screen: next()?,
             bells: next()?,
             done: next()?,
-            ended: next()?,
+            ended: match next()? {
+                0 => false,
+                1 => true,
+                _ => return Err(()),
+            },
         };
-        match parts.next() {
-            None => Ok(version),
-            Some(_) => Err(()),
-        }
+        parts.next().is_none().then_some(counts).ok_or(())
+    }
+}
+
+/// Where a pane stands: which server run, which pane, and its counts.
+/// Written `%2:0.57.0.3.0:48211-1867a3f9c2b8e7d6`, one word, as every
+/// action and wait answers it: so it names its own pane, and a server
+/// tells its own runs' from any other's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Version {
+    pub pane: PaneId,
+    pub counts: Counts,
+    pub run: Run,
+}
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}:{}", self.pane, self.counts, self.run)
+    }
+}
+
+/// `PANE:COUNTS:RUN`, as a version is written.
+impl std::str::FromStr for Version {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Version, ()> {
+        let mut parts = text.split(':');
+        let version = Version {
+            pane: parts.next().ok_or(())?.parse().map_err(drop)?,
+            counts: parts.next().ok_or(())?.parse()?,
+            run: parts.next().ok_or(())?.parse()?,
+        };
+        // One spelling only: `%2:0.057…` is no version's.
+        let one = parts.next().is_none() && version.to_string() == text;
+        one.then_some(version).ok_or(())
     }
 }
 
 wire! {
-    /// A wait: until the version of any of its panes differs from `since`
-    /// (else from theirs as it begins) or its pane closes; how long at
-    /// most.
+    /// What a wait waits from: the version of the pane it names, or each
+    /// pane of a pane, tab or workspace as it begins.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Since {
+        Now(target: AnyRef),
+        Version(version: Version),
+    }
+}
+
+wire! {
+    /// A wait: until a version of the panes it waits on differs from the
+    /// one it waits from, or its pane closes; how long at most.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Wait {
-        pub since: Option<Version>,
+        pub since: Since,
         /// How long at most; if unsaid, the server's `wait-seconds`.
-        pub timeout: Option<Duration>,
+        pub timeout: Option<crate::config::Limit>,
     }
 }
 
@@ -391,8 +490,6 @@ wire! {
         },
         NewWorkspace {
             name: Option<String>,
-            /// A command line typed into its new shell.
-            typed: Option<String>,
             size: Size,
             /// Where its shell starts (default: the caller's directory).
             cwd: Option<PathBuf>,
@@ -403,7 +500,6 @@ wire! {
         NewTab {
             target: Option<WsRef>,
             name: Option<String>,
-            typed: Option<String>,
             size: Size,
             cwd: Option<PathBuf>,
             env: Env,
@@ -415,7 +511,6 @@ wire! {
             /// A program started in place of a shell, as `run` starts one,
             /// if given.
             argv: Vec<String>,
-            typed: Option<String>,
             /// Where its shell starts (default: where the split pane's is).
             cwd: Option<PathBuf>,
             env: Env,
@@ -579,17 +674,6 @@ wire! {
     }
 }
 
-impl ClientAction {
-    /// The action on the client it comes from, as a key, a chooser or the
-    /// prompt runs it.
-    pub fn here(self) -> Command {
-        Command::Client {
-            client: None,
-            action: self,
-        }
-    }
-}
-
 /// A request the server cannot make sense of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Usage {
@@ -736,9 +820,9 @@ wire! {
     pub enum Request {
         /// A command, at once.
         Do(command: Command),
-        /// A wait in the pane, or a tab's or workspace's every pane, each of
+        /// A wait in a pane, or a tab's or workspace's every pane, each of
         /// which answers.
-        Wait(target: AnyRef, wait: Wait),
+        Wait(wait: Wait),
         /// What happens, a line each as it happens, until the client goes:
         /// where the target is, or anywhere without one.
         Events(target: Option<AnyRef>, json: bool),

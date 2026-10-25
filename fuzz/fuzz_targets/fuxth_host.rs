@@ -1,6 +1,8 @@
 #![allow(dead_code, reason = "each target uses its own part")]
 //! What the fuxth targets share: a host of one word and a run to the end.
-//! `ask` (n -- n*10) suspends for its answer, as a server's does; `maybe`
+//! `ask` (n -- n*10) suspends for its answer, as a server's does, and is
+//! answered with a failure (`negative`) for n below 0, as a server's wait
+//! times out; given no integer it fails at once (`not_a_number`). `maybe`
 //! (n -- [n]), defined after the standard library, gives n back only above
 //! 0, a value given only sometimes.
 use fuxth::{
@@ -67,6 +69,8 @@ thread_local! {
 fn library() -> Result<Compiler<Nothing>, Error> {
     let mut words = Vocabulary::default();
     let _ = words.add("ask", "any -- integer");
+    let _ = words.code("not_a_number");
+    let _ = words.code("negative");
     let mut compiler = Compiler::new(words);
     compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
     let maybe = "define maybe dup 0 gt if else drop then end";
@@ -89,7 +93,11 @@ pub fn run(
             Ok(Outcome::Finished) => return Some(Ok(machine.stack().to_vec())),
             Ok(Outcome::Paused) => {}
             Ok(Outcome::Suspended(n)) => {
-                if let Err(e) = machine.push(Value::Int(n.saturating_mul(10))) {
+                let answered = match n < 0 {
+                    true => machine.raise(Failure::new(fuxth::Code::Host("negative"), "below 0")),
+                    false => machine.push(Value::Int(n.saturating_mul(10))),
+                };
+                if let Err(e) = answered {
                     return Some(Err(e));
                 }
             }

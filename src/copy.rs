@@ -458,10 +458,8 @@ pub fn text(
         if cells > MAX_CELLS {
             return Err(Error::SelectionTooLarge);
         }
-        let mut line = String::new();
-        for (_, glyph) in row.copied(usize::from(from), usize::from(to)) {
-            line.push_str(glyph);
-        }
+        let copied = row.copied(usize::from(from), usize::from(to));
+        let line: String = copied.map(|(_, glyph)| glyph).collect();
         let joined = kind != Select::Block && row.continues() && index < last;
         if joined {
             out.push_str(&line);
@@ -610,9 +608,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
             leave(session, client);
             return;
         }
-        CopyAct::Left => {
-            target = Some((row, col.saturating_sub(1)));
-        }
+        CopyAct::Left => target = Some((row, col.saturating_sub(1))),
         CopyAct::Right => {
             let wide = row.cell(usize::from(col)).is_some_and(|c| c.is_wide());
             target = Some((

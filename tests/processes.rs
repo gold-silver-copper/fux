@@ -135,7 +135,7 @@ fn signal_ends_the_foreground_and_leaves_background_jobs() -> Outcome {
     let (job, front) = (pid_in(&job)?, pid_in(&front)?);
     let _reap = Reap(vec![job, front]);
     let answer = server.ok(&["str", &pane, "pane", "str", "TERM", "signal"])?;
-    assert!(answer.starts_with(&format!("{pane} ")), "{answer}");
+    assert!(answer.starts_with(&format!("{pane}:")), "{answer}");
     gone(front, "the foreground program, after signal TERM")?;
     assert!(alive(job), "signal ended a background job");
     assert!(alive(shell), "signal ended the shell");
@@ -232,23 +232,6 @@ fn a_job_stopped_in_a_pane_leaves_the_pane_running() -> Outcome {
     gone(job, "a stopped job, after pane kill")
 }
 
-/// The server's children that have exited but were never reaped.
-fn zombies_of(pid: u32) -> Result<Vec<String>, String> {
-    let out = std::process::Command::new("ps")
-        .args(["-A", "-o", "ppid=,pid=,stat=,comm="])
-        .output()
-        .map_err(e)?;
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|line| {
-            let mut fields = line.split_whitespace();
-            fields.next() == Some(&pid.to_string())
-                && fields.nth(1).is_some_and(|stat| stat.starts_with('Z'))
-        })
-        .map(str::to_owned)
-        .collect())
-}
-
 /// A program a pane's program started and left (a double fork) becomes the
 /// server's child, not init's (Linux): once it exits the server reaps it,
 /// leaving no zombie.
@@ -284,33 +267,4 @@ fn an_orphan_a_pane_leaves_is_read_and_reaped() -> Outcome {
     })?;
     server.ok(&["str", &pane, "pane", "str", "C-d", "press"])?;
     eventually("the orphan reaped", || Ok(!fuxix::process::exists(gone)))
-}
-
-/// A command line too long to type into a new pane's shell is refused
-/// before the shell starts, so no process is left behind. A pane's input
-/// queue holds a little more than a frame, so the request carrying the
-/// line is what is refused.
-#[test]
-fn a_line_too_long_to_type_leaves_no_process_behind() -> Outcome {
-    let server = Server::start("")?;
-    let pid = server.pid().ok_or("the server's pid")?;
-    // From a file: Linux takes at most 128 KiB in one argument.
-    let line = format!(
-        "echo {}",
-        std::iter::repeat_n("x", fux::pane::INPUT_BYTES).collect::<String>()
-    );
-    let file = server.dir.join("long.fux");
-    std::fs::write(
-        &file,
-        format!("str %1 pane horizontal str {line} typed split\n"),
-    )
-    .map_err(e)?;
-    let out = server.fux(&[&file.to_string_lossy()])?;
-    assert_eq!(out.status, 1, "the split was refused: {}", out.stdout);
-    // Any child it made would have exited by now, unreaped.
-    std::thread::sleep(Duration::from_millis(500));
-    let zombies = zombies_of(pid)?;
-    assert!(zombies.is_empty(), "unreaped children: {zombies:?}");
-    assert!(!server.ok(&["ls"])?.contains("%2"), "no pane was made");
-    Ok(())
 }

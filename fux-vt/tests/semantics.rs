@@ -162,6 +162,10 @@ fn history_ids_survive_scrolling_and_recycled_slots_do_not_alias() -> Result {
     assert_eq!(row.up(1).id(), id, "none above the oldest");
     let w = row.window();
     assert_eq!(w.place(&row), Some(0));
+    // A row of another parser, at the same index, is not in it.
+    let other = Parser::new(Size::new(3, 8)?, 2 * 64)?;
+    let theirs = other.screen().rows().next().ok_or(Error::InvalidRange)?;
+    assert_eq!((theirs.index(), w.place(&theirs)), (0, None));
     assert_eq!(w.text((0, 0), (2, 7), 100, 100)?, "one\ntwo\nthree");
     assert_eq!(row.cell(0).ok_or(Error::InvalidRange)?.contents(), "o");
     assert!(p.screen().full_refresh_since(mark));

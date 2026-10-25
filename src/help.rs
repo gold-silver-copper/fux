@@ -39,7 +39,8 @@ pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
 pub fn overview() -> String {
-    let mut out = String::from(
+    let wait = crate::config::Limit::DEFAULT.seconds();
+    let mut out = format!(
         "\
 usage: fux                 attach, starting a server if none runs
        fux WORD...         run the words, a fuxth program (or all in one argument)
@@ -49,20 +50,36 @@ usage: fux                 attach, starting a server if none runs
 Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
-takes (options, keys, a version, what to read) goes on the pane before it
-(`%2 str y text send-keys`, `%2 str 0.57.0.3.0 changed wait`, `%2
-all-history capture`); only run, new-tab and new-workspace start from opts
-(`opts str 'make test' command run`). An action answers at once, with its
-pane's version before it acted; a wait waits for the version to differ,
-30s at most (SECS timeout). A failure prints `fux: CODE: MESSAGE` on stderr.
-Driving programs from a script or an agent: `fux help-agents`; one word:
-`fux help WORD`.
-
-The language: str WORD, define NAME … end, X let NAME, if … else … then,
-begin … until, list … end, SEQ each … end; the core's words drop pick roll
-add sub mul div lt eq len at slice concat push put code char kind string
-print fail; and the libraries below, written in fuxth. Mistakes every run
-would make are refused before anything runs.
+takes (options, keys, what to read) goes on the pane before it (`%2 str y
+text send-keys`, `%2 all-history capture`); only run, new-tab and
+new-workspace start from opts (`opts str 'make test' command run`). An
+action answers at once, with its pane's version from before it acted, one
+word (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until
+its version differs from V, {wait}s at most unless `SECS timeout` says
+(the server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on
+stderr. Driving programs from a script or an agent: `fux help-agents`; one
+word: `fux help WORD`.
+",
+    );
+    // The language's parsing words and core, as fuxth says them: a block's
+    // words once, never broken across lines.
+    let mut shapes: Vec<String> = Vec::new();
+    for (shape, _) in fuxth::Parsing::ALL.map(fuxth::Parsing::syntax) {
+        let unbroken = shape.replace(' ', "\u{a0}");
+        if !shapes.contains(&unbroken) {
+            shapes.push(unbroken);
+        }
+    }
+    let core = fuxth::Builtin::ALL.map(fuxth::Builtin::name).join(" ");
+    let language = format!(
+        "The language: {}; the core's words {core}; and the libraries below, written in \
+         fuxth. Mistakes every run would make are refused before anything runs.",
+        shapes.join(", ")
+    );
+    let words = language.split(' ').map(|w| w.replace('\u{a0}', " "));
+    out.push_str(&wrapped(words, "\n", 74));
+    out.push_str(
+        "
 
 Below, x is a pane, tab, workspace or client (an action's answer is its
 pane), a request on one, or opts; target, subject and place a pane (or a
@@ -81,22 +98,32 @@ workspace; ref a name or a handle; text a string, number or boolean.
             word.name, word.effect, word.about
         ));
     }
-    out.push_str("\nThe libraries (`fux help WORD` says each):\n ");
-    let mut width = 1usize;
-    for (name, ..) in library() {
-        width = width.saturating_add(name.len()).saturating_add(1);
-        if width > 78 {
-            out.push_str("\n ");
-            width = name.len().saturating_add(2);
-        }
-        out.push(' ');
-        out.push_str(name);
-    }
+    out.push_str("\nThe libraries (`fux help WORD` says each):");
+    let names = library().into_iter().map(|(name, ..)| name.to_owned());
+    out.push_str(&wrapped(names, "\n  ", 79));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux.\n",
     );
     out
+}
+
+/// `words` joined by blanks, in lines each begun with `start` and at most
+/// `width` columns long, the line end included.
+fn wrapped(words: impl Iterator<Item = String>, start: &str, width: usize) -> String {
+    let (mut out, mut line) = (String::new(), String::from(start));
+    for word in words {
+        if line.len() > start.len() {
+            if line.chars().count().saturating_add(word.chars().count()) >= width {
+                out.push_str(&line);
+                line = String::from(start);
+            } else {
+                line.push(' ');
+            }
+        }
+        line.push_str(&word);
+    }
+    out + &line
 }
 
 /// The prelude's and library's words: each name, stack effect, what it
@@ -137,11 +164,13 @@ pub fn explain(name: &str) -> Option<String> {
         if let Some(usage) = crate::script::usage(name) {
             out.push_str(&format!("\n{usage}\n"));
         }
-        if let Some(takes) = options(name) {
+        if let Some(mut takes) = options(name).map(Iterator::peekable)
+            && takes.peek().is_some()
+        {
             // What they go on: options, for what makes its own pane.
-            let on = match name {
-                "run" | "new-tab" | "new-workspace" => "opts",
-                _ => "the pane",
+            let on = match FROM_OPTS.contains(&name) {
+                true => "opts",
+                false => "the pane",
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes {
@@ -168,43 +197,36 @@ pub fn explain(name: &str) -> Option<String> {
     Some(format!("{name}  {shape}: {about}\n"))
 }
 
+/// The words that start from `opts`, empty options: they make their own
+/// pane. Every other word's options go on the pane it acts on.
+pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
+
 /// The words that build what a word takes, its options or its input: the
-/// words each uses, which `explain` prints and the word refuses others of;
-/// and whether it takes a wait's words too: the `Waiting` words that go on
-/// the pane.
-pub(crate) const OPTIONS: [(&str, &str, bool); 10] = [
-    (
-        "run",
-        "name size cwd env command program arg in log-to id",
-        false,
-    ),
+/// words each uses, which `explain` prints and the word refuses others of.
+pub(crate) const OPTIONS: [(&str, &str); 10] = [
+    ("run", "name size cwd env command program arg in log-to id"),
     (
         "split",
-        "horizontal vertical cwd env command program arg typed id",
-        false,
+        "horizontal vertical cwd env command program arg id",
     ),
-    ("new-tab", "name size cwd env typed in id", false),
-    ("new-workspace", "name size cwd env typed id", false),
-    ("respawn", "kill-first env command program arg", false),
+    ("new-tab", "name size cwd env in id"),
+    ("new-workspace", "name size cwd env id"),
+    ("respawn", "kill-first env command program arg"),
     (
         "capture",
         "history all-history wrapped full styles marks main-screen alt-screen last-output \
          rows cols",
-        false,
     ),
-    ("wait", "", true),
-    ("send-keys", "text key paste paste-file bytes times", false),
-    ("send-mouse", "mouse", false),
-    ("signal", "", false),
+    ("wait", "changed timeout"),
+    ("send-keys", "text key paste paste-file bytes times"),
+    ("send-mouse", "mouse"),
+    ("signal", ""),
 ];
 
-/// The options `name` takes, if it takes any: its own, then a wait's.
+/// The options `name` takes, if it takes any.
 pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> {
-    let (_, takes, waits) = OPTIONS.iter().find(|(word, ..)| *word == name)?;
-    let waiting = (WORDS.iter())
-        .filter(|w| *waits && w.group == "Waiting" && w.effect.starts_with("x "))
-        .map(|w| w.name);
-    Some(takes.split_whitespace().chain(waiting))
+    let (_, takes) = OPTIONS.iter().find(|(word, _)| *word == name)?;
+    Some(takes.split_whitespace())
 }
 
 /// An example of a word in use, as a command line.
@@ -213,22 +235,26 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
         "split" => "fux %3 vertical split",
         "command" => "fux opts str 'python3 -I app.py --fast' command run",
-        "name" | "size" | "cwd" | "env" | "program" | "arg" | "in" | "log-to" => {
-            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program run"
+        "name" | "size" | "cwd" | "program" | "arg" | "in" | "log-to" => {
+            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg str app.log log-to run"
         }
-        "typed" => "fux opts str 'make test' typed new-tab",
+        "env" => "fux opts str PORT 8080 env str ./app program run",
         "new-tab" => "fux opts str logs name str agent in new-tab",
         "new-workspace" => "fux opts str work name new-workspace",
-        "respawn" => "fux %3 kill-first respawn",
-        "wait" => "fux %3 str 0.57.0.3.0 changed 60 timeout wait",
+        "respawn" | "kill-first" => "fux %3 kill-first respawn",
+        "wait" | "changed" => {
+            "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait"
+        }
         "help-agents-on" => "fux str recipes help-agents-on",
-        "changed" => "fux %3 str 0.57.0.3.0 changed wait",
         "timeout" => "fux %3 300 timeout wait",
         "times" => "fux %3 str Down key 2 times str Enter key send-keys",
         "bytes" => "fux %3 str 1b5b41 bytes send-keys",
         "line" => "fux %3 str 'make test' line",
         "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
         "key" => "fux %3 str C-c key send-keys",
+        "paste" => "fux %3 str 'a long prompt' paste str Enter key send-keys",
+        "paste-file" => "fux %3 str prompt.txt paste-file send-keys",
+        "signal" => "fux %3 str TERM signal",
         "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
         "capture" | "history" => "fux %3 100 history capture",
         "all-history" => "fux %3 all-history capture",
@@ -243,6 +269,14 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "get" => "fux %3 str exited get",
         "json" => "fux ls json",
         "info" => "fux %3 info json",
+        "ls" => "fux ls",
+        "pane" => "fux str web pane capture",
+        "tab" => "fux %3 tab str logs rename",
+        "workspace" => "fux str agent workspace kill",
+        "events-of" | "events-of-json" => "fux str agent workspace events-of-json",
+        "clear-history" => "fux %3 clear-history",
+        "notify" => "fux %3 str 'tests passed' notify",
+        "status" => "fux status || fux start",
         "dump" => "fux str work workspace dump-of > work.fux; fux work.fux",
         "rename" => "fux %3 str editor rename",
         "kill" => "fux %3 kill",
@@ -272,15 +306,12 @@ mod tests {
         for word in WORDS {
             assert!(overview.contains(word.name), "{}", word.name);
             assert!(explain(word.name).is_some(), "{}", word.name);
-            if let Some(example) = example(word.name) {
-                let code = example.strip_prefix("fux ").unwrap_or(example);
-                let code = code
-                    .split(';')
-                    .next()
-                    .unwrap_or_default()
-                    .split(" >")
-                    .next()
-                    .unwrap_or_default();
+            // Each fux command line in it, a shell line's too.
+            let commands = (example(word.name).into_iter())
+                .flat_map(|line| line.split(['(', ')', ';', '|', '>']))
+                .filter_map(|part| part.trim().strip_prefix("fux "))
+                .filter(|code| !code.ends_with(".fux"));
+            for code in commands {
                 let tokens = fuxth::token::source("example", code);
                 let compiled = tokens.map_err(|e| e.to_string()).and_then(|t| {
                     crate::script::compile(&t)

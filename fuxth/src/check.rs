@@ -8,13 +8,13 @@
 //!
 //! The stack is described from the top down: the kinds of the top values,
 //! as far as they are known, and below them the rest, whose depth is a
-//! range. At the top level, and inside `list … end`, the depth is counted
-//! from an empty stack. In a definition it is counted from where the stack
-//! was when it was called, which isn't known; each definition is summed up
-//! by how many of its caller's values it surely uses and what it leaves,
-//! and a call applies that summary.
+//! range. At the top level, and inside `list … end` and `try … catch`, the
+//! depth is counted from an empty stack. In a definition it is counted from
+//! where the stack was when it was called, which isn't known; each
+//! definition is summed up by how many of its caller's values it surely
+//! uses and what it leaves, and a call applies that summary.
 use crate::compile::{Op, Program, Steps};
-use crate::error::{Code, Error, Wants, underflow};
+use crate::error::{Code, Error, Floor, Wants, underflow};
 use crate::machine::Builtin;
 use crate::value::Kind;
 use crate::vocabulary::{Vocabulary, through};
@@ -78,10 +78,15 @@ impl Kinds {
     pub(crate) const fn may_be(self, kind: Self) -> bool {
         self.0 & kind.0 != 0
     }
+
+    /// Whether every value of these kinds is the application's.
+    pub(crate) const fn app_only(self) -> bool {
+        self.0 != 0 && !self.may_be(INT.union(BOOL).union(SEQ))
+    }
 }
 
 /// What the stack is known to be at a step.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct State {
     /// The top values' kinds, deepest first.
     top: Vec<Kinds>,
@@ -94,11 +99,11 @@ struct State {
     /// The deepest any way here has reached below the depth at entry: the
     /// values down to there may have been replaced.
     reached: i64,
-    /// Whether the depth is counted from an empty stack (the top level, or
-    /// a `list` body), so too few values is an error here.
+    /// Whether the depth is counted from an empty stack (the top level, a
+    /// `list` or `try` body), so too few values is an error here.
     bounded: bool,
-    /// The states each open `list` began from, innermost last.
-    outer: Vec<State>,
+    /// The states each open `list` or `try` began from, innermost last.
+    outer: Vec<(Floor, State)>,
     /// What kind each open `each` gives, innermost last.
     iters: Vec<Kinds>,
     /// The kinds the code's own `let` names hold, by slot: a definition's
@@ -148,18 +153,6 @@ enum End {
     Stops,
 }
 
-impl End {
-    /// The stack where it returns; or, if it never does, how a run goes on
-    /// past a call to it.
-    fn exit(&self) -> Result<&State, Flow> {
-        match self {
-            End::Returns(exit) => Ok(exit),
-            End::Diverges => Err(Flow::Diverge),
-            End::Stops => Err(Flow::Stop),
-        }
-    }
-}
-
 impl Summary {
     /// What a definition might do, for one the checker can't follow.
     fn anything() -> Self {
@@ -173,12 +166,12 @@ impl Summary {
 /// A step that surely fails: why.
 enum Failing {
     /// It takes `takes`, and the stack has from `lo` to `hi`; `inside`
-    /// a `list` body.
+    /// a `list` or `try` body.
     Underflow {
         takes: usize,
         lo: i64,
         hi: i64,
-        inside: bool,
+        inside: Option<Floor>,
     },
     /// Its values can't be the kinds it takes.
     Type(String),
@@ -227,15 +220,8 @@ enum Flow {
 impl State {
     fn start(bounded: bool) -> Self {
         Self {
-            top: Vec::new(),
-            lo: 0,
-            hi: 0,
-            used: 0,
-            reached: 0,
             bounded,
-            outer: Vec::new(),
-            iters: Vec::new(),
-            names: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -248,7 +234,7 @@ impl State {
 
     /// The depth, from `lo` to `hi`, where it is known.
     fn depth(&self) -> (i64, i64) {
-        let top = len(&self.top);
+        let top = count(self.top.len());
         (self.lo.saturating_add(top), self.hi.saturating_add(top))
     }
 
@@ -289,7 +275,7 @@ impl State {
                 takes: n,
                 lo,
                 hi,
-                inside: !self.outer.is_empty(),
+                inside: self.outer.last().map(|(floor, _)| *floor),
             });
         }
         self.lo = self.lo.saturating_sub(missing);
@@ -304,7 +290,7 @@ impl State {
     /// Forgets the top values' kinds, and adds from `lo` to `hi` values of
     /// any kind.
     fn forget(&mut self, lo: i64, hi: i64) {
-        let top = len(&self.top);
+        let top = count(self.top.len());
         self.top.clear();
         self.lo = self.lo.saturating_add(top).saturating_add(lo);
         self.hi = self.hi.saturating_add(top).saturating_add(hi);
@@ -314,7 +300,7 @@ impl State {
     /// What either way may be.
     fn join(&self, other: &Self) -> Self {
         let kept = self.top.len().min(other.top.len());
-        let rest = |s: &Self| len(&s.top).saturating_sub(count(kept));
+        let rest = |s: &Self| count(s.top.len()).saturating_sub(count(kept));
         let top = self.top.iter().rev().zip(other.top.iter().rev());
         let mut top: Vec<Kinds> = top.take(kept).map(|(a, b)| a.union(*b)).collect();
         top.reverse();
@@ -329,10 +315,33 @@ impl State {
             used: self.used.min(other.used),
             reached: self.reached.min(other.reached),
             bounded: self.bounded,
-            outer: outer.map(|(a, b)| a.join(b)).collect(),
+            outer: outer
+                .map(|((floor, a), (_, b))| (*floor, a.join(b)))
+                .collect(),
             iters: iters.map(|(a, b)| a.union(*b)).collect(),
             names: join_names(&self.names, &other.names),
         }
+    }
+
+    /// Into a block whose body starts with an empty stack, this kept for
+    /// its end.
+    fn enter(&mut self, floor: Floor) {
+        let mut inner = State::start(true);
+        inner.iters = self.iters.clone();
+        inner.names = self.names.clone();
+        inner.outer = take(&mut self.outer);
+        inner.outer.push((floor, take(self)));
+        *self = inner;
+    }
+
+    /// Out of the innermost such block: the state it began from, with
+    /// what its body named.
+    fn leave(&mut self) -> State {
+        let mut outer = self.outer.pop().map_or_else(State::unknown, |(_, o)| o);
+        outer.outer = take(&mut self.outer);
+        outer.iters = self.iters.clone();
+        outer.names = take(&mut self.names);
+        outer
     }
 
     /// `joined` (this joined with a new way), with a depth that keeps
@@ -340,7 +349,7 @@ impl State {
     fn widen(&self, mut joined: Self) -> Self {
         let (lo, hi) = self.depth();
         let (new_lo, new_hi) = joined.depth();
-        let top = len(&joined.top);
+        let top = count(joined.top.len());
         if new_lo < lo {
             joined.lo = BIG.saturating_neg().saturating_sub(top);
         }
@@ -350,10 +359,6 @@ impl State {
         joined.settle();
         joined
     }
-}
-
-fn len(top: &[Kinds]) -> i64 {
-    count(top.len())
 }
 
 /// `n` as a depth: past `BIG`, unbounded.
@@ -534,7 +539,12 @@ impl<'a, A> Unit<'a, A> {
     ) -> Self {
         let mut starts = BTreeSet::from([0]);
         for (at, op) in code.ops.iter().enumerate() {
-            if let Op::Jump(to) | Op::JumpUnless(to) | Op::EachNext(to) = op {
+            if let Op::Jump(to)
+            | Op::JumpUnless(to)
+            | Op::EachNext(to)
+            | Op::Tried(to)
+            | Op::Try(to, _) = op
+            {
                 starts.insert(*to);
                 starts.insert(at.saturating_add(1));
             }
@@ -576,7 +586,7 @@ impl<'a, A> Unit<'a, A> {
             };
             for (to, next) in self.block(start, state, &mut |_, _| {}, &mut diverged) {
                 if forward && to <= start {
-                    let used = next.outer.first().map_or(next.used, |o| o.used);
+                    let used = next.outer.first().map_or(next.used, |(_, o)| o.used);
                     diverged.end(used, Flow::Diverge);
                     continue;
                 }
@@ -670,6 +680,13 @@ impl<'a, A> Unit<'a, A> {
                 state.iters.pop();
                 return vec![(next, body), (*out, state)];
             }
+            // A `try`: on into its body, from an empty stack; or, failing
+            // anywhere in it, to its handler.
+            if let Op::Try(handler, _) = op {
+                let caught = self.caught(at, *handler, &state);
+                state.enter(Floor::Try);
+                return vec![(next, state), (*handler, caught)];
+            }
             match self.step(op, &mut state) {
                 Err(failing) => {
                     failed(at, self.error(at, op, failing));
@@ -679,7 +696,7 @@ impl<'a, A> Unit<'a, A> {
                 // used what it had: counted as an end, at the definition's
                 // own depth (not a `list` body's).
                 Ok(flow @ (Flow::Diverge | Flow::Stop)) => {
-                    let used = state.outer.first().map_or(state.used, |o| o.used);
+                    let used = state.outer.first().map_or(state.used, |(_, o)| o.used);
                     diverged.end(used, flow);
                     return Vec::new();
                 }
@@ -688,7 +705,7 @@ impl<'a, A> Unit<'a, A> {
             // Every op named, so that a new one that jumps cannot pass here
             // as one that goes on.
             match op {
-                Op::Jump(to) => return vec![(*to, state)],
+                Op::Jump(to) | Op::Tried(to) => return vec![(*to, state)],
                 Op::JumpUnless(to) => return vec![(next, state.clone()), (*to, state)],
                 Op::Push(_)
                 | Op::Builtin(_)
@@ -703,13 +720,30 @@ impl<'a, A> Unit<'a, A> {
                 | Op::Mark
                 | Op::Gather
                 | Op::EachStart
-                | Op::EachNext(_) => {}
+                | Op::EachNext(_)
+                | Op::Try(..) => {}
             }
             if self.starts.contains(&next) || next >= self.code.ops.len() {
                 return vec![(next, state)];
             }
             at = next;
         }
+    }
+
+    /// The stack at the handler of the `try` at `at`: as it was at `try`,
+    /// then the failure's message and code, both strings. A `let` name
+    /// the body sets may hold what it was set to there, or not.
+    fn caught(&self, at: usize, handler: usize, state: &State) -> State {
+        let mut caught = state.clone();
+        let body = self.code.ops.get(at.saturating_add(1)..handler);
+        for op in body.unwrap_or_default() {
+            if let Op::SetLocal(slot) | Op::SetGlobal(slot) = op {
+                name(&mut caught.names, *slot, ANY);
+            }
+        }
+        caught.push(STR);
+        caught.push(STR);
+        caught
     }
 
     /// One step: whether a run can go on past it.
@@ -730,9 +764,7 @@ impl<'a, A> Unit<'a, A> {
                     state.forget(below, below);
                     ANY
                 };
-                for kinds in taken {
-                    state.push(kinds);
-                }
+                taken.into_iter().for_each(|kinds| state.push(kinds));
                 state.push(copy);
             }
             Op::RollN(n) => {
@@ -748,9 +780,7 @@ impl<'a, A> Unit<'a, A> {
                         (ANY, taken.as_slice())
                     }
                 };
-                for kinds in stay {
-                    state.push(*kinds);
-                }
+                stay.iter().for_each(|kinds| state.push(*kinds));
                 state.push(moved);
             }
             Op::App(id) => {
@@ -785,9 +815,11 @@ impl<'a, A> Unit<'a, A> {
                 };
                 let (before, _) = state.depth();
                 state.pop(usize::try_from(summary.need).unwrap_or(0))?;
-                let exit = match summary.end.exit() {
-                    Ok(exit) => exit,
-                    Err(flow) => return Ok(flow),
+                // A call that never returns goes on as the definition does.
+                let exit = match &summary.end {
+                    End::Returns(exit) => exit,
+                    End::Diverges => return Ok(Flow::Diverge),
+                    End::Stops => return Ok(Flow::Stop),
                 };
                 // A way that went deeper than every way surely does may
                 // have replaced the caller's values down to there: what was
@@ -802,41 +834,31 @@ impl<'a, A> Unit<'a, A> {
                 if lo != 0 || hi != 0 {
                     state.forget(lo, hi);
                 }
-                for kinds in &exit.top {
-                    state.push(*kinds);
-                }
+                exit.top.iter().for_each(|kinds| state.push(*kinds));
             }
-            Op::Jump(_) | Op::EachNext(_) => {}
+            // Each is gone through in `block`.
+            Op::Jump(_) | Op::EachNext(_) | Op::Try(..) => {}
             Op::JumpUnless(_) => must(self.words(), Wants::Flag, state.pop1()?, BOOL)?,
             Op::SetLocal(slot) | Op::SetGlobal(slot) => {
                 let kinds = state.pop1()?;
                 name(&mut state.names, *slot, kinds);
             }
             Op::GetLocal(slot) => state.push(named(&state.names, *slot)),
-            Op::GetGlobal(slot) => {
-                let kinds = if self.own.is_none() {
-                    named(&state.names, *slot)
-                } else {
-                    ANY
-                };
-                state.push(kinds);
-            }
-            Op::Mark => {
-                let mut inner = State::start(true);
-                inner.iters = state.iters.clone();
-                inner.names = state.names.clone();
-                inner.outer = take(&mut state.outer);
-                inner
-                    .outer
-                    .push(std::mem::replace(state, State::start(true)));
-                *state = inner;
-            }
+            Op::GetGlobal(slot) if self.own.is_none() => state.push(named(&state.names, *slot)),
+            Op::GetGlobal(_) => state.push(ANY),
+            Op::Mark => state.enter(Floor::List),
             Op::Gather => {
-                let mut outer = state.outer.pop().unwrap_or_else(State::unknown);
-                outer.outer = take(&mut state.outer);
-                outer.iters = state.iters.clone();
-                outer.names = take(&mut state.names);
-                outer.push(LIST);
+                *state = state.leave();
+                state.push(LIST);
+            }
+            // The body went through: what it left is on the stack it began
+            // from.
+            Op::Tried(_) => {
+                let mut outer = state.leave();
+                if state.lo != 0 || state.hi != 0 {
+                    outer.forget(state.lo, state.hi);
+                }
+                state.top.iter().for_each(|kinds| outer.push(*kinds));
                 *state = outer;
             }
             Op::EachStart => {
@@ -879,7 +901,9 @@ fn must(words: &Vocabulary, wants: Wants, kinds: Kinds, may_be: Kinds) -> Result
     if kinds.may_be(may_be) {
         Ok(())
     } else {
-        Err(Failing::Type(wants.not(words.describe(kinds))))
+        Err(Failing::Type(
+            wants.not(words.describe(kinds), kinds.app_only()),
+        ))
     }
 }
 
@@ -912,7 +936,7 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
             && let Some(wants) = arg.wants
         {
             let got = placed(words.describe(at(i)), i, args.len());
-            return Err(Failing::Type(wants(builtin).not(got)));
+            return Err(Failing::Type(wants(builtin).not(got, at(i).app_only())));
         }
     }
     // What it leaves, and what one value's kind asks of another's.
@@ -943,7 +967,8 @@ fn builtin_step(words: &Vocabulary, builtin: Builtin, state: &mut State) -> Resu
             let (a, b) = (at(0), at(1));
             if !a.and(b).may_be(INT.union(SEQ)) {
                 let got = format!("{} and {}", words.describe(a), words.describe(b));
-                return Err(Failing::Type(Wants::Ordered.not(got)));
+                let app = a.app_only() || b.app_only();
+                return Err(Failing::Type(Wants::Ordered.not(got, app)));
             }
             state.push(BOOL);
         }

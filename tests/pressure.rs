@@ -325,7 +325,7 @@ fn a_run_answers_an_exit_with_the_last_of_the_output() -> Outcome {
     let out = server.fux(&[
         "opts", "str", "sh", "program", "str", "-c", "arg", "str", code, "arg", "run",
     ])?;
-    let pane = out.stdout.split_whitespace().next().ok_or("its pane")?;
+    let pane = out.stdout.split(':').next().ok_or("its pane")?;
     assert_eq!(server.exits(pane)?, "0");
     let out = server.fux(&["str", pane, "pane", "capture"])?;
     assert!(

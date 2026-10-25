@@ -6,8 +6,8 @@
 //! the program's screen, and [`crate::Screen::focus_report`] reads its
 //! own. Mouse reports are [`crate::keys::mouse`]'s.
 use crate::keys::{
-    CAPS_LOCK_BIT, Direction, Function, Key, KeyPress, Keystroke, Modifiers, NUM_LOCK_BIT,
-    SHIFT_BIT,
+    CAPS_LOCK_BIT, DISAMBIGUATE, Direction, Function, Key, KeyPress, Keystroke, Modifiers,
+    NUM_LOCK_BIT, SHIFT_BIT,
 };
 
 /// How a pane's program asked for its keys: one of the protocols fux
@@ -102,7 +102,6 @@ impl crate::Screen {
 }
 
 /// The kitty protocol's progressive enhancements, as a screen holds them.
-const DISAMBIGUATE: u8 = 1;
 const ALTERNATE_KEYS: u8 = 4;
 const ALL_KEYS: u8 = 8;
 const TEXT: u8 = 16;
@@ -142,8 +141,7 @@ pub fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
     }
     let start = out.len();
     for c in text.chars() {
-        let mut utf8 = [0; 4];
-        out.extend_from_slice(c.encode_utf8(&mut utf8).as_bytes());
+        out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
         // A marker can only end where a character was just added; what is
         // left after removing one is checked again by the characters after.
         if c == '~' {

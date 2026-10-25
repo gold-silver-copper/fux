@@ -304,10 +304,13 @@ fn context(without: &str) -> Result<Parser, Box<dyn std::error::Error>> {
 
 /// The screen's whole state, as `Debug` shows it, but its version, which
 /// every call to the parser moves on (the host's "something may have
-/// changed").
+/// changed"), and its revision, which counts the bytes read.
 fn state(parser: &Parser) -> String {
     let text = format!("{:#?}", parser.screen());
-    let lines = text.lines().filter(|l| !l.starts_with("    version: "));
+    let counts = ["    version: ", "    revision: "];
+    let lines = text
+        .lines()
+        .filter(|l| !counts.iter().any(|c| l.starts_with(c)));
     lines.collect::<Vec<_>>().join("\n")
 }
 

@@ -59,10 +59,7 @@ impl<'a> Reader<'a> {
     /// The whole value: no bytes may follow.
     pub fn whole<T: Wire>(mut self) -> Result<T, Error> {
         let value = T::get(&mut self)?;
-        match self.0.is_empty() {
-            true => Ok(value),
-            false => Err(Error::Trailing),
-        }
+        self.0.is_empty().then_some(value).ok_or(Error::Trailing)
     }
 }
 
@@ -134,8 +131,7 @@ fn put_list<T: Wire>(items: &[T], out: &mut Vec<u8>) {
 
 impl Wire for String {
     fn put(&self, out: &mut Vec<u8>) {
-        u32::try_from(self.len()).unwrap_or(u32::MAX).put(out);
-        out.extend_from_slice(self.as_bytes());
+        put_list(self.as_bytes(), out);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let len = u32::get(r)? as usize;
@@ -283,6 +279,18 @@ text_wire!(WsId, "workspace id");
 text_wire!(ClientId, "client id");
 text_wire!(KeyPress, "key");
 text_wire!(crate::code::Code, "code");
+text_wire!(crate::command::Version, "version");
+
+/// Its seconds, read back only if a wait may wait that long.
+impl Wire for crate::config::Limit {
+    fn put(&self, out: &mut Vec<u8>) {
+        self.seconds().put(out);
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let secs = u32::get(r)?;
+        crate::config::Limit::secs(u64::from(secs)).ok_or(Error::Bad("wait limit"))
+    }
+}
 
 /// `closed_wire!(Ty, "what"; Ty2, "what2")` expands to `impl Wire for` each,
 /// a fieldless enum whose `ALL` lists every variant once (as fux-vt's
@@ -518,7 +526,6 @@ mod tests {
             axis: crate::layout::Axis::Vertical,
             target: crate::id::PaneId::of(1),
             argv: Vec::new(),
-            typed: None,
             cwd: Some(dir.clone()),
             env: Env::default(),
             id: None,

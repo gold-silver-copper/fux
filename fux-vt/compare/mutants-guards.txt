@@ -408,7 +408,7 @@ fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec:
 fux-vt/src/keys/decode.rs: replace paste -> Result<&'a[u8], Pasted> with Ok(Vec::leak(vec![1])) @ let (mut text, too_long) = match pasted {
 
 # B24
-fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ self.feed(bytes, false, out);
+fux-vt/src/keys/decode.rs: replace Decoder::bytes with () @ let from = out.len();
 fux-vt/src/keys/decode.rs: replace + with - @ const HELD: usize = DCS_LIMIT + 2;
 fux-vt/src/keys/decode.rs: replace + with * @ const HELD: usize = DCS_LIMIT + 2;
 
@@ -447,7 +447,7 @@ fux-vt/src/screen.rs: replace Screen::break_cluster with () @ self.last_print = 
 fux-vt/src/compact.rs: replace <= with > in Line<'_, C>::store_long @ if self.live_long().saturating_add(text.len()) <= limit {
 
 # B32 to B36
-fux-vt/src/screen.rs: replace Screen::repeat -> Result<(), Error> with Ok(()) @ let Some(c) = self.repeat else {
+fux-vt/src/screen.rs: replace Screen::repeat with () @ let Some(c) = self.repeat else {
 
 # B33 and B34
 fux-vt/src/screen.rs: replace > with == in Screen::copies_needed @ let Some(per_row) = line.checked_div(width).filter(|n| *n > 0) else {
@@ -466,9 +466,6 @@ fux-vt/src/screen.rs: replace > with >= in Screen::copies_needed @ if width > us
 fux-vt/src/screen.rs: replace > with == in Screen::copies_needed @ let below = g.cursor.row() > g.lines.last();
 fux-vt/src/screen.rs: replace > with < in Screen::copies_needed @ let below = g.cursor.row() > g.lines.last();
 fux-vt/src/screen.rs: replace > with >= in Screen::copies_needed @ let below = g.cursor.row() > g.lines.last();
-fux-vt/src/screen.rs: replace > with == in Screen::copies @ if count > 0 {
-fux-vt/src/screen.rs: replace > with < in Screen::copies @ if count > 0 {
-fux-vt/src/screen.rs: replace > with >= in Screen::copies @ if count > 0 {
 fux-vt/src/screen.rs: replace / with % in Screen::copies_needed @ true => (g.history_bytes() / 32).min(crate::grid::MAX_ROWS),
 fux-vt/src/screen.rs: replace / with * in Screen::copies_needed @ true => (g.history_bytes() / 32).min(crate::grid::MAX_ROWS),
 
@@ -550,8 +547,7 @@ fux-vt/src/grid.rs: replace Grid::make -> Result<(), Error> with Ok(()) @ if !se
 fux-vt/src/grid.rs: delete ! in Grid::make @ if !self.unmade {
 fux-vt/src/parser.rs: replace Parser::refused -> u64 with 0 @ self.refused
 fux-vt/src/parser.rs: replace Parser::refused -> u64 with 1 @ self.refused
-fux-vt/src/parser.rs: replace Parser::refuse with () @ self.refuse_many(1);
-fux-vt/src/parser.rs: replace Parser::refuse_many with () @ self.refused = self.refused.saturating_add(count);
+fux-vt/src/parser.rs: replace Parser::count_degrades_met with () @ let met = crate::degrades().saturating_sub(degrades);
 fux-vt/src/check.rs: replace Checked::record with () @ if !self.ran.contains(&check) {
 fux-vt/src/check.rs: replace Checked::merge with () @ for check in other.ran {
 fux-vt/src/check.rs: replace ensure -> Result<(), String> with Ok(()) @ if holds { Ok(()) } else { Err(detail()) }

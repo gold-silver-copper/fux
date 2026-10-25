@@ -748,7 +748,7 @@ fn consumers_can_reconstruct_cells_exactly() -> Result {
         ));
     }
     let row = screen.rows().nth_back(1).ok_or("row")?;
-    let original: Cells = row.cells().take(6).collect();
+    let original = Cells::try_from_iter(row.cells().take(6))?;
     assert_eq!(copy, original);
     assert_eq!(copy.get(4).map(|c| c.contents()), Some(family));
     let attributes = Attributes::new(Color::Idx(1), Color::Default);

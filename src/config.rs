@@ -57,7 +57,7 @@ settings! {
     /// The bytes of history each pane keeps, for copy mode and `capture`.
     history_bytes "history-bytes": usize = 8 << 20, number(0, 1 << 30);
     /// How long a wait waits at most, unless it says.
-    wait "wait-seconds": Duration = WAIT, |v| number(0, MAX_WAIT)(v).map(Duration::from_secs);
+    wait "wait-seconds": Limit = Limit::DEFAULT, |v| number(0, MAX_WAIT)(v).and_then(Limit::read);
     /// Copies are also sent to the client's terminal as OSC 52.
     clipboard "clipboard": bool = true, on;
     /// How many paste buffers are kept.
@@ -97,12 +97,39 @@ const KEPT: [&str; 8] = [
 ];
 
 pub const MAX_BUFFERS: usize = 1000;
-/// How long a wait waits at most by default: a build or a program's
-/// startup is waited through, while a wait that cannot be met still
-/// answers well inside what a tool running a command waits for it.
-pub const WAIT: Duration = Duration::from_secs(30);
-/// The longest `wait-seconds`: a day.
+/// The longest a wait waits: a day.
 pub const MAX_WAIT: usize = 86_400;
+
+/// How long a wait waits at most: up to `MAX_WAIT` seconds, so its
+/// deadline is a time there is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limit(u32);
+
+impl Limit {
+    /// By default: a build or a program's startup is waited through, while
+    /// a wait that cannot be met still answers well inside what a tool
+    /// running a command waits for it.
+    pub const DEFAULT: Limit = Limit(30);
+
+    /// `secs` seconds, if at most `MAX_WAIT`.
+    pub fn secs(secs: u64) -> Option<Limit> {
+        let within = |s: &u32| usize::try_from(*s).is_ok_and(|s| s <= MAX_WAIT);
+        u32::try_from(secs).ok().filter(within).map(Limit)
+    }
+
+    /// `secs` seconds, or why not.
+    pub fn read(secs: u64) -> Result<Limit, String> {
+        Limit::secs(secs).ok_or_else(|| format!("{secs} s: a wait waits at most {MAX_WAIT} s"))
+    }
+
+    pub fn duration(self) -> Duration {
+        Duration::from_secs(u64::from(self.0))
+    }
+
+    pub fn seconds(self) -> u32 {
+        self.0
+    }
+}
 
 /// The user's login shell from `/etc/passwd`, for when `SHELL` is unset
 /// (a service, a sandbox, a cleared environment).
