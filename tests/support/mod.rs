@@ -18,9 +18,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "linux")]
-pub mod sandbox;
-
 pub type Outcome = Result<(), String>;
 
 /// A size a frame carries: never zero.

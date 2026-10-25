@@ -8,19 +8,6 @@ pub const NONBLOCK: i32 = libc::O_NONBLOCK;
 /// Opening a terminal does not make it the caller's controlling terminal.
 pub const NOCTTY: i32 = libc::O_NOCTTY;
 
-/// Makes a FIFO at `path` with `mode` (the umask still applies).
-pub fn make_fifo(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| std::io::ErrorKind::InvalidInput)?;
-    let mode = libc::mode_t::try_from(mode).map_err(|_| std::io::ErrorKind::InvalidInput)?;
-    // SAFETY: `c` is a NUL-terminated path that outlives the call.
-    match unsafe { libc::mkfifo(c.as_ptr(), mode) } {
-        0 => Ok(()),
-        _ => Err(std::io::Error::last_os_error()),
-    }
-}
-
 /// Where fux's tests and tools make their short-lived files and sockets,
 /// made if it is missing: `$TMPDIR` if it is set and resolves to at most
 /// 40 bytes, else `~/.cache/fux`. A socket's path must stay under 104

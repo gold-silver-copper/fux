@@ -142,35 +142,11 @@ sys.exit(code)
 """
 
 
-# The new fux runs inside the sandbox as it is: its wrapper only logs the
-# call and execs the real binary, which reaches the run's server through its
-# door (a FIFO), since the sandbox refuses Unix sockets.
-DIRECT = r"""#!/bin/sh
-t=$(date +%s.%N)
-e=$(mktemp)
-{real} "$@" 2> "$e"
-c=$?
-cat "$e" >&2
-h=$(head -c 300 "$e" | tr '\t\n' '  ')
-rm -f "$e"
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$t" fux "$*" "$c" "$(date +%s.%N)" "$h" >> "{log}"
-exit $c
-"""
-
-
-def direct(tool, fux_bin):
-    """Whether the agent calls the binary itself: every fux but the base."""
-    return tool == "fux" and os.path.basename(fux_bin) != "fux-base"
-
-
-def shims(env_dir, tool, log, fux_bin):
+def shims(env_dir, tool, log):
     path = os.path.join(env_dir, "bin")
     os.makedirs(path, exist_ok=True)
     with open(os.path.join(path, tool), "w") as f:
-        if direct(tool, fux_bin):
-            f.write(DIRECT.format(log=log, real=shlex.quote(os.path.realpath(fux_bin))))
-        else:
-            f.write(PROXY)
+        f.write(PROXY)
     with open(os.path.join(path, "sleep"), "w") as f:
         f.write(f'#!/bin/sh\nprintf "%s\\t%s\\t%s\\n" "$(date +%s.%N)" sleep "$*" >> "{log}"\n'
                 f'exec /usr/bin/sleep "$@"\n')
@@ -241,7 +217,7 @@ class Helper(threading.Thread):
             pass
 
 
-def make_env(work, tool, fux_bin):
+def make_env(work, tool):
     e = os.path.join(work, ".env")
     dirs = {"XDG_RUNTIME_DIR": "rt", "TMUX_TMPDIR": "tmux", "XDG_CONFIG_HOME": "config",
             "XDG_STATE_HOME": "state", "TMPDIR": "tmp", "ZELLIJ_SOCKET_DIR": "zs",
@@ -255,15 +231,12 @@ def make_env(work, tool, fux_bin):
            "TERM": "xterm-256color", "PYTHONDONTWRITEBYTECODE": "1"}
     # Unix socket paths are limited to 108 bytes, and a socket under a deep
     # run folder doesn't fit (herdr keeps its sockets in its config folder).
-    # The tools that run outside the sandbox get their folders under a short
-    # path of the run's own; fux, called inside the sandbox, keeps them in
-    # the work folder, which the sandbox lets it write.
-    short = e
-    if tool != "fux":
-        import hashlib
-        short = os.path.join(H, "s", hashlib.sha1(work.encode()).hexdigest()[:10])
-        shutil.rmtree(short, ignore_errors=True)
-        os.makedirs(short, mode=0o700)
+    # Every tool runs outside the sandbox, its folders under a short path of
+    # the run's own.
+    import hashlib
+    short = os.path.join(H, "s", hashlib.sha1(work.encode()).hexdigest()[:10])
+    shutil.rmtree(short, ignore_errors=True)
+    os.makedirs(short, mode=0o700)
     for k, sub in dirs.items():
         p = os.path.join(e if k in ("TMPDIR",) else short, sub)
         os.makedirs(p, mode=0o700, exist_ok=True)
@@ -274,7 +247,7 @@ def make_env(work, tool, fux_bin):
     log = os.path.join(work, ".calls.log")
     env["FXH_RPC"] = os.path.join(work, ".rpc")
     os.makedirs(env["FXH_RPC"], exist_ok=True)
-    env["PATH"] = ":".join([shims(e, tool, log, fux_bin), os.path.dirname(os.path.realpath(CODEX)),
+    env["PATH"] = ":".join([shims(e, tool, log), os.path.dirname(os.path.realpath(CODEX)),
                             os.path.dirname(CODEX), "/usr/local/bin", "/usr/bin", "/bin"])
     for k in list(dirs) + ["FUX_SOCKET"]:
         assert env[k].startswith(H), k
@@ -386,7 +359,7 @@ def run_one(tool, fux_bin, ref, work):
     task = load_task(ref)
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
-    env = make_env(work, tool, fux_bin)
+    env = make_env(work, tool)
     setup(task, work)
     # The server, its panes and the helper see a plain PATH: the proxies
     # are for the agent's sandboxed shell only.
@@ -395,8 +368,7 @@ def run_one(tool, fux_bin, ref, work):
     d.start()
     real = fux_bin if tool == "fux" else REAL[tool]
     helper = Helper(env["FXH_RPC"], real, tool, dict(plain), os.path.join(work, ".calls.log"))
-    if not direct(tool, fux_bin):
-        helper.start()
+    helper.start()
     learn = LEARN[tool]
     # A guide named after the binary (bench-161 gave each build an opaque
     # name and its own docs/agents.md) is offered beside the built-in help.
@@ -406,7 +378,6 @@ def run_one(tool, fux_bin, ref, work):
     prompt = PROMPT.format(learn=learn, goal=goal_text(task, work), work=work)
     open(os.path.join(work, ".prompt.md"), "w").write(prompt)
     rec = {"id": task["id"], "tool": tool, "bin": tool,
-           "direct": direct(tool, fux_bin),
            "category": task.get("category")}
     started = time.time()
     try:

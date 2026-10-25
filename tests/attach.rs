@@ -971,6 +971,26 @@ fn resizing_while_typing_keeps_the_client_attached_and_every_byte() -> Outcome {
     Ok(())
 }
 
+/// The prefix, then Esc, stops a key's program waiting at the server; the
+/// next key's program asks on as before.
+#[test]
+fn a_stopped_key_program_leaves_the_next_one_asking() -> Outcome {
+    let keys = "str j str 'me focused 600 timeout wait drop' bind \
+                str k str 'me focused str next-''ok text send-keys' bind";
+    let server = Server::start(keys)?;
+    let mut terminal = Terminal::attach(&server, 12, 50, &[])?;
+    terminal.wait_for("%1 sh")?;
+    terminal.type_bytes(b"echo sleep''ing; sleep 100\r")?;
+    terminal.wait_for("sleeping")?;
+    terminal.type_bytes(b"\x02j")?;
+    // The wait under way at the server, not stopped between its steps.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    terminal.type_bytes(b"\x02\x1b")?;
+    terminal.wait_for("stopped")?;
+    terminal.type_bytes(b"\x02k")?;
+    terminal.wait_for("next-ok")
+}
+
 /// Commands from the command line are not ended by signals either, when
 /// one arrives while they wait for the server.
 #[test]

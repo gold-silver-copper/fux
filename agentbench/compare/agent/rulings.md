@@ -46,6 +46,11 @@ A spec run twice on one configuration with different final grades is flaky. Look
 
 ## Requirement from the user (2026-10-13): fux runs inside a sandbox
 
+Reversed on 2026-10-25: the FIFO door is deleted, and fux is controlled
+through its Unix socket alone. Every tool, fux included, now runs through the
+proxy helper outside the sandbox; what follows is kept as the record of the
+earlier sets.
+
 - Baseline (today's fux) runs through the proxy helper: its private-socket check refuses
   every path under a user namespace (root shows as uid 65534), and Codex's sandbox blocks
   AF_UNIX connect and bind outright (socketpair and mkfifo work).

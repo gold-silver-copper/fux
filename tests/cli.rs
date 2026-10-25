@@ -513,3 +513,29 @@ fn a_write_that_fails_stops_the_program() -> Outcome {
     })?;
     Ok(())
 }
+
+/// A stop between requests ends the run, not the connection: the next
+/// run's request is asked on it, as one after a stop under way is asked on
+/// a new one.
+#[test]
+fn a_stop_between_requests_leaves_the_connection_asking() -> Outcome {
+    use fux::script::Asks;
+    let server = Server::start("")?;
+    let path = server.socket.to_string_lossy().into_owned();
+    let stop = fux::script::Stop::default();
+    let mut asks = fux::script::Server::stoppable(fux::socket::Choice::Path(path), stop.clone());
+    let ls = fux::protocol::Asked {
+        request: fux::command::Command::Ls {
+            target: None,
+            get: None,
+        }
+        .into(),
+        context: fux::protocol::Context::default(),
+    };
+    let mut sink = std::io::sink();
+    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
+    stop.stop();
+    stop.reset();
+    asks.ask(&ls, &mut sink).map_err(|f| f.to_string())?;
+    Ok(())
+}

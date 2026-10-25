@@ -286,10 +286,6 @@ pub fn check_client_socket(socket: &SocketPath) -> Result<(), Error> {
     let path = socket.path();
     let meta = match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            // Its door is knocked at instead, in the same directory.
-            if crate::door::path(path).exists() {
-                private_directory(socket, false)?;
-            }
             return Err(Error::NoServer(path.to_owned()));
         }
         Err(error) => return Err(io(path)(error)),
@@ -339,19 +335,17 @@ impl Pinned {
     }
 }
 
-/// The lock that makes this server its only owner, and the socket it bound
-/// if the system let it (a sandbox may deny sockets: a door serves instead,
-/// `crate::door`). Dropping it removes the socket if it is still the one
-/// this server bound.
+/// The lock that makes this server its only owner, and the socket it bound.
+/// Dropping it removes the socket if it is still the one this server bound.
 pub struct Endpoint {
     path: PathBuf,
-    socket: Option<Pinned>,
+    socket: Pinned,
     _lock: File,
 }
 
 impl Drop for Endpoint {
     fn drop(&mut self) {
-        if self.socket.as_ref().is_some_and(|s| s.still_at(&self.path)) {
+        if self.socket.still_at(&self.path) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -369,26 +363,10 @@ fn probe(path: &Path) -> io::Result<()> {
     }
 }
 
-/// A socket bound at its path, not yet listening: no client connects to it
-/// until its owner has made all else a client may look for (its door).
-pub struct Bound {
-    fd: std::os::fd::OwnedFd,
-    path: PathBuf,
-}
-
-impl Bound {
-    /// Listens: from here clients connect.
-    pub fn listen(self) -> Result<UnixListener, Error> {
-        fuxix::socket::listen(&self.fd, 128).map_err(failed("listening on ", &self.path))?;
-        Ok(UnixListener::from(self.fd))
-    }
-}
-
-/// Takes ownership of `path` and binds it. Refuses a live server's socket and
-/// anything that is not a socket; replaces only a socket proven stale. Where
-/// the system denies sockets the lock is taken all the same, with no
-/// socket: its owner serves through its door alone.
-pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<Bound>), Error> {
+/// Takes ownership of `path`, binds it and listens there. Refuses a live
+/// server's socket and anything that is not a socket; replaces only a
+/// socket proven stale.
+pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, UnixListener), Error> {
     let path = socket.path();
     private_directory(socket, true)?;
     let mut lock_path = path.as_os_str().to_owned();
@@ -428,40 +406,25 @@ pub fn bind_socket(socket: &SocketPath) -> Result<(Endpoint, Option<Bound>), Err
                 path.display()
             )));
         }
-        // No answer: with the lock held, no server owns it, whether connect
-        // was refused or denied (a sandbox that forbids sockets).
+        // No answer: with the lock held, no server owns it.
         Ok(_) => {
             if stale.as_ref().is_ok_and(|stale| stale.still_at(path)) {
                 fs::remove_file(path).map_err(failed("removing stale socket ", path))?;
             }
         }
     }
-    let mut endpoint = Endpoint {
+    let fd = fuxix::socket::stream().map_err(failed("a socket for ", path))?;
+    fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
+    let endpoint = Endpoint {
         path: path.to_owned(),
-        socket: None,
+        socket: Pinned::new(path).map_err(io(path))?,
         _lock: lock,
     };
-    let bound = fuxix::socket::stream()
-        .map_err(failed("a socket for ", path))
-        .and_then(|fd| {
-            fuxix::socket::bind(&fd, path).map_err(failed("binding ", path))?;
-            Ok(fd)
-        });
-    let fd = match bound {
-        Ok(fd) => fd,
-        // The system denies sockets at all (a sandbox that forbids them): a
-        // door may serve instead (`crate::door`).
-        Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::PermissionDenied => {
-            return Ok((endpoint, None));
-        }
-        Err(error) => return Err(error),
-    };
-    endpoint.socket = Some(Pinned::new(path).map_err(io(path))?);
     // From here a failure drops `endpoint`, which removes the socket. The mode
     // is set before `listen`, so no connection is accepted on an open socket.
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(io(path))?;
-    let path = path.to_owned();
-    Ok((endpoint, Some(Bound { fd, path })))
+    fuxix::socket::listen(&fd, 128).map_err(failed("listening on ", path))?;
+    Ok((endpoint, UnixListener::from(fd)))
 }
 
 #[cfg(test)]
@@ -475,10 +438,7 @@ mod tests {
     }
 
     fn bind(path: &Path) -> Result<(Endpoint, UnixListener), Error> {
-        match bind_socket(&checked(path, "test")?)? {
-            (endpoint, Some(bound)) => Ok((endpoint, bound.listen()?)),
-            (_, None) => Err(io(path)(io::ErrorKind::PermissionDenied.into())),
-        }
+        bind_socket(&checked(path, "test")?)
     }
 
     fn scratch(name: &str) -> std::io::Result<PathBuf> {
@@ -578,7 +538,7 @@ mod tests {
         drop((client, served, listener, endpoint));
         assert!(!exists(&path), "the socket is removed at exit");
         // A stale socket (nothing listening) is replaced, even one whose
-        // connect is denied, as a sandbox denies sockets.
+        // connect is refused (mode 0000).
         let stale = UnixListener::bind(&path).map_err(|e| e.to_string())?;
         drop(stale);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).map_err(|e| e.to_string())?;
@@ -694,10 +654,9 @@ mod tests {
             error.contains("mode 0700") && error.contains("mode 0755"),
             "{error}"
         );
-        // A client is refused there too, though it would knock at a door,
-        // not connect to a socket.
+        // A client is refused there too.
         let socket = root.join("fux").join("s.sock");
-        fuxix::file::make_fifo(&crate::door::path(&socket), 0o600)?;
+        std::os::unix::net::UnixListener::bind(&socket)?;
         let socket = checked(&socket, "socket")?;
         let error = check_client_socket(&socket).err().map(|e| e.to_string());
         let error = error.unwrap_or_default();

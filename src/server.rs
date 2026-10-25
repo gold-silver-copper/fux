@@ -69,42 +69,19 @@ const ACCEPT_REST: Duration = Duration::from_millis(100);
 /// moment it stops, its listener closes and the socket is gone, and a
 /// client finds no server rather than one that never answers.
 struct Listening {
-    /// None where the system denies sockets: the door alone serves.
-    listener: Option<UnixListener>,
-    /// The door beside the socket, for clients in a sandbox that denies
-    /// them sockets (`crate::door`).
-    door: Option<crate::door::Door>,
+    listener: UnixListener,
     /// Holds the lock; removes the socket once dropped, after the listener
     /// closes.
     _endpoint: Endpoint,
 }
 
 impl Listening {
-    /// The socket at `socket` bound and its door opened; where the system
-    /// denies sockets, the door alone, the lock held all the same.
+    /// The socket at `socket` bound and listened on.
     fn open(socket: &SocketPath) -> Result<Listening, Error> {
-        let (endpoint, bound) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
-        let door = match crate::door::Door::open(socket.path()) {
-            Ok(door) => Some(door),
-            Err(error) if bound.is_none() => return Err(Error::Setup(error)),
-            Err(error) => {
-                log!("no door beside the socket: {error}");
-                None
-            }
-        };
-        // Listened on only once the door is there: a client that can
-        // connect finds the door too, as one in a sandbox looks for it as
-        // soon as `fux start` says the server answers.
-        let listener = bound
-            .map(crate::socket::Bound::listen)
-            .transpose()
-            .map_err(Error::Socket)?;
-        if let Some(listener) = &listener {
-            listener.set_nonblocking(true).map_err(Error::Setup)?;
-        }
+        let (endpoint, listener) = crate::socket::bind_socket(socket).map_err(Error::Socket)?;
+        listener.set_nonblocking(true).map_err(Error::Setup)?;
         Ok(Listening {
             listener,
-            door,
             _endpoint: endpoint,
         })
     }
@@ -142,16 +119,9 @@ enum Wake {
     Look,
 }
 
-/// What a connection comes over: a socket, or a door's two FIFOs, which
-/// carry no descriptor (`crate::door`).
-enum Wire {
-    Socket(UnixStream),
-    Door(crate::door::Fifos),
-}
-
-/// A client's connection: its wire, and where it is in its life.
+/// A client's connection: its socket, and where it is in its life.
 struct Conn {
-    wire: Wire,
+    stream: UnixStream,
     decoder: Decoder,
     out: ByteQueue,
     stage: Stage,
@@ -364,9 +334,9 @@ impl Attached {
 }
 
 impl Conn {
-    fn new(wire: Wire) -> Conn {
+    fn new(stream: UnixStream) -> Conn {
         Conn {
-            wire,
+            stream,
             decoder: Decoder::default(),
             out: ByteQueue::default(),
             stage: Stage::Hello(None),
@@ -523,11 +493,7 @@ impl Conn {
     /// for its terminal is written too.
     fn flush(&mut self, session: &mut Session) {
         self.flush_tty(session);
-        let written = match &self.wire {
-            Wire::Socket(stream) => write_out(stream, &mut self.out),
-            Wire::Door(fifos) => write_out(&fifos.down, &mut self.out),
-        };
-        if !written {
+        if !write_out(&self.stream, &mut self.out) {
             self.enter(session, Stage::Dead);
         }
     }
@@ -627,8 +593,6 @@ pub fn serve(socket: &SocketPath) -> Result<(), Error> {
 enum Slot {
     /// The socket listened on.
     Listener,
-    /// The door beside it: knocks waiting.
-    Door,
     Children,
     Stops,
     Conn(usize),
@@ -680,7 +644,6 @@ impl Server {
             for &(slot, flags) in &ready {
                 match slot {
                     Slot::Listener => self.accept(),
-                    Slot::Door => self.open_door(),
                     Slot::Children => {
                         crate::drain(self.children.pipe());
                         self.reap();
@@ -817,12 +780,7 @@ impl Server {
             resting: None,
         } = &self.phase
         {
-            if let Some(listener) = &listening.listener {
-                add(PollFd::new(listener, PollFlags::IN), Slot::Listener);
-            }
-            if let Some(door) = &listening.door {
-                add(PollFd::new(door.fd(), PollFlags::IN), Slot::Door);
-            }
+            add(PollFd::new(&listening.listener, PollFlags::IN), Slot::Listener);
         }
         add(
             PollFd::new(self.children.pipe(), PollFlags::IN),
@@ -844,22 +802,7 @@ impl Server {
             if !conn.out.is_empty() {
                 flags |= PollFlags::OUT;
             }
-            match &conn.wire {
-                Wire::Socket(stream) => add(PollFd::new(stream, flags), Slot::Conn(i)),
-                // Each FIFO for its own way, the way in for its end too.
-                Wire::Door(fifos) => {
-                    if conn.reads() || conn.out.is_empty() {
-                        let flags = match conn.reads() {
-                            true => PollFlags::IN,
-                            false => PollFlags::NONE,
-                        };
-                        add(PollFd::new(&fifos.up, flags), Slot::Conn(i));
-                    }
-                    if flags.intersects(PollFlags::OUT) {
-                        add(PollFd::new(&fifos.down, PollFlags::OUT), Slot::Conn(i));
-                    }
-                }
-            }
+            add(PollFd::new(&conn.stream, flags), Slot::Conn(i));
             // Polled for its hangup, and for room to write what waits.
             if let Stage::Attached(attached) = &conn.stage
                 && let Some(tty) = &attached.tty
@@ -1050,11 +993,7 @@ impl Server {
     fn accept(&mut self) {
         // Accept until the backlog is empty, so one tick drains it.
         loop {
-            let Some(Listening {
-                listener: Some(listener),
-                ..
-            }) = self.listening()
-            else {
+            let Some(Listening { listener, .. }) = self.listening() else {
                 return;
             };
             let stream = match listener.accept() {
@@ -1108,22 +1047,7 @@ impl Server {
             if stream.set_nonblocking(true).is_err() {
                 continue;
             }
-            self.conns.push(Conn::new(Wire::Socket(stream)));
-        }
-    }
-
-    /// Takes the connections knocks at the door bring: each a client's two
-    /// FIFOs, whose owner the door checked, as the socket's peer check
-    /// does.
-    fn open_door(&mut self) {
-        let Some(Listening {
-            door: Some(door), ..
-        }) = self.listening()
-        else {
-            return;
-        };
-        for fifos in door.knocks() {
-            self.conns.push(Conn::new(Wire::Door(fifos)));
+            self.conns.push(Conn::new(stream));
         }
     }
 
@@ -1198,13 +1122,7 @@ impl Server {
                 break false;
             }
             // A client may send its terminal with its `Attach`.
-            let got = match &conn.wire {
-                Wire::Socket(stream) => fuxix::socket::recv_with_fd(stream, &mut self.read_buffer),
-                Wire::Door(fifos) => {
-                    fuxix::io::read(&fifos.up, &mut self.read_buffer).map(|n| (n, None))
-                }
-            };
-            match got {
+            match fuxix::socket::recv_with_fd(&conn.stream, &mut self.read_buffer) {
                 Ok((0, _)) => break true,
                 Ok((n, fd)) => {
                     if let (
@@ -1498,35 +1416,10 @@ mod tests {
         let (stream, peer) = UnixStream::pair().map_err(|e| e.to_string())?;
         let (tty, far) = UnixStream::pair().map_err(|e| e.to_string())?;
         tty.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut conn = Conn::new(Wire::Socket(stream));
+        let mut conn = Conn::new(stream);
         let tty = TakenTerminal::new(OwnedFd::from(tty));
         conn.stage = Stage::Attached(Box::new(Attached::new(client, Some(tty))));
         Ok((session, conn, peer, far))
-    }
-
-    /// Something not a door where the door goes (a file left there): the
-    /// server serves on its socket all the same, with no door.
-    #[test]
-    fn a_door_that_cannot_open_leaves_the_socket_serving() -> Result<(), String> {
-        use std::os::unix::fs::PermissionsExt;
-        let e = |e: &dyn std::fmt::Display| e.to_string();
-        let dir = (fuxix::file::scratch().map_err(|x| e(&x))?)
-            .join(format!("fux-listening-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("fux")).map_err(|x| e(&x))?;
-        for private in [dir.clone(), dir.join("fux")] {
-            std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700))
-                .map_err(|x| e(&x))?;
-        }
-        let path = dir.join("fux").join("s.sock");
-        std::fs::write(crate::door::path(&path), "").map_err(|x| e(&x))?;
-        let socket = crate::socket::checked(&path, "test").map_err(|x| e(&x))?;
-        let listening = Listening::open(&socket).map_err(|x| e(&x))?;
-        assert!(listening.listener.is_some(), "the socket serves");
-        assert!(listening.door.is_none(), "with no door");
-        drop(listening);
-        let _ = std::fs::remove_dir_all(&dir);
-        Ok(())
     }
 
     /// The frames waiting for the client: what is painted in them, and the

@@ -11,7 +11,6 @@ pub mod code;
 pub mod command;
 pub mod config;
 pub mod copy;
-pub mod door;
 pub mod events;
 pub mod help;
 pub mod id;
@@ -53,9 +52,7 @@ pub(crate) const STOPS: [std::ffi::c_int; 3] = [SIGTERM, SIGINT, SIGHUP];
 
 /// A pipe that becomes readable when any of its signals arrives: each
 /// writes a byte to the other end, of which its handler holds a copy.
-/// Dropped, it unregisters them, which closes those copies. A pipe, not a
-/// socket pair: a sandbox may refuse send(2), which a signal writes a
-/// socket with.
+/// Dropped, it unregisters them, which closes those copies.
 pub(crate) struct SignalPipe {
     pipe: PipeReader,
     registered: Vec<signal_hook::SigId>,

@@ -489,7 +489,9 @@ without it, and a comment line says so: it starts where the dump is run.
 
 ## Security
 
-The server listens only on a Unix socket: `str PATH socket`, `str NAME
+The server listens only on a Unix socket, which is the only way to
+control it: a sandbox that denies `connect` to it cannot drive fux. The
+socket is `str PATH socket`, `str NAME
 server` (`NAME.sock` in fux's directory), else `FUX_SOCKET`, else
 `server.sock` there. fux's directory is `$XDG_RUNTIME_DIR/fux` whenever
 `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`; one of them set empty or to

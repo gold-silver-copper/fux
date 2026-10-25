@@ -520,20 +520,28 @@ pub struct Server {
 }
 
 /// What stops a run from another thread (the prefix then Esc, for a key's
-/// program): a flag it looks at between steps, and what ends its
-/// connection's reads under a request that waits.
+/// program): a flag it looks at between steps and before each request, and
+/// the connection of the request under way, if one is, which it shuts down.
 #[derive(Clone, Default)]
 pub struct Stop {
     flag: Arc<AtomicBool>,
-    stream: Arc<Mutex<Option<io::PipeWriter>>>,
+    stream: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
 }
 
 impl Stop {
     /// Stops the run under way.
     pub fn stop(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        if let Ok(mut stream) = self.stream.lock() {
-            *stream = None;
+        if let Some(stream) = self.stream.lock().ok().and_then(|mut s| s.take()) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// `stream` is the connection of the request under way (`None`: no
+    /// request is): what a stop shuts down.
+    fn hold(&self, stream: Option<std::os::unix::net::UnixStream>) {
+        if let Ok(mut held) = self.stream.lock() {
+            *held = stream;
         }
     }
 
@@ -577,6 +585,11 @@ impl Server {
     }
 }
 
+/// A run stopped from another thread (`Stop`).
+fn cancelled() -> Failed {
+    Failed::new(Code::Cancelled, "stopped (the prefix, then Esc)")
+}
+
 fn client_failed(error: client::Error) -> Failed {
     Failed::new(error.code(), error.to_string())
 }
@@ -601,18 +614,27 @@ impl Asks for Server {
             Some(requests) => requests,
             None => {
                 let socket = self.socket()?;
-                let mut opened = client::Requests::open(&socket).map_err(client_failed)?;
-                // A connection a stop can end.
-                if let Some(stop) = &self.stop
-                    && let Ok(mut held) = stop.stream.lock()
-                {
-                    *held = opened.stopper();
-                }
+                let opened = client::Requests::open(&socket).map_err(client_failed)?;
                 self.requests.insert(opened)
             }
         };
-        let reply = requests.ask(asked, out).map_err(client_failed);
-        if reply.is_err() {
+        // Held while it asks, so a stop ends a request that waits; a stop
+        // that came first is seen once it is held, so none is missed.
+        if let Some(stop) = &self.stop {
+            stop.hold(requests.stopper());
+        }
+        let reply = match self.stop.as_ref().is_some_and(Stop::stopped) {
+            true => Err(cancelled()),
+            false => requests.ask(asked, out).map_err(client_failed),
+        };
+        // Let go of before the flag is read: a stop from then on cannot
+        // shut what is kept.
+        if let Some(stop) = &self.stop {
+            stop.hold(None);
+        }
+        // A failed request's connection is not asked again, nor one a stop
+        // may have shut, however the request ended.
+        if reply.is_err() || self.stop.as_ref().is_some_and(Stop::stopped) {
             self.requests = None;
         }
         reply
@@ -680,10 +702,7 @@ pub fn run_capped(
 ) -> Result<Vec<Value<Fux>>, Failed> {
     loop {
         if stop.is_some_and(Stop::stopped) {
-            return Err(Failed::new(
-                Code::Cancelled,
-                "stopped (the prefix, then Esc)",
-            ));
+            return Err(cancelled());
         }
         if let Some(steps) = steps.filter(|steps| machine.steps() > *steps) {
             // No try may name it: it ends the run, said at the step reached.

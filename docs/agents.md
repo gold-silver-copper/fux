@@ -7,7 +7,9 @@ explains one.)
 A fux command line is a fuxth program: words run left to right, each taking
 what the words before it left. `str WORD` pushes WORD as text. `%2` alone is
 a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
-`FUX_SOCKET`'s; `fux start` starts one if none runs. **The word that acts
+`FUX_SOCKET`'s; `fux start` starts one if none runs. It is reached through
+that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
+be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
@@ -312,12 +314,12 @@ stopped it.
   watches is refused, as there is nothing to watch), `status` says which
   answers, and fails (`no_server`) where none does: `fux status || fux
   start`. The servers in fux's directory (`$XDG_RUNTIME_DIR/fux` whenever
-  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files (or a `NAME.sock.door`
-  alone): `status` each.
+  `XDG_RUNTIME_DIR` is set, else `$TMPDIR/fux`) are its `NAME.sock` files:
+  `status` each.
 
   ```sh
-  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' -e 's/\.sock\.door$//p' |
-    sort -u | while read -r n; do fux str "$n" server status; done
+  ls "${XDG_RUNTIME_DIR-$TMPDIR}/fux" | sed -n -e 's/\.sock$//p' |
+    while read -r n; do fux str "$n" server status; done
   ```
   Inside a person's pane, `here` is that pane. Every pane has
   `FUX_PANE` (its id), `FUX_SOCKET` (its server's socket), `FUX_SERVER` (which run of the server: a
@@ -333,8 +335,9 @@ stopped it.
   choose; `fux start && fux FILE` makes them again on a fresh server,
   never its processes' state. That is another server run: versions from
   before it are refused.
-- In a sandbox that refuses Unix sockets, client and server meet through a
-  FIFO beside the socket (`NAME.sock.door`).
+- fux is controlled through its Unix socket alone: a sandbox that denies
+  `connect` to it (Codex's denies every `connect`) cannot drive fux. Run
+  fux commands outside such a sandbox, or allow the socket.
 - A tab no client shows, or only clients that watch, is laid out on its
   `size`; `TAB 40 12 resize` changes it, `resize-auto` gives it back to a
   client's screen, `PANE 95 percent resize-x` sizes a pane in its tab. A
