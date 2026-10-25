@@ -1,5 +1,5 @@
 # comment
-str shell str /bin/sh set
+str shell list str /bin/sh end set
 str C-a prefix
 
 str 'g n' str 'opts new-tab drop' bind str Tools group # trailing
