@@ -623,6 +623,25 @@ fn a_picture_needs_a_host_cell_of_a_sixel_band_or_more() -> Result<(), Error> {
     Ok(())
 }
 
+/// A picture the pictures' budget refuses room is not placed, and is
+/// counted; one that drew nothing, or that CAN ended, is no picture.
+#[test]
+fn a_picture_refused_room_is_counted() -> Result<(), Error> {
+    let options = crate::Options::from(crate::Feature::Pictures);
+    let mut p = crate::Parser::with_options(Size::of(24, 80), 0, options)?;
+    p.set_host_graphics(crate::Graphics {
+        cell: crate::CellSize::new(10, 20),
+        sixel: true,
+    });
+    p.process(b"\x1bP9q\x1b\\\x1bP9q~\x18")?;
+    assert_eq!(p.pictures_refused(), 0);
+    p.set_picture_bytes(0);
+    p.process(b"\x1bP9q~\x1b\\")?;
+    assert_eq!(p.screen().pictures().count(), 0);
+    assert_eq!(p.pictures_refused(), 1);
+    Ok(())
+}
+
 /// A picture begun while the host drew sixel and ended once it had no cell
 /// size, read across two reads, is not placed, and is counted so.
 #[test]

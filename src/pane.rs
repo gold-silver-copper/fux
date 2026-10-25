@@ -881,8 +881,9 @@ impl<S> Pane<S> {
         self.parser.screen()
     }
 
-    /// The sixel pictures its program drew while no terminal showing it
-    /// drew sixel, which were not kept.
+    /// The sixel pictures its program drew that were not kept whole, for
+    /// each cause `fux_vt::Parser::pictures_refused` names: among them,
+    /// those drawn while no terminal showing it drew sixel.
     pub fn pictures_refused(&self) -> u64 {
         self.parser.pictures_refused()
     }

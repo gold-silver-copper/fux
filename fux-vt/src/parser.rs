@@ -1061,9 +1061,13 @@ impl Parser {
         self.refused
     }
     /// How many sixel pictures the program sent, with [`Feature::Pictures`],
-    /// that were not placed: begun while the host drew no sixel
+    /// that were not placed whole: begun while the host drew no sixel
     /// (`set_host_graphics`), and not read; ended once it had no cell size;
-    /// or lifted past a scroll region's top as it was placed.
+    /// lifted past a scroll region's top as it was placed; or cut, placed
+    /// or not: what it drew past what a picture may keep
+    /// ([`crate::sixel::MAX_SIDE`] a side, 4096 by 2160 in all, and the
+    /// pictures' budget, [`Parser::set_picture_bytes`]) is not kept. One
+    /// that drew nothing, or that CAN ended, is none.
     pub fn pictures_refused(&self) -> u64 {
         self.pictures_refused
     }
@@ -1612,15 +1616,15 @@ impl Parser {
                 }
                 State::Sixel => {
                     let screen = &mut self.screen;
-                    let picture = (self.sixel.take()).and_then(|decoder| {
+                    let (picture, whole) = (self.sixel.take()).map_or((None, true), |decoder| {
                         decoder.finish(&mut |bytes, evict| screen.make_room(bytes, evict))
                     });
                     // One with no host cell left to lay it out in, the
                     // host's having gone as it was read, or that lost bands
-                    // as it was placed, is not placed.
-                    if let Some(picture) = picture
-                        && !self.screen.place_picture(picture)
-                    {
+                    // as it was placed, is not placed; one cut is counted
+                    // too, placed or not.
+                    let placed = picture.map(|picture| self.screen.place_picture(picture));
+                    if !whole || placed == Some(false) {
                         self.pictures_refused = self.pictures_refused.saturating_add(1);
                     }
                 }
