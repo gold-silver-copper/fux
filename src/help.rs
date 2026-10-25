@@ -316,20 +316,11 @@ mod tests {
     /// constant the check uses.
     #[test]
     fn the_docs_state_each_bound_as_its_check_has_it() {
-        let grouped = |n: usize| {
-            let digits = n.to_string();
-            let mut out = String::new();
-            for (i, digit) in digits.chars().enumerate() {
-                if i > 0 && (digits.len() - i).is_multiple_of(3) {
-                    out.push(',');
-                }
-                out.push(digit);
-            }
-            out
-        };
+        use crate::copy::MAX_CELLS;
         let readme = include_str!("../README.md");
         for said in [
-            format!("at most {} cells", grouped(crate::copy::MAX_CELLS)),
+            // Thousands grouped by a comma, as the README writes them.
+            format!("at most {},{:03} cells", MAX_CELLS / 1000, MAX_CELLS % 1000),
             format!("to {} MiB encoded", crate::copy::MAX_CLIPBOARD >> 20),
             format!("up to {} KiB encoded", fux_vt::OSC_PAYLOAD_LIMIT >> 10),
             format!("at most {} MiB", crate::protocol::MAX_FRAME >> 20),
