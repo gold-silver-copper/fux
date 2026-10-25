@@ -12,7 +12,7 @@
 use crate::command::Sibling;
 use crate::events::{Journal, Place, What};
 use crate::id::{ClientId, PaneId, TabId, WsId};
-use crate::layout::{self, Axis, Rect, Side, Tree};
+use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
 use crate::pane::{Loose, Pane};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -253,7 +253,7 @@ impl Tab {
         for seat in self.seats.values_mut() {
             let (focus, last) = (seat.focus.filter(inside), seat.last.filter(inside));
             seat.held &= focus.is_some();
-            seat.focus = focus.or(last).or_else(|| root.and_then(Tree::first_pane));
+            seat.focus = focus.or(last).or_else(|| root.map(Tree::first_pane));
             seat.last = last.filter(|l| Some(*l) != seat.focus);
         }
     }
@@ -340,6 +340,15 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
     };
     let pair = first.and_then(|i| items.get_mut(i..i.checked_add(2)?));
     Some(pair.map(<[T]>::reverse).is_some())
+}
+
+/// Takes `pane` out of `root`, `None` once its last pane is gone.
+fn without(root: &mut Option<Tree>, pane: PaneId) {
+    match root.as_ref().map(|r| r.remove(pane)) {
+        Some(Removed::Left(rest)) => *root = Some(rest),
+        Some(Removed::Emptied) => *root = None,
+        Some(Removed::Absent) | None => {}
+    }
 }
 
 /// Names `old` `new`, journaled at `place` if it is another name.
@@ -551,11 +560,11 @@ impl Parts {
         (target, new): (PaneId, PaneId),
         axis: Axis,
         shares: layout::Shares,
-    ) -> Result<Split, layout::Unmade> {
-        let (_, tab) = self.locate(target).ok_or(layout::Unmade::NoPane)?;
+    ) -> Result<Split, NoPane> {
+        let (_, tab) = self.locate(target).ok_or(NoPane)?;
         let mut tabs = (self.workspaces.iter()).flat_map(|w| &w.tabs);
         let was = tabs.find(|t| t.id == tab).and_then(|t| t.root.clone());
-        let was = was.ok_or(layout::Unmade::NoPane)?;
+        let was = was.ok_or(NoPane)?;
         let mut root = was.clone();
         root.split((target, new), (axis, Side::After), shares)?;
         Ok(Split { tab, was, root })
@@ -583,10 +592,9 @@ impl Parts {
     pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane<Loose>> {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
-        let removed = tab.edit(|root| layout::remove(root, id));
+        tab.edit(|root| without(root, id));
         let emptied = tab.root.is_none();
         self.journal.push(Place::Pane(at, id), What::Closed);
-        self.rounded(at, removed);
         if emptied {
             self.remove_tab(at.1);
         }
@@ -676,7 +684,7 @@ impl Parts {
         // what its panes have (a zoomed pane, its whole screen).
         let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
         for tab in tabs.filter(|t| t.id == was_a.1 || t.id == was_b.1) {
-            tab.edit(|root| root.as_mut().map(|r| layout::swap(r, a, b)));
+            tab.edit(|root| root.as_mut().map(|r| r.swap(a, b)));
         }
         if was_a != was_b {
             self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
@@ -685,30 +693,21 @@ impl Parts {
     }
 
     /// Moves `pane` from its tab to the end of tab `to`, another: its tab
-    /// lets go of it, and `to` takes it (`layout::append`); no other tab
+    /// lets go of it, and `to` takes it (`Tree::append`); no other tab
     /// changes. Refused, none does.
-    pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) -> Result<(), layout::Unmade> {
-        let was = self.locate(pane).ok_or(layout::Unmade::NoPane)?;
-        let (ws, tab) = tab_mut(&mut self.workspaces, to).ok_or(layout::Unmade::NoPane)?;
-        let mut root = tab.root.clone();
-        layout::append(&mut root, pane)?;
-        tab.edit(|r| *r = root);
-        let from = tab_mut(&mut self.workspaces, was.1);
-        let removed = from.map(|(_, from)| from.edit(|root| layout::remove(root, pane)));
+    pub(crate) fn relocate(&mut self, pane: PaneId, to: TabId) -> Result<(), NoPane> {
+        let was = self.locate(pane).ok_or(NoPane)?;
+        let (ws, tab) = tab_mut(&mut self.workspaces, to).ok_or(NoPane)?;
+        tab.edit(|root| match root {
+            Some(root) => root.append(pane),
+            None => *root = Some(Tree::Pane(pane)),
+        });
+        if let Some((_, from)) = tab_mut(&mut self.workspaces, was.1) {
+            from.edit(|root| without(root, pane));
+        }
         self.journal
             .push(Place::Pane((ws, to), pane), What::Moved(was));
-        if let Some(removed) = removed {
-            self.rounded(was, removed);
-        }
         Ok(())
-    }
-
-    /// Tab `at`'s weights were rounded, if `removed` says so: said
-    /// (`What::Rounded`).
-    fn rounded(&mut self, (ws, tab): (WsId, TabId), removed: layout::Removed) {
-        if removed == layout::Removed::Rounded {
-            self.journal.push(Place::Tab(ws, tab), What::Rounded);
-        }
     }
 
     /// Changes the layout of `pane`'s tab with `change`, which keeps its

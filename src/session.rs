@@ -10,7 +10,7 @@ use crate::copy::MAX_CELLS;
 use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
-use crate::layout::{self, Axis, Placement, Rect, Tree};
+use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Left, Loose, Output, Pane, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
@@ -367,23 +367,6 @@ fn ended(pane: PaneId, status: Ended) -> Error {
     };
     let told = format!("the program in {pane} {was}{}", process::told(status));
     fail(Code::NotRunning, told)
-}
-
-/// A layout change about `pane` not made (`layout::Unmade`).
-fn unmade_error(unmade: layout::Unmade, pane: PaneId) -> Error {
-    match unmade {
-        layout::Unmade::NoPane => Error::NoPane(pane),
-        layout::Unmade::Weights => fail(
-            Code::Size,
-            format!(
-                "{pane}: the layout would take weights more than {} together to hold its \
-                 shares exactly, which fux never rounds (room is not what is short): resize \
-                 a border first, which weighs the panes by their sizes, or split a pane with \
-                 a larger share",
-                layout::MOST
-            ),
-        ),
-    }
 }
 
 /// What a command line from the CLI begins: its outcome, now, or a wait
@@ -1041,9 +1024,9 @@ impl Session {
         followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
-        let shares = shares.unwrap_or(layout::HALVED);
+        let shares = shares.map_or(Shares::HALVED, |(a, b)| Shares::new(a, b));
         let split = (self.parts.plan_split((target, new), axis, shares))
-            .map_err(|unmade| unmade_error(unmade, target))?;
+            .map_err(|NoPane| Error::NoPane(target))?;
         self.room(split.tab(), Some(split.root()), None)?;
         let seat = |view: &View, now| match followers.contains(&view.id) {
             true => (false, Some(new)),
@@ -2663,11 +2646,11 @@ impl Session {
         let (ws, tab, made) = match to {
             &MoveTo::Beside(direction) => {
                 let destination = self.neighbor(pane, direction, here)?;
-                let mut root = self.root(from).cloned();
-                layout::move_beside(&mut root, pane, destination, direction)
-                    .map_err(|unmade| unmade_error(unmade, pane))?;
-                self.room(from, root.as_ref(), None)?;
-                self.parts.reshape(pane, |old| *old = root);
+                let root = self.root(from).ok_or(Error::NoTab(from))?;
+                let root = layout::move_beside(root, pane, destination, direction)
+                    .ok_or(Error::NoPane(pane))?;
+                self.room(from, Some(&root), None)?;
+                self.parts.reshape(pane, |old| *old = Some(root));
                 return Ok(String::new());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, tab, false),
@@ -2706,10 +2689,13 @@ impl Session {
         }
         if !made {
             let mut root = self.root(tab).cloned();
-            layout::append(&mut root, pane).map_err(|unmade| unmade_error(unmade, pane))?;
+            match &mut root {
+                Some(root) => root.append(pane),
+                None => root = Some(Tree::Pane(pane)),
+            }
             self.room(tab, root.as_ref(), here.client())?;
         }
-        (self.parts.relocate(pane, tab)).map_err(|unmade| unmade_error(unmade, pane))?;
+        (self.parts.relocate(pane, tab)).map_err(|NoPane| Error::NoPane(pane))?;
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
@@ -5393,9 +5379,8 @@ mod tests {
         Ok(())
     }
 
-    /// Panes are made again at the places they had: 80, 10 and 8 of 100
-    /// columns, which giving each its width in turn makes 72, 10 and 16,
-    /// the second's growing into the first.
+    /// Panes are made again at the places they had: 81, 9 and 8 of 100
+    /// columns, each split's nearest to its shares.
     #[test]
     fn a_dump_makes_its_panes_again_where_they_were() -> Result<(), String> {
         let mut s = started(Config::default())?;
@@ -5404,7 +5389,7 @@ mod tests {
         run(&mut s, &format!("{tab} {splits}"))?;
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         let widths: Vec<u16> = rects(&s, tab).iter().map(Rect::w).collect();
-        assert_eq!(widths, [80, 10, 8]);
+        assert_eq!(widths, [81, 9, 8]);
         assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
@@ -5509,9 +5494,8 @@ mod tests {
     }
 
     /// Shares divide the room of the pane split, whatever is beside it,
-    /// exactly: the others keep theirs, and a dump makes the split again.
-    /// Weights that would be more than a u32 together are refused, the
-    /// layout kept.
+    /// exactly: the others keep theirs, and a dump makes the split again,
+    /// whatever the shares.
     #[test]
     fn shares_divide_the_split_panes_room() -> Result<(), String> {
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
@@ -5526,18 +5510,13 @@ mod tests {
         }
         let mut s = started(Config::default())?;
         run(&mut s, &format!("{made} %2 4294967294 1 shares split drop"))?;
-        let before = s.root(tab).cloned();
-        for split in ["%3 split", "%3 vertical 4294967295 1 shares split"] {
-            let refused = run(&mut s, split).err().unwrap_or_default();
-            assert!(
-                refused.starts_with("size: ") && refused.contains("together"),
-                "{refused}"
-            );
-            assert_eq!(s.root(tab).cloned(), before);
+        for split in [
+            "%3 split drop",
+            "%3 vertical 4294967295 1 shares split drop",
+        ] {
+            run(&mut s, split)?;
+            assert_eq!(replayed(&s, tab)?, rects(&s, tab), "{split}");
         }
-        // An even weight halves as it is.
-        run(&mut s, "%2 split drop")?;
-        assert_eq!(replayed(&s, tab)?, rects(&s, tab));
         Ok(())
     }
 

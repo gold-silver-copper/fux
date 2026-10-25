@@ -1,5 +1,5 @@
-//! Milestone 3: splits, focus (next, previous, last, directional), resize by
-//! weight, zoom, and the bar.
+//! Milestone 3: splits, focus (next, previous, last, directional), resizes,
+//! zoom, and the bar.
 mod support;
 use support::*;
 

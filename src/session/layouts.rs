@@ -4,7 +4,7 @@
 use super::Session;
 use crate::command::AnyRef;
 use crate::id::{PaneId, WsId};
-use crate::layout::{Axis, Split, Tree};
+use crate::layout::{Axis, Tree};
 use crate::pane::{self, Launch, Runs};
 use crate::workspace::{Fit, Tab, Workspace};
 
@@ -37,7 +37,7 @@ impl Session {
     /// with `whole`, as part of its workspace, which it `opens` if it is the
     /// first written.
     fn dump_tab(&self, ws: &Workspace, tab: &Tab, whole: bool, opens: bool, out: &mut String) {
-        let Some((root, first)) = tab.root().and_then(|r| Some((r, r.first_pane()?))) else {
+        let Some((root, first)) = tab.root().map(|r| (r, r.first_pane())) else {
             return;
         };
         let program = self.program(first);
@@ -72,9 +72,7 @@ impl Session {
         if matches!(tab.fit(), Fit::Clients(_)) {
             push(out, &[&named, "tab", "resize-auto"]);
         }
-        if let Tree::Split(axis, split) = root {
-            self.dump_split(*axis, split, out);
-        }
+        self.dump_tree(root, out);
         // Panes renamed keep their names.
         for pane in root.panes() {
             let Some(p) = self.parts.panes().get(&pane) else {
@@ -90,34 +88,28 @@ impl Session {
         }
     }
 
-    /// The `split` lines that make `split`'s children beside its first,
-    /// along `axis`, and then each child's own: each line divides what the
-    /// child before had between it and the rest (`Tree::split`), so each
-    /// has its weight, and the layout made again is the one there is, at
-    /// every size. A split's weights are within `layout::MOST` together,
-    /// as two shares are.
-    fn dump_split(&self, axis: Axis, split: &Split, out: &mut String) {
-        let firsts: Vec<_> = (split.children())
-            .filter_map(|(share, child)| Some((child.first_pane()?, u64::from(share.get()))))
-            .collect();
-        let way = match axis {
+    /// The `split` lines that make `tree` from its first pane: each
+    /// divides what its first child's first pane has with its second's,
+    /// as its shares say, and then each child is made from those. So the
+    /// layout made again is the one there is, share for share.
+    fn dump_tree(&self, tree: &Tree, out: &mut String) {
+        let Tree::Split(split) = tree else {
+            return;
+        };
+        let (first, second) = split.children();
+        let way = match split.axis() {
             Axis::Horizontal => "horizontal",
             Axis::Vertical => "vertical",
         };
-        let mut rest = (firsts.iter()).fold(0u64, |sum, (_, share)| sum.saturating_add(*share));
-        for ((before, theirs), (pane, _)) in firsts.iter().zip(firsts.iter().skip(1)) {
-            rest = rest.saturating_sub(*theirs);
-            let mut line = vec![pane_name(*before), way.into()];
-            line.extend([theirs.to_string(), rest.to_string(), "shares".to_owned()]);
-            self.pane_words(*pane, &mut line, out);
-            line.extend(["split".to_owned(), "let".to_owned(), pane_name(*pane)]);
-            push(out, &line);
-        }
-        for (_, child) in split.children() {
-            if let Tree::Split((), inner) = child {
-                self.dump_split(axis.cross(), inner, out);
-            }
-        }
+        let (a, b) = split.shares().get();
+        let pane = second.first_pane();
+        let mut line = vec![pane_name(first.first_pane()), way.into()];
+        line.extend([a.to_string(), b.to_string(), "shares".to_owned()]);
+        self.pane_words(pane, &mut line, out);
+        line.extend(["split".to_owned(), "let".to_owned(), pane_name(pane)]);
+        push(out, &line);
+        self.dump_tree(first, out);
+        self.dump_tree(second, out);
     }
 
     /// The program `run` started in pane `id`, if it runs one: its words,

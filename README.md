@@ -386,12 +386,11 @@ layout comes back as it was, at every size. A split
 or a move that would hide a pane, on its tab's size or on the screen of a
 client showing it (but one that sizes nothing: that only watches, or has
 no room below its bar), is refused: whatever there
-is can be made again. Shares are held exactly, never rounded, in weights
-at most 4,294,967,295 together; a split or a move that would take more is
-refused (`size`), room or not: the 32nd split halving the newest pane of
-one row does. Resizing a border weighs a split's panes by their sizes, and
-makes room for more. A close is never refused: shares it merges past that
-bound are rounded to the nearest that fit, which the `rounded` event says.
+is can be made again. Each split holds its two shares exactly, never
+rounded. A close gives the closed pane's room to its sibling in their
+split, every other share as it was. Moving a border changes only the panes
+that touch it: each split it moves takes the cells its two sides then have
+as its shares. A terminal's resize changes no share.
 
 Nothing is saved on its own. To keep a session past its server (a crash, a
 `kill -9`, a reboot), dump it when you choose, and replay the dump on a

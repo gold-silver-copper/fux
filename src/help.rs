@@ -351,10 +351,6 @@ mod tests {
             format!("at most {} MiB", whole(crate::protocol::MAX_FRAME, 20)),
             format!("past {} MiB", whole(crate::pane::FRAME_LIMIT, 20)),
             format!("at most once every {bell_gap} ms"),
-            format!(
-                "at most {} together",
-                grouped(usize::try_from(crate::layout::MOST).unwrap_or_default())
-            ),
         ] {
             assert!(readme.contains(&said), "README: {said}");
         }
