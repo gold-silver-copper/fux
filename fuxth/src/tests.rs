@@ -1535,6 +1535,9 @@ fn a_try_is_checked_before_it_runs() {
         .and_then(|tokens| Compiler::<Ticket>::new(Vocabulary::default()).add(&tokens));
     assert_eq!(plain.err().map(|e| e.code), Some(Code::BadCodes));
     let mut words = Vocabulary::default();
-    assert!(words.raises(Code::Host("fail")).is_err(), "the language's own");
+    assert!(
+        words.raises(Code::Host("fail")).is_err(),
+        "the language's own"
+    );
     assert!(words.raises(Code::Host("two words")).is_err());
 }

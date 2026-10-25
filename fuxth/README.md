@@ -66,7 +66,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. The message says where and why, `PLACE: WORD: MESSAGE`, as a failure that ends the program does (`Error::located`, after the host's `Machine::telling`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`, unless the application's words raise it) is refused before the program runs. Checked as `if … else … then`: the two ways join after `end` |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. The message says where and why, `PLACE: WORD: MESSAGE`, as a failure that ends the program does (`Error::located`, after the host's `Machine::telling`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
 
 | Word | Stack | |
 |---|---|---|
@@ -140,8 +140,8 @@ host raises there (`machine.raise(failure)`), caught by a `try` as one at
 once would be; `machine.at()` is the token of the word it stopped at. The
 codes of its words' failures are the vocabulary's (`raises`), for a `try` to
 name: its own (`Code::Host`), and any of the language's found only compiling
-or at a program's end that its words raise as they run (`Code::Unused`). A `Failure` may name a word of its own, one in a
-program the word was given. `print(line)` prints. A word
+or at a program's end that its words raise as they run (`Code::Unused`).
+A `Failure` may name a word of its own, one in a program the word was given. `print(line)` prints. A word
 gives as many values as its vocabulary says, of the kinds it says: the checker counts on it, and the machine fails a run
 with `contract` if a host gives otherwise, when it returns or resumes. A word that is one step (`dup`
 is `0 pick`) is copied in where it is called, so a mistake in it is placed

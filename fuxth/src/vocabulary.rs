@@ -140,7 +140,9 @@ impl Vocabulary {
     /// A code the application's words may fail with, which a `try` may
     /// name: one of its own (`Code::Host`), a word that is none of the
     /// language's; or one of the language's that plain fuxth finds only
-    /// compiling or at a program's end, which its words raise as they run.
+    /// compiling or at a program's end (`Code::raised` is false), which its
+    /// words raise as they run. One fuxth's words raise already changes
+    /// nothing.
     pub fn raises(&mut self, code: Code) -> Result<(), Error> {
         let name = code.name();
         if let Code::Host(_) = code {

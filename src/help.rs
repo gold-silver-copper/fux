@@ -387,6 +387,14 @@ mod tests {
                 grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),
                 grouped(fux_vt::sixel::MAX_PIXELS)
             ),
+            // The language's codes fux's words raise, which a try catches.
+            {
+                let raised = crate::code::RAISED.map(|c| format!("`{}`", c.name()));
+                match raised.split_last() {
+                    Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+                    None => String::new(),
+                }
+            },
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
         }

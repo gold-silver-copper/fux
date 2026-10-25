@@ -6,9 +6,9 @@ use std::rc::Rc;
 
 /// Expands `/// doc, Variant "name" [found], ...` to the enum `Code` of
 /// those variants and `Host`; `name`, each variant's name (a host's code is
-/// its own); and `raised`, whether a running word can raise it: not for a
-/// row marked `[found]`, a mistake found before or after the words run, or
-/// in the application.
+/// its own); and `raised`, whether a running word of fuxth's can raise it:
+/// not for a row marked `[found]`, a mistake found before or after the
+/// words run, or in the application.
 macro_rules! codes {
     (@raised) => {
         true
@@ -39,7 +39,8 @@ macro_rules! codes {
             }
 
             /// Whether a word can raise it as the program runs, so that a
-            /// `try` may catch it.
+            /// `try` may catch it: in plain fuxth; a host may declare that
+            /// its words raise more (`Vocabulary::raises`).
             pub fn raised(self) -> bool {
                 match self {
                     $(Code::$variant => codes!(@raised $($found)?),)*

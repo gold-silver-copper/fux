@@ -420,8 +420,12 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
-    for code in Code::all().filter(|c| c.raised()) {
-        vocabulary.raises(code.into())?;
+    let own = Code::ALL.iter().filter(|c| c.raised());
+    for code in own
+        .map(|c| fuxth::Code::from(*c))
+        .chain(crate::code::RAISED)
+    {
+        vocabulary.raises(code)?;
     }
     Ok(vocabulary)
 }
