@@ -4801,6 +4801,21 @@ mod tests {
         Ok(())
     }
 
+    /// A tab as big as a client's screen may be, which a tab that fits
+    /// clients takes, is made again from its dump.
+    #[test]
+    fn a_dump_makes_a_tab_as_big_as_a_screen_again() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 600 40 size str +1 workspace in new-tab drop")?;
+        let mut again = started(Config::default())?;
+        run(&mut again, &s.dump_layout(None, false))?;
+        let tabs = (again.parts.workspaces().iter()).flat_map(|w| w.tabs());
+        let mut sizes = tabs.map(|t| t.fit().size());
+        let wide = sizes.any(|s| (s.cols(), s.rows()) == (600, 40));
+        assert!(wide, "{}", s.dump_layout(None, false));
+        Ok(())
+    }
+
     /// A kill from the command line names all it closed: a tab's
     /// workspace, when it was the last tab, as a pane's.
     #[test]

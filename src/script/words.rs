@@ -383,13 +383,10 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
     })
 }
 
-/// The most columns, and rows, a tab is laid out on.
-const TAB_MOST: u16 = 500;
-
-/// A size: columns and rows each 1 to `most` (a tab's laid out on,
-/// `TAB_MOST`; a client's, `view::MOST`).
-fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>, most: u16) -> Result<fux_vt::Size, Failure> {
-    let cells = 1..=i64::from(most);
+/// A size: columns and rows each 1 to `view::MOST`, as a client's screen,
+/// and so a tab that fits clients, may be.
+fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<fux_vt::Size, Failure> {
+    let cells = 1..=i64::from(crate::view::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
     fux_vt::Size::new(rows, cols).map_err(|e| fail(Lang::Range, e.to_string()))
 }
@@ -530,7 +527,7 @@ fn modify(
         "log-to" => built.log = Some(string(&next()?)?),
         "history" => built.history = Some(within(&next()?, COUNT)?),
         "all-history" => built.history = Some(usize::MAX),
-        "size" => built.size = Some(laid_out(&next()?, &next()?, TAB_MOST)?),
+        "size" => built.size = Some(laid_out(&next()?, &next()?)?),
         "horizontal" => built.axis = Some(Axis::Horizontal),
         "vertical" => built.axis = Some(Axis::Vertical),
         "kill-first" => built.kill = true,
@@ -1195,14 +1192,14 @@ impl fuxth::Host for Host<'_> {
             "resize" | "resize-auto" => {
                 let target = target(&next()?)?;
                 let size = match name {
-                    "resize" => Some(laid_out(&next()?, &next()?, TAB_MOST)?),
+                    "resize" => Some(laid_out(&next()?, &next()?)?),
                     _ => None,
                 };
                 tell(Command::Resize(Resized::Tabs(target, size)))
             }
             "resize-client" => {
                 let c = client(&next()?)?;
-                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
+                let size = laid_out(&next()?, &next()?)?;
                 tell(Command::Resize(Resized::Client(c, size)))
             }
             "resize-x" | "resize-y" => {
@@ -1322,7 +1319,7 @@ impl fuxth::Host for Host<'_> {
                 })
             }
             "headless" => {
-                let size = laid_out(&next()?, &next()?, crate::view::MOST)?;
+                let size = laid_out(&next()?, &next()?)?;
                 local(Local::Attach {
                     workspace: None,
                     read_only: false,
