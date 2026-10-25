@@ -323,7 +323,7 @@ stopped it.
   program waiting for `respawn`. `kill-server` forgets it. It is another
   server run: versions from before it are refused.
 - In a sandbox that refuses Unix sockets, client and server meet through a
-  FIFO beside the socket (`NAME.door`).
+  FIFO beside the socket (`NAME.sock.door`).
 - A tab no client shows is laid out on its `size`; `TAB 40 12 resize`
   changes it, `resize-auto` gives it back to a client's screen, `PANE 95
   percent resize-x` sizes a pane in its tab. A size that cannot be had is

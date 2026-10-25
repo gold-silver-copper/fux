@@ -1,7 +1,7 @@
 //! A door: the way into a server for a client in a sandbox that forbids
 //! Unix sockets (Codex's denies every `connect` and `bind`; FIFOs and socket
-//! pairs it allows). The door is a FIFO beside the socket, `NAME.door`, in
-//! the same private directory (the user's own, mode 0700).
+//! pairs it allows). The door is a FIFO beside the socket, `NAME.sock.door`,
+//! in the same private directory (the user's own, mode 0700).
 //!
 //! A client makes two FIFOs of its own there, `c-HEX.up` and `c-HEX.down`
 //! (mode 0600), and knocks: it writes `c-HEX` and a newline to the door. The
