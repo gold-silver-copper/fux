@@ -684,6 +684,15 @@ fn acted(versions: impl IntoIterator<Item = command::Version>) -> Reply {
     reply
 }
 
+/// What a client showing pane `id` is told of input it dropped.
+fn lost(id: PaneId) -> String {
+    format!(
+        "input to {id} was dropped: its input queue was full, and takes nothing until its \
+         program reads, or one read of its output asked for more than {} bytes of replies",
+        crate::pane::REPLIES_MAX
+    )
+}
+
 /// A command that failed, told with its code (its status: 1, 4 or 124).
 fn failure(error: Error, origin: &Origin) -> Reply {
     // A command that needed its caller's pane, tab or workspace, from a
@@ -1597,6 +1606,7 @@ impl Session {
         self.outbox.extend(ended);
         self.size_panes();
         self.tell_schemes();
+        self.tell_lost();
         self.hold_copies();
         self.edited = true;
     }
@@ -1888,14 +1898,15 @@ impl Session {
     /// Reads into pane `id` with `read`, as every read of a pane's output
     /// does: its tab's host colours and palette given it first; after, its
     /// bell rung, its copies made in order, and the views showing it
-    /// repainted and told of each copy refused and of a reply dropped.
+    /// repainted and told of each copy refused and of input dropped.
     fn read_with(&mut self, id: PaneId, read: impl FnOnce(&mut Pane)) {
         let tab = self.locate(id).map(|(_, tab)| tab);
+        let viewers = self.viewers(tab);
         let Some(mut pane) = self.hosted(id) else {
             return;
         };
         read(&mut pane);
-        let dropped = pane.input.lost_reply();
+        let dropped = !viewers.is_empty() && pane.input.tell_lost();
         let bell = std::mem::take(&mut pane.bell);
         let copied = std::mem::take(&mut pane.copied);
         drop(pane);
@@ -1903,7 +1914,6 @@ impl Session {
         if bell {
             self.ring(id, Instant::now());
         }
-        let viewers = self.viewers(tab);
         // A program's copies, as copies in copy mode, to the clients showing
         // it; none with `set clipboard off`. Those that are no copy are told,
         // counted by why. A copy fits the clipboard: fux-vt keeps less of a
@@ -1925,11 +1935,7 @@ impl Session {
             })
             .collect();
         if dropped {
-            told.push(format!(
-                "a terminal reply to {id} was dropped: its input queue was full, \
-                 or one read of its output asked for more than {} bytes of replies",
-                crate::pane::REPLIES_MAX
-            ));
+            told.push(lost(id));
         }
         let told = told.join("; ");
         for view in (self.views.values_mut()).filter(|v| viewers.contains(&v.id)) {
@@ -1938,6 +1944,33 @@ impl Session {
                 view.notify(told.clone(), true);
             }
         }
+    }
+
+    /// Tells the clients showing each pane that dropped input, and has not
+    /// said so since its run of drops began (`InputQueue`); whether it told
+    /// any. A pane no client shows tells it once one does.
+    pub(crate) fn tell_lost(&mut self) -> bool {
+        let losing: Vec<PaneId> = (self.parts.panes().iter())
+            .filter(|(_, p)| p.input.loses())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut told = false;
+        for id in losing {
+            let viewers = self.viewers(self.locate(id).map(|(_, tab)| tab));
+            if viewers.is_empty()
+                || !self
+                    .parts
+                    .pane_mut(id)
+                    .is_some_and(|mut p| p.input.tell_lost())
+            {
+                continue;
+            }
+            for client in viewers {
+                self.notify_to(client, lost(id), true);
+            }
+            told = true;
+        }
+        told
     }
 
     /// `text`, copied, goes to the paste buffers and, unless `set clipboard
@@ -2557,9 +2590,6 @@ impl Session {
                 "the program in {pane} asked for X10 mouse reports: presses alone, no releases or wheel"
             );
             return Err(fail(Code::Mouse, message));
-        }
-        if let Some(why) = events.iter().find_map(|e| p.no_mouse_report(*e)) {
-            return Err(fail(Code::Mouse, why));
         }
         let mut report = Vec::new();
         for event in events {

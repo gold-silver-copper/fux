@@ -576,7 +576,7 @@ fux-vt DECSET 1005	UTF-8 mouse	Enable UTF-8 mouse mode	ctlseqs, CSI ? Pm h	imple
 fux-vt DECSET 1006	SGR mouse	Enable SGR mouse mode	ctlseqs, CSI ? Pm h	implemented	\e[?1006h => effect	keys::mouse::tests::sgr_names_the_button_released_and_ends_a_release_with_m	
 fux-vt DECSET 1007	Alternate scroll	Enable alternate scroll mode	ctlseqs, CSI ? Pm h	implemented	\e[?1007h => effect	mouse_modes::each_mode_is_kept_and_reported, mouse_modes::alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen	
 fux-vt DECSET 1015	urxvt mouse	Enable urxvt mouse mode	ctlseqs, CSI ? Pm h	implemented	\e[?1015h => effect	mouse_modes::each_mode_is_kept_and_reported, mouse_modes::urxvt_sends_the_code_plus_32_and_decimal_positions	
-fux-vt DECSET 1016	SGR-Pixels mouse	Enable SGR-Pixels mouse mode	ctlseqs, CSI ? Pm h	implemented	\e[?1016h => effect	mouse_modes::each_mode_is_kept_and_reported, mouse_modes::sgr_pixels_reports_the_pointers_pixel	the middle of the cell, in the host's cell size
+fux-vt DECSET 1016	SGR-Pixels mouse	Enable SGR-Pixels mouse mode	ctlseqs, CSI ? Pm h	implemented	\e[?1016$p => reply	mouse_modes::sgr_pixels_is_never_set_and_the_cell_encoding_stays	reported permanently reset: a mouse event names a cell, not the pixel within it
 fux-vt DECSET 1045	Extended reverse-wraparound	Extended reverse-wraparound mode	ctlseqs, CSI ? Pm h	implemented	\e[?1045h => effect	modes::reverse_wraparound_moves_as_xterm_moves	
 fux-vt DECSET 1047	Alternate screen, cleared	Use the alternate screen buffer, clearing it on leaving	ctlseqs, CSI ? Pm h	implemented	\e[?1047h => effect	conformance::modes_1047_and_1048	
 fux-vt DECSET 1048	Save cursor	Save cursor as in DECSC	ctlseqs, CSI ? Pm h	implemented	\e[?1048h => effect	conformance::modes_1047_and_1048	

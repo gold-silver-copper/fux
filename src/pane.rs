@@ -60,9 +60,10 @@ pub struct InputQueue {
     lost: Lost,
 }
 
-/// Whether a terminal reply was dropped, and whether that was told: told
-/// once for each run of reads that drop one, which ends at a read that
-/// drops none while the queue takes input.
+/// Whether input was dropped, a piece the full queue refused or a reply
+/// past a read's bound, and whether that was told: told once for each run
+/// of drops, which ends as the program reads after the queue refused, or
+/// at a read that drops no reply while the queue takes input.
 #[derive(Clone, Copy, Default, PartialEq)]
 enum Lost {
     #[default]
@@ -90,8 +91,7 @@ impl InputQueue {
             }
             fits
         });
-        self.refusing |= !fits;
-        fits.then_some(()).ok_or(Error::InputFull)
+        self.refuse(!fits)
     }
     /// How many bytes it holds, not yet written to the program.
     pub fn len(&self) -> usize {
@@ -101,9 +101,22 @@ impl InputQueue {
     /// is everything after them until its terminal takes some, as `push`
     /// refuses.
     pub fn fits(&mut self, len: usize) -> Result<(), Error> {
-        let fits = len <= self.room();
-        self.refusing |= !fits;
-        fits.then_some(()).ok_or(Error::InputFull)
+        self.refuse(len > self.room())
+    }
+    /// Refuses input from now on if `refused`, and takes it as a drop.
+    fn refuse(&mut self, refused: bool) -> Result<(), Error> {
+        if !refused {
+            return Ok(());
+        }
+        self.refusing = true;
+        self.dropped();
+        Err(Error::InputFull)
+    }
+    /// A piece was dropped: told, if none was since the run began.
+    fn dropped(&mut self) {
+        if self.lost == Lost::None {
+            self.lost = Lost::Untold;
+        }
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
@@ -112,10 +125,13 @@ impl InputQueue {
             false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
-    /// Whether a reply was lost and is yet to be told, which it then is
-    /// (`Lost`).
-    pub fn lost_reply(&mut self) -> bool {
-        let untold = self.lost == Lost::Untold;
+    /// Whether input was dropped and is yet to be told (`Lost`).
+    pub fn loses(&self) -> bool {
+        self.lost == Lost::Untold
+    }
+    /// Whether input was dropped and is yet to be told, which it then is.
+    pub fn tell_lost(&mut self) -> bool {
+        let untold = self.loses();
         if untold {
             self.lost = Lost::Told;
         }
@@ -134,7 +150,9 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: its terminal took them.
     pub fn advance(&mut self, n: usize) {
-        self.refusing &= n == 0;
+        if n > 0 && std::mem::take(&mut self.refusing) && self.lost == Lost::Told {
+            self.lost = Lost::None;
+        }
         self.bytes.take(n);
     }
     /// Everything queued, for tests and for a pane with no process.
@@ -788,14 +806,14 @@ impl<S> Pane<S> {
                 break;
             }
         }
-        // Queued as `push` queues; a full queue drops them, which is told,
-        // as replies past the read's bound are (`Lost`).
+        // Queued as `push` queues; a full queue drops them, which is told
+        // (`Lost`), as replies past the read's bound are.
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
-        self.input.lost = match (self.input.lost, full || sink.dropped) {
-            (Lost::None, true) => Lost::Untold,
-            (Lost::Told, false) if !self.input.refusing => Lost::None,
-            (lost, _) => lost,
-        };
+        if sink.dropped {
+            self.input.dropped();
+        } else if !full && !self.input.refusing && self.input.lost == Lost::Told {
+            self.input.lost = Lost::None;
+        }
         begun
     }
 
@@ -828,7 +846,8 @@ impl<S> Pane<S> {
             }
             // In-band resize: the report follows the PTY's new size, never
             // precedes it (references/modern/mode_2048_in_band_resize.md).
-            // A program that does not read its input loses it, as a reply.
+            // A program that does not read its input loses it, told
+            // (`Lost`).
             if let Some(report) = self.parser.resize_report() {
                 let _ = self.input.push(report);
             }
@@ -841,6 +860,12 @@ impl<S> Pane<S> {
 
     pub fn screen(&self) -> &Screen {
         self.parser.screen()
+    }
+
+    /// The sixel pictures its program drew while no terminal showing it
+    /// drew sixel, which were not kept.
+    pub fn pictures_refused(&self) -> u64 {
+        self.parser.pictures_refused()
     }
 
     /// Queues for its program what `write` makes for its screen, as
@@ -1034,19 +1059,6 @@ impl<S> Pane<S> {
 
     pub fn title(&self) -> &Said<TITLE_MAX> {
         self.title.said()
-    }
-
-    /// Why `event` is not reported to its program, if it would be but for
-    /// this: it asked for reports in pixels (mode 1016), and no terminal
-    /// showing it has said its cell size.
-    pub fn no_mouse_report(&self, event: fux_vt::keys::mouse::MouseEvent) -> Option<String> {
-        self.screen().mouse_needs_cell(event).then(|| {
-            format!(
-                "the program in {} asked for mouse reports in pixels (mode 1016), and no terminal \
-                 showing it has said its cell size",
-                self.id
-            )
-        })
     }
 
     pub fn label(&self) -> &str {
@@ -1431,6 +1443,23 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    /// A piece the full queue refuses is told dropped, once for the run of
+    /// refusals, which ends as the program reads; and again after.
+    #[test]
+    fn a_refused_piece_is_told_once_a_run() {
+        let mut input = InputQueue::default();
+        assert!(input.push(vec![0; INPUT_BYTES]).is_ok());
+        assert!(!input.tell_lost());
+        assert!(input.push(b"\x1b[I").is_err());
+        assert!(input.push(b"x").is_err());
+        assert!(input.tell_lost());
+        assert!(input.fits(1).is_err());
+        assert!(!input.tell_lost(), "the same run");
+        input.advance(1);
+        assert!(input.push(vec![0; 2]).is_err());
+        assert!(input.tell_lost(), "a run after the program read");
+    }
+
     /// Replies past what one read queues are dropped, and that is told:
     /// once for reads that drop them one after another, and again for a
     /// later drop after a read that dropped none.
@@ -1438,20 +1467,20 @@ pub(crate) mod tests {
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
         let mut pane = pane(3, 20)?;
         pane.output(b"\x1b[6n");
-        assert!(!pane.input.lost_reply());
+        assert!(!pane.input.tell_lost());
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
             .copied()
             .collect();
         pane.output(&queries);
-        assert!(pane.input.lost_reply());
+        assert!(pane.input.tell_lost());
         pane.input.drain_all();
         pane.output(&queries);
-        assert!(!pane.input.lost_reply(), "the same run of drops");
+        assert!(!pane.input.tell_lost(), "the same run of drops");
         pane.input.drain_all();
         pane.output(b"\x1b[6n");
         pane.output(&queries);
-        assert!(pane.input.lost_reply(), "a drop after none");
+        assert!(pane.input.tell_lost(), "a drop after none");
         Ok(())
     }
 

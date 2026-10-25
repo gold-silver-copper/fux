@@ -285,6 +285,7 @@ pub fn state<S>(
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
+        ("pictures_refused", Json::int(pane.pictures_refused())),
         (
             "cell",
             screen.cell_size().map_or(Json::Null, |cell| {

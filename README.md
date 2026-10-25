@@ -29,9 +29,10 @@ The server runs until `fux kill-server`, SIGTERM, SIGINT, SIGHUP, or until
 its last pane closes. It then hangs up every pane, tells each attached
 terminal why, and removes its socket.
 
-Every pane runs your shell (`str shell str /bin/zsh set`, else `$SHELL`,
-else `/bin/sh`). A pane closes when its shell exits, showing its viewers the
-exit status; a tab closes with its last pane, a workspace with its last tab.
+Every pane runs your shell (`str shell str /bin/zsh set`, else the
+server's `$SHELL`, else your login shell, else `/bin/sh`). A pane closes
+when its shell exits, showing its viewers the exit status; a tab closes
+with its last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
@@ -286,8 +287,8 @@ prints them all.
 The rest is the server's own environment, as it was when the server
 started. Two things override it and the table alike: the names in
 `update-environment`, which a pane takes from whoever starts it, and, last,
-what a program's `env` sets (`opts str NAME str VALUE env str PROGRAM
-program run`). A name in `update-environment` that the starter lacks is
+what a program's `env` sets (`opts str NAME str VALUE env 80 24 size str
+PROGRAM program run`). A name in `update-environment` that the starter lacks is
 unset, but `FUX`, `FUX_PANE`, `FUX_SOCKET` and `FUX_SERVER` then keep the
 table's value. A starter with no environment at all, as `env -i` leaves
 one, changes none.
@@ -410,13 +411,16 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   frame is shown anyway after one second or past 2 MiB.
 - **Colours.** Programs asking the foreground and background (OSC 10, 11)
   or palette entries 0 to 15 (OSC 4) are told your terminal's, and get its
-  dark/light changes (mode 2031) if it reports them. With several terminals
-  attached, a pane is answered from the one that typed into its tab last.
+  dark/light changes (mode 2031) if it reports them: one whose tab was not
+  shown, or not by that terminal, is told the scheme it is shown with once
+  it is. With several terminals
+  attached, a pane is answered from the one showing its tab that typed
+  into it last, else the first showing it.
   Colours a program sets (OSC 4, 10, 11) apply to its own pane only, and
   win over your terminal's; your terminal's palette is never changed. A
   colour no one knows is not answered: one your terminal didn't say,
   palette entries past 15 the program didn't set, and every colour in a
-  tab no attached terminal answers for.
+  tab no attached terminal shows.
 - **Bells.** A program's bell rings each terminal showing its workspace, at
   most once every 250 ms; a tab you are not looking at is marked `!` in the
   bar until you show it. `set bell off` silences both.
@@ -434,9 +438,7 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
   fux never makes a cell size up: without one (no terminal showing the
   pane said it, a 0 saying none, or it said one smaller than a sixel band,
   2 by 6 pixels, which fux tells you), a sixel picture is not placed,
-  `CSI 14 t` and `CSI 16 t` go unanswered, mode 1016 (mouse reports in
-  pixels) is reported permanently reset, and a program that set it anyway
-  is sent none (`send-mouse` fails saying why). Drawn by foot, WezTerm,
+  and `CSI 14 t` and `CSI 16 t` go unanswered. Drawn by foot, WezTerm,
   xterm (`-ti vt340`), Konsole, mlterm and others; not by kitty, whose
   graphics protocol fux does not speak, nor Ghostty, Alacritty or Apple's
   Terminal.
@@ -449,6 +451,10 @@ attaches meanwhile is let in once it is back. `kill-server` and the last pane cl
 
 - **fux's own mouse actions**: the mouse reaches only programs that ask for
   it (see [Terminal features](#terminal-features)).
+- **Mouse reports in pixels** (mode 1016): your terminal tells fux the
+  cell the mouse is in, not the pixel within it, and fux makes none up.
+  The mode is reported permanently reset and setting it changes nothing,
+  so a program reports in cells, as with a terminal without it.
 - **Hooks** (tmux's `set-hook`): read `fux events` and run fux
   instead.
 - **Programs that outlive their server**: a crash ends them; the next server

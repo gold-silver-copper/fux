@@ -99,8 +99,8 @@ impl CursorShape {
     }
 }
 
-/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 / 1015 / 1016
-/// h`), the latest set winning, as xterm 411's `extend_coords`.
+/// How mouse reports are to be encoded (`CSI ? 1005 / 1006 / 1015 h`),
+/// the latest set winning, as xterm 411's `extend_coords`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MouseProtocolEncoding {
     /// The legacy encoding: coordinates as single bytes.
@@ -113,9 +113,6 @@ pub enum MouseProtocolEncoding {
     /// Mode 1015, urxvt: `CSI b ; x ; y M`, `b` the code plus 32 and a
     /// release unnamed, as the default encoding has them.
     Urxvt,
-    /// Mode 1016, SGR with pixels: SGR's form, the pointer's position in
-    /// pixels from one.
-    SgrPixels,
 }
 
 /// The cell printed last, the state of its grapheme cluster, and what a
@@ -3756,11 +3753,6 @@ impl Screen {
                     None if !private && RESET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlyReset,
                     None if !private && SET_FOR_GOOD.contains(&n) => ModeStatus::PermanentlySet,
                     None => ModeStatus::NotRecognized,
-                    // No pixel is known without the host's cell: no report
-                    // in pixels can be made, set or not (`encode_mouse`).
-                    Some(Mode::MouseSgrPixels) if self.cell_size().is_none() => {
-                        ModeStatus::PermanentlyReset
-                    }
                     Some(mode) => mode.fixed().unwrap_or(match self.mode(mode) {
                         true => ModeStatus::Set,
                         false => ModeStatus::Reset,

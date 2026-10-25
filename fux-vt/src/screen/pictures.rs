@@ -29,8 +29,8 @@ pub const PICTURE_BYTES: usize = 96 << 20;
 /// What the host's terminal draws, for the pictures a program asks about
 /// and draws: the size of a cell in pixels, if known, and whether it shows
 /// sixel graphics. With no cell size known, a picture has no cells to be
-/// laid out in and a pointer no pixel: no picture is placed, no pixel
-/// mouse report is sent, and `CSI 14 t` and `CSI 16 t` are not answered.
+/// laid out in: no picture is placed, and `CSI 14 t` and `CSI 16 t` are
+/// not answered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Graphics {
     /// A cell's size in pixels.
@@ -40,7 +40,7 @@ pub struct Graphics {
 }
 
 /// The size of a cell in pixels, as the host's terminal says it: at least
-/// 2 by 6, a sixel's band, so that placing a picture costs a bounded
+/// a sixel's band (`LEAST`), so that placing a picture costs a bounded
 /// number of cells (`THREATS.md` B05). A smaller one is no size a picture
 /// can be laid out in, and is refused, not replaced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,8 @@ pub struct CellSize {
 }
 
 impl CellSize {
+    /// The smallest cell, width and height in pixels: a sixel band, 2 by 6.
+    pub const LEAST: (u16, u16) = (2, 6);
     /// A cell `width` by `height` pixels, unless smaller than a sixel band.
     pub fn new(width: u16, height: u16) -> Option<Self> {
         holds_a_band(width, height).then_some(Self { width, height })
@@ -64,11 +66,11 @@ impl CellSize {
     }
 }
 
-/// Whether a cell `width` by `height` pixels holds a sixel band, 2 by 6:
-/// a function of its own, which the mutation guards name (cargo-mutants
-/// leaves `new` unmutated).
+/// Whether a cell `width` by `height` pixels holds a sixel band
+/// (`CellSize::LEAST`): a function of its own, which the mutation guards
+/// name (cargo-mutants leaves `new` unmutated).
 fn holds_a_band(width: u16, height: u16) -> bool {
-    width >= 2 && height >= 6
+    width >= CellSize::LEAST.0 && height >= CellSize::LEAST.1
 }
 
 /// A picture placed on a grid.

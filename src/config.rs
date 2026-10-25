@@ -13,9 +13,19 @@ use std::time::Duration;
 /// help set` prints. The row `/// A bell rings.  bell "bell": bool =
 /// true;` gives the field `pub bell: bool`, `true` in `Default`, `"bell"`
 /// in `NAMES`, in `set` the arm `"bell" => self.bell = bool::read(value)`,
-/// and in `table` the row `bell`, `on or off`, `on`, `A bell rings.`.
+/// and in `table` the row `bell`, `on or off`, `on`, `A bell rings.`. A
+/// default the server reads where it runs is told by its rule, which
+/// `=> "RULE"` after it gives `table`, not by the value the process
+/// asking for help would read.
 macro_rules! settings {
-    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty = $default:expr;)*) => {
+    (@default $shown:literal; $value:expr) => {
+        $shown.to_owned()
+    };
+    (@default; $value:expr) => {
+        $value
+    };
+    ($($(#[doc = $about:literal])* $field:ident $name:literal: $reads:ty = $default:expr
+        $(=> $shown:literal)?;)*) => {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub struct Config {
             $($(#[doc = $about])* pub $field: <$reads as Reads>::Value,)*
@@ -55,7 +65,7 @@ macro_rules! settings {
             vec![$([
                 $name.to_owned(),
                 <$reads as Reads>::takes(),
-                <$reads as Reads>::show(&defaults.$field),
+                settings!(@default $($shown)?; <$reads as Reads>::show(&defaults.$field)),
                 [$($about.trim()),*].join(" "),
             ],)*]
         }
@@ -73,9 +83,9 @@ pub trait Reads {
 }
 
 settings! {
-    /// The program a new pane runs, and its arguments: `$SHELL`, else your
-    /// login shell, else `/bin/sh`, unless set.
-    shell "shell": Shell = default_shell();
+    /// The program a new pane runs, and its arguments.
+    shell "shell": Shell = default_shell()
+        => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and
     /// `history capture` reads. Past it, the oldest rows go; a change
     /// applies to every pane.
@@ -235,7 +245,7 @@ impl Reads for bool {
 impl Reads for Shell {
     type Value = Shell;
     fn takes() -> String {
-        "a program and its arguments, separated by blanks".to_owned()
+        "a program and its arguments, separated by blanks, unquoted".to_owned()
     }
     fn read(text: &str) -> Result<Shell, String> {
         Shell::parse(text)
@@ -271,8 +281,14 @@ pub struct Shell {
 
 impl Shell {
     /// Words separated by blanks, the program first: no quoting, so no
-    /// word holds a blank.
+    /// word holds a blank, and a quote or backslash, which would be taken
+    /// as it is, is refused.
     pub fn parse(value: &str) -> Result<Shell, String> {
+        if let Some(quote) = value.chars().find(|c| matches!(c, '\'' | '"' | '\\')) {
+            return Err(format!(
+                "{quote} is taken as it is: words are parted by blanks, and not quoted or escaped"
+            ));
+        }
         let mut words = value.split_whitespace().map(str::to_owned);
         let program = words.next().ok_or("a program is needed")?;
         Ok(Shell {
@@ -307,6 +323,16 @@ pub fn default_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The shell's default is told by its rule, which the server follows
+    /// where it runs, not by what the process asking for help would start.
+    #[test]
+    fn the_shells_default_is_told_by_its_rule() {
+        let shell = table().into_iter().find(|[name, ..]| name == "shell");
+        assert!(
+            shell.is_some_and(|[_, _, default, _]| default.starts_with("the server's `$SHELL`"))
+        );
+    }
+
     #[test]
     fn settings_take_their_values_as_text() {
         let mut config = Config::default();
@@ -315,6 +341,10 @@ mod tests {
         assert_eq!(config.set("bell", "false"), Ok(()));
         assert!(!config.bell);
         assert_eq!(config.set("shell", "/bin/zsh -l"), Ok(()));
+        assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
+        for quoted in ["'/bin/my shell' -l", "zsh -c \"ls\"", "my\\ shell"] {
+            assert!(config.set("shell", quoted).is_err(), "{quoted}");
+        }
         assert_eq!(config.shell.argv(), ["/bin/zsh", "-l"]);
         assert!(config.set("history-bytes", "lots").is_err());
         let below = config.set("history-bytes", "-1");

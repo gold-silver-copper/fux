@@ -14,12 +14,11 @@
 //! popping it, the shell would be left unusable. The client pops the flags
 //! as it leaves (`client::LEAVE`).
 //!
-//! The terminal that answers for a pane is the client's that last typed
-//! into its tab, while attached; else any client's showing the tab; else
-//! none: a pane no attached terminal answers for is not answered colours
-//! it did not set, as no one knows what it is shown on. Its pictures and
-//! pixels are of a terminal showing its tab that said its cell size: the
-//! one that last typed into it, else the first; else none.
+//! The terminal that answers for a pane is, of the clients showing its tab,
+//! the one that last typed into it, else the first; else none: a pane no
+//! terminal showing it answers for is not answered colours it did not
+//! set, as no one knows what it is shown on. Its pictures and cell size
+//! are of a terminal showing its tab that said its cell size, chosen so.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -207,10 +206,11 @@ impl Session {
             Reply::CellSize { width, height } => {
                 terminal.cell = fux_vt::CellSize::new(width, height);
                 if terminal.cell.is_none() && width != 0 && height != 0 {
+                    let (least_width, least_height) = fux_vt::CellSize::LEAST;
                     view.notify(
                         format!(
                             "your terminal's cell, {width}x{height} pixels, is smaller than a sixel band \
-                             (2x6): no pictures, and no mouse reports in pixels"
+                             ({least_width}x{least_height}): no pictures"
                         ),
                         true,
                     );
@@ -263,20 +263,20 @@ impl Session {
         }
     }
 
-    /// Tells each pane whose program takes scheme reports (mode 2031) and
-    /// was told a scheme, if the terminal that answers for it now has
-    /// another, with no change of its own waiting (`tell_change`): it was
-    /// shown on another terminal, or on none, when its own changed. Run as
-    /// the session settles.
+    /// Tells each pane whose program takes scheme reports (mode 2031) the
+    /// scheme of the terminal that answers for it, if it was told another
+    /// or none, with no change of its own waiting (`tell_change`): it was
+    /// shown on another terminal, or on none, when its own changed or it
+    /// asked; or its report was refused. Run as the session settles.
     pub(crate) fn tell_schemes(&mut self) {
         let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
             .filter_map(|(id, p)| {
-                let told = p.scheme_told?;
                 let tab = self.locate(*id).map(|(_, t)| t);
                 let terminal = &self.views.get(&self.colour_client(tab)?)?.terminal;
                 let scheme = terminal.colours.scheme?;
-                (terminal.change.is_none() && scheme != told).then_some((*id, scheme))
+                let due = terminal.change.is_none() && p.scheme_told != Some(scheme);
+                due.then_some((*id, scheme))
             })
             .collect();
         for (id, scheme) in due {
@@ -284,11 +284,13 @@ impl Session {
         }
     }
 
-    /// Pane `id`'s program is told the scheme is `scheme`.
+    /// Pane `id`'s program is told the scheme is `scheme`, if its input
+    /// queue takes the report; one refused is told lost (`InputQueue`), and
+    /// sent again as the session settles (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
-        if let Some(mut pane) = self.parts.pane_mut(id) {
-            // A program that does not read loses it, as a reply.
-            let _ = pane.input.push(scheme.report());
+        if let Some(mut pane) = self.parts.pane_mut(id)
+            && pane.input.push(scheme.report()).is_ok()
+        {
             pane.scheme_told = Some(scheme);
         }
     }
@@ -301,32 +303,30 @@ impl Session {
         }
     }
 
-    /// The client whose terminal answers for the panes of `tab`: the one that
-    /// last typed into it, while attached, if its terminal said anything;
-    /// else the first showing it whose terminal did.
+    /// The client whose terminal answers for the panes of `tab`: of those
+    /// showing it whose terminal said anything, the one that last typed
+    /// into it, else the first.
     fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        self.answering(tab, |_, t| t.said())
+        self.answering(tab, Terminal::said)
     }
 
     /// The client whose terminal draws the panes of `tab` as they are told:
-    /// the one that last typed into it if it shows it and said its cell
-    /// size; else the first showing it that said one.
+    /// of those showing it that said a cell size, the one that last typed
+    /// into it, else the first.
     fn graphics_client(&self, tab: Option<TabId>) -> Option<ClientId> {
-        let tab = tab?;
-        self.answering(Some(tab), |c, t| t.cell.is_some() && self.shows(c, tab))
+        self.answering(tab, |t| t.cell.is_some())
     }
 
-    /// Of the attached clients `said` holds for, the one that last typed
-    /// into `tab`, else the first showing it.
-    fn answering(
-        &self,
-        tab: Option<TabId>,
-        said: impl Fn(ClientId, &Terminal) -> bool,
-    ) -> Option<ClientId> {
+    /// Of the attached clients showing `tab` that `said` holds for, the one
+    /// that last typed into it, else the first: one that typed there and
+    /// went to another tab answers for it no more.
+    fn answering(&self, tab: Option<TabId>, said: impl Fn(&Terminal) -> bool) -> Option<ClientId> {
         let tab = tab?;
-        let told = |c: &ClientId| self.views.get(c).is_some_and(|v| said(*c, &v.terminal));
+        let told = |c: &ClientId| {
+            self.shows(*c, tab) && self.views.get(c).is_some_and(|v| said(&v.terminal))
+        };
         let typist = self.tab(tab)?.typist.filter(told);
-        typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
+        typist.or_else(|| self.views.keys().copied().find(told))
     }
 
     /// Pane `id`, told what the panes of its tab are answered with now: the
@@ -533,6 +533,10 @@ mod tests {
         assert_eq!(ask(&mut s, 2), "");
         s.output(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
+        // c1 typed into %1's tab and went to another: it answers no more.
+        s.input(c, b"x");
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(ask(&mut s, 1), "");
         Ok(())
     }
 
@@ -562,8 +566,26 @@ mod tests {
         Ok(())
     }
 
+    /// A picture drawn while no terminal showing its pane draws sixel is
+    /// not kept, and counted (`pictures_refused`).
+    #[test]
+    fn a_picture_no_terminal_draws_is_counted() -> Outcome {
+        let (mut s, c) = session()?;
+        let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
+        let refused = |s: &mut Session| {
+            s.output(PaneId::of(1), picture);
+            (s.parts.panes().get(&PaneId::of(1))).map(crate::pane::Pane::pictures_refused)
+        };
+        s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
+        assert_eq!(refused(&mut s), Some(0));
+        run(&mut s, "opts str other name new-workspace")?;
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(refused(&mut s), Some(1));
+        Ok(())
+    }
+
     /// A cell said 0 wide or high is no size said, which is no fault; one
-    /// under a sixel band (2 by 6) is refused, and told.
+    /// under a sixel band (`CellSize::LEAST`) is refused, and told.
     #[test]
     fn a_cell_of_0_is_no_size_and_a_small_one_is_refused() -> Outcome {
         let (mut s, c) = session()?;
@@ -594,6 +616,36 @@ mod tests {
         // Told: not again.
         run(&mut s, "str c1 client str main workspace show-workspace")?;
         assert_eq!(answered(&mut s, 1), "");
+        // One never told, as no terminal answered its query, is told once
+        // one does.
+        s.output(PaneId::of(2), b"\x1b[?2031h\x1b[?996n");
+        assert_eq!(answered(&mut s, 2), "");
+        run(&mut s, "str c1 client str other workspace show-workspace")?;
+        assert_eq!(answered(&mut s, 2), "\x1b[?997;2n");
+        Ok(())
+    }
+
+    /// A scheme report a full input queue refuses is not taken as told: it
+    /// is sent once the program reads, and the loss in between is told.
+    #[test]
+    fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
+        let (mut s, c) = session()?;
+        s.output(PaneId::of(1), b"\x1b[?2031h");
+        s.input(c, b"\x1b[?997;1n");
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
+        let full = vec![0; crate::pane::INPUT_BYTES];
+        let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
+        p.input.push(full).map_err(|e| e.to_string())?;
+        drop(p);
+        s.input(c, b"\x1b[?997;2n");
+        let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
+        assert!(
+            notice.is_some_and(|n| n.text.contains("%1")),
+            "the loss is told"
+        );
+        assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
+        s.settle();
+        assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");
         Ok(())
     }
 

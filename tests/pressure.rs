@@ -174,7 +174,7 @@ fn input_waits_while_the_queue_is_full() -> Outcome {
     client.wait("the notice", |t| {
         t.lines()
             .last()
-            .is_some_and(|b| b.contains("input queue is full"))
+            .is_some_and(|b| b.contains("input queue was full"))
     })?;
     // Nothing more is queued until its terminal takes some: not even a key.
     client.send(b"Z")?;

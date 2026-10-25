@@ -869,6 +869,8 @@ pub struct Parser {
     /// does not stop.
     end: u64,
     refused: u64,
+    /// Sixel pictures not read, the host drawing no sixel then.
+    pictures_refused: u64,
 }
 #[cfg(test)]
 mod tests;
@@ -903,6 +905,7 @@ impl Parser {
             spent: 0,
             end: u64::MAX,
             refused: 0,
+            pictures_refused: 0,
         })
     }
     /// Checks every invariant of the parser and its screen that the state
@@ -1025,8 +1028,7 @@ impl Parser {
     /// in pixels, which `CSI 16 t` and `CSI 14 t` are answered with, and
     /// whether it shows sixel graphics, which primary device attributes
     /// then say (`4`) with [`Feature::Pictures`] and a cell size. Without
-    /// a cell size no picture is placed and no pixel is reported
-    /// ([`crate::Graphics`]).
+    /// a cell size no picture is placed ([`crate::Graphics`]).
     pub fn set_host_graphics(&mut self, mut graphics: crate::Graphics) {
         graphics.sixel &= self.options.has(Feature::Pictures) && graphics.cell.is_some();
         self.screen.set_graphics(graphics);
@@ -1057,6 +1059,12 @@ impl Parser {
     /// 1.3). Each refusal loses only what it was for.
     pub fn refused(&self) -> u64 {
         self.refused
+    }
+    /// How many sixel pictures the program sent, with [`Feature::Pictures`],
+    /// while the host drew no sixel (`set_host_graphics`): none of them was
+    /// read.
+    pub fn pictures_refused(&self) -> u64 {
+        self.pictures_refused
     }
     /// Process output while deliberately discarding terminal query replies.
     pub fn process(&mut self, bytes: &[u8]) -> Result<(), Error> {
@@ -1330,7 +1338,8 @@ impl Parser {
         // Sixel: `q` with no intermediates, read only while the host draws
         // sixel, as DA1 says (with `Feature::Pictures` and a cell size to
         // lay it out in, `set_host_graphics`).
-        let sixel = self.screen.sixel() && byte == b'q' && read.as_slice().is_empty();
+        let picture = byte == b'q' && read.as_slice().is_empty();
+        let sixel = self.screen.sixel() && picture;
         if decrqss {
             State::Request(Some(Bytes::default()))
         } else if termcap {
@@ -1343,6 +1352,9 @@ impl Parser {
             ));
             State::Sixel
         } else {
+            if picture && self.options.has(Feature::Pictures) {
+                self.pictures_refused = self.pictures_refused.saturating_add(1);
+            }
             State::IgnoreString
         }
     }

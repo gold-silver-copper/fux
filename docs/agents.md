@@ -13,7 +13,8 @@ pane before it, and `json` after it. Only `run`, `new-tab` and
 `new-workspace` start from `opts`; of the three, only `run` takes a program
 (as `split` does): the other two start a shell. Their tab is laid out on an
 attached client's screen, or on `COLS ROWS size`: with no client attached a
-size must be given, as fux makes none up (`size` fails without one).
+size must be given, as fux makes none up: without one the request fails
+with code `size`.
 
 **Every pane has a version, and a wait waits for it to change.** A version
 is one word, `%2:0.57.1.3.0:48211-1867a3f9c2b8e7d6`: its pane, its counts
@@ -180,7 +181,7 @@ as integers: `A counts 3 at` is its `DONE`.
 
   ```sh
   fux %2 str "$(cat FILE)" paste send-keys   # drops its last line ends; one argument's size at most (Linux: 32 memory pages)
-  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it, quoted for fuxth
+  { printf "%s str '" %2; sed "s/'/'\\\\''/g" FILE; printf "' paste send-keys"; } | fux -   # all of it up to the 900 KiB, quoted for fuxth
   ```
 - They are written together, in order, as the program's terminal takes
   them; an action answers once they are queued, not once the program

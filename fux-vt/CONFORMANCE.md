@@ -601,7 +601,7 @@ Every control function ECMA-48 (5th edition, 8.3), DEC STD 070 (its function pag
 | DECSET 1006 | SGR mouse (Enable SGR mouse mode) | implemented | `keys::mouse::tests::sgr_names_the_button_released_and_ends_a_release_with_m` |  |
 | DECSET 1007 | Alternate scroll (Enable alternate scroll mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::alternate_scroll_sends_the_cursor_keys_on_the_alternate_screen` |  |
 | DECSET 1015 | urxvt mouse (Enable urxvt mouse mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::urxvt_sends_the_code_plus_32_and_decimal_positions` |  |
-| DECSET 1016 | SGR-Pixels mouse (Enable SGR-Pixels mouse mode) | implemented | `mouse_modes::each_mode_is_kept_and_reported`, `mouse_modes::sgr_pixels_reports_the_pointers_pixel` | the middle of the cell, in the host's cell size |
+| DECSET 1016 | SGR-Pixels mouse (Enable SGR-Pixels mouse mode) | implemented | `mouse_modes::sgr_pixels_is_never_set_and_the_cell_encoding_stays` | reported permanently reset: a mouse event names a cell, not the pixel within it |
 | DECSET 1045 | Extended reverse-wraparound (Extended reverse-wraparound mode) | implemented | `modes::reverse_wraparound_moves_as_xterm_moves` |  |
 | DECSET 1047 | Alternate screen, cleared (Use the alternate screen buffer, clearing it on leaving) | implemented | `conformance::modes_1047_and_1048` |  |
 | DECSET 1048 | Save cursor (Save cursor as in DECSC) | implemented | `conformance::modes_1047_and_1048` |  |
