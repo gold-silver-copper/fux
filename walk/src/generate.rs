@@ -61,7 +61,7 @@ impl State {
             | Step::Hangup { .. }
             | Step::Child { .. }
             | Step::Exit { .. }
-            | Step::Clamp => {}
+            | Step::TooBig => {}
         }
     }
 }
@@ -192,7 +192,7 @@ pub fn step(rng: &mut Rng, world: &World, clients: &[String], state: &State) -> 
                 }
             }
         }
-        _ => Step::Clamp,
+        _ => Step::TooBig,
     }
 }
 

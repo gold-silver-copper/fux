@@ -62,8 +62,8 @@ pub enum Step {
     Signal { pane: String, stop: Stop },
     /// The configuration rewritten, for the clients that attach after.
     Config(Config),
-    /// A client that asks for 9000 by 9000 and must get 4096 by 4096.
-    Clamp,
+    /// A client that asks for 9000 by 9000 and must be refused.
+    TooBig,
 }
 
 /// Bytes as a word: printable ASCII as it is, a backslash doubled, and
@@ -144,7 +144,7 @@ impl Step {
                     Config::PrefixB => "prefix-b",
                 }
             ),
-            Step::Clamp => "clamp".to_owned(),
+            Step::TooBig => "too-big".to_owned(),
         }
     }
 
@@ -200,7 +200,7 @@ impl Step {
             ["config", "invalid"] => Step::Config(Config::Invalid),
             ["config", "prefix-a"] => Step::Config(Config::PrefixA),
             ["config", "prefix-b"] => Step::Config(Config::PrefixB),
-            ["clamp"] => Step::Clamp,
+            ["too-big"] => Step::TooBig,
             other => return Err(format!("an unknown step {other:?}")),
         })
     }
