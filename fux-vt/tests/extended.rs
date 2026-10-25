@@ -296,6 +296,20 @@ fn a_cluster_grown_wide_in_the_last_column_wraps_as_a_wide_glyph() -> Result {
         (Some("u".into()), Some("u".into()))
     );
     assert!(left(&p)? && link(0, 3).is_none());
+    // Its own even when IRM's blank sweeps the style table, its style held
+    // by no cell then: 4,095 backgrounds and its own fill it to the floor.
+    let mut p = Parser::new(Size::new(2, 4)?, 1 << 20)?;
+    let mut input = String::new();
+    for i in 0..4095u32 {
+        input.push_str(&format!("\x1b[2;1H\x1b[48;2;0;{};{}mx", i / 256, i % 256));
+    }
+    input.push_str("\x1b[1;1H\x1b[m\x1b[4habc\x1b[48;2;1;0;0m\u{2764}");
+    p.process(format!("{input}\x1b[48;2;2;0;0m\u{fe0f}").as_bytes())?;
+    let own = Color::Rgb(fux_vt::Rgb { r: 1, g: 0, b: 0 });
+    assert_eq!(
+        (cell(&p, 1, 0)?.contents(), cell(&p, 1, 0)?.bgcolor()),
+        (heart, own)
+    );
     // With autowrap off it is not printed, as a wide glyph with no room
     // is not (the spec leaves it undefined).
     let mut p = Parser::new(Size::new(2, 4)?, 0)?;

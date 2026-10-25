@@ -1891,7 +1891,7 @@ impl Screen {
         let (Some(&cell), Some(text)) = (g.stored(row, at), g.cell(row, at)) else {
             return None;
         };
-        let text = text.contents().to_owned();
+        let (attributes, text) = (text.attributes(), text.contents().to_owned());
         let link = (g.live_row(row))
             .and_then(|r| r.link(usize::from(at)))
             .cloned();
@@ -1916,6 +1916,9 @@ impl Screen {
         let (row, col) = self.grid().cursor.at();
         let to = usize::from(col);
         self.with_grid(|g, _, v| {
+            // Its style is found again: no cell holds its number once it
+            // is blanked, so the wrap's or the edit's styles may sweep it.
+            glyph.set_style(g.style(attributes));
             g.mutate_line(row, v, col.saturating_add(2), |line| {
                 put(line.cells, to, glyph, 2);
                 line.set(to, glyph, &text);
