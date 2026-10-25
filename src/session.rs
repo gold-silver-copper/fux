@@ -1197,9 +1197,8 @@ impl Session {
         root.split(target, new, axis, Side::After);
         // No place for it, or one it takes from another pane: the tab is
         // too small to show another pane.
-        let placed = layout::place(&root, area);
-        let shows_all = root.panes().iter().all(|p| placed.rect(*p).is_some());
-        let rect = placed.rect(new).filter(|_| shows_all);
+        let shows_all = layout::shows_all(&root, area);
+        let rect = layout::place(&root, area).rect(new).filter(|_| shows_all);
         rect.and_then(|r| Size::new(r.h(), r.w()).ok())
             .ok_or_else(|| {
                 let message = format!(
@@ -2460,8 +2459,7 @@ impl Session {
                 let Some(root) = self.root(*tab) else {
                     continue;
                 };
-                let placed = layout::place(root, area);
-                if root.panes().iter().any(|p| placed.rect(*p).is_none()) {
+                if !layout::shows_all(root, area) {
                     let message = format!(
                         "{tab} cannot show its {} panes at that size; close some, or choose a bigger one",
                         root.panes().len()
@@ -4817,10 +4815,11 @@ mod tests {
     }
 
     /// A dump of a tab is made again however its clients showed it: a
-    /// pane zoomed, which has the whole screen.
+    /// pane zoomed, which has the whole screen; a screen too small for
+    /// every pane, whose size the tab does not take.
     #[test]
     fn a_dump_is_made_again_however_its_tab_was_shown() -> Result<(), String> {
-        let (mut s, _) = attached(11, 40)?;
+        let (mut s, c) = attached(11, 40)?;
         run(&mut s, "%1 split drop %1 vertical split drop")?;
         run(&mut s, "str c1 client %1 focus-pane str c1 client zoom")?;
         let replays = |s: &Session| {
@@ -4829,6 +4828,9 @@ mod tests {
             run(&mut again, &dump).map_err(|e| format!("{e}\n{dump}"))?;
             Ok::<_, String>(again.parts.panes().len())
         };
+        assert_eq!(replays(&s)?, 4);
+        run(&mut s, "str c1 client zoom")?;
+        s.resize(c, 2, 2).map_err(|e| e.to_string())?;
         assert_eq!(replays(&s)?, 4);
         Ok(())
     }

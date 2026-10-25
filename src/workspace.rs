@@ -51,8 +51,8 @@ pub struct Tab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     /// The screens of the clients showing it: while none does, the last
-    /// it was laid out on (the smallest, of several), or the one it was
-    /// made on.
+    /// it was laid out on (the smallest, of several) that showed every
+    /// pane, or the one it was made on.
     Clients(fux_vt::Size),
     /// A screen of this size, client or none: `size` and `resize`.
     Fixed(fux_vt::Size),
@@ -255,9 +255,12 @@ impl Tab {
 
     /// Clients showing it lay it out on `size`, the smallest of their
     /// screens: laid out on clients' screens, that is its size while none
-    /// does.
+    /// does, if it shows every pane. A screen too small to is not: the tab
+    /// keeps the last size that showed them all, which a dump makes it at.
     pub(crate) fn shown_on(&mut self, size: fux_vt::Size) {
-        if let Fit::Clients(last) = &mut self.fit {
+        let area = Fit::Clients(size).area();
+        let shows_all = (self.root.as_ref()).is_none_or(|r| layout::shows_all(r, area));
+        if let (Fit::Clients(last), true) = (&mut self.fit, shows_all) {
             *last = size;
         }
     }
