@@ -4710,6 +4710,12 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
+        // Caught, it says the same, but its code: where, how it is used.
+        let caught = output(&mut s, "str type try 3 upper catch drop end");
+        assert_eq!(
+            caught,
+            Ok(format!("{}\n", upper.trim_start_matches("type: ")))
+        );
         // A server word's answer that overflows the stack fails at the
         // word, as an immediate word's would: a `try` catches it.
         let full = "str stack_overflow try 0 1000000 range each end ls catch 2drop str caught end";

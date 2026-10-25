@@ -322,37 +322,48 @@ impl std::fmt::Display for Failed {
 }
 
 impl From<fuxth::Error> for Failed {
+    /// A mistake compiling, told as fux tells it.
     fn from(error: fuxth::Error) -> Failed {
-        // A word given too few values, the wrong kind, or one out of its
-        // range, says how it is used.
-        let usage = match error.code {
-            Lang::StackUnderflow | Lang::Type | Lang::Range => true,
-            Lang::OpenQuote
-            | Lang::UnknownWord
-            | Lang::MissingToken
-            | Lang::BadName
-            | Lang::NotTopLevel
-            | Lang::Unmatched
-            | Lang::Unclosed
-            | Lang::StackOverflow
-            | Lang::CallDepth
-            | Lang::DivByZero
-            | Lang::Overflow
-            | Lang::Unset
-            | Lang::Unused
-            | Lang::BadCodes
-            | Lang::Fail
-            | Lang::TooLong
-            | Lang::Contract
-            | Lang::Host(_) => false,
-        };
-        told(error, usage)
+        placed(telling(error))
     }
+}
+
+/// `error` as fux tells it, with how its word is used where it was given
+/// too few values, the wrong kind, or one out of its range.
+fn telling(error: fuxth::Error) -> fuxth::Error {
+    let usage = match error.code {
+        Lang::StackUnderflow | Lang::Type | Lang::Range => true,
+        Lang::OpenQuote
+        | Lang::UnknownWord
+        | Lang::MissingToken
+        | Lang::BadName
+        | Lang::NotTopLevel
+        | Lang::Unmatched
+        | Lang::Unclosed
+        | Lang::StackOverflow
+        | Lang::CallDepth
+        | Lang::DivByZero
+        | Lang::Overflow
+        | Lang::Unset
+        | Lang::Unused
+        | Lang::BadCodes
+        | Lang::Fail
+        | Lang::TooLong
+        | Lang::Contract
+        | Lang::Host(_) => false,
+    };
+    told(error, usage)
+}
+
+/// A told error as a failure: its code, and where and why it happened.
+fn placed(error: fuxth::Error) -> Failed {
+    Failed::new(Code::from(error.code), error.located())
 }
 
 /// `error` as fux tells it, with how its word is used if `usage`, and
 /// for options or a request left over, the words that would take them.
-fn told(mut error: fuxth::Error, usage: bool) -> Failed {
+/// What `check` read says where its mistake is: it is placed nowhere.
+fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
     let left = words::KINDS
         .iter()
         .any(|(.., why)| *why == Some(&*error.message));
@@ -366,12 +377,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if error.code == Lang::UnknownWord {
         error.message.push_str(" (`fux help` lists every word)");
     }
-    let code = Code::from(error.code);
-    // What check read says where its mistake is.
-    match code == Code::Check {
-        true => Failed::new(code, error.message),
-        false => Failed::new(code, error.located()),
+    if Code::from(error.code) == Code::Check {
+        (error.place, error.word) = (None, None);
     }
+    error
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -420,7 +429,7 @@ pub(crate) fn compiled(
         compiler = configured_compiler(config, compiler)?;
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()))
+    Ok(Machine::new(compiler.finish()?, Limits::default()).telling(tell))
 }
 
 /// The libraries and `config`'s definitions, compiled and checked once a
@@ -691,7 +700,7 @@ pub fn run_capped(
             let failed = Failed::new(Code::Steps, format!("ran more than {steps} steps"));
             pushed(machine, Err(failed))?;
         }
-        match machine.run(host, SLICE).map_err(|e| ours(machine, e))? {
+        match machine.run(host, SLICE).map_err(placed)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
@@ -740,7 +749,7 @@ fn pushed(
 ) -> Result<(), Failed> {
     let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
         let failure = fuxth::Failure::new(code, message);
-        machine.raise(failure).map_err(|e| ours(machine, e))
+        machine.raise(failure).map_err(placed)
     };
     let values = match values {
         Ok(values) => values,
@@ -755,17 +764,18 @@ fn pushed(
     Ok(())
 }
 
-/// An error placed where the program is: a failure inside a word of the
-/// prelude's or library's is named by the program's step that called it,
-/// with the bundled word's own step in the message, and how the program's
-/// word is used.
-fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
+/// A failure as fux tells it, whether a `try` catches it or it ends the
+/// program (`Machine::telling`): one inside a word of the prelude's or
+/// library's is placed at the program's step that called it, with the
+/// bundled word's own step in the message, and how the program's word is
+/// used.
+fn tell(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
-        return Failed::from(error);
+        return telling(error);
     }
     let Some(step) = machine
         .calls()
@@ -773,7 +783,7 @@ fn ours(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         .rev()
         .find(|t| !bundled(Some(&t.place)))
     else {
-        return Failed::from(error);
+        return telling(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
     error.message = format!("inside {}, {inner}: {}", step.text, error.message);
