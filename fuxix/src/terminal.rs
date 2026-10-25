@@ -238,6 +238,17 @@ pub fn foreground_group(fd: impl AsFd) -> Result<Option<Pid>> {
     }
 }
 
+/// Whether the terminal `fd` is open on is this process's session's
+/// controlling terminal. A session has one: two descriptors that both are
+/// reach one terminal, whatever name each was opened by (`/dev/tty`, whose
+/// device is its own, opens the controlling terminal).
+pub fn controls_session(fd: impl AsFd) -> bool {
+    // SAFETY: tcgetsid takes a descriptor and touches no memory.
+    let its = unsafe { libc::tcgetsid(fd.as_fd().as_raw_fd()) };
+    // SAFETY: getsid takes a number and touches no memory.
+    its > 0 && its == unsafe { libc::getsid(0) }
+}
+
 /// A new open file for the terminal `fd` is open on, read-write,
 /// nonblocking, close-on-exec, and never made this process's controlling
 /// terminal: its flags are its own, so making it nonblocking changes

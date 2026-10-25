@@ -469,9 +469,10 @@ pub(crate) fn window_size() -> Option<fux_vt::Size> {
     fuxix::terminal::window_size(io::stdin()).map(|s| (s.rows, s.cols).into())
 }
 
-/// Whether stdin and stdout are one terminal, the same device: the client
-/// reads keys from stdin, which the server paints, and sets the terminal's
-/// modes through stdout.
+/// Whether stdin and stdout are one terminal: the same device, or both the
+/// session's controlling terminal (`fux </dev/tty`, whose device is
+/// `/dev/tty`'s). The client reads keys from stdin, which the server
+/// paints, and sets the terminal's modes through stdout.
 pub(crate) fn on_one_terminal() -> bool {
     use io::IsTerminal as _;
     use std::os::fd::AsFd as _;
@@ -482,7 +483,9 @@ pub(crate) fn on_one_terminal() -> bool {
     };
     io::stdin().is_terminal()
         && io::stdout().is_terminal()
-        && device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
+        && (device(io::stdin().as_fd()).is_some_and(|d| device(io::stdout().as_fd()) == Some(d))
+            || fuxix::terminal::controls_session(io::stdin())
+                && fuxix::terminal::controls_session(io::stdout()))
 }
 
 /// How a client attaches: to which workspace, whether it only watches, its
