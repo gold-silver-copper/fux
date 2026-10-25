@@ -2297,7 +2297,7 @@ impl Session {
                 Ok(Reply::default())
             }
             &Command::ClearHistory { target } => {
-                self.pane_mut(target)?.parser.clear_history();
+                self.pane_mut(target)?.clear_history();
                 Ok(Reply::default())
             }
             &Command::SendKeys { target, ref inputs } => self.send_keys(target, inputs),
@@ -2330,8 +2330,7 @@ impl Session {
                     .map_err(|crate::config::Refused(code, why)| fail(code, why))?;
                 // Every pane keeps the history they say.
                 let history = self.config.history_bytes;
-                self.parts
-                    .each_pane_mut(|p| p.parser.set_history_bytes(history));
+                self.parts.each_pane_mut(|p| p.set_history_bytes(history));
                 Ok(Reply::default())
             }
             Command::Resolve { text, kind } => {

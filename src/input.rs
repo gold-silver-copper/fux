@@ -132,9 +132,7 @@ impl Session {
         if p.input.refusing() {
             return;
         }
-        let pane = &mut *p;
-        let screen = pane.parser.screen();
-        let pushed = pane.input.push_with(|out| write(screen, out));
+        let pushed = p.push_with(write);
         drop(p);
         if let Err(error) = pushed {
             self.notify_to(client, error.to_string(), true);

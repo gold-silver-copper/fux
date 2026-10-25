@@ -303,9 +303,7 @@ impl Session {
         let (colours, palette) =
             answering.map_or_else(Default::default, |t| (t.colours, t.palette));
         let mut pane = self.parts.pane_mut(id)?;
-        pane.colours = colours;
-        pane.parser.set_host_palette(palette);
-        pane.parser.set_host_graphics(graphics);
+        pane.host(colours, palette, graphics);
         Some(pane)
     }
 

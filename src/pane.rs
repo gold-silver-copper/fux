@@ -472,8 +472,9 @@ pub struct Pane {
     /// Set by the program with OSC 0 or 2, which says so.
     title: Title,
     /// Its screen's size is the PTY's: the smallest rectangle any client
-    /// shows the pane in.
-    pub parser: fux_vt::Parser,
+    /// shows the pane in. What it reads and is resized to goes through the
+    /// pane, which says what events tell of it.
+    parser: fux_vt::Parser,
     /// Its program ends by `exit`, which says so.
     process: Process,
     pub input: InputQueue,
@@ -799,6 +800,34 @@ impl Pane {
 
     pub fn screen(&self) -> &Screen {
         self.parser.screen()
+    }
+
+    /// Queues for its program what `write` makes for its screen, as
+    /// `InputQueue::push_with` does.
+    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+        let screen = self.parser.screen();
+        self.input.push_with(|out| write(screen, out))
+    }
+
+    /// Its program's queries are answered with `colours` and `palette`
+    /// from now on, and it is told its terminal draws `graphics`.
+    pub fn host(
+        &mut self,
+        colours: Colours,
+        palette: crate::outer::Palette,
+        graphics: fux_vt::Graphics,
+    ) {
+        self.colours = colours;
+        self.parser.set_host_palette(palette);
+        self.parser.set_host_graphics(graphics);
+    }
+
+    pub fn clear_history(&mut self) {
+        self.parser.clear_history();
+    }
+
+    pub fn set_history_bytes(&mut self, bytes: usize) {
+        self.parser.set_history_bytes(bytes);
     }
 
     /// Whether its program is one a restore brought back, waiting for
