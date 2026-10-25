@@ -67,7 +67,10 @@ impl<const MAX: usize> Line<MAX> {
     pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
             Edit::Insert(text) => {
-                let text = text.trim_end_matches(['\n', '\r']);
+                let text = (text
+                    .strip_suffix("\r\n")
+                    .or_else(|| text.strip_suffix(['\n', '\r'])))
+                .unwrap_or(text);
                 if text.contains(['\n', '\r']) {
                     return Err("a line holds one line of text: nothing was typed".to_owned());
                 }
