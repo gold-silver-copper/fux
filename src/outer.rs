@@ -17,7 +17,9 @@
 //! The terminal that answers for a pane is the client's that last typed
 //! into its tab, while attached; else any client's showing the tab; else
 //! none: a pane no attached terminal answers for is not answered colours
-//! it did not set, as no one knows what it is shown on.
+//! it did not set, as no one knows what it is shown on. Its pictures and
+//! pixels are of a terminal showing its tab that said its cell size: the
+//! one that last typed into it, else the first; else none.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
 use crate::protocol::ToAttached;
@@ -123,7 +125,7 @@ pub struct Terminal {
     pub palette: Palette,
     /// Whether it draws sixel graphics (DA1's `4`), and the size of its cells
     /// in pixels (`CSI 16 t`): pictures in panes are shown on it, and the
-    /// panes it answers for are told so (sixel only with a cell size, which
+    /// panes it draws are told so (sixel only with a cell size, which
     /// pictures are laid out in).
     pub sixel: bool,
     pub cell: Option<fux_vt::CellSize>,
@@ -275,29 +277,45 @@ impl Session {
     /// last typed into it, while attached, if its terminal said anything;
     /// else the first showing it whose terminal did.
     fn colour_client(&self, tab: Option<TabId>) -> Option<ClientId> {
+        self.answering(tab, |_, t| t.said())
+    }
+
+    /// The client whose terminal draws the panes of `tab` as they are told:
+    /// the one that last typed into it if it shows it and said its cell
+    /// size; else the first showing it that said one.
+    fn graphics_client(&self, tab: Option<TabId>) -> Option<ClientId> {
         let tab = tab?;
-        let told = |client: &ClientId| self.views.get(client).is_some_and(|v| v.terminal.said());
+        self.answering(Some(tab), |c, t| t.cell.is_some() && self.shows(c, tab))
+    }
+
+    /// Of the attached clients `said` holds for, the one that last typed
+    /// into `tab`, else the first showing it.
+    fn answering(
+        &self,
+        tab: Option<TabId>,
+        said: impl Fn(ClientId, &Terminal) -> bool,
+    ) -> Option<ClientId> {
+        let tab = tab?;
+        let told = |c: &ClientId| self.views.get(c).is_some_and(|v| said(*c, &v.terminal));
         let typist = self.tab(tab)?.typist.filter(told);
         typist.or_else(|| (self.views.keys().copied()).find(|c| self.shows(*c, tab) && told(c)))
     }
 
-    /// Pane `id`, told what the panes of its tab are answered with now,
-    /// from the terminal of `colour_client`: its colours (see the module
-    /// documentation); its palette whole, so that another client's replaces
-    /// it, entries it did not say cleared; and what they are told their
-    /// terminal draws, which is nothing in a tab no client shows, so a
+    /// Pane `id`, told what the panes of its tab are answered with now: the
+    /// colours of `colour_client`'s terminal (see the module documentation),
+    /// its palette whole, so that another client's replaces it, entries it
+    /// did not say cleared; and what `graphics_client`'s terminal draws,
+    /// which is nothing in a tab no client shows with a cell size, so a
     /// program started there draws in text, which a capture reads (and its
     /// mouse reports are made in that terminal's cells). With no such
     /// terminal, nothing.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
         let tab = self.locate(id).map(|(_, tab)| tab);
-        let answering = (self.colour_client(tab)).and_then(|c| self.views.get(&c));
-        let answering = answering.map(|v| &v.terminal);
-        let shown = tab.is_some_and(|t| self.views.keys().any(|c| self.shows(*c, t)));
+        let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
         let graphics =
-            (answering.filter(|_| shown)).map_or_else(Graphics::default, Terminal::graphics);
-        let (colours, palette) =
-            answering.map_or_else(Default::default, |t| (t.colours, t.palette));
+            terminal(self.graphics_client(tab)).map_or_else(Graphics::default, Terminal::graphics);
+        let (colours, palette) = terminal(self.colour_client(tab))
+            .map_or_else(Default::default, |t| (t.colours, t.palette));
         let mut pane = self.parts.pane_mut(id)?;
         pane.host(colours, palette, graphics);
         Some(pane)
@@ -487,6 +505,32 @@ mod tests {
         assert_eq!(ask(&mut s, 2), "");
         s.output(PaneId::of(2), b"\x1b]11;#445566\x07");
         assert_eq!(ask(&mut s, 2), "\x1b]11;rgb:4444/5555/6666\x07");
+        Ok(())
+    }
+
+    /// A pane's pictures and pixels are of a terminal showing its tab that
+    /// said its cell size, whether or not it said its colours; not of one
+    /// that typed there and went to another tab.
+    #[test]
+    fn a_panes_cell_is_of_a_terminal_showing_it_that_said_one() -> Outcome {
+        let (mut s, c) = session()?;
+        let cell = |s: &mut Session| {
+            s.output(PaneId::of(1), b"");
+            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().cell_size())
+        };
+        assert_eq!(cell(&mut s), None);
+        // No colours said: its cell still is.
+        s.input(c, b"\x1b[6;20;10t\x1b[?62c");
+        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
+        // c typed here and shows another tab; d shows this one with no cell.
+        let d = s.attach(10, 40, None).map_err(|e| e.to_string())?;
+        s.input(c, b"x");
+        run(&mut s, "opts str +1 workspace in new-tab")?;
+        run(&mut s, "str c1 client str @2 tab show-tab")?;
+        run(&mut s, &format!("str {d} client str @1 tab show-tab"))?;
+        assert_eq!(cell(&mut s), None);
+        s.input(d, b"\x1b[6;16;8t\x1b[?62c");
+        assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
         Ok(())
     }
 
