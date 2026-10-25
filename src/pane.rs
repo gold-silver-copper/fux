@@ -110,18 +110,6 @@ impl InputQueue {
             false => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
-    /// Queues terminal replies, as `push`: a full queue drops them.
-    fn reply(&mut self, bytes: &[u8]) {
-        if self.push(bytes).is_err() {
-            self.lose_reply();
-        }
-    }
-    /// A reply was dropped: to be told, unless one was before.
-    fn lose_reply(&mut self) {
-        if self.lost == Lost::None {
-            self.lost = Lost::Untold;
-        }
-    }
     /// Whether a reply was lost and is yet to be told, which it then is:
     /// once in the queue's life.
     pub fn lost_reply(&mut self) -> bool {
@@ -760,12 +748,11 @@ impl Pane {
                 break;
             }
         }
-        let (replies, dropped) = (sink.replies, sink.dropped);
-        if !replies.is_empty() {
-            self.input.reply(&replies);
-        }
-        if dropped {
-            self.input.lose_reply();
+        // Queued as `push` queues; a full queue drops them, which is told
+        // (once in the queue's life), as replies past the read's bound are.
+        let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
+        if (full || sink.dropped) && self.input.lost == Lost::None {
+            self.input.lost = Lost::Untold;
         }
         begun
     }
