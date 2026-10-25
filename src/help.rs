@@ -39,13 +39,16 @@ pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
 pub fn overview() -> String {
-    let wait = crate::config::Limit::DEFAULT.seconds();
+    let (wait, shebang) = (
+        crate::config::Limit::DEFAULT.seconds(),
+        crate::script::SHEBANG,
+    );
     let mut out = format!(
         "\
-usage: fux                 attach, starting a server if none runs
-       fux WORD...         run the words, a fuxth program (or all in one argument)
-       fux --file FILE     run a file of fuxth (#!/usr/bin/env -S fux --file)
-       fux -               run fuxth read from stdin
+usage: fux                     attach, starting a server if none runs
+       fux WORD...             run the words, a fuxth program (or all in one argument)
+       fux --file FILE ARG...  run a file of fuxth, its ARGs for `args` ({shebang})
+       fux -                   run fuxth read from stdin
 
 Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
@@ -309,6 +312,10 @@ pub(crate) fn example(name: &str) -> Option<&'static str> {
         "set" => "fux str history-bytes 16777216 set",
         "server" => "fux str test server start opts 80 24 size str ./app program run",
         "headless" => "fux 100 30 headless",
+        "input" => "ls | fux input lines len",
+        "read-file" => "fux str notes.txt read-file lines len",
+        "getenv" => "fux str HOME getenv",
+        "warn" | "exit" => "fux str 'no tests found' warn 2 exit",
         _ => return None,
     })
 }
@@ -388,6 +395,10 @@ mod tests {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
         let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
+        let read = format!("{} MiB at most", whole(crate::script::SOURCE_MAX, 20));
+        for name in ["input", "read-file"] {
+            assert!(about(name).is_some_and(|a| a.contains(&read)), "{name}");
+        }
         let sides = format!("1 to {} each", crate::view::MOST);
         for name in ["size", "resize", "resize-client", "headless"] {
             assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");

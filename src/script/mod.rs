@@ -30,6 +30,9 @@ pub type Config = std::sync::Arc<(String, String)>;
 /// The bundled words, written in fuxth.
 pub const LIBRARY: &str = include_str!("library.fux");
 
+/// The first line of a fuxth script, which runs it as `fux --file`.
+pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
+
 /// fux's default keys: a config, run before the user's.
 const KEYS: &str = include_str!("keys.fux");
 
@@ -250,6 +253,26 @@ pub enum Local {
     /// Open one of the client's own screens: a client running its keys'
     /// programs does (`client::Keyboard`); nothing else has one.
     Open(crate::screens::Open),
+    /// What the command line's program asks of its process.
+    Shell(Shell),
+}
+
+/// What a command line's program asks of the process it runs in, as a
+/// shell script would: no other program has one.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shell {
+    /// Its arguments (`args`).
+    Args,
+    /// The rest of stdin (`input`).
+    Input,
+    /// A file's text (`read-file`).
+    ReadFile(String),
+    /// An environment variable's value (`getenv`).
+    Getenv(VarName),
+    /// A line on stderr (`warn`).
+    Warn(String),
+    /// The program's end, with this exit status (`exit`).
+    Exit(u8),
 }
 
 /// What runs a program's words: where its requests come from, the client's
@@ -640,16 +663,93 @@ impl Asks for Server {
     }
 }
 
-/// The command line's: a server, and the client's own words.
-#[derive(Default)]
-pub struct Cli(pub Server);
+/// The command line's: a server, the client's own words, where the program
+/// came from, and the status `exit` gave, once it has.
+pub struct Cli {
+    server: Server,
+    from: Given,
+    status: Option<u8>,
+}
+
+/// Where a command line's program came from.
+#[derive(Clone, Debug, PartialEq)]
+enum Given {
+    /// The words given.
+    Words,
+    /// stdin, which `input` then cannot read.
+    Stdin,
+    /// A file, `--file FILE`, and the arguments after it.
+    File(Vec<String>),
+}
 
 impl Asks for Cli {
     fn ask(&mut self, asked: &Asked, out: &mut dyn Write) -> Result<Reply, Failed> {
-        self.0.ask(asked, out)
+        self.server.ask(asked, out)
     }
     fn local(&mut self, what: &Local, _out: &mut dyn Write) -> Result<Vec<Value<Fux>>, Failed> {
-        local(what, &mut self.0)
+        let Local::Shell(shell) = what else {
+            return local(what, &mut self.server);
+        };
+        let string = |s: &str| vec![Value::str(s)];
+        Ok(match shell {
+            Shell::Args => {
+                let args = match &self.from {
+                    Given::File(args) => args.iter().map(|a| Value::str(a.as_str())).collect(),
+                    Given::Words | Given::Stdin => Vec::new(),
+                };
+                let list = fuxth::List::new(args)
+                    .ok_or_else(|| Failed::new(Code::Usage, "more arguments than a list holds"))?;
+                vec![Value::List(std::rc::Rc::new(list))]
+            }
+            Shell::Input => match self.from {
+                Given::Stdin => {
+                    let why = "stdin: the program itself was read from it";
+                    return Err(Failed::new(Code::Read, why));
+                }
+                Given::Words | Given::File(_) => string(&read_text("stdin", io::stdin())?),
+            },
+            Shell::ReadFile(path) => string(&read_file(path.as_ref())?),
+            Shell::Getenv(name) => string(&getenv(name)?),
+            Shell::Warn(line) => {
+                writeln!(io::stderr(), "{line}")
+                    .map_err(|e| Failed::new(Code::Output, format!("writing to stderr: {e}")))?;
+                Vec::new()
+            }
+            Shell::Exit(status) => {
+                self.status = Some(*status);
+                Vec::new()
+            }
+        })
+    }
+}
+
+/// A name an environment variable can have: not empty, and with no `=` or
+/// NUL.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VarName(String);
+
+impl std::str::FromStr for VarName {
+    type Err = String;
+    fn from_str(name: &str) -> Result<VarName, String> {
+        match name.is_empty() || name.contains(['=', '\0']) {
+            true => Err(format!("{name:?}: no variable is named so")),
+            false => Ok(VarName(name.to_owned())),
+        }
+    }
+}
+
+/// The value of the environment variable `name`: one not set fails
+/// `unset_var`, never an empty string; one that is not text is refused.
+fn getenv(VarName(name): &VarName) -> Result<String, Failed> {
+    match std::env::var(name) {
+        Ok(value) => Ok(value),
+        Err(std::env::VarError::NotPresent) => {
+            Err(Failed::new(Code::UnsetVar, format!("{name} is not set")))
+        }
+        Err(std::env::VarError::NotUnicode(_)) => Err(Failed::new(
+            Code::BadValue,
+            format!("{name}: its value is not text"),
+        )),
     }
 }
 
@@ -748,7 +848,14 @@ pub fn run_capped(
                 });
                 pushed(machine, values)?;
             }
-            Outcome::Suspended(Ask::Local(what)) => pushed(machine, asks.local(&what, host.out))?,
+            Outcome::Suspended(Ask::Local(what)) => {
+                let values = asks.local(&what, host.out);
+                // An exit the host took ends the run here, as it stands.
+                if let (Local::Shell(Shell::Exit(_)), Ok(_)) = (&what, &values) {
+                    return Ok(machine.stack().to_vec());
+                }
+                pushed(machine, values)?
+            }
         }
     }
 }
@@ -917,7 +1024,7 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
             }
         }
         Local::ForceKill => client::kill_server(&server.socket()?).map_err(client_failed)?,
-        Local::Open(_) => return refuse_local(what),
+        Local::Open(_) | Local::Shell(_) => return refuse_local(what),
         Local::Status => {
             let socket = server.socket()?;
             let probe = client::probe(&socket).map_err(client_failed)?;
@@ -1041,7 +1148,8 @@ pub fn refuse_local(what: &Local) -> Result<Vec<Value<Fux>>, Failed> {
         | Local::Server(_)
         | Local::Start
         | Local::Status
-        | Local::ForceKill => "runs from the command line only",
+        | Local::ForceKill
+        | Local::Shell(_) => "runs from the command line only",
     };
     Err(Failed::new(Code::NotHere, why))
 }
@@ -1053,17 +1161,21 @@ pub const PROGRAM_STEPS: u64 = 10_000_000;
 
 /// The `fux` binary's words: attaches with none, runs `-` (stdin) or a file,
 /// or runs the words given. What is left on the stack is printed, a value a
-/// line. Why it failed, if it did.
-pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
-    let mut machine = compile(&program(args)?)?;
+/// line. Its exit status (0, or what `exit` gave), or why it failed.
+pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
+    let (tokens, from) = program(args)?;
+    // Only words can be a file mistaken for a program.
+    let mut machine = compiled(None, &tokens).map_err(|e| match from {
+        Given::Words => Failed::from(a_file(e, args)),
+        Given::Stdin | Given::File(_) => Failed::from(e),
+    })?;
     let mut host = Host::new(client::context(), None, out);
-    let ran = run_capped(
-        &mut machine,
-        &mut host,
-        &mut Cli::default(),
-        Some(LINE_STEPS),
-        None,
-    );
+    let mut cli = Cli {
+        server: Server::default(),
+        from,
+        status: None,
+    };
+    let ran = run_capped(&mut machine, &mut host, &mut cli, Some(LINE_STEPS), None);
     // What the words before a failure left is printed too: their answers.
     // The run's failure, if it failed, came first, and is the one told.
     let stack = match &ran {
@@ -1080,22 +1192,48 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<(), Failed> {
         .try_for_each(|value| writeln!(host.out, "{}", value.text()))
         .and_then(|()| host.out.flush());
     ran?;
-    printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))
+    printed.map_err(|e| Failed::new(Code::Output, format!("writing the output: {e}")))?;
+    Ok(cli.status.unwrap_or(0))
 }
 
-/// The program `args` give: none attaches; `-` is stdin; `--file FILE`
-/// a file (`#!/usr/bin/env -S fux --file`); help as other programs give
-/// it; any other one argument a whole program, as a shell passes
-/// `fux 'ls json'`, never a file, whatever it holds; else each is a word.
-fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
-    Ok(match args {
+/// `error`, an unknown word that is a file's path, as the first argument or
+/// in the only one (`fux ./job.fux`, `fux 'my job.fux'`), saying how to run
+/// it: never run, as no argument is guessed to be a file.
+fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
+    let word = error.word.as_deref();
+    if error.code == Lang::UnknownWord
+        && let Some(file) = (args.first())
+            .filter(|a| args.len() == 1 || word == Some(a.as_str()))
+            .filter(|a| std::path::Path::new(a).is_file())
+    {
+        let file = crate::words::quote(file);
+        error.message += &format!("; {file} is a file, which `fux --file {file}` runs");
+    }
+    error
+}
+
+/// The program `args` give, and where it came from: none attaches; `-` is
+/// stdin; `--file FILE ARGS…` a file, the arguments after it its own
+/// (`#!/usr/bin/env -S fux --file`); help as other programs give it; any
+/// other one argument a whole program, as a shell passes `fux 'ls json'`,
+/// never a file, whatever it holds; else each is a word.
+fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
+    let words = match args {
         [] => token::arguments(&["attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
-        [dash] if dash == "-" => token::source("stdin", &read_text("stdin", io::stdin())?)?,
-        [flag, file] if flag == "--file" => token::source(file, &read_file(file.as_ref())?)?,
-        [flag, ..] if flag == "--file" => {
-            let why = "--file runs one file, and takes nothing after it: fux --file FILE";
-            return Err(Failed::new(Code::Usage, why));
+        [dash] if dash == "-" => {
+            let text = read_text("stdin", io::stdin())?;
+            return Ok((token::source("stdin", &text)?, Given::Stdin));
+        }
+        [flag, file, rest @ ..] if flag == "--file" => {
+            let tokens = token::source(file, &read_file(file.as_ref())?)?;
+            return Ok((tokens, Given::File(rest.to_vec())));
+        }
+        [flag] if flag == "--file" => {
+            return Err(Failed::new(
+                Code::Usage,
+                "--file names the file: fux --file FILE ARGS…",
+            ));
         }
         // Help as other programs give it: `help agents TOPIC`, `help json`,
         // `help WORD`, `--help`, `--version`.
@@ -1111,15 +1249,17 @@ fn program(args: &[String]) -> Result<Vec<Token>, Failed> {
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
         [line] => token::source("command line", line)?,
         words => token::arguments(words),
-    })
+    };
+    Ok((words, Given::Words))
 }
 
 /// The most steps a command line's program takes: one that loops without
 /// end fails rather than spinning.
 const LINE_STEPS: u64 = 1_000_000_000;
 
-/// The most a program read from a file or stdin may be.
-const SOURCE_MAX: usize = 16 << 20;
+/// The most text read from a file or stdin may be: a program, or what
+/// `read-file` and `input` read.
+pub(crate) const SOURCE_MAX: usize = 16 << 20;
 
 fn read_failed(name: &str, why: &str) -> Failed {
     Failed::new(Code::Read, format!("{name}: {why}"))
@@ -1134,10 +1274,7 @@ fn read_text(name: &str, from: impl Read) -> Result<String, Failed> {
         .read_to_end(&mut bytes)
         .map_err(|e| read_failed(name, &e.to_string()))?;
     if bytes.len() > SOURCE_MAX {
-        let why = format!(
-            "more than {} MiB: no program is that long",
-            SOURCE_MAX >> 20
-        );
+        let why = format!("more than {} MiB, the most fux reads", SOURCE_MAX >> 20);
         return Err(read_failed(name, &why));
     }
     String::from_utf8(bytes).map_err(|_| read_failed(name, "not UTF-8 text"))
@@ -1158,21 +1295,45 @@ mod tests {
     fn one_argument_is_a_program() -> Result<(), super::Failed> {
         let words = |args: &[&str]| -> Result<Vec<String>, super::Failed> {
             let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
-            Ok(super::program(&args)?
-                .into_iter()
-                .map(|t| t.text.to_string())
-                .collect())
+            let (tokens, given) = super::program(&args)?;
+            assert_eq!(given, super::Given::Words);
+            Ok(tokens.into_iter().map(|t| t.text.to_string()).collect())
         };
         assert_eq!(
             words(&["%2 str \"ls /tmp\" line"])?,
             ["%2", "str", "ls /tmp", "line"]
         );
         assert_eq!(words(&["./no/such.fux"])?, ["./no/such.fux"]);
-        let read = words(&["--file", "./no/such.fux"]).err().map(|f| f.code);
+        let read = words(&["--file", "./no/such.fux", "b"])
+            .err()
+            .map(|f| f.code);
         assert_eq!(read, Some(super::Code::Read));
-        let more = words(&["--file", "a.fux", "b"]).err().map(|f| f.code);
-        assert_eq!(more, Some(super::Code::Usage));
+        let none = words(&["--file"]).err().map(|f| f.code);
+        assert_eq!(none, Some(super::Code::Usage));
         Ok(())
+    }
+
+    /// What a script asks of its process is the command line's alone: a
+    /// config's program, as a key's, is refused it.
+    #[test]
+    fn only_the_command_line_asks_its_process() {
+        let words = [
+            "args",
+            "input",
+            "str x read-file",
+            "str HOME getenv",
+            "str x warn",
+            "0 exit",
+        ];
+        for code in words {
+            let dry = &mut super::Settings(None);
+            let ran = super::run_quiet("config", code, Default::default(), None, dry);
+            assert_eq!(
+                ran.err().map(|f| f.code),
+                Some(super::Code::NotHere),
+                "{code}"
+            );
+        }
     }
 
     /// The default keys are a config every line of which binds; what
@@ -1232,7 +1393,8 @@ mod tests {
             ("%2 str hi paste", "send-keys"),
             ("opts str x in", "run or new-tab"),
         ] {
-            let compiled = super::compile(&super::program(&[code.to_owned()]).unwrap_or_default());
+            let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
+            let compiled = super::compile(&tokens.unwrap_or_default());
             let error = compiled.err().map(|e| e.to_string()).unwrap_or_default();
             assert!(
                 error.ends_with(&format!("end with {end}")),

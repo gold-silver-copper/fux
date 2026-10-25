@@ -12,7 +12,9 @@ impl Session {
     /// What there is, or `only` that tab or workspace (a pane's: its tab),
     /// as a fuxth program.
     pub(crate) fn dump_layout(&self, only: Option<AnyRef>) -> String {
-        let mut out = String::from("# fux: running this makes it again\n");
+        // A script, as a file `chmod +x` makes runnable.
+        let shebang = crate::script::SHEBANG;
+        let mut out = format!("{shebang}\n# fux: running this makes it again\n");
         // A tab's or a pane's is its tab alone, not its workspace's part.
         let whole = match only {
             None | Some(AnyRef::Workspace(_)) => true,

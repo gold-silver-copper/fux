@@ -173,7 +173,7 @@ wait's own (above). CODE stays; every one fux gives
   `not_headless`, `own_server`, `people_attached`;
 - how a wait ends: `timeout` (124), `closed` (4), `gone` (4);
 - a program of words: `steps`, `cancelled`, `not_here`, `not_config`,
-  `config`, `bad_binding`, `check`, `read`, `output`, `nested`,
+  `config`, `bad_binding`, `check`, `read`, `unset_var`, `output`, `nested`,
   `not_a_key`, `no_program`, `no_keys`, `not_a_client`;
 - the language's own: `open_quote`, `unknown_word`, `missing_token`,
   `bad_name`, `not_top_level`, `unmatched`, `unclosed`, `stack_underflow`,

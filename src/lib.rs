@@ -98,8 +98,8 @@ pub(crate) fn drain(mut pipe: &PipeReader) {
 }
 
 /// The command line of the `fux` binary: no words attaches; `-` runs the
-/// fuxth on stdin; `--file FILE` runs a file; any other words are a fuxth
-/// program.
+/// fuxth on stdin; `--file FILE ARGS…` runs a file; any other words are a
+/// fuxth program.
 pub fn main() -> ExitCode {
     // Words are text: an argument that is not is refused, not mangled.
     let args: Result<Vec<String>, _> = std::env::args_os()
@@ -116,7 +116,7 @@ pub fn main() -> ExitCode {
         return serve(rest);
     }
     let status = match args.and_then(|args| script::main(&args, &mut std::io::stdout())) {
-        Ok(()) => 0,
+        Ok(status) => status,
         Err(failed) => {
             // Nowhere is left to say that stderr failed.
             let _ = writeln!(std::io::stderr(), "fux: {failed}");

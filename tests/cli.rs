@@ -369,25 +369,13 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
 /// `fux -` runs stdin, and `fux --file FILE` a file, whatever its name.
 #[test]
 fn programs_come_from_stdin_and_files() -> Outcome {
-    use std::io::Write;
     let server = Server::start("")?;
     let program = "# the panes, doubled\ndefine twice dup add end\n21 twice str %1 pane\n";
-    let mut child = std::process::Command::new(FUX)
-        .arg("-")
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(e)?;
-    child
-        .stdin
-        .take()
-        .ok_or("no stdin")?
-        .write_all(program.as_bytes())
-        .map_err(e)?;
-    let out = child.wait_with_output().map_err(e)?;
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n%1\n");
+    let out = server.piped(fux().as_ref(), &["-"], program)?;
+    assert_eq!(out.stdout, "42\n%1\n");
+    // What it reads is its program: `input` has nothing left to read.
+    let input = server.piped(fux().as_ref(), &["-"], "input")?;
+    assert!(input.stderr.starts_with("fux: read: "), "{}", input.stderr);
     for name in ["prog.fux", "prog"] {
         let file = server.dir.join(name);
         std::fs::write(&file, program).map_err(e)?;
@@ -401,6 +389,58 @@ fn programs_come_from_stdin_and_files() -> Outcome {
         "{}",
         missing.stderr
     );
+    Ok(())
+}
+
+/// A script runs as a shell runs it: from its `#!` line, with its
+/// arguments; it reads stdin, files and the environment (a variable not
+/// set fails `unset_var`), warns on stderr, and ends with the status it
+/// gives. A file given as a word is not run: the error says how.
+#[test]
+fn a_script_runs_as_the_shell_runs_it() -> Outcome {
+    use std::os::unix::fs::PermissionsExt;
+    let server = Server::start("")?;
+    let script = |name: &str, text: &str| {
+        let file = server.dir.join(name);
+        std::fs::write(&file, text).map_err(e)?;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
+        Ok::<_, String>(file)
+    };
+    let greet = script(
+        "greet.fux",
+        "#!/usr/bin/env -S fux --file\nargs each str 'hello ' swap cat print end\n",
+    )?;
+    let greeted = server.piped(&greet, &["ann", "bob"], "")?;
+    assert_eq!(
+        greeted.stdout, "hello ann\nhello bob\n",
+        "{}",
+        greeted.stderr
+    );
+    let note = script("note.txt", "noted\n")?;
+    let shell = script(
+        "shell.fux",
+        "#!/usr/bin/env -S fux --file
+        input trim print
+        args 0 at read-file trim print
+        str FUX_SOCKET getenv print
+        str unset_var try str FUX_NO_SUCH_VAR getenv catch nip end print
+        str 'to stderr' warn
+        str left 3 exit
+        str never print\n",
+    )?;
+    let ran = server.piped(&shell, &[&note.to_string_lossy()], "typed\n")?;
+    let socket = server.socket.to_string_lossy();
+    let said = format!("typed\nnoted\n{socket}\nunset_var\nleft\n");
+    assert_eq!(
+        (ran.status, ran.stdout, ran.stderr),
+        (3, said, "to stderr\n".into())
+    );
+    let path = greet.to_string_lossy();
+    let named = server.fux(&[&path, "ann"])?;
+    assert_eq!(named.status, 1);
+    let how = format!("{path} is a file, which `fux --file {path}` runs");
+    assert!(named.stderr.contains(&how), "{}", named.stderr);
+    assert!(named.stdout.is_empty(), "{}", named.stdout);
     Ok(())
 }
 

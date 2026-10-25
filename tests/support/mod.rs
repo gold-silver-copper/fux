@@ -82,6 +82,14 @@ pub struct Output {
     pub stderr: String,
 }
 
+fn output(out: std::process::Output) -> Result<Output, String> {
+    Ok(Output {
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
 impl Server {
     /// A server whose shell is `sh` with a plain prompt, and `config`, a
     /// fuxth config its clients run: what it `set`s, set as it starts.
@@ -211,22 +219,54 @@ impl Server {
     }
 
     pub fn fux_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<Output, String> {
-        let mut command = Command::new(fux());
+        let mut command = self.command(fux());
+        command.args(args);
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        output(command.output().map_err(e)?)
+    }
+
+    /// `program`, to run against this server.
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
         command
-            .args(args)
             .env("FUX_SOCKET", &self.socket)
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
             .env_remove("FUX_PANE")
             .env_remove("FUX_SERVER");
-        for (k, v) in env {
-            command.env(k, v);
+        command
+    }
+
+    /// Runs `program` with `args`, `stdin` piped to it, as a shell runs
+    /// it: a script's `#!` line finds this build's fux first on the PATH.
+    pub fn piped(&self, program: &Path, args: &[&str], stdin: &str) -> Result<Output, String> {
+        let bin = Path::new(fux()).parent().ok_or("fux is in no directory")?;
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::iter::once(bin.to_owned()).chain(std::env::split_paths(&path));
+        let mut command = self.command(program);
+        (command.args(args))
+            .env("PATH", std::env::join_paths(path).map_err(e)?)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // A fork in another test may hold a script just written open for
+        // writing a moment longer (ETXTBSY).
+        let mut child = command.spawn();
+        for _ in 0..50 {
+            match &child {
+                Err(busy) if busy.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    child = command.spawn();
+                }
+                _ => break,
+            }
         }
-        let out = command.output().map_err(e)?;
-        Ok(Output {
-            status: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+        let mut child = child.map_err(e)?;
+        (child.stdin.take().ok_or("no stdin")?)
+            .write_all(stdin.as_bytes())
+            .map_err(e)?;
+        output(child.wait_with_output().map_err(e)?)
     }
 
     /// Runs a command that must succeed; its stdout.

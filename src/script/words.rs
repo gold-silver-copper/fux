@@ -1,7 +1,7 @@
 //! fux's words: each a name, what it does to the stack, in the names of
 //! the kinds it takes and gives (`KINDS`, `NAMES`), and a line of help;
 //! and what each does, run by the program's [`Host`].
-use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Then};
+use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Shell, Then};
 use crate::code::Code;
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
@@ -205,6 +205,13 @@ pub const WORDS: &[Word] = &[
     word("Server", "force-kill-server", "--", "stop it anyway, whatever fux version it is"),
     word("Server", "set", "setting text --", "a setting of the server's, for every client: `fux help set` lists them"),
     word("Server", "version", "-- text", "this fux's version (a pane's version is `str version get` on the pane)"),
+    // Shell
+    word("Shell", "args", "-- list", "the strings after fux --file FILE (none for any other program)"),
+    word("Shell", "input", "-- string", "the rest of stdin, as UTF-8 text, 16 MiB at most; not when the program came from stdin"),
+    word("Shell", "read-file", "path -- string", "a file's text, as UTF-8, 16 MiB at most"),
+    word("Shell", "getenv", "name -- string", "an environment variable's value; one not set fails unset_var"),
+    word("Shell", "warn", "value --", "print a value on stderr, a line"),
+    word("Shell", "exit", "n --", "end the program now, what is left printed, with exit status n, 0 to 255"),
     // Config
     word("Config", "prefix", "key --", "this client's prefix (config)"),
     word("Config", "bind", "keys code --", "keys after the prefix run fuxth (config)"),
@@ -1370,6 +1377,17 @@ impl fuxth::Host for Host<'_> {
                 tell(Command::Set { option, value })
             }
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
+            // ------------------------------------------------------- shell
+            "args" => local(Local::Shell(Shell::Args)),
+            "input" => local(Local::Shell(Shell::Input)),
+            "read-file" => local(Local::Shell(Shell::ReadFile(string(&next()?)?))),
+            "getenv" => {
+                let name = string(&next()?)?.parse();
+                let name = name.map_err(|why: String| fail(Code::BadValue, why))?;
+                local(Local::Shell(Shell::Getenv(name)))
+            }
+            "warn" => local(Local::Shell(Shell::Warn(next()?.text()))),
+            "exit" => local(Local::Shell(Shell::Exit(within(&next()?, 0..=255)?))),
             // ------------------------------------------------------ config
             "prefix" | "bind" | "bind-root" | "unbind" | "unbind-root" | "unbind-all" | "label"
             | "group" | "repeat" => self.configure(name, &mut next),

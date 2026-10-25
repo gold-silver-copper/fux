@@ -170,8 +170,10 @@ codes! {
     BadBinding "bad_binding",
     /// A program that did not check (`check`).
     Check "check",
-    /// A file that could not be read.
+    /// A file that could not be read, or stdin.
     Read "read",
+    /// An environment variable `getenv` names that is not set.
+    UnsetVar "unset_var",
     /// Output that could not be written.
     Output "output",
     /// A word that may not run inside another's run.
