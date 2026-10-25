@@ -613,7 +613,7 @@ fn osc(body: &[u8]) -> (String, Does) {
         ),
         "52" => Does::Implemented("a clipboard event"),
         "4" | "5" if rest.ends_with('?') => Does::Implemented(
-            "answered (Feature::Palette): the colour the program set, or xterm's default",
+            "answered (Feature::Palette): the colour the program set, or the host's; else not answered",
         ),
         "4" | "5" | "104" | "105" => Does::Implemented(
             "the palette kept (Feature::Palette); fux paints a changed entry's cells in its colour",

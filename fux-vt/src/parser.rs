@@ -1014,8 +1014,8 @@ impl Parser {
     }
     /// Tells the parser what the host's terminal shows for palette entries
     /// 0 to 15 (`None`: unknown). With `Feature::Palette`, a program's query
-    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it
-    /// rather than xterm's default. A colour the program set still wins,
+    /// of an entry it has not set (`OSC 4 ; index ; ?`) is answered with it,
+    /// and not at all where it is unknown. A colour the program set wins,
     /// and no reset (OSC 104, DECSTR, RIS) clears the host's. It changes no
     /// colour drawn.
     pub fn set_host_palette(&mut self, palette: [Option<Rgb>; 16]) {
