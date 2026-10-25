@@ -955,10 +955,7 @@ impl Session {
     /// terminal, a frame held, the output waiting its turns; then tells
     /// its exit, if one waits on that.
     fn drain(&mut self, id: PaneId) {
-        let left = self.pane(id).ok().map(|p| unread(p.process()));
-        if let Some(left) = left.filter(|l| !l.is_empty()) {
-            self.output(id, &left);
-        }
+        self.read_left(id);
         // Each turn reads some of it, and nothing adds more.
         let waits = |p: &Pane| p.has_unread() || p.frame_deadline().is_some();
         while self.pane(id).is_ok_and(waits) {
@@ -1928,12 +1925,7 @@ impl Session {
         // till the last of it is read; at each, a frame it holds read, one
         // begun in output read since too.
         if first {
-            let left = (self.parts.panes().get(&id))
-                .map(|p| unread(p.process()))
-                .unwrap_or_default();
-            if !left.is_empty() {
-                self.output(id, &left);
-            }
+            self.read_left(id);
         }
         self.read_with(id, Pane::release_frame);
         let Some(mut pane) = self.parts.pane_mut(id) else {
@@ -1965,6 +1957,28 @@ impl Session {
                     self.notify_to(client, format!("{id} {}", process::told(ended)), false);
                 }
                 self.touch();
+            }
+        }
+    }
+
+    /// Reads what pane `id`'s program left on its terminal as it ends, or
+    /// is respawned over (`unread`); what is past `LEFT_MAX` is not, which
+    /// the clients showing it are told.
+    fn read_left(&mut self, id: PaneId) {
+        let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process())) else {
+            return;
+        };
+        if !left.is_empty() {
+            self.output(id, &left);
+        }
+        if cut {
+            let why = format!(
+                "{id}'s program left more than {} MiB on its terminal as it ended: \
+                 the rest was not read",
+                LEFT_MAX >> 20
+            );
+            for client in self.viewers(self.locate(id).map(|(_, t)| t)) {
+                self.notify_to(client, why.clone(), true);
             }
         }
     }
@@ -3393,21 +3407,34 @@ impl Session {
     }
 }
 
-/// What a program's terminal holds, unread, up to a mebibyte: read as it
-/// exits, so that its last screen is whole.
-fn unread(process: &Process) -> Vec<u8> {
+/// The most read of what a program left on its terminal as it ends.
+const LEFT_MAX: usize = 1 << 20;
+
+/// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
+/// it held more: read as it ends, so that its last screen is whole.
+fn unread(process: &Process) -> (Vec<u8>, bool) {
+    match process {
+        Process::Reading(child) => left_on(&child.master),
+        Process::HungUp(_) | Process::Absent | Process::Exited(_) => (Vec::new(), false),
+    }
+}
+
+/// What `fd` holds to read now, up to `LEFT_MAX`, and whether it held more.
+fn left_on(fd: impl std::os::fd::AsFd) -> (Vec<u8>, bool) {
     let mut left = Vec::new();
-    if let Process::Reading(child) = process {
-        let mut buffer = [0u8; 16384];
-        while left.len() < 1 << 20 {
-            match fuxix::io::read(&child.master, &mut buffer) {
-                Ok(n) if n > 0 => left.extend_from_slice(buffer.get(..n).unwrap_or_default()),
-                Err(fuxix::Errno::INTR) => {}
-                Ok(_) | Err(_) => break,
-            }
+    let mut buffer = [0u8; 16384];
+    let most = buffer.len();
+    loop {
+        // A byte past the most, read, says there was more.
+        let room = LEFT_MAX.saturating_sub(left.len());
+        let read = buffer.get_mut(..room.clamp(1, most)).unwrap_or_default();
+        match fuxix::io::read(&fd, read) {
+            Ok(n) if n > 0 && room == 0 => return (left, true),
+            Ok(n) if n > 0 => left.extend_from_slice(read.get(..n).unwrap_or_default()),
+            Err(fuxix::Errno::INTR) => {}
+            Ok(_) | Err(_) => return (left, false),
         }
     }
-    left
 }
 
 /// What a new pane starts.
@@ -4020,6 +4047,18 @@ mod tests {
         assert!(at("title")? < at("exited")?, "{lines}");
         assert!(at("bell")? < at("exited")?, "{lines}");
         assert!(at("exited")? < at("respawned")?, "{lines}");
+        Ok(())
+    }
+
+    /// What a program left is read up to `LEFT_MAX`, and more past it is
+    /// said: a file of zeros holds more, one of nothing none.
+    #[test]
+    fn what_is_left_past_the_most_read_is_said() -> Result<(), String> {
+        let zeros = std::fs::File::open("/dev/zero").map_err(|e| e.to_string())?;
+        let (left, more) = left_on(&zeros);
+        assert_eq!((left.len(), more), (LEFT_MAX, true));
+        let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
+        assert_eq!(left_on(&null), (Vec::new(), false));
         Ok(())
     }
 
