@@ -1234,21 +1234,38 @@ impl Session {
     }
 
     /// The split of `target` along `axis`, the two taking `shares` if
-    /// given, and the size the new pane starts at: its place in the
-    /// layout the split makes, which its tab must have room for.
+    /// given, and the size the new pane starts at: the one settling gives
+    /// it in the layout the split makes, which its tab must have room for,
+    /// `followers` focusing it unzoomed. Shown on no screen (each zoomed
+    /// on another pane), it starts at its place on the tab's own size.
     fn split_size(
         &self,
         target: PaneId,
         (axis, shares): (Axis, Option<(NonZeroU32, NonZeroU32)>),
-        here: Here,
+        followers: &[ClientId],
     ) -> Result<(Split, Size), Error> {
         let new = self.ids.clone().pane()?;
         let split =
             (self.parts.plan_split((target, new), axis, shares)).ok_or(Error::NoPane(target))?;
-        self.room(split.tab(), Some(split.root()))?;
-        let area = self.reference_area(split.tab(), here);
-        let rect = area.and_then(|area| layout::place(split.root(), area).rect(new));
-        let size = rect.and_then(|r| Size::new(r.h(), r.w()).ok());
+        self.room(split.tab(), Some(split.root()), None)?;
+        let seat = |view: &View, now| match followers.contains(&view.id) {
+            true => (false, Some(new)),
+            false => now,
+        };
+        let (mut placed, mut shown) = (Placement::default(), Vec::new());
+        self.shown_in((split.tab(), split.root()), seat, &mut placed, &mut shown);
+        let mut sizes = shown.into_iter().filter(|(p, _)| *p == new).map(|(_, s)| s);
+        let least = sizes
+            .next()
+            .map(|first| sizes.fold(first, |(rows, cols), (h, w)| (rows.min(h), cols.min(w))));
+        let own = || {
+            let area = self.tab(split.tab())?.fit().area();
+            let rect = layout::place(split.root(), area).rect(new)?;
+            Some((rect.h(), rect.w()))
+        };
+        let size = least
+            .or_else(own)
+            .and_then(|(rows, cols)| Size::new(rows, cols).ok());
         Ok((split, size.ok_or(Error::NoPane(target))?))
     }
 
@@ -1602,20 +1619,26 @@ impl Session {
 
     /// What a new tab is laid out on while no client shows it: `size`, if
     /// given; else the screen of the commanding client, or of any client
-    /// attached, which it then fits. With no client, and no size given, it
+    /// attached with room for a pane, which it then fits. With no client, and no size given, it
     /// has no size, which is not made up: it is refused.
     fn new_fit(&self, size: command::Size, here: Here) -> Result<Fit, Error> {
         if let Some(size) = size {
             return Ok(Fit::Fixed(size.size()));
         }
         let own = here.client().and_then(|c| self.views.get(&c));
-        let client = (own.into_iter().chain(self.views.values())).find(|v| v.sizes());
-        let why = match client.map(|view| Self::screen_size(view).ok_or(view.id)) {
-            Some(Ok(size)) => return Ok(Fit::Clients(size)),
-            Some(Err(client)) => format!("{client}'s screen has no room for a pane below its bar"),
-            None => "no client is attached to lay it out on (one that only watches sizes \
+        let mut sizing = (own.into_iter().chain(self.views.values()))
+            .filter(|v| v.sizes())
+            .peekable();
+        let none = sizing.peek().is_none();
+        if let Some(size) = sizing.find_map(Self::screen_size) {
+            return Ok(Fit::Clients(size));
+        }
+        let why = match none {
+            true => {
+                "no client is attached to lay it out on (one that only watches sizes \
                      nothing), and no size was given"
-                .to_owned(),
+            }
+            false => "no client's screen has room for a pane below its bar",
         };
         Err(fail(
             Code::Size,
@@ -1724,7 +1747,8 @@ impl Session {
     /// is laid out on what its fit says, as commands resizing it are;
     /// otherwise its panes keep their size, so leaving a tab resizes
     /// nothing. A tab that fits clients takes the smallest screen showing
-    /// it as its size.
+    /// it as its size. Each tab is laid out as `shown_in` says, which a
+    /// pane about to start is sized by too.
     fn size_panes(&mut self) {
         let mut sizes = std::mem::take(&mut self.shown_sizes);
         let mut placed = std::mem::take(&mut self.placed);
@@ -1732,9 +1756,6 @@ impl Session {
         // Each tab a client sizes, and its smallest screen if it has one.
         let mut screens = BTreeMap::new();
         for view in self.views.values().filter(|v| v.sizes()) {
-            self.placement_into(view, &mut placed);
-            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
-            sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
             if let Some(tab) = self.shown_tab(view.id) {
                 let least = screens.entry(tab.id()).or_insert(None);
                 if let Some((rows, cols)) = Self::screen_size(view).map(Size::nonzero) {
@@ -1749,10 +1770,10 @@ impl Session {
             }
         }
         let changed = (self.parts).changed_unshown(|tab| screens.contains_key(&tab));
-        for (root, area) in changed {
-            layout::place_into(root, area, &mut placed);
-            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
-            sizes.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
+        for tab in screens.into_keys().chain(changed) {
+            if let Some(root) = self.root(tab) {
+                self.shown_in((tab, root), |_, now| now, &mut placed, &mut sizes);
+            }
         }
         self.placed = placed;
         // A pane's rectangles side by side, for the smallest.
@@ -1776,6 +1797,44 @@ impl Session {
         self.shown_sizes = sizes;
         if resized {
             self.touch();
+        }
+    }
+
+    /// The rectangles, rows and columns, each pane of tab `tab` laid out as
+    /// `root` is shown in, into `out` (empty ones left out): on the screen
+    /// of each client that sizes the tab, zoomed and focusing as `seat`
+    /// makes of what the client is now (zoomed, its focus there); with
+    /// none, on what the tab's fit says. Settling sizes a pane to the
+    /// smallest it has here, and leaves one with none at its size.
+    fn shown_in(
+        &self,
+        (tab, root): (TabId, &Tree),
+        seat: impl Fn(&View, (bool, Option<PaneId>)) -> (bool, Option<PaneId>),
+        placed: &mut Placement,
+        out: &mut Vec<(PaneId, (u16, u16))>,
+    ) {
+        let Some(t) = self.tab(tab) else {
+            return;
+        };
+        let mut sizing = self.sizing(tab).peekable();
+        let fit = sizing.peek().is_none().then(|| (t.fit().area(), None));
+        let screens = sizing.map(|view| {
+            let zoomed = match seat(view, (view.zoom, t.focus(view.id))) {
+                (true, focus) => focus,
+                (false, _) => None,
+            };
+            (Self::pane_area(view), zoomed)
+        });
+        for (area, zoomed) in screens.chain(fit) {
+            match zoomed.filter(|_| !area.is_empty()) {
+                Some(focus) => {
+                    placed.clear();
+                    placed.panes.push((focus, area));
+                }
+                None => layout::place_into(root, area, placed),
+            }
+            let shown = placed.panes.iter().filter(|(_, r)| !r.is_empty());
+            out.extend(shown.map(|(p, r)| (*p, (r.h(), r.w()))));
         }
     }
 
@@ -2213,7 +2272,7 @@ impl Session {
                 ids,
             } => {
                 let (cwd, fit, size) =
-                    self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
+                    self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
                 let new = NewPane::new(Start::Shell(env.as_slice()), &cwd, &starting, size);
                 let made = self.create_workspace(name.clone(), None, fit, new)?;
                 self.follow(here, made.ws, None);
@@ -2228,7 +2287,7 @@ impl Session {
                 ids,
             } => {
                 let (cwd, fit, size) =
-                    self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
+                    self.opening((*ids, cwd.as_deref(), *size), (here, true), &starting)?;
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
                 }
@@ -2258,7 +2317,7 @@ impl Session {
             } => {
                 // Its place is out of every client's way: no client follows.
                 let (dir, fit, size) =
-                    self.opening(*ids, cwd.as_deref(), *size, here, &starting)?;
+                    self.opening((*ids, cwd.as_deref(), *size), (here, false), &starting)?;
                 // A name given is one `str NAME tab` finds: it must be the only one.
                 if let Some(name) = name {
                     self.check_tab_name(name, None)?;
@@ -2452,19 +2511,22 @@ impl Session {
 
     /// What `new-workspace`, `new-tab` and `run` do before their pane
     /// starts: the ids asked for taken, the directory it starts in found,
-    /// and its tab's fit and its size there.
+    /// and its tab's fit and the size settling gives its pane: if `follows`,
+    /// its client then shows it, on its screen; else its fit's.
     fn opening(
         &mut self,
-        ids: Wanted,
-        dir: Option<&Path>,
-        size: command::Size,
-        here: Here,
+        (ids, dir, size): (Wanted, Option<&Path>, command::Size),
+        (here, follows): (Here, bool),
         starting: &Starting,
     ) -> Result<(PathBuf, Fit, Size), Error> {
         self.want(ids, starting.restoring)?;
         let cwd = self.start_dir(here, dir, None)?;
         let fit = self.new_fit(size, here)?;
-        Ok((cwd, fit, fit.size()))
+        let follower = here.client().filter(|_| follows);
+        let screen = (follower.and_then(|c| self.views.get(&c)))
+            .filter(|view| view.sizes())
+            .and_then(Self::screen_size);
+        Ok((cwd, fit, screen.unwrap_or(fit.size())))
     }
 
     /// `ls`: everything there is, or `target` and what is in it, as text
@@ -2683,7 +2745,7 @@ impl Session {
         };
         // Its tab found (by `split_size`) before the program starts, which
         // nothing can then leave running.
-        let (split, size) = self.split_size(target, (axis, shares), here)?;
+        let (split, size) = self.split_size(target, (axis, shares), &followers)?;
         let mut ids = self.ids.clone();
         let new = NewPane::new(start, &cwd, &starting, size);
         let pane = self.new_pane(&mut ids, new)?;
@@ -2867,7 +2929,7 @@ impl Session {
                 let destination = self.neighbor(pane, direction, here)?;
                 let mut root = self.root(from).cloned();
                 layout::move_beside(&mut root, pane, destination, direction);
-                self.room(from, root.as_ref())?;
+                self.room(from, root.as_ref(), None)?;
                 self.parts.reshape(pane, |old| *old = root);
                 return Ok(String::new());
             }
@@ -2903,7 +2965,7 @@ impl Session {
         }
         let mut root = self.root(tab).cloned();
         layout::append(&mut root, pane);
-        self.room(tab, root.as_ref())?;
+        self.room(tab, root.as_ref(), here.client())?;
         self.parts.relocate(pane, tab);
         // The moving client follows its pane.
         let pane = Some(pane);
@@ -2914,14 +2976,23 @@ impl Session {
     /// Refused unless tab `tab` laid out as `root` shows every pane on each
     /// size it is laid out on: its own, which a dump makes it at (`size`,
     /// or the screens it last fitted), and the screen of each client
-    /// showing it that sizes its panes. So a split or a move hides no pane,
-    /// and a dump can make every layout there is again.
-    fn room(&self, tab: TabId, root: Option<&Tree>) -> Result<(), Error> {
+    /// showing it that sizes its panes, `follower` too, which is about to.
+    /// So a split or a move hides no pane, and a dump can make every
+    /// layout there is again.
+    fn room(
+        &self,
+        tab: TabId,
+        root: Option<&Tree>,
+        follower: Option<ClientId>,
+    ) -> Result<(), Error> {
         let Some(root) = root else {
             return Ok(());
         };
         let own = self.tab(tab).ok_or(Error::NoTab(tab))?.fit().area();
-        let screens = (self.sizing(tab)).map(|v| (Some(v.id), Self::pane_area(v)));
+        let follower = follower
+            .and_then(|c| self.views.get(&c))
+            .filter(|v| v.sizes());
+        let screens = (self.sizing(tab).chain(follower)).map(|v| (Some(v.id), Self::pane_area(v)));
         let mut sizes = std::iter::once((None, own)).chain(screens);
         let Some((client, area)) = sizes.find(|(_, a)| !layout::shows_all(root, *a)) else {
             return Ok(());
@@ -3782,7 +3853,7 @@ mod tests {
         fux_vt::Size::new(rows, cols).map_err(|e| e.to_string())
     }
 
-    use super::testing::{attached, output, requests, run, started};
+    use super::testing::{attached, output, output_as, requests, run, started};
     use super::*;
 
     /// A client that only watches, of `rows` by `cols`, attached.
@@ -5183,6 +5254,64 @@ mod tests {
         assert!(!lines.contains("resized %3"), "{lines}");
         let size = s.parts.panes().get(&PaneId::of(3)).map(Pane::size);
         assert_eq!(size, Some(sized(10, 18)?));
+        Ok(())
+    }
+
+    /// A pane starts at the size settling gives it, however many clients
+    /// show its tab: a split's, the smallest of the screens showing it, a
+    /// client zoomed that follows it unzoomed; a tab's its client follows,
+    /// that client's screen, not the size given for while none shows it.
+    #[test]
+    fn a_pane_starts_at_the_size_its_screens_give_it() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let wide = s.attach(11, 101, None).map_err(|e| e.to_string())?;
+        s.attach(11, 81, None).map_err(|e| e.to_string())?;
+        let size = |s: &Session, id| s.parts.panes().get(&PaneId::of(id)).map(Pane::size);
+        // The narrow one, zoomed, follows the split unzoomed.
+        run(&mut s, "str c2 client zoom")?;
+        let lines = told(&mut s, |s| {
+            let _ = run(s, "%1 split drop");
+        });
+        assert!(
+            lines.contains("created %2") && !lines.contains("resized %2"),
+            "{lines}"
+        );
+        assert_eq!(size(&s, 2), Some(sized(10, 40)?));
+        let lines = told(&mut s, |s| {
+            let _ = output_as(s, Some(wide), "opts 30 5 size new-tab drop");
+        });
+        assert!(
+            lines.contains("created %3") && !lines.contains("resized %3"),
+            "{lines}"
+        );
+        assert_eq!(size(&s, 3), Some(sized(10, 101)?));
+        Ok(())
+    }
+
+    /// A client with no room for a pane lays out no new tab, nor is a
+    /// pane moved where the client following it would hide one.
+    #[test]
+    fn a_screen_with_no_room_lays_out_no_pane() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
+        // Its first client, of one row, has no room: the next one's screen
+        // is the tab's.
+        s.attach(1, 40, None).map_err(|e| e.to_string())?;
+        s.attach(11, 40, None).map_err(|e| e.to_string())?;
+        s.detach(small);
+        run(&mut s, "opts str +1 workspace in new-tab drop")?;
+        let size = s.parts.panes().get(&PaneId::of(2)).map(Pane::size);
+        assert_eq!(size, Some(sized(10, 40)?));
+        let small = s.attach(5, 6, None).map_err(|e| e.to_string())?;
+        let made = "opts 100 10 size str +1 workspace in new-tab \
+                    dup split drop dup split drop split drop";
+        run(&mut s, made)?;
+        let refused = output_as(&mut s, Some(small), "%2 str @3 tab move-to").err();
+        let refused = refused.unwrap_or_default();
+        assert!(
+            refused.contains("no room") && refused.contains("screen"),
+            "{refused}"
+        );
         Ok(())
     }
 

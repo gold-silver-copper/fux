@@ -467,22 +467,14 @@ impl Parts {
         Some(())
     }
 
-    /// The layouts of the tabs no client sizes (`sized` says which do)
-    /// that changed since their panes were sized, each with the area its
-    /// fit lays it out in, for sizing them. Those are then taken as sized,
-    /// as is a sized one, by its clients.
-    pub(crate) fn changed_unshown(
-        &mut self,
-        sized: impl Fn(TabId) -> bool,
-    ) -> impl Iterator<Item = (&Tree, Rect)> {
+    /// The tabs no client sizes (`sized` says which do) whose layout
+    /// changed since their panes were sized, for sizing them on their fit.
+    /// Those are then taken as sized, as is a sized one, by its clients.
+    pub(crate) fn changed_unshown(&mut self, sized: impl Fn(TabId) -> bool) -> Vec<TabId> {
         let tabs = self.workspaces.iter_mut().flat_map(|w| w.tabs.iter_mut());
-        tabs.filter_map(move |tab| {
-            let changed = std::mem::take(&mut tab.changed);
-            let tab = &*tab;
-            (tab.root.as_ref())
-                .filter(|_| changed && !sized(tab.id))
-                .map(|root| (root, tab.fit.area()))
-        })
+        let changed = |tab: &mut Tab| std::mem::take(&mut tab.changed) && !sized(tab.id);
+        tabs.filter_map(|tab| changed(tab).then_some(tab.id))
+            .collect()
     }
 
     pub fn panes(&self) -> &BTreeMap<PaneId, Pane> {
