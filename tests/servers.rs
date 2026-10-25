@@ -452,6 +452,51 @@ fn a_client_that_reads_no_answers_is_read_no_more() -> Outcome {
     Ok(())
 }
 
+/// Kills `server` outright, as a crash does.
+fn crash(server: &Server) -> Outcome {
+    let pid = server.pid().ok_or("the server's pid")?;
+    let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
+    fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
+    // Gone before another starts: else `start` finds it still answering.
+    eventually("the server gone", || Ok(!alive(pid.as_raw())))
+}
+
+/// Starts a server on `server`'s socket again, which brings back what the
+/// one before saved.
+fn restart(server: &Server) -> Outcome {
+    let socket = server.socket.to_string_lossy().into_owned();
+    let again = Command::new(FUX)
+        .args(["str", &socket, "socket", "start"])
+        .env("XDG_STATE_HOME", server.dir.join("state"))
+        .env("XDG_CONFIG_HOME", server.dir.join("config"))
+        .env("HOME", &server.dir)
+        .env("SHELL", "/bin/sh")
+        .env_remove("FUX_PANE")
+        .env_remove("FUX_SOCKET")
+        .output()
+        .map_err(e)?;
+    let said = String::from_utf8_lossy(&again.stderr);
+    again
+        .status
+        .success()
+        .then_some(())
+        .ok_or_else(|| said.into_owned())
+}
+
+/// The files `server` saves its session in, of `extension`, and what each
+/// holds.
+fn saved(server: &Server, extension: &str) -> Result<Vec<(std::path::PathBuf, String)>, String> {
+    let layout = server.dir.join("state").join("fux");
+    let files = std::fs::read_dir(&layout)
+        .map_err(e)?
+        .filter_map(Result::ok);
+    Ok(files
+        .map(|f| f.path())
+        .filter(|path| path.extension().is_some_and(|x| x == extension))
+        .filter_map(|path| Some((path.clone(), std::fs::read_to_string(path).ok()?)))
+        .collect())
+}
+
 /// A server killed outright comes back on its socket with the panes it
 /// had, their ids, splits and sizes: a program waits for `respawn`, which
 /// starts it again; a `run` taking its tab's name is told where that came
@@ -484,39 +529,14 @@ fn a_crashed_server_comes_back() -> Outcome {
     let shell = first_word(&shell);
     server.ok(&["str", app, "pane", "70", "resize-x"])?;
     let before = server.ok(&["ls"])?;
-    // Saved within a second of the last change.
-    let layout = server.dir.join("state").join("fux");
+    // Saved within a second of the last change: the file itself, not the
+    // one written beside it and moved in. Its split's shares are the
+    // columns either side of the border.
     eventually("the layout saved", || {
-        let saved = std::fs::read_dir(&layout)
-            .map_err(e)?
-            .filter_map(Result::ok);
-        // The file itself, not the one written beside it and moved in.
-        Ok(saved
-            .filter(|f| f.path().extension().is_some_and(|x| x == "layout"))
-            .filter_map(|f| std::fs::read_to_string(f.path()).ok())
-            .any(|text| text.contains(" 70 29 shares ")))
+        Ok((saved(&server, "layout")?.iter()).any(|(_, text)| text.contains(" 70 29 shares ")))
     })?;
-    let pid = server.pid().ok_or("the server's pid")?;
-    let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
-    fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
-    // Gone before another starts: else `start` finds it still answering.
-    eventually("the server gone", || Ok(!alive(pid.as_raw())))?;
-    let socket = server.socket.to_string_lossy().into_owned();
-    let again = Command::new(FUX)
-        .args(["str", &socket, "socket", "start"])
-        .env("XDG_STATE_HOME", server.dir.join("state"))
-        .env("XDG_CONFIG_HOME", server.dir.join("config"))
-        .env("HOME", &server.dir)
-        .env("SHELL", "/bin/sh")
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SOCKET")
-        .output()
-        .map_err(e)?;
-    assert!(
-        again.status.success(),
-        "{}",
-        String::from_utf8_lossy(&again.stderr)
-    );
+    crash(&server)?;
+    restart(&server)?;
     let mut after = String::new();
     eventually("the panes back, at their sizes", || {
         after = server.ok(&["ls"])?;
@@ -558,13 +578,7 @@ fn a_crashed_server_comes_back() -> Outcome {
     assert_eq!(server.ok(&paused)?, "false\n");
     server.ok(&["force-kill-server"])?;
     eventually("the layout forgotten", || {
-        let saved = std::fs::read_dir(&layout)
-            .map_err(e)?
-            .filter_map(Result::ok);
-        Ok(saved
-            .filter(|f| f.path().extension().is_some_and(|x| x == "layout"))
-            .count()
-            == 0)
+        Ok(saved(&server, "layout")?.is_empty())
     })
 }
 
@@ -579,25 +593,55 @@ fn a_pane_made_just_before_a_crash_comes_back() -> Outcome {
     ];
     let late = server.ok(&run)?;
     let late = first_word(&late);
-    let pid = server.pid().ok_or("the server's pid")?;
-    let pid = fuxix::process::Pid::from_raw(i32::try_from(pid).map_err(e)?).ok_or("a pid")?;
-    fuxix::process::kill(pid, fuxix::process::Signal::Kill).map_err(e)?;
-    eventually("the server gone", || Ok(!alive(pid.as_raw())))?;
-    let socket = server.socket.to_string_lossy().into_owned();
-    let again = Command::new(FUX)
-        .args(["str", &socket, "socket", "start"])
-        .env("XDG_STATE_HOME", server.dir.join("state"))
-        .env("HOME", &server.dir)
-        .env("SHELL", "/bin/sh")
-        .env_remove("FUX_PANE")
-        .env_remove("FUX_SOCKET")
-        .output()
-        .map_err(e)?;
-    assert!(again.status.success());
+    crash(&server)?;
+    restart(&server)?;
     eventually("the late pane back", || {
         let ls = server.ok(&["ls"])?;
         Ok(ls.contains(&format!("{late} sleep")))
     })?;
+    server.ok(&["force-kill-server"])?;
+    Ok(())
+}
+
+/// A client that attaches while a saved session comes back is let in once
+/// it is back: the session is laid out on the sizes it was saved at, not
+/// on that client's screen, too narrow to show its two panes.
+#[test]
+fn a_client_attaching_during_a_restore_waits_for_it() -> Outcome {
+    let server = Server::start("")?;
+    let run = [
+        "opts", "100", "10", "size", "str", "sleep", "program", "str", "60", "arg", "run",
+    ];
+    let app = server.ok(&run)?;
+    let app = first_word(&app).to_owned();
+    let split = server.ok(&["str", &app, "pane", "horizontal", "split"])?;
+    let split = first_word(&split).to_owned();
+    let named = format!("p{}", app.trim_start_matches('%'));
+    let mut file = None;
+    eventually("the layout saved", || {
+        file = saved(&server, "layout")?.into_iter().next();
+        Ok(file
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("split")))
+    })?;
+    let (path, text) = file.ok_or("the layout")?;
+    crash(&server)?;
+    // A wait for output its paused program never gives holds the restore
+    // open, its tab made but not yet split, while the client attaches.
+    let hold = format!("str timeout try {named} 2 timeout wait drop catch 2drop end");
+    let held = text.replacen(
+        &format!(" let {named}\n"),
+        &format!(" let {named}\n{hold}\n"),
+        1,
+    );
+    assert_ne!(held, text, "{text}");
+    std::fs::write(&path, held).map_err(e)?;
+    restart(&server)?;
+    let mut client = server.attach_to(10, 4, "agent")?;
+    client.ready()?;
+    assert!(saved(&server, "failed")?.is_empty(), "{}", server.log());
+    let ls = server.ok(&["ls"])?;
+    assert!(ls.contains(&format!("{split} ")), "{ls}");
     server.ok(&["force-kill-server"])?;
     Ok(())
 }

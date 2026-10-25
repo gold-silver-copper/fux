@@ -960,7 +960,8 @@ impl Server {
         ControlFlow::Continue(())
     }
 
-    /// A restore is over: the requests held for it are answered.
+    /// A restore is over: the requests held for it are answered, and the
+    /// clients held attach.
     fn restored(&mut self) {
         if let Some(saved) = &mut self.saved {
             saved.restore = None;
@@ -973,6 +974,8 @@ impl Server {
                 && let Stage::Held(held) = mem::replace(&mut conn.stage, Stage::Command)
             {
                 self.request(index, held.request, held.context);
+            } else if let Stage::Attaching(..) = conn.stage {
+                self.read_conn(index);
             }
         }
     }
@@ -1481,6 +1484,7 @@ impl Server {
         index: usize,
         decoder: &mut Decoder,
     ) -> Result<bool, crate::protocol::Error> {
+        let restore_runs = self.saved.as_ref().is_some_and(|s| s.restore.is_some());
         let session = &mut self.session;
         let Some(conn) = self.conns.get_mut(index) else {
             return Ok(false);
@@ -1519,6 +1523,10 @@ impl Server {
                     (Ok(()), Role::Command) => conn.enter(session, Stage::Command),
                 }
             }
+            // A client attaches once the restore under way is over
+            // (`Server::restored`): until then no screen shows what it
+            // makes, which it lays out on the sizes saved alone.
+            Stage::Attaching(..) if restore_runs => return Ok(false),
             Stage::Attaching(passed, kind) => {
                 let Some(Attach {
                     size,

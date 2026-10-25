@@ -386,7 +386,8 @@ socket after a crash, a `kill -9` or a reboot runs it to bring the session
 back with the same ids: shells start fresh in their directories; a program
 `run` started waits, saying so on its screen, until `respawn` starts it
 (`paused` in `ls json`). Each tab comes back at the size it had, as a dump
-makes it (`TAB resize-auto` lets one fit clients again). `kill-server` and the last pane closing forget it.
+makes it (`TAB resize-auto` lets one fit clients again); a client that
+attaches meanwhile is let in once it is back. `kill-server` and the last pane closing forget it.
 
 ## Terminal features
 
