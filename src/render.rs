@@ -241,7 +241,9 @@ impl Sixels {
 /// Grids are equal when they show the same.
 impl PartialEq for Grid {
     fn eq(&self, other: &Grid) -> bool {
-        self.head() == other.head()
+        // All the grid shows but its cells and links.
+        let head = |g: &Grid| ((g.rows, g.cols, g.cursor), (g.modes, g.underline_styles));
+        head(self) == head(other)
             && self.cells == other.cells
             && (0..self.rows).all(|y| self.links.row_eq(&other.links, y))
     }
@@ -414,10 +416,6 @@ impl Links {
     fn row(&self, y: u16) -> Option<&[Link]> {
         self.0.get(usize::from(y))?.as_deref()
     }
-    fn get(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        let (pane, link) = self.row(y)?.get(usize::from(x))?.as_ref()?;
-        Some((*pane, link))
-    }
     /// Gives cell `x` of row `y`, `cols` wide, `link`.
     fn set(&mut self, y: u16, x: u16, link: Option<(PaneId, &Hyperlink)>, cols: u16) {
         let y = usize::from(y);
@@ -476,7 +474,8 @@ impl Grid {
     }
     /// The hyperlink of the cell at `y`, `x`, and the pane whose it is.
     pub fn link(&self, y: u16, x: u16) -> Option<(PaneId, &Hyperlink)> {
-        self.links.get(y, x)
+        let (pane, link) = self.links.row(y)?.get(usize::from(x))?.as_ref()?;
+        Some((*pane, link))
     }
     /// Makes the grid `rows` by `cols`, resizing its cells only if the size
     /// changed, so that a grid composed into again allocates nothing; and
@@ -533,13 +532,6 @@ impl Grid {
                 }
             }
         }
-    }
-    /// All the grid shows but its cells and links.
-    fn head(&self) -> impl PartialEq + '_ {
-        (
-            (self.rows, self.cols, self.cursor),
-            (self.modes, self.underline_styles),
-        )
     }
     /// Whether row `y` shows what `other`'s, a grid of its size, does: its
     /// cells, compared by `Cells::range_eq` without reading each one's
@@ -602,8 +594,7 @@ impl Grid {
             let i = start.saturating_add(usize::from(at));
             let gx = x.saturating_add(at);
             let Some(cell) = row.cell(col) else {
-                self.cells.set(i, CellRef::default());
-                self.links.unlink(y, gx..gx.saturating_add(1));
+                self.put(y, gx, CellRef::default());
                 continue;
             };
             // A wide glyph's two halves take the first two of its four
@@ -677,26 +668,19 @@ impl Grid {
         });
         if was_continuation
             && !cell.is_wide_continuation()
-            && let Some(leader) = index.checked_sub(1).filter(|_| x > 0)
-            && self.cells.get(leader).is_some_and(|c| c.is_wide())
+            && let Some(left) = x.checked_sub(1)
+            && self.get(y, left).is_some_and(|c| c.is_wide())
         {
-            self.cells.set(leader, CellRef::default());
-            self.links.unlink(y, x.saturating_sub(1)..x);
+            self.put(y, left, CellRef::default());
         }
         if was_wide
             && !cell.is_wide()
-            && let Some(rest) = x.checked_add(1).and_then(|x| self.index(y, x))
-            && self
-                .cells
-                .get(rest)
-                .is_some_and(|c| c.is_wide_continuation())
+            && let Some(right) = x.checked_add(1)
+            && self.get(y, right).is_some_and(|c| c.is_wide_continuation())
         {
-            self.cells.set(rest, CellRef::default());
-            let after = x.saturating_add(1);
-            self.links.unlink(y, after..after.saturating_add(1));
+            self.put(y, right, CellRef::default());
         }
-        self.cells.set(index, cell);
-        self.links.unlink(y, x..x.saturating_add(1));
+        self.put(y, x, cell);
     }
     /// The text of a row, trailing blanks trimmed: for `capture-client`.
     pub fn row_text(&self, y: u16) -> String {
