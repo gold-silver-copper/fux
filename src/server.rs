@@ -887,7 +887,11 @@ impl Server {
             }
             // Input given to panes since the last poll is written now rather
             // than when the next poll says their terminals can take it.
-            self.session.parts.each_pane_mut(Pane::write_input);
+            let mut wrote = false;
+            self.session
+                .parts
+                .each_pane_mut(|p| wrote |= p.write_input());
+            self.wrote_input(wrote);
             self.close_conns();
             // Each change settles as it is made; this catches output that
             // dropped rows a copy mode held.
@@ -1582,9 +1586,11 @@ impl Server {
                 Some(AttachedFrame::Act(act)) => attached.act(session, *act),
                 // The client's terminal was resized, which may have moved
                 // what it shows even if the size it ends at is the same:
-                // forgotten, it is repainted in full either way.
+                // forgotten, it is repainted in full either way, and its
+                // cell size, which a font zoom changes, is asked again.
                 Some(AttachedFrame::Resize(size)) => {
                     attached.known = false;
+                    session.terminal_resized(attached.client);
                     let resized = session.resize(attached.client, size.rows(), size.cols());
                     if let Err(refused) = resized {
                         session.notify_to(attached.client, refused.to_string(), true);
@@ -1706,13 +1712,20 @@ impl Server {
     }
 
     fn serve_pane(&mut self, id: PaneId, flags: PollFlags) {
-        if flags.intersects(PollFlags::OUT)
-            && let Some(mut pane) = self.session.parts.pane_mut(id)
-        {
-            pane.write_input();
-        }
+        let wrote = flags.intersects(PollFlags::OUT)
+            && (self.session.parts.pane_mut(id)).is_some_and(|mut p| p.write_input());
+        self.wrote_input(wrote);
         if flags.intersects(PollFlags::IN | PollFlags::HUP | PollFlags::ERR) {
             self.read_pane(id);
+        }
+    }
+
+    /// A program read input if `wrote`, making room in its queue: a scheme
+    /// report refused for want of it is sent now (`Session::tell_schemes`),
+    /// not at the next change that settles the session.
+    fn wrote_input(&mut self, wrote: bool) {
+        if wrote {
+            self.session.tell_schemes();
         }
     }
 

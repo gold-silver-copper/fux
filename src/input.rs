@@ -111,28 +111,37 @@ impl Session {
         };
         view.dirty |= shown;
         // Encoded as its program asked.
-        self.type_in(client, |screen, out| {
+        let refused = self.type_in(client, |screen, out| {
             crate::encode::key_bytes(stroke, screen.key_mode(), out)
         });
-        shown
+        shown || refused
     }
 
     /// Types into the client's focused pane what `write` makes for its
-    /// screen: a key or a paste, as its program asked. Refused already, and
-    /// told once (`InputQueue`): nothing more goes in, so a client typing
-    /// into a pane whose input queue is full costs nothing per key.
-    fn type_in(&mut self, client: ClientId, write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>)) {
+    /// screen: a key or a paste, as its program asked. Refused already
+    /// (`InputQueue`): nothing more goes in, so a client typing into a pane
+    /// whose input queue is full costs nothing per key but its notice,
+    /// shown again for each key or paste refused; whether it was.
+    fn type_in(
+        &mut self,
+        client: ClientId,
+        write: impl FnOnce(&fux_vt::Screen, &mut Vec<u8>),
+    ) -> bool {
         let Some(pane) = self.focused(client) else {
-            return;
+            return false;
         };
         self.typed(client);
         let Some(mut p) = self.parts.pane_mut(pane) else {
-            return;
+            return false;
         };
         // Refused, it is told as the acts are done (`Session::acts`).
         if !p.input.refusing() {
             let _ = p.push_with(write);
+            return false;
         }
+        drop(p);
+        self.notify_to(client, crate::session::lost(pane), true);
+        true
     }
 
     fn paste(&mut self, client: ClientId, text: &str) {
@@ -144,7 +153,7 @@ impl Session {
             return;
         }
         view.notice = None;
-        self.type_in(client, |screen, out| {
+        let _ = self.type_in(client, |screen, out| {
             crate::encode::paste(text, screen.mode(fux_vt::Mode::BracketedPaste), out)
         });
     }
@@ -201,7 +210,7 @@ impl Session {
         let (row, col) = rect.clamp(event.row, event.col);
         let event = MouseEvent { row, col, ..event };
         self.typed(client);
-        let Some(mut p) = self.hosted(pane) else {
+        let Some(mut p) = self.parts.pane_mut(pane) else {
             return;
         };
         let mut report = Vec::new();
@@ -872,8 +881,9 @@ mod tests {
         Ok(())
     }
 
-    /// A mouse report a full input queue refuses is told, and the keys
-    /// refused after it in the same run are not told again.
+    /// A mouse report a full input queue refuses is told, and so is each
+    /// key and paste refused after it, the notice cleared by a key shown
+    /// again.
     #[test]
     fn a_report_a_full_queue_refuses_is_told_once() -> Outcome {
         let (mut s, c) = session()?;
@@ -888,8 +898,11 @@ mod tests {
         };
         s.input(c, b"\x1b[<0;3;2M");
         assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
-        s.input(c, b"x");
-        assert_eq!(notice(&mut s), None, "the same run");
+        for typed in [b"x".as_slice(), b"y", b"\x1b[200~z\x1b[201~"] {
+            s.input(c, typed);
+            let told = notice(&mut s);
+            assert!(told.is_some_and(|n| n.contains("input to %1 was dropped")));
+        }
         Ok(())
     }
 

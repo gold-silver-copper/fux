@@ -57,19 +57,30 @@ macro_rules! styles {
         "\x1bP+q536d756c78\x1b\\\x1b[0m\x1b[4:3m\x1bP$qm\x1b\\\x1b[0m"
     };
 }
+/// Asks the terminal its cell size in pixels: as it attaches, and again
+/// each time it is resized ([`CELL_QUERY`]).
+macro_rules! cell {
+    () => {
+        "\x1b[16t"
+    };
+}
 /// What the server asks a client's terminal as it attaches: mode 2031
 /// (DECRQM), its colours (each palette entry its own OSC 4, as not every
 /// terminal reads several in one), underline styles, its cell size in
-/// pixels (`CSI 16 t`), its kitty flags, and last DA1, which every terminal
+/// pixels (`cell!`), its kitty flags, and last DA1, which every terminal
 /// answers, after the others (terminals answer in order): it says whether
 /// the terminal draws sixel, and ends the decoder's waiting.
 pub const QUERIES: &[u8] = concat!(
     "\x1b[?2031$p",
     colours!(),
     styles!(),
-    "\x1b[16t\x1b[?u\x1b[c"
+    cell!(),
+    "\x1b[?u\x1b[c"
 )
 .as_bytes();
+/// Asked of a terminal each time it is resized, which a font zoom does
+/// with its cells too.
+pub const CELL_QUERY: &[u8] = cell!().as_bytes();
 /// Pushes disambiguate and alternate keys (see the module documentation),
 /// and asks the flags again: their answer, disambiguate set, is the
 /// terminal's word that it sends Escape as `CSI 27 u`, which the decoder
@@ -153,6 +164,17 @@ impl Session {
         if self.views.contains_key(&client) {
             (self.outbox).push(Outgoing::To(client, ToAttached::Paint(bytes.into())));
         }
+    }
+
+    /// Client `client`'s terminal was resized, as a font zoom resizes it:
+    /// its cell size is unknown until it answers again (`CELL_QUERY`), so
+    /// no picture is laid out in, nor answered with, the old one.
+    pub(crate) fn terminal_resized(&mut self, client: ClientId) {
+        if let Some(view) = self.views.get_mut(&client) {
+            view.terminal.cell = None;
+            view.dirty = true;
+        }
+        self.ask(client, CELL_QUERY);
     }
 
     /// An answer or report from client `client`'s terminal.
@@ -267,7 +289,8 @@ impl Session {
     /// scheme of the terminal that answers for it, if it was told another
     /// or none, with no change of its own waiting (`tell_change`): it was
     /// shown on another terminal, or on none, when its own changed or it
-    /// asked; or its report was refused. Run as the session settles.
+    /// asked; or its report was refused. Run as the session settles, and
+    /// as a program reads its input, which makes room for a refused one.
     pub(crate) fn tell_schemes(&mut self) {
         let due: Vec<(PaneId, Scheme)> = (self.parts.panes().iter())
             .filter(|(_, p)| p.screen().mode(fux_vt::Mode::ColorSchemeUpdates))
@@ -286,7 +309,7 @@ impl Session {
 
     /// Pane `id`'s program is told the scheme is `scheme`, if its input
     /// queue takes the report; one refused is told lost (`InputQueue`), and
-    /// sent again as the session settles (`tell_schemes`).
+    /// sent again once there is room (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
             && pane.input.push(scheme.report()).is_ok()
@@ -334,9 +357,8 @@ impl Session {
     /// its palette whole, so that another client's replaces it, entries it
     /// did not say cleared; and what `graphics_client`'s terminal draws,
     /// which is nothing in a tab no client shows with a cell size, so a
-    /// program started there draws in text, which a capture reads (and its
-    /// mouse reports are made in that terminal's cells). With no such
-    /// terminal, nothing.
+    /// program started there draws in text, which a capture reads. With no
+    /// such terminal, nothing.
     pub(crate) fn hosted(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
         let tab = self.locate(id).map(|(_, tab)| tab);
         let terminal = |c: Option<ClientId>| Some(&self.views.get(&c?)?.terminal);
@@ -540,7 +562,7 @@ mod tests {
         Ok(())
     }
 
-    /// A pane's pictures and pixels are of a terminal showing its tab that
+    /// A pane's pictures and cell size are of a terminal showing its tab that
     /// said its cell size, whether or not it said its colours; not of one
     /// that typed there and went to another tab.
     #[test]
@@ -563,6 +585,26 @@ mod tests {
         assert_eq!(cell(&mut s), None);
         s.input(d, b"\x1b[6;16;8t\x1b[?62c");
         assert_eq!(cell(&mut s), fux_vt::CellSize::new(8, 16));
+        Ok(())
+    }
+
+    /// A terminal resized, as a font zoom resizes it, is asked its cell
+    /// size again, which is unknown to its panes until it answers.
+    #[test]
+    fn a_resized_terminals_cell_is_unknown_until_it_answers_again() -> Outcome {
+        let (mut s, c) = session()?;
+        let cell = |s: &mut Session| {
+            s.output(PaneId::of(1), b"");
+            (s.parts.panes().get(&PaneId::of(1))).and_then(|p| p.screen().cell_size())
+        };
+        s.input(c, b"\x1b[6;20;10t\x1b[?62c");
+        assert_eq!(cell(&mut s), fux_vt::CellSize::new(10, 20));
+        let _ = sent(&mut s, c);
+        s.terminal_resized(c);
+        assert_eq!(sent(&mut s, c), [CELL_QUERY.to_vec()]);
+        assert_eq!(cell(&mut s), None);
+        s.input(c, b"\x1b[6;24;12t");
+        assert_eq!(cell(&mut s), fux_vt::CellSize::new(12, 24));
         Ok(())
     }
 

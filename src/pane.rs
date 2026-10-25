@@ -548,6 +548,9 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// session takes them after every read, so they are fewer than the
     /// bytes it read.
     pub copied: Vec<Result<String, Uncopied>>,
+    /// Its program's copies that copied nothing, counted by why, kept until
+    /// a client showing it is told them (`Session::tell_refused`).
+    pub uncopied: std::collections::BTreeMap<Uncopied, usize>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
     /// What happened in it that events tell, in order, since the session
@@ -597,6 +600,7 @@ impl Pane<Loose> {
             scheme_told: None,
             bell: false,
             copied: Vec::new(),
+            uncopied: std::collections::BTreeMap::new(),
             wrote_at: Instant::now(),
             said: Vec::new(),
             respawns: 0,
@@ -623,7 +627,8 @@ impl<S> Pane<S> {
         #[rustfmt::skip]
         let pane = moved!(
             id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
-            colours, scheme_told, bell, copied, wrote_at, said, mouse_held, respawns, alerts, log
+            colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
+            alerts, log
         );
         pane
     }
@@ -830,19 +835,25 @@ impl<S> Pane<S> {
         begun
     }
 
-    /// Writes the waiting input, as far as the program's terminal takes it.
-    pub fn write_input(&mut self) {
+    /// Writes the waiting input, as far as the program's terminal takes it;
+    /// whether it took any, which makes room in the queue.
+    pub fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
-            return;
+            return false;
         };
+        let mut wrote = false;
         while let Some(bytes) = self.input.front() {
             match fuxix::io::write(&child.master, bytes) {
                 Ok(0) => break,
-                Ok(n) => self.input.advance(n),
+                Ok(n) => {
+                    self.input.advance(n);
+                    wrote = true;
+                }
                 Err(fuxix::Errno::INTR) => continue,
                 Err(_) => break,
             }
         }
+        wrote
     }
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
@@ -875,8 +886,9 @@ impl<S> Pane<S> {
         self.parser.screen()
     }
 
-    /// The sixel pictures its program drew while no terminal showing it
-    /// drew sixel, which were not kept.
+    /// The sixel pictures its program drew that were not kept whole, for
+    /// each cause `fux_vt::Parser::pictures_refused` names: among them,
+    /// those drawn while no terminal showing it drew sixel.
     pub fn pictures_refused(&self) -> u64 {
         self.parser.pictures_refused()
     }
@@ -969,13 +981,15 @@ impl<S> Pane<S> {
         let runs = Runs::Program(launch);
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
-        // old one (what it said, a bell, a copy), its colours and log.
+        // old one (what it said, a bell, a copy, one refused), its colours
+        // and log.
         let Pane {
             id: _,
             name: _,
             said: _,
             bell: _,
             copied: _,
+            uncopied: _,
             colours: _,
             log: _,
             respawns: _,
