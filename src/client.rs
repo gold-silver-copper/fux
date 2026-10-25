@@ -1264,8 +1264,12 @@ fn attached(
         if is(STOPS) {
             // What the server paints until it lets go is written before the
             // terminal is put back, not after, on the shell.
-            if send(stream, &AttachedFrame::Detach).is_ok() && keyboard.is_some() {
-                let _ = last_frames(stream, decoder, true, output.as_deref_mut());
+            // Welcomed, its only error is the terminal's writer's.
+            if send(stream, &AttachedFrame::Detach).is_ok()
+                && keyboard.is_some()
+                && let Some(Err(error)) = last_frames(stream, decoder, true, output.as_deref_mut())
+            {
+                return Err(error);
             }
             return Ok(STOPPED.into());
         }
