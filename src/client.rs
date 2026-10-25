@@ -721,35 +721,10 @@ impl Keyboard {
         }
     }
 
-    /// What the terminal sent, decoded.
+    /// What the terminal sent, decoded (`Screen::input`).
     fn input(&mut self, input: Input, acts: &mut Vec<Act>) {
-        match input {
-            // A key typed: to the screen open, else through the bindings.
-            Input::Key(stroke) => {
-                let effects = self.screen.key(&self.keymap, stroke, self.read_only);
-                self.apply(effects, acts);
-            }
-            Input::Reply(reply) => acts.push(Act::Reply(reply)),
-            Input::Paste(_) | Input::PasteTooLong if self.read_only => {
-                acts.push(crate::keymap::watching(&self.keymap));
-            }
-            Input::FocusIn | Input::FocusOut | Input::Mouse(_) if self.read_only => {}
-            Input::Paste(text) => {
-                let effects = self.screen.paste(&text);
-                self.apply(effects, acts);
-            }
-            Input::PasteTooLong => {
-                let limit = crate::decode::PASTE_LIMIT / 1024;
-                let text = format!("paste exceeds {limit} KiB; discarded");
-                acts.push(Act::Notice { text, error: true });
-            }
-            Input::FocusIn => acts.push(Act::Focus(true)),
-            Input::FocusOut => acts.push(Act::Focus(false)),
-            // The mouse is a program's, while the client shows none of its
-            // own screens.
-            Input::Mouse(_) if self.screen.kind().is_some() => {}
-            Input::Mouse(event) => acts.push(Act::Mouse(event)),
-        }
+        let effects = self.screen.input(&self.keymap, input, self.read_only);
+        self.apply(effects, acts);
     }
 
     /// Keys the server says were typed here (`send-keys` to this client),

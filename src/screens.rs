@@ -9,6 +9,7 @@
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::copy::SEARCH_MAX;
+use crate::decode::Input;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
@@ -257,6 +258,33 @@ impl Screen {
                 question: question.clone(),
                 about: *about,
             }),
+        }
+    }
+
+    /// What a client's terminal sent (`input`), decoded: what it leads to,
+    /// as `key` and `paste` say, else what the server is sent. A client
+    /// that only watches (`read_only`) is told it of a paste, and sends no
+    /// focus change or mouse report; the mouse is a program's only while
+    /// no screen of the client's own is open.
+    pub fn input(&mut self, keymap: &Keymap, input: Input, read_only: bool) -> Vec<Effect> {
+        let send = |act| vec![Effect::Send(act)];
+        match input {
+            Input::Key(stroke) => self.key(keymap, stroke, read_only),
+            Input::Reply(reply) => send(Act::Reply(reply)),
+            Input::Paste(_) | Input::PasteTooLong if read_only => {
+                send(crate::keymap::watching(keymap))
+            }
+            Input::FocusIn | Input::FocusOut | Input::Mouse(_) if read_only => Vec::new(),
+            Input::Paste(text) => self.paste(&text),
+            Input::PasteTooLong => {
+                let limit = crate::decode::PASTE_LIMIT / 1024;
+                let text = format!("paste exceeds {limit} KiB; discarded");
+                send(Act::Notice { text, error: true })
+            }
+            Input::FocusIn => send(Act::Focus(true)),
+            Input::FocusOut => send(Act::Focus(false)),
+            Input::Mouse(_) if self.kind().is_some() => Vec::new(),
+            Input::Mouse(event) => send(Act::Mouse(event)),
         }
     }
 

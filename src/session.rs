@@ -3888,47 +3888,13 @@ pub(crate) mod testing {
         }
 
         pub(crate) fn inputs(&mut self, client: ClientId, inputs: Vec<crate::decode::Input>) {
-            use crate::act::Act;
-            use crate::decode::Input;
             for input in inputs {
                 let Some(read_only) = self.views.get(&client).map(|v| v.read_only) else {
                     return;
                 };
                 let keys = self.test_keys.entry(client).or_default();
-                let open = keys.screen.kind().is_some();
-                let act = match input {
-                    Input::Key(stroke) => {
-                        let effects = keys.screen.key(&self.test_keymap, stroke, read_only);
-                        self.effects(client, effects);
-                        continue;
-                    }
-                    Input::Reply(reply) => Act::Reply(reply),
-                    Input::Paste(_)
-                    | Input::PasteTooLong
-                    | Input::FocusIn
-                    | Input::FocusOut
-                    | Input::Mouse(_)
-                        if read_only =>
-                    {
-                        continue;
-                    }
-                    Input::Paste(text) => {
-                        let effects = keys.screen.paste(&text);
-                        self.effects(client, effects);
-                        continue;
-                    }
-                    Input::PasteTooLong => {
-                        let limit = crate::decode::PASTE_LIMIT / 1024;
-                        let text = format!("paste exceeds {limit} KiB; discarded");
-                        Act::Notice { text, error: true }
-                    }
-                    Input::FocusIn => Act::Focus(true),
-                    Input::FocusOut => Act::Focus(false),
-                    Input::Mouse(_) if open => continue,
-                    Input::Mouse(event) => Act::Mouse(event),
-                };
-                self.acts(client, vec![act]);
-                deliver(self);
+                let effects = keys.screen.input(&self.test_keymap, input, read_only);
+                self.effects(client, effects);
             }
         }
     }
@@ -3973,6 +3939,22 @@ mod tests {
         };
         s.attach_as(ClientKind::Terminal, attach)
             .map_err(|e| e.to_string())
+    }
+
+    /// A watcher's paste is told it only watches, as its client tells it:
+    /// the test's input is the client's (`Screen::input`).
+    #[test]
+    fn a_watchers_paste_is_told_it_only_watches() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let c = watch(&mut s, 24, 80)?;
+        s.input(c, b"\x1b[200~hi\x1b[201~");
+        let said = s
+            .views
+            .get(&c)
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text);
+        assert!(said.is_some_and(|n| n.starts_with("watching only")));
+        Ok(())
     }
 
     /// A client that attaches only to watch sizes nothing from its first
