@@ -8,6 +8,7 @@
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
 use crate::command::{AnyRef, Choices, ClientAction, Command};
+use crate::copy::SEARCH_MAX;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
@@ -43,7 +44,7 @@ pub enum Screen {
         about: AnyRef,
     },
     /// Copy mode, and the search line being typed in it, forward or back.
-    Copy(Option<(Seek, Line<1024>)>),
+    Copy(Option<(Seek, Line<SEARCH_MAX>)>),
 }
 
 /// A chooser: its rows, each running fuxth when chosen and about a tab,
@@ -351,7 +352,7 @@ impl Screen {
         }
     }
 
-    fn copy(&mut self, search: Option<(Seek, Line<1024>)>, press: KeyPress) -> Vec<Effect> {
+    fn copy(&mut self, search: Option<(Seek, Line<SEARCH_MAX>)>, press: KeyPress) -> Vec<Effect> {
         if let Some(search) = search {
             return match line_act(press) {
                 Some(act) => self.copy_search(search, act),
@@ -380,7 +381,11 @@ impl Screen {
         Vec::from_iter(act.map(|(act, _)| Effect::Send(Act::Copy(act))))
     }
 
-    fn copy_search(&mut self, (seek, mut line): (Seek, Line<1024>), act: LineAct) -> Vec<Effect> {
+    fn copy_search(
+        &mut self,
+        (seek, mut line): (Seek, Line<SEARCH_MAX>),
+        act: LineAct,
+    ) -> Vec<Effect> {
         let sent = match act {
             LineAct::Cancel => CopyAct::Typing(None),
             LineAct::Submit => CopyAct::Find {
