@@ -1873,10 +1873,10 @@ impl Session {
     /// (`Session::fire`).
     pub fn timers(&self) -> impl Iterator<Item = (Instant, Timer)> + '_ {
         self.parts.panes().values().flat_map(|pane| {
-            let frame = pane
-                .frame_deadline()
-                .map(|at| (at, Timer::Frame(pane.id())));
             let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
+            // A respawn's turn reads a held frame: one parser call a round.
+            let frame = (pane.frame_deadline().filter(|_| respawn.is_none()))
+                .map(|at| (at, Timer::Frame(pane.id())));
             let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
             frame.into_iter().chain(unread)
         })
@@ -4145,6 +4145,25 @@ mod tests {
         Ok(())
     }
 
+    /// A frame a respawned-over program holds is read by a turn of the
+    /// respawn's, the one timer of its pane: no other reads in that round.
+    #[test]
+    fn a_held_frame_is_a_turn_of_the_respawn() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let id = PaneId::of(2);
+        s.output(id, b"\x1b[?2026hheld");
+        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
+        let Begun::Waiting(waiting) = begun else {
+            return Err("answered with a frame held".into());
+        };
+        let timers: Vec<Timer> = s.timers().map(|(_, timer)| timer).collect();
+        assert_eq!(timers, [Timer::Unread(id)]);
+        let (_, turns) = turns(&mut s, id, &waiting)?;
+        assert_eq!(turns, 1);
+        Ok(())
+    }
+
     /// A pane resized while respawning, in a tab no client shows, keeps
     /// that size once its new program takes over.
     #[test]
@@ -4193,9 +4212,10 @@ mod tests {
             assert!(Instant::now() < deadline, "the program never ended");
             std::thread::sleep(Duration::from_millis(5));
         }
-        // As the server reaps what is no program's it holds.
-        let kept: Vec<_> = s.children().map(|c| c.leader.pid()).collect();
-        fuxix::process::reap_orphans(|pid| kept.contains(&pid));
+        // The server reaps no orphan it holds: none but the children.
+        let started = s.respawning.get(&id).and_then(|r| r.process.child());
+        let started = started.map(|c| c.leader.pid());
+        assert!(s.children().any(|c| Some(c.leader.pid()) == started));
         turns(&mut s, id, &waiting)?;
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
