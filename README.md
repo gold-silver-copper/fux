@@ -237,6 +237,16 @@ the same way.
   (`me focused vertical str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
+- **Prompts and questions of your own:** `prompt` opens a line whose Enter
+  runs your fuxth with the line on its stack, a string, and `confirm` a
+  question whose `y` runs it (`me str 'close it?' str '%3 kill' confirm`).
+  The rename prompts and close questions are library words made of them.
+- **These screens' keys are a config too**, as the bindings are: `bind-in`
+  gives a key of copy mode, a chooser, a line being typed or a question
+  one of that screen's actions, and `label` names it in the screen's hints
+  (`str copy str g str top bind-in str top label`); `unbind-in` takes one
+  away. keys.fux binds every action; a name that is none is refused with
+  the list. Escape always leaves a screen, and is never bound.
 - **A key's program** runs as your client, one at a time. While one that may
   open a screen runs (it has `copy-mode`, a chooser or another such word), the
   keys you type wait for it, and go to the screen it opens. The prefix, then
@@ -252,8 +262,8 @@ the lowest number.
 pane holds still while output continues; other terminals see it live. If
 the history drops the rows copy mode holds, copy mode ends and says why.
 
-Keys are letters, in either case, and the brackets; the arrows,
-PageUp/PageDown, Home, End, Enter and Esc also work.
+Its keys, as keys.fux binds them: letters, in either case, and the
+brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
