@@ -387,7 +387,7 @@ fn a_spacing_mark_and_a_coeng_conjunct_take_their_columns() {
         ("a\u{302e}", 1),
     ] {
         assert!(one_cluster(text), "{text:?}");
-        assert_eq!(crate::str_width(text), width, "{text:?}");
+        assert_eq!(super::cluster_width(text), width, "{text:?}");
     }
 }
 
@@ -437,7 +437,7 @@ fn every_pair_of_regional_indicators_is_two_columns() {
     for a in '\u{1f1e6}'..='\u{1f1ff}' {
         for b in '\u{1f1e6}'..='\u{1f1ff}' {
             let flag: String = [a, b].into_iter().collect();
-            assert_eq!(str_width(&flag), 2, "{flag}");
+            assert_eq!(super::cluster_width(&flag), 2, "{flag}");
             assert!(Properties::of(a).regional_indicator());
         }
     }

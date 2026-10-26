@@ -116,54 +116,72 @@ fn the_rules_make_two_columns() {
     }
 }
 
-/// Each cluster `clusters` gives, printed alone at a row's start, is one
-/// cell holding its text and as wide as it says, or no cell when it says
-/// none: every cluster of the Unicode conformance test (marks and controls
-/// alone among them, and a spacing mark after a mark, the mark dropped); a wide character with the text presentation
-/// selector, which the cluster rule makes 1 column but whose cell stays
-/// wide; and a cluster past what a cell keeps.
+/// The cells of `text` printed at a row's start, as `clusters` names them.
+fn named(text: &str) -> Vec<(String, bool)> {
+    clusters(text)
+        .map(|(cell, width)| c(cell, width == 2))
+        .collect()
+}
+
+/// The cells a screen shows for `text` printed at a row's start, empty
+/// ones left out.
+fn printed(text: &str) -> Result<Vec<(String, bool)>> {
+    let mut parser = Parser::new(Size::new(1, 64)?, 0)?;
+    parser.process(text.as_bytes())?;
+    Ok(cells(&parser, 0)
+        .into_iter()
+        .filter(|(text, _)| !text.is_empty())
+        .collect())
+}
+
+/// `clusters` names the cells a screen prints, and `str_width` their
+/// columns: for each case of the Unicode conformance test, its controls
+/// left out; and by hand, a character of no width joining the cell before
+/// though it joins no cluster (README), with a spacing mark after it
+/// joining too, a mark with no cell before it, a wide character the text
+/// presentation selector makes 1 column by the rule (its cell stays
+/// wide), and cells past the capacity.
 #[test]
-fn a_cluster_is_the_cell_clusters_says() -> Result {
+fn clusters_names_the_cells_a_screen_prints() -> Result {
     let cases = include_str!("data/GraphemeBreakTest.txt");
-    let mut texts: Vec<String> = (cases.lines())
-        .filter(|line| !line.starts_with('#'))
-        .map(|case| {
-            (case.split_whitespace())
-                .filter_map(|hex| u32::from_str_radix(hex, 16).ok().and_then(char::from_u32))
-                .collect()
-        })
-        .collect();
-    texts.push("\u{231a}\u{fe0e}".into());
-    let long: String = std::iter::once('e')
-        .chain(std::iter::repeat_n('\u{301}', 100))
-        .collect();
-    texts.push(long.clone());
     let mut checked = 0;
-    for text in &texts {
-        for (cluster, width) in clusters(text) {
-            let mut parser = Parser::new(Size::new(1, 4)?, 0)?;
-            parser.process(cluster.as_bytes())?;
-            let got: Vec<_> = cells(&parser, 0)
-                .into_iter()
-                .filter(|(text, _)| !text.is_empty())
-                .collect();
-            let want = match width {
-                0 => vec![],
-                _ => vec![c(cluster, width == 2)],
-            };
-            assert_eq!(cluster.is_empty(), width == 0, "{text:?}");
-            assert_eq!(got, want, "{cluster:?}");
-            checked += 1;
-        }
+    for case in cases.lines().filter(|line| !line.starts_with('#')) {
+        let text: String = (case.split_whitespace())
+            .filter_map(|hex| u32::from_str_radix(hex, 16).ok().and_then(char::from_u32))
+            .filter(|c| !c.is_control())
+            .collect();
+        assert_eq!(named(&text), printed(&text)?, "{text:?}");
+        checked += 1;
     }
-    assert!(checked > 1_000, "{checked} clusters");
-    assert_eq!(
-        clusters("\u{231a}\u{fe0e}").next(),
-        Some(("\u{231a}\u{fe0e}", 2))
-    );
-    // A starter and 63 two-byte marks: the 64th would pass the capacity.
-    let kept: Vec<_> = clusters(&long).collect();
-    assert_eq!(kept, [(long.get(..CLUSTER_CAPACITY - 1).ok_or("kept")?, 1)]);
+    assert!(checked > 500, "{checked} cases");
+    let mark = |n| std::iter::repeat_n('\u{301}', n);
+    // 127 bytes: a 64th mark would pass the capacity.
+    let long: String = std::iter::once('e').chain(mark(100)).collect();
+    // 126 bytes, then U+200B, dropped, and U+0308, which would fit.
+    let full: String = std::iter::once('\u{e9}')
+        .chain(mark(62))
+        .chain(['\u{200b}', '\u{308}'])
+        .collect();
+    for (text, want, width) in [
+        ("一\u{1161}\u{e33}", vec![c("一\u{1161}\u{e33}", true)], 2),
+        (
+            "a\u{200b}\u{308}\u{903}\u{903}",
+            vec![c("a\u{200b}\u{308}\u{903}\u{903}", true)],
+            2,
+        ),
+        (
+            "\u{308}\u{903}x",
+            vec![c("\u{903}", false), c("x", false)],
+            2,
+        ),
+        ("\u{231a}\u{fe0e}", vec![c("\u{231a}\u{fe0e}", true)], 2),
+        (&long, vec![c(long.get(..127).ok_or("long")?, false)], 1),
+        (&full, vec![c(full.get(..126).ok_or("full")?, false)], 1),
+    ] {
+        assert_eq!(named(text), want, "{text:?}");
+        assert_eq!(printed(text)?, want, "{text:?}");
+        assert_eq!(str_width(text), width, "{text:?}");
+    }
     Ok(())
 }
 
