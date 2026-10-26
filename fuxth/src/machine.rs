@@ -251,8 +251,9 @@ impl<A: AppValue> Machine<A> {
 
     /// `error` caught by the innermost `try` that names its code: what the
     /// body began undone (its calls, `let` frames, blocks and values), its
-    /// message and code pushed, the handler next. Else `error`, the
-    /// machine left where it failed, for its host to say where.
+    /// message and code pushed, the handler next. Else the error no `try`
+    /// caught, the machine left where that error happened, for its host to
+    /// say where.
     fn recover(&mut self, mut error: Error) -> Result<(), Error> {
         loop {
             let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
