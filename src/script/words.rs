@@ -216,7 +216,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("json", "json string", "JSON"),
-    ("version", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
+    ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
     ("width", "integer size", "cells, or a percent"),
     ("height", "integer size", "cells, or a percent"),
@@ -224,7 +224,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
 pub const STRINGS: &str =
-    "name dir key path line id file field setting socket way action code keys word hex";
+    "name dir key path line id file field setting socket way action code keys word hex version";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -323,9 +323,9 @@ words! {
         Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
-        Waiting Changed "changed" "version -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
+        Waiting Changed "changed" "seen -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
         Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else the server's wait-seconds" "fux %3 300 timeout wait";
-        Input Expect "expect" "version -- request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture dup expect str y text send-keys";
+        Input Expect "expect" "seen -- request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "V=$(fux %3 str version get); fux str \"$V\" expect str y text send-keys";
         Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
@@ -632,6 +632,10 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     }
 }
 
+/// Why a request `expect` made is refused by all but `send-keys`, which
+/// alone checks it.
+const EXPECTED: &str = "takes no request expect made: only send-keys checks a version";
+
 /// The version `value` holds (`Said::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
@@ -837,8 +841,9 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
 fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure> {
     match request(word, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
-        // `expect` goes on keys alone (`unused`).
-        (On::Version(version) | On::Seen(version), built) => Ok((version.pane, built)),
+        (On::Version(version), built) => Ok((version.pane, built)),
+        // Refused, not acted on unchecked (`unused` refuses it first today).
+        (On::Seen(_), _) => Err(fail(Raise::Type, EXPECTED)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
             Raise::Type,
             "takes a pane (from pane, run or split), or a request on one",
@@ -1211,10 +1216,8 @@ impl fuxth::Host for Host<'_> {
                 let (on, built) = request(act, next()?)?;
                 // On a tab or workspace, in each of its panes.
                 let (since, then) = match on {
-                    // `expect` goes on keys alone (`unused`).
-                    On::Version(version) | On::Seen(version) => {
-                        (Since::Version(version), Then::Outcome)
-                    }
+                    On::Version(version) => (Since::Version(version), Then::Outcome),
+                    On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
                     On::Target(target) => (Since::Now(target), answer_of(target)),
                     On::Client(_) => {
                         let why = "takes a pane, tab or workspace, not a client";
@@ -1490,7 +1493,11 @@ impl fuxth::Host for Host<'_> {
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             Act::CaptureClient => {
                 let c = client(&next()?)?;
-                later(on_client(c, ClientAction::Capture, Then::Capture))
+                later(on_client(
+                    c,
+                    ClientAction::Capture,
+                    Then::Answer(Said::Capture(None)),
+                ))
             }
             // ------------------------------------------------------ server
             Act::Server => local(Local::Server(crate::socket::Choice::Name(

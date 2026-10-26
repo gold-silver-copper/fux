@@ -403,7 +403,8 @@ wire! {
 wire! {
     /// Where `send-keys` sends: to a pane, or a tab's or workspace's every
     /// pane, as they are now; or to one pane only if it is still at a
-    /// version seen (`expect`), checked as the keys are queued.
+    /// version seen (`expect`), checked as the keys are queued. `Since`'s
+    /// shape, but its own type: a wait from a version is no check at one.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum To {
         Now(target: AnyRef),

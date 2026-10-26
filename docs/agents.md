@@ -49,7 +49,7 @@ fux %2 all-history capture                     # read the screen; also main-scre
 fux %2 capture json                            # as JSON, with version, exited, idle_ms
 fux %2 str version get                         # one field: version, exited, last_status, cwd
 fux %2 str C-c key send-keys                   # a key: Enter, C-c, Up, F5 (`fux key-names`)
-fux %2 capture dup expect str y text send-keys # only if %2 is still as captured, else `stale` (`keys`)
+fux str "$A" expect str y text send-keys       # only if %2 is still at version A, else `stale` (`keys`)
 fux %2 str click 3 10 mouse send-mouse         # a click at row 3, column 10, from 0
 fux %2 tab 80 24 resize; fux %2 50 percent resize-x; fux %2 horizontal split
 fux %2 str TERM signal                         # signal what runs in its foreground
@@ -216,8 +216,9 @@ too). `A counts` gives a version's five counts as integers:
   as they are queued; else it sends none and fails `stale`. SEEN is a
   pane's capture (its version as fux read the screen, as its `json`'s
   `version` says), an action's or wait's answer, or a version as text.
-  Every count of the version is a change: output read, a resize, a bell,
-  a shell command ended, the program's end, a respawn. That is all it
+  Every count of the version is a change (above: output read, a resize,
+  a change to its history, a bell or notification, a shell command
+  ended, the program's end, a respawn). That is all it
   promises: the pane was where you saw it when the keys were queued, not
   that its program has not moved on before it reads them, nor what output
   is on its way that fux has not read. A version is one pane's: to a

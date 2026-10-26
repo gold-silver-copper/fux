@@ -177,7 +177,8 @@ impl Said {
     /// What it is, said where it is refused.
     fn kind(self) -> &'static str {
         match self {
-            Said::Capture(_) => "a capture",
+            Said::Capture(Some(_)) => "a capture",
+            Said::Capture(None) => "a client's capture",
             Said::Listing => "a listing",
             Said::Action(_) => "an action's answer",
             Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
@@ -228,7 +229,8 @@ pub enum Then {
     Handles,
     /// Its text, as an answer `json` can show as JSON.
     Answer(Said),
-    /// A capture: its text, JSON and version.
+    /// A pane's capture: its text, JSON and its pane's version, which its
+    /// reply must hold.
     Capture,
     /// Its text, as a string.
     Text,
@@ -971,7 +973,13 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             vec![Value::List(std::rc::Rc::new(list))]
         }
         Then::Answer(said) => vec![Answer::value(text, json, said)],
-        Then::Capture => vec![Answer::value(text, json, Said::Capture(version))],
+        Then::Capture => match version {
+            Some(version) => vec![Answer::value(text, json, Said::Capture(Some(version)))],
+            None => {
+                let why = "the server gave the capture no version";
+                return Err(Failed::new(Code::NoTarget, why));
+            }
+        },
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),
