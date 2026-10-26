@@ -387,10 +387,14 @@ mod tests {
                 grouped(usize::try_from(fux_vt::sixel::MAX_SIDE).unwrap_or_default()),
                 grouped(fux_vt::sixel::MAX_PIXELS)
             ),
-            // The language's codes fux's words raise, which a try catches.
+            // The language's codes fux's words raise, which a try catches
+            // only as fux says so.
             {
-                let [a, b, c] = crate::code::RAISED.map(|c| format!("`{}`", c.name()));
-                format!("{a}, {b} and {c}")
+                let raised = crate::code::Raise::LANG.iter();
+                let declared = raised.filter(|c| !c.raised());
+                let quoted: Vec<String> = declared.map(|c| format!("`{}`", c.name())).collect();
+                let quoted: Vec<&str> = quoted.iter().map(String::as_str).collect();
+                crate::words::listed(&quoted, "and")
             },
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");

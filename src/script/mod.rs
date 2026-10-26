@@ -388,10 +388,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if error.code == Lang::UnknownWord {
         error.message.push_str(" (`fux help` lists every word)");
     }
-    if Code::from(error.code) == Code::Check {
+    if Code::of(error.code) == Code::Check {
         (error.place, error.word) = (None, None);
     }
-    Failed::new(Code::from(error.code), error.located())
+    Failed::new(Code::of(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -416,12 +416,8 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for word in WORDS {
         vocabulary.add(word.name, word.effect)?;
     }
-    let own = Code::ALL.iter().filter(|c| c.raised());
-    for code in own
-        .map(|c| fuxth::Code::from(*c))
-        .chain(crate::code::RAISED)
-    {
-        vocabulary.raises(code)?;
+    for code in Code::all().filter(|c| c.raised()) {
+        vocabulary.raises(code.into())?;
     }
     Ok(vocabulary)
 }

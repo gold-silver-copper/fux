@@ -2,7 +2,7 @@
 //! the kinds it takes and gives (`KINDS`, `NAMES`), and a line of help;
 //! and what each does, run by the program's [`Host`].
 use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Shell, Then};
-use crate::code::Code;
+use crate::code::{Code, Raise};
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Mouse, MoveTo, PanePick,
     PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, Usage, Wait,
@@ -13,7 +13,7 @@ use crate::id::{ClientId, PaneId};
 use crate::keys::Direction;
 use crate::layout::Axis;
 use crate::screens::Open;
-use fuxth::{Code as Lang, Done, Failure, Value};
+use fuxth::{Done, Failure, Value};
 use std::num::NonZeroU32;
 use std::ops::RangeInclusive;
 
@@ -235,8 +235,8 @@ pub const WORDS: &[Word] = &[
 ];
 
 /// A failure of a word's own: its code and why.
-fn fail(code: impl Into<Lang>, message: impl Into<String>) -> Failure {
-    Failure::new(code.into(), message)
+fn fail(code: Raise, message: impl Into<String>) -> Failure {
+    Failure::new(Code::from(code).into(), message)
 }
 
 /// How a word of fux's is used, for a mistake in using it: what goes
@@ -300,7 +300,7 @@ pub fn usage(word: &str) -> Option<String> {
 }
 
 fn wrong(wanted: &str, got: &Value<Fux>) -> Failure {
-    fail(Lang::Type, format!("takes {wanted}, not {}", got.kind()))
+    fail(Raise::Type, format!("takes {wanted}, not {}", got.kind()))
 }
 
 fn string(value: &Value<Fux>) -> Result<String, Failure> {
@@ -367,7 +367,7 @@ const COUNT: RangeInclusive<i64> = 0..=i64::MAX;
 /// A share of a split (`shares`): 1 or more, in a u32.
 fn share(value: &Value<Fux>) -> Result<NonZeroU32, Failure> {
     let n = within(value, 1..=i64::from(u32::MAX))?;
-    NonZeroU32::new(n).ok_or_else(|| fail(Lang::Range, "a share is 1 or more"))
+    NonZeroU32::new(n).ok_or_else(|| fail(Raise::Range, "a share is 1 or more"))
 }
 
 /// An integer within `range`, as the type it goes in.
@@ -379,7 +379,7 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
             (from, &i64::MAX) => format!("from {from}"),
             (from, to) => format!("{from} to {to}"),
         };
-        fail(Lang::Range, format!("{n} is out of range: {said}"))
+        fail(Raise::Range, format!("{n} is out of range: {said}"))
     })
 }
 
@@ -390,7 +390,7 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
     found.map(|(_, t)| *t).ok_or_else(|| {
         let names: Vec<&str> = all.iter().map(|(name, _)| *name).collect();
         let names = crate::words::listed(&names, "or");
-        fail(Code::BadValue, format!("{given:?} is not {names}"))
+        fail(Raise::BadValue, format!("{given:?} is not {names}"))
     })
 }
 
@@ -399,7 +399,7 @@ fn one_of<T: Copy>(value: &Value<Fux>, all: &[(&str, T)]) -> Result<T, Failure> 
 fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen, Failure> {
     let cells = 1..=i64::from(crate::view::MOST);
     let (cols, rows) = (within(cols, cells.clone())?, within(rows, cells)?);
-    crate::view::Screen::new(rows, cols).map_err(|e| fail(Lang::Range, e))
+    crate::view::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
 }
 
 /// The pane a value is: a pane, or an action's answer of one.
@@ -440,7 +440,7 @@ fn workspace(value: &Value<Fux>) -> Result<WsRef, Failure> {
         return Ok(WsRef::Id(*w));
     }
     crate::command::parse_workspace(&string(value)?)
-        .map_err(|e| fail(Code::BadValue, e.to_string()))
+        .map_err(|e| fail(Raise::BadValue, e.to_string()))
 }
 
 fn direction(value: &Value<Fux>) -> Result<Direction, Failure> {
@@ -454,7 +454,7 @@ fn unused(word: &str, built: &Opts) -> Result<(), Failure> {
         return Ok(());
     };
     let instead = format!("takes no {option}: {option} goes on {}", takers(option));
-    Err(fail(Lang::Unused, instead))
+    Err(fail(Raise::Unused, instead))
 }
 
 /// What a request is on: a pane, tab or workspace, a client, or the
@@ -548,7 +548,7 @@ fn modify(
         "marks" => built.view.marks = true,
         "timeout" => {
             let secs = within(&next()?, COUNT)?;
-            let limit = crate::config::Limit::read(secs).map_err(|why| fail(Lang::Range, why))?;
+            let limit = crate::config::Limit::read(secs).map_err(|why| fail(Raise::Range, why))?;
             built.timeout = Some(limit);
         }
         "text" => built.inputs.push(Input::Text(text(&next()?)?)),
@@ -564,7 +564,7 @@ fn modify(
         "arg" => {
             let arg = text(&next()?)?;
             if built.argv.is_empty() {
-                return Err(fail(Code::NoProgram, "comes after program"));
+                return Err(fail(Raise::NoProgram, "comes after program"));
             }
             built.argv.push(arg);
         }
@@ -582,12 +582,12 @@ fn modify(
             built
                 .env
                 .push(key, value)
-                .map_err(|why| fail(Code::BadValue, why))?;
+                .map_err(|why| fail(Raise::BadValue, why))?;
         }
         "main-screen" | "alt-screen" | "last-output" => {
             if built.view.source != Source::Shown {
                 let why = "a capture reads one screen, and one is given";
-                return Err(fail(Lang::Unused, why));
+                return Err(fail(Raise::Unused, why));
             }
             built.view.source = match name {
                 "main-screen" => Source::Main,
@@ -599,7 +599,7 @@ fn modify(
             let (from, to) = (within(&next()?, CELL)?, within(&next()?, CELL)?);
             if from > to {
                 let why = format!("{from} {to}: the first {name} before the last");
-                return Err(fail(Lang::Range, why));
+                return Err(fail(Raise::Range, why));
             }
             match name {
                 "rows" => built.view.rows = Some((from, to)),
@@ -612,7 +612,7 @@ fn modify(
                 let closest = closest_key(&word)
                     .map_or_else(String::new, |k| format!("; the closest is `{k}`"));
                 fail(
-                    Code::NotAKey,
+                    Raise::NotAKey,
                     format!("{word:?} is no key's name{closest} (key-names lists them)"),
                 )
             })?;
@@ -622,7 +622,7 @@ fn modify(
             let mouse = one_of(&next()?, &MICE)?;
             built.mouse = Some((mouse, within(&next()?, CELL)?, within(&next()?, CELL)?));
         }
-        _ => return Err(fail(Lang::UnknownWord, format!("{name}: no such word"))),
+        _ => return Err(fail(Raise::UnknownWord, format!("{name}: no such word"))),
     }
     Ok(())
 }
@@ -644,7 +644,7 @@ fn request(word: &str, value: Value<Fux>) -> Result<(On, Opts), Failure> {
     };
     let Some(on) = built.on.take() else {
         return Err(fail(
-            Lang::Type,
+            Raise::Type,
             "takes a pane, not options: what opts gives is for run, new-tab and new-workspace; \
              the rest go on the pane (`%2 all-history capture`, `%2 vertical split`)",
         ));
@@ -659,7 +659,7 @@ fn request_pane(word: &str, value: Value<Fux>) -> Result<(PaneId, Opts), Failure
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
-            Lang::Type,
+            Raise::Type,
             "takes a pane (from pane, run or split), or a request on one",
         )),
     }
@@ -730,7 +730,7 @@ fn taking(option: &str) -> Vec<&'static str> {
 fn hex(hex: &str) -> Result<Vec<u8>, Failure> {
     let bad = || {
         fail(
-            Code::BadValue,
+            Raise::BadValue,
             format!("{hex:?}: bytes in hex, two digits each: 1b5b41"),
         )
     };
@@ -770,7 +770,7 @@ fn fits(inputs: &[Input]) -> Result<(), Failure> {
         .saturating_add(inputs.len().saturating_sub(1).saturating_mul(5));
     match typed > INPUT_MAX {
         true => Err(fail(
-            Lang::TooLong,
+            Raise::TooLong,
             format!(
                 "{typed} bytes, more than {} KiB, the most it sends at once \
                  (text and pastes count their bytes, keys their names', each input \
@@ -847,7 +847,7 @@ impl fuxth::Host for Host<'_> {
     type Request = Ask;
 
     fn print(&mut self, line: &str) -> Result<(), Failure> {
-        writeln!(self.out, "{line}").map_err(|e| fail(Code::Output, e.to_string()))
+        writeln!(self.out, "{line}").map_err(|e| fail(Raise::Output, e.to_string()))
     }
 
     fn call(
@@ -857,14 +857,14 @@ impl fuxth::Host for Host<'_> {
         out: &mut Vec<Value<Fux>>,
     ) -> Result<Done<Ask>, Failure> {
         let Some(spec) = WORDS.get(word) else {
-            return Err(fail(Lang::UnknownWord, "no such word"));
+            return Err(fail(Raise::UnknownWord, "no such word"));
         };
         let name = spec.name;
         let mut args = args.into_iter();
         let mut next = || {
             args.next().ok_or_else(|| {
                 fail(
-                    Lang::StackUnderflow,
+                    Raise::StackUnderflow,
                     format!("too few values: {}", spec.effect),
                 )
             })
@@ -917,7 +917,7 @@ impl fuxth::Host for Host<'_> {
                     // which `here` is, so that an empty variable closes
                     // nothing.
                     Value::Str(s) if s.trim().is_empty() => Err(fail(
-                        Code::NoTarget,
+                        Raise::NoTarget,
                         format!("an empty name names no {name}: `here` is the pane this runs in"),
                     )),
                     Value::Str(s) => resolve(s.to_string(), kind),
@@ -928,7 +928,7 @@ impl fuxth::Host for Host<'_> {
             }
             "pane-named" => match string(&next()?)? {
                 name if name.trim().is_empty() => {
-                    Err(fail(Code::NoTarget, "an empty name names no pane"))
+                    Err(fail(Raise::NoTarget, "an empty name names no pane"))
                 }
                 name => later(ask(Command::PaneNamed { name }, Then::Handle(Kind::Pane))),
             },
@@ -937,13 +937,13 @@ impl fuxth::Host for Host<'_> {
                 let text = string(&next()?)?;
                 let id = text
                     .parse()
-                    .map_err(|e: Usage| fail(Code::BadValue, e.to_string()))?;
+                    .map_err(|e: Usage| fail(Raise::BadValue, e.to_string()))?;
                 now(out, Value::App(Fux::Client(id)))
             }
             "me" => match self.context.client {
                 Some(c) => now(out, Value::App(Fux::Client(c))),
                 None => Err(fail(
-                    Code::NotAClient,
+                    Raise::NotAClient,
                     "the client whose key or prompt runs this: this runs from the command line",
                 )),
             },
@@ -966,7 +966,7 @@ impl fuxth::Host for Host<'_> {
                     let why = format!(
                         "{text:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
                     );
-                    return Err(fail(Code::BadValue, why));
+                    return Err(fail(Raise::BadValue, why));
                 };
                 let built = Opts {
                     on: Some(On::Version(version)),
@@ -981,7 +981,7 @@ impl fuxth::Host for Host<'_> {
                     "run" => {
                         if built.argv.is_empty() {
                             return Err(fail(
-                                Code::NoProgram,
+                                Raise::NoProgram,
                                 "needs a program: opts str ./app program run",
                             ));
                         }
@@ -1042,7 +1042,7 @@ impl fuxth::Host for Host<'_> {
                     On::Target(target) => (Since::Now(target), answer_of(target)),
                     On::Client(_) => {
                         let why = "takes a pane, tab or workspace, not a client";
-                        return Err(fail(Lang::Type, why));
+                        return Err(fail(Raise::Type, why));
                     }
                 };
                 let wait = Wait {
@@ -1056,7 +1056,7 @@ impl fuxth::Host for Host<'_> {
                 let (on, built) = request(name, next()?)?;
                 if built.inputs.is_empty() {
                     return Err(fail(
-                        Code::NoKeys,
+                        Raise::NoKeys,
                         "needs keys: %2 str hello text send-keys",
                     ));
                 }
@@ -1070,7 +1070,7 @@ impl fuxth::Host for Host<'_> {
                         // here.
                         if built.inputs.iter().any(|i| matches!(i, Input::Bytes(_))) {
                             return Err(fail(
-                                Lang::Unused,
+                                Raise::Unused,
                                 "to a client takes keys, text and pastes: bytes go to a pane",
                             ));
                         }
@@ -1094,7 +1094,7 @@ impl fuxth::Host for Host<'_> {
                 let (p, built) = request_pane(name, next()?)?;
                 let Some((mouse, row, col)) = built.mouse else {
                     return Err(fail(
-                        Code::NoKeys,
+                        Raise::NoKeys,
                         "needs a mouse event: %2 str click 3 10 mouse send-mouse",
                     ));
                 };
@@ -1138,7 +1138,7 @@ impl fuxth::Host for Host<'_> {
                 // Options and requests are no value to convert: what acts
                 // on them gives one.
                 Value::App(Fux::Opts(_)) => Err(fail(
-                    Lang::Unused,
+                    Raise::Unused,
                     "converts a value: it goes after what acts on the pane (%2 capture json)",
                 )),
                 other @ (Value::Int(_)
@@ -1215,7 +1215,7 @@ impl fuxth::Host for Host<'_> {
             }
             "percent" => {
                 let n = within(&next()?, Percent::SHARES)?;
-                let share = Percent::new(n).ok_or_else(|| fail(Lang::Range, "no share"))?;
+                let share = Percent::new(n).ok_or_else(|| fail(Raise::Range, "no share"))?;
                 now(out, Value::App(Fux::Extent(Extent::Percent(share))))
             }
             "move-border" => {
@@ -1376,7 +1376,7 @@ impl fuxth::Host for Host<'_> {
                 let name = string(&next()?)?;
                 let setting = crate::config::Setting::read(&name, &next()?);
                 tell(Command::Set(vec![
-                    setting.map_err(|why| fail(Code::Config, why))?,
+                    setting.map_err(|why| fail(Raise::Config, why))?,
                 ]))
             }
             "version" => now(out, Value::str(env!("CARGO_PKG_VERSION"))),
@@ -1386,7 +1386,7 @@ impl fuxth::Host for Host<'_> {
             "read-file" => local(Local::Shell(Shell::ReadFile(string(&next()?)?))),
             "getenv" => {
                 let name = string(&next()?)?.parse();
-                let name = name.map_err(|why: String| fail(Code::BadValue, why))?;
+                let name = name.map_err(|why: String| fail(Raise::BadValue, why))?;
                 local(Local::Shell(Shell::Getenv(name)))
             }
             "warn" => local(Local::Shell(Shell::Warn(next()?.text()))),
@@ -1400,7 +1400,7 @@ impl fuxth::Host for Host<'_> {
                 let text = match &self.keymap {
                     Some(keymap) => keymap.describe(),
                     None => (super::config_keymap(None))
-                        .map_err(|e| fail(Code::Config, e.to_string()))?
+                        .map_err(|e| fail(Raise::Config, e.to_string()))?
                         .describe(),
                 };
                 self.show(&text)
@@ -1414,7 +1414,7 @@ impl fuxth::Host for Host<'_> {
                 let text = help::agents_topic(&topic).ok_or_else(|| {
                     let topics = help::agents_topics().join(" ");
                     fail(
-                        Code::BadValue,
+                        Raise::BadValue,
                         format!("no topic {topic:?}: {topics}, or all"),
                     )
                 })?;
@@ -1424,16 +1424,16 @@ impl fuxth::Host for Host<'_> {
             "explain" => {
                 let word = string(&next()?)?;
                 let text = help::explain(&word)
-                    .ok_or_else(|| fail(Lang::UnknownWord, format!("no word {word:?}")))?;
+                    .ok_or_else(|| fail(Raise::UnknownWord, format!("no word {word:?}")))?;
                 self.show(&text)
             }
             "check" => {
                 let path = string(&next()?)?;
                 // Read as running it reads it, and refused alike.
                 let text =
-                    super::read_file(path.as_ref()).map_err(|f| fail(Code::Read, f.message))?;
+                    super::read_file(path.as_ref()).map_err(|f| fail(Raise::Read, f.message))?;
                 // Its mistake, with where it is, as the file's own.
-                let checked = |failed: super::Failed| fail(Code::Check, failed.message);
+                let checked = |failed: super::Failed| fail(Raise::Check, failed.message);
                 let tokens = fuxth::token::source(&path, &text)
                     .map_err(|e| checked(super::Failed::from(e)))?;
                 super::compile(&tokens).map_err(checked)?;
@@ -1447,7 +1447,7 @@ impl fuxth::Host for Host<'_> {
                 }
                 self.show(&format!("{path}: ok\n"))
             }
-            other => Err(fail(Lang::UnknownWord, format!("{other}: no such word"))),
+            other => Err(fail(Raise::UnknownWord, format!("{other}: no such word"))),
         }
     }
 }
@@ -1455,7 +1455,7 @@ impl fuxth::Host for Host<'_> {
 impl Host<'_> {
     /// Writes `text` out.
     fn show(&mut self, text: &str) -> Result<Done<Ask>, Failure> {
-        write!(self.out, "{text}").map_err(|e| fail(Code::Output, e.to_string()))?;
+        write!(self.out, "{text}").map_err(|e| fail(Raise::Output, e.to_string()))?;
         Ok(Done::Now)
     }
 
@@ -1467,11 +1467,11 @@ impl Host<'_> {
     ) -> Result<Done<Ask>, Failure> {
         let Some(keymap) = self.keymap.as_deref_mut() else {
             return Err(fail(
-                Code::NotConfig,
+                Raise::NotConfig,
                 "changes a client's keys: in its config, or typed at its prompt",
             ));
         };
-        let refused = |why: String| fail(Code::BadBinding, why);
+        let refused = |why: String| fail(Raise::BadBinding, why);
         match name {
             "prefix" => {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;

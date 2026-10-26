@@ -12,25 +12,16 @@ const CLOSED: NonZeroU8 = NonZeroU8::MIN.saturating_add(3);
 /// The time limit came first: as `timeout(1)`.
 const TIMED_OUT: NonZeroU8 = NonZeroU8::MIN.saturating_add(123);
 
-/// The language's codes that fuxth finds only compiling or at a program's
-/// end, which fux's words raise as they run too, for a `try` to catch:
-/// `unused`, options a word would leave unused; `unknown_word`, `explain`'s
-/// word that is none; `bad_name`, a name a pane, tab or workspace cannot
-/// have.
-pub const RAISED: [fuxth::Code; 3] = [
-    fuxth::Code::Unused,
-    fuxth::Code::UnknownWord,
-    fuxth::Code::BadName,
-];
-
-/// `codes! { /// doc  Variant "name", Closed "closed" CLOSED, … }` expands
-/// to the enum `Code` of those variants and `Lang`, the language's own
-/// codes; `Code::ALL`, fux's own in order; `Code::status`, each one's exit
-/// status: the one its row names (`Code::Closed => CLOSED`), else `FAILED`,
-/// as for the language's; `Code::raised`, whether a word a program runs
-/// can fail with it, so a `try` may catch it: not for a row marked
-/// `[run_loop]`, which only the loop running the program gives; a
-/// language's code if fuxth's words raise it, or fux's (`RAISED`); and
+/// `codes! { raises [Lang…]; run_loop [Variant "name", …]; /// doc
+/// Variant "name", Closed "closed" CLOSED, … }` expands to the enum `Code`
+/// of those variants and `Lang`, the language's own codes; `Code::ALL`,
+/// fux's own in order; `Code::status`, each one's exit status: the one its
+/// row names (`Code::Closed => CLOSED`), else `FAILED`, as for the
+/// language's; `Code::raised`, whether a word a program runs can fail with
+/// it, so a `try` may catch it: not for a `run_loop` one, which only the
+/// loop running the program gives; a language's code if fuxth's words
+/// raise it, or fux's (`raises`); `Raise`, what a word's `fail` takes: the
+/// rows' codes and `raises`'s, never a `run_loop` one; and
 /// `fuxth::Code::from`, each one as the language takes it (one of fux's as
 /// `Host`, by its name).
 macro_rules! codes {
@@ -40,37 +31,61 @@ macro_rules! codes {
     (@status $status:ident) => {
         $status
     };
-    (@raised) => {
-        true
-    };
-    (@raised run_loop) => {
-        false
-    };
-    ($($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)? $([$by:ident])?,)*) => {
+    (raises [$($lang:ident),*];
+    run_loop [$($(#[$loop_doc:meta])* $looped:ident $loop_name:literal,)*];
+    $($(#[$doc:meta])* $variant:ident $name:literal $($status:ident)?,)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Code {
             $($(#[$doc])* $variant,)*
+            $($(#[$loop_doc])* $looped,)*
             /// One of the language's own (fuxth's), as fuxth names it.
             Lang(LangCode),
         }
 
         impl Code {
-            pub const ALL: &[Code] = &[$(Code::$variant),*];
+            pub const ALL: &[Code] = &[$(Code::$variant,)* $(Code::$looped),*];
 
             /// The exit status a failure, or an answer, of this kind ends
             /// with.
             pub fn status(self) -> NonZeroU8 {
                 match self {
                     $(Code::$variant => codes!(@status $($status)?),)*
-                    Code::Lang(_) => FAILED,
+                    $(Code::$looped)|* | Code::Lang(_) => FAILED,
                 }
             }
 
             /// Whether a word a program runs can fail with it.
             pub fn raised(self) -> bool {
                 match self {
-                    $(Code::$variant => codes!(@raised $($by)?),)*
-                    Code::Lang(LangCode(code)) => code.raised() || RAISED.contains(&code),
+                    $(Code::$variant)|* => true,
+                    $(Code::$looped)|* => false,
+                    Code::Lang(LangCode(code)) => code.raised() || Raise::LANG.contains(&code),
+                }
+            }
+        }
+
+        /// A code a word's `fail` (or the session's) takes, each one a
+        /// `try` may catch: one of fux's own but the run loop's, or one of
+        /// the language's that fux's words raise (`raises`), which the
+        /// vocabulary declares. A code of the language's that only
+        /// compiling finds (`Code::of`) is none. A failure a word's request
+        /// comes back with (`script::Failed`) holds any `Code`.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Raise {
+            $($(#[$doc])* $variant,)*
+            $($lang,)*
+        }
+
+        impl Raise {
+            /// The language's codes fux's words raise.
+            pub const LANG: &[fuxth::Code] = &[$(fuxth::Code::$lang),*];
+        }
+
+        impl From<Raise> for Code {
+            fn from(code: Raise) -> Code {
+                match code {
+                    $(Raise::$variant => Code::$variant,)*
+                    $(Raise::$lang => Code::Lang(LangCode(fuxth::Code::$lang)),)*
                 }
             }
         }
@@ -79,6 +94,7 @@ macro_rules! codes {
             fn from(code: Code) -> fuxth::Code {
                 match code {
                     $(Code::$variant => fuxth::Code::Host($name),)*
+                    $(Code::$looped => fuxth::Code::Host($loop_name),)*
                     Code::Lang(LangCode(code)) => code,
                 }
             }
@@ -87,6 +103,20 @@ macro_rules! codes {
 }
 
 codes! {
+    // The language's codes fux's words raise as they run: those fuxth's
+    // own words raise too, and those fuxth finds only compiling or at a
+    // program's end: `unused`, options a word would leave unused;
+    // `unknown_word`, `explain`'s word that is none; `bad_name`, a name a
+    // pane, tab or workspace cannot have.
+    raises [Type, Range, StackUnderflow, TooLong, Unused, UnknownWord, BadName];
+    // What only the loop running a program gives, never a word: no `try`
+    // catches it.
+    run_loop [
+        /// A run of more steps than allowed.
+        Steps "steps",
+        /// A run the prefix, then Esc, stopped.
+        Cancelled "cancelled",
+    ];
     // Where a client finds its server.
     /// No server runs at the socket.
     NoServer "no_server",
@@ -169,10 +199,6 @@ codes! {
     /// Everything an event stream watched closed.
     Gone "gone" CLOSED,
     // A program of words.
-    /// A run of more steps than allowed.
-    Steps "steps" [run_loop],
-    /// A run the prefix, then Esc, stopped.
-    Cancelled "cancelled" [run_loop],
     /// A word the client runs itself (attach, server, start, status), which
     /// runs from the command line only: not a key's or a config's.
     NotHere "not_here",
@@ -232,12 +258,14 @@ impl std::str::FromStr for Code {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LangCode(fuxth::Code);
 
-/// The language's code as fux names it, found by its name among them all:
-/// a host's (every host code is one of fux's own, given by
-/// `fuxth::Code::from`; one it does not know is the program's failure,
-/// `fail`), the language's own as it is.
-impl From<fuxth::Code> for Code {
-    fn from(code: fuxth::Code) -> Code {
+impl Code {
+    /// The language's code as fux names it, found by its name among them
+    /// all: a host's (every host code is one of fux's own, given by
+    /// `fuxth::Code::from`; one it does not know is the program's failure,
+    /// `fail`), the language's own as it is. Not a `From`, so that a
+    /// word's `fail` (and the session's), which take a `Raise`, never
+    /// name a code of the language's that only compiling finds.
+    pub fn of(code: fuxth::Code) -> Code {
         (code.name().parse()).unwrap_or(Code::Lang(LangCode(fuxth::Code::Fail)))
     }
 }
@@ -250,8 +278,8 @@ mod tests {
     /// the program's failure.
     #[test]
     fn an_unknown_host_code_is_the_programs_failure() {
-        assert_eq!(Code::from(fuxth::Code::Host("nosuch")).name(), "fail");
-        assert_eq!(Code::from(fuxth::Code::Host("closed")), Code::Closed);
+        assert_eq!(Code::of(fuxth::Code::Host("nosuch")).name(), "fail");
+        assert_eq!(Code::of(fuxth::Code::Host("closed")), Code::Closed);
     }
 
     /// Every code has a name of its own, and docs/json.md's list of
@@ -269,7 +297,7 @@ mod tests {
         let mut names = std::collections::BTreeSet::new();
         for (i, code) in Code::all().enumerate() {
             assert_eq!(code.name().parse(), Ok(code), "{code:?}");
-            assert_eq!(Code::from(fuxth::Code::from(code)), code);
+            assert_eq!(Code::of(fuxth::Code::from(code)), code);
             let named = Code::all().skip(i + 1).any(|c| c.name() == code.name());
             assert!(!named, "{code:?} shares its name");
             names.insert(code.name());
