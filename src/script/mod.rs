@@ -502,32 +502,28 @@ fn libraries() -> Result<Compiler<Fux>, Failed> {
 }
 
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
-/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
-/// `str` takes. Nor may `define` or `let` give one as a name: it
-/// would always be the handle. Nor may either take the name of a word an
-/// id becomes (`pane`): every id would then be theirs.
+/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the token
+/// a parsing word reads (`str`'s text). Nor may one be given as a name
+/// (by `define` or `let`): it would always be the handle. Nor may a name
+/// be a word an id becomes (`pane`): every id would then be its.
 fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
     let mut out = Vec::with_capacity(tokens.len());
-    let mut after: Option<&str> = None;
+    let mut after: Option<fuxth::Read> = None;
     for token in tokens {
         let id = token.text.parse::<AnyRef>().ok();
         let named = |why: String| fuxth::Error::new(Lang::BadName, why, Some(token));
-        let bound = match after {
-            Some("let") => "let",
-            _ => "defined",
-        };
         match (after, id) {
-            (Some("let" | "define"), None)
+            (Some(fuxth::Read::Name), None)
                 if Kind::ALL.iter().any(|k| k.name() == &*token.text) =>
             {
                 let kind = &token.text;
                 return Err(named(format!(
-                    "cannot be {bound}: a {kind} id is `str ID {kind}`"
+                    "cannot be defined: a {kind} id is `str ID {kind}`"
                 )));
             }
-            (Some("define" | "let"), Some(id)) => {
+            (Some(fuxth::Read::Name), Some(id)) => {
                 return Err(named(format!(
-                    "cannot be {bound}: it names a {}",
+                    "cannot be defined: it names a {}",
                     id.kind().name()
                 )));
             }
@@ -540,10 +536,8 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
             }
             (Some(_) | None, _) => out.push(token.clone()),
         }
-        // A word that reads the token after it as a word of its own: the
-        // text `str` takes, the name `define` or `let` gives.
-        let reads = matches!(&*token.text, "str" | "define" | "let");
-        after = (after.is_none() && reads).then_some(&*token.text);
+        let reads = fuxth::Parsing::named(&token.text).and_then(fuxth::Parsing::reads);
+        after = after.is_none().then_some(reads).flatten();
     }
     Ok(out)
 }

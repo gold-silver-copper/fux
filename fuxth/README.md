@@ -158,7 +158,8 @@ there (`unset`).
 
 For help, [`Builtin`] and [`Parsing`] are the core's words and the parsing
 words: each has `ALL`, `name()` and `named(name)`, a built-in its `effect()`
-and `about()`, a parsing word its `syntax()`. A list's values are
+and `about()`, a parsing word its `syntax()` and what it `reads()` of the
+token after it (`str` text, `define` and `let` a name). A list's values are
 `List::items()`, read only, so its nesting and size limits hold.
 
 ## Tested

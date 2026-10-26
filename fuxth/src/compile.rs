@@ -18,10 +18,13 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
-/// `Parsing::ALL` in that order, and `name`, a match giving each one's:
-/// `If "if",` gives `Parsing::If`, named "if".
+/// `Parsing::ALL` in that order, and `name` and `reads`, matches giving
+/// each one's: `If "if",` gives `Parsing::If`, named "if", reading no
+/// token; `Str "str" Text,` reads the next as `Read::Text`.
 macro_rules! parsing {
-    ($($variant:ident $name:literal,)*) => {
+    (@reads) => { None };
+    (@reads $read:ident) => { Some(Read::$read) };
+    ($($variant:ident $name:literal $($read:ident)?,)*) => {
         /// The words that read the token after them, or shape the program:
         /// no definition or `let` may take their names.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,15 +40,23 @@ macro_rules! parsing {
                     $(Self::$variant => $name,)*
                 }
             }
+
+            /// What it reads of the token after it, if it reads one: that
+            /// token is no word of the program's.
+            pub fn reads(self) -> Option<Read> {
+                match self {
+                    $(Self::$variant => parsing!(@reads $($read)?),)*
+                }
+            }
         }
     };
 }
 
 parsing! {
-    Str "str",
-    Define "define",
+    Str "str" Text,
+    Define "define" Name,
     End "end",
-    Let "let",
+    Let "let" Name,
     If "if",
     Else "else",
     Then "then",
@@ -105,6 +116,15 @@ impl Parsing {
             ),
         }
     }
+}
+
+/// What a parsing word reads of the token after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// The token as text, whatever it looks like (`str`).
+    Text,
+    /// The token as the name it gives a meaning (`define`, `let`).
+    Name,
 }
 
 /// One step of compiled code.
