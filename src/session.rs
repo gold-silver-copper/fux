@@ -4029,7 +4029,7 @@ mod tests {
         let mut s = started(Config::default())?;
         run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
         let spends = crate::pane::tests::spends_the_budget(24, 80);
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
@@ -4054,7 +4054,11 @@ mod tests {
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
-        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
         assert!(at("bell")? < at("respawned")?, "{lines}");
         Ok(())
     }
@@ -4116,7 +4120,8 @@ mod tests {
                 pane.exiting(ended);
             }
             s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
-            let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+            let mut stream =
+                crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
             let respawn = Request::Do(Command::Respawn {
                 target: id,
                 kill,
@@ -4134,7 +4139,7 @@ mod tests {
             let lines = stream
                 .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
                 .0;
-            assert!(lines.contains("respawned %2"), "{lines}");
+            assert!(lines.contains(r#""respawned","pane":"%2""#), "{lines}");
             assert!(!lines.contains("input_unread"), "{lines}");
             for dying in std::mem::take(&mut s.dying) {
                 if let Some(pid) = dying.kill() {
@@ -4192,7 +4197,7 @@ mod tests {
         run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let mut stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None)?;
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin(
@@ -4220,9 +4225,16 @@ mod tests {
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
-        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        let at = |what: &str| {
+            lines
+                .find(&format!(r#""{what}","pane":"%2""#))
+                .ok_or(lines.clone())
+        };
         assert!(at("respawned")? < at("exited")?, "{lines}");
-        assert!(lines.contains("exited %2 @2 +2 exited=0"), "{lines}");
+        assert!(
+            lines.contains(r#""exited","pane":"%2","tab":"@2","workspace":"+2","exited":0"#),
+            "{lines}"
+        );
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {
                 process::reaped(pid);
