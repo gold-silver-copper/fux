@@ -387,8 +387,6 @@ pub enum Begun {
 struct Replacement {
     fresh: Pane,
     process: Process,
-    /// The history it was made to keep, which a `set` may change meanwhile.
-    history: usize,
     /// When it began: its turns are due from then, a frame the old program
     /// holds, with nothing else to read, read by one.
     since: Instant,
@@ -783,7 +781,6 @@ impl Session {
         let new = Replacement {
             fresh,
             process,
-            history,
             since,
         };
         self.respawning.insert(id, new);
@@ -813,12 +810,10 @@ impl Session {
         };
         // At the pane's size and history now, which may have changed while
         // it waited.
-        let (size, history) = (pane.size(), self.config.history_bytes.get());
+        let size = pane.size();
         let (old, left) = pane.respawned(new.fresh, new.process);
         pane.resize(size);
-        if new.history != history {
-            pane.set_history_bytes(history);
-        }
+        pane.set_history_bytes(self.config.history_bytes.get());
         // An exit that came while it was no pane's program is told now: the
         // server looks for exits as they are signalled (`Server::reap`).
         let exited = pane.process().child().and_then(|c| c.leader.exited());
@@ -4185,7 +4180,7 @@ mod tests {
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
         let begun = s.begin(
-            respawn_of(id, &["/bin/true"]),
+            respawn_of(id, &["/bin/sh", "-c", "exit 0"]),
             &Origin::Cli(Caller::default()),
         );
         s.launch = None;
@@ -4198,7 +4193,7 @@ mod tests {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         while ended(&s).is_none() {
-            assert!(Instant::now() < deadline, "/bin/true never ended");
+            assert!(Instant::now() < deadline, "the program never ended");
             std::thread::sleep(Duration::from_millis(5));
         }
         // As the server reaps what is no program's it holds.
