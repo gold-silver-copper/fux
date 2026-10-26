@@ -101,6 +101,9 @@ struct Reading {
     parsed: bool,
     dropped: bool,
     refused: bool,
+    /// A frame was read whole: the read ends where the next frame begins,
+    /// or where nothing is left, what follows the frame joining it.
+    framed: bool,
 }
 
 /// A run of one kind of drop: none going on; going on and not yet told;
@@ -1103,10 +1106,8 @@ impl Pane {
             self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
             return;
         }
-        // The rest of a frame read: its end ends a read.
-        if at > 0 {
-            self.judge_read();
-        }
+        // The rest of a frame read: the read ends at the next frame.
+        self.reading.framed |= at > 0;
         self.read(after, Instant::now(), tell);
     }
 
@@ -1140,12 +1141,17 @@ impl Pane {
                     self.wait_unread([left, rest].concat());
                     return;
                 }
-                // A frame read whole ends a read, whatever comes after it.
-                self.judge_read();
+                // A frame read whole: the read ends at the next frame.
+                self.reading.framed = true;
             } else {
                 match self.parse(rest, true, tell) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
+                        // A frame begun after one read whole ends that read,
+                        // with what came between them.
+                        if self.reading.framed {
+                            self.judge_read();
+                        }
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                         rest = rest.get(end..).unwrap_or_default();
                     }
@@ -1177,8 +1183,8 @@ impl Pane {
                 self.frame_left = left.len();
                 self.wait_unread(left);
             }
-            // A frame read whole ends a read.
-            None => self.judge_read(),
+            // A frame read whole: the read ends at the next frame.
+            None => self.reading.framed = true,
         }
     }
 
@@ -1399,10 +1405,11 @@ impl Pane {
     /// A call that reads its output is done: once nothing is held back or
     /// left, the read is whole, over however many calls of the parser and
     /// turns it took (a frame begun, a budget spent), and only then does
-    /// what it lost end runs. A frame read whole ends a read too, so the
-    /// next frame begun after it starts a record of its own. One that read output and dropped no reply
-    /// while the queue takes input ends a run of replies; one that refused
-    /// no memory, a run of refusals.
+    /// what it lost end runs. A frame read whole ends a read where the
+    /// next frame begins, so frames drawn back to back are read one by
+    /// one, what follows each joining it. One that read output and
+    /// dropped no reply while the queue takes input ends a run of
+    /// replies; one that refused no memory, a run of refusals.
     fn read_done(&mut self) {
         // Output held back (a frame) or left (a budget spent) is still
         // being read: what this read did so far is kept for its end.
@@ -1443,13 +1450,14 @@ impl Pane {
             run.told();
         }
         self.input.replies.told();
-        let runs = &mut self.loss_runs;
-        for run in [
-            &mut runs.copies_cut,
-            &mut runs.copies_not_text,
-            &mut runs.pictures,
-            &mut runs.memory,
-        ] {
+        // Every run named: one more does not compile till it is told.
+        let LossRuns {
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = &mut self.loss_runs;
+        for run in [copies_cut, copies_not_text, pictures, memory] {
             run.told();
         }
         std::mem::take(&mut self.untold)
@@ -1493,7 +1501,10 @@ impl Pane {
     /// queued (its colour scheme, `Session::tell_schemes`): whether it
     /// was. One refused is late, not lost.
     fn offer(&mut self, report: impl AsRef<[u8]>) -> bool {
-        self.input.push(report).is_ok()
+        // One that does not fit waits, leaving the queue to take input: it
+        // is sent again, so no hole is left before what comes after it.
+        let report = report.as_ref();
+        report.len() <= self.input.room() && self.input.push(report).is_ok()
     }
 
     /// Its program's queries are answered with `colours` and `palette`
@@ -1945,6 +1956,7 @@ pub(crate) mod tests {
         pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
             let mut placed = self.placed();
             placed.pane.output_at(bytes, now, &mut placed.tell);
+            placed.pane.read_done();
         }
         pub(crate) fn read_unread(&mut self) {
             self.placed().read_unread();
@@ -2301,6 +2313,16 @@ pub(crate) mod tests {
             pane.take_untold().replies > 0,
             "a run after the clean frame"
         );
+        // What follows a frame joins its read: frames that each drop
+        // replies and end with a little output after them are one run.
+        pane.output(&[&b"x"[..], esu].concat());
+        pane.input.drain_all();
+        let tailed = [bsu, &queries, esu, b"\x1b[?25h"].concat();
+        pane.output(&tailed);
+        let told = pane.take_untold().replies;
+        pane.input.drain_all();
+        pane.output(&tailed);
+        assert!(told > 0 && !pane.loses(), "one run, told once");
         Ok(())
     }
 
