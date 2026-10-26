@@ -844,7 +844,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let typed = s
             .parts
             .pane_mut(pane)
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);

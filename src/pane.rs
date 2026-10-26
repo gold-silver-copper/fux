@@ -161,7 +161,7 @@ impl InputQueue {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
     }
     /// `n` bytes of the front were written: its terminal took them.
-    pub fn advance(&mut self, n: usize) {
+    fn advance(&mut self, n: usize) {
         if n > 0 && std::mem::take(&mut self.refusing) {
             (self.run, self.replies) = (Run::Over, Run::Over);
         }
@@ -169,14 +169,14 @@ impl InputQueue {
     }
     /// Lets everything queued go, as its program ends unread: how many
     /// bytes, which its ender tells. Its run of refusals ends with it.
-    pub fn discard(&mut self) -> usize {
+    fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
         (self.run, self.replies) = (Run::Over, Run::Over);
         queued
     }
     /// Everything queued, for tests and the fuzz targets.
-    pub fn drain_all(&mut self) -> Vec<u8> {
+    fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
         out
@@ -635,7 +635,7 @@ pub struct Pane {
     parser: fux_vt::Parser,
     /// Its program ends by `exit`, which says so.
     process: Process,
-    pub input: InputQueue,
+    input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, since when (its timeout's start), and where the parser
@@ -693,11 +693,13 @@ pub struct Pane {
 }
 
 /// A pane to change, with a journal at its place: what its methods do
-/// that events tell is journaled as they do it, at its own id, and the
-/// pane's methods that tell are reached through it alone. A pane of the
-/// session's is had only from the session's parts, which alone hold the
-/// session's journal (`Parts::pane_mut`); one made on another journal
-/// (a bench's) tells only that one.
+/// that events tell is journaled as they do it, at its own id. It reads
+/// as a `Pane` and changes it only by its own methods, one for each thing
+/// the session changes: it gives no `&mut Pane`, so its pane is never put
+/// in another's place behind its teller, nor wrapped on another journal.
+/// A pane of the session's is had only from the session's parts, which
+/// alone hold the session's journal (`Parts::pane_mut`); one made on
+/// another journal (a bench's, a pane not yet placed) tells only that.
 pub struct PaneMut<'a> {
     pane: &'a mut Pane,
     tell: Teller<'a>,
@@ -733,17 +735,102 @@ impl<'a> PaneMut<'a> {
     pub fn ended(&mut self, ended: Ended) -> End {
         self.pane.ended(ended, &mut self.tell)
     }
+
+    // What the session changes that events do not tell: each change by
+    // name, no whole pane, so none is put in its place or wrapped anew.
+    pub fn write_input(&mut self) -> bool {
+        self.pane.write_input()
+    }
+    pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+        self.pane.push(bytes)
+    }
+    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+        self.pane.push_with(write)
+    }
+    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
+        self.pane.fits(len)
+    }
+    /// Its program is sent `held`'s mouse report, `report`; the button
+    /// `send-mouse press` holds is `held` once it is queued.
+    pub fn push_mouse(
+        &mut self,
+        report: Vec<u8>,
+        held: Option<fux_vt::keys::mouse::MouseButton>,
+    ) -> Result<(), Error> {
+        self.pane.push(report)?;
+        self.pane.mouse_held = held;
+        Ok(())
+    }
+    /// Its program is told the scheme is `scheme`, if the queue takes the
+    /// report; one refused is sent again (`Session::tell_schemes`).
+    pub fn offer_scheme(&mut self, scheme: Scheme) {
+        if self.pane.offer(scheme.report()) {
+            self.pane.scheme_told = Some(scheme);
+        }
+    }
+    #[must_use]
+    pub fn host(
+        &mut self,
+        colours: Colours,
+        palette: crate::outer::Palette,
+        graphics: fux_vt::Graphics,
+    ) -> bool {
+        self.pane.host(colours, palette, graphics)
+    }
+    pub fn keeps_size(&mut self) {
+        self.pane.keeps_size();
+    }
+    pub fn uncopied(&mut self, why: Uncopied) {
+        self.pane.uncopied(why);
+    }
+    pub fn take_untold(&mut self) -> Losses {
+        self.pane.take_untold()
+    }
+    /// What the session takes after each read: whether its program rang
+    /// the bell, and its copies, in order.
+    pub fn take_read(&mut self) -> (bool, Vec<Result<String, Uncopied>>) {
+        (
+            std::mem::take(&mut self.pane.bell),
+            std::mem::take(&mut self.pane.copied),
+        )
+    }
+    /// Its program ended so, told once what it wrote is read.
+    pub fn exiting(&mut self, ended: Ended) {
+        self.pane.exiting = Some(ended);
+    }
+    /// Its program left more on its terminal than is read.
+    pub fn left_cut(&mut self) {
+        self.pane.left.output = Output::Cut;
+    }
+    pub fn clear_history(&mut self) {
+        self.pane.clear_history();
+    }
+    pub fn set_history_bytes(&mut self, bytes: usize) {
+        self.pane.set_history_bytes(bytes);
+    }
+    pub fn stop_reading(&mut self) {
+        self.pane.stop_reading();
+    }
+    /// `n` bytes of its input were written to its terminal, as
+    /// `write_input` writes them: for fux-diff's queue.
+    pub fn wrote_input(&mut self, n: usize) {
+        self.pane.input.advance(n);
+    }
+    /// Gives it `process`, as a test's pane runs a child of the test's.
+    #[cfg(test)]
+    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+        self.pane.set_process(process)
+    }
+    /// Everything queued for its program, as if written: for tests and the
+    /// fuzz targets.
+    pub fn drain_input(&mut self) -> Vec<u8> {
+        self.pane.input.drain_all()
+    }
 }
 
 impl std::ops::Deref for PaneMut<'_> {
     type Target = Pane;
     fn deref(&self) -> &Pane {
-        self.pane
-    }
-}
-
-impl std::ops::DerefMut for PaneMut<'_> {
-    fn deref_mut(&mut self) -> &mut Pane {
         self.pane
     }
 }
@@ -1069,7 +1156,7 @@ impl Pane {
 
     /// Writes the waiting input, as far as the program's terminal takes it;
     /// whether it took any, which makes room in the queue.
-    pub fn write_input(&mut self) -> bool {
+    fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
             return false;
         };
@@ -1135,8 +1222,13 @@ impl Pane {
 
     /// It is asked the size it has: a size refused before, asked again,
     /// is a new refusal, counted.
-    pub fn keeps_size(&mut self) {
+    fn keeps_size(&mut self) {
         self.refused_size = None;
+    }
+
+    /// Its input queue, to read.
+    pub fn input(&self) -> &InputQueue {
+        &self.input
     }
 
     /// What fux let go of its program's since it started.
@@ -1159,7 +1251,7 @@ impl Pane {
     }
 
     /// Its program's copy (OSC 52) copied nothing, for `why`.
-    pub fn uncopied(&mut self, why: Uncopied) {
+    fn uncopied(&mut self, why: Uncopied) {
         let (copies_cut, copies_not_text) = match why {
             Uncopied::Cut => (1, 0),
             Uncopied::NotText => (0, 1),
@@ -1191,7 +1283,7 @@ impl Pane {
 
     /// What it let go of and has not told, which it then has: the rest of
     /// each run of drops going on is not told (`Run`).
-    pub fn take_untold(&mut self) -> Losses {
+    fn take_untold(&mut self) -> Losses {
         self.input.run.told();
         self.input.replies.told();
         std::mem::take(&mut self.untold)
@@ -1199,14 +1291,14 @@ impl Pane {
 
     /// Queues `bytes` of input for its program, as `InputQueue::push`
     /// does; a piece refused is lost.
-    pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
         let pushed = self.input.push(bytes);
         self.refused(pushed)
     }
 
     /// Queues for its program what `write` makes for its screen, as
     /// `InputQueue::push_with` does; a piece refused is lost.
-    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+    fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
         let screen = self.parser.screen();
         let pushed = self.input.push_with(|out| write(screen, out));
         self.refused(pushed)
@@ -1214,7 +1306,7 @@ impl Pane {
 
     /// Whether `len` bytes of input fit now, as `InputQueue::fits` says;
     /// a piece refused is lost.
-    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
+    fn fits(&mut self, len: usize) -> Result<(), Error> {
         let fits = self.input.fits(len);
         self.refused(fits)
     }
@@ -1235,7 +1327,7 @@ impl Pane {
     /// Queues `report`, which fux sends its program again till it is
     /// queued (its colour scheme, `Session::tell_schemes`): whether it
     /// was. One refused is late, not lost.
-    pub fn offer(&mut self, report: impl AsRef<[u8]>) -> bool {
+    fn offer(&mut self, report: impl AsRef<[u8]>) -> bool {
         self.input.push(report).is_ok()
     }
 
@@ -1272,11 +1364,11 @@ impl Pane {
         let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
     }
 
-    pub fn clear_history(&mut self) {
+    fn clear_history(&mut self) {
         self.parser.clear_history();
     }
 
-    pub fn set_history_bytes(&mut self, bytes: usize) {
+    fn set_history_bytes(&mut self, bytes: usize) {
         self.parser.set_history_bytes(bytes);
     }
 
@@ -1407,7 +1499,7 @@ impl Pane {
 
     /// The program's terminal hung up: it is read no more, and waits to be
     /// reaped.
-    pub fn stop_reading(&mut self) {
+    fn stop_reading(&mut self) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
             other @ (Process::Absent | Process::Exited(_)) => other,

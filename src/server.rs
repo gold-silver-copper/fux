@@ -855,7 +855,7 @@ impl Server {
                     true => PollFlags::HUP,
                     false => PollFlags::IN,
                 };
-                if !pane.input.is_empty() {
+                if !pane.input().is_empty() {
                     flags |= PollFlags::OUT;
                 }
                 add(PollFd::new(&child.master, flags), Slot::Pane(*id));

@@ -300,7 +300,7 @@ mod tests {
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
         (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default()
     }
 
@@ -943,7 +943,7 @@ mod tests {
             .collect();
         s.output(PaneId::of(1), &queries);
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        let room = p.input.room();
+        let room = p.input().room();
         p.push(vec![0; room]).map_err(|e| e.to_string())?;
         let notice = |s: &mut Session| {
             let view = s.views.get_mut(&c);

@@ -207,8 +207,8 @@ stack!(
 );
 
 /// An input queue, as each version is driven: the baseline's alone, the
-/// current one through its pane, which alone queues input and counts what
-/// the queue refuses (`Pane::push`).
+/// current one through its pane (`PaneMut`), which alone queues input and
+/// counts what the queue refuses.
 trait Queue {
     fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String>;
     fn advance(&mut self, n: usize);
@@ -231,19 +231,19 @@ impl Queue for baseline::pane::InputQueue {
     }
 }
 
-impl Queue for fux::pane::Pane {
+impl Queue for fux::pane::PaneMut<'_> {
     fn push(&mut self, bytes: &[u8], with: bool) -> Result<(), String> {
         let result = match with {
             true => self.push_with(|_, out| out.extend_from_slice(bytes)),
-            false => fux::pane::Pane::push(self, bytes),
+            false => fux::pane::PaneMut::push(self, bytes),
         };
         result.map_err(|e| e.to_string())
     }
     fn advance(&mut self, n: usize) {
-        self.input.advance(n);
+        self.wrote_input(n);
     }
     fn front(&self) -> Option<&[u8]> {
-        self.input.front()
+        self.input().front()
     }
 }
 
@@ -355,7 +355,13 @@ pub fn run(r: &mut Rng, scale: usize) -> Outcome {
         let mut a = baseline::pane::InputQueue::default();
         let (id, runs) = ("%1".parse().map_err(|_| "%1")?, fux::pane::Runs::Shell);
         let b = fux::pane::Pane::new(id, String::new(), runs, crate::size(24, 80), 0);
-        let mut b = b.map_err(|e| e.to_string())?;
+        let mut pane = b.map_err(|e| e.to_string())?;
+        let mut journal = fux::events::Journal::default();
+        let at = (
+            "+1".parse().map_err(|_| "+1")?,
+            "@1".parse().map_err(|_| "@1")?,
+        );
+        let mut b = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
         let mut log = Vec::new();
         for _ in 0..r.below(60) {
             let next = match r.below(10) {

@@ -315,9 +315,8 @@ impl Session {
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
             && crate::session::refuses_input(&pane).is_none()
-            && pane.offer(scheme.report())
         {
-            pane.scheme_told = Some(scheme);
+            pane.offer_scheme(scheme);
         }
     }
 
@@ -483,7 +482,7 @@ mod tests {
     /// What pane `pane`'s program was answered, taken.
     fn answered(s: &mut Session, pane: u32) -> String {
         let bytes = (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
     }

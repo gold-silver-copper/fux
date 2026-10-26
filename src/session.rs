@@ -11,7 +11,7 @@ use crate::id::{ClientId, Ids, PaneId, TabId, WsId};
 use crate::json::{Fields, Json};
 use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
-use crate::pane::{self, Output, Pane, PaneMut, Process, Runs, basename};
+use crate::pane::{self, Pane, PaneMut, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
 use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
@@ -1728,7 +1728,7 @@ impl Session {
         let Some(mut pane) = self.parts.pane_mut(id) else {
             return;
         };
-        pane.exiting = Some(ended);
+        pane.exiting(ended);
         if pane.has_unread() {
             return;
         }
@@ -1769,7 +1769,7 @@ impl Session {
             self.output(id, &left);
         }
         if let (true, Ok(mut pane)) = (cut, self.pane_mut(id)) {
-            pane.left.output = Output::Cut;
+            pane.left_cut();
         }
     }
 
@@ -1824,16 +1824,13 @@ impl Session {
         if retold {
             pane.size_terminal();
         }
-        let bell = std::mem::take(&mut pane.bell);
+        let (bell, copied) = pane.take_read();
         // A program's copies, as copies in copy mode, to the clients showing
         // it; none with `clipboard` false. Those that are no copy stay to
         // be told. A copy fits the clipboard: fux-vt keeps less of a string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
         let mut copies = Vec::new();
-        for copy in std::mem::take(&mut pane.copied)
-            .into_iter()
-            .filter(|_| clipboard)
-        {
+        for copy in copied.into_iter().filter(|_| clipboard) {
             match copy {
                 Ok(text) => copies.push(text),
                 Err(why) => pane.uncopied(why),
@@ -2411,8 +2408,7 @@ impl Session {
             return Err(fail(Raise::Mouse, message));
         }
         let version = p.version(run);
-        p.push(report)?;
-        p.mouse_held = held;
+        p.push_mouse(report, held)?;
         Ok(acted([version]))
     }
 
@@ -3585,7 +3581,7 @@ mod tests {
         let id = PaneId::of(2);
         s.output(id, b"\x1b[?2026h\x1b]2;old\x07\x07");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        pane.exiting = Some(crate::process::Ended::Exited(3));
+        pane.exiting(crate::process::Ended::Exited(3));
         let lines = told(&mut s, |s| {
             let _ = run(s, "%2 kill-first respawn");
         });
@@ -3763,7 +3759,7 @@ mod tests {
         )?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
-        let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left.output = Output::Cut);
+        let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut());
         cut(&mut s);
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3)));
         assert!(
@@ -4004,7 +4000,7 @@ mod tests {
             said.ends_with("; 3 bytes of input queued for it were never written to it"),
             "{said}"
         );
-        assert!(s.pane(id).is_ok_and(|p| p.input.is_empty()));
+        assert!(s.pane(id).is_ok_and(|p| p.input().is_empty()));
         let json = output(&mut s, "%2 capture json")?;
         assert!(json.contains(r#""input_unread":3"#), "{json}");
         // Respawned over while it runs, with input it has not read.
@@ -4041,7 +4037,11 @@ mod tests {
             &format!("str {c} client str +2 workspace show-workspace"),
         )?;
         let id = PaneId::of(2);
-        let queued = |s: &Session| s.pane(id).map(|p| p.input.len()).map_err(|e| e.to_string());
+        let queued = |s: &Session| {
+            s.pane(id)
+                .map(|p| p.input().len())
+                .map_err(|e| e.to_string())
+        };
         s.output(id, b"\x1b[?2048h\x1b[?2031h");
         s.exited(id, Ended::Exited(0));
         (s.parts.pane_mut(id).ok_or("the pane")?).resize(sized(10, 40)?);
@@ -4282,11 +4282,11 @@ mod tests {
         let sent = run(&mut s, "@1 str x text send-keys");
         assert!(sent.is_err_and(|e| e.contains("input_full")), "refused");
         let first = s.parts.panes().get(&PaneId::of(1)).ok_or("no %1")?;
-        assert_eq!(first.input.len(), 0, "the first pane got none");
+        assert_eq!(first.input().len(), 0, "the first pane got none");
         // Keys too many for the room left are refused, and so is a key
         // after them, until the program reads: none lands past a hole.
         let mut pane = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        let room = pane.input.room();
+        let room = pane.input().room();
         (pane.push(vec![0; room.saturating_sub(4)])).map_err(|e| e.to_string())?;
         assert!(run(&mut s, "%1 str 12345678 text send-keys").is_err());
         assert!(
@@ -4399,7 +4399,7 @@ mod tests {
         let json = output(&mut s, "%1 capture json")?;
         assert!(json.contains(r#""replies":1,"#), "{json}");
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
-        let room = pane.input.room();
+        let room = pane.input().room();
         pane.push(vec![b'x'; room]).map_err(|e| e.to_string())?;
         s.output(id, b"\x1b[6n\x1b[6n");
         let json = output(&mut s, "%1 capture json")?;
