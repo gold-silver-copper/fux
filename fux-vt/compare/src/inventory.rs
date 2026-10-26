@@ -677,7 +677,11 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
     };
     // The settings `Screen::setting_report` answers.
     let answered = ["m", " q", "r", "s", "\"q", "\"p", "*x"];
-    let does = if kind == b'P' && key.strip_prefix("DCS $ q ").is_some_and(|s| answered.contains(&s)) {
+    let does = if kind == b'P'
+        && key
+            .strip_prefix("DCS $ q ")
+            .is_some_and(|s| answered.contains(&s))
+    {
         Does::Implemented("answered (Feature::SettingReports)")
     } else if kind == b'P' && key.starts_with("DCS $ q") {
         Does::Implemented("answered as invalid, as xterm answers it")
