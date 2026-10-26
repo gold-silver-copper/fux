@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "fux"
-version = "0.35.0"
+version = "0.36.0"
 dependencies = [
  "fux-vt",
  "fuxix",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "fux-vt"
-version = "0.14.0"
+version = "0.15.0"
 
 [[package]]
 name = "fux-vt-compare"
@@ -629,14 +629,14 @@ dependencies = [
 
 [[package]]
 name = "fuxix"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "fuxth"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "generic-array"
