@@ -1836,7 +1836,7 @@ impl Session {
         }
         let bell = std::mem::take(&mut pane.bell);
         // A program's copies, as copies in copy mode, to the clients showing
-        // it; none with `set clipboard off`. Those that are no copy stay to
+        // it; none with `clipboard` false. Those that are no copy stay to
         // be told. A copy fits the clipboard: fux-vt keeps less of a string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
         let mut copies = Vec::new();
@@ -1913,8 +1913,8 @@ impl Session {
         true
     }
 
-    /// `text`, copied, goes to the paste buffers and, unless `set clipboard
-    /// off`, to the clipboard of each client in `to` (OSC 52): false if it
+    /// `text`, copied, goes to the paste buffers and, unless `clipboard` is
+    /// false, to the clipboard of each client in `to` (OSC 52): false if it
     /// is too large for the clipboard.
     pub(crate) fn copied(&mut self, text: String, to: &[ClientId]) -> bool {
         let mut fits = true;
@@ -4376,7 +4376,7 @@ mod tests {
     }
 
     /// A program's OSC 52 write is a copy: to the paste buffers and the
-    /// clipboard of the clients showing it, unless `set clipboard off`;
+    /// clipboard of the clients showing it, unless `clipboard` is false;
     /// one it cannot be is told them.
     #[test]
     fn a_programs_clipboard_write_is_a_copy() -> Result<(), String> {
