@@ -650,7 +650,7 @@ class Fux(Driver):
 
     def size_of(self, pane):
         s = self.state(pane)
-        return s["cols"], s["rows"]
+        return s["screen_cols"], s["screen_rows"]
 
     def find(self, name):
         return self.fux("str", name, "pane").stdout.strip()

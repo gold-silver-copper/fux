@@ -776,7 +776,7 @@ fn a_row_range_takes_joined_lines_whole() -> Outcome {
     // and every row kept was read.
     let json = server.ok(&["str", &pane, "pane", "capture", "json"])?;
     assert!(
-        json.contains(r#""cursor":[4,0],"#) && json.contains(r#""above":0"#),
+        json.contains(r#""screen_cursor":[4,0],"#) && json.contains(r#""above":0"#),
         "{json}"
     );
     Ok(())
@@ -1021,7 +1021,7 @@ fn last_output_is_the_running_command_s_so_far() -> Outcome {
     let draw = "printf 'before\\n\\033[?1049h\\033[Habc\\ndef\\nxy%s\\033[2;2H' z; read x";
     shows_after(&server, &server.ok(&typed("r", draw))?, "xyz")?;
     let json = server.ok(&["str", "r", "pane", "last-output", "capture", "json"])?;
-    assert!(json.contains("\"cursor\":[1,1]"), "{json}");
+    assert!(json.contains("\"screen_cursor\":[1,1]"), "{json}");
     Ok(())
 }
 

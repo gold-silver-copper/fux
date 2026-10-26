@@ -508,9 +508,9 @@ impl Captured {
         });
         let lines = (self.lines.iter()).map(|l| Json::str(sgr_line(l, self.marks, false)));
         fields.extend([
-            ("rows", Json::int(self.screen_rows)),
-            ("cols", Json::int(self.screen_cols)),
-            ("cursor", cursor),
+            ("screen_rows", Json::int(self.screen_rows)),
+            ("screen_cols", Json::int(self.screen_cols)),
+            ("screen_cursor", cursor),
             ("lines", Json::Array(lines.collect())),
         ]);
         if let Of::Pane { wrap_pending, .. } = &self.of {

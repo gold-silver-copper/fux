@@ -5315,7 +5315,7 @@ mod tests {
         let (mut s, _) = attached(10, 40)?;
         let cursor = |s: &mut Session, read: &str| -> Result<String, String> {
             let json = output(s, &format!("%1 {read} capture json"))?;
-            let after = json.split("\"cursor\":").nth(1).unwrap_or_default();
+            let after = json.split("\"screen_cursor\":").nth(1).unwrap_or_default();
             Ok(after
                 .split(",\"lines\"")
                 .next()
