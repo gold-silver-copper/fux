@@ -466,12 +466,15 @@ pub enum Process {
     /// The program `fux run` started exited so: the pane stays, its last
     /// screen kept to be read.
     Exited(Ended),
+    /// Respawning (`PaneMut::let_go`): the old program is let go, and the
+    /// new one is no program of the pane's till it takes its place.
+    Respawning,
 }
 
 impl Process {
     pub fn child(&self) -> Option<&Child> {
         match self {
-            Self::Absent | Self::Exited(_) => None,
+            Self::Absent | Self::Exited(_) | Self::Respawning => None,
             Self::Reading(child) | Self::HungUp(child) => Some(child),
         }
     }
@@ -480,7 +483,7 @@ impl Process {
     pub fn exit_status(&self) -> Option<Ended> {
         match self {
             Self::Exited(status) => Some(*status),
-            Self::Absent | Self::Reading(_) | Self::HungUp(_) => None,
+            Self::Absent | Self::Reading(_) | Self::HungUp(_) | Self::Respawning => None,
         }
     }
 
@@ -884,6 +887,19 @@ impl<'a> PaneMut<'a> {
     /// Its program ended so, told once what it wrote is read.
     pub fn exiting(&mut self, ended: Ended) {
         self.pane.exiting = Some(ended);
+    }
+    /// Its program, if it has one to end, taken as a respawn over it
+    /// begins: the pane is respawning till the new one takes its place.
+    /// One that ended keeps its status, its end told already.
+    pub fn let_go(&mut self) -> Option<Child> {
+        match std::mem::replace(&mut self.pane.process, Process::Respawning) {
+            Process::Reading(child) | Process::HungUp(child) => Some(child),
+            Process::Absent | Process::Respawning => None,
+            ended @ Process::Exited(_) => {
+                self.pane.process = ended;
+                None
+            }
+        }
     }
     /// Its program left more on its terminal than is read.
     pub fn left_cut(&mut self) {
@@ -1684,7 +1700,7 @@ impl Pane {
     fn stop_reading(&mut self) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
-            other @ (Process::Absent | Process::Exited(_)) => other,
+            other @ (Process::Absent | Process::Exited(_) | Process::Respawning) => other,
         };
     }
 
