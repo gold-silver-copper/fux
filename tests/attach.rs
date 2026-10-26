@@ -975,6 +975,47 @@ fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
     Ok(())
 }
 
+/// A caller whose own directory is gone sends none it knows: a start it
+/// asks for that needs one fails saying so, rather than starting in
+/// `$HOME` or, joined onto nothing, the server's `/`. One given whole still
+/// starts.
+#[test]
+fn a_caller_with_no_directory_starts_nothing_that_needs_one() -> Outcome {
+    let server = Server::start("")?;
+    let before = server.ok(&["ls"])?;
+    for (i, given) in ["", "str . cwd", "str tmp cwd"].into_iter().enumerate() {
+        let gone = server.dir.join(format!("gone-{i}"));
+        std::fs::create_dir_all(&gone).map_err(e)?;
+        let script =
+            format!(r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size {given} new-tab"#);
+        let gone = gone.to_string_lossy();
+        let out = server.piped(
+            std::path::Path::new("/bin/sh"),
+            &["-c", &script, "sh", &gone],
+            "",
+        )?;
+        assert_eq!(out.status, 1, "{given}: {}", out.stdout);
+        assert!(
+            out.stderr
+                .ends_with("the caller's own directory is unknown\n"),
+            "{given}: {}",
+            out.stderr
+        );
+    }
+    assert_eq!(server.ok(&["ls"])?, before);
+    let whole = server.dir.join("gone-whole");
+    std::fs::create_dir_all(&whole).map_err(e)?;
+    let script = r#"cd "$1" && rmdir "$1" && fux opts str main in 80 24 size str "$2" cwd new-tab"#;
+    let (gone, here) = (whole.to_string_lossy(), server.dir.to_string_lossy());
+    let out = server.piped(
+        std::path::Path::new("/bin/sh"),
+        &["-c", script, "sh", &gone, &here],
+        "",
+    )?;
+    assert_eq!(out.status, 0, "{}", out.stderr);
+    Ok(())
+}
+
 /// Resizing a terminal signals its client, and a signal can interrupt a
 /// read or write in flight. Typing while the window is resized, hundreds of
 /// times, keeps the client attached and loses no byte (Linux once ended the attachment with "Interrupted system call").

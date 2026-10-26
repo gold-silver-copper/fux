@@ -1120,6 +1120,10 @@ impl Session {
         }
         let near = near.filter(|_| dir.is_none());
         let known = match here {
+            // Empty: the caller could not read its own (`client::context`).
+            Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
+                return Err(fail(Code::Start, "the caller's own directory is unknown"));
+            }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
             Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
             Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
