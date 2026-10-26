@@ -339,13 +339,13 @@ impl std::fmt::Display for Failed {
 impl From<fuxth::Error> for Failed {
     /// A mistake compiling, told as fux tells it.
     fn from(error: fuxth::Error) -> Failed {
-        placed(telling(error))
+        telling(error)
     }
 }
 
 /// `error` as fux tells it, with how its word is used where it was given
 /// too few values, the wrong kind, or one out of its range.
-fn telling(error: fuxth::Error) -> fuxth::Error {
+fn telling(error: fuxth::Error) -> Failed {
     let usage = match error.code {
         Lang::StackUnderflow | Lang::Type | Lang::Range => true,
         Lang::OpenQuote
@@ -370,15 +370,11 @@ fn telling(error: fuxth::Error) -> fuxth::Error {
     told(error, usage)
 }
 
-/// A told error as a failure: its code, and where and why it happened.
-fn placed(error: fuxth::Error) -> Failed {
-    Failed::new(Code::from(error.code), error.located())
-}
-
 /// `error` as fux tells it, with how its word is used if `usage`, and
-/// for options or a request left over, the words that would take them.
-/// What `check` read says where its mistake is: it is placed nowhere.
-fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
+/// for options or a request left over, the words that would take them: a
+/// failure of its code, saying where and why it happened. What `check`
+/// read says where its mistake is: it is placed nowhere.
+fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     let left = words::KINDS
         .iter()
         .any(|(.., why)| *why == Some(&*error.message));
@@ -395,7 +391,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
     if Code::from(error.code) == Code::Check {
         (error.place, error.word) = (None, None);
     }
-    error
+    Failed::new(Code::from(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -897,7 +893,7 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
-        return placed(telling(error));
+        return telling(error);
     }
     let Some(step) = machine
         .calls()
@@ -905,13 +901,13 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         .rev()
         .find(|t| !bundled(Some(&t.place)))
     else {
-        return placed(telling(error));
+        return telling(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
     error.message = format!("inside {}, {inner}: {}", step.text, error.message);
     error.place = Some(step.place);
     error.word = Some(step.text);
-    placed(told(error, true))
+    told(error, true)
 }
 
 /// A reply, or its failure: why, from its message, else from what it said.
