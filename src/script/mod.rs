@@ -18,6 +18,7 @@ use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -29,7 +30,7 @@ pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opt
 pub type Config = std::sync::Arc<(String, String)>;
 
 /// The bundled words, written in fuxth.
-pub const LIBRARY: &str = include_str!("library.fux");
+const LIBRARY: &str = include_str!("library.fux");
 
 /// The first line of a fuxth script, which runs it as `fux --file`.
 pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
@@ -421,6 +422,9 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
             vocabulary.must_use(kind, why)?;
         }
     }
+    for (kind, also) in words::TAKEN_AS {
+        vocabulary.taken_as(kind, also)?;
+    }
     let strings = words::STRINGS
         .split_whitespace()
         .map(|n| (n, "string", "a string"));
@@ -452,7 +456,8 @@ pub(crate) fn compiled(
     tokens: &[Token],
 ) -> Result<Machine<Fux>, fuxth::Error> {
     let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.message, None);
-    let mut compiler = READY.with(Clone::clone).map_err(broken)?;
+    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
+    let mut compiler = ready.map_err(broken)?;
     if let Some(config) = config {
         compiler = configured_compiler(config, compiler)?;
     }
@@ -483,48 +488,60 @@ fn configured_compiler(
 
 thread_local! {
     /// The standard library and fux's, compiled and checked once a thread,
-    /// for every program after.
-    static READY: Result<Compiler<Fux>, Failed> = libraries();
+    /// for every program after; and their words' help.
+    static READY: Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
     /// The last config's, as `configured_compiler` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Compiler<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-fn libraries() -> Result<Compiler<Fux>, Failed> {
-    let mut compiler = Compiler::new(vocabulary()?);
-    compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
-    compiler.add(&token::source("library.fux", LIBRARY)?)?;
+/// Its mistake is told without a word's usage, which would read `READY`
+/// as it is made.
+fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
+    let told = |error| told(error, false);
+    let mut compiler = Compiler::new(vocabulary().map_err(told)?);
+    let mut docs = compiler
+        .library("stdlib.fux", fuxth::STDLIB)
+        .map_err(told)?;
+    docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
     compiler.prepare();
-    Ok(compiler)
+    Ok((compiler, docs.into()))
+}
+
+/// The standard library's and fux's library's words, as help says them.
+/// Libraries that fail to compile leave none, but no help asks then: every
+/// program, `help` too, fails first with why.
+pub fn docs() -> Rc<[fuxth::Doc]> {
+    READY.with(|ready| {
+        ready
+            .as_ref()
+            .map_or_else(|_| Rc::from([]), |(_, docs)| Rc::clone(docs))
+    })
 }
 
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is
-/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the text
-/// `str` takes. Nor may `define` or `let` give one as a name: it
-/// would always be the handle. Nor may either take the name of a word an
-/// id becomes (`pane`): every id would then be theirs.
+/// `str @2 tab`, `+1` is `str +1 workspace`; but not where it is the token
+/// a parsing word reads (`str`'s text). Nor may one be given as a name
+/// (by `define` or `let`): it would always be the handle. Nor may a name
+/// be a word an id becomes (`pane`): every id would then be its.
 fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
     let mut out = Vec::with_capacity(tokens.len());
-    let mut after: Option<&str> = None;
+    let mut after: Option<fuxth::Read> = None;
     for token in tokens {
         let id = token.text.parse::<AnyRef>().ok();
         let named = |why: String| fuxth::Error::new(Lang::BadName, why, Some(token));
-        let bound = match after {
-            Some("let") => "let",
-            _ => "defined",
-        };
         match (after, id) {
-            (Some("let" | "define"), None)
+            (Some(fuxth::Read::Name), None)
                 if Kind::ALL.iter().any(|k| k.name() == &*token.text) =>
             {
                 let kind = &token.text;
                 return Err(named(format!(
-                    "cannot be {bound}: a {kind} id is `str ID {kind}`"
+                    "cannot be defined: a {kind} id is `str ID {kind}`"
                 )));
             }
-            (Some("define" | "let"), Some(id)) => {
+            (Some(fuxth::Read::Name), Some(id)) => {
                 return Err(named(format!(
-                    "cannot be {bound}: it names a {}",
+                    "cannot be defined: it names a {}",
                     id.kind().name()
                 )));
             }
@@ -535,12 +552,12 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
                 };
                 out.extend([at("str"), token.clone(), at(id.kind().name())]);
             }
-            (Some(_) | None, _) => out.push(token.clone()),
+            (Some(fuxth::Read::Name), None) | (Some(fuxth::Read::Text), _) | (None, None) => {
+                out.push(token.clone())
+            }
         }
-        // A word that reads the token after it as a word of its own: the
-        // text `str` takes, the name `define` or `let` gives.
-        let reads = matches!(&*token.text, "str" | "define" | "let");
-        after = (after.is_none() && reads).then_some(&*token.text);
+        let reads = fuxth::Parsing::named(&token.text).and_then(fuxth::Parsing::reads);
+        after = after.is_none().then_some(reads).flatten();
     }
     Ok(out)
 }

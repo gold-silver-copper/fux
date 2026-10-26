@@ -1247,6 +1247,94 @@ fn a_kind_given_is_held_to_the_word() {
         words.add("odd", "pane").map_err(|e| e.code.name()),
         Err("contract")
     );
+    // Each name means one thing: a second meaning is refused, whichever
+    // came first.
+    let made = words
+        .kind("pane", "a pane")
+        .and_then(|()| words.add("w", "--"));
+    assert_eq!(made.map_err(|e| e.message), Ok(0));
+    let again = [
+        words.kind("pane", "a pane"),
+        words.name("pane", "integer", "an integer"),
+        words.kind("string", "a string"),
+        words.name("any", "integer", "an integer"),
+        words.add("w", "--").map(drop),
+        words.add("drop", "--").map(drop),
+        words.add("if", "--").map(drop),
+        words.raises(Code::Host("refused")),
+        words.raises(Code::Host("refused")),
+        words.taken_as("pane", "string"),
+    ];
+    let mut kinds = Vocabulary::default();
+    let made = kinds
+        .kind("a", "an a")
+        .and_then(|()| kinds.taken_as("a", "string"));
+    assert_eq!(made.map_err(|e| e.message), Ok(()));
+    for again in [("a", "string"), ("a", "a")] {
+        let said = kinds.taken_as(again.0, again.1).map_err(|e| e.message);
+        assert_eq!(said, Err("a: taken as that already".to_owned()));
+    }
+    let said: Vec<String> = again
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "pane: a kind or name already",
+            "pane: a kind or name already",
+            "string: a kind or name already",
+            "any: a kind or name already",
+            "w: a word already",
+            "drop: a word of the core",
+            "if: a word of the language",
+            "refused: declared already",
+            "pane: taken as more after a word was added",
+        ]
+    );
+}
+
+/// A library says what each of its words does on the line just above it,
+/// which is its help, with its code as written; a word saying nothing
+/// there is refused.
+#[test]
+fn a_library_says_what_each_word_does() {
+    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let docs = compiler.library("stdlib.fux", STDLIB).unwrap_or_default();
+    let defined = STDLIB.lines().filter(|l| l.starts_with("define ")).count();
+    assert_eq!(docs.len(), defined);
+    let doc = |name: &str| docs.iter().find(|d| d.name == name).cloned();
+    let dup = doc("dup").map(|d| (d.effect, d.about, d.code));
+    let dup = dup.unwrap_or_default();
+    assert_eq!(
+        dup,
+        (
+            "a -- a a".into(),
+            "a copy of the top".into(),
+            "define dup 0 pick end".into()
+        )
+    );
+    let library = "# n -- m : doubled\ndefine double\n  dup add\nend\n";
+    let docs = compiler.library("l", library).unwrap_or_default();
+    let code: Vec<&str> = docs.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(code, ["define double\n  dup add\nend"]);
+    // A comment after a token is that line's, not the definition's below.
+    let silent = compiler.library("l", "# -- : one\n1 # -- : said\ndefine x end");
+    assert_eq!(silent.map_err(|e| e.to_string()).map(drop), Err(
+        "contract: l:3: define: a library's definition says what it does on the line just above it: # EFFECT : ABOUT".to_owned()
+    ));
+    // Refused, it is as it was.
+    let after = token::source("t", "x").and_then(|t| compiler.add(&t));
+    assert_eq!(after.map_err(|e| e.code), Err(Code::UnknownWord));
+    // A library is whole: a definition it leaves open, or one left open
+    // before it, is refused, not documented by another source.
+    let open = compiler.library("l", "# -- : open\ndefine open");
+    assert_eq!(open.map_err(|e| e.code), Err(Code::Unclosed));
+    let tokens = token::source("t", "define actual").unwrap_or_default();
+    assert_eq!(compiler.add(&tokens), Ok(()));
+    let closing = compiler.library("l", "# -- : fake\n1 2 end");
+    assert_eq!(closing.map_err(|e| e.code), Err(Code::Unclosed));
 }
 
 /// Words calling each other, two and three of them, deeply (calls in last

@@ -1,8 +1,9 @@
-//! fux's help, made from its words (`crate::script::Word`) and the bundled
-//! library's comments, so that it always says what this binary does; and
-//! the guide to driving programs from a script or an agent
-//! (`str agents explain`), which is `docs/agents.md`, built in.
-use crate::script::{Act, After, LIBRARY, Word};
+//! fux's help, made from its words (`crate::script::Word`) and what fuxth
+//! read of the libraries' words (`crate::script::docs`), so that it
+//! always says what this binary does; and the guide to driving programs
+//! from a script or an agent (`str agents explain`), which is
+//! `docs/agents.md`, built in.
+use crate::script::{Act, After, Word};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
@@ -117,8 +118,12 @@ workspace; ref a name or a handle; text a string, number or boolean.
         ));
     }
     out.push_str("\nThe libraries (`fux help WORD` says each):");
-    let names = library().into_iter().map(|(name, ..)| name.to_owned());
-    out.push_str(&wrapped(names, "\n  ", 79));
+    let docs = crate::script::docs();
+    out.push_str(&wrapped(
+        docs.iter().map(|doc| doc.name.clone()),
+        "\n  ",
+        79,
+    ));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\
@@ -146,37 +151,6 @@ fn wrapped(words: impl Iterator<Item = String>, start: &str, width: usize) -> St
         line.push_str(&word);
     }
     out + &line
-}
-
-/// The prelude's and library's words: each name, stack effect, what it
-/// does, and its definition, from the comment before its `define`:
-/// `# pane text -- : what it does`. A definition over several lines is
-/// its indented body and the `end` closing it.
-pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
-    let mut words: Vec<(_, _, _, String)> = Vec::new();
-    let mut comment = None;
-    let mut open = false;
-    for line in fuxth::STDLIB.lines().chain(LIBRARY.lines()) {
-        if open && (line.starts_with("  ") || line == "end") {
-            if let Some((.., code)) = words.last_mut() {
-                code.push_str("\n  ");
-                code.push_str(line);
-            }
-            open = line != "end";
-            continue;
-        }
-        open = false;
-        if let Some(text) = line.strip_prefix("# ") {
-            comment = text.split_once(" : ");
-        } else if let Some(rest) = line.strip_prefix("define ") {
-            let name = rest.split_whitespace().next().unwrap_or_default();
-            if let Some((effect, about)) = comment.take() {
-                words.push((name, effect, about, line.to_owned()));
-                open = true;
-            }
-        }
-    }
-    words
 }
 
 /// One word at length, a topic of the guide, or `limits`.
@@ -214,7 +188,8 @@ fn word(name: &str) -> Option<String> {
         }
         return Some(out);
     }
-    if let Some((name, effect, about, code)) = library().into_iter().find(|(n, ..)| *n == name) {
+    if let Some(doc) = crate::script::docs().iter().find(|doc| doc.name == name) {
+        let (effect, about, code) = (&doc.effect, &doc.about, doc.code.replace('\n', "\n  "));
         return Some(format!(
             "{name}  ( {effect} )\n\n{about}.\nWritten in fuxth:\n\n  {code}\n"
         ));
@@ -448,13 +423,14 @@ mod tests {
                 assert!(compiled.is_ok(), "{}: {compiled:?}", word.name);
             }
         }
-        assert!(library().len() >= 5);
+        let docs = crate::script::docs();
+        assert!(docs.len() >= 5);
         // A word defined over several lines shows all of them.
         let range = explain("range").unwrap_or_default();
         assert!(range.contains("  define range\n    let to\n"), "{range}");
         assert!(range.ends_with("\n  end\n"), "{range}");
-        for (name, ..) in library() {
-            assert!(explain(name).is_some(), "{name}");
+        for doc in docs.iter() {
+            assert!(explain(&doc.name).is_some(), "{}", doc.name);
         }
         // Each word's options go on what it takes.
         for (name, on) in [("send-keys", "after the pane"), ("run", "after opts")] {

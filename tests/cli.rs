@@ -365,7 +365,7 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(
-        named.contains("+7: cannot be let: it names a workspace"),
+        named.contains("+7: cannot be defined: it names a workspace"),
         "{named}"
     );
     let client = said(&["str", "c9", "client", "focused"])?;
