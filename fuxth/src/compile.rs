@@ -296,8 +296,6 @@ impl<A: Clone> Compiler<A> {
         for (id, name) in vocabulary.names().enumerate() {
             names.insert(Rc::from(name), Entry::App(id));
         }
-        // The core's words are the core's: an application's word of the
-        // same name is never reached.
         for builtin in Builtin::ALL {
             names.insert(Rc::from(builtin.name()), Entry::Builtin(builtin));
         }

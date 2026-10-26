@@ -129,7 +129,12 @@ a kind that becomes another when passed through, `x secs -- x`). Each word's
 effect is read strictly, in the names of kinds (`integer`, `boolean`,
 `string`, `list`, `any`, the application's, and its names): a name before
 the `--` is what a place takes, after it what one gives, and a name on both
-sides passes the kind it was given through. The checker follows those kinds,
+sides passes the kind it was given through. `taken_as("pane", "answer")`,
+said before any effect, takes and gives a kind's values where an effect
+names another. Each name means one thing: a second kind or name of one
+spelling, a second word of a name (the core's and the parsing words'
+among them) or a code declared twice is refused (`contract`), so a host
+adds each once and keeps the id `add` gave. The checker follows those kinds,
 as it does the core's, and refuses only what surely fails.
 
 The host implements [`Host`]: `call(word, args, out)` gets the word's values

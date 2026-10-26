@@ -196,6 +196,10 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
+/// Kinds taken where an effect names another: an action's answer is its
+/// pane, and a workspace may be given by its name.
+pub const TAKEN_AS: [(&str, &str); 2] = [("pane", "answer"), ("workspace", "string")];
+
 /// The names the words' effects use beyond the kinds' own, each with the
 /// kinds it stands for (`from>to`: what a kind is once the word passes it
 /// through), and how an error says them; then the names of a string, and
@@ -207,7 +211,6 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("target", "pane tab workspace client answer request", "a pane, tab, workspace or client, or a request on one"),
     ("subject", "pane answer request", "a pane, or a request on one"),
     ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
-    ("pane", "pane answer", "a pane (from pane, run or split)"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
@@ -215,13 +218,11 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
     ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
-    ("json", "json string", "JSON"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
     ("width", "integer size", "cells, or a percent"),
     ("height", "integer size", "cells, or a percent"),
     ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
-    ("workspace", "workspace string", "a workspace, or its name"),
 ];
 pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
@@ -254,7 +255,7 @@ words! {
         Reading Ls "ls" "-- listing" "workspaces, tabs, panes and clients" "fux ls" [];
         Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
-        Reading Json "json" "value -- json" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
         Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace, a JSON line each" "fux str agent workspace events-of" [];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
@@ -1780,20 +1781,11 @@ impl Host<'_> {
 mod tests {
     use super::*;
 
-    /// No two words share a name, and none is a word of the language.
+    /// No word's name needs quoting in a shell. (That no two share one,
+    /// nor any the language's, the vocabulary checks as it is made.)
     #[test]
-    fn every_word_has_its_own_name() {
-        let mut names: Vec<&str> = Word::ALL.iter().map(|w| w.row().name).collect();
-        names.sort_unstable();
-        let before = names.len();
-        names.dedup();
-        assert_eq!(names.len(), before, "a name given twice");
-        for name in names {
-            assert!(fuxth::Parsing::named(name).is_none(), "{name}");
-            assert!(
-                fuxth::Builtin::ALL.iter().all(|b| b.name() != name),
-                "{name}"
-            );
+    fn every_name_is_a_shell_word() {
+        for name in Word::ALL.iter().map(|w| w.row().name) {
             assert!(
                 !name.chars().any(|c| ";|&<>()$`*?[{!~#'\"\\".contains(c)),
                 "{name}: a character a shell treats specially"

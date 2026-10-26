@@ -421,6 +421,9 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
             vocabulary.must_use(kind, why)?;
         }
     }
+    for (kind, also) in words::TAKEN_AS {
+        vocabulary.taken_as(kind, also)?;
+    }
     let strings = words::STRINGS
         .split_whitespace()
         .map(|n| (n, "string", "a string"));

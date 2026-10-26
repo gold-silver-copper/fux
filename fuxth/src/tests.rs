@@ -1247,6 +1247,43 @@ fn a_kind_given_is_held_to_the_word() {
         words.add("odd", "pane").map_err(|e| e.code.name()),
         Err("contract")
     );
+    // Each name means one thing: a second meaning is refused, whichever
+    // came first.
+    let made = words
+        .kind("pane", "a pane")
+        .and_then(|()| words.add("w", "--"));
+    assert_eq!(made.map_err(|e| e.message), Ok(0));
+    let again = [
+        words.kind("pane", "a pane"),
+        words.name("pane", "integer", "an integer"),
+        words.kind("string", "a string"),
+        words.name("any", "integer", "an integer"),
+        words.add("w", "--").map(drop),
+        words.add("drop", "--").map(drop),
+        words.add("if", "--").map(drop),
+        words.raises(Code::Host("refused")),
+        words.raises(Code::Host("refused")),
+        words.taken_as("pane", "string"),
+    ];
+    let said: Vec<String> = again
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|e| e.message)
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "pane: a kind or name already",
+            "pane: a kind or name already",
+            "string: a kind or name already",
+            "any: a kind or name already",
+            "w: a word already",
+            "drop: a word of the core",
+            "if: a word of the language",
+            "refused: declared already",
+            "pane: taken as more after an effect named it",
+        ]
+    );
 }
 
 /// Words calling each other, two and three of them, deeply (calls in last
