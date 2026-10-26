@@ -628,6 +628,11 @@ mod tests {
             return Err(format!("{screen:?}"));
         };
         assert_eq!(prompt.line.before(), "a");
+        assert_eq!(
+            key(&mut screen, "C-Escape")?,
+            [HIDE],
+            "Escape leaves, held or not"
+        );
         Ok(())
     }
 

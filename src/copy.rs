@@ -137,7 +137,7 @@ impl Copy {
             };
             return Bar {
                 badge: Badge::Typing(prompt, before, after),
-                hints: self.line_hints.iter().collect(),
+                hints: &self.line_hints,
                 position,
             };
         }
@@ -149,7 +149,7 @@ impl Copy {
         };
         Bar {
             badge: Badge::Label(badge),
-            hints: self.hints.iter().collect(),
+            hints: &self.hints,
             position,
         }
     }
@@ -171,7 +171,7 @@ pub enum Badge<'a> {
 /// is.
 pub struct Bar<'a> {
     pub badge: Badge<'a>,
-    pub hints: Vec<&'a Hint>,
+    pub hints: &'a [Hint],
     /// The cursor's line, counted from 1, of all the rows retained.
     pub position: String,
 }
@@ -459,19 +459,14 @@ fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<
     let Some(place) = session.place(client) else {
         return;
     };
-    let entered = enter(session, place);
+    let entered = enter(session, place, hints, typing);
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
     view.dirty = true;
     match entered {
         Ok(copy) => {
-            let line_hints = typing;
-            view.mode = Mode::Copy(Box::new(Copy {
-                hints,
-                line_hints,
-                ..copy
-            }));
+            view.mode = Mode::Copy(Box::new(copy));
             // The bar shows where the cursor is; a notice would hide it.
             view.notice = None;
         }
@@ -485,8 +480,14 @@ fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<
     }
 }
 
-/// Copy mode on the client's focused pane, its cursor where the pane's is.
-fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
+/// Copy mode on the client's focused pane, its cursor where the pane's is,
+/// its bar's hints `hints` and its search line's `line_hints`.
+fn enter(
+    session: &Session,
+    place: session::Place,
+    hints: Vec<Hint>,
+    line_hints: Vec<Hint>,
+) -> Result<Copy, Error> {
     let pane = place.pane;
     let screen = session.parts.panes().get(&pane);
     let screen = screen.ok_or(Error::NoPane(pane))?.screen();
@@ -502,8 +503,8 @@ fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
         selection: None,
         search: None,
         typing: None,
-        hints: Vec::new(),
-        line_hints: Vec::new(),
+        hints,
+        line_hints,
         held_at: None,
     })
 }
@@ -522,7 +523,7 @@ fn clean(text: &str) -> Option<String> {
     (text.len() <= SEARCH_MAX).then_some(text)
 }
 
-/// An action in copy mode, its keys the client's (`keymap::copy_act`).
+/// An action in copy mode, its keys the client's (`keymap::Modes::copy`).
 pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     if let CopyAct::Enter { hints, typing } = act {
         return start(session, client, hints, typing);

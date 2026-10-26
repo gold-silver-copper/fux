@@ -361,7 +361,7 @@ words! {
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
         Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line confirm), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
-        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does nothing" "str copy str g unbind-in";
+        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
         Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
@@ -1614,12 +1614,15 @@ impl Host<'_> {
             Screen::ChoosePane => Open::ChoosePane(pane(&next()?)?),
             Screen::Prompt => {
                 let title = text(&next()?)?;
-                // Its start typed as a paste would be, so the line holds no
-                // more, nor any other, than one typed.
+                // Its start typed, so the line holds no more, nor any other,
+                // than one typed: text alone, refused whole if it is not.
+                let start = text(&next()?)?;
                 let mut line = crate::view::Line::new(String::new());
-                let start = crate::act::Edit::Insert(text(&next()?)?);
-                line.edit(&start)
-                    .map_err(|why| fail(Raise::BadValue, why))?;
+                let typed = match start.contains(char::is_control) {
+                    true => Err("a line holds text alone, no control characters".to_owned()),
+                    false => line.edit(&crate::act::Edit::Insert(start)),
+                };
+                typed.map_err(|why| fail(Raise::BadValue, why))?;
                 let action = Some(self.action(&next()?, true, here)?);
                 Open::Prompt(crate::screens::Prompt {
                     title,

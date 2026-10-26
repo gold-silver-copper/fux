@@ -1272,7 +1272,7 @@ fn bar(
             }
         };
         x = grid.text(y, x, &text, badge, left_limit);
-        for crate::act::Hint { keys: key, label } in copy.hints.iter().copied() {
+        for crate::act::Hint { keys: key, label } in copy.hints {
             let hint = format!("  {key} {label}");
             if x.saturating_add(width(&hint)) > left_limit {
                 break;

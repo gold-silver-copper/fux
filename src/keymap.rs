@@ -704,7 +704,7 @@ impl<A: Named> Table<A> {
     /// What `press` does here: a named key's, with any modifiers, its own
     /// unless bound with them.
     pub fn get(&self, press: KeyPress) -> Option<A> {
-        if press.plain_key() == Some(Key::Escape) {
+        if press.key == Key::Escape {
             return Some(A::ESCAPE);
         }
         let find = |press: KeyPress| (self.0.iter()).find(|(k, ..)| *k == press.folded());
@@ -751,7 +751,7 @@ pub trait Bindable {
 
 impl<A: Named> Bindable for Table<A> {
     fn bind(&mut self, key: KeyPress, name: &str) -> Result<(), String> {
-        if key.plain_key() == Some(Key::Escape) {
+        if key.key == Key::Escape {
             return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
         }
         let Some((_, act)) = A::NAMES.iter().find(|(n, _)| *n == name) else {
@@ -761,9 +761,12 @@ impl<A: Named> Bindable for Table<A> {
                 crate::words::listed(&names, "or")
             ));
         };
-        let key = key.folded();
-        self.0.retain(|(k, ..)| *k != key);
-        self.0.push((key, act.clone(), None));
+        // A key bound again keeps its place, as a binding's does.
+        let bound = (key.folded(), act.clone(), None);
+        match self.0.iter_mut().find(|(k, ..)| *k == bound.0) {
+            Some(was) => *was = bound,
+            None => self.0.push(bound),
+        }
         Ok(())
     }
 

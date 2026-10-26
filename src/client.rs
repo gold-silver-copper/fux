@@ -509,6 +509,8 @@ pub struct Attaching {
 struct Ran {
     notice: Option<(String, bool)>,
     opened: Option<Screen>,
+    /// It changed the keys of fux's screens.
+    rebound: bool,
 }
 
 /// The longest a program's notice may be: what it prints past this fails
@@ -768,8 +770,20 @@ impl Keyboard {
             if let Some((text, error)) = ran.notice {
                 acts.push(Act::Notice { text, error });
             }
-            if let Some(screen) = ran.opened {
-                self.open(screen, &mut acts);
+            match ran.opened {
+                Some(screen) => self.open(screen, &mut acts),
+                // The screen showing hints at keys that changed: it closes,
+                // rather than say what its keys no longer do.
+                None if ran.rebound && self.screen.kind().is_some() => {
+                    let left = match matches!(self.screen, Screen::Copy(_)) {
+                        true => Act::Copy(crate::act::CopyAct::Leave),
+                        false => Act::Hide,
+                    };
+                    self.screen = Screen::default();
+                    let text = "the keys of fux's screens changed: the one open closed".to_owned();
+                    acts.extend([left, Act::Notice { text, error: false }]);
+                }
+                None => {}
             }
         }
         acts.extend(self.release());
@@ -877,8 +891,11 @@ fn run_job(
             Some(stop),
         )
     })();
+    let mut rebound = false;
     if result.is_ok() {
-        *lock(keymap) = changed;
+        let mut keys = lock(keymap);
+        rebound = keys.modes != changed.modes;
+        *keys = changed;
     }
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
@@ -906,9 +923,14 @@ fn run_job(
             Ran {
                 notice: Some((text, true)),
                 opened: None,
+                rebound,
             }
         }
-        opened => Ran { notice, opened },
+        opened => Ran {
+            notice,
+            opened,
+            rebound,
+        },
     }
 }
 
@@ -1439,6 +1461,30 @@ mod tests {
             (keymap.prefix.to_string(), root),
             ("C-a".into(), vec!["F5".into()])
         );
+        Ok(())
+    }
+
+    /// A program that changes the screens' keys while one is open closes
+    /// it, so its hints never name keys that do otherwise; one that changes
+    /// none leaves it open.
+    #[test]
+    fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        keyboard.screen = Screen::Copy(None);
+        keyboard.frame(ToAttached::Run("str F5 str ls bind-root".into()));
+        assert_eq!(all_ran(&mut keyboard)?, []);
+        assert_eq!(keyboard.screen, Screen::Copy(None));
+        keyboard.frame(ToAttached::Run("str copy str g str top bind-in".into()));
+        let acts = all_ran(&mut keyboard)?;
+        assert!(
+            matches!(
+                acts.as_slice(),
+                [Act::Copy(crate::act::CopyAct::Leave), Act::Notice { .. }]
+            ),
+            "{acts:?}"
+        );
+        assert_eq!(keyboard.screen, Screen::default());
         Ok(())
     }
 
