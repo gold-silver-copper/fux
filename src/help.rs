@@ -1,8 +1,8 @@
-//! fux's help, made from its words (`crate::script::WORDS`) and the bundled
+//! fux's help, made from its words (`crate::script::Word`) and the bundled
 //! library's comments, so that it always says what this binary does; and
 //! the recipe for driving programs from a script or an agent
 //! (`help-agents`), which is `docs/agents.md`, built in.
-use crate::script::{LIBRARY, WORDS};
+use crate::script::{Act, After, LIBRARY, Word};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
@@ -93,11 +93,13 @@ tab, workspace or client) or a request on one; handle a pane, tab or
 workspace; ref a name or a handle; text a string, number or boolean.
 ",
     );
-    let mut group = "";
-    for word in WORDS {
-        if word.group != group {
-            group = word.group;
-            out.push_str(&format!("\n{group}:\n"));
+    let mut rows: Vec<_> = Word::ALL.iter().map(|w| w.row()).collect();
+    rows.sort_by_key(|row| row.group);
+    let mut group = None;
+    for word in rows {
+        if group != Some(word.group) {
+            group = Some(word.group);
+            out.push_str(&format!("\n{}:\n", word.group.name()));
         }
         out.push_str(&format!(
             "  {:<20} {:<28} {}\n",
@@ -169,27 +171,27 @@ pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
 
 /// One word at length: its stack effect, what it does, and an example.
 pub fn explain(name: &str) -> Option<String> {
-    if let Some(word) = WORDS.iter().find(|w| w.name == name) {
-        let mut out = format!("{}  ( {} )\n\n{}.\n", word.name, word.effect, word.about);
+    if let Some(word) = Word::named(name) {
+        let row = word.row();
+        let mut out = format!("{}  ( {} )\n\n{}.\n", row.name, row.effect, row.about);
         if let Some(usage) = crate::script::usage(name) {
             out.push_str(&format!("\n{usage}\n"));
         }
-        if let Some(mut takes) = options(name).map(Iterator::peekable)
-            && takes.peek().is_some()
+        if let Word::Act(act) = word
+            && let Some(takes) = act.takes()
         {
             // What they go on: options, for what makes its own pane.
-            let on = match FROM_OPTS.contains(&name) {
-                true => "opts",
-                false => "the pane",
+            let on = match takes.after {
+                After::Opts => "opts",
+                After::Pane => "the pane",
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
-            for option in takes {
-                if let Some(w) = WORDS.iter().find(|w| w.name == option) {
-                    out.push_str(&format!("  {:<14} {:<26} {}\n", w.name, w.effect, w.about));
-                }
+            for option in takes.options.iter().map(|o| Word::Opt(*o).row()) {
+                let (name, effect, about) = (option.name, option.effect, option.about);
+                out.push_str(&format!("  {name:<14} {effect:<26} {about}\n"));
             }
         }
-        if name == "set" {
+        if word == Word::Act(Act::Set) {
             out.push_str(&settings());
         }
         return Some(out);
@@ -225,104 +227,10 @@ fn settings() -> String {
     out
 }
 
-/// The words that start from `opts`, empty options: they make their own
-/// pane. Every other word's options go on the pane it acts on.
-pub(crate) const FROM_OPTS: [&str; 3] = ["run", "new-tab", "new-workspace"];
-
-/// The words that build what a word takes, its options or its input: the
-/// words each uses, which `explain` prints and the word refuses others of.
-pub(crate) const OPTIONS: [(&str, &str); 10] = [
-    ("run", "name size cwd env program arg in"),
-    ("split", "horizontal vertical shares cwd env program arg"),
-    ("new-tab", "name size cwd env in"),
-    ("new-workspace", "name size cwd env"),
-    ("respawn", "kill-first env program arg"),
-    (
-        "capture",
-        "history all-history wrapped full styles marks main-screen alt-screen last-output \
-         rows cols",
-    ),
-    ("wait", "changed timeout"),
-    ("send-keys", "text key paste bytes"),
-    ("send-mouse", "mouse"),
-    ("signal", ""),
-];
-
-/// The options `name` takes, if it takes any.
-pub(crate) fn options(name: &str) -> Option<impl Iterator<Item = &'static str>> {
-    let (_, takes) = OPTIONS.iter().find(|(word, _)| *word == name)?;
-    Some(takes.split_whitespace())
-}
-
-/// An example of a word in use, as a command line.
-pub(crate) fn example(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "run" => "fux opts str web name 120 40 size str ./app program str --flag arg run",
-        "split" => "fux %3 vertical split",
-        "shares" => "fux %3 horizontal 2 1 shares split",
-        "name" | "size" | "cwd" | "program" | "arg" | "in" => {
-            "fux opts str web name 80 24 size str /srv cwd str agent in str ./app program str -v arg run"
-        }
-        "env" => "fux opts str PORT 8080 env 80 24 size str ./app program run",
-        "new-tab" => "fux opts str logs name 80 24 size str agent in new-tab",
-        "new-workspace" => "fux opts str work name 80 24 size new-workspace",
-        "respawn" | "kill-first" => "fux %3 kill-first respawn",
-        "wait" | "changed" => {
-            "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait"
-        }
-        "help-agents-on" => "fux str recipes help-agents-on",
-        "timeout" => "fux %3 300 timeout wait",
-        "bytes" => "fux %3 str 1b5b41 bytes send-keys",
-        "line" => "fux %3 str 'make test' line",
-        "send-keys" | "text" => "fux %3 str 'ls -l' text str Enter key send-keys",
-        "key" => "fux %3 str C-c key send-keys",
-        "paste" => "fux %3 str 'a long prompt' paste str Enter key send-keys",
-        "signal" => "fux %3 str TERM signal",
-        "mouse" | "send-mouse" => "fux %3 str click 2 10 mouse send-mouse",
-        "capture" | "history" => "fux %3 100 history capture",
-        "all-history" => "fux %3 all-history capture",
-        "wrapped" => "fux %3 wrapped 0 2 rows capture",
-        "full" => "fux %3 full capture",
-        "styles" => "fux %3 styles capture",
-        "main-screen" => "fux %3 main-screen capture",
-        "alt-screen" => "fux %3 alt-screen capture",
-        "last-output" => "fux %3 last-output capture",
-        "rows" => "fux %3 0 4 rows capture",
-        "cols" => "fux %3 0 39 cols capture",
-        "get" => "fux %3 str exited get",
-        "json" => "fux ls json",
-        "info" => "fux %3 info json",
-        "ls" => "fux ls",
-        "pane" => "fux str web pane capture",
-        "tab" => "fux %3 tab str logs rename",
-        "workspace" => "fux str agent workspace kill",
-        "events-of" | "events-of-json" => "fux str agent workspace events-of-json",
-        "clear-history" => "fux %3 clear-history",
-        "notify" => "fux %3 str 'tests passed' notify",
-        "status" => "fux status || fux start",
-        "dump" => "fux str work workspace dump-of > work.fux; fux --file work.fux",
-        "rename" => "fux %3 str editor rename",
-        "kill" => "fux %3 kill",
-        "resize-x" => "fux %3 30 percent resize-x",
-        "move-to" => "fux %3 str new-tab move-to",
-        "focus" => "fux str c1 client str left focus",
-        "bind" => "str 'g v' str 'me focused horizontal split drop' bind",
-        "bind-root" => "str M-n str 'me next-tab' bind-root",
-        "prefix" => "str C-a prefix",
-        "set" => "fux str history-bytes 16777216 set",
-        "server" => "fux str test server start opts 80 24 size str ./app program run",
-        "headless" => "fux 100 30 headless",
-        "input" => "ls | fux input lines len",
-        "read-file" => "fux str notes.txt read-file lines len",
-        "getenv" => "fux str HOME getenv",
-        "warn" | "exit" => "fux str 'no tests found' warn 2 exit",
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::script::Opt;
 
     /// Where the docs and words' help state a bound, they state the
     /// constant the check uses; the JSON they show is this protocol's.
@@ -399,14 +307,14 @@ mod tests {
         ] {
             assert!(JSON.contains(&said), "json.md: {said}");
         }
-        let about = |name| WORDS.iter().find(|w| w.name == name).map(|w| w.about);
         let read = format!("{} MiB at most", whole(crate::script::SOURCE_MAX, 20));
-        for name in ["input", "read-file"] {
-            assert!(about(name).is_some_and(|a| a.contains(&read)), "{name}");
+        for word in [Act::Input, Act::ReadFile].map(Word::Act) {
+            assert!(word.row().about.contains(&read), "{word:?}");
         }
         let sides = format!("1 to {} each", crate::view::MOST);
-        for name in ["size", "resize", "resize-client", "headless"] {
-            assert!(about(name).is_some_and(|a| a.contains(&sides)), "{name}");
+        let sized = [Act::Resize, Act::ResizeClient, Act::Headless].map(Word::Act);
+        for word in sized.into_iter().chain([Word::Opt(Opt::Size)]) {
+            assert!(word.row().about.contains(&sides), "{word:?}");
         }
     }
 
@@ -416,9 +324,9 @@ mod tests {
     fn the_guide_lists_its_topics_as_its_headings_are() {
         let topics = agents_topics();
         assert!(topics.len() >= 5, "{topics:?}");
-        let on = WORDS.iter().find(|w| w.name == "help-agents-on");
+        let on = Word::Act(Act::HelpAgentsOn).row().about;
         let listed = format!("({})", topics.join(" "));
-        assert!(on.is_some_and(|w| w.about.contains(&listed)), "{listed}");
+        assert!(on.contains(&listed), "{listed}");
         let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
         let listed = format!("whole guide): {}.", quoted.join(", "));
         let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -430,12 +338,11 @@ mod tests {
     #[test]
     fn every_word_has_its_help() {
         let overview = overview();
-        for word in WORDS {
+        for word in Word::ALL.iter().map(|w| w.row()) {
             assert!(overview.contains(word.name), "{}", word.name);
             assert!(explain(word.name).is_some(), "{}", word.name);
             // Each fux command line in it, a shell line's too.
-            let commands = (example(word.name).into_iter())
-                .flat_map(|line| line.split(['(', ')', ';', '|', '>']))
+            let commands = (word.example.split(['(', ')', ';', '|', '>']))
                 .filter_map(|part| part.trim().strip_prefix("fux "))
                 .filter(|code| !code.ends_with(".fux"));
             for code in commands {
@@ -461,11 +368,15 @@ mod tests {
             let explained = explain(name).unwrap_or_default();
             assert!(explained.contains(&format!("options, {on}")), "{explained}");
         }
-        // Each option is a word, which explain lists.
-        for (name, ..) in OPTIONS {
-            for option in options(name).into_iter().flatten() {
-                assert!(WORDS.iter().any(|w| w.name == option), "{name} {option}");
-            }
+        // A word's options go after opts just when it starts from them.
+        for act in crate::script::Act::ALL {
+            let (opts, row) = (act.takes().map(|t| t.after), Word::Act(*act).row());
+            let from_opts = row.effect.starts_with("opts ");
+            assert_eq!(opts == Some(After::Opts), from_opts, "{act}");
+        }
+        // Each option goes on a word.
+        for opt in Opt::ALL {
+            assert!(!opt.takers().is_empty(), "{opt}");
         }
         assert!(AGENTS.contains("fux "));
         // `set`'s help names every setting.

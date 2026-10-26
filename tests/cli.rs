@@ -478,12 +478,11 @@ fn ls_json_list_keys_and_help() -> Outcome {
     assert!(keys.contains("\nstr C-b prefix\n"), "{keys}");
     // help lists every word.
     let help = server.ok(&["help"])?;
-    for word in fux::script::WORDS {
+    for word in fux::script::Word::ALL.iter().map(|w| w.row().name) {
         assert!(
             help.lines()
-                .any(|l| l.split_whitespace().next() == Some(word.name)),
-            "{} is not in help",
-            word.name
+                .any(|l| l.split_whitespace().next() == Some(word)),
+            "{word} is not in help"
         );
     }
     Ok(())
