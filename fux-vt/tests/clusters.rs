@@ -108,7 +108,7 @@ fn row(given: &[(String, bool)], cols: usize) -> Vec<(String, bool)> {
     [given.to_vec(), empty(cols.saturating_sub(used))].concat()
 }
 
-/// Each is two columns by the width rule.
+/// Each takes two columns on a screen (`str_width`).
 #[test]
 fn the_rules_make_two_columns() {
     for (name, x) in RULES {
@@ -154,6 +154,10 @@ fn clusters_names_the_cells_a_screen_prints() -> Result {
         checked += 1;
     }
     assert!(checked > 500, "{checked} cases");
+    // A control takes no cell and ends the one before; a mark after it is
+    // taken as at a row's start.
+    let controlled = [c("e\u{301}", false), c("x", false)];
+    assert_eq!(named("e\u{301}\n\u{301}x"), controlled);
     let mark = |n| std::iter::repeat_n('\u{301}', n);
     // 127 bytes: a 64th mark would pass the capacity.
     let long: String = std::iter::once('e').chain(mark(100)).collect();

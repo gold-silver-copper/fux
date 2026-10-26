@@ -1551,8 +1551,9 @@ impl Screen {
                 // with it the open link, as a glyph printed there would.
                 let blank = g.stored(row, col).is_some_and(|c| !c.has_contents());
                 let end = col.saturating_add(1);
-                // A full cell takes no more (`append`), nor one that has
-                // dropped a character: it keeps a start of its text.
+                // A full cell takes no more (`append`), nor the cell
+                // printed last once it has dropped a character, so it
+                // keeps a start of its text.
                 let full = self
                     .last_print
                     .is_some_and(|p| p.at == (row, col) && p.full());
