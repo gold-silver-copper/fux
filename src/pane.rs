@@ -455,7 +455,9 @@ impl fux_vt::Sink for Sink<'_, '_> {
 /// A pane's program, by how far along its life it is. A closed pane's
 /// goes on to `session::Dying`.
 pub enum Process {
-    /// None was started: tests of the session's state alone.
+    /// None runs: tests of the session's state alone start none, and a
+    /// respawn under way has taken the old one (`PaneMut::let_go`) before
+    /// the new one takes its place.
     Absent,
     /// Its terminal is polled, read and written.
     Reading(Child),
@@ -885,10 +887,17 @@ impl<'a> PaneMut<'a> {
     pub fn exiting(&mut self, ended: Ended) {
         self.pane.exiting = Some(ended);
     }
-    /// Its program, taken to be ended as a respawn over it begins: the pane
-    /// runs none till the new one takes its place.
-    pub fn let_go(&mut self) -> Process {
-        std::mem::replace(&mut self.pane.process, Process::Absent)
+    /// Its program, if it has one to end, taken as a respawn over it
+    /// begins: the pane runs none till the new one takes its place. One
+    /// that ended keeps its status, its end told already.
+    pub fn let_go(&mut self) -> Option<Child> {
+        match std::mem::replace(&mut self.pane.process, Process::Absent) {
+            Process::Reading(child) | Process::HungUp(child) => Some(child),
+            other @ (Process::Absent | Process::Exited(_)) => {
+                self.pane.process = other;
+                None
+            }
+        }
     }
     /// Its program left more on its terminal than is read.
     pub fn left_cut(&mut self) {

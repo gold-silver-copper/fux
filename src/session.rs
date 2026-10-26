@@ -760,15 +760,21 @@ impl Session {
         let _ = fresh.host(Default::default(), Default::default(), graphics);
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started (a start
-        // refused leaves it running, nothing of it cut), and it is ended:
-        // no more of it is read, and input sent meanwhile waits, to be let
-        // go and said at the swap.
+        // refused leaves it running, nothing of it cut). Then its program is
+        // taken: no more of it is read, and input sent meanwhile waits, to
+        // be let go and said with its end. One that runs is ended; one whose
+        // exit waits is let go as that exit lets it go.
         if kill {
             self.read_left(id);
         }
-        if let (true, Ok(mut pane)) = (kill && exiting.is_none(), self.pane_mut(id)) {
-            let old = pane.let_go();
-            self.end(old, true);
+        if let Some(child) = self.pane_mut(id).ok().and_then(|mut p| p.let_go()) {
+            match exiting {
+                None => self.end(Process::Reading(child), true),
+                Some(_) => self.dying.push(Dying {
+                    child,
+                    deadline: Instant::now(),
+                }),
+            }
         }
         let mut started = fresh.version(self.run);
         started.counts.respawns = respawns;
@@ -837,6 +843,10 @@ impl Session {
     /// started; never the shell of a pane that runs one.
     fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
+        if self.respawning.contains_key(&target) {
+            let message = format!("{target} is respawning: no program is its own till it is done");
+            return Err(fail(Raise::StillRunning, message));
+        }
         if let Some(status) = pane.process().exit_status() {
             return Err(ended(pane.id(), status));
         }
@@ -1151,7 +1161,9 @@ impl Session {
 
     /// The directory pane `pane`'s program is in, if it can be read.
     fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
-        let child = self.parts.panes().get(&pane)?.process().child()?;
+        let runs = self.parts.panes().get(&pane)?.process().child();
+        // While it respawns, the program started for it.
+        let child = runs.or_else(|| self.respawning.get(&pane)?.process.child())?;
         fuxix::process::cwd(child.leader.pid())
     }
 
@@ -3923,6 +3935,11 @@ mod tests {
         assert!(!lines.contains("truncated"), "{lines}");
         let json = output(&mut s, "%2 capture json")?;
         assert!(json.contains(r#""truncated":[]"#), "{json}");
+        // So too with `kill-first`, which ends only a program that runs.
+        cut(&mut s);
+        s.exited(id, Ended::Exited(3));
+        let lines = told(&mut s, |s| _ = run(s, "%2 kill-first respawn"));
+        assert!(!lines.contains("truncated"), "{lines}");
         // One respawned over while it runs is told so at the respawn.
         let argv = ["/bin/cat".to_owned()];
         let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(4, 20)?, None))?;
@@ -4080,38 +4097,57 @@ mod tests {
         Ok(())
     }
 
-    /// A program respawned over (`kill-first`) is ended as the respawn
-    /// begins: input sent while what it left is read is written to no
-    /// program, and said let go, with `respawned`.
+    /// A program respawned over is taken from its pane as the respawn
+    /// begins, whether it runs (`kill-first`) or its exit waits on what it
+    /// left: input sent while that is read is written to no program, and
+    /// said let go with its end; nor is it signalled meanwhile.
     #[test]
     fn input_sent_while_respawning_is_said_let_go() -> Result<(), String> {
-        let mut s = started(Config::default())?;
-        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
-        let id = PaneId::of(2);
-        let argv = ["/bin/cat".to_owned()];
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(24, 80)?, None))?;
-        (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
-        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
-        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
-        let Begun::Waiting(waiting) = begun else {
-            return Err("answered before what was left was read".into());
-        };
-        run(&mut s, "%2 str abc text send-keys")?;
-        // As the server writes a pane's input.
-        let wrote = (s.parts.pane_mut(id).ok_or("the pane")?).write_input();
-        assert!(!wrote, "written to the program respawned over");
-        turns(&mut s, id, &waiting)?;
-        let lines = stream
-            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
-            .0;
-        assert!(
-            lines.contains("respawned %2 @2 +2 input_unread=3"),
-            "{lines}"
-        );
-        for dying in std::mem::take(&mut s.dying) {
-            if let Some(pid) = dying.kill() {
-                process::reaped(pid);
+        for (kill, exiting, said) in [
+            (true, None, "respawned %2 @2 +2 input_unread=3"),
+            (
+                false,
+                Some(Ended::Exited(0)),
+                "exited %2 @2 +2 exited=0 input_unread=3",
+            ),
+        ] {
+            let mut s = started(Config::default())?;
+            run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+            let id = PaneId::of(2);
+            let argv = ["/bin/cat".to_owned()];
+            let size = (sized(24, 80)?, None);
+            let child = process::spawn(&argv, Path::new("/"), (&[], &[]), size)?;
+            let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
+            pane.set_process(Process::Reading(child));
+            if let Some(ended) = exiting {
+                pane.exiting(ended);
+            }
+            s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
+            let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+            let respawn = Request::Do(Command::Respawn {
+                target: id,
+                kill,
+                env: command::Env::default(),
+                argv: Vec::new(),
+            });
+            let Begun::Waiting(waiting) = s.begin(respawn, &Origin::Cli(Caller::default())) else {
+                return Err("answered before what was left was read".into());
+            };
+            run(&mut s, "%2 str abc text send-keys")?;
+            // As the server writes a pane's input.
+            let wrote = (s.parts.pane_mut(id).ok_or("the pane")?).write_input();
+            assert!(!wrote, "written to the program respawned over");
+            let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
+            assert!(signalled.is_err_and(|e| e.contains("respawning")));
+            turns(&mut s, id, &waiting)?;
+            let lines = stream
+                .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
+                .0;
+            assert!(lines.contains(said), "{lines}");
+            for dying in std::mem::take(&mut s.dying) {
+                if let Some(pid) = dying.kill() {
+                    process::reaped(pid);
+                }
             }
         }
         Ok(())
@@ -4165,12 +4201,16 @@ mod tests {
             assert!(Instant::now() < deadline, "/bin/true never ended");
             std::thread::sleep(Duration::from_millis(5));
         }
+        // As the server reaps what is no program's it holds.
+        let kept: Vec<_> = s.children().map(|c| c.leader.pid()).collect();
+        fuxix::process::reap_orphans(|pid| kept.contains(&pid));
         turns(&mut s, id, &waiting)?;
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
         let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
         assert!(at("respawned")? < at("exited")?, "{lines}");
+        assert!(lines.contains("exited %2 @2 +2 exited=0"), "{lines}");
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {
                 process::reaped(pid);
