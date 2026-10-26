@@ -353,6 +353,9 @@ impl From<pane::Error> for Error {
 pub(crate) fn refuses_input(pane: &Pane) -> Option<Error> {
     let why = match pane.process() {
         Process::HungUp(_) => "its program closed its terminal: nothing reads input there",
+        Process::Respawning => {
+            "it is respawning: no program of its own reads input till it is done"
+        }
         Process::Exited(status) => return Some(ended(pane.id(), *status)),
         Process::Absent | Process::Reading(_) => return None,
     };
@@ -759,9 +762,9 @@ impl Session {
         let child = self.spawn(id, &launch, starting, size)?;
         // What one that runs left is read once another started (a start
         // refused leaves it running, nothing of it cut). Then its program is
-        // taken: no more of it is read, and input sent meanwhile waits, to
-        // be let go and said with its end. One that runs is ended; one whose
-        // exit waits is let go as that exit lets it go.
+        // taken: no more of it is read, and input is refused till the new
+        // one takes its place. One that runs is ended; one whose exit waits
+        // is let go as that exit lets it go.
         if kill {
             self.read_left(id);
         }
@@ -838,7 +841,7 @@ impl Session {
     /// started; never the shell of a pane that runs one.
     fn signalled(&self, target: PaneId) -> Result<process::Pid, Error> {
         let pane = self.pane(target)?;
-        if self.respawning.contains_key(&target) {
+        if let Process::Respawning = pane.process() {
             let message = format!("{target} is respawning: no program is its own till it is done");
             return Err(fail(Raise::StillRunning, message));
         }
@@ -3145,7 +3148,9 @@ pub(crate) const LEFT_MAX: usize = LEFT_MIB << 20;
 fn unread(process: &Process) -> (Vec<u8>, bool) {
     match process {
         Process::Reading(child) => left_on(&child.master),
-        Process::HungUp(_) | Process::Absent | Process::Exited(_) => (Vec::new(), false),
+        Process::HungUp(_) | Process::Absent | Process::Exited(_) | Process::Respawning => {
+            (Vec::new(), false)
+        }
     }
 }
 
@@ -4094,18 +4099,11 @@ mod tests {
 
     /// A program respawned over is taken from its pane as the respawn
     /// begins, whether it runs (`kill-first`) or its exit waits on what it
-    /// left: input sent while that is read is written to no program, and
-    /// said let go with its end; nor is it signalled meanwhile.
+    /// left: while that is read the pane is no program's, so input is
+    /// refused, none queued to be lost, and nothing is signalled.
     #[test]
-    fn input_sent_while_respawning_is_said_let_go() -> Result<(), String> {
-        for (kill, exiting, said) in [
-            (true, None, "respawned %2 @2 +2 input_unread=3"),
-            (
-                false,
-                Some(Ended::Exited(0)),
-                "exited %2 @2 +2 exited=0 input_unread=3",
-            ),
-        ] {
+    fn input_is_refused_while_respawning() -> Result<(), String> {
+        for (kill, exiting) in [(true, None), (false, Some(Ended::Exited(0)))] {
             let mut s = started(Config::default())?;
             run(&mut s, "opts 80 24 size str /bin/cat program run")?;
             let id = PaneId::of(2);
@@ -4128,17 +4126,16 @@ mod tests {
             let Begun::Waiting(waiting) = s.begin(respawn, &Origin::Cli(Caller::default())) else {
                 return Err("answered before what was left was read".into());
             };
-            run(&mut s, "%2 str abc text send-keys")?;
-            // As the server writes a pane's input.
-            let wrote = (s.parts.pane_mut(id).ok_or("the pane")?).write_input();
-            assert!(!wrote, "written to the program respawned over");
+            let sent = run(&mut s, "%2 str abc text send-keys");
+            assert!(sent.is_err_and(|e| e.contains("respawning")));
             let signalled = s.signalled(id).map(drop).map_err(|e| e.to_string());
             assert!(signalled.is_err_and(|e| e.contains("respawning")));
             turns(&mut s, id, &waiting)?;
             let lines = stream
                 .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
                 .0;
-            assert!(lines.contains(said), "{lines}");
+            assert!(lines.contains("respawned %2"), "{lines}");
+            assert!(!lines.contains("input_unread"), "{lines}");
             for dying in std::mem::take(&mut s.dying) {
                 if let Some(pid) = dying.kill() {
                     process::reaped(pid);
@@ -4586,7 +4583,7 @@ mod tests {
                 .pane_mut(id)
                 .and_then(|mut p| match p.set_process(Process::Absent) {
                     Process::Reading(child) | Process::HungUp(child) => Some(child),
-                    Process::Absent | Process::Exited(_) => None,
+                    Process::Absent | Process::Exited(_) | Process::Respawning => None,
                 })
         {
             drop(child.master);
