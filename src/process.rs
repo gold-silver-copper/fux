@@ -96,7 +96,7 @@ pub enum Ended {
 impl Ended {
     /// How a wait or an event says it: `exited`, its code, `null` if it
     /// was lost, or `signal`, the signal that killed it.
-    pub fn field(self) -> (&'static str, crate::json::Json<'static>) {
+    pub fn field(self) -> (&'static str, crate::json::Json) {
         use crate::json::Json;
         match self {
             Ended::Exited(code) => ("exited", Json::int(code)),

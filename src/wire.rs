@@ -89,7 +89,7 @@ macro_rules! int_wire {
         }
     )*};
 }
-int_wire!(u8, u16, u32, u64, i64);
+int_wire!(u8, u16, u32, u64, i32, i64);
 
 impl Wire for std::num::NonZeroU32 {
     fn put(&self, out: &mut Vec<u8>) {

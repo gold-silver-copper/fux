@@ -170,7 +170,7 @@ pub enum Told {
 }
 
 /// An event's fields after its name and place.
-type Fields = Vec<(&'static str, Json<'static>)>;
+type Fields = Vec<(&'static str, Json)>;
 
 /// A name, as the field `name`.
 fn named(name: &str) -> Fields {
@@ -313,7 +313,7 @@ fn missed(count: u64) -> String {
 fn line(
     name: &str,
     (pane, tab, ws): (Option<PaneId>, Option<TabId>, Option<WsId>),
-    fields: Vec<(&'static str, Json<'static>)>,
+    fields: Vec<(&'static str, Json)>,
 ) -> String {
     let at = [
         ("pane", pane.map(|p| p.to_string())),
@@ -323,7 +323,7 @@ fn line(
     let mut all = vec![("event", Json::str(name))];
     all.extend(at.into_iter().filter_map(|(k, v)| Some((k, Json::str(v?)))));
     all.extend(fields);
-    format!("{}\n", Json::Object(all).render())
+    format!("{}\n", Json::object(all).render())
 }
 
 /// A connection that streams events: which pane, tab or workspace it is

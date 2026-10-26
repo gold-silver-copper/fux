@@ -588,7 +588,7 @@ impl Losses {
     }
 
     /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
-    pub fn json(self) -> crate::json::Json<'static> {
+    pub fn json(self) -> crate::json::Json {
         use crate::json::Json;
         let Losses {
             input,
@@ -598,7 +598,7 @@ impl Losses {
             pictures,
             memory,
         } = self;
-        Json::Object(vec![
+        Json::object(vec![
             ("input", Json::uint(input)),
             ("replies", Json::uint(replies)),
             ("copies_cut", Json::uint(copies_cut)),
@@ -958,7 +958,7 @@ impl Left {
     /// its terminal than is read (`Output::Cut`), and `input_unread`, the
     /// bytes of input queued for it not yet written to its terminal, if
     /// any.
-    pub fn fields(self) -> impl Iterator<Item = (&'static str, crate::json::Json<'static>)> {
+    pub fn fields(self) -> impl Iterator<Item = (&'static str, crate::json::Json)> {
         use crate::json::Json;
         let cut = match self.output {
             Output::Read => None,

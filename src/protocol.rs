@@ -15,6 +15,7 @@ use crate::bytes::ByteQueue;
 use crate::code::Code;
 use crate::command::{AnyRef, Request};
 use crate::id::{ClientId, PaneId};
+use crate::json::Json;
 use crate::wire::{Wire, wire};
 use std::borrow::Cow;
 
@@ -368,29 +369,48 @@ impl OneKind for Asked {
 }
 
 wire! {
-    /// A field's value, as its JSON has it, if it is a number, a bool or a
-    /// string.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub enum Scalar {
-        Int(n: i64),
-        Bool(b: bool),
-        Str(s: String),
+    /// The server's answer to a request: how it ended, and what it
+    /// answers, which a failure has too (a wait's that timed out or whose
+    /// pane closed).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Reply {
+        pub end: End,
+        pub body: Body,
     }
 }
 
 wire! {
-    /// The server's answer to a request: how it ended; what it says as text,
-    /// and as JSON where it has a JSON form; the panes, tabs or workspaces it
-    /// made or found; the version of each pane an action or wait answers,
-    /// or of the pane a capture read, read with it; a field's value.
+    /// What a request answers, as data: the client renders it as text, or
+    /// as JSON (`json`).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Reply {
-        pub end: End,
-        pub text: String,
-        pub json: String,
-        pub ids: Vec<AnyRef>,
-        pub versions: Vec<crate::command::Version>,
-        pub value: Option<Scalar>,
+    pub enum Body {
+        #[default]
+        Empty,
+        Text(text: String),
+        /// The pane, tab or workspace a lookup found.
+        Found(id: AnyRef),
+        /// The panes or tabs a place holds, in its order.
+        Handles(ids: Vec<AnyRef>),
+        /// An action's or wait's on a pane, or a program started.
+        Pane(answer: crate::answer::PaneAnswer),
+        /// An action's or wait's on a tab or workspace: each pane's that
+        /// answered.
+        Panes(answers: Vec<crate::answer::PaneAnswer>),
+        Capture(captured: Box<crate::capture::Captured>),
+        /// `ls`: everything (`of` none), or a pane, tab or workspace and
+        /// what is in it (`info`).
+        Listing {
+            of: Option<crate::command::Kind>,
+            listing: Json,
+        },
+        /// One field of a pane, tab or workspace (`get`).
+        Field(value: Json),
+        /// A chooser's rows: what each is, its label, and the place of the
+        /// client's own.
+        Choices {
+            rows: Vec<(AnyRef, String)>,
+            current: Option<usize>,
+        },
     }
 }
 
@@ -424,16 +444,6 @@ impl End {
     }
 }
 
-/// An answer of `text` alone.
-impl From<String> for Reply {
-    fn from(text: String) -> Self {
-        Self {
-            text,
-            ..Self::default()
-        }
-    }
-}
-
 impl Reply {
     /// A failure of kind `code`, with its exit status, and why.
     pub fn failed(code: Code, message: impl Into<String>) -> Self {
@@ -442,7 +452,16 @@ impl Reply {
                 code,
                 message: message.into(),
             },
-            ..Self::default()
+            body: Body::Empty,
+        }
+    }
+}
+
+impl From<Body> for Reply {
+    fn from(body: Body) -> Self {
+        Self {
+            end: End::Done,
+            body,
         }
     }
 }

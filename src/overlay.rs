@@ -4,7 +4,7 @@
 use crate::command::{AnyRef, Choices, Kind};
 use crate::id::ClientId;
 use crate::layout::Tree;
-use crate::protocol::{Reply, Scalar};
+use crate::protocol::{Body, Reply};
 use crate::session::{Error, Session};
 
 /// The names of the panes in `roots`, for a chooser row, shortened.
@@ -20,8 +20,8 @@ fn pane_names<'a>(session: &Session, roots: impl IntoIterator<Item = &'a Tree>) 
     names.join(", ")
 }
 
-/// A chooser's rows for client `client`: what each is (its ids), its label
-/// (a line of text each), and which one is the client's own (its value).
+/// A chooser's rows for client `client`: what each is, its label, and
+/// which one is the client's own.
 pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<Reply, Error> {
     let mut rows = Vec::new();
     let mut current = None;
@@ -71,13 +71,7 @@ pub fn choices(session: &Session, client: ClientId, choices: Choices) -> Result<
             }
         }
     }
-    let (ids, labels): (_, Vec<String>) = rows.into_iter().unzip();
-    Ok(Reply {
-        ids,
-        text: labels.iter().map(|l| format!("{l}\n")).collect(),
-        value: (current.and_then(|i| i64::try_from(i).ok())).map(Scalar::Int),
-        ..Reply::default()
-    })
+    Ok(Body::Choices { rows, current }.into())
 }
 
 /// Rows a scrolled panel has for its entries on a screen of `rows`: the

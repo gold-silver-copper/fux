@@ -220,7 +220,7 @@ impl Vocabulary {
     /// kinds (`Machine::raise_with`): a `try`'s handler gets it in place of
     /// the message.
     pub fn carries(&mut self, code: Code, name: &str) -> Result<(), Error> {
-        let kinds = taken(&self.lookup(name)?.0);
+        let kinds = taken(&self.lookup(name, false)?.0);
         self.carried.push((code, kinds));
         Ok(())
     }

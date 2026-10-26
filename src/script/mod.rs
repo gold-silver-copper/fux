@@ -8,13 +8,15 @@
 //! words first (`library.fux`).
 mod words;
 
+use crate::answer::PaneAnswer;
 use crate::client;
 use crate::code::{Code, Raise};
 use crate::command::{AnyRef, Extent, Input, Kind, Mouse, Request, Version, WsRef};
 use crate::id::{ClientId, PaneId, TabId, WsId};
+use crate::json::Json;
 use crate::keymap::Keymap;
 use crate::layout::Axis;
-use crate::protocol::{Asked, Context, End, Reply, Scalar};
+use crate::protocol::{Asked, Body, Context, End, Reply};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
@@ -59,7 +61,7 @@ pub enum Fux {
 impl AppValue for Fux {
     fn kind(&self) -> &'static str {
         if let Fux::Answer(answer) = self {
-            return answer.said.kind();
+            return answer.kind();
         }
         let kind = words::KINDS.iter().find(|(name, ..)| *name == self.name());
         kind.map_or("a value of fux's", |(_, said, _)| said)
@@ -76,7 +78,7 @@ impl AppValue for Fux {
                 Some(_) => "request",
             },
             Fux::Extent(_) => "size",
-            Fux::Answer(answer) => answer.said.name(),
+            Fux::Answer(answer) => answer.name(),
         }
     }
 
@@ -86,7 +88,7 @@ impl AppValue for Fux {
             Fux::Tab(t) => t.to_string(),
             Fux::Workspace(w) => w.to_string(),
             Fux::Client(c) => c.to_string(),
-            Fux::Answer(answer) => answer.text.clone(),
+            Fux::Answer(answer) => answer.text(),
             Fux::Extent(Extent::Cells(n)) => n.to_string(),
             Fux::Extent(Extent::Percent(n)) => format!("{}%", n.get()),
             Fux::Opts(_) => format!("({})", self.kind()),
@@ -138,110 +140,138 @@ pub enum On {
     Seen(Version),
 }
 
-/// What the server answered, to print as text, or as JSON: the JSON the
-/// server gave with it, read at the same moment.
+/// What the server answered, as data: printed, its text; given to `json`,
+/// its JSON; each made of the one value, read once.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Answer {
-    pub text: String,
-    pub json: Option<String>,
-    pub said: Said,
+pub enum Answer {
+    /// An action's or wait's on one pane: a word that wants a pane takes
+    /// it, and a wait waits from its version.
+    Pane(PaneAnswer),
+    /// An action's or wait's on a tab or workspace: each pane's that
+    /// answered, which is no one pane.
+    Panes(Vec<PaneAnswer>),
+    Capture(Box<crate::capture::Captured>),
+    /// `ls` (`of` none) or `info`.
+    Listing {
+        of: Option<Kind>,
+        listing: Json,
+    },
+    /// A field's value that is no one value of fuxth's: `null`, a list,
+    /// an object.
+    Json(Json),
+    /// `status`: the server that answers, and its version.
+    Status(Json),
 }
 
-/// What an answer is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Said {
-    /// A capture: of a pane, with its pane's version as it was read, which
-    /// `expect` sends at and `changed` waits from; of a client's terminal,
-    /// none.
-    Capture(Option<Version>),
-    Listing,
-    /// An action's or wait's answer of one pane, which holds its
-    /// version: a word that wants a pane takes it, and a wait waits from
-    /// that version.
-    Action(Version),
-    /// An answer that holds no one pane's version: a tab's or workspace's
-    /// panes', or a closed pane's.
-    Panes,
-    /// JSON that is no one value of fuxth's.
-    Json,
-    Status,
-}
-
-impl Said {
+impl Answer {
     /// Its kind, as the vocabulary names it.
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
-            Said::Capture(_) => "capture",
-            Said::Listing | Said::Status => "listing",
-            Said::Action(_) | Said::Panes => "answer",
-            Said::Json => "json",
+            Answer::Pane(_) => "answer",
+            Answer::Panes(_) => "answer",
+            Answer::Capture(_) => "capture",
+            Answer::Listing { .. } | Answer::Status(_) => "listing",
+            Answer::Json(_) => "json",
         }
     }
 
     /// What it is, said where it is refused.
-    fn kind(self) -> &'static str {
+    fn kind(&self) -> &'static str {
         match self {
-            Said::Capture(Some(_)) => "a capture",
-            Said::Capture(None) => "a client's capture",
-            Said::Listing => "a listing",
-            Said::Action(_) => "an action's answer",
-            Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
-            Said::Json => "a JSON value",
-            Said::Status => "a status",
+            Answer::Pane(_) => "an action's answer",
+            Answer::Panes(_) => "an answer of a tab's or workspace's panes",
+            Answer::Capture(captured) => match captured.of {
+                crate::capture::Of::Pane { .. } => "a capture",
+                crate::capture::Of::Client(_) => "a client's capture",
+            },
+            Answer::Listing { .. } => "a listing",
+            Answer::Json(_) => "a JSON value",
+            Answer::Status(_) => "a status",
         }
     }
 
-    /// The version an action's answer holds, its pane's from before what
-    /// it did; or a pane's capture, its pane's as it was read.
-    pub fn version(self) -> Option<crate::command::Version> {
+    /// As it is printed.
+    pub fn text(&self) -> String {
         match self {
-            Said::Action(version) | Said::Capture(Some(version)) => Some(version),
-            Said::Capture(None) | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
+            Answer::Pane(answer) => answer.text(),
+            Answer::Panes(answers) => {
+                let lines: Vec<String> = answers.iter().map(PaneAnswer::text).collect();
+                lines.join("\n")
+            }
+            Answer::Capture(captured) => captured.text(),
+            Answer::Listing { of, listing } => {
+                let text = crate::answer::listing_text(*of, listing);
+                text.trim_end_matches('\n').to_owned()
+            }
+            Answer::Json(json) => json.render(),
+            Answer::Status(status) => status_text(status),
         }
+    }
+
+    /// As `json` gives it: one pane's answer as its object, a tab's or
+    /// workspace's as an array of theirs, however many answered.
+    pub fn json(&self) -> Json {
+        match self {
+            Answer::Pane(answer) => answer.json(),
+            Answer::Panes(answers) => Json::Array(answers.iter().map(PaneAnswer::json).collect()),
+            Answer::Capture(captured) => captured.json(),
+            Answer::Listing { listing: json, .. } | Answer::Json(json) | Answer::Status(json) => {
+                json.clone()
+            }
+        }
+    }
+
+    /// The version it holds: a pane's answer's, which a wait on it waits
+    /// from; or a pane's capture's, its pane's as it was read, which
+    /// `expect` sends at and `changed` waits from.
+    pub fn version(&self) -> Option<Version> {
+        match self {
+            Answer::Pane(answer) => answer.version(),
+            Answer::Capture(captured) => match captured.of {
+                crate::capture::Of::Pane { version, .. } => Some(version),
+                crate::capture::Of::Client(_) => None,
+            },
+            Answer::Panes(_) | Answer::Listing { .. } | Answer::Json(_) | Answer::Status(_) => None,
+        }
+    }
+
+    /// An answer, as a value on the stack.
+    fn value(self) -> Value<Fux> {
+        Value::App(Fux::Answer(Box::new(self)))
     }
 }
 
-impl Answer {
-    /// An answer, as a value on the stack.
-    fn value(text: String, json: Option<String>, said: Said) -> Value<Fux> {
-        Value::App(Fux::Answer(Box::new(Answer { text, json, said })))
+/// `status`'s text: the server's version and socket, and if it speaks
+/// another protocol, how to stop it.
+fn status_text(status: &Json) -> String {
+    let field = |key| match status.get(key) {
+        Some(Json::String(s)) => s.clone(),
+        Some(json) => json.render(),
+        None => String::new(),
+    };
+    let mut text = format!("fux {} at {}", field("server_version"), field("socket"));
+    if status.get("compatible") == Some(&Json::Bool(false)) {
+        text.push_str(&format!(
+            " speaks protocol {}, not this fux's ({}, fux {}): `fux force-kill-server` stops it",
+            field("server_protocol"),
+            field("protocol"),
+            field("version")
+        ));
     }
+    text
 }
 
 /// What an application word asks while the program waits.
 #[derive(Clone, Debug)]
 pub enum Ask {
-    /// A request, as the client `client` (or the caller), and what to make
-    /// of its reply.
+    /// A request, as the client `client` (or the caller).
     Server {
         request: Box<Request>,
         client: Option<ClientId>,
-        then: Then,
     },
     /// Something the client itself does that takes over (attaching), or
     /// talks to no server (`status`).
     Local(Local),
-}
-
-/// What a reply becomes on the stack.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Then {
-    Nothing,
-    /// The pane, tab or workspace it made or found, of `Kind`.
-    Handle(Kind),
-    /// The panes or tabs it named, as a list of their handles, in its order.
-    Handles,
-    /// Its text, as an answer `json` can show as JSON.
-    Answer(Said),
-    /// A pane's capture: its text, JSON and its pane's version, which its
-    /// reply must hold.
-    Capture,
-    /// Its text, as a string.
-    Text,
-    /// A field's value.
-    Value,
-    /// A wait's outcome: its text, and JSON; empty for no wait.
-    Outcome,
 }
 
 /// The keys of a binding just made.
@@ -847,38 +877,26 @@ pub fn run_capped(
         match machine.run(host, slice).map_err(|e| uncaught(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
-            Outcome::Suspended(Ask::Server {
-                request,
-                client,
-                then,
-            }) => {
+            Outcome::Suspended(Ask::Server { request, client }) => {
                 let mut context = host.context.clone();
                 context.client = client.or(context.client);
                 let asked = Asked {
                     request: *request,
                     context,
                 };
-                let reply = asks.ask(&asked, host.out);
-                let values = reply.and_then(|reply| {
-                    // A failure that answered too (a wait's): its answer is
-                    // left, printed before why it failed, unless a `try`
-                    // catches the failure.
-                    if let End::Failed { message, .. } = &reply.end
-                        && !message.trim().is_empty()
-                        && !reply.text.trim().is_empty()
-                    {
-                        let answer = Reply {
-                            end: End::Done,
-                            ..reply.clone()
-                        };
-                        // Only what it answered: its failure is raised
-                        // once, below.
-                        let answer = answered(answer, then).unwrap_or_default();
-                        pushed(machine, Ok(answer))?;
+                match asks.ask(&asked, host.out) {
+                    Ok(Reply {
+                        end: End::Failed { code, message },
+                        body,
+                    }) => {
+                        // A failure that answered too (a wait's): its answer
+                        // is left, printed before why it failed, unless a
+                        // `try` catches the failure.
+                        pushed(machine, answered(body))?;
+                        pushed(machine, Err(Failed::new(code, message)))?;
                     }
-                    answered(reply, then)
-                });
-                pushed(machine, values)?;
+                    reply => pushed(machine, reply.and_then(|reply| answered(reply.body)))?,
+                }
             }
             Outcome::Suspended(Ask::Local(what)) => {
                 let values = asks.local(&what, host.out);
@@ -941,78 +959,46 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     told(error, true)
 }
 
-/// A reply, or its failure: why, from its message, else from what it said.
-pub fn succeeded(reply: Reply) -> Result<Reply, Failed> {
+/// A reply's answer, or its failure.
+pub fn succeeded(reply: Reply) -> Result<Body, Failed> {
     match reply.end {
-        End::Failed { code, message } => {
-            let message = match (message.trim_end(), reply.text.trim_end()) {
-                ("", text) => text,
-                (message, _) => message,
-            };
-            Err(Failed::new(code, message))
-        }
-        End::Done => Ok(reply),
+        End::Failed { code, message } => Err(Failed::new(code, message)),
+        End::Done => Ok(reply.body),
     }
 }
 
-/// What a reply puts on the stack, `then` saying what it is; a failure,
-/// with its status, if it failed: why, else what it answered.
-pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
-    let reply = succeeded(reply)?;
-    let text = reply.text.trim_end_matches('\n').to_owned();
-    let json = Some(reply.json.trim_end().to_owned()).filter(|j| !j.is_empty());
-    // An action's answer is its pane's, when the reply holds one pane's
-    // version alone (a wait on a tab's panes answers each).
-    let version = match reply.versions.as_slice() {
-        [one] => Some(*one),
-        _ => None,
+/// What a reply's answer puts on the stack: nothing, a string, handles, or
+/// an answer of fux's; a field's value as fuxth's own where it is one.
+pub fn answered(body: Body) -> Result<Vec<Value<Fux>>, Failed> {
+    let handles = |ids: Vec<AnyRef>| {
+        let ids = ids.into_iter().map(|id| Value::App(handle(id))).collect();
+        let list = fuxth::List::new(ids)
+            .ok_or_else(|| Failed::new(Code::from(Raise::TooLong), "more ids than a list holds"))?;
+        Ok::<_, Failed>(Value::List(std::rc::Rc::new(list)))
     };
-    let action = |text: String, json: Option<String>| {
-        Answer::value(text, json, version.map_or(Said::Panes, Said::Action))
-    };
-    Ok(match then {
-        Then::Nothing => Vec::new(),
-        // A pane an action started: its answer, which is its pane too.
-        Then::Handle(Kind::Pane) if version.is_some() => vec![action(text, json)],
-        Then::Handle(kind) => match reply.ids.iter().rev().find(|id| id.kind() == kind) {
-            Some(id) => vec![Value::App(handle(*id))],
-            None => {
-                return Err(Failed::new(
-                    Code::NoTarget,
-                    format!("the server named no {}", kind.name()),
-                ));
-            }
-        },
-        Then::Handles => {
-            let ids = reply
-                .ids
-                .into_iter()
-                .map(|id| Value::App(handle(id)))
-                .collect();
-            let list = fuxth::List::new(ids).ok_or_else(|| {
-                Failed::new(Code::from(Raise::TooLong), "more ids than a list holds")
-            })?;
-            vec![Value::List(std::rc::Rc::new(list))]
+    Ok(vec![match body {
+        Body::Empty => return Ok(Vec::new()),
+        Body::Text(text) => Value::str(text.trim_end_matches('\n')),
+        Body::Found(id) => Value::App(handle(id)),
+        Body::Handles(ids) => handles(ids)?,
+        Body::Choices { rows, .. } => handles(rows.into_iter().map(|(id, _)| id).collect())?,
+        Body::Pane(answer) => Answer::Pane(answer).value(),
+        Body::Panes(answers) => Answer::Panes(answers).value(),
+        Body::Capture(captured) => Answer::Capture(captured).value(),
+        Body::Listing { of, listing } => Answer::Listing { of, listing }.value(),
+        Body::Field(Json::Int(n)) => Value::Int(n),
+        Body::Field(Json::Uint(n)) => Value::Int(i64::try_from(n).map_err(|_| {
+            Failed::new(
+                Code::from(Raise::Range),
+                format!("{n} is past fuxth's integers"),
+            )
+        })?),
+        Body::Field(Json::Bool(b)) => Value::Bool(b),
+        Body::Field(Json::String(s)) => Value::str(s),
+        Body::Field(json @ (Json::Null | Json::Array(_) | Json::Object(_))) => {
+            Answer::Json(json).value()
         }
-        Then::Answer(said) => vec![Answer::value(text, json, said)],
-        Then::Capture => match version {
-            Some(version) => vec![Answer::value(text, json, Said::Capture(Some(version)))],
-            None => {
-                let why = "the server gave the capture no version";
-                return Err(Failed::new(Code::NoTarget, why));
-            }
-        },
-        Then::Text => vec![Value::str(text)],
-        Then::Value => vec![match reply.value {
-            Some(Scalar::Int(n)) => Value::Int(n),
-            Some(Scalar::Bool(b)) => Value::Bool(b),
-            Some(Scalar::Str(s)) => Value::str(s),
-            // JSON that is no one value of fuxth's: `null`, a list, an
-            // object, as text that `json` gives as it is.
-            None => Answer::value(text.clone(), Some(text), Said::Json),
-        }],
-        Then::Outcome => vec![action(text, json)],
-    })
+    }])
 }
 
 /// A handle for `id`.
@@ -1076,9 +1062,9 @@ fn local(what: &Local, server: &mut Server) -> Result<Vec<Value<Fux>>, Failed> {
         Local::Status => {
             let socket = server.socket()?;
             let probe = client::probe(&socket).map_err(client_failed)?;
-            let (text, json) =
+            let status =
                 crate::status(&socket, &probe).map_err(|why| Failed::new(Code::NoServer, why))?;
-            return Ok(vec![Answer::value(text, Some(json), Said::Status)]);
+            return Ok(vec![Answer::Status(status).value()]);
         }
     }
     Ok(Vec::new())
@@ -1239,7 +1225,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         // An answer with nothing to say (an empty listing) prints no
         // blank line; options or a request, nothing.
         .filter(|value| {
-            !matches!(value, Value::App(Fux::Answer(a)) if a.text.is_empty())
+            !matches!(value, Value::App(Fux::Answer(a)) if a.text().is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
         .try_for_each(|value| writeln!(host.out, "{}", value.text()))

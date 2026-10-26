@@ -128,6 +128,10 @@ fn a_client_that_shuts_its_side_still_gets_its_answer() -> Outcome {
     }
     let reply = reply.ok_or("no reply")?.map_err(e)?;
     assert_eq!(reply.end, fux::protocol::End::Done);
-    assert!(reply.text.contains("+1 main"), "{}", reply.text);
+    let fux::protocol::Body::Listing { listing, .. } = &reply.body else {
+        return Err(format!("not a listing: {:?}", reply.body));
+    };
+    let listed = listing.render();
+    assert!(listed.contains(r#""name":"main""#), "{listed}");
     Ok(())
 }

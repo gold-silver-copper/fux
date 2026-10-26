@@ -1,30 +1,117 @@
-//! What `capture` and `capture-client` print: a screen's text, trimmed,
+//! What `capture` and `capture-client` read: a screen's text, trimmed,
 //! sliced and joined as asked, with its colours and attributes and its
-//! pane's state if asked.
-use crate::command::{CaptureView, Run, Source};
+//! pane's state, as data (`Captured`) that the client renders as text or
+//! as JSON.
+use crate::command::{CaptureView, Run, Source, Version};
 use crate::id::ClientId;
 use crate::json::Json;
 use crate::pane::{Pane, Process, Runs};
-use fux_vt::{Attributes, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen};
+use crate::wire::{wire, wire_enum};
+use fux_vt::{
+    Attributes, Blink, Color, CommandMark, Mode, MouseProtocolMode, Rgb, Row, Screen,
+    UnderlineStyle,
+};
 use std::time::Instant;
 
 /// A captured line's cells, each its glyph (the second cell of a wide one
 /// empty, a blank one a space) and its attributes.
 type Cells<'a> = Vec<(&'a str, Attributes)>;
 
-/// A capture as text, and as JSON, read once (`json` gives the second).
-type Read = (String, String);
+wire! {
+    /// A capture, read once: what it read, its screen's size and cursor
+    /// (its row and column, if it shows on the screen read), and its
+    /// lines, trimmed as its view asked, each a run of cells for each
+    /// change of style; and whether its text shows styles (SGR) and marks.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Captured {
+        pub of: Of,
+        pub screen_rows: u16,
+        pub screen_cols: u16,
+        pub screen_cursor: Option<(u16, u16)>,
+        pub lines: Vec<Vec<Cut>>,
+        pub styles: bool,
+        pub marks: bool,
+    }
+}
 
-/// A pane's screen, and `history` rows before it, as `view` asks, and its
-/// JSON (which `json` gives, read once with the text); with `copy_mode`,
-/// that says a client is in copy mode on it (`state`).
+wire! {
+    /// What a capture read: a pane, at its version, read with it, its
+    /// pending wrap and its state (`state`); or a client's terminal.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Of {
+        Pane {
+            version: Version,
+            /// A glyph went into the last column: the next one goes on the
+            /// next line, though the cursor shows on this one's last cell.
+            wrap_pending: bool,
+            state: Json,
+        },
+        Client(client: ClientId),
+    }
+}
+
+wire! {
+    /// A run of a line's cells of one style: their glyphs, and how many
+    /// cells they fill.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Cut {
+        pub text: String,
+        pub cells: u32,
+        pub style: Attributes,
+    }
+}
+
+wire_enum!(Color { Default, Idx(n), Rgb(rgb) });
+wire_enum!(Blink { None, Slow, Rapid });
+
+/// The style's colours, its flags and its underline's style and blink, as
+/// the vocabulary of `Attributes` gives and takes them.
+impl crate::wire::Wire for Attributes {
+    fn put(&self, out: &mut Vec<u8>) {
+        let a = *self;
+        [a.foreground(), a.background(), a.underline_color()]
+            .iter()
+            .for_each(|c| c.put(out));
+        [
+            a.bold(),
+            a.dim(),
+            a.italic(),
+            a.inverse(),
+            a.hidden(),
+            a.strikeout(),
+        ]
+        .iter()
+        .for_each(|f| f.put(out));
+        (a.underline_style() as u16).put(out);
+        a.blink().put(out);
+    }
+    fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
+        let [fg, bg, under] = [Color::get(r)?, Color::get(r)?, Color::get(r)?];
+        let mut flag = || bool::get(r);
+        let a = Attributes::new(fg, bg)
+            .with_underline_color(under)
+            .with_bold(flag()?)
+            .with_dim(flag()?)
+            .with_italic(flag()?)
+            .with_inverse(flag()?)
+            .with_hidden(flag()?)
+            .with_strikeout(flag()?);
+        let style = UnderlineStyle::from_number(u16::get(r)?);
+        let style = style.ok_or(crate::wire::Error::Bad("underline style"))?;
+        Ok(a.with_underline_style(style).with_blink(Blink::get(r)?))
+    }
+}
+
+/// A pane's screen, and `history` rows before it, as `view` asks, read
+/// once with its version and state; with `copy_mode`, that says a client
+/// is in copy mode on it (`state`).
 pub fn pane(
     pane: &Pane,
     run: Run,
     history: Option<usize>,
     view: CaptureView,
     copy_mode: bool,
-) -> Read {
+) -> Captured {
     let screen = pane.screen();
     let mut lines: Vec<Cells<'_>> = Vec::new();
     // A soft-wrapped row goes on in the next, joined unless `wrapped`.
@@ -103,21 +190,16 @@ pub fn pane(
         }
         wraps = !view.wrapped && row.continues();
     }
-    let (rows, cols) = screen.size().into();
     let mut state = state(pane, run, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
-    // A glyph went into the last column: the next one goes on the next
-    // line, though the cursor shows on this one's last cell.
-    let pending = cursor.is_some() && screen.pending_wrap();
-    print(
-        ("pane", pane.id().to_string()),
-        (rows, cols),
-        (cursor, Some(pending)),
-        (lines, view),
-        state,
-    )
+    let of = Of::Pane {
+        version: pane.version(run),
+        wrap_pending: cursor.is_some() && screen.pending_wrap(),
+        state: Json::object(state),
+    };
+    captured(of, screen.size().into(), cursor, lines, view)
 }
 
 /// The rows a capture reads, each with the columns of it it reads: the
@@ -193,9 +275,8 @@ fn last_output(screen: &Screen) -> Vec<(Row<'_>, std::ops::Range<usize>)> {
         .collect()
 }
 
-/// What a client's terminal shows, row by row, as `capture-client` prints
-/// it, and as JSON.
-pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
+/// What a client's terminal shows, row by row.
+pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
     let lines = (0..grid.rows).map(|y| grid.row_text(y)).collect::<Vec<_>>();
     let lines = lines
         .iter()
@@ -205,12 +286,12 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
         full: true,
         ..CaptureView::default()
     };
-    print(
-        ("client", client.to_string()),
+    captured(
+        Of::Client(client),
         (grid.rows, grid.cols),
-        (grid.cursor, None),
-        (lines, view),
-        Vec::new(),
+        grid.cursor,
+        lines,
+        view,
     )
 }
 
@@ -219,12 +300,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
-pub fn state(
-    pane: &Pane,
-    run: Run,
-    now: Instant,
-    copy_mode: bool,
-) -> Vec<(&'static str, Json<'static>)> {
+pub fn state(pane: &Pane, run: Run, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json)> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // What runs in the foreground: a job the shell started, else the
@@ -295,7 +371,7 @@ pub fn state(
         (
             "cell",
             cell.map_or(Json::Null, |cell| {
-                Json::Object(vec![
+                Json::object(vec![
                     ("width", Json::int(cell.width())),
                     ("height", Json::int(cell.height())),
                 ])
@@ -330,7 +406,7 @@ pub fn state(
 
 /// A path or an argument as JSON text, which must be UTF-8: each byte
 /// that is not shown as U+FFFD, as `docs/json.md` says.
-fn text(os: &std::ffi::OsStr) -> Json<'static> {
+fn text(os: &std::ffi::OsStr) -> Json {
     Json::str(os.to_string_lossy().into_owned())
 }
 
@@ -339,8 +415,8 @@ fn text(os: &std::ffi::OsStr) -> Json<'static> {
 /// that are gone (`cropped`: scrolled off a region's top or a screen's
 /// that keeps no history, the rest shown below them), and its size in
 /// pixels.
-fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
-    Json::Object(vec![
+fn picture(shown: fux_vt::Shown<'_>) -> Json {
+    Json::object(vec![
         ("row", Json::Int(shown.row)),
         ("col", Json::int(shown.col)),
         ("rows", Json::int(shown.rows)),
@@ -351,31 +427,20 @@ fn picture(shown: fux_vt::Shown<'_>) -> Json<'static> {
     ])
 }
 
-/// A capture as it is printed: its lines, trimmed unless `view.full`, in
-/// SGR with `view.styles`; and with `state` given, as `json` prints it,
-/// an object naming what was captured, with its size, cursor, lines, their
-/// style runs with `view.styles`, and the state.
-fn print(
-    (key, id): (&'static str, String),
-    (rows, cols): (u16, u16),
-    (cursor, pending): (Option<(u16, u16)>, Option<bool>),
-    (mut lines, view): (Vec<Cells<'_>>, CaptureView),
-    state: Vec<(&'static str, Json<'static>)>,
-) -> Read {
-    // Highlighted: reverse video, or a background colour.
-    let highlighted = |a: &Attributes| a.inverse() || a.background() != Color::Default;
-    // A blank's style shows on the screen: a background colour, reverse
-    // video, a line under or through it. One bold or coloured in front
-    // shows none.
-    let painted = |a: &Attributes| highlighted(a) || a.underline() || a.strikeout();
+/// A capture of `lines`, trimmed as `view` says, each made runs of one
+/// style.
+fn captured(
+    of: Of,
+    (screen_rows, screen_cols): (u16, u16),
+    screen_cursor: Option<(u16, u16)>,
+    mut lines: Vec<Cells<'_>>,
+    view: CaptureView,
+) -> Captured {
     // Blanks at a line's end are trimmed, unless they show: highlighted
     // with `marks`, painted with `styles` (alike as SGR and in JSON's lines
     // and runs, a painted surface kept whole); plain text trims them all
     // (blanks, however painted, are no text). `view.full` keeps them all.
-    let trim = |lines: &mut Vec<Cells<'_>>| {
-        if view.full {
-            return;
-        }
+    if !view.full {
         let shows = |a: &Attributes| (view.marks && highlighted(a)) || (view.styles && painted(a));
         for line in lines.iter_mut() {
             while line
@@ -388,63 +453,109 @@ fn print(
         while lines.last().is_some_and(Vec::is_empty) {
             lines.pop();
         }
-    };
-    let marks = view.marks.then_some(&highlighted);
-    let text = |line: &Cells<'_>, styles: bool| sgr_line(line, marks, styles);
-    trim(&mut lines);
-    let shown: Vec<String> = lines.iter().map(|l| text(l, view.styles)).collect();
-    let mut out = shown.join("\n");
-    out.push('\n');
-    // JSON's lines are the text's, trimmed alike.
-    // The screen's own row and column, as the state line says them,
-    // whatever blank rows are trimmed from the lines.
-    let cursor = cursor.map_or(Json::Null, |(y, x)| {
-        Json::Array(vec![Json::int(y), Json::int(x)])
-    });
-    let mut fields = vec![
-        (key, Json::str(id)),
-        ("rows", Json::int(rows)),
-        ("cols", Json::int(cols)),
-        ("cursor", cursor),
-        (
-            "lines",
-            Json::Array(lines.iter().map(|l| Json::str(text(l, false))).collect()),
-        ),
-    ];
-    fields.extend(pending.map(|p| ("wrap_pending", Json::Bool(p))));
-    if view.styles {
-        fields.push(("styles", Json::Array(lines.iter().map(runs).collect())));
     }
-    fields.extend(state);
-    (out, format!("{}\n", Json::Object(fields).render()))
+    let cut = |run: &[(&str, Attributes)]| Cut {
+        text: run.iter().map(|(text, _)| *text).collect(),
+        cells: u32::try_from(run.len()).unwrap_or(u32::MAX),
+        style: run.first().map_or_else(Attributes::default, |(_, a)| *a),
+    };
+    let lines = (lines.iter())
+        .map(|line| line.chunk_by(|(_, a), (_, b)| a == b).map(cut).collect())
+        .collect();
+    Captured {
+        of,
+        screen_rows,
+        screen_cols,
+        screen_cursor,
+        lines,
+        styles: view.styles,
+        marks: view.marks,
+    }
+}
+
+/// Highlighted: reverse video, or a background colour.
+fn highlighted(a: &Attributes) -> bool {
+    a.inverse() || a.background() != Color::Default
+}
+
+/// A blank's style shows on the screen: a background colour, reverse
+/// video, a line under or through it. One bold or coloured in front shows
+/// none.
+fn painted(a: &Attributes) -> bool {
+    highlighted(a) || a.underline() || a.strikeout()
+}
+
+impl Captured {
+    /// As it is printed: its lines, in SGR with `styles`, what is
+    /// highlighted between `⟦` and `⟧` with `marks`.
+    pub fn text(&self) -> String {
+        let lines: Vec<String> = (self.lines.iter())
+            .map(|line| sgr_line(line, self.marks, self.styles))
+            .collect();
+        lines.join("\n")
+    }
+
+    /// As `json` gives it: an object naming what it read, with its
+    /// screen's size and cursor, its lines as plain text, their style runs
+    /// with `styles`, and a pane's version, pending wrap and state.
+    pub fn json(&self) -> Json {
+        let mut fields = match &self.of {
+            Of::Pane { version, .. } => vec![("pane", Json::str(version.pane.to_string()))],
+            Of::Client(client) => vec![("client", Json::str(client.to_string()))],
+        };
+        let cursor = self.screen_cursor.map_or(Json::Null, |(y, x)| {
+            Json::Array(vec![Json::int(y), Json::int(x)])
+        });
+        let lines = (self.lines.iter()).map(|l| Json::str(sgr_line(l, self.marks, false)));
+        fields.extend([
+            ("rows", Json::int(self.screen_rows)),
+            ("cols", Json::int(self.screen_cols)),
+            ("cursor", cursor),
+            ("lines", Json::Array(lines.collect())),
+        ]);
+        if let Of::Pane { wrap_pending, .. } = &self.of {
+            fields.push(("wrap_pending", Json::Bool(*wrap_pending)));
+        }
+        if self.styles {
+            fields.push(("styles", Json::Array(self.lines.iter().map(runs).collect())));
+        }
+        let mut json = Json::object(fields);
+        if let (
+            Json::Object(all),
+            Of::Pane {
+                state: Json::Object(state),
+                ..
+            },
+        ) = (&mut json, &self.of)
+        {
+            all.extend(state.iter().cloned());
+        }
+        json
+    }
 }
 
 /// A line, in SGR with `styles`: each change of attributes set from
 /// nothing, and reset at its end. With `marks`, what is highlighted
 /// (reverse video, or a background colour) is between `⟦` and `⟧`, drawn
 /// outside the SGR.
-fn sgr_line(
-    line: &Cells<'_>,
-    marks: Option<&impl Fn(&Attributes) -> bool>,
-    styles: bool,
-) -> String {
+fn sgr_line(line: &[Cut], marks: bool, styles: bool) -> String {
     let mut out = Vec::new();
     let mut pen = Attributes::default();
     let mut on = false;
-    for (text, attributes) in line {
-        let lit = marks.is_some_and(|highlighted| highlighted(attributes));
+    for cut in line {
+        let lit = marks && highlighted(&cut.style);
         if lit && !on {
             out.extend_from_slice("⟦".as_bytes());
         }
-        if styles && *attributes != pen {
-            crate::render::sgr(&mut out, *attributes, true);
-            pen = *attributes;
+        if styles && cut.style != pen {
+            crate::render::sgr(&mut out, cut.style, true);
+            pen = cut.style;
         }
         if on && !lit {
             out.extend_from_slice("⟧".as_bytes());
         }
         on = lit;
-        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(cut.text.as_bytes());
     }
     if pen != Attributes::default() {
         out.extend_from_slice(b"\x1b[0m");
@@ -457,24 +568,23 @@ fn sgr_line(
 
 /// A line's runs of cells with attributes other than the default: where
 /// each starts, from 0, how many cells, and what it has.
-fn runs(line: &Cells<'_>) -> Json<'static> {
+fn runs(line: &Vec<Cut>) -> Json {
     let mut runs = Vec::new();
-    let mut start = 0usize;
-    for group in line.chunk_by(|(_, a), (_, b)| a == b) {
-        let len = group.len();
-        if let Some((_, attributes)) = group.first().filter(|(_, a)| *a != Attributes::default()) {
-            let mut fields = vec![("col", Json::count(start)), ("len", Json::count(len))];
-            fields.extend(described(*attributes));
-            runs.push(Json::Object(fields));
+    let mut start = 0u32;
+    for cut in line {
+        if cut.style != Attributes::default() {
+            let mut fields = vec![("col", Json::uint(start)), ("len", Json::uint(cut.cells))];
+            fields.extend(described(cut.style));
+            runs.push(Json::object(fields));
         }
-        start = start.saturating_add(len);
+        start = start.saturating_add(cut.cells);
     }
     Json::Array(runs)
 }
 
 /// Attributes as `json` names them: the colours other than the default,
 /// and the attributes set.
-fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
+fn described(a: Attributes) -> Vec<(&'static str, Json)> {
     let colour = |c: Color| match c {
         Color::Idx(n) => Some(Json::int(n)),
         Color::Rgb(Rgb { r, g, b }) => Some(Json::str(format!("#{r:02x}{g:02x}{b:02x}"))),
@@ -527,7 +637,7 @@ mod tests {
                 join,
                 false,
             )
-            .0)
+            .text())
         };
         // Cols 3 and 4 erased, 世 at col 4 does not fit and wraps on.
         let first = |output| {
@@ -561,12 +671,12 @@ mod tests {
                 wrapped,
                 ..CaptureView::default()
             };
-            super::pane(&pane, run, None, view, false).0
+            super::pane(&pane, run, None, view, false).text()
         };
-        assert_eq!(capture((2, 2), false), "abcdefghijklm\n");
-        assert_eq!(capture((0, 1), false), "top\nabcdefghijklm\n");
-        assert_eq!(capture((3, 4), false), "abcdefghijklm\nend\n");
-        assert_eq!(capture((2, 2), true), "fghij\n");
+        assert_eq!(capture((2, 2), false), "abcdefghijklm");
+        assert_eq!(capture((0, 1), false), "top\nabcdefghijklm");
+        assert_eq!(capture((3, 4), false), "abcdefghijklm\nend");
+        assert_eq!(capture((2, 2), true), "fghij");
         Ok(())
     }
 
@@ -596,7 +706,7 @@ mod tests {
             view,
             false,
         )
-        .0;
+        .text();
         assert_eq!(text.lines().next(), Some("abc世"));
         Ok(())
     }
@@ -626,8 +736,8 @@ mod tests {
             view,
             false,
         )
-        .0;
-        assert_eq!(text, "hello\n");
+        .text();
+        assert_eq!(text, "hello");
         // A running command's row is whole, its cursor at the start of it
         // too (a progress line it rewrites).
         pane.output(b"\r\n$ \x1b]133;C\x07step 1\r");
@@ -638,8 +748,8 @@ mod tests {
             view,
             false,
         )
-        .0;
-        assert_eq!(text, "step 1\n");
+        .text();
+        assert_eq!(text, "step 1");
         Ok(())
     }
 }
