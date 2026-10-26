@@ -252,7 +252,7 @@ fn one_cluster(text: &str) -> bool {
     breaks(text).next().is_none()
 }
 
-/// The cluster rule (`str_width` of one cluster) is unicode-width 0.2.2's
+/// The cluster rule (`cluster_width`) is unicode-width 0.2.2's
 /// string width of that cluster, but for a cluster holding U+17D8, a
 /// spacing mark the rule departs on, or a Khmer coeng (whose rule fux-vt
 /// does not take: `a_spacing_mark_and_a_coeng_conjunct_take_their_columns`):
@@ -266,7 +266,7 @@ fn a_cluster_is_as_wide_as_unicode_width_makes_it() {
     let mut checked = 0u32;
     let mut check = |text: &str| {
         if one_cluster(text) && !text.chars().any(|c| c == '\u{17d2}' || departs(c)) {
-            assert_eq!(crate::str_width(text), text.width(), "{text:?}");
+            assert_eq!(super::cluster_width(text), text.width(), "{text:?}");
             checked = checked.saturating_add(1);
         }
     };

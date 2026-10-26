@@ -131,9 +131,9 @@ enum Kept {
     /// The character just printed there, alone.
     Alone,
     /// Text whose characters' columns sum to 1, none of them one the
-    /// cluster width rule looks at, so `str_width` says 1 of it.
+    /// cluster width rule looks at, so `cluster_width` says 1 of it.
     One,
-    /// Text whose width only `str_width` says.
+    /// Text whose width only `cluster_width` says.
     Unknown,
     /// The cluster is full: once a character of it is dropped, so is every
     /// one after, so a cell always holds a start of its cluster.
@@ -1850,7 +1850,7 @@ impl Screen {
                     && if summed {
                         !still_one
                     } else {
-                        flag || crate::str_width(line.text(at)) >= 2
+                        flag || crate::unicode::cluster_width(line.text(at)) >= 2
                     };
                 kept
             });

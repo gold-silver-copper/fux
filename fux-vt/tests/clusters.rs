@@ -6,7 +6,7 @@
 //! time and split in two anywhere, with the same cells. The expected cells
 //! are derived by hand from the README's rows, not read from fux-vt.
 
-use fux_vt::{CLUSTER_CAPACITY, Feature, Options, Parser, Size, str_width};
+use fux_vt::{CLUSTER_CAPACITY, Feature, Options, Parser, Size, clusters, str_width};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -108,13 +108,63 @@ fn row(given: &[(String, bool)], cols: usize) -> Vec<(String, bool)> {
     [given.to_vec(), empty(cols.saturating_sub(used))].concat()
 }
 
-/// Each is two columns by the width rule, at most 2 (the jamo sum to 8).
+/// Each is two columns by the width rule.
 #[test]
 fn the_rules_make_two_columns() {
     for (name, x) in RULES {
-        assert_eq!(str_width(x).min(2), 2, "{name}");
-        assert!(str_width(x) == 2 || name == "jamo", "{name}");
+        assert_eq!(str_width(x), 2, "{name}");
     }
+}
+
+/// Each cluster `clusters` gives, printed alone at a row's start, is one
+/// cell holding its text and as wide as it says, or no cell when it says
+/// none: every cluster of the Unicode conformance test (marks and controls
+/// alone among them, and a spacing mark after a mark, the mark dropped); a wide character with the text presentation
+/// selector, which the cluster rule makes 1 column but whose cell stays
+/// wide; and a cluster past what a cell keeps.
+#[test]
+fn a_cluster_is_the_cell_clusters_says() -> Result {
+    let cases = include_str!("data/GraphemeBreakTest.txt");
+    let mut texts: Vec<String> = (cases.lines())
+        .filter(|line| !line.starts_with('#'))
+        .map(|case| {
+            (case.split_whitespace())
+                .filter_map(|hex| u32::from_str_radix(hex, 16).ok().and_then(char::from_u32))
+                .collect()
+        })
+        .collect();
+    texts.push("\u{231a}\u{fe0e}".into());
+    let long: String = std::iter::once('e')
+        .chain(std::iter::repeat_n('\u{301}', 100))
+        .collect();
+    texts.push(long.clone());
+    let mut checked = 0;
+    for text in &texts {
+        for (cluster, width) in clusters(text) {
+            let mut parser = Parser::new(Size::new(1, 4)?, 0)?;
+            parser.process(cluster.as_bytes())?;
+            let got: Vec<_> = cells(&parser, 0)
+                .into_iter()
+                .filter(|(text, _)| !text.is_empty())
+                .collect();
+            let want = match width {
+                0 => vec![],
+                _ => vec![c(cluster, width == 2)],
+            };
+            assert_eq!(cluster.is_empty(), width == 0, "{text:?}");
+            assert_eq!(got, want, "{cluster:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 1_000, "{checked} clusters");
+    assert_eq!(
+        clusters("\u{231a}\u{fe0e}").next(),
+        Some(("\u{231a}\u{fe0e}", 2))
+    );
+    // A starter and 63 two-byte marks: the 64th would pass the capacity.
+    let kept: Vec<_> = clusters(&long).collect();
+    assert_eq!(kept, [(long.get(..CLUSTER_CAPACITY - 1).ok_or("kept")?, 1)]);
+    Ok(())
 }
 
 /// At a row's start, the cluster is one wide cell, and the cursor two
