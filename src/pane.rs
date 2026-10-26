@@ -885,9 +885,9 @@ impl<'a> PaneMut<'a> {
     pub fn exiting(&mut self, ended: Ended) {
         self.pane.exiting = Some(ended);
     }
-    /// Its program left more on its terminal than is read.
-    pub fn left_cut(&mut self) {
-        self.pane.left.output = Output::Cut;
+    /// Its program left more on its terminal than is read, as `cut` says.
+    pub fn left_cut(&mut self, cut: Output) {
+        self.pane.left.output = cut;
     }
     pub fn clear_history(&mut self) {
         self.pane.clear_history();
@@ -939,14 +939,14 @@ pub struct Left {
 
 impl Left {
     /// What an event says of it: `truncated` (`true`) if it left more on
-    /// its terminal than is read (`Output::Cut`), and `input_unread`, the
-    /// bytes of input queued for it not yet written to its terminal, if
-    /// any.
+    /// its terminal than is read (`Output::Cut`, `Output::Late`), and
+    /// `input_unread`, the bytes of input queued for it not yet written to
+    /// its terminal, if any.
     pub fn fields(self) -> impl Iterator<Item = (&'static str, crate::json::Json<'static>)> {
         use crate::json::Json;
         let cut = match self.output {
             Output::Read => None,
-            Output::Cut => Some(("truncated", Json::Bool(true))),
+            Output::Cut | Output::Late => Some(("truncated", Json::Bool(true))),
         };
         let input = (self.input > 0).then(|| ("input_unread", Json::count(self.input)));
         cut.into_iter().chain(input)
@@ -960,6 +960,11 @@ impl Left {
             Output::Read => String::new(),
             Output::Cut => {
                 format!("; {who} left more than {mib} MiB on its terminal: the rest was not read")
+            }
+            Output::Late => {
+                format!(
+                    "; {who} wrote more on its terminal once the respawn began: it was not read"
+                )
             }
         };
         if self.input > 0 {
@@ -987,6 +992,9 @@ pub enum Output {
     #[default]
     Read,
     Cut,
+    /// Respawned over while it ran (`kill-first`): what it wrote once the
+    /// respawn began, which read what it had left, is not read.
+    Late,
 }
 
 /// What is said of a pane where no shell command was ever marked.
