@@ -12,7 +12,7 @@ use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, MAX_FRAME, Mismatch,
     PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
-use crate::screens::{Effect, Screen};
+use crate::screens::{Effect, Job, Screen};
 use crate::script;
 use crate::socket::{self, SocketPath};
 use fuxix::Errno;
@@ -581,7 +581,7 @@ pub struct Keyboard {
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
-    jobs: std::sync::mpsc::Sender<String>,
+    jobs: std::sync::mpsc::Sender<Job>,
     /// One `Ran` for each program sent: as many as `running` holds.
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
@@ -605,7 +605,7 @@ impl Keyboard {
         keymap: Keymap,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
-        let (jobs, todo) = std::sync::mpsc::channel::<String>();
+        let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
@@ -620,8 +620,8 @@ impl Keyboard {
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
-                for code in todo {
-                    let ran = run_job(&mut server, me, &shared, &code, &stops);
+                for job in todo {
+                    let ran = run_job(&mut server, me, &shared, &job, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -749,7 +749,7 @@ impl Keyboard {
         let mut acts = Vec::new();
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
-            ToAttached::Run(code) => self.run(code, &mut acts),
+            ToAttached::Run(code) => self.run(code.into(), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
@@ -796,27 +796,27 @@ impl Keyboard {
         for effect in effects {
             match effect {
                 Effect::Send(act) => acts.push(act),
-                Effect::Run(code) => self.run(code, acts),
+                Effect::Run(job) => self.run(job, acts),
             }
         }
     }
 
-    /// Sends `code` to the worker, unless as many programs, or as much
+    /// Sends `job` to the worker, unless as many programs, or as much
     /// code, as it may hold wait for it.
-    fn run(&mut self, code: String, acts: &mut Vec<Act>) {
+    fn run(&mut self, job: Job, acts: &mut Vec<Act>) {
         // A stop stops the programs queued with the one it was typed for.
         if self.running.is_empty() {
             self.stop.reset();
         }
         let (waiting, bytes) = (self.running.len(), self.running.iter().sum::<usize>());
-        if waiting >= JOBS || bytes.saturating_add(code.len()) > JOB_BYTES {
+        let len = (job.code.len()).saturating_add(job.given.as_ref().map_or(0, String::len));
+        if waiting >= JOBS || bytes.saturating_add(len) > JOB_BYTES {
             let text = format!(
                 "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
             );
             return acts.push(Act::Notice { text, error: true });
         }
-        let len = code.len();
-        if self.jobs.send(code).is_ok() {
+        if self.jobs.send(job).is_ok() {
             self.running.push_back(len);
         }
     }
@@ -851,7 +851,7 @@ fn run_job(
     server: &mut script::Server,
     me: crate::id::ClientId,
     keymap: &Mutex<Keymap>,
-    code: &str,
+    job: &Job,
     stop: &script::Stop,
 ) -> Ran {
     let mut changed = lock(keymap).clone();
@@ -865,7 +865,7 @@ fn run_job(
         opened: None,
     };
     let result = (|| {
-        let tokens = fuxth::token::source("key", code)?;
+        let tokens = job.tokens()?;
         let mut machine = script::compiled(config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(

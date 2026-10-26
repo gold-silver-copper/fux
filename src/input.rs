@@ -823,11 +823,11 @@ mod tests {
             // A confirmation's program is what `y` runs.
             let codes: Vec<String> = match screen(&s, c) {
                 Screen::List(list) => list.items.into_iter().map(|i| i.code).collect(),
-                mut confirm @ Screen::Confirm { .. } => {
+                mut confirm @ Screen::Confirm(_) => {
                     (confirm.key(&s.test_keymap, crate::keymap::key("y")?.into(), false))
                         .into_iter()
                         .filter_map(|e| match e {
-                            crate::screens::Effect::Run(code) => Some(code),
+                            crate::screens::Effect::Run(job) => Some(job.code),
                             crate::screens::Effect::Send(_) => None,
                         })
                         .collect()

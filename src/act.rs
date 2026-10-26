@@ -50,15 +50,14 @@ wire! {
         Repeat(bar: String),
         /// A chooser.
         List(list: List),
-        /// A line being typed: the command prompt, a rename (of `about`).
+        /// A line being typed.
         Prompt {
             title: String,
             before: String,
             after: String,
-            about: Option<AnyRef>,
         },
-        /// A question answered y or n, about closing `about`.
-        Confirm { question: String, about: AnyRef },
+        /// A question answered yes or no.
+        Confirm { question: String },
     }
 }
 

@@ -347,8 +347,8 @@ words! {
         Clients ChooseTabFor "choose-tab-for" "client pane --" "a list of tabs to move the pane to" "fux str c1 client %3 choose-tab-for";
         Clients ChooseWorkspaceFor "choose-workspace-for" "client pane --" "a list of workspaces to move the pane to" "fux str c1 client %3 choose-workspace-for";
         Clients ChoosePane "choose-pane" "client pane --" "a list of panes to swap the pane with" "fux str c1 client %3 choose-pane";
-        Clients RenamePrompt "rename-prompt" "client handle --" "a prompt for its new name" "fux str c1 client @2 rename-prompt";
-        Clients ConfirmClose "confirm-close" "client handle --" "close it, once confirmed" "fux str c1 client %3 confirm-close";
+        Clients Prompt "prompt" "client name text code --" "a line to type, titled name and starting as text: Enter runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
+        Clients Confirm "confirm" "client text code --" "a question: y runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
@@ -1548,6 +1548,25 @@ impl fuxth::Host for Host<'_> {
     }
 }
 
+/// `job` compiled as its keys or screen will run it, with the config's
+/// definitions: its mistake said as `what`'s, of `code`.
+fn checked(
+    keymap: &crate::keymap::Keymap,
+    job: &crate::screens::Job,
+    code: Raise,
+    what: &str,
+) -> Result<(), Failure> {
+    let mistake = |e: fuxth::Error| {
+        let mut failed = fail(code, format!("{}, in {what}", e.message));
+        failed.word = e.word;
+        failed
+    };
+    let tokens = job.tokens().map_err(mistake)?;
+    super::compiled(keymap.config.as_ref(), &tokens)
+        .map(drop)
+        .map_err(mistake)
+}
+
 /// The binding just made, `bound`, which `label` and `group` change.
 fn just_made<'k>(
     keymap: &'k mut crate::keymap::Keymap,
@@ -1582,17 +1601,56 @@ impl Host<'_> {
             Screen::ChooseTab => Open::ChooseTab(None),
             Screen::ChooseWorkspace => Open::ChooseWorkspace(None),
             Screen::CopyMode => Open::Copy,
-            Screen::CommandPrompt => Open::Prompt,
+            Screen::CommandPrompt => Open::Prompt(crate::screens::Prompt {
+                title: ":".to_owned(),
+                line: crate::view::Line::new(String::new()),
+                action: None,
+            }),
             Screen::ChooseTabFor => Open::ChooseTab(Some(pane(&next()?)?)),
             Screen::ChooseWorkspaceFor => Open::ChooseWorkspace(Some(pane(&next()?)?)),
             Screen::ChoosePane => Open::ChoosePane(pane(&next()?)?),
-            Screen::RenamePrompt => Open::Rename(target(&next()?)?),
-            Screen::ConfirmClose => Open::Confirm(target(&next()?)?),
+            Screen::Prompt => {
+                let title = text(&next()?)?;
+                let line = crate::view::Line::new(text(&next()?)?);
+                let action = Some(self.action(&next()?, true)?);
+                Open::Prompt(crate::screens::Prompt {
+                    title,
+                    line,
+                    action,
+                })
+            }
+            Screen::Confirm => {
+                let question = text(&next()?)?;
+                let action = self.action(&next()?, false)?;
+                Open::Confirm(crate::screens::Confirm { question, action })
+            }
         };
         match self.context.client == Some(c) {
             true => local(Local::Open(open)),
             false => order(c, ClientAction::Run(open.code())),
         }
+    }
+
+    /// The fuxth a prompt (`given`: the line typed on its stack) or a
+    /// question runs: within `ACTION_MAX`, as the client holds it, outside
+    /// any frame; and, in a client's own program, compiled now.
+    fn action(&self, value: &Value<Fux>, given: bool) -> Result<String, Failure> {
+        let code = string(value)?;
+        let (len, most) = (code.len(), crate::screens::ACTION_MAX);
+        if len > most {
+            return Err(fail(
+                Raise::TooLong,
+                format!("an action of {len} bytes is past {most}"),
+            ));
+        }
+        let job = crate::screens::Job {
+            code,
+            given: given.then(String::new),
+        };
+        if let Some(keymap) = self.keymap.as_deref() {
+            checked(keymap, &job, Raise::BadValue, "the action")?;
+        }
+        Ok(job.code)
     }
 
     /// A config's word: it changes the client's keymap.
@@ -1616,17 +1674,10 @@ impl Host<'_> {
             Keys::Bind | Keys::BindRoot => {
                 let keys_text = string(&next()?)?;
                 let code = string(&next()?)?;
-                // Checked now, rather than each time its keys are typed:
-                // with the config's definitions, its mistake said as the
-                // binding's.
-                let mistake = |e: fuxth::Error| {
-                    let mut failed =
-                        refused(format!("{}, in the binding for {keys_text}", e.message));
-                    failed.word = e.word;
-                    failed
-                };
-                let tokens = fuxth::token::source("binding", &code).map_err(mistake)?;
-                super::compiled(keymap.config.as_ref(), &tokens).map_err(mistake)?;
+                // Checked now, rather than each time its keys are typed.
+                let job = code.as_str().into();
+                let what = format!("the binding for {keys_text}");
+                checked(keymap, &job, Raise::BadBinding, &what)?;
                 let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
                 match (keys == Keys::BindRoot, pressed.as_slice()) {

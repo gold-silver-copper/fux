@@ -105,19 +105,15 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
-    // A confirmation whose item disappears closes, saying so.
+    // A question about a pane that goes stays; its y, run, says so and
+    // closes nothing else.
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
     server.ok(&["str", "%3", "pane", "kill"])?;
-    bar_has(&mut client, "%3 is gone")?;
     client.keys("y")?;
-    // Something that shows, typed after the y: once it shows, the y has
-    // been handled.
-    client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
-    client.keys("\x1b")?;
+    bar_has(&mut client, "no pane %3")?;
     assert_eq!(panes(&server)?, ["%1"], "a late y closes nothing");
     Ok(())
 }

@@ -456,7 +456,7 @@ impl Held {
                     return self.open(keymap, Vec::new(), 0);
                 }
                 match keymap.root_binding(press) {
-                    Some(binding) => vec![Effect::Run(binding.code.clone())],
+                    Some(binding) => vec![Effect::Run(binding.code.as_str().into())],
                     None => vec![Effect::Send(Act::Key(stroke))],
                 }
             }
@@ -495,7 +495,10 @@ impl Held {
                         Act::Hide
                     }
                 };
-                vec![Effect::Send(shown), Effect::Run(binding.code.clone())]
+                vec![
+                    Effect::Send(shown),
+                    Effect::Run(binding.code.as_str().into()),
+                ]
             }
             Some(Node::Layer(_)) => {
                 let mut deeper = path;
@@ -551,7 +554,9 @@ impl Held {
                 // A key bound without the prefix, listed after the rest.
                 Some((press, true)) => {
                     let code = keymap.root_binding(press).map(|b| b.code.clone());
-                    std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
+                    std::iter::once(HIDE)
+                        .chain(code.map(|c| Effect::Run(c.into())))
+                        .collect()
                 }
                 Some((key, false)) => self.follow(keymap, path, key),
                 None => vec![HIDE],
@@ -577,7 +582,7 @@ impl Held {
             }) => {
                 let code = binding.code.clone();
                 *self = Held::Repeat { path };
-                vec![Effect::Run(code)]
+                vec![Effect::Run(code.into())]
             }
             // A key of the layer that does not repeat runs once, and ends
             // the mode.
@@ -585,7 +590,7 @@ impl Held {
                 binding,
                 repeat: false,
             }) => {
-                vec![HIDE, Effect::Run(binding.code.clone())]
+                vec![HIDE, Effect::Run(binding.code.as_str().into())]
             }
             Some(Node::Layer(_)) | None => {
                 let text = format!("{press} is not one of this mode's keys");
@@ -597,7 +602,7 @@ impl Held {
     fn watching(&mut self, keymap: &Keymap, press: KeyPress) -> Vec<Effect> {
         let prefixed = std::mem::take(self) == Held::Prefixed;
         if prefixed && press == KeyPress::char('d') {
-            return vec![Effect::Run("me detach".to_owned())];
+            return vec![Effect::Run("me detach".into())];
         }
         if !prefixed && press == keymap.prefix {
             *self = Held::Prefixed;

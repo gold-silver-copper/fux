@@ -20,3 +20,18 @@ define quiet
   until
   drop
 end
+# client handle -- : a prompt for its new name
+define rename-prompt
+  dup kind str answer eq if pane then let it
+  list str 'rename ' it kind str ' ' it string end glue
+  it str name get
+  list it string str ' swap rename' end glue
+  prompt
+end
+# client handle -- : close it, once confirmed
+define confirm-close
+  dup kind str answer eq if pane then let it
+  list str 'close ' it kind str ' ' it string str ' ' it str name get str ? end glue
+  list it string str ' kill' end glue
+  confirm
+end

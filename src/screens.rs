@@ -16,9 +16,10 @@ use crate::keys::{KeyPress, Keystroke};
 use crate::protocol::{Reply, Scalar, ScreenKind};
 use crate::script::{self, Failed, succeeded};
 use crate::view::Line;
+use crate::words::quote;
 
-/// A screen a word asks to open: built with what the server knows (names,
-/// a chooser's rows) by `Open::build`.
+/// A screen a word asks to open: a chooser built with what the server
+/// knows by `Open::build`; a prompt or a question as it is given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
     /// The tabs of the client's workspace: to show one, or to move a pane to.
@@ -26,9 +27,8 @@ pub enum Open {
     ChooseWorkspace(Option<PaneId>),
     /// The other panes of a pane's tab, to swap it with.
     ChoosePane(PaneId),
-    Rename(AnyRef),
-    Confirm(AnyRef),
-    Prompt,
+    Prompt(Prompt),
+    Confirm(Confirm),
     Copy,
 }
 
@@ -40,16 +40,13 @@ pub enum Screen {
     Keys(Held),
     List(ListScreen),
     Prompt(Prompt),
-    Confirm {
-        question: String,
-        about: AnyRef,
-    },
+    Confirm(Confirm),
     /// Copy mode, and the search line being typed in it, forward or back.
     Copy(Option<(Seek, Line<SEARCH_MAX>)>),
 }
 
 /// A chooser: its rows, each running fuxth when chosen and about a tab,
-/// workspace or pane, which `r` renames and `x` closes.
+/// workspace or pane, which the list's keys may rename or close.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListScreen {
     pub title: String,
@@ -74,8 +71,16 @@ pub struct Item {
 pub struct Prompt {
     pub title: String,
     pub line: Line,
-    /// None: the line is fuxth to run. Some: it is the new name of this.
-    pub rename: Option<AnyRef>,
+    /// None: the line is fuxth to run. Some: fuxth run with the line on its
+    /// stack, a string.
+    pub action: Option<String>,
+}
+
+/// A question, and the fuxth its yes runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Confirm {
+    pub question: String,
+    pub action: String,
 }
 
 /// What a key leads to, in a screen or through the bindings: an action for
@@ -83,69 +88,86 @@ pub struct Prompt {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Send(Act),
-    Run(String),
+    Run(Job),
 }
+
+/// fuxth for the client to run, and the line typed for it, if any: on its
+/// stack as a string as it begins, never read as code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub code: String,
+    pub given: Option<String>,
+}
+
+impl From<String> for Job {
+    fn from(code: String) -> Self {
+        Job { code, given: None }
+    }
+}
+
+impl From<&str> for Job {
+    fn from(code: &str) -> Self {
+        code.to_owned().into()
+    }
+}
+
+impl Job {
+    /// Its program's tokens: the line given, as `str LINE`, then its code's.
+    pub fn tokens(&self) -> Result<Vec<fuxth::token::Token>, fuxth::Error> {
+        let given = (self.given.iter()).flat_map(|line| fuxth::token::arguments(&["str", line]));
+        Ok(given
+            .chain(fuxth::token::source("key", &self.code)?)
+            .collect())
+    }
+}
+
+/// The most bytes of fuxth a prompt or a question holds to run: the
+/// client keeps it, outside any frame, so it has a bound of its own.
+pub const ACTION_MAX: usize = 1 << 16;
 
 /// The effect that hides the screen showing.
 pub const HIDE: Effect = Effect::Send(Act::Hide);
-
-/// The words that push a handle to `target`: `str %3 pane`.
-pub fn naming(target: AnyRef) -> String {
-    format!("str {} {}", target, target.kind().name())
-}
-
-/// What `target` is, as a title says it: `pane %3`.
-fn about(target: AnyRef) -> String {
-    format!("{} {}", target.kind().name(), target)
-}
 
 impl Open {
     /// The fuxth that opens it on client `me`: what is relayed to a client
     /// asked from elsewhere (`str c1 client choose-tab`).
     pub fn code(&self) -> String {
         let pane = |p: &PaneId| format!("str {p} {} ", script::Act::Pane);
+        let text = |t: &str| format!("str {} ", quote(t));
         let (on, screen) = match self {
             Open::ChooseTab(None) => (String::new(), script::Screen::ChooseTab),
             Open::ChooseTab(Some(p)) => (pane(p), script::Screen::ChooseTabFor),
             Open::ChooseWorkspace(None) => (String::new(), script::Screen::ChooseWorkspace),
             Open::ChooseWorkspace(Some(p)) => (pane(p), script::Screen::ChooseWorkspaceFor),
             Open::ChoosePane(p) => (pane(p), script::Screen::ChoosePane),
-            Open::Rename(t) => (format!("{} ", naming(*t)), script::Screen::RenamePrompt),
-            Open::Confirm(t) => (format!("{} ", naming(*t)), script::Screen::ConfirmClose),
-            Open::Prompt => (String::new(), script::Screen::CommandPrompt),
+            Open::Prompt(Prompt { action: None, .. }) => {
+                (String::new(), script::Screen::CommandPrompt)
+            }
+            Open::Prompt(Prompt {
+                title,
+                line,
+                action: Some(action),
+            }) => {
+                let typed = format!("{}{}", line.before(), line.after());
+                let on = [title, &typed, action].map(|t| text(t)).concat();
+                (on, script::Screen::Prompt)
+            }
+            Open::Confirm(Confirm { question, action }) => {
+                (text(question) + &text(action), script::Screen::Confirm)
+            }
             Open::Copy => (String::new(), script::Screen::CopyMode),
         };
         format!("{} {on}{screen}", script::Act::Me)
     }
 
-    /// The screen, built with what `ask` answers: names, a chooser's rows.
+    /// The screen, a chooser built with what `ask` answers: its rows.
     pub fn build(
-        &self,
+        self,
         ask: &mut dyn FnMut(Command) -> Result<Reply, Failed>,
     ) -> Result<Screen, Failed> {
-        let mut name = |target: AnyRef| -> Result<String, Failed> {
-            let get = Command::Ls {
-                target: Some(target),
-                get: Some("name".to_owned()),
-            };
-            let reply = succeeded(ask(get)?)?;
-            Ok(reply.text.trim_end_matches('\n').to_owned())
-        };
-        Ok(match *self {
-            Open::Rename(target) => Screen::Prompt(Prompt {
-                title: format!("rename {}", about(target)),
-                line: Line::new(name(target)?),
-                rename: Some(target),
-            }),
-            Open::Confirm(target) => Screen::Confirm {
-                question: format!("close {} {}?", about(target), name(target)?),
-                about: target,
-            },
-            Open::Prompt => Screen::Prompt(Prompt {
-                title: ":".to_owned(),
-                line: Line::new(String::new()),
-                rename: None,
-            }),
+        Ok(match self {
+            Open::Prompt(prompt) => Screen::Prompt(prompt),
+            Open::Confirm(confirm) => Screen::Confirm(confirm),
             Open::Copy => Screen::Copy(None),
             Open::ChooseTab(moving) => chooser(ask, Choices::Tabs, moving, "tab")?,
             Open::ChooseWorkspace(moving) => {
@@ -175,7 +197,7 @@ fn chooser(
     let items = (reply.ids.iter())
         .zip(reply.text.lines())
         .map(|(id, label)| {
-            let it = naming(*id);
+            let it = id;
             let code = match (choices, moving) {
                 (Choices::Panes(source), _) => format!("str {source} pane {it} swap-panes"),
                 (Choices::Tabs, None) => format!("me {it} show-tab"),
@@ -218,7 +240,7 @@ impl Screen {
         match self {
             Self::Keys(_) => None,
             Self::Copy(_) => Some(ScreenKind::Copy),
-            Self::List(_) | Self::Prompt(_) | Self::Confirm { .. } => Some(ScreenKind::Panel),
+            Self::List(_) | Self::Prompt(_) | Self::Confirm(_) => Some(ScreenKind::Panel),
         }
     }
 
@@ -254,11 +276,9 @@ impl Screen {
                 title: prompt.title.clone(),
                 before: prompt.line.before().to_owned(),
                 after: prompt.line.after().to_owned(),
-                about: prompt.rename,
             }),
-            Self::Confirm { question, about } => Some(Panel::Confirm {
-                question: question.clone(),
-                about: *about,
+            Self::Confirm(confirm) => Some(Panel::Confirm {
+                question: confirm.question.clone(),
             }),
         }
     }
@@ -308,11 +328,11 @@ impl Screen {
                     Vec::new()
                 }
             },
-            Self::Confirm { question, about } => match confirm_act(press) {
-                Some(true) => vec![HIDE, Effect::Run(format!("{} kill", naming(about)))],
+            Self::Confirm(confirm) => match confirm_act(press) {
+                Some(true) => vec![HIDE, Effect::Run(confirm.action.into())],
                 Some(false) => vec![HIDE],
                 None => {
-                    *self = Self::Confirm { question, about };
+                    *self = Self::Confirm(confirm);
                     Vec::new()
                 }
             },
@@ -332,7 +352,7 @@ impl Screen {
                 .into(),
             Self::Prompt(prompt) => self.prompt(prompt, insert),
             Self::Copy(Some(search)) => self.copy_search(search, insert),
-            other @ (Self::List(_) | Self::Confirm { .. } | Self::Copy(_)) => {
+            other @ (Self::List(_) | Self::Confirm(_) | Self::Copy(_)) => {
                 *self = other;
                 let why = "a list, a question or copy mode is open: nothing was pasted";
                 vec![refusal(why.to_owned())]
@@ -344,16 +364,17 @@ impl Screen {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
         let about = chosen.and_then(|item| item.about);
+        let on = |word: &str| about.map(|it| format!("{} {it} {word}", script::Act::Me));
         let (moved, code) = match list_act(press) {
             None => (at, None),
             Some(ListAct::Move(moved)) => (moved.from(at, last), None),
             Some(ListAct::Cancel) => return vec![HIDE],
             Some(ListAct::Choose) => (at, chosen.map(|item| item.code.clone())),
-            Some(ListAct::Rename) => (at, about.map(|it| Open::Rename(it).code())),
-            Some(ListAct::Close) => (at, about.map(|it| Open::Confirm(it).code())),
+            Some(ListAct::Rename) => (at, on("rename-prompt")),
+            Some(ListAct::Close) => (at, on("confirm-close")),
         };
         if let Some(code) = code {
-            return vec![HIDE, Effect::Run(code)];
+            return vec![HIDE, Effect::Run(code.into())];
         }
         list.selected = moved;
         *self = Self::List(list);
@@ -366,15 +387,14 @@ impl Screen {
             LineAct::Cancel => vec![HIDE],
             LineAct::Submit => {
                 let text = prompt.line.text();
-                let code = match prompt.rename {
-                    Some(it) => Some(format!(
-                        "{} str {} rename",
-                        naming(it),
-                        crate::words::quote(&text)
-                    )),
-                    None => Some(text).filter(|t| !t.trim().is_empty()),
+                let job = match prompt.action {
+                    Some(code) => Some(Job {
+                        code,
+                        given: Some(text),
+                    }),
+                    None => Some(text).filter(|t| !t.trim().is_empty()).map(Job::from),
                 };
-                std::iter::once(HIDE).chain(code.map(Effect::Run)).collect()
+                std::iter::once(HIDE).chain(job.map(Effect::Run)).collect()
             }
             LineAct::Edit(edit) => {
                 let refused = prompt.line.edit(&edit).err();
@@ -507,7 +527,7 @@ mod tests {
             key(&mut screen, "x")?,
             [
                 Effect::Send(Act::Hide),
-                Effect::Run("me str @1 tab confirm-close".into())
+                Effect::Run("me @1 confirm-close".into())
             ]
         );
         let mut screen = list();
@@ -528,22 +548,26 @@ mod tests {
         }
     }
 
-    /// A rename takes any name, quoted as fuxth reads it back.
+    /// A prompt's action is given the line typed as a string, whatever it
+    /// looks like: never read as code.
     #[test]
-    fn a_rename_prompt_runs_its_name_quoted() -> Result<(), String> {
+    fn a_prompt_gives_its_line_to_its_action() -> Result<(), String> {
         let mut screen = Screen::Prompt(Prompt {
             title: "rename".into(),
             line: Line::new(String::new()),
-            rename: Some(AnyRef::Pane(PaneId::of(1))),
+            action: Some("%1 swap rename".into()),
         });
-        screen.paste("it's -x");
-        assert_eq!(
-            key(&mut screen, "Enter")?,
-            [
-                Effect::Send(Act::Hide),
-                Effect::Run("str %1 pane str 'it'\\''s -x' rename".into())
-            ]
-        );
+        screen.paste("it's -x' drop");
+        let ran = key(&mut screen, "Enter")?;
+        let job = Job {
+            code: "%1 swap rename".into(),
+            given: Some("it's -x' drop".into()),
+        };
+        assert_eq!(ran, [Effect::Send(Act::Hide), Effect::Run(job.clone())]);
+        let texts: Vec<String> = (job.tokens().map_err(|e| e.message)?.iter())
+            .map(|t| t.text.to_string())
+            .collect();
+        assert_eq!(texts, ["str", "it's -x' drop", "%1", "swap", "rename"]);
         Ok(())
     }
 

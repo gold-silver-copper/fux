@@ -772,7 +772,7 @@ impl Asks for AsClient<'_> {
         };
         let (asks, context) = (&mut *self.asks, &self.context);
         let mut sink = io::sink();
-        let screen = open.build(&mut |command| {
+        let screen = open.clone().build(&mut |command| {
             asks.ask(
                 &Asked {
                     request: command.into(),
