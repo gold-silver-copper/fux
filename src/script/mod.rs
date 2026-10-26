@@ -484,7 +484,7 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
         vocabulary.raises(code.into())?;
     }
     // A wait that failed answered too: its handler gets the answer.
-    for code in CARRIED {
+    for code in PaneAnswer::FAILURES {
         vocabulary.carries(code.into(), "outcome")?;
     }
     Ok(vocabulary)
@@ -919,12 +919,8 @@ pub fn run_capped(
     }
 }
 
-/// The codes whose failures answered too (a wait's), and carry that
-/// answer to a `try`'s handler.
-const CARRIED: [Code; 2] = [Code::Timeout, Code::Closed];
-
-/// Raises a failed reply's failure at the word. One of the `CARRIED`
-/// codes carries its answer, which a `try` that catches it gets for its
+/// Raises a failed reply's failure at the word. A pane's answer's
+/// failure (`PaneAnswer::FAILURES`) carries its answer, which a `try` that catches it gets for its
 /// message; uncaught, the answer is left, printed before why it failed.
 /// Any other fails alone: no other failure answers.
 fn raised(
@@ -933,7 +929,9 @@ fn raised(
     body: Body,
 ) -> Result<(), Failed> {
     let answer = answered(body);
-    let Ok(Some(answer)) = answer.map(|mut a| a.pop().filter(|_| CARRIED.contains(&code))) else {
+    let Ok(Some(answer)) =
+        answer.map(|mut a| a.pop().filter(|_| PaneAnswer::FAILURES.contains(&code)))
+    else {
         return pushed(machine, Err(Failed::new(code, message)));
     };
     match machine.raise_with(fuxth::Failure::new(code.into(), message), answer.clone()) {

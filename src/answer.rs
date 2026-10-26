@@ -82,7 +82,11 @@ impl PaneAnswer {
         }
     }
 
-    /// The code of the failure it is, if it is one.
+    /// The codes of the failures one may be (`failure`), which carry it
+    /// to a `try`'s handler.
+    pub const FAILURES: [Code; 2] = [Code::Closed, Code::Timeout];
+
+    /// The code of the failure it is, if it is one: one of `FAILURES`.
     pub fn failure(&self) -> Option<Code> {
         match self {
             PaneAnswer::Acted(_) | PaneAnswer::Changed { .. } => None,
@@ -138,10 +142,12 @@ pub fn listing_text(of: Option<Kind>, listing: &Json) -> String {
         Some(Json::Null) | None => "-".into(),
         Some(other) => other.render(),
     };
-    let items = |json: &Json, key| match json.get(key) {
-        Some(Json::Array(items)) => items.clone(),
-        _ => Vec::new(),
-    };
+    fn items<'a>(json: &'a Json, key: &str) -> &'a [Json] {
+        match json.get(key) {
+            Some(Json::Array(items)) => items,
+            _ => &[],
+        }
+    }
     let int = |json: &Json, key| match json.get(key) {
         Some(Json::Int(n)) => i32::try_from(*n).ok(),
         Some(Json::Uint(n)) => i32::try_from(*n).ok(),

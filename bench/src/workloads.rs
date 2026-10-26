@@ -1121,6 +1121,7 @@ fn wait(recordings: &[Recording], baseline: bool, total: usize) -> Result<Done, 
         let watches = (panes.iter())
             .filter_map(|p| Some((*p, s.parts.panes().get(p)?.counts())))
             .collect();
+        let watches = fux::wait::Watches::Panes(watches);
         fux::wait::Waiting::new(watches, s.run, now, std::time::Duration::from_secs(3600))
     };
     let all: Vec<u8> = recordings.iter().flat_map(Recording::bytes).collect();
