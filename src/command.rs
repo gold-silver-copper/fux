@@ -248,10 +248,12 @@ wire! {
 }
 
 /// Which run of a server this is: its process and the moment it started,
-/// in nanoseconds since 1970 (`48211-1867a3f9c2b8e7d6`). No two runs share
-/// both: a process id is another process's only once this one ended, and
-/// that one started at another moment. A restart is a run
-/// of its own; so is a server on another socket. Its panes' `FUX_SERVER`.
+/// in nanoseconds since 1970 (`48211-1867a3f9c2b8e7d6`), as the wall
+/// clock says. Two runs sharing both is unlikely, not ruled out: a process
+/// id comes back once its process ended, and the clock may be set back to
+/// the moment it started, or be too coarse to tell two moments apart;
+/// servers in other PID namespaces share ids too. A restart is a run of
+/// its own; so is a server on another socket. Its panes' `FUX_SERVER`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Run {
     pid: u32,
