@@ -63,7 +63,8 @@ A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
 SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
 status lost` if its program ended since, `respawned` once started again
-(its `RESPAWNS` grows, its other counts start afresh). Its first word is the version to wait from next.
+(its `RESPAWNS` grows, its other counts start afresh). Its first word is
+the version to wait from next.
 A wait from a version that already holds the end waits for something else,
 as any wait does; one from a version of a pane since closed answers
 `%2 closed`. On a tab or workspace a wait waits on the panes there as it

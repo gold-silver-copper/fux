@@ -41,8 +41,9 @@ probes run at 4,095 × 4,096);
 history is at most 1 GiB (8 MiB by default); a piece is what fux read
 (`Pane::unread`): one read of at most 16 KiB, an exited program's last
 1 MiB, or a held frame, shown once past 2 MiB (`FRAME_LIMIT`), so at most
-2 MiB and one read; a call of n bytes has 4.4's ceiling
-(`Work::ceiling`) ⌈n ÷ 4096⌉ times; the `Feature`s are `fux::pane::OPTIONS`',
+2 MiB and what was appended last: one read, or at an exit the program's
+last 1 MiB; a call of n bytes has 4.4's ceiling (`Work::ceiling`)
+max(1, ⌈n ÷ 4096⌉) times; the `Feature`s are `fux::pane::OPTIONS`',
 every one but `ExtendedReplies` and `RectangleChecksums`.
 
 The host also sets the picture budget (`Parser::set_picture_bytes`,
@@ -115,7 +116,7 @@ Conventions for every row:
 - Chunkings: each probe feeds its input at 1 B, 16 B and 4 KiB a call,
   and whole (`WHOLE`: all of it, given again from each stop), as
   `tests/bounds/probe.rs` `CHUNKS` lists. A call of n bytes is held to
-  U × ⌈n ÷ 4096⌉. Rows with megabytes of setup feed at no less than
+  U × max(1, ⌈n ÷ 4096⌉). Rows with megabytes of setup feed at no less than
   16 B or 4 KiB, as each probe says.
 - Sizes: 1× is the smallest input that reaches the limit; 10× and 100×
   repeat it. `bNN_1x` and `bNN_10x` run in CI; `bNN_100x` is ignored and
@@ -221,7 +222,8 @@ beside the old: + 12.10 MiB.
 ### 3.3 Outside the parser
 
 - fux, per pane and client: ≤ P of evicted pictures in its last paint.
-- fux, per pane: its frame buffer (≤ 2 MiB + 16 KiB), and output read
+- fux, per pane: its frame buffer (≤ 2 MiB + 16 KiB, or 2 MiB + 1 MiB as its
+  exited program's last output is read), and output read
   but not parsed after a budget stop (`Pane::unread`: a held frame, one
   16 KiB read and an exited program's last 1 MiB, twice while joined).
 - fux, per client: encoded sixel data, ≤ `SIXEL_BYTES` = 16 MiB.
@@ -355,7 +357,7 @@ that size (`budget::sequence_most`), whichever is larger.
 
 What is checked where:
 - In CI, the bounds suite (a `checks` build) asserts W ≤ the ceiling
-  for every call of every probe (× ⌈n ÷ 4096⌉ for a call of n bytes),
+  for every call of every probe (× max(1, ⌈n ÷ 4096⌉) for a call of n bytes),
   and `tests/bounds.rs` `budget` asserts, at 4095×4096, that each class
   of screen-wide function stops at the budget and ends with the screen
   one unbudgeted call makes. `guards.rs`

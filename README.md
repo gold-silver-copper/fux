@@ -28,8 +28,8 @@ detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attac
 
 The server runs until `fux kill-server` (refused while a person's terminal
 is attached or from its own panes: [Security](#security)), SIGTERM,
-SIGINT, SIGHUP, or until its last pane closes. It then hangs up every pane, tells each attached
-terminal why, and removes its socket.
+SIGINT, SIGHUP, or until its last pane closes. It then hangs up every
+pane, tells each attached terminal why, and removes its socket.
 
 A pane runs your shell (the `shell` setting: `fux help set`), or the program
 it was given (`run`, `split`). A shell's pane closes when its shell exits,
@@ -41,8 +41,9 @@ A pane's lines re-wrap when its width changes, history included.
 The bottom row is the bar: the workspace and its tabs on the left; on the
 right the focused pane's number and title (the program's OSC 0/2 title,
 else the pane's name), a notice, or copy mode's position. A screen too
-small for its tab (a watcher's, or one too small for all its panes) shows panes cut off at their right and
-bottom, or none of a pane it has no room for: the bar names them before the
+small for its tab (a watcher's, or one too small for all its panes)
+shows panes cut off at their right and bottom, or none of a pane it has
+no room for: the bar names them before the
 title, hidden first: `[hidden %3] [cut %2]`.
 
 ## fuxth
@@ -104,9 +105,9 @@ enough for most work and `fux help agents TOPIC` the rest
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet: they start from `opts`, empty options. Of the three, only `run` takes a program
-(`program`, then each `arg`; a shell's line is `str sh program str -c arg str
-LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
+no pane yet: they start from `opts`, empty options. Of the three, only
+`run` takes a program (`program`, then each `arg`; a shell's line is
+`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace` start a shell. Their tab is laid
 out on `COLS ROWS size`, else on the caller's own screen (a client's keys),
 else on the caller's tab (`fux` run in a pane): never on the screen of a
 client that does not show the caller's tab. Run from outside fux, a size
