@@ -320,12 +320,18 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
         for (n, &nothing) in lines.iter().enumerate() {
             let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
-            // Counted once the echo's own output is the last a command left:
-            // the line before it, read first, has ended what it ends by then.
-            // (The echo's wait alone may end at the end that line makes.)
+            // Counted once the echo has ended, its own output the last a
+            // command left and no command running: the line before it, read
+            // first, has ended what it ends by then. (The echo's wait alone
+            // may end at the end that line makes, and a running command's
+            // output is its last output too.)
             line_done(&server, pane, &format!("echo two {n}"))?;
             let echoed = format!("two {n}\n");
-            eventually("the echo's end", || Ok(last(pane)? == echoed))?;
+            let running =
+                |pane: &str| server.ok(&["str", pane, "pane", "str", "command_running", "get"]);
+            eventually("the echo's end", || {
+                Ok(last(pane)? == echoed && running(pane)? == "false\n")
+            })?;
             let after = done(&server.version(pane)?);
             if after != before.map(|d| d.saturating_add(1)) {
                 ended.push(nothing);

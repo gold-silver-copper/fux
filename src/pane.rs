@@ -1277,6 +1277,8 @@ impl Pane {
             return;
         }
         self.release_frame(tell);
+        // The frame read now ends its read, before the resize's own losses.
+        self.read_done();
         let refused = self.parser.refused();
         let resized = self.parser.resize(size);
         // A size refused is asked again as the session settles: counted
@@ -1383,18 +1385,23 @@ impl Pane {
         self.lose(losses);
     }
 
-    /// A read of its output is done, over however many calls of the
-    /// parser (a frame begun, a budget spent): what it lost ends runs only
-    /// now. One that read output, held none back, and dropped no reply
+    /// A call that reads its output is done: once nothing is held back or
+    /// left, the read is whole, over however many calls of the parser and
+    /// turns it took (a frame begun, a budget spent), and only then does
+    /// what it lost end runs. One that read output and dropped no reply
     /// while the queue takes input ends a run of replies; one that refused
     /// no memory, a run of refusals.
     fn read_done(&mut self) {
+        // Output held back (a frame) or left (a budget spent) is still
+        // being read: what this read did so far is kept for its end.
+        if self.frame.is_some() || self.has_unread() {
+            return;
+        }
         let read = std::mem::take(&mut self.reading);
-        let whole = read.parsed && self.frame.is_none() && !self.has_unread();
-        if whole && !read.dropped && self.input.refusing == Refusing::No {
+        if read.parsed && !read.dropped && self.input.refusing == Refusing::No {
             self.input.replies = Run::Over;
         }
-        if whole && !read.refused {
+        if read.parsed && !read.refused {
             self.loss_runs.memory = Run::Over;
         }
     }
@@ -2239,6 +2246,19 @@ pub(crate) mod tests {
         pane.input.drain_all();
         pane.output(&frame);
         assert!(!pane.loses(), "the same run");
+        // A frame past a parser call's budget, read over turns, is one read.
+        let mut long = b"\x1b[?2026h".to_vec();
+        long.extend(spends_the_budget(3, 20));
+        long.extend(std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX).flatten());
+        long.extend_from_slice(b"\x1b[?2026l");
+        for _ in 0..2 {
+            pane.input.drain_all();
+            pane.output(&long);
+            while pane.has_unread() {
+                pane.read_unread();
+            }
+        }
+        assert!(!pane.loses(), "still the same run");
         Ok(())
     }
 
