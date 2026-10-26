@@ -1337,7 +1337,9 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
 }
 
 // B31: a zero-width character after a full row costs at most 257 text
-// bytes.
+// bytes. Each comes after a cursor move, alternately left and right, so
+// that it joins a full cell of the row afresh: once a cell printed last
+// has dropped one, the rest after it cost nothing.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
     const BOUND: Bound = Bound {
@@ -1351,8 +1353,11 @@ pub fn b31(scale: Scale, chunk: usize) -> Found {
     let mut prefix = repeat(&cluster(50), 64);
     prefix.extend(cluster(22));
     prefix.extend(cluster(8));
-    let marks: String =
-        std::iter::repeat_n("\u{200b}", 1000usize.saturating_mul(scale.times())).collect();
+    let marks: String = ["\x1b[D\u{200b}", "\x1b[C\u{200b}"]
+        .into_iter()
+        .cycle()
+        .take(1000usize.saturating_mul(scale.times()))
+        .collect();
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
     probe.feed(&prefix)?;
     probe.restart(bound, scale.times());
