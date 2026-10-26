@@ -113,7 +113,8 @@ impl Parsing {
                 "CODES try … catch … end",
                 "the body from an empty stack, its values left; if it fails with one of \
                  CODES (str 'timeout closed' just before try), the handler instead, on \
-                 the stack as it was at try and the failure's message and code",
+                 the stack as it was at try and the failure's message (or the value it \
+                 carries, as the application declares) and code",
             ),
         }
     }

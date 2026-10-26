@@ -7,13 +7,14 @@
 //!
 //! What a screen's entry does is fuxth, run as the client runs a binding.
 use crate::act::{Act, CopyAct, LineAct, List, ListAct, Panel, Seek};
+use crate::code::Code;
 use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::copy::SEARCH_MAX;
 use crate::decode::Input;
 use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
-use crate::protocol::{Reply, Scalar, ScreenKind};
+use crate::protocol::{Body, Reply, ScreenKind};
 use crate::script::{self, Failed, succeeded};
 use crate::view::Line;
 use crate::words::quote;
@@ -190,12 +191,10 @@ fn chooser(
         client: None,
         action: ClientAction::Choices(choices),
     })?)?;
-    let current = match reply.value {
-        Some(Scalar::Int(n)) => usize::try_from(n).ok(),
-        Some(Scalar::Bool(_) | Scalar::Str(_)) | None => None,
+    let Body::Choices { rows, current } = reply else {
+        return Err(Failed::new(Code::NoTarget, "the server gave no choices"));
     };
-    let items = (reply.ids.iter())
-        .zip(reply.text.lines())
+    let items = (rows.into_iter())
         .map(|(id, label)| {
             let it = id;
             let code = match (choices, moving) {
@@ -207,9 +206,9 @@ fn chooser(
                 }
             };
             Item {
-                label: label.to_owned(),
+                label,
                 code,
-                about: Some(*id),
+                about: Some(id),
             }
         })
         .collect();

@@ -76,6 +76,8 @@ fn vocabulary() -> Vocabulary {
         .and_then(|_| words.raises(Code::Host("not_a_number")))
         .and_then(|()| words.raises(Code::Host("refused")))
         .and_then(|()| words.raises(Code::Host("negative")))
+        .and_then(|()| words.raises(Code::Host("far")))
+        .and_then(|()| words.carries(Code::Host("far"), "integer"))
         .and_then(|()| words.raises(Code::Unused));
     assert!(added.is_ok(), "{added:?}");
     words
@@ -107,6 +109,10 @@ fn run_by(text: &str, budget: u64) -> Result<Vec<Value<Ticket>>, Error> {
     loop {
         match machine.run(&mut host, budget)? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
+            Outcome::Suspended(n) if n <= -1000 => {
+                let failure = Failure::new(Code::Host("far"), format!("{n} is far below 0"));
+                machine.raise_with(failure, Value::Int(n))?;
+            }
             Outcome::Suspended(n) if n < 0 => machine.raise(Failure::new(
                 Code::Host("negative"),
                 format!("{n} is below 0"),
@@ -1532,6 +1538,12 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
         run("str 'fail negative' try -1 ask catch end 5")?,
         [strs(&["-1 is below 0", "negative"]), ints(&[5])].concat(),
         "a suspended word's failure, answered"
+    );
+    // A failure that carries a value gives it in place of the message,
+    // as the vocabulary says its code may: a number, here.
+    assert_eq!(
+        run("str far try -1000 ask catch drop 1 add end")?,
+        ints(&[-999])
     );
     assert_eq!(
         run("str not_a_number try str x ask catch nip end")?,

@@ -238,7 +238,15 @@ impl<A: AppValue> Machine<A> {
     pub fn raise(&mut self, failure: Failure) -> Result<(), Error> {
         self.pending = None;
         let error = self.failed(failure);
-        self.recover(error)
+        self.recover(error, None)
+    }
+
+    /// `raise`, the failure carrying `value`: a `try`'s handler gets it in
+    /// place of the message (`Vocabulary::carries` says of which codes).
+    pub fn raise_with(&mut self, failure: Failure, value: Value<A>) -> Result<(), Error> {
+        self.pending = None;
+        let error = self.failed(failure);
+        self.recover(error, Some(value))
     }
 
     /// An application word's failure, said at the word, or the word it
@@ -251,10 +259,10 @@ impl<A: AppValue> Machine<A> {
 
     /// `error` caught by the innermost `try` that names its code: what the
     /// body began undone (its calls, `let` frames, blocks and values), its
-    /// message and code pushed, the handler next. Else the error no `try`
+    /// message (or the value it carries) and code pushed, the handler next. Else the error no `try`
     /// caught, the machine left where that error happened, for its host to
     /// say where.
-    fn recover(&mut self, mut error: Error) -> Result<(), Error> {
+    fn recover(&mut self, mut error: Error, mut carried: Option<Value<A>>) -> Result<(), Error> {
         loop {
             let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
             let Some(caught) = self.marks.iter().rposition(catches) else {
@@ -282,9 +290,12 @@ impl<A: AppValue> Machine<A> {
             self.jump(handler);
             // A message longer than a string may be, or a stack full to
             // its limit, fails again, for a `try` further out to catch.
-            let pushed = (self.fits(error.message.chars().count()))
-                .and_then(|()| self.push(Value::str(&*error.message)))
-                .and_then(|()| self.push(Value::str(error.code.name())));
+            let message = match carried.take() {
+                Some(value) => self.push(value),
+                None => (self.fits(error.message.chars().count()))
+                    .and_then(|()| self.push(Value::str(&*error.message))),
+            };
+            let pushed = message.and_then(|()| self.push(Value::str(error.code.name())));
             match pushed {
                 Ok(()) => return Ok(()),
                 Err(again) => error = again,
@@ -372,7 +383,7 @@ impl<A: AppValue> Machine<A> {
         let until = self.steps.saturating_add(budget);
         loop {
             match self.steps_until(host, until) {
-                Err(error) => self.recover(error)?,
+                Err(error) => self.recover(error, None)?,
                 ran => return ran,
             }
         }

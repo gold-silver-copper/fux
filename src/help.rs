@@ -102,6 +102,8 @@ Below, x is a pane, tab, workspace or client (an action's answer is its
 pane), a request on one, or opts; target, subject and place a pane (or a
 tab, workspace or client) or a request on one; handle a pane, tab or
 workspace; ref a name or a handle; text a string, number or boolean.
+wait and send-keys leave an answer for a pane, and answers for a tab or
+workspace (send-keys: or a client), which no word that wants a pane takes.
 ",
     );
     let mut rows: Vec<_> = Word::ALL.iter().map(|w| w.row()).collect();

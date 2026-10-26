@@ -66,7 +66,7 @@ prints `null` (`string` makes it the text).
 ## `PANE capture json`
 
 ```json
-{"pane":"%1","rows":23,"cols":80,"cursor":[ROW,COL],"lines":["…"],PANE FIELDS…,"above":0}
+{"pane":"%1","screen_rows":23,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"],"wrap_pending":false,PANE FIELDS…,"above":0}
 ```
 
 `above` is how many history rows are kept above the first row read:
@@ -77,10 +77,11 @@ leaves out are not counted).
 (each screen row a line). Blanks at a line's end are trimmed, but with
 `styles` those painted (a background, reverse video, underline or
 strikeout) stay, in `lines` and `styles` alike: a painted surface shows
-whole. `cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
+whole. `screen_rows` and `screen_cols` are the screen's size;
+`screen_cursor` is `[ROW,COL]` on the screen, from 0, as a mouse event and
 `wrapped` count them, whatever
 `lines` join or `rows` and `cols` take: `null` while hidden or on the
-screen not captured (`main-screen` under a full-screen program). `wrap_pending` (after `lines`):
+screen not captured (`main-screen` under a full-screen program). `wrap_pending`:
 a glyph went into the last column, autowrap on, and the next goes on the
 next line, though the cursor shows on that last cell. With `marks`, each line holds its marks as text does. With the
 `styles` option, `"styles"` holds a list per line of its runs of cells that are not
@@ -90,7 +91,7 @@ plain: `{"col":0,"len":3,"fg":1,"bg":"#1e1e20","bold":true,"inverse":true,
 palette numbers or `"#rrggbb"`.
 
 `CLIENT capture-client json`:
-`{"client":"c1","rows":24,"cols":80,"cursor":[ROW,COL],"lines":["…"]}`.
+`{"client":"c1","screen_rows":24,"screen_cols":80,"screen_cursor":[ROW,COL],"lines":["…"]}`.
 
 ## What a word made
 
@@ -126,13 +127,17 @@ since (`null` if that status was lost), `signal` the signal that killed
 it; a wait from a version that already holds its end waits for
 something else.
 
-A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
-ends the program with that status and says why on stderr, one line, `fux:
-CODE: MESSAGE`, its answer printed first, as text, after the answers of the
-words before it; nothing after it runs, `json` either. Caught by `try`,
-its answer is dropped with the rest of the body's values. A wait on a
-tab's or a workspace's panes answers a line for each that changed, the
-first failing status naming the whole.
+A wait that fails (124 nothing changed, 4 its pane closed) answers too,
+with its status: `{"pane":"%3","version":"%3:0.57.0.3.0:RUN","status":124}`,
+the version it is still at; `{"pane":"%3","status":4}`, its pane closed.
+Uncaught, it ends the program with that status and says why on stderr, one
+line, `fux: CODE: MESSAGE`, its answer printed first, as text, after the
+answers of the words before it; nothing after it runs. Caught by `try`,
+the handler gets its answer in place of the message, under the code:
+`str timeout try %3 5 timeout wait catch drop end json` prints it, and
+`wait` on it waits again from the version it is still at. A wait on a
+tab's or a workspace's panes answers each that changed, the first failing
+status naming the whole.
 
 ## `events`, `X events-of`
 

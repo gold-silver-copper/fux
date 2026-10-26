@@ -48,6 +48,9 @@ pub struct Vocabulary {
     kinds: Vec<(String, String, Option<String>, Kinds)>,
     names: Vec<(String, Map, String)>,
     codes: Vec<Code>,
+    /// The codes whose failures may carry a value, which a `try`'s handler
+    /// gets in place of the message, and its kinds.
+    carried: Vec<(Code, Kinds)>,
 }
 
 /// `said`, the last two joined by "or": "a, b or c".
@@ -211,6 +214,22 @@ impl Vocabulary {
         }
         self.codes.push(code);
         Ok(())
+    }
+
+    /// The application's failures of `code` may carry a value of `name`'s
+    /// kinds (`Machine::raise_with`): a `try`'s handler gets it in place of
+    /// the message.
+    pub fn carries(&mut self, code: Code, name: &str) -> Result<(), Error> {
+        let kinds = taken(&self.lookup(name, false)?.0);
+        self.carried.push((code, kinds));
+        Ok(())
+    }
+
+    /// What the handler of a `try` that names `codes` gets in place of the
+    /// message: a string, or what a failure of one of them carries.
+    pub(crate) fn caught_kinds(&self, codes: &[Code]) -> Kinds {
+        let carried = self.carried.iter().filter(|(code, _)| codes.contains(code));
+        carried.fold(crate::check::STR, |all, (_, kinds)| all.union(*kinds))
     }
 
     /// The code `name` names, if a running word may raise it, for a `try`

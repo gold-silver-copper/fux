@@ -289,7 +289,9 @@ fn capture_client_shows_what_a_client_shows_in_every_mode() -> Outcome {
     // As JSON: the client, its size, the cursor or null, and the rows.
     let json = server.ok(&["str", "c1", "client", "capture-client", "json"])?;
     assert!(
-        json.starts_with("{\"client\":\"c1\",\"rows\":20,\"cols\":90,\"cursor\":"),
+        json.starts_with(
+            "{\"client\":\"c1\",\"screen_rows\":20,\"screen_cols\":90,\"screen_cursor\":"
+        ),
         "{json}"
     );
     let rows = json.split_once("\"lines\":[").map_or("", |(_, rows)| rows);

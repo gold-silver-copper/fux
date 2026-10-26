@@ -43,7 +43,7 @@ macro_rules! stack {
                     $fux::json::Json::int(-3i64),
                     $fux::json::Json::Null,
                     $fux::json::Json::Bool(true),
-                    $fux::json::Json::Object(vec![("key", $fux::json::Json::str(text))]),
+                    $fux::json::Json::Object(vec![("key".into(), $fux::json::Json::str(text))]),
                 ]);
                 format!("{} {}", json.render(), $fux::json::base64(text.as_bytes()))
             }

@@ -1,43 +1,64 @@
-//! A small JSON writer for what `json` gives. Output only: fux never reads JSON.
-use std::borrow::Cow;
+//! A JSON value: what `json` gives, and what a reply carries of what has
+//! no type of its own (a pane's state, a listing, a field), rendered at
+//! the client. fux never reads JSON text.
+use crate::wire::{Error, Reader, Wire};
 use std::fmt::Write;
 
-/// A JSON object's fields, in order.
-pub type Fields<'a> = Vec<(&'static str, Json<'a>)>;
+/// A JSON object's fields as they are built, in order.
+pub type Fields = Vec<(&'static str, Json)>;
 
-/// A value to write, its strings borrowed from what it describes where they
-/// can be.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Json<'a> {
+/// How deep a value read from the wire may nest, each value a level: past
+/// any fux makes (`ls json`'s deepest, a picture's number, is ten), so a
+/// reply can't make its reader recurse without bound.
+const DEEPEST: usize = 32;
+
+/// A JSON value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Json {
     Null,
     Bool(bool),
     Int(i64),
     /// A whole number that is never negative, `i64`'s reach or not.
     Uint(u64),
-    String(Cow<'a, str>),
-    Array(Vec<Json<'a>>),
-    Object(Fields<'a>),
-    /// JSON written already (an answer's), as it is.
-    Raw(Cow<'a, str>),
+    String(String),
+    Array(Vec<Json>),
+    Object(Vec<(String, Json)>),
 }
 
-impl<'a> Json<'a> {
-    pub fn str(text: impl Into<Cow<'a, str>>) -> Json<'a> {
+impl Json {
+    pub fn str(text: impl Into<String>) -> Json {
         Json::String(text.into())
     }
 
-    pub fn int(n: impl Into<i64>) -> Json<'a> {
+    pub fn int(n: impl Into<i64>) -> Json {
         Json::Int(n.into())
     }
 
-    pub fn uint(n: impl Into<u64>) -> Json<'a> {
+    pub fn uint(n: impl Into<u64>) -> Json {
         Json::Uint(n.into())
     }
 
     /// A count or a place in memory, as a `Uint`: every `usize` fits one.
-    pub fn count(n: usize) -> Json<'a> {
+    pub fn count(n: usize) -> Json {
         const _: () = assert!(usize::BITS <= u64::BITS);
         u64::try_from(n).map_or(Json::Null, Json::Uint)
+    }
+
+    pub fn object(fields: Fields) -> Json {
+        Json::Object(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    }
+
+    /// The value of field `key`, if it is an object that has one.
+    pub fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Object(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            Json::Null
+            | Json::Bool(_)
+            | Json::Int(_)
+            | Json::Uint(_)
+            | Json::String(_)
+            | Json::Array(_) => None,
+        }
     }
 
     pub fn render(&self) -> String {
@@ -57,7 +78,6 @@ impl<'a> Json<'a> {
                 let _ = write!(out, "{n}");
             }
             Json::String(s) => write_str(out, s),
-            Json::Raw(json) => out.push_str(json),
             Json::Array(items) => {
                 out.push('[');
                 for (i, item) in items.iter().enumerate() {
@@ -81,6 +101,65 @@ impl<'a> Json<'a> {
                 out.push('}');
             }
         }
+    }
+
+    /// A value read from the wire, at most `depth` deep.
+    fn read(r: &mut Reader<'_>, depth: usize) -> Result<Json, Error> {
+        let depth = depth.checked_sub(1).ok_or(Error::Bad("JSON depth"))?;
+        Ok(match u8::get(r)? {
+            0 => Json::Null,
+            1 => Json::Bool(bool::get(r)?),
+            2 => Json::Int(i64::get(r)?),
+            3 => Json::Uint(u64::get(r)?),
+            4 => Json::String(String::get(r)?),
+            5 => Json::Array(
+                (0..u32::get(r)?)
+                    .map(|_| Json::read(r, depth))
+                    .collect::<Result<_, _>>()?,
+            ),
+            6 => Json::Object(
+                (0..u32::get(r)?)
+                    .map(|_| Ok((String::get(r)?, Json::read(r, depth)?)))
+                    .collect::<Result<_, _>>()?,
+            ),
+            tag => return Err(Error::Tag("JSON value", tag)),
+        })
+    }
+}
+
+/// A tag, then its value: an array's or object's count, then its items.
+impl Wire for Json {
+    fn put(&self, out: &mut Vec<u8>) {
+        match self {
+            Json::Null => out.push(0),
+            Json::Bool(b) => {
+                out.push(1);
+                b.put(out);
+            }
+            Json::Int(n) => {
+                out.push(2);
+                n.put(out);
+            }
+            Json::Uint(n) => {
+                out.push(3);
+                n.put(out);
+            }
+            Json::String(s) => {
+                out.push(4);
+                s.put(out);
+            }
+            Json::Array(items) => {
+                out.push(5);
+                items.put(out);
+            }
+            Json::Object(fields) => {
+                out.push(6);
+                fields.put(out);
+            }
+        }
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Json::read(r, DEEPEST)
     }
 }
 
@@ -186,7 +265,7 @@ mod tests {
 
     #[test]
     fn json_escapes_and_nests() {
-        let value = Json::Object(vec![
+        let value = Json::object(vec![
             ("a", Json::str("q\"\\\n\u{1}界")),
             (
                 "b",

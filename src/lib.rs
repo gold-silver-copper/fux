@@ -17,6 +17,7 @@ macro_rules! log {
 }
 
 pub mod act;
+pub mod answer;
 pub mod capture;
 pub mod client;
 pub mod code;
@@ -164,38 +165,23 @@ fn serve(args: &[String]) -> ExitCode {
     }
 }
 
-/// `fux status`: the server that answers on `socket`, as text and as
-/// JSON, and whether it is one this fux can drive; with none, why not.
-pub(crate) fn status(
-    socket: &socket::SocketPath,
-    probe: &client::Probe,
-) -> Result<(String, String), String> {
+/// `fux status`: the server that answers on `socket`, and whether it is
+/// one this fux can drive; with none, why not.
+pub(crate) fn status(socket: &socket::SocketPath, probe: &client::Probe) -> Result<Json, String> {
     let path = socket.path().display().to_string();
     let ours = env!("CARGO_PKG_VERSION");
-    let (theirs, text) = match probe {
+    let theirs = match probe {
         client::Probe::Absent => return Err(format!("no fux server at {path}")),
         client::Probe::Left => {
             return Err(format!(
                 "no fux server at {path} (its socket is left from one that stopped)"
             ));
         }
-        client::Probe::Server { protocol, version } => {
-            let compatible = *protocol == protocol::PROTOCOL;
-            let mut text = format!("fux {version} at {path}");
-            if !compatible {
-                let ours = format!("{}, fux {ours}", protocol::PROTOCOL);
-                text.push_str(&format!(
-                    " speaks protocol {protocol}, not this fux's ({ours}): \
-                     `fux force-kill-server` stops it"
-                ));
-            }
-            let theirs = vec![
-                ("server_version", Json::str(version.as_str())),
-                ("server_protocol", Json::int(*protocol)),
-                ("compatible", Json::Bool(compatible)),
-            ];
-            (theirs, text)
-        }
+        client::Probe::Server { protocol, version } => vec![
+            ("server_version", Json::str(version.as_str())),
+            ("server_protocol", Json::int(*protocol)),
+            ("compatible", Json::Bool(*protocol == protocol::PROTOCOL)),
+        ],
     };
     let mut fields = vec![
         ("socket", Json::str(&path)),
@@ -203,7 +189,7 @@ pub(crate) fn status(
         ("protocol", Json::int(protocol::PROTOCOL)),
     ];
     fields.extend(theirs);
-    Ok((text, Json::Object(fields).render()))
+    Ok(Json::object(fields))
 }
 
 #[cfg(test)]

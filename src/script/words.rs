@@ -2,7 +2,7 @@
 //! it does to the stack in the names of the kinds it takes and gives
 //! (`KINDS`, `NAMES`), a line of help, an example and the options it
 //! takes; and what each does, run by the program's [`Host`].
-use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Shell, Then};
+use super::{Ask, Bound, Fux, Host, Local, On, Opts, Shell};
 use crate::code::{Code, Raise};
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
@@ -189,10 +189,11 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 11] = [
+pub const KINDS: [(&str, &str, Option<&str>); 12] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
-    ("answer", "an action's answer", None), ("capture", "a capture", None),
+    ("answer", "an action's answer", None),
+    ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, events-of and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
@@ -208,18 +209,21 @@ pub const TAKEN_AS: [(&str, &str); 2] = [("pane", "answer"), ("workspace", "stri
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
     ("x", "opts request pane>request tab>request workspace>request client>request answer>request",
         "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("target", "pane tab workspace client answer request", "a pane, tab, workspace or client, or a request on one"),
+    ("target", "pane>answer tab>answers workspace>answers client>answers answer request>outcome",
+        "a pane, tab, workspace or client, or a request on one"),
     ("subject", "pane answer request", "a pane, or a request on one"),
-    ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
+    ("place", "pane>answer tab>answers workspace>answers answer request>outcome",
+        "a pane, tab or workspace, or a request on one"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("watched", "opts pane tab workspace answer request", "a pane, tab or workspace, a request on one, or opts (everything)"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
+    ("value", "integer boolean string list pane tab workspace client size answer answers capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
@@ -250,15 +254,15 @@ words! {
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env Program Arg];
-        Waiting Wait "wait" "place -- answer" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- answer" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
+        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "subject -- capture" "the screen, as the words on the pane say" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
         Reading Ls "ls" "-- listing" "workspaces, tabs, panes and clients" "fux ls" [];
         Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
-        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
+        Reading Json "json" "value -- string" "value as JSON (an answer as its JSON); a failed wait's answer is the message try's handler gets" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
         Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts everywhere, a JSON line each" "fux str agent workspace events-of" [Either: From];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
@@ -458,9 +462,8 @@ fn text(value: &Value<Fux>) -> Result<String, Failure> {
 }
 
 /// A value as JSON: a list as an array of its values', an answer as its
-/// JSON, as alone (a capture's, a listing's or an action's object; of
-/// several panes, an array of theirs), anything else of fux's as its text.
-fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
+/// JSON (`Answer::json`), anything else of fux's as its text.
+fn json_of(value: &Value<Fux>) -> crate::json::Json {
     use crate::json::Json;
     match value {
         Value::Int(n) => Json::Int(*n),
@@ -468,22 +471,7 @@ fn json_of(value: &Value<Fux>) -> crate::json::Json<'static> {
         Value::Str(s) => Json::str(s.to_string()),
         // As deep as lists nest, at most fuxth's limit.
         Value::List(list) => Json::Array(list.items().iter().map(json_of).collect()),
-        // An answer, a line of JSON a pane: one pane's as its object; one
-        // of several panes (a tab's or workspace's wait), as an array,
-        // however many answered.
-        Value::App(Fux::Answer(answer)) => match &answer.json {
-            Some(json) => {
-                let mut objects: Vec<Json<'static>> = (json.lines())
-                    .filter(|line| !line.trim().is_empty())
-                    .map(|line| Json::Raw(line.to_owned().into()))
-                    .collect();
-                match (answer.said, objects.as_mut_slice()) {
-                    (said, [one]) if said != Said::Panes => std::mem::replace(one, Json::Null),
-                    _ => Json::Array(objects),
-                }
-            }
-            None => Json::str(answer.text.clone()),
-        },
+        Value::App(Fux::Answer(answer)) => answer.json(),
         Value::App(_) => Json::str(value.text()),
     }
 }
@@ -545,12 +533,18 @@ fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen,
     crate::view::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
 }
 
-/// The pane a value is: a pane, or an action's answer of one.
+/// The pane a value is: a pane, or an action's or wait's answer of one
+/// (a closed one's too, whose words then find no pane).
 fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
     if let Value::App(Fux::Pane(p)) = value {
         return Some(*p);
     }
-    held(value).map(|version| version.pane)
+    if let Value::App(Fux::Answer(answer)) = value
+        && let super::Answer::Pane(answer) = &**answer
+    {
+        return Some(answer.pane());
+    }
+    None
 }
 
 fn pane(value: &Value<Fux>) -> Result<PaneId, Failure> {
@@ -615,25 +609,19 @@ fn on(value: &Value<Fux>) -> Result<On, Failure> {
     target(value).map(On::Target)
 }
 
-/// What a wait or an action on `target` answers: a pane's, its pane; a
-/// tab's or workspace's, no pane, however many panes it has or answered
-/// (name it again to act on it again), and as JSON an array.
-fn answer_of(target: AnyRef) -> Then {
-    match target {
-        AnyRef::Pane(_) => Then::Outcome,
-        AnyRef::Tab(_) | AnyRef::Workspace(_) => Then::Answer(Said::Panes),
-    }
-}
-
 /// The version an action's answer, or a wait's, holds: its pane's from
 /// before what it did. A wait on it waits from there, so nothing that came
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer)) => match answer.said {
-            Said::Action(version) => Some(version),
+        Value::App(Fux::Answer(answer)) => match &**answer {
+            super::Answer::Pane(answer) => answer.version(),
             // A capture's is for `expect` and `changed` alone (`version`).
-            Said::Capture(_) | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
+            super::Answer::Panes(_)
+            | super::Answer::Capture(_)
+            | super::Answer::Listing { .. }
+            | super::Answer::Json(_)
+            | super::Answer::Status(_) => None,
         },
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
@@ -643,12 +631,12 @@ fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
 /// alone checks it.
 const EXPECTED: &str = "takes no request expect made: only send-keys checks a version";
 
-/// The version `value` holds (`Said::version`), or is as text.
+/// The version `value` holds (`Answer::version`), or is as text.
 fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
     let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
     let text = match value {
         Value::App(Fux::Answer(answer)) => {
-            return answer.said.version().ok_or_else(|| wrong(wanted, value));
+            return answer.version().ok_or_else(|| wrong(wanted, value));
         }
         Value::Str(text) => text,
         other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
@@ -1005,10 +993,7 @@ fn resize_to(
 
 /// The pane, tab or workspace of `kind` that `text` names, looked for.
 fn resolve(text: String, kind: Kind) -> Result<Done<Ask>, Failure> {
-    Ok(Done::Later(ask(
-        Command::Resolve { text, kind },
-        Then::Handle(kind),
-    )))
+    Ok(Done::Later(ask(Command::Resolve { text, kind })))
 }
 
 /// What `pane`, `tab` or `workspace` finds of `kind`, named by `found`: a
@@ -1041,20 +1026,19 @@ fn find(kind: Kind, found: Value<Fux>, out: &mut Vec<Value<Fux>>) -> Result<Done
 
 /// A request for the panes or tabs of `target`, as a list of handles.
 fn members_of(target: AnyRef, members: Members) -> Ask {
-    ask(Command::Members { target, members }, Then::Handles)
+    ask(Command::Members { target, members })
 }
 
-fn ask(request: impl Into<Request>, then: Then) -> Ask {
+fn ask(request: impl Into<Request>) -> Ask {
     Ask::Server {
         request: Box::new(request.into()),
         client: None,
-        then,
     }
 }
 
 /// An order to the server that answers nothing.
 fn tell(request: impl Into<Request>) -> Result<Done<Ask>, Failure> {
-    Ok(Done::Later(ask(request, Then::Nothing)))
+    Ok(Done::Later(ask(request)))
 }
 
 /// What this client does itself.
@@ -1062,25 +1046,24 @@ fn local(local: Local) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(Ask::Local(local)))
 }
 
-fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
+fn ask_as(client: ClientId, command: Command) -> Ask {
     Ask::Server {
         request: Box::new(command.into()),
         client: Some(client),
-        then,
     }
 }
 
-fn on_client(client: ClientId, action: ClientAction, then: Then) -> Ask {
+fn on_client(client: ClientId, action: ClientAction) -> Ask {
     let command = Command::Client {
         client: Some(client),
         action,
     };
-    ask_as(client, command, then)
+    ask_as(client, command)
 }
 
 /// An order to a client that answers nothing.
 fn order(client: ClientId, action: ClientAction) -> Result<Done<Ask>, Failure> {
-    Ok(Done::Later(on_client(client, action, Then::Nothing)))
+    Ok(Done::Later(on_client(client, action)))
 }
 
 impl fuxth::Host for Host<'_> {
@@ -1136,7 +1119,7 @@ impl fuxth::Host for Host<'_> {
                 name if name.trim().is_empty() => {
                     Err(fail(Raise::NoTarget, "an empty name names no pane"))
                 }
-                name => later(ask(Command::PaneNamed { name }, Then::Handle(Kind::Pane))),
+                name => later(ask(Command::PaneNamed { name })),
             },
             Act::Here => resolve(String::new(), Kind::Pane),
             Act::Client => {
@@ -1161,7 +1144,6 @@ impl fuxth::Host for Host<'_> {
                         text: String::new(),
                         kind: Kind::Pane,
                     },
-                    Then::Handle(Kind::Pane),
                 ))
             }
             // ---------------------------------------------------- starting
@@ -1182,7 +1164,7 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     argv: built.argv,
                 };
-                later(ask(run, Then::Handle(Kind::Pane)))
+                later(ask(run))
             }
             Act::NewTab => {
                 let built = finished(act, next()?)?;
@@ -1193,7 +1175,7 @@ impl fuxth::Host for Host<'_> {
                     cwd: built.cwd,
                     env: built.env,
                 };
-                later(ask(tab, Then::Handle(Kind::Pane)))
+                later(ask(tab))
             }
             Act::NewWorkspace => {
                 let built = finished(act, next()?)?;
@@ -1203,7 +1185,7 @@ impl fuxth::Host for Host<'_> {
                     cwd: built.cwd,
                     env: built.env,
                 };
-                later(ask(workspace, Then::Handle(Kind::Pane)))
+                later(ask(workspace))
             }
             Act::Split => {
                 let (p, built) = request_pane(act, next()?)?;
@@ -1215,7 +1197,7 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     shares: built.shares,
                 };
-                later(ask(split, Then::Handle(Kind::Pane)))
+                later(ask(split))
             }
             Act::Respawn => {
                 let (p, built) = request_pane(act, next()?)?;
@@ -1225,16 +1207,16 @@ impl fuxth::Host for Host<'_> {
                     env: built.env,
                     argv: built.argv,
                 };
-                later(ask(respawn, Then::Handle(Kind::Pane)))
+                later(ask(respawn))
             }
             // ----------------------------------------------------- waiting
             Act::Wait => {
                 let (on, built) = request(act, next()?)?;
                 // On a tab or workspace, in each of its panes.
-                let (since, then) = match on {
-                    On::Version(version) => (Since::Version(version), Then::Outcome),
+                let since = match on {
+                    On::Version(version) => Since::Version(version),
                     On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
-                    On::Target(target) => (Since::Now(target), answer_of(target)),
+                    On::Target(target) => Since::Now(target),
                     On::Client(_) => {
                         let why = "takes a pane, tab or workspace, not a client";
                         return Err(fail(Raise::Type, why));
@@ -1244,7 +1226,7 @@ impl fuxth::Host for Host<'_> {
                     since,
                     timeout: built.timeout,
                 };
-                later(ask(Request::Wait(wait), then))
+                later(ask(Request::Wait(wait)))
             }
             // ------------------------------------------------------- input
             Act::SendKeys => {
@@ -1277,14 +1259,14 @@ impl fuxth::Host for Host<'_> {
                         };
                         // Its answer, empty: the client's keys go to the pane
                         // it chooses, so there is no one version to answer.
-                        return later(ask(typed, Then::Outcome));
+                        return later(ask(typed));
                     }
                 };
                 let keys = Command::SendKeys {
                     to,
                     inputs: built.inputs,
                 };
-                later(ask(keys, answer_of(to.target())))
+                later(ask(keys))
             }
             Act::SendMouse => {
                 let (p, built) = request_pane(act, next()?)?;
@@ -1300,14 +1282,14 @@ impl fuxth::Host for Host<'_> {
                     row,
                     col,
                 };
-                later(ask(mouse, Then::Outcome))
+                later(ask(mouse))
             }
             Act::Signal => {
                 let (p, _) = request_pane(act, next()?)?;
                 let signals = fuxix::process::Signal::ALL.map(|signal| (signal.name(), signal));
                 let signal = one_of(&next()?, &signals)?;
                 let signal = Command::Signal { target: p, signal };
-                later(ask(signal, Then::Outcome))
+                later(ask(signal))
             }
             // ----------------------------------------------------- reading
             Act::Capture => {
@@ -1317,28 +1299,28 @@ impl fuxth::Host for Host<'_> {
                     history: built.history,
                     view: built.view,
                 };
-                later(ask(capture, Then::Capture))
+                later(ask(capture))
             }
             Act::Ls => {
                 let ls = Command::Ls {
                     target: None,
                     get: None,
                 };
-                later(ask(ls, Then::Answer(Said::Listing)))
+                later(ask(ls))
             }
             Act::Info => {
                 let info = Command::Ls {
                     target: Some(target(&next()?)?),
                     get: None,
                 };
-                later(ask(info, Then::Answer(Said::Listing)))
+                later(ask(info))
             }
             Act::Panes => later(members_of(target(&next()?)?, Members::Panes)),
             Act::Tabs => later(members_of(target(&next()?)?, Members::Tabs)),
             Act::Get => {
                 let target = Some(target(&next()?)?);
                 let get = Some(string(&next()?)?);
-                later(ask(Command::Ls { target, get }, Then::Value))
+                later(ask(Command::Ls { target, get }))
             }
             Act::Json => match next()? {
                 // Options and requests are no value to convert: what acts
@@ -1378,10 +1360,10 @@ impl fuxth::Host for Host<'_> {
                 };
                 tell(Request::Events(target, built.from))
             }
-            Act::Dump => later(ask(Command::DumpLayout { target: None }, Then::Text)),
+            Act::Dump => later(ask(Command::DumpLayout { target: None })),
             Act::DumpOf => {
                 let target = Some(target(&next()?)?);
-                later(ask(Command::DumpLayout { target }, Then::Text))
+                later(ask(Command::DumpLayout { target }))
             }
             // ---------------------------------------------------- changing
             Act::Kill => tell(Command::Kill {
@@ -1473,20 +1455,14 @@ impl fuxth::Host for Host<'_> {
             Act::ClearHistory => tell(Command::ClearHistory {
                 target: pane(&next()?)?,
             }),
-            Act::Buffers => later(ask(Command::ListBuffers, Then::Text)),
-            Act::Buffer => later(ask(
-                Command::ShowBuffer {
-                    index: within(&next()?, COUNT)?,
-                },
-                Then::Text,
-            )),
+            Act::Buffers => later(ask(Command::ListBuffers)),
+            Act::Buffer => later(ask(Command::ShowBuffer {
+                index: within(&next()?, COUNT)?,
+            })),
             Act::PasteBuffer => {
                 let p = pane(&next()?)?;
                 let index = within(&next()?, COUNT)?;
-                later(ask(
-                    Command::PasteBuffer { index, target: p },
-                    Then::Outcome,
-                ))
+                later(ask(Command::PasteBuffer { index, target: p }))
             }
             // ----------------------------------------------------- clients
             Act::Attach => {
@@ -1532,11 +1508,7 @@ impl fuxth::Host for Host<'_> {
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             Act::CaptureClient => {
                 let c = client(&next()?)?;
-                later(on_client(
-                    c,
-                    ClientAction::Capture,
-                    Then::Answer(Said::Capture(None)),
-                ))
+                later(on_client(c, ClientAction::Capture))
             }
             // ------------------------------------------------------ server
             Act::Server => local(Local::Server(crate::socket::Choice::Name(
@@ -1885,22 +1857,31 @@ mod tests {
         }
     }
 
+    /// A tab's answer is a kind of its own, which a word that wants a
+    /// pane refuses before anything runs; a pane's answer is its pane.
     #[test]
-    fn an_answer_of_several_panes_is_an_array() {
-        let answer = |json: &str| {
-            json_of(&Value::App(Fux::Answer(Box::new(super::super::Answer {
-                text: String::new(),
-                json: Some(json.to_owned()),
-                said: super::super::Said::Panes,
-            }))))
-            .render()
+    fn a_tabs_answer_is_no_pane() {
+        let checked = |code: &str| {
+            let tokens = fuxth::token::source("t", code).unwrap_or_default();
+            super::super::compile(&tokens).map(drop)
         };
-        // However many answered: one is an array too.
-        assert_eq!(answer("{\"pane\":\"%1\"}\n"), "[{\"pane\":\"%1\"}]");
+        assert!(checked("@1 wait capture").is_err());
+        assert!(checked("+1 wait str y text send-keys").is_err());
+        assert_eq!(checked("%1 str x text send-keys wait capture"), Ok(()));
+    }
+
+    /// A tab's or workspace's answer is an array, however many panes
+    /// answered.
+    #[test]
+    fn an_answer_of_several_panes_is_an_array() -> Result<(), ()> {
+        let version = "%1:0.0.0.0.0:1-1".parse()?;
+        let one = super::super::Answer::Panes(vec![crate::answer::PaneAnswer::Acted(version)]);
+        let json = json_of(&Value::App(Fux::Answer(Box::new(one)))).render();
         assert_eq!(
-            answer("{\"pane\":\"%1\"}\n{\"pane\":\"%2\"}\n"),
-            "[{\"pane\":\"%1\"},{\"pane\":\"%2\"}]"
+            json,
+            r#"[{"pane":"%1","version":"%1:0.0.0.0.0:1-1","status":0}]"#
         );
+        Ok(())
     }
 
     /// A request costs the steps the program took to make it, not a whole
