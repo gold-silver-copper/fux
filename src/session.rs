@@ -205,9 +205,6 @@ enum Here<'a> {
 }
 
 impl Here<'_> {
-    /// The CLI with no caller: a command run for no one.
-    const NOWHERE: Here<'static> = Here::Cli(None, None);
-
     fn ws(self) -> Option<WsId> {
         match self {
             Here::Client(_, place) => Some(place.ws),
@@ -1108,10 +1105,13 @@ impl Session {
             Here::Cli(_, None) => near,
             Here::Client(_, place) => near.or(Some(place.pane)),
         };
-        let leader = near.and_then(|p| self.parts.panes().get(&p)?.process().child());
-        leader
-            .and_then(|c| fuxix::process::cwd(c.leader.pid()))
-            .unwrap_or_else(home)
+        near.and_then(|p| self.dir_of(p)).unwrap_or_else(home)
+    }
+
+    /// The directory pane `pane`'s program is in, if it can be read.
+    fn dir_of(&self, pane: PaneId) -> Option<PathBuf> {
+        let child = self.parts.panes().get(&pane)?.process().child()?;
+        fuxix::process::cwd(child.leader.pid())
     }
 
     /// Where a new pane's program starts: `dir`, from the caller's
@@ -5222,6 +5222,16 @@ mod tests {
         let dump = s.dump_layout(None);
         assert!(!dump.contains("tab-3"), "{dump}");
         assert!(dump.contains("given"), "{dump}");
+        Ok(())
+    }
+
+    /// A shell whose directory cannot be read (here none runs) is dumped
+    /// without one, never with `$HOME` in its place: a comment names it.
+    #[test]
+    fn a_dump_leaves_out_a_directory_it_cannot_read() -> Result<(), String> {
+        let dump = started(Config::default())?.dump_layout(None);
+        assert!(dump.contains("# %1: its directory is unknown"), "{dump}");
+        assert!(!dump.contains("cwd"), "{dump}");
         Ok(())
     }
 

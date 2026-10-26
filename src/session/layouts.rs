@@ -121,16 +121,20 @@ impl Session {
 
     /// The options a line gives pane `id`: where it starts, and a program's
     /// variables and words. A directory that is not text, which a fuxth
-    /// string cannot hold, is left out, never written changed: a comment
-    /// in `out` says so, and the line starts it where it runs.
+    /// string cannot hold, or a shell's that cannot be read, is left out,
+    /// never written changed or guessed: a comment in `out` says so, and
+    /// the line starts it where it runs.
     fn pane_words(&self, id: PaneId, line: &mut Vec<String>, out: &mut String) {
         let program = self.program(id);
-        let shell = || self.cwd_for(super::Here::NOWHERE, Some(id));
-        let cwd = program.map_or_else(shell, |launch| launch.cwd.clone());
-        match cwd.to_str() {
-            Some(cwd) => line.extend(string(cwd).chain(["cwd".to_owned()])),
-            None => out.push_str(&format!(
+        let cwd = program.map(|launch| launch.cwd.clone());
+        let cwd = cwd.or_else(|| self.dir_of(id));
+        match cwd.as_deref().map(|cwd| (cwd, cwd.to_str())) {
+            Some((_, Some(cwd))) => line.extend(string(cwd).chain(["cwd".to_owned()])),
+            Some((cwd, None)) => out.push_str(&format!(
                 "# {id}: its directory {cwd:?} is not UTF-8 text, so it starts where this runs\n"
+            )),
+            None => out.push_str(&format!(
+                "# {id}: its directory is unknown, so it starts where this runs\n"
             )),
         }
         for (key, value) in program.iter().flat_map(|launch| &launch.env) {
