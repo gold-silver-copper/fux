@@ -2,7 +2,6 @@
 //! the session's counters, [`Ids`]; any other is read from what a person
 //! typed (`%3`, `@2`, `+1`, `c1`) by `FromStr`, and the session looks it up
 //! before acting on it. No code can make one from a number.
-use crate::code::Code;
 use crate::command::{Kind, Usage};
 use crate::session::Error;
 use std::fmt;
@@ -109,7 +108,10 @@ impl Ids {
 
 fn take(counter: &mut u32, what: &'static str) -> Result<u32, Error> {
     *counter = (counter.checked_add(1)).ok_or_else(|| {
-        crate::session::fail(Code::IdsExhausted, format!("no {what} IDs are left"))
+        crate::session::fail(
+            crate::code::Raise::IdsExhausted,
+            format!("no {what} IDs are left"),
+        )
     })?;
     Ok(*counter)
 }

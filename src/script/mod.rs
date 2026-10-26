@@ -21,7 +21,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use words::{WORDS, Word, usage};
+pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
 /// prompt see.
@@ -116,7 +116,7 @@ pub struct Opts {
     pub mouse: Option<(Mouse, u16, u16)>,
     /// The words given, for the word they go on to refuse any it would not
     /// use.
-    pub given: Vec<&'static str>,
+    pub given: Vec<words::Opt>,
 }
 
 /// What a request is on.
@@ -379,7 +379,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
         .iter()
         .any(|(.., why)| *why == Some(&*error.message));
     if error.code == Lang::Unused && left {
-        let word = error.word.as_deref().unwrap_or_default();
+        let word = error.word.as_deref().and_then(Word::named);
         error.message += &format!(": end with {}", words::takers(word));
     }
     if usage && let Some(usage) = error.word.as_deref().and_then(words::usage) {
@@ -388,10 +388,10 @@ fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     if error.code == Lang::UnknownWord {
         error.message.push_str(" (`fux help` lists every word)");
     }
-    if Code::from(error.code) == Code::Check {
+    if Code::of(error.code) == Code::Check {
         (error.place, error.word) = (None, None);
     }
-    Failed::new(Code::from(error.code), error.located())
+    Failed::new(Code::of(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -413,15 +413,11 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     for (name, kinds, said) in strings.chain(integers).chain(words::NAMES.iter().copied()) {
         vocabulary.name(name, kinds, said)?;
     }
-    for word in WORDS {
-        vocabulary.add(word.name, word.effect)?;
+    for word in Word::ALL {
+        vocabulary.add(word.row().name, word.row().effect)?;
     }
-    let own = Code::ALL.iter().filter(|c| c.raised());
-    for code in own
-        .map(|c| fuxth::Code::from(*c))
-        .chain(crate::code::RAISED)
-    {
-        vocabulary.raises(code)?;
+    for code in Code::all().filter(|c| c.raised()) {
+        vocabulary.raises(code.into())?;
     }
     Ok(vocabulary)
 }

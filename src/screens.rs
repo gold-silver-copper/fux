@@ -14,7 +14,7 @@ use crate::id::PaneId;
 use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
 use crate::keys::{KeyPress, Keystroke};
 use crate::protocol::{Reply, Scalar, ScreenKind};
-use crate::script::{Failed, succeeded};
+use crate::script::{self, Failed, succeeded};
 use crate::view::Line;
 
 /// A screen a word asks to open: built with what the server knows (names,
@@ -103,17 +103,19 @@ impl Open {
     /// The fuxth that opens it on client `me`: what is relayed to a client
     /// asked from elsewhere (`str c1 client choose-tab`).
     pub fn code(&self) -> String {
-        match self {
-            Open::ChooseTab(None) => "me choose-tab".to_owned(),
-            Open::ChooseTab(Some(p)) => format!("me str {p} pane choose-tab-for"),
-            Open::ChooseWorkspace(None) => "me choose-workspace".to_owned(),
-            Open::ChooseWorkspace(Some(p)) => format!("me str {p} pane choose-workspace-for"),
-            Open::ChoosePane(p) => format!("me str {p} pane choose-pane"),
-            Open::Rename(t) => format!("me {} rename-prompt", naming(*t)),
-            Open::Confirm(t) => format!("me {} confirm-close", naming(*t)),
-            Open::Prompt => "me command-prompt".to_owned(),
-            Open::Copy => "me copy-mode".to_owned(),
-        }
+        let pane = |p: &PaneId| format!("str {p} {} ", script::Act::Pane);
+        let (on, screen) = match self {
+            Open::ChooseTab(None) => (String::new(), script::Screen::ChooseTab),
+            Open::ChooseTab(Some(p)) => (pane(p), script::Screen::ChooseTabFor),
+            Open::ChooseWorkspace(None) => (String::new(), script::Screen::ChooseWorkspace),
+            Open::ChooseWorkspace(Some(p)) => (pane(p), script::Screen::ChooseWorkspaceFor),
+            Open::ChoosePane(p) => (pane(p), script::Screen::ChoosePane),
+            Open::Rename(t) => (format!("{} ", naming(*t)), script::Screen::RenamePrompt),
+            Open::Confirm(t) => (format!("{} ", naming(*t)), script::Screen::ConfirmClose),
+            Open::Prompt => (String::new(), script::Screen::CommandPrompt),
+            Open::Copy => (String::new(), script::Screen::CopyMode),
+        };
+        format!("{} {on}{screen}", script::Act::Me)
     }
 
     /// The screen, built with what `ask` answers: names, a chooser's rows.
