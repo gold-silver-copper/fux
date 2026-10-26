@@ -1337,9 +1337,9 @@ pub fn b30(scale: Scale, chunk: usize) -> Found {
 }
 
 // B31: a zero-width character after a full row costs at most 257 text
-// bytes. Each comes after a cursor move, alternately left and right, so
-// that it joins a full cell of the row afresh: once a cell printed last
-// has dropped one, the rest after it cost nothing.
+// bytes. They come after a cursor move (BS), which leaves no cell printed
+// last, so each one reaches a full cell's text: the cell printed last
+// takes nothing once it has dropped a character.
 pub fn b31(scale: Scale, chunk: usize) -> Found {
     let setup = Setup::defaults().sized(1, 200).history(0);
     const BOUND: Bound = Bound {
@@ -1353,17 +1353,18 @@ pub fn b31(scale: Scale, chunk: usize) -> Found {
     let mut prefix = repeat(&cluster(50), 64);
     prefix.extend(cluster(22));
     prefix.extend(cluster(8));
-    let marks: String = ["\x1b[D\u{200b}", "\x1b[C\u{200b}"]
-        .into_iter()
-        .cycle()
-        .take(1000usize.saturating_mul(scale.times()))
+    let marks: String = std::iter::once("\x08")
+        .chain(std::iter::repeat_n(
+            "\u{200b}",
+            1000usize.saturating_mul(scale.times()),
+        ))
         .collect();
     let mut probe = Probe::new(&setup, bound, chunk, 1)?;
     probe.feed(&prefix)?;
     probe.restart(bound, scale.times());
     probe.feed(marks.as_bytes())?;
-    // Each ZWSP's three bytes, at least, go into the cell's text.
-    let marks = u64::try_from(3000usize.saturating_mul(scale.times())).unwrap_or(0);
+    // Each ZWSP reads the cell's text, 17 bytes at least, and its own 3.
+    let marks = u64::try_from(20_000usize.saturating_mul(scale.times())).unwrap_or(0);
     probe.at_least("text", marks)?;
     probe.finish()
 }
