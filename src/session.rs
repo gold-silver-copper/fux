@@ -3411,7 +3411,7 @@ pub(crate) mod testing {
             if let crate::screens::Screen::Copy(_) = keys.screen {
                 acts.push(crate::act::Act::Copy(crate::act::CopyAct::Leave));
             }
-            acts.extend(screen.opened());
+            acts.extend(screen.opened(&self.test_keymap.modes));
             keys.screen = screen;
             self.acts(client, acts);
             deliver(self);
@@ -4938,7 +4938,7 @@ mod tests {
             .map(|n| n.text);
         assert_eq!(
             notice.as_deref(),
-            Some("nothing_there: test:1: choose-pane: only one pane")
+            Some("nothing_there: key:1: choose-pane: only one pane")
         );
         run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(

@@ -39,13 +39,13 @@ fn copy_mode(client: &mut Client) -> Outcome {
 fn search(client: &mut Client, keys: &str, term: &str) -> Outcome {
     client.keys(keys)?;
     client.wait("the search", |t| {
-        t.lines().last().is_some_and(|b| b.contains("Enter search"))
+        t.lines().last().is_some_and(|b| b.contains("Enter accept"))
     })?;
     client.keys(&format!("{term}\r"))?;
     client.wait("the search to end", |t| {
         t.lines()
             .last()
-            .is_some_and(|b| b.contains("COPY") && !b.contains("Enter search"))
+            .is_some_and(|b| b.contains("COPY") && !b.contains("Enter accept"))
     })
 }
 

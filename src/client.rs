@@ -787,7 +787,8 @@ impl Keyboard {
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
         }
-        acts.extend(screen.opened());
+        let opened = screen.opened(&lock(&self.keymap).modes);
+        acts.extend(opened);
         self.screen = screen;
     }
 
@@ -894,8 +895,9 @@ fn run_job(
     });
     // Opened, a screen is sent the server in one frame: one larger was
     // never to show.
+    let modes = lock(keymap).modes.clone();
     let fits = |screen: &Screen| {
-        (screen.opened()).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
+        (screen.opened(&modes)).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
     };
     match asks.opened {
         Some(screen) if !fits(&screen) => {

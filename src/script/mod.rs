@@ -237,6 +237,8 @@ pub enum Bound {
     Prefix(Vec<crate::keys::KeyPress>),
     /// One key, bound without the prefix.
     Root(crate::keys::KeyPress),
+    /// One key of a screen of fux's own.
+    In(crate::keymap::Modal, crate::keys::KeyPress),
 }
 
 /// What the client does itself.
@@ -1353,10 +1355,12 @@ mod tests {
             super::run_quiet(name, text, Default::default(), Some(keymap), dry)
         };
         let mut keymap = super::default_keys()?;
-        let lines = (super::KEYS.lines())
+        let (screens, keys): (Vec<&str>, Vec<&str>) = (super::KEYS.lines())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .count();
-        assert_eq!(keymap.bindings.all().len(), lines);
+            .partition(|l| l.contains(" bind-in"));
+        assert_eq!(keymap.bindings.all().len(), keys.len());
+        let listed = keymap.describe();
+        assert_eq!(listed.matches(" bind-in").count(), screens.len());
         // Quotes, a backslash and a line end, as a config writes them.
         let mine = r#"str M-t str 'me zoom' bind-root str Mine group
             str g str 'me focused horizontal str sh program str "echo it'\''s" arg split drop' bind

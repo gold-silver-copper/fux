@@ -7,8 +7,10 @@
 //! each time its keys are typed, the client itself its `me`. The default
 //! bindings are a config too, `script/keys.fux`, run on `Keymap::empty`
 //! before the user's.
-use crate::act::{Act, Column, ColumnEntry, CopyAct, Edit, LineAct, ListAct, Move, Panel, Seek};
-use crate::keys::{Direction, Key, KeyPress, Keystroke, Modifiers};
+use crate::act::{
+    Act, Column, ColumnEntry, CopyAct, Edit, Hint, LineAct, ListAct, Move, Panel, Seek,
+};
+use crate::keys::{Key, KeyPress, Keystroke, Modifiers};
 use crate::screens::{Effect, HIDE};
 use crate::words::quote;
 
@@ -212,6 +214,8 @@ pub struct Keymap {
     pub bindings: Layer,
     /// Keys bound without the prefix, in the order bound; never the prefix.
     pub root: Vec<(KeyPress, Binding)>,
+    /// The keys of fux's own screens.
+    pub modes: Modes,
     /// The config that made it, by its name and text: its definitions are
     /// its bindings' and prompt's words too.
     pub config: Option<std::sync::Arc<(String, String)>>,
@@ -231,6 +235,7 @@ impl Keymap {
             prefix: KeyPress::new(Key::Char('b'), Modifiers::CTRL),
             bindings: Layer::default(),
             root: Vec::new(),
+            modes: Modes::default(),
             config: None,
         }
     }
@@ -287,6 +292,7 @@ impl Keymap {
     pub fn unbind_all(&mut self) {
         self.bindings = Layer::default();
         self.root.clear();
+        self.modes = Modes::default();
     }
 
     /// The binding `keys` after the prefix run.
@@ -421,6 +427,7 @@ impl Keymap {
         std::iter::once(format!("unbind-all\nstr {prefix} prefix\n"))
             .chain(bound)
             .chain(root)
+            .chain([self.modes.lines()])
             .collect()
     }
 }
@@ -542,7 +549,7 @@ impl Held {
         // A list's moves, but by its keys that are not letters, which are
         // bindings here.
         let unbound = press.mods == Modifiers::NONE && !matches!(press.key, Key::Char(_));
-        if let Some(ListAct::Move(moved)) = list_act(press).filter(|_| unbound) {
+        if let Some(ListAct::Move(moved)) = keymap.modes.list.get(press).filter(|_| unbound) {
             return self.open(keymap, path, moved.from(selected, last));
         }
         if press.key == Key::Enter && press.mods == Modifiers::NONE {
@@ -619,130 +626,228 @@ pub fn watching(keymap: &Keymap) -> Act {
     Act::Notice { text, error: false }
 }
 
-/// A key in a list: moving, choosing, leaving; `r` renames and `x` closes
-/// what the chosen entry is about.
-pub fn list_act(press: KeyPress) -> Option<ListAct> {
-    match press.plain_key()? {
-        Key::Arrow(Direction::Up) | Key::Char('k') => Some(ListAct::Move(Move::Up)),
-        Key::Arrow(Direction::Down) | Key::Char('j') => Some(ListAct::Move(Move::Down)),
-        Key::PageUp => Some(ListAct::Move(Move::PageUp)),
-        Key::PageDown => Some(ListAct::Move(Move::PageDown)),
-        Key::Home => Some(ListAct::Move(Move::First)),
-        Key::End => Some(ListAct::Move(Move::Last)),
-        Key::Enter => Some(ListAct::Choose),
-        Key::Escape | Key::Char('q') => Some(ListAct::Cancel),
-        Key::Char('r') => Some(ListAct::Rename),
-        Key::Char('x') => Some(ListAct::Close),
-        Key::Char(_)
-        | Key::Tab
-        | Key::Backspace
-        | Key::Insert
-        | Key::Delete
-        | Key::Arrow(Direction::Left | Direction::Right)
-        | Key::F(_) => None,
-    }
+/// The keys of fux's own screens, from the config as the bindings are
+/// (`bind-in`): each a key to one of its screen's actions, and the hint
+/// that names it there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    pub copy: Table<CopyAct>,
+    pub list: Table<ListAct>,
+    pub line: Table<LineAct>,
+    pub confirm: Table<bool>,
 }
 
-/// A key in a line being typed: a one-line editor.
-pub fn line_act(press: KeyPress) -> Option<LineAct> {
-    let edit = |edit| Some(LineAct::Edit(edit));
-    match press.key {
-        Key::Escape => Some(LineAct::Cancel),
-        Key::Enter => Some(LineAct::Submit),
-        Key::Backspace => edit(Edit::Backspace),
-        Key::Delete => edit(Edit::Delete),
-        Key::Arrow(Direction::Left) => edit(Edit::Left),
-        Key::Arrow(Direction::Right) => edit(Edit::Right),
-        Key::Home => edit(Edit::Home),
-        Key::End => edit(Edit::End),
-        // Text: a letter with Ctrl or Alt types nothing.
-        Key::Char(c) if !press.mods.ctrl && !press.mods.alt && !c.is_control() => {
-            edit(Edit::Insert(c.to_string()))
+/// One of fux's own screens, as `bind-in` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Modal {
+    Copy,
+    List,
+    Line,
+    Confirm,
+}
+
+impl Modal {
+    pub const ALL: &[(&str, Modal)] = &[
+        ("copy", Modal::Copy),
+        ("list", Modal::List),
+        ("line", Modal::Line),
+        ("confirm", Modal::Confirm),
+    ];
+}
+
+impl Modes {
+    pub fn table(&mut self, modal: Modal) -> &mut dyn Bindable {
+        match modal {
+            Modal::Copy => &mut self.copy,
+            Modal::List => &mut self.list,
+            Modal::Line => &mut self.line,
+            Modal::Confirm => &mut self.confirm,
         }
-        Key::Char(_)
-        | Key::Tab
-        | Key::Insert
-        | Key::Arrow(_)
-        | Key::PageUp
-        | Key::PageDown
-        | Key::F(_) => None,
+    }
+
+    /// Every key, as config lines that bind it again.
+    fn lines(&self) -> String {
+        let tables: [&dyn Bindable; 4] = [&self.copy, &self.list, &self.line, &self.confirm];
+        (Modal::ALL.iter().zip(tables))
+            .map(|((name, _), table)| table.lines(name))
+            .collect()
     }
 }
 
-/// The letter a key types with neither Ctrl nor Alt, in either case, as
-/// lower case.
-pub fn letter(press: KeyPress) -> Option<char> {
-    let Some(Key::Char(c)) = press.plain_key() else {
-        return None;
-    };
-    Some(c.to_ascii_lowercase())
-}
+/// The actions of one of fux's screens, by the names `bind-in` reads; and
+/// what Escape does there, always, so that no screen holds a key it cannot
+/// leave.
+pub trait Named: Clone + PartialEq + 'static {
+    const NAMES: &'static [(&'static str, Self)];
+    const ESCAPE: Self;
 
-/// A key while a confirmation waits: `y` yes; `n`, `q` or Escape no.
-pub fn confirm_act(press: KeyPress) -> Option<bool> {
-    match press.plain_key()? {
-        Key::Char('y') => Some(true),
-        Key::Char('n' | 'q') | Key::Escape => Some(false),
-        Key::Char(_)
-        | Key::Enter
-        | Key::Tab
-        | Key::Backspace
-        | Key::Insert
-        | Key::Delete
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown
-        | Key::Arrow(_)
-        | Key::F(_) => None,
+    fn name(&self) -> &'static str {
+        (Self::NAMES.iter())
+            .find(|(_, a)| a == self)
+            .map_or("", |(name, _)| name)
     }
 }
 
-/// A key in copy mode that moves, selects, copies or leaves, and whether
-/// it ends copy mode (leaving and copying do). Letters, in either case,
-/// and the brackets; one with Ctrl or Alt is no key's. The arrows, paging
-/// keys, Home, End, Enter and Esc too. `f` and `r`, which open its search
-/// line, are the client's own (`crate::screens`).
-pub fn copy_act(press: KeyPress) -> Option<(CopyAct, bool)> {
-    let act = match press.key {
-        Key::Char(_) => match letter(press)? {
-            'q' => (CopyAct::Leave, true),
-            'h' => (CopyAct::Left, false),
-            'l' => (CopyAct::Right, false),
-            'j' => (CopyAct::Down, false),
-            'k' => (CopyAct::Up, false),
-            'w' => (CopyAct::WordForward, false),
-            'b' => (CopyAct::WordBack, false),
-            'a' => (CopyAct::FirstInk, false),
-            'e' => (CopyAct::LastInk, false),
-            't' => (CopyAct::Top, false),
-            'z' => (CopyAct::Bottom, false),
-            'u' => (CopyAct::HalfUp, false),
-            'd' => (CopyAct::HalfDown, false),
-            'n' => (CopyAct::Next, false),
-            'p' => (CopyAct::Previous, false),
-            '[' => (CopyAct::Prompt(Seek::Backward), false),
-            ']' => (CopyAct::Prompt(Seek::Forward), false),
-            'v' => (CopyAct::SelectChar, false),
-            's' => (CopyAct::SelectLine, false),
-            'x' => (CopyAct::SelectBlock, false),
-            'o' => (CopyAct::OtherEnd, false),
-            'y' => (CopyAct::Yank, true),
-            _ => return None,
-        },
-        Key::Escape => (CopyAct::Leave, true),
-        Key::Arrow(Direction::Left) => (CopyAct::Left, false),
-        Key::Arrow(Direction::Right) => (CopyAct::Right, false),
-        Key::Arrow(Direction::Down) => (CopyAct::Down, false),
-        Key::Arrow(Direction::Up) => (CopyAct::Up, false),
-        Key::End => (CopyAct::LastInk, false),
-        Key::Home => (CopyAct::LineStart, false),
-        Key::PageUp => (CopyAct::PageUp, false),
-        Key::PageDown => (CopyAct::PageDown, false),
-        Key::Enter => (CopyAct::Yank, true),
-        Key::Tab | Key::Backspace | Key::Delete | Key::Insert | Key::F(_) => return None,
-    };
-    Some(act)
+/// A screen's keys, each once, in the order bound: its action, and the
+/// hint that names it, if any. A letter in either case is one key; Escape
+/// is none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Table<A>(Vec<(KeyPress, A, Option<String>)>);
+
+impl<A> Default for Table<A> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<A: Named> Table<A> {
+    /// What `press` does here.
+    pub fn get(&self, press: KeyPress) -> Option<A> {
+        if press.plain_key() == Some(Key::Escape) {
+            return Some(A::ESCAPE);
+        }
+        let press = press.folded();
+        (self.0.iter())
+            .find(|(k, ..)| *k == press)
+            .map(|(_, a, _)| a.clone())
+    }
+
+    /// The hints a screen shows of its keys: each label once, the keys it
+    /// names together, in the order bound; then Escape, by its action.
+    pub fn hints(&self) -> Vec<Hint> {
+        let mut hints: Vec<Hint> = Vec::new();
+        for (key, _, label) in &self.0 {
+            let Some(label) = label else { continue };
+            match hints.iter_mut().find(|h| h.label == *label) {
+                Some(hint) => hint.keys = format!("{} {key}", hint.keys),
+                None => hints.push(Hint {
+                    keys: key.to_string(),
+                    label: label.clone(),
+                }),
+            }
+        }
+        let (keys, label) = ("Escape".to_owned(), A::ESCAPE.name().to_owned());
+        hints.push(Hint { keys, label });
+        hints
+    }
+}
+
+/// A screen's table, whatever its actions: what a config's words change.
+pub trait Bindable {
+    /// Binds `key` to the action named `name`, in place of what it did.
+    fn bind(&mut self, key: KeyPress, name: &str) -> Result<(), String>;
+    fn unbind(&mut self, key: KeyPress) -> Result<(), String>;
+    /// The hint of `key`'s action, if it is bound.
+    fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>>;
+    /// Its keys as config lines, for the screen named `modal`.
+    fn lines(&self, modal: &str) -> String;
+}
+
+impl<A: Named> Bindable for Table<A> {
+    fn bind(&mut self, key: KeyPress, name: &str) -> Result<(), String> {
+        if key.plain_key() == Some(Key::Escape) {
+            return Err("Escape leaves every screen of fux's own; it cannot be bound".to_owned());
+        }
+        let Some((_, act)) = A::NAMES.iter().find(|(n, _)| *n == name) else {
+            let names: Vec<&str> = A::NAMES.iter().map(|(n, _)| *n).collect();
+            return Err(format!(
+                "{name:?} is not {}",
+                crate::words::listed(&names, "or")
+            ));
+        };
+        let key = key.folded();
+        self.0.retain(|(k, ..)| *k != key);
+        self.0.push((key, act.clone(), None));
+        Ok(())
+    }
+
+    fn unbind(&mut self, key: KeyPress) -> Result<(), String> {
+        let (key, before) = (key.folded(), self.0.len());
+        self.0.retain(|(k, ..)| *k != key);
+        let unbound = self.0.len() != before;
+        unbound
+            .then_some(())
+            .ok_or_else(|| format!("{key} is not bound there"))
+    }
+
+    fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>> {
+        (self.0.iter_mut())
+            .find(|(k, ..)| *k == key)
+            .map(|(.., label)| label)
+    }
+
+    fn lines(&self, modal: &str) -> String {
+        let line = |(key, act, label): &(KeyPress, A, Option<String>)| {
+            let key = quote(&key.to_string());
+            let label = label.as_ref().map(|l| format!("  str {} label", quote(l)));
+            let label = label.unwrap_or_default();
+            format!("str {modal} str {key} str {} bind-in{label}\n", act.name())
+        };
+        self.0.iter().map(line).collect()
+    }
+}
+
+/// A key in copy mode: an action for the server; the search line opening
+/// (`CopyAct::Typing`) the client's own too.
+impl Named for CopyAct {
+    #[rustfmt::skip]
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("left", CopyAct::Left), ("right", CopyAct::Right), ("up", CopyAct::Up),
+        ("down", CopyAct::Down), ("word-forward", CopyAct::WordForward),
+        ("word-back", CopyAct::WordBack), ("first-ink", CopyAct::FirstInk),
+        ("last-ink", CopyAct::LastInk), ("line-start", CopyAct::LineStart),
+        ("top", CopyAct::Top), ("bottom", CopyAct::Bottom), ("half-up", CopyAct::HalfUp),
+        ("half-down", CopyAct::HalfDown), ("page-up", CopyAct::PageUp),
+        ("page-down", CopyAct::PageDown), ("next", CopyAct::Next),
+        ("previous", CopyAct::Previous), ("prompt-back", CopyAct::Prompt(Seek::Backward)),
+        ("prompt-forward", CopyAct::Prompt(Seek::Forward)), ("select-char", CopyAct::SelectChar),
+        ("select-line", CopyAct::SelectLine), ("select-block", CopyAct::SelectBlock),
+        ("other-end", CopyAct::OtherEnd), ("yank", CopyAct::Yank), ("leave", CopyAct::Leave),
+        ("search-forward", CopyAct::Typing(Some((Seek::Forward, String::new(), String::new())))),
+        ("search-back", CopyAct::Typing(Some((Seek::Backward, String::new(), String::new())))),
+    ];
+    const ESCAPE: Self = CopyAct::Leave;
+}
+
+impl Named for ListAct {
+    #[rustfmt::skip]
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("up", ListAct::Move(Move::Up)), ("down", ListAct::Move(Move::Down)),
+        ("page-up", ListAct::Move(Move::PageUp)), ("page-down", ListAct::Move(Move::PageDown)),
+        ("first", ListAct::Move(Move::First)), ("last", ListAct::Move(Move::Last)),
+        ("choose", ListAct::Choose), ("cancel", ListAct::Cancel),
+        ("rename", ListAct::Rename), ("close", ListAct::Close),
+    ];
+    const ESCAPE: Self = ListAct::Cancel;
+}
+
+impl Named for LineAct {
+    #[rustfmt::skip]
+    const NAMES: &'static [(&'static str, Self)] = &[
+        ("left", LineAct::Edit(Edit::Left)), ("right", LineAct::Edit(Edit::Right)),
+        ("home", LineAct::Edit(Edit::Home)), ("end", LineAct::Edit(Edit::End)),
+        ("backspace", LineAct::Edit(Edit::Backspace)), ("delete", LineAct::Edit(Edit::Delete)),
+        ("submit", LineAct::Submit), ("cancel", LineAct::Cancel),
+    ];
+    const ESCAPE: Self = LineAct::Cancel;
+}
+
+/// A question's answer: yes or no.
+impl Named for bool {
+    const NAMES: &'static [(&'static str, Self)] = &[("yes", true), ("no", false)];
+    const ESCAPE: Self = false;
+}
+
+impl Table<LineAct> {
+    /// What `press` does to a line being typed: its key's action; else the
+    /// character it types (with Ctrl or Alt, a letter types none).
+    pub fn typed(&self, press: KeyPress) -> Option<LineAct> {
+        self.get(press).or_else(|| {
+            let Key::Char(c) = press.key else { return None };
+            let typed = !press.mods.ctrl && !press.mods.alt && !c.is_control();
+            typed.then(|| LineAct::Edit(Edit::Insert(c.to_string())))
+        })
+    }
 }
 
 #[cfg(test)]

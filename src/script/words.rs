@@ -222,8 +222,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
-pub const STRINGS: &str =
-    "name dir key path line id file field setting socket way action code keys word hex version";
+pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -361,7 +360,9 @@ words! {
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
-        Config UnbindAll "unbind-all" "--" "no bindings at all" "unbind-all";
+        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line confirm), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
+        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does nothing" "str copy str g unbind-in";
+        Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
 
@@ -1578,6 +1579,7 @@ fn just_made<'k>(
             .find(|(k, _)| k == key)
             .map(|(_, b)| b),
         Bound::Prefix(keys) => keymap.binding_mut(keys),
+        Bound::In(..) => return Err(refused("a screen's key has a label only")),
     };
     binding.ok_or_else(|| refused("the binding just made is gone"))
 }
@@ -1700,10 +1702,25 @@ impl Host<'_> {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 keymap.unbind_root(key).map_err(refused)?;
             }
+            Keys::BindIn | Keys::UnbindIn => {
+                let modal = one_of(&next()?, crate::keymap::Modal::ALL)?;
+                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
+                let table = keymap.modes.table(modal);
+                match keys == Keys::BindIn {
+                    true => table.bind(key, &string(&next()?)?).map_err(refused)?,
+                    false => table.unbind(key).map_err(refused)?,
+                }
+                self.last_bound = Some(Bound::In(modal, key.folded()));
+            }
             Keys::UnbindAll => keymap.unbind_all(),
             Keys::Label => {
-                let binding = just_made(keymap, self.last_bound.as_ref())?;
-                binding.label = text(&next()?)?;
+                let label = text(&next()?)?;
+                if let Some(Bound::In(modal, key)) = self.last_bound {
+                    let gone = || refused("the key just bound is gone".to_owned());
+                    *keymap.modes.table(modal).label(key).ok_or_else(gone)? = Some(label);
+                    return Ok(Done::Now);
+                }
+                just_made(keymap, self.last_bound.as_ref())?.label = label;
             }
             Keys::Group => {
                 let binding = just_made(keymap, self.last_bound.as_ref())?;

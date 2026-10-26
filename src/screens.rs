@@ -11,7 +11,7 @@ use crate::command::{AnyRef, Choices, ClientAction, Command};
 use crate::copy::SEARCH_MAX;
 use crate::decode::Input;
 use crate::id::PaneId;
-use crate::keymap::{Held, Keymap, confirm_act, copy_act, letter, line_act, list_act};
+use crate::keymap::{Held, Keymap, Modes};
 use crate::keys::{KeyPress, Keystroke};
 use crate::protocol::{Reply, Scalar, ScreenKind};
 use crate::script::{self, Failed, succeeded};
@@ -253,16 +253,19 @@ impl Screen {
     }
 
     /// What opening it sends the server: the panel to draw, or copy mode's
-    /// start.
-    pub fn opened(&self) -> Option<Act> {
+    /// start; each with the hints of `modes`, its keys.
+    pub fn opened(&self, modes: &Modes) -> Option<Act> {
         match self.kind()? {
-            ScreenKind::Copy => Some(Act::Copy(CopyAct::Enter)),
-            ScreenKind::Panel => self.panel().map(Act::Show),
+            ScreenKind::Copy => Some(Act::Copy(CopyAct::Enter {
+                hints: modes.copy.hints(),
+                typing: modes.line.hints(),
+            })),
+            ScreenKind::Panel => self.panel(modes).map(Act::Show),
         }
     }
 
-    /// What the server draws of it.
-    pub fn panel(&self) -> Option<Panel> {
+    /// What the server draws of it, with the hints of `modes`.
+    pub fn panel(&self, modes: &Modes) -> Option<Panel> {
         match self {
             Self::Keys(_) | Self::Copy(_) => None,
             Self::List(list) => Some(Panel::List(List {
@@ -271,14 +274,17 @@ impl Screen {
                 current: list.current,
                 selected: list.selected,
                 about: list.about,
+                hints: modes.list.hints(),
             })),
             Self::Prompt(prompt) => Some(Panel::Prompt {
                 title: prompt.title.clone(),
                 before: prompt.line.before().to_owned(),
                 after: prompt.line.after().to_owned(),
+                hints: modes.line.hints(),
             }),
             Self::Confirm(confirm) => Some(Panel::Confirm {
                 question: confirm.question.clone(),
+                hints: modes.confirm.hints(),
             }),
         }
     }
@@ -297,7 +303,7 @@ impl Screen {
                 send(crate::keymap::watching(keymap))
             }
             Input::FocusIn | Input::FocusOut | Input::Mouse(_) if read_only => Vec::new(),
-            Input::Paste(text) => self.paste(&text),
+            Input::Paste(text) => self.paste(&keymap.modes, &text),
             Input::PasteTooLong => {
                 let limit = crate::decode::PASTE_LIMIT / 1024;
                 let text = format!("paste exceeds {limit} KiB; discarded");
@@ -311,24 +317,25 @@ impl Screen {
     }
 
     /// A key typed: what it leads to, through the bindings of `keymap` if
-    /// no screen is open (`read_only`: the client only watches). A screen
-    /// closes itself (`Screen::default`) as the key says.
+    /// no screen is open (`read_only`: the client only watches), else its
+    /// screen's keys. A screen closes itself (`Screen::default`) as the key
+    /// says.
     pub fn key(&mut self, keymap: &Keymap, stroke: Keystroke, read_only: bool) -> Vec<Effect> {
         if let Self::Keys(held) = self {
             return held.press(keymap, stroke, read_only);
         }
-        let press = stroke.press;
+        let (press, modes) = (stroke.press, &keymap.modes);
         match std::mem::take(self) {
             Self::Keys(_) => Vec::new(),
-            Self::List(list) => self.list(list, press),
-            Self::Prompt(prompt) => match line_act(press) {
-                Some(act) => self.prompt(prompt, act),
+            Self::List(list) => self.list(modes, list, press),
+            Self::Prompt(prompt) => match modes.line.typed(press) {
+                Some(act) => self.prompt(modes, prompt, act),
                 None => {
                     *self = Self::Prompt(prompt);
                     Vec::new()
                 }
             },
-            Self::Confirm(confirm) => match confirm_act(press) {
+            Self::Confirm(confirm) => match modes.confirm.get(press) {
                 Some(true) => vec![HIDE, Effect::Run(confirm.action.into())],
                 Some(false) => vec![HIDE],
                 None => {
@@ -336,21 +343,21 @@ impl Screen {
                     Vec::new()
                 }
             },
-            Self::Copy(search) => self.copy(search, press),
+            Self::Copy(search) => self.copy(modes, search, press),
         }
     }
 
     /// Text pasted: a line being typed takes it; with no screen open, the
     /// pane does, and the column or a repeat mode ends; a list, a question
     /// or copy mode takes none, and says so.
-    pub fn paste(&mut self, text: &str) -> Vec<Effect> {
+    pub fn paste(&mut self, modes: &Modes, text: &str) -> Vec<Effect> {
         let insert = LineAct::Edit(crate::act::Edit::Insert(text.to_owned()));
         match std::mem::take(self) {
             Self::Keys(Held::Normal) => vec![Effect::Send(Act::Paste(text.to_owned()))],
             Self::Keys(_) => [Act::Hide, Act::Paste(text.to_owned())]
                 .map(Effect::Send)
                 .into(),
-            Self::Prompt(prompt) => self.prompt(prompt, insert),
+            Self::Prompt(prompt) => self.prompt(modes, prompt, insert),
             Self::Copy(Some(search)) => self.copy_search(search, insert),
             other @ (Self::List(_) | Self::Confirm(_) | Self::Copy(_)) => {
                 *self = other;
@@ -360,12 +367,12 @@ impl Screen {
         }
     }
 
-    fn list(&mut self, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
+    fn list(&mut self, modes: &Modes, mut list: ListScreen, press: KeyPress) -> Vec<Effect> {
         let (at, last) = (list.selected, list.items.len().saturating_sub(1));
         let chosen = list.items.get(at);
         let about = chosen.and_then(|item| item.about);
         let on = |word: &str| about.map(|it| format!("{} {it} {word}", script::Act::Me));
-        let (moved, code) = match list_act(press) {
+        let (moved, code) = match modes.list.get(press) {
             None => (at, None),
             Some(ListAct::Move(moved)) => (moved.from(at, last), None),
             Some(ListAct::Cancel) => return vec![HIDE],
@@ -378,11 +385,11 @@ impl Screen {
         }
         list.selected = moved;
         *self = Self::List(list);
-        let shown = self.panel().filter(|_| moved != at);
+        let shown = self.panel(modes).filter(|_| moved != at);
         Vec::from_iter(shown.map(|p| Effect::Send(Act::Show(p))))
     }
 
-    fn prompt(&mut self, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
+    fn prompt(&mut self, modes: &Modes, mut prompt: Prompt, act: LineAct) -> Vec<Effect> {
         match act {
             LineAct::Cancel => vec![HIDE],
             LineAct::Submit => {
@@ -399,15 +406,20 @@ impl Screen {
             LineAct::Edit(edit) => {
                 let refused = prompt.line.edit(&edit).err();
                 *self = Self::Prompt(prompt);
-                let shown = self.panel().map(|p| Effect::Send(Act::Show(p)));
+                let shown = self.panel(modes).map(|p| Effect::Send(Act::Show(p)));
                 shown.into_iter().chain(refused.map(refusal)).collect()
             }
         }
     }
 
-    fn copy(&mut self, search: Option<(Seek, Line<SEARCH_MAX>)>, press: KeyPress) -> Vec<Effect> {
+    fn copy(
+        &mut self,
+        modes: &Modes,
+        search: Option<(Seek, Line<SEARCH_MAX>)>,
+        press: KeyPress,
+    ) -> Vec<Effect> {
         if let Some(search) = search {
-            return match line_act(press) {
+            return match modes.line.typed(press) {
                 Some(act) => self.copy_search(search, act),
                 None => {
                     *self = Self::Copy(Some(search));
@@ -415,23 +427,16 @@ impl Screen {
                 }
             };
         }
-        // `f` and `r` open the search line, forward or back.
-        if let Some(seek) = letter(press).and_then(|c| match c {
-            'f' => Some(Seek::Forward),
-            'r' => Some(Seek::Backward),
-            _ => None,
-        }) {
-            *self = Self::Copy(Some((seek, Line::new(String::new()))));
-            let typing = CopyAct::Typing(Some((seek, String::new(), String::new())));
-            return vec![Effect::Send(Act::Copy(typing))];
-        }
-        let act = copy_act(press);
-        // Leaving and copying end it, as `copy_act`'s bool says, here as on
-        // the server (copy.rs tests that the two agree).
-        if act.as_ref().is_none_or(|(_, ends)| !ends) {
-            *self = Self::Copy(None);
-        }
-        Vec::from_iter(act.map(|(act, _)| Effect::Send(Act::Copy(act))))
+        let act = modes.copy.get(press);
+        *self = match &act {
+            // Leaving and copying end it, here as on the server.
+            Some(act) if act.ends() => Self::default(),
+            Some(CopyAct::Typing(Some((seek, ..)))) => {
+                Self::Copy(Some((*seek, Line::new(String::new()))))
+            }
+            Some(_) | None => Self::Copy(None),
+        };
+        Vec::from_iter(act.map(|act| Effect::Send(Act::Copy(act))))
     }
 
     fn copy_search(
@@ -543,7 +548,7 @@ mod tests {
         )];
         for mut screen in [list(), Screen::Copy(None)] {
             let was = screen.clone();
-            assert_eq!(screen.paste("x"), told);
+            assert_eq!(screen.paste(&Modes::default(), "x"), told);
             assert_eq!(screen, was);
         }
     }
@@ -557,7 +562,10 @@ mod tests {
             line: Line::new(String::new()),
             action: Some("%1 swap rename".into()),
         });
-        screen.paste("it's -x' drop");
+        let modes = crate::script::default_keys()
+            .map_err(|e| e.to_string())?
+            .modes;
+        screen.paste(&modes, "it's -x' drop");
         let ran = key(&mut screen, "Enter")?;
         let job = Job {
             code: "%1 swap rename".into(),

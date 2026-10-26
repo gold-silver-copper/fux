@@ -60,3 +60,66 @@ str 'm h' str 'me focused str left move-beside' bind  str 'move left' label  str
 str 'm j' str 'me focused str down move-beside' bind  str 'move down' label  str Move group  repeat
 str 'm k' str 'me focused str up move-beside' bind  str 'move up' label  str Move group  repeat
 str 'm l' str 'me focused str right move-beside' bind  str 'move right' label  str Move group  repeat
+
+# The keys of fux's own screens: `bind-in` gives a key one of its screen's
+# actions, and `label` names it in the screen's hints, the keys of one
+# label shown together, in the order bound. Escape always leaves a screen
+# (or a line being typed), shown with its action's label.
+str copy str v str select-char bind-in  str select label
+str copy str s str select-line bind-in  str select label
+str copy str x str select-block bind-in  str select label
+str copy str y str yank bind-in  str copy label
+str copy str Enter str yank bind-in
+str copy str o str other-end bind-in  str 'other end' label
+str copy str q str leave bind-in  str quit label
+str copy str f str search-forward bind-in  str search label
+str copy str r str search-back bind-in  str search label
+str copy str n str next bind-in  str next label
+str copy str p str previous bind-in  str next label
+str copy str h str left bind-in  str move label
+str copy str j str down bind-in  str move label
+str copy str k str up bind-in  str move label
+str copy str l str right bind-in  str move label
+str copy str Left str left bind-in
+str copy str Down str down bind-in
+str copy str Up str up bind-in
+str copy str Right str right bind-in
+str copy str w str word-forward bind-in  str words label
+str copy str b str word-back bind-in  str words label
+str copy str u str half-up bind-in  str 'half page' label
+str copy str d str half-down bind-in  str 'half page' label
+str copy str PageUp str page-up bind-in
+str copy str PageDown str page-down bind-in
+str copy str t str top bind-in  str 'top bottom' label
+str copy str z str bottom bind-in  str 'top bottom' label
+str copy str a str first-ink bind-in  str line label
+str copy str e str last-ink bind-in  str line label
+str copy str End str last-ink bind-in
+str copy str Home str line-start bind-in
+str copy str [ str prompt-back bind-in  str prompts label
+str copy str ] str prompt-forward bind-in  str prompts label
+
+str list str Enter str choose bind-in  str select label
+str list str r str rename bind-in  str rename label
+str list str x str close bind-in  str close label
+str list str q str cancel bind-in  str cancel label
+str list str j str down bind-in
+str list str k str up bind-in
+str list str Down str down bind-in
+str list str Up str up bind-in
+str list str PageDown str page-down bind-in
+str list str PageUp str page-up bind-in
+str list str Home str first bind-in
+str list str End str last bind-in
+
+str line str Enter str submit bind-in  str accept label
+str line str Left str left bind-in
+str line str Right str right bind-in
+str line str Home str home bind-in
+str line str End str end bind-in
+str line str Backspace str backspace bind-in
+str line str Delete str delete bind-in
+
+str confirm str y str yes bind-in  str yes label
+str confirm str n str no bind-in  str no label
+str confirm str q str no bind-in  str no label
