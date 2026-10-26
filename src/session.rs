@@ -747,24 +747,25 @@ impl Session {
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
-        let respawns = pane.respawns.saturating_add(1);
+        let (respawns, exiting) = (pane.respawns.saturating_add(1), pane.exiting);
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
-        let mut fresh = Pane::new(
-            id,
-            String::new(),
-            runs,
-            size.0,
-            self.config.history_bytes.get(),
-        )?;
+        let history = self.config.history_bytes.get();
+        let mut fresh = Pane::new(id, String::new(), runs, size.0, history)?;
         // Its program starts sized in that cell, so no resize is due.
         let _ = fresh.host(Default::default(), Default::default(), graphics);
         let child = self.spawn(id, &launch, starting, size)?;
-        // What one that runs left is read once another started: a start
-        // refused leaves it running, nothing of it cut.
+        // What one that runs left is read once another started (a start
+        // refused leaves it running, nothing of it cut), and it is ended:
+        // no more of it is read, and input sent meanwhile waits, to be let
+        // go and said at the swap.
         if kill {
             self.read_left(id);
+        }
+        if let (true, Ok(mut pane)) = (kill && exiting.is_none(), self.pane_mut(id)) {
+            let old = pane.let_go();
+            self.end(old, true);
         }
         let mut started = fresh.version(self.run);
         started.counts.respawns = respawns;
@@ -782,9 +783,7 @@ impl Session {
 
     /// What ends a turn of pane `id`'s reads: once nothing read waits, a
     /// program that exited with output unread exits, and a respawn under
-    /// way takes its place, a frame its old program holds read first. One
-    /// that runs (`kill-first`) was read as the respawn began: what it
-    /// wrote since is not, and said cut.
+    /// way takes its place, a frame its old program holds read first.
     fn after_turn(&mut self, id: PaneId) {
         let respawning = self.respawning.contains_key(&id);
         if respawning && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some()) {
@@ -793,15 +792,8 @@ impl Session {
         let Some(pane) = self.parts.panes().get(&id).filter(|p| !p.has_unread()) else {
             return;
         };
-        match pane.exiting {
-            Some(ended) => self.exited(id, ended),
-            // A byte there, read, says it wrote more.
-            None if respawning && unread(pane.process(), 0).1 => {
-                if let Ok(mut pane) = self.pane_mut(id) {
-                    pane.left_cut(pane::Output::Late);
-                }
-            }
-            None => {}
+        if let Some(ended) = pane.exiting {
+            self.exited(id, ended);
         }
         let Some(new) = self.respawning.remove(&id) else {
             return;
@@ -1840,14 +1832,14 @@ impl Session {
     /// is respawned over (`unread`), up to `LEFT_MAX`; what is past it is
     /// not, which the pane keeps (`Pane::left`) to say with its end.
     fn read_left(&mut self, id: PaneId) {
-        let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process(), LEFT_MAX)) else {
+        let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process())) else {
             return;
         };
         if !left.is_empty() {
             self.output(id, &left);
         }
         if let (true, Ok(mut pane)) = (cut, self.pane_mut(id)) {
-            pane.left_cut(pane::Output::Cut);
+            pane.left_cut();
         }
     }
 
@@ -3125,25 +3117,24 @@ pub(crate) const LEFT_MIB: usize = 1;
 /// The same in bytes.
 pub(crate) const LEFT_MAX: usize = LEFT_MIB << 20;
 
-/// What a program's terminal holds, unread, up to `most` bytes, and
-/// whether it held more: read as it ends, so that its last screen is whole.
-fn unread(process: &Process, most: usize) -> (Vec<u8>, bool) {
+/// What a program's terminal holds, unread, up to `LEFT_MAX`, and whether
+/// it held more: read as it ends, so that its last screen is whole.
+fn unread(process: &Process) -> (Vec<u8>, bool) {
     match process {
-        Process::Reading(child) => left_on(&child.master, most),
+        Process::Reading(child) => left_on(&child.master),
         Process::HungUp(_) | Process::Absent | Process::Exited(_) => (Vec::new(), false),
     }
 }
 
-/// What `fd` holds to read now, up to `most` bytes, and whether it held
-/// more.
-fn left_on(fd: impl std::os::fd::AsFd, most: usize) -> (Vec<u8>, bool) {
+/// What `fd` holds to read now, up to `LEFT_MAX`, and whether it held more.
+fn left_on(fd: impl std::os::fd::AsFd) -> (Vec<u8>, bool) {
     let mut left = Vec::new();
     let mut buffer = [0u8; 16384];
-    let size = buffer.len();
+    let most = buffer.len();
     loop {
         // A byte past the most, read, says there was more.
-        let room = most.saturating_sub(left.len());
-        let read = buffer.get_mut(..room.clamp(1, size)).unwrap_or_default();
+        let room = LEFT_MAX.saturating_sub(left.len());
+        let read = buffer.get_mut(..room.clamp(1, most)).unwrap_or_default();
         match fuxix::io::read(&fd, read) {
             Ok(n) if n > 0 && room == 0 => return (left, true),
             Ok(n) if n > 0 => left.extend_from_slice(read.get(..n).unwrap_or_default()),
@@ -3734,10 +3725,10 @@ mod tests {
     #[test]
     fn what_is_left_past_the_most_read_is_said() -> Result<(), String> {
         let zeros = std::fs::File::open("/dev/zero").map_err(|e| e.to_string())?;
-        let (left, more) = left_on(&zeros, LEFT_MAX);
+        let (left, more) = left_on(&zeros);
         assert_eq!((left.len(), more), (LEFT_MAX, true));
         let null = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
-        assert_eq!(left_on(&null, LEFT_MAX), (Vec::new(), false));
+        assert_eq!(left_on(&null), (Vec::new(), false));
         Ok(())
     }
 
@@ -3896,8 +3887,7 @@ mod tests {
         )?;
         let id = PaneId::of(2);
         let notice = |s: &Session| s.views.get(&c).and_then(|v| v.notice.clone());
-        let cut =
-            |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut(pane::Output::Cut));
+        let cut = |s: &mut Session| (s.parts.pane_mut(id)).map(|mut p| p.left_cut());
         cut(&mut s);
         let lines = told(&mut s, |s| s.exited(id, Ended::Exited(3)));
         assert!(
@@ -3973,14 +3963,28 @@ mod tests {
         Ok(())
     }
 
-    /// A respawn of `id`, ending what runs there first.
-    fn respawn_of(id: PaneId) -> Request {
+    /// A respawn of `id`, ending what runs there first; `argv` instead of
+    /// its program, if given.
+    fn respawn_of(id: PaneId, argv: &[&str]) -> Request {
         Request::Do(Command::Respawn {
             target: id,
             kill: true,
             env: command::Env::default(),
-            argv: Vec::new(),
+            argv: argv.iter().map(|a| (*a).to_owned()).collect(),
         })
+    }
+
+    /// The turns that finish what `waiting` waits for, in pane `id`, to
+    /// its answer; how many there were.
+    fn turns(s: &mut Session, id: PaneId, waiting: &Waiting) -> Result<(Reply, usize), String> {
+        for turns in 0..10_000 {
+            if let Some(answer) = waiting.answer(s, Instant::now()) {
+                return Ok((answer, turns));
+            }
+            assert!(s.timers().any(|t| t.1 == Timer::Unread(id)), "no turn due");
+            s.fire(Timer::Unread(id));
+        }
+        Err("never answered".into())
     }
 
     /// A respawn over output the parser has yet to read reads it in the
@@ -3997,10 +4001,10 @@ mod tests {
         let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
         left.push(0x07);
         s.output(id, &left);
-        let Begun::Waiting(waiting) = s.begin(respawn_of(id), &origin) else {
+        let Begun::Waiting(waiting) = s.begin(respawn_of(id, &[]), &origin) else {
             return Err("answered before what was left was read".into());
         };
-        let Begun::Done(again) = s.begin(respawn_of(id), &origin) else {
+        let Begun::Done(again) = s.begin(respawn_of(id, &[]), &origin) else {
             return Err("a second respawn under way".into());
         };
         assert_eq!(
@@ -4009,15 +4013,7 @@ mod tests {
             "{:?}",
             again.end
         );
-        let mut turns = 0;
-        let answer = loop {
-            if let Some(answer) = waiting.answer(&s, Instant::now()) {
-                break answer;
-            }
-            assert!(s.timers().any(|t| t.1 == Timer::Unread(id)));
-            s.fire(Timer::Unread(id));
-            turns += 1;
-        };
+        let (answer, turns) = turns(&mut s, id, &waiting)?;
         assert!(turns > 1, "read in {turns} turns");
         assert_eq!(answer.end, End::Done);
         let pane = s.pane(id).map_err(|e| e.to_string())?;
@@ -4045,7 +4041,7 @@ mod tests {
         s.output(id, &crate::pane::tests::spends_the_budget(23, 80));
         // Programs are started, as a server starts them.
         s.launch = Some("/nonexistent/fux.sock".into());
-        let begun = s.begin(respawn_of(id), &Origin::Cli(Caller::default()));
+        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
         s.launch = None;
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
@@ -4068,53 +4064,34 @@ mod tests {
         Ok(())
     }
 
-    /// What a program respawned over writes once the respawn began is not
-    /// read, and said: here its terminal's echo of what was typed then.
+    /// A program respawned over (`kill-first`) is ended as the respawn
+    /// begins: input sent while what it left is read is written to no
+    /// program, and said let go, with `respawned`.
     #[test]
-    fn what_a_program_writes_once_respawned_over_is_said() -> Result<(), String> {
-        let (mut s, c) = attached(24, 80)?;
-        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
-        run(
-            &mut s,
-            &format!("str {c} client str +2 workspace show-workspace"),
-        )?;
+    fn input_sent_while_respawning_is_said_let_go() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
         let id = PaneId::of(2);
         let argv = ["/bin/cat".to_owned()];
-        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(23, 80)?, None))?;
+        let child = process::spawn(&argv, Path::new("/"), (&[], &[]), (sized(24, 80)?, None))?;
         (s.parts.pane_mut(id).ok_or("the pane")?).set_process(Process::Reading(child));
-        s.output(id, &crate::pane::tests::spends_the_budget(23, 80));
+        s.output(id, &crate::pane::tests::spends_the_budget(24, 80));
         let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
-        let begun = s.begin(respawn_of(id), &Origin::Cli(Caller::default()));
+        let begun = s.begin(respawn_of(id, &[]), &Origin::Cli(Caller::default()));
         let Begun::Waiting(waiting) = begun else {
             return Err("answered before what was left was read".into());
         };
-        let pane = s.pane(id).map_err(|e| e.to_string())?;
-        let Process::Reading(child) = pane.process() else {
-            return Err("its program gone".into());
-        };
-        fuxix::io::write(&child.master, b"late").map_err(|e| e.to_string())?;
-        let mut fds = [fuxix::poll::PollFd::new(
-            &child.master,
-            fuxix::poll::Events::IN,
-        )];
-        fuxix::poll::poll(&mut fds, Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
-        while waiting.answer(&s, Instant::now()).is_none() {
-            s.fire(Timer::Unread(id));
-        }
+        run(&mut s, "%2 str abc text send-keys")?;
+        // As the server writes a pane's input.
+        let wrote = (s.parts.pane_mut(id).ok_or("the pane")?).write_input();
+        assert!(!wrote, "written to the program respawned over");
+        turns(&mut s, id, &waiting)?;
         let lines = stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
             .0;
         assert!(
-            lines.contains("respawned %2 @2 +2 truncated=true"),
+            lines.contains("respawned %2 @2 +2 input_unread=3"),
             "{lines}"
-        );
-        let said = (s.views.get(&c))
-            .and_then(|v| v.notice.clone())
-            .map(|n| n.text);
-        let said = said.unwrap_or_default();
-        assert!(
-            said.contains("wrote more on its terminal once the respawn began"),
-            "{said}"
         );
         for dying in std::mem::take(&mut s.dying) {
             if let Some(pid) = dying.kill() {

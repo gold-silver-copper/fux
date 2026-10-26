@@ -257,7 +257,7 @@ pub fn state(
     let cut = [
         ("title", pane.title().cut()),
         ("notification", notification.is_some_and(|n| n.cut())),
-        ("output", pane.left.output != crate::pane::Output::Read),
+        ("output", pane.left.output == crate::pane::Output::Cut),
     ];
     let truncated = cut.into_iter().filter(|(_, cut)| *cut);
     let truncated = truncated.map(|(field, _)| Json::str(field)).collect();

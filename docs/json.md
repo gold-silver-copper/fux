@@ -159,7 +159,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `created` | `name`, for a tab or workspace |
 | `renamed` | `name`: a pane's, tab's or workspace's new name |
 | `closed`, `bell` | |
-| `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal, or wrote more once the respawn began (what it left then is read first, before the new program takes over): the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
+| `respawned` | at every respawn. Its fields, only when the program it ran over had not ended (a `kill-first` respawn), as one that ended said them with its `exited`: `truncated` (`true`) if it left more than 1 MiB on its terminal: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go |
 | `moved` | `from_tab`, `from_workspace`: where the pane was; `events-of` either place tells it |
 | `exited` | `exited`, its status (`null` if it was lost), or `signal`: its program's end, as a pane's JSON and a wait say it; `truncated` (`true`) if it left more than 1 MiB on its terminal as it ended: the rest was not read; `input_unread`, if any: bytes of input fux queued for it and had not yet written to its terminal, let go (as a pane's `input_unread`); a shell's pane then closes (`closed`) |
 | `done` | `status`: a shell command's, `null` if the shell gave none |

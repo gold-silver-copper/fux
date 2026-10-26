@@ -165,7 +165,8 @@ enum Stage {
     /// more, and holds no more memory than one answer.
     Command,
     /// Its request waits for its pane (`wait`, or a respawn under way): it
-    /// is answered once the wait has an answer. It is read only to notice the client go.
+    /// is answered once the wait has an answer. It is read only to notice
+    /// the client go.
     Waiting(Box<Waiting>),
     /// Its request streams events (`events`) until the client goes, or the
     /// server stops. It is read only to notice the client go.
