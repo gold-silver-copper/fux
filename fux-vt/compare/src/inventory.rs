@@ -33,8 +33,17 @@ fn keeps_mode(n: u16) -> bool {
 }
 
 /// Sequences fux-vt reports as unhandled that fux answers itself, from
-/// what it knows as the host, and how.
+/// what it knows as the host, and how; and those fux-vt answers only
+/// from what fux, as the host, tells it, which no recording here does.
 const HOST_ANSWERS: &[(&str, &str)] = &[
+    (
+        "CSI 14 t",
+        "answered from the host's cell size, which fux gives a pane whose terminal has one (src/pane.rs, Pane::host); unhandled without",
+    ),
+    (
+        "CSI 16 t",
+        "answered from the host's cell size, which fux gives a pane whose terminal has one (src/pane.rs, Pane::host); unhandled without",
+    ),
     (
         "CSI ? 996 n",
         "reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs)",
