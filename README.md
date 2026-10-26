@@ -18,12 +18,13 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone attaches this terminal, starting a server in the background if
-none answers; `fux str work attach-to` attaches to workspace `work`, and
-`fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
-new server holds nothing: the first client to attach starts workspace
-`main`, with one tab and a shell, on its screen. `fux watch` starts
-nothing: with no server, or one holding nothing, it is refused. `C-b d`
+`fux` alone attaches this terminal (it runs `opts attach`), starting a
+server in the background if none answers; `fux opts str work in attach`
+attaches to workspace `work`, and `fux opts watch attach` only watches
+(keys do nothing but `C-b d`, which detaches). A new server holds
+nothing: the first client to attach starts workspace `main`, with one tab
+and a shell, on its screen. One that watches starts nothing: with no
+server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server` (refused while a person's terminal
@@ -592,7 +593,7 @@ Against mistakes, rather than against a program of yours that means harm:
   ```
 
   An agent given only that socket reaches only what runs there; you watch
-  it by attaching to the socket (`FUX_SOCKET=… fux watch`, or `fux attach`
+  it by attaching to the socket (`FUX_SOCKET=… fux opts watch attach`, or `fux`
   to type there too). Panes never move between servers. It keeps a mistake
   in one session from reaching the other, nothing more: both servers run as
   you, so neither is kept from your own processes and files.

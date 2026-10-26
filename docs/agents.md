@@ -366,7 +366,7 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
   LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
   the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
   'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
-  first and last line of its own). `dump` prints the
-  layout as a program that makes it again; `100 30 headless` is a client
-  with no terminal (`str c2 client … send-keys` types at it,
-  `capture-client` shows it): how to drive fux's own screens.
+  first and last line of its own). `dump` prints the layout as a program
+  that makes it again; `opts 100 30 size attach` is a client with no
+  terminal (`str c2 client … send-keys` types at it, `capture-client`
+  shows it): how to drive fux's own screens.

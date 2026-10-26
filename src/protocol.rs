@@ -101,7 +101,7 @@ wire! {
         /// `fux force-kill-server` can always stop a server from another fux version:
         /// for that, a `Hello`'s frame and payload never change.
         Kill,
-        /// A client with no terminal (`COLS ROWS headless`): `Attach`, then
+        /// A client with no terminal (`opts COLS ROWS size attach`): `Attach`, then
         /// nothing but its end; the server sizes it (`resize-client`).
         Headless,
     }

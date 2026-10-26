@@ -509,7 +509,7 @@ fn a_headless_client_is_sized_from_the_command_line() -> Outcome {
     use std::io::BufRead;
     let server = Server::start("")?;
     let mut client = std::process::Command::new(FUX)
-        .args(["50", "10", "headless"])
+        .args(["opts", "50", "10", "size", "attach"])
         .env("FUX_SOCKET", &server.socket)
         .env("XDG_CONFIG_HOME", server.dir.join("config"))
         .env_remove("FUX_PANE")

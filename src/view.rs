@@ -151,7 +151,7 @@ impl Mode {
 pub enum ClientKind {
     /// A terminal, which says its size and sends keys.
     Terminal,
-    /// Nowhere a person sees (`COLS ROWS headless`): its size is set by
+    /// Nowhere a person sees (`opts COLS ROWS size attach`): its size is set by
     /// `resize-client`, and it sends no keys.
     Headless,
 }

@@ -266,10 +266,7 @@ words! {
         Changing Buffers "buffers" "-- text" "the paste buffers, newest 0" "fux buffers" [];
         Changing Buffer "buffer" "n -- text" "paste buffer n" "fux 0 buffer" [];
         Changing PasteBuffer "paste-buffer" "pane n -- answer" "paste buffer n into a pane; answers as send-keys does" "fux %3 0 paste-buffer" [];
-        Clients Attach "attach" "--" "show the server in this terminal" "fux attach" [];
-        Clients AttachTo "attach-to" "workspace --" "the same, on a workspace" "fux str work attach-to" [];
-        Clients Watch "watch" "--" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux watch" [];
-        Clients Headless "headless" "cols rows --" "a client with no terminal, 1 to 4096 each, until signalled; prints its id" "fux 100 30 headless" [];
+        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach)" "fux opts str work in attach" [Opts: In Size Watch];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
@@ -307,7 +304,7 @@ words! {
     }
     Opt {
         Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up" "fux opts 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: a client of no terminal, this size, until signalled, which prints its id" "fux opts 80 24 size str ./app program run";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
@@ -315,7 +312,8 @@ words! {
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run or new-tab (a name not there is made)" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
+        Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "version -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
         Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else the server's wait-seconds" "fux %3 300 timeout wait";
@@ -682,6 +680,7 @@ fn modify(
         Opt::Vertical => built.axis = Some(Axis::Vertical),
         Opt::Shares => built.shares = Some((share(&next()?)?, share(&next()?)?)),
         Opt::KillFirst => built.kill = true,
+        Opt::Watch => built.watch = true,
         Opt::Wrapped => built.view.wrapped = true,
         Opt::Full => built.view.full = true,
         Opt::Styles => built.view.styles = true,
@@ -997,20 +996,6 @@ fn tell(request: impl Into<Request>) -> Result<Done<Ask>, Failure> {
 /// What this client does itself.
 fn local(local: Local) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(Ask::Local(local)))
-}
-
-/// This terminal attached, to `workspace` or the last, only watching if
-/// `read_only`; or a client of no terminal, of `size`.
-fn attach(
-    workspace: Option<WsRef>,
-    read_only: bool,
-    size: Option<fux_vt::Size>,
-) -> Result<Done<Ask>, Failure> {
-    local(Local::Attach {
-        workspace,
-        read_only,
-        size,
-    })
 }
 
 fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
@@ -1414,10 +1399,14 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             // ----------------------------------------------------- clients
-            Act::Attach => attach(None, false, None),
-            Act::AttachTo => attach(Some(workspace(&next()?)?), false, None),
-            Act::Watch => attach(None, true, None),
-            Act::Headless => attach(None, false, Some(laid_out(&next()?, &next()?)?.size())),
+            Act::Attach => {
+                let built = finished(act, next()?)?;
+                local(Local::Attach {
+                    workspace: built.place,
+                    read_only: built.watch,
+                    size: built.size.map(|screen| screen.size()),
+                })
+            }
             Act::Focus => {
                 let c = client(&next()?)?;
                 let ways = Direction::ALL.map(|way| (way.name(), PanePick::Toward(way)));

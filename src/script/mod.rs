@@ -107,6 +107,8 @@ pub struct Opts {
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
     pub kill: bool,
+    /// Attaching only to watch (`watch`).
+    pub watch: bool,
     /// How long a wait waits before it times out.
     pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,
@@ -1218,7 +1220,7 @@ fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
 /// never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
     let words = match args {
-        [] => token::arguments(&["attach"]),
+        [] => token::arguments(&["opts", "attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin())?;
@@ -1390,7 +1392,7 @@ mod tests {
     fn what_is_left_names_its_word() {
         for (code, end) in [
             ("%2 str hi paste", "send-keys"),
-            ("opts str x in", "run or new-tab"),
+            ("opts str x in", "run, new-tab or attach"),
         ] {
             let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());
