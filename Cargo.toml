@@ -17,8 +17,9 @@ categories = ["command-line-utilities"]
 include = ["/src/**", "/tests/**", "/README.md", "/docs/agents.md", "/docs/json.md", "/LICENSE"]
 
 [features]
-# `session::InProcess`, a session asked in-process as the tests ask it, for
-# the fuzz targets.
+# `session::InProcess`, a session asked in-process as the tests ask it, and
+# `PaneMut::drain_input` and `wrote_input`, which empty a pane's input as
+# if written: for the fuzz targets, fux-diff, fux-bench and fux-vt-compare.
 in-process = []
 
 [dependencies]

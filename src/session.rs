@@ -1824,18 +1824,12 @@ impl Session {
         if retold {
             pane.size_terminal();
         }
-        let (bell, copied) = pane.take_read();
         // A program's copies, as copies in copy mode, to the clients showing
-        // it; none with `clipboard` false. Those that are no copy stay to
-        // be told. A copy fits the clipboard: fux-vt keeps less of a string.
+        // it; none with `clipboard` false. Those that are no copy are
+        // counted, to be told. A copy fits the clipboard: fux-vt keeps less
+        // of a string.
         const _: () = assert!(fux_vt::OSC_PAYLOAD_LIMIT <= crate::copy::MAX_CLIPBOARD);
-        let mut copies = Vec::new();
-        for copy in copied.into_iter().filter(|_| clipboard) {
-            match copy {
-                Ok(text) => copies.push(text),
-                Err(why) => pane.uncopied(why),
-            }
-        }
+        let (bell, copies) = pane.take_read(clipboard);
         if bell {
             self.ring(id, Instant::now());
         }

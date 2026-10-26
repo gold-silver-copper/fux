@@ -64,15 +64,23 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
-    /// Input was refused, and the program has not read since: everything
-    /// is refused, so none arrives with a hole before it.
-    refusing: bool,
-    /// Its run of input lost (`Run`): begun by input refused, not by a
-    /// reply refused, and over as it stops refusing.
-    run: Run,
+    /// Whether it refuses, and its run of input lost, which goes on only
+    /// while it refuses.
+    refusing: Refusing,
     /// Its run of replies dropped (`Run`): over at a read that drops none
     /// while it takes input, or as it stops refusing.
     replies: Run,
+}
+
+/// Whether the queue refuses: input was refused, and the program has not
+/// read since, so everything is refused and none arrives with a hole
+/// before it; with its run of input lost (`Run`), begun by input refused,
+/// not by a reply refused, and over as it stops refusing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Refusing {
+    #[default]
+    No,
+    Yes(Run),
 }
 
 /// A run of one kind of drop: none going on; going on and not yet told;
@@ -143,14 +151,16 @@ impl InputQueue {
         if len > INPUT_BYTES {
             return Err(Error::TooLong(len));
         }
-        self.refusing = true;
+        if self.refusing == Refusing::No {
+            self.refusing = Refusing::Yes(Run::Over);
+        }
         Err(Error::InputFull)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
         match self.refusing {
-            true => 0,
-            false => INPUT_BYTES.saturating_sub(self.len()),
+            Refusing::Yes(_) => 0,
+            Refusing::No => INPUT_BYTES.saturating_sub(self.len()),
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -162,8 +172,8 @@ impl InputQueue {
     }
     /// `n` bytes of the front were written: its terminal took them.
     fn advance(&mut self, n: usize) {
-        if n > 0 && std::mem::take(&mut self.refusing) {
-            (self.run, self.replies) = (Run::Over, Run::Over);
+        if n > 0 && std::mem::take(&mut self.refusing) != Refusing::No {
+            self.replies = Run::Over;
         }
         self.bytes.take(n);
     }
@@ -172,10 +182,11 @@ impl InputQueue {
     fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
-        (self.run, self.replies) = (Run::Over, Run::Over);
+        (self.refusing, self.replies) = (Refusing::No, Run::Over);
         queued
     }
-    /// Everything queued, for tests and the fuzz targets.
+    /// Everything queued, for tests and the harnesses.
+    #[cfg(any(test, feature = "in-process"))]
     fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
@@ -506,7 +517,8 @@ pub struct Losses {
     pub input: u64,
     /// Replies to its queries, and in-band resize reports, dropped: past
     /// a read's `REPLIES_MAX`, or for a full queue. A colour-scheme report
-    /// refused is sent again (`Pane::offer`), not lost.
+    /// sent unasked (mode 2031) and refused is sent again (`Pane::offer`),
+    /// not lost.
     pub replies: u64,
     /// Its copies (OSC 52) that copied nothing, by why (`Uncopied`).
     pub copies_cut: u64,
@@ -780,19 +792,26 @@ impl<'a> PaneMut<'a> {
     pub fn keeps_size(&mut self) {
         self.pane.keeps_size();
     }
-    pub fn uncopied(&mut self, why: Uncopied) {
-        self.pane.uncopied(why);
-    }
+    #[must_use]
     pub fn take_untold(&mut self) -> Losses {
         self.pane.take_untold()
     }
     /// What the session takes after each read: whether its program rang
     /// the bell, and its copies, in order.
-    pub fn take_read(&mut self) -> (bool, Vec<Result<String, Uncopied>>) {
-        (
-            std::mem::take(&mut self.pane.bell),
-            std::mem::take(&mut self.pane.copied),
-        )
+    /// Refused copies are counted here, unless the `clipboard` setting
+    /// is false, which copies nothing and so refuses none.
+    pub fn take_read(&mut self, clipboard: bool) -> (bool, Vec<String>) {
+        let mut copies = Vec::new();
+        for copy in std::mem::take(&mut self.pane.copied)
+            .into_iter()
+            .filter(|_| clipboard)
+        {
+            match copy {
+                Ok(text) => copies.push(text),
+                Err(why) => self.pane.uncopied(why),
+            }
+        }
+        (std::mem::take(&mut self.pane.bell), copies)
     }
     /// Its program ended so, told once what it wrote is read.
     pub fn exiting(&mut self, ended: Ended) {
@@ -813,6 +832,7 @@ impl<'a> PaneMut<'a> {
     }
     /// `n` bytes of its input were written to its terminal, as
     /// `write_input` writes them: for fux-diff's queue.
+    #[cfg(any(test, feature = "in-process"))]
     pub fn wrote_input(&mut self, n: usize) {
         self.pane.input.advance(n);
     }
@@ -822,7 +842,8 @@ impl<'a> PaneMut<'a> {
         self.pane.set_process(process)
     }
     /// Everything queued for its program, as if written: for tests and the
-    /// fuzz targets.
+    /// harnesses.
+    #[cfg(any(test, feature = "in-process"))]
     pub fn drain_input(&mut self) -> Vec<u8> {
         self.pane.input.drain_all()
     }
@@ -1142,7 +1163,7 @@ impl Pane {
         }
         // A run of dropped replies ends at a read that drops none while
         // the queue takes input.
-        if replies == 0 && !self.input.refusing {
+        if replies == 0 && self.input.refusing == Refusing::No {
             self.input.replies = Run::Over;
         }
         self.lose_replies(replies);
@@ -1241,7 +1262,7 @@ impl Pane {
     /// (`Run`).
     fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
-        if self.input.run == Run::Told {
+        if self.input.refusing == Refusing::Yes(Run::Told) {
             losses.input = 0;
         }
         if self.input.replies == Run::Told {
@@ -1284,7 +1305,9 @@ impl Pane {
     /// What it let go of and has not told, which it then has: the rest of
     /// each run of drops going on is not told (`Run`).
     fn take_untold(&mut self) -> Losses {
-        self.input.run.told();
+        if let Refusing::Yes(run) = &mut self.input.refusing {
+            run.told();
+        }
         self.input.replies.told();
         std::mem::take(&mut self.untold)
     }
@@ -1315,7 +1338,9 @@ impl Pane {
     /// refused is lost.
     fn refused(&mut self, pushed: Result<(), Error>) -> Result<(), Error> {
         if let Err(Error::InputFull) = pushed {
-            self.input.run.dropped();
+            if let Refusing::Yes(run) = &mut self.input.refusing {
+                run.dropped();
+            }
             self.lose(Losses {
                 input: 1,
                 ..Losses::default()

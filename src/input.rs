@@ -29,7 +29,8 @@ impl Session {
             }
             shown |= self.act(client, act);
         }
-        // Input a pane dropped is told, once a run (`InputQueue`). Keys a
+        // What a pane lost is told (`tell_lost`): input and replies once a
+        // run, the rest as it is lost. Keys a
         // pane's program reads show when its output does: nothing to paint
         // or settle until then.
         shown |= self.tell_lost();
