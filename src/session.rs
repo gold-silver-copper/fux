@@ -1123,7 +1123,7 @@ impl Session {
         let known = match here {
             // Empty: the caller could not read its own (`client::context`).
             Here::Cli(_, Some(cwd)) if !cwd.is_absolute() => {
-                return Err(fail(Code::Start, "the caller's own directory is unknown"));
+                return Err(fail(Raise::Start, "the caller's own directory is unknown"));
             }
             Here::Cli(_, Some(cwd)) => Some(cwd.to_owned()),
             Here::Cli(_, None) => near.and_then(|p| self.dir_of(p)),
@@ -3033,7 +3033,7 @@ fn home() -> Result<PathBuf, Error> {
         Some(home) => format!("$HOME is {home:?}, not an absolute path"),
         None => "$HOME is not set, and nothing else says where to start".to_owned(),
     };
-    Err(fail(Code::Start, why))
+    Err(fail(Raise::Start, why))
 }
 
 /// The most read of what a program left on its terminal as it ends, in
