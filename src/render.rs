@@ -2189,7 +2189,9 @@ mod tests {
         s.input(c, b"\x02c");
         let copying = bar(&s);
         assert!(
-            copying.starts_with(" COPY   v s x select  y copy  o other end  q quit  f r search"),
+            copying.starts_with(
+                " COPY   v s x select  y copy  o other end  q Escape quit  f r search"
+            ),
             "{copying}"
         );
         assert!(!copying.contains("main"));

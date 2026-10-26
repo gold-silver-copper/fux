@@ -395,7 +395,7 @@ mod tests {
             Some(Mode::Copy(copy)) => copy.hints.iter().map(|h| h.keys.clone()).collect(),
             _ => Vec::new(),
         };
-        assert!(hints.contains(&"g".to_owned()), "{hints:?}");
+        assert!(hints.contains(&"g Escape".to_owned()), "{hints:?}");
         s.input(c, b"q");
         assert_eq!(mode(&s, c), "copy");
         s.input(c, b"g");
@@ -419,6 +419,11 @@ mod tests {
             assert!(refused.contains(said), "{refused}");
             assert_eq!(mode(&s, c), "normal");
         }
+        // A prompt's start is a line as typing makes one: no line end.
+        let open = "me str t list str a 10 char str b end glue str drop prompt";
+        let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
+        assert!(refused.contains("bad_value"), "{refused}");
+        assert_eq!(mode(&s, c), "normal");
         output_as(
             &mut s,
             Some(c),

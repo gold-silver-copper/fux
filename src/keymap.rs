@@ -701,33 +701,39 @@ impl<A> Default for Table<A> {
 }
 
 impl<A: Named> Table<A> {
-    /// What `press` does here.
+    /// What `press` does here: a named key's, with any modifiers, its own
+    /// unless bound with them.
     pub fn get(&self, press: KeyPress) -> Option<A> {
         if press.plain_key() == Some(Key::Escape) {
             return Some(A::ESCAPE);
         }
-        let press = press.folded();
-        (self.0.iter())
-            .find(|(k, ..)| *k == press)
-            .map(|(_, a, _)| a.clone())
+        let find = |press: KeyPress| (self.0.iter()).find(|(k, ..)| *k == press.folded());
+        let named = (!matches!(press.key, Key::Char(_))).then(|| KeyPress::plain(press.key));
+        let found = find(press).or_else(|| named.and_then(find));
+        found.map(|(_, a, _)| a.clone())
     }
 
     /// The hints a screen shows of its keys: each label once, the keys it
-    /// names together, in the order bound; then Escape, by its action.
+    /// names together, in the order bound; Escape with the keys of its
+    /// action, else last, named by it.
     pub fn hints(&self) -> Vec<Hint> {
+        let escape = (self.0.iter()).find(|(_, a, l)| *a == A::ESCAPE && l.is_some());
+        let label = escape.and_then(|(.., l)| l.clone());
+        let escape = (
+            KeyPress::plain(Key::Escape),
+            label.unwrap_or(A::ESCAPE.name().to_owned()),
+        );
+        let labelled = (self.0.iter()).filter_map(|(k, _, l)| Some((*k, l.clone()?)));
         let mut hints: Vec<Hint> = Vec::new();
-        for (key, _, label) in &self.0 {
-            let Some(label) = label else { continue };
-            match hints.iter_mut().find(|h| h.label == *label) {
+        for (key, label) in labelled.chain([escape]) {
+            match hints.iter_mut().find(|h| h.label == label) {
                 Some(hint) => hint.keys = format!("{} {key}", hint.keys),
                 None => hints.push(Hint {
                     keys: key.to_string(),
-                    label: label.clone(),
+                    label,
                 }),
             }
         }
-        let (keys, label) = ("Escape".to_owned(), A::ESCAPE.name().to_owned());
-        hints.push(Hint { keys, label });
         hints
     }
 }
@@ -772,7 +778,7 @@ impl<A: Named> Bindable for Table<A> {
 
     fn label(&mut self, key: KeyPress) -> Option<&mut Option<String>> {
         (self.0.iter_mut())
-            .find(|(k, ..)| *k == key)
+            .find(|(k, ..)| *k == key.folded())
             .map(|(.., label)| label)
     }
 

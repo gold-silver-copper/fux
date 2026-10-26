@@ -893,11 +893,11 @@ fn run_job(
             true,
         ),
     });
-    // Opened, a screen is sent the server in one frame: one larger was
-    // never to show.
-    let modes = lock(keymap).modes.clone();
+    // Opened, a screen is sent the server in one frame, and again at each
+    // edit of its line: one that could grow past a frame was never to show.
     let fits = |screen: &Screen| {
-        (screen.opened(&modes)).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
+        let largest = screen.largest(&lock(keymap).modes);
+        largest.is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
     };
     match asks.opened {
         Some(screen) if !fits(&screen) => {

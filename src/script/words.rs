@@ -346,8 +346,8 @@ words! {
         Clients ChooseTabFor "choose-tab-for" "client pane --" "a list of tabs to move the pane to" "fux str c1 client %3 choose-tab-for";
         Clients ChooseWorkspaceFor "choose-workspace-for" "client pane --" "a list of workspaces to move the pane to" "fux str c1 client %3 choose-workspace-for";
         Clients ChoosePane "choose-pane" "client pane --" "a list of panes to swap the pane with" "fux str c1 client %3 choose-pane";
-        Clients Prompt "prompt" "client name text code --" "a line to type, titled name and starting as text: Enter runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
-        Clients Confirm "confirm" "client text code --" "a question: y runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
+        Clients Prompt "prompt" "client name text code --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
+        Clients Confirm "confirm" "client text code --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
@@ -1599,6 +1599,7 @@ impl Host<'_> {
         next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
     ) -> Result<Done<Ask>, Failure> {
         let c = client(&next()?)?;
+        let here = self.context.client == Some(c);
         let open = match screen {
             Screen::ChooseTab => Open::ChooseTab(None),
             Screen::ChooseWorkspace => Open::ChooseWorkspace(None),
@@ -1613,8 +1614,13 @@ impl Host<'_> {
             Screen::ChoosePane => Open::ChoosePane(pane(&next()?)?),
             Screen::Prompt => {
                 let title = text(&next()?)?;
-                let line = crate::view::Line::new(text(&next()?)?);
-                let action = Some(self.action(&next()?, true)?);
+                // Its start typed as a paste would be, so the line holds no
+                // more, nor any other, than one typed.
+                let mut line = crate::view::Line::new(String::new());
+                let start = crate::act::Edit::Insert(text(&next()?)?);
+                line.edit(&start)
+                    .map_err(|why| fail(Raise::BadValue, why))?;
+                let action = Some(self.action(&next()?, true, here)?);
                 Open::Prompt(crate::screens::Prompt {
                     title,
                     line,
@@ -1623,11 +1629,11 @@ impl Host<'_> {
             }
             Screen::Confirm => {
                 let question = text(&next()?)?;
-                let action = self.action(&next()?, false)?;
+                let action = self.action(&next()?, false, here)?;
                 Open::Confirm(crate::screens::Confirm { question, action })
             }
         };
-        match self.context.client == Some(c) {
+        match here {
             true => local(Local::Open(open)),
             false => order(c, ClientAction::Run(open.code())),
         }
@@ -1635,8 +1641,10 @@ impl Host<'_> {
 
     /// The fuxth a prompt (`given`: the line typed on its stack) or a
     /// question runs: within `ACTION_MAX`, as the client holds it, outside
-    /// any frame; and, in a client's own program, compiled now.
-    fn action(&self, value: &Value<Fux>, given: bool) -> Result<String, Failure> {
+    /// any frame; and compiled now if it opens `here`, in the client's own
+    /// program (one relayed is checked by the client it opens on, with its
+    /// own config, as it runs the word again).
+    fn action(&self, value: &Value<Fux>, given: bool, here: bool) -> Result<String, Failure> {
         let code = string(value)?;
         let (len, most) = (code.len(), crate::screens::ACTION_MAX);
         if len > most {
@@ -1649,7 +1657,7 @@ impl Host<'_> {
             code,
             given: given.then(String::new),
         };
-        if let Some(keymap) = self.keymap.as_deref() {
+        if let Some(keymap) = self.keymap.as_deref().filter(|_| here) {
             checked(keymap, &job, Raise::BadValue, "the action")?;
         }
         Ok(job.code)

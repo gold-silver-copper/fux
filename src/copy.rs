@@ -628,7 +628,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                     let search = Search { seek, ..search };
                     jump(copy, screen, height, at, &search, &mut view.notice);
                 }
-                None => view.notify("no search yet: f or r starts one", true),
+                None => view.notify("no search yet", true),
             }
             return;
         }

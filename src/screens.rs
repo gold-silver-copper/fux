@@ -264,6 +264,16 @@ impl Screen {
         }
     }
 
+    /// What `opened` sends at its largest, its line, if it has one, as long
+    /// as a line may be: if this fits a frame, so does every edit's.
+    pub fn largest(&self, modes: &Modes) -> Option<Act> {
+        let mut largest = self.clone();
+        if let Self::Prompt(prompt) = &mut largest {
+            prompt.line = Line::new(std::iter::repeat_n('x', crate::view::LINE_MAX).collect());
+        }
+        largest.opened(modes)
+    }
+
     /// What the server draws of it, with the hints of `modes`.
     pub fn panel(&self, modes: &Modes) -> Option<Panel> {
         match self {
@@ -576,6 +586,48 @@ mod tests {
             .map(|t| t.text.to_string())
             .collect();
         assert_eq!(texts, ["str", "it's -x' drop", "%1", "swap", "rename"]);
+        Ok(())
+    }
+
+    /// A prompt opens only if its line, grown as long as a line may be,
+    /// still fits a frame: an edit never makes a display too large to send.
+    #[test]
+    fn a_prompt_fits_a_frame_at_its_largest() -> Result<(), String> {
+        let modes = crate::script::default_keys()
+            .map_err(|e| e.to_string())?
+            .modes;
+        let fits = |act: Option<Act>| {
+            act.is_some_and(|act| {
+                use crate::protocol::Frame;
+                let frame = crate::protocol::AttachedFrame::Act(Box::new(act));
+                frame.encode().is_ok()
+            })
+        };
+        let title = std::iter::repeat_n('t', crate::protocol::MAX_FRAME - 2048).collect();
+        let screen = Screen::Prompt(Prompt {
+            title,
+            line: Line::new(String::new()),
+            action: None,
+        });
+        assert!(fits(screen.opened(&modes)));
+        assert!(!fits(screen.largest(&modes)));
+        Ok(())
+    }
+
+    /// A named key with a modifier does what it does alone, unless bound
+    /// so: Ctrl-Backspace deletes in a line.
+    #[test]
+    fn a_named_key_acts_with_its_modifiers() -> Result<(), String> {
+        let mut screen = Screen::Prompt(Prompt {
+            title: "t".into(),
+            line: Line::new("ab".into()),
+            action: None,
+        });
+        key(&mut screen, "C-BSpace")?;
+        let Screen::Prompt(prompt) = &screen else {
+            return Err(format!("{screen:?}"));
+        };
+        assert_eq!(prompt.line.before(), "a");
         Ok(())
     }
 

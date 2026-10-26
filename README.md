@@ -368,7 +368,7 @@ str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str clipboard false set
 
-unbind-all                                        # optional: start from no bindings
+unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused horizontal split drop end   # a word of the config's
 str v str split-right bind
 str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
@@ -405,7 +405,8 @@ both. Esc after the prefix always closes the column. `label`, `group` and
 their keys were first bound, `Other` last (a key bound again keeps its place).
 
 The default keys are a config like yours, run before it, so anything one
-binding does, yours may: rebind a key, `unbind` it, or start from none.
+binding does, yours may: rebind a key, `unbind` it, or start from none
+(`unbind-all`, which takes the screens' keys too; Escape still leaves them).
 `fux list-keys` prints your keys as config lines that make them, from
 `unbind-all` on; not your definitions, which a binding may call, so add
 them to your config rather than replace it: `fux list-keys >>
