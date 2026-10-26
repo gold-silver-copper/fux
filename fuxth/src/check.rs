@@ -682,8 +682,8 @@ impl<'a, A> Unit<'a, A> {
             }
             // A `try`: on into its body, from an empty stack; or, failing
             // anywhere in it, to its handler.
-            if let Op::Try(handler, _) = op {
-                let caught = self.caught(at, *handler, &state);
+            if let Op::Try(handler, codes) = op {
+                let caught = self.caught((at, codes.as_slice()), *handler, &state);
                 state.enter(Floor::Try);
                 return vec![(next, state), (*handler, caught)];
             }
@@ -730,10 +730,11 @@ impl<'a, A> Unit<'a, A> {
         }
     }
 
-    /// The stack at the handler of the `try` at `at`: as it was at `try`,
-    /// then the failure's message and code, both strings. A `let` name
-    /// the body sets may hold what it was set to there, or not.
-    fn caught(&self, at: usize, handler: usize, state: &State) -> State {
+    /// The stack at the handler of the `try` at `at`, which names `codes`:
+    /// as it was at `try`, then the failure's message (or the value it
+    /// carries, `Vocabulary::carries`) and its code, a string. A `let`
+    /// name the body sets may hold what it was set to there, or not.
+    fn caught(&self, (at, codes): (usize, &[Code]), handler: usize, state: &State) -> State {
         let mut caught = state.clone();
         let body = self.code.ops.get(at.saturating_add(1)..handler);
         for op in body.unwrap_or_default() {
@@ -741,7 +742,7 @@ impl<'a, A> Unit<'a, A> {
                 name(&mut caught.names, *slot, ANY);
             }
         }
-        caught.push(STR);
+        caught.push(self.words().caught_kinds(codes));
         caught.push(STR);
         caught
     }
