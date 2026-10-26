@@ -1103,6 +1103,10 @@ impl Pane {
             self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
             return;
         }
+        // The rest of a frame read: its end ends a read.
+        if at > 0 {
+            self.judge_read();
+        }
         self.read(after, Instant::now(), tell);
     }
 
@@ -1136,6 +1140,8 @@ impl Pane {
                     self.wait_unread([left, rest].concat());
                     return;
                 }
+                // A frame read whole ends a read, whatever comes after it.
+                self.judge_read();
             } else {
                 match self.parse(rest, true, tell) {
                     None => return,
@@ -1161,13 +1167,18 @@ impl Pane {
 
     /// Reads the held frame now, ended or not.
     fn release_frame(&mut self, tell: &mut Teller<'_>) {
-        if let Some((held, ..)) = self.frame.take()
-            && let Some((taken, _)) = self.parse(&held, false, tell)
-        {
+        let Some((held, ..)) = self.frame.take() else {
+            return;
+        };
+        match self.parse(&held, false, tell) {
             // No output waits while a frame is held: it is the first.
-            let left = held.get(taken..).unwrap_or_default().to_vec();
-            self.frame_left = left.len();
-            self.wait_unread(left);
+            Some((taken, _)) => {
+                let left = held.get(taken..).unwrap_or_default().to_vec();
+                self.frame_left = left.len();
+                self.wait_unread(left);
+            }
+            // A frame read whole ends a read.
+            None => self.judge_read(),
         }
     }
 
@@ -1388,15 +1399,21 @@ impl Pane {
     /// A call that reads its output is done: once nothing is held back or
     /// left, the read is whole, over however many calls of the parser and
     /// turns it took (a frame begun, a budget spent), and only then does
-    /// what it lost end runs. One that read output and dropped no reply
+    /// what it lost end runs. A frame read whole ends a read too, so the
+    /// next frame begun after it starts a record of its own. One that read output and dropped no reply
     /// while the queue takes input ends a run of replies; one that refused
     /// no memory, a run of refusals.
     fn read_done(&mut self) {
         // Output held back (a frame) or left (a budget spent) is still
         // being read: what this read did so far is kept for its end.
-        if self.frame.is_some() || self.has_unread() {
-            return;
+        if self.frame.is_none() && !self.has_unread() {
+            self.judge_read();
         }
+    }
+
+    /// A read ends here, its record judged: at a frame read whole, or once
+    /// nothing is held back or left.
+    fn judge_read(&mut self) {
         let read = std::mem::take(&mut self.reading);
         if read.parsed && !read.dropped && self.input.refusing == Refusing::No {
             self.input.replies = Run::Over;
@@ -2247,9 +2264,11 @@ pub(crate) mod tests {
         pane.output(&frame);
         assert!(!pane.loses(), "the same run");
         // A frame past a parser call's budget, read over turns, is one read.
+        // Its drops come first, in a call the budget stops, and a clean
+        // call ends it.
         let mut long = b"\x1b[?2026h".to_vec();
-        long.extend(spends_the_budget(3, 20));
         long.extend(std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX).flatten());
+        long.extend(spends_the_budget(3, 20));
         long.extend_from_slice(b"\x1b[?2026l");
         for _ in 0..2 {
             pane.input.drain_all();
@@ -2259,6 +2278,29 @@ pub(crate) mod tests {
             }
         }
         assert!(!pane.loses(), "still the same run");
+        Ok(())
+    }
+
+    /// A frame read whole ends a read, though the next frame begins in
+    /// the same output: a clean frame between two that drop replies ends
+    /// the run, and the second is told.
+    #[test]
+    fn a_clean_frame_between_ends_the_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        let (bsu, esu) = (&b"\x1b[?2026h"[..], &b"\x1b[?2026l"[..]);
+        pane.output(&[bsu, &queries, esu, bsu].concat());
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.output(&[&b"hello"[..], esu, bsu].concat());
+        pane.output(&[&queries[..], esu, bsu].concat());
+        assert!(
+            pane.take_untold().replies > 0,
+            "a run after the clean frame"
+        );
         Ok(())
     }
 
