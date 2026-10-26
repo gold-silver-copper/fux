@@ -159,13 +159,15 @@ fn a_started_server_keeps_nothing_of_its_client() -> Outcome {
     Ok(())
 }
 
-/// `fux events` tells what happens, a line each, from `ready` on, in
-/// order: a pane made, its bell, its exit, its close.
-#[test]
-fn events_tell_what_happens() -> Outcome {
-    let server = Server::start("")?;
+/// The next line of a stream holding a text.
+type Next = Box<dyn Fn(&str) -> Result<String, String>>;
+
+/// A `fux` with `args`, streaming events from `server`, and its next
+/// line holding a text, each within `PATIENCE`, the lines before it
+/// passed over (`""`: the next line).
+fn streaming(server: &Server, args: &[&str]) -> Result<(std::process::Child, Next), String> {
     let mut events = Command::new(FUX)
-        .args(["events"])
+        .args(args)
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdout(Stdio::piped())
@@ -180,8 +182,8 @@ fn events_tell_what_happens() -> Outcome {
             }
         }
     });
-    let next = |what: &str| -> Result<String, String> {
-        let deadline = std::time::Instant::now() + PATIENCE;
+    let next: Next = Box::new(move |what: &str| {
+        let deadline = after(PATIENCE);
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             let line = read
@@ -191,38 +193,49 @@ fn events_tell_what_happens() -> Outcome {
                 return Ok(line);
             }
         }
-    };
-    next(r#""event":"ready""#)?;
-    let pane = server.ok(&[
-        "opts",
-        "80",
-        "24",
-        "size",
-        "str",
-        "sh",
-        "program",
-        "str",
-        "-c",
-        "arg",
-        "str",
-        "printf '\\a'; exit 7",
-        "arg",
-        "run",
-    ])?;
-    let pane = first_word(&pane);
-    let created = next(r#""event":"created""#)?;
-    assert!(created.contains(r#""name":"agent""#), "{created}");
-    next(&format!(r#""event":"created","pane":"{pane}""#))?;
-    // The bell, then the exit, in the order they happened, one round or
-    // two: an exit told first is passed over, and never found after.
-    next(&format!(r#""event":"bell","pane":"{pane}""#))?;
-    let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
-    assert!(exited.ends_with(r#""exited":7}"#), "{exited}");
-    server.ok(&["str", pane, "pane", "kill"])?;
-    next(&format!(r#""event":"closed","pane":"{pane}""#))?;
+    });
+    Ok((events, next))
+}
+
+/// `fux events` tells what happens, a line each, from `ready` on, in
+/// order: a pane made, its bell, its exit, its close.
+#[test]
+fn events_tell_what_happens() -> Outcome {
+    let server = Server::start("")?;
+    let (mut events, next) = streaming(&server, &["events"])?;
+    let told = (|| {
+        next(r#""event":"ready""#)?;
+        let pane = server.ok(&[
+            "opts",
+            "80",
+            "24",
+            "size",
+            "str",
+            "sh",
+            "program",
+            "str",
+            "-c",
+            "arg",
+            "str",
+            "printf '\\a'; exit 7",
+            "arg",
+            "run",
+        ])?;
+        let pane = first_word(&pane);
+        let created = next(r#""event":"created""#)?;
+        assert!(created.contains(r#""name":"agent""#), "{created}");
+        next(&format!(r#""event":"created","pane":"{pane}""#))?;
+        // The bell, then the exit, in the order they happened, one round or
+        // two: an exit told first is passed over, and never found after.
+        next(&format!(r#""event":"bell","pane":"{pane}""#))?;
+        let exited = next(&format!(r#""event":"exited","pane":"{pane}""#))?;
+        assert!(exited.ends_with(r#""exited":7}"#), "{exited}");
+        server.ok(&["str", pane, "pane", "kill"])?;
+        next(&format!(r#""event":"closed","pane":"{pane}""#))
+    })();
     let _ = events.kill();
     let _ = events.wait();
-    Ok(())
+    told.map(drop)
 }
 
 /// A stream from the cursor `ls` gives is told what changed after the
@@ -245,25 +258,12 @@ fn a_stream_from_ls_misses_nothing() -> Outcome {
         "size",
         "new-workspace",
     ])?;
-    let mut events = Command::new(FUX)
-        .args(["opts", "str", cursor, "from", "events-of"])
-        .env("FUX_SOCKET", &server.socket)
-        .env_remove("FUX_PANE")
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(e)?;
-    let mut lines = BufReader::new(events.stdout.take().ok_or("no stdout")?).lines();
-    let mut next = || {
-        lines
-            .next()
-            .ok_or("no line")
-            .and_then(|l| l.map_err(|_| "no line"))
-    };
-    let ready = next()?;
+    let (mut events, next) = streaming(&server, &["opts", "str", cursor, "from", "events-of"])?;
+    let told = (|| Ok::<_, String>((next("")?, next("")?)))();
     let _ = events.kill();
     let _ = events.wait();
+    let (ready, created) = told?;
     assert_eq!(ready, format!(r#"{{"event":"ready","from":"{cursor}"}}"#));
-    let created = next()?;
     assert!(created.contains(r#""event":"created""#), "{created}");
     assert!(created.ends_with(r#""name":"w"}"#), "{created}");
     let (seq, run) = cursor.split_once(':').ok_or("no run")?;

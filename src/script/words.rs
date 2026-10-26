@@ -145,11 +145,13 @@ pub struct Takes {
 }
 
 /// What a word's options go after: `opts`, for a word that makes its own
-/// pane; else the pane (or tab, workspace or client) it acts on.
+/// pane; else the pane (or tab, workspace or client) it acts on; or
+/// either, for one that acts on a pane, tab or workspace, or on everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum After {
     Opts,
     Pane,
+    Either,
 }
 
 impl Word {
@@ -175,9 +177,9 @@ impl Opt {
 }
 
 /// The words that start from opts, as the table says: `run, new-tab,
-/// new-workspace and attach`, `last` before the last.
+/// new-workspace, attach and events-of`, `last` before the last.
 pub fn from_opts(last: &str) -> String {
-    let opts = |act: &&Act| act.takes().is_some_and(|t| t.after == After::Opts);
+    let opts = |act: &&Act| (act.takes()).is_some_and(|t| t.after != After::Pane);
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
         .map(|act| Word::Act(*act).row().name)
         .collect();
@@ -192,7 +194,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab, new-workspace and attach; events-of on them streams everything; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace, events-of and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
@@ -241,7 +243,7 @@ words! {
         Finding Panes "panes" "handle -- list" "the panes of a pane (itself), a tab or a workspace, in layout order" "fux str agent workspace panes each capture print end" [];
         Finding Tabs "tabs" "handle -- list" "the tabs of a pane or tab (its own) or a workspace, in the workspace's order" "fux str agent workspace tabs each str name get print end" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace, events-of and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
@@ -257,7 +259,7 @@ words! {
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- json" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
         Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
-        Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts anywhere, a JSON line each" "fux str agent workspace events-of" [Pane: From];
+        Reading EventsOf "events-of" "watched --" "what happens in a pane, tab or workspace, or on opts everywhere, a JSON line each" "fux str agent workspace events-of" [Either: From];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
         Reading DumpOf "dump-of" "handle -- text" "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)" "fux str work workspace dump-of > work.fux; fux --file work.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
@@ -331,7 +333,7 @@ words! {
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
         Input Bytes "bytes" "x hex -- x" "bytes as they are, in hex (1b5b41, c3): part of a key's sequence or of a character" "fux %3 str 1b5b41 bytes send-keys";
         Input Mouse "mouse" "x action row col -- x" "click right middle press release wheel-up wheel-down or move, at a cell from 0" "fux %3 str click 2 10 mouse send-mouse";
-        Reading From "from" "x cursor -- x" "events-of: from this cursor (SEQ:RUN, as ls and a stream's ready give it), not from now: nothing after it is missed" "C=$(fux ls json | jq -r .events); fux opts str \"$C\" from events-of";
+        Reading From "from" "x cursor -- x" "events-of: from this cursor (SEQ:RUN, as ls and a stream's ready give it), not from now: what came after it, or how many of those the journal let go (missed)" "C=$(fux ls json | jq -r .events); fux opts str \"$C\" from events-of";
         Reading History "history" "x lines -- x" "capture: lines of history first" "fux %3 100 history capture";
         Reading AllHistory "all-history" "x -- x" "capture: all the history first" "fux %3 all-history capture";
         Reading Wrapped "wrapped" "x -- x" "capture: each screen row a line, as wrapped at the pane's width (the cells a mouse event counts), not joined into the lines printed" "fux %3 wrapped 0 2 rows capture";

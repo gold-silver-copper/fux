@@ -211,8 +211,7 @@ fn defaults() -> &'static Keymap {
 }
 
 impl Run {
-    fn new(rows: u16, cols: u16) -> Run {
-        let run = fux::command::Run::now().expect("a clock after 1970");
+    fn new(rows: u16, cols: u16, run: fux::command::Run) -> Run {
         let s = Session::new(
             Config::default(),
             "/nonexistent/fux.sock".into(),
@@ -701,8 +700,10 @@ fuzz_target!(|data: &[u8]| {
     let (rows, cols) = size(input.next(), input.next());
     // `given` gets each client's bytes as the input splits them; `bytewise`
     // one at a time. However the bytes arrive, the same result.
-    let mut given = Run::new(rows, cols);
-    let mut bytewise = Run::new(rows, cols);
+    // One server run for both: what they list (`ls`'s cursor) names it.
+    let run = fux::command::Run::now().expect("a clock after 1970");
+    let mut given = Run::new(rows, cols, run);
+    let mut bytewise = Run::new(rows, cols, run);
     check(&given);
     while !input.0.is_empty() && !given.shut {
         let tag = input.next();

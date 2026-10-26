@@ -53,8 +53,10 @@ for `id`, `name` and `pid` (it says `pane`):
 
 `events` is a cursor, `SEQ:RUN`: the number the session's journal of events
 gives next, and the server's run, read with the listing. A stream from it
-(`opts str CURSOR from events-of`) tells everything that changed after the
-listing, nothing before it. `ls` ends with it too, as `events CURSOR`.
+(`opts str CURSOR from events-of`) tells every event (the table under
+`events`) after the listing, none before it, or with `missed` how many of
+those the journal let go first: then read `ls` again. `ls` ends with it
+too, as `events CURSOR`.
 
 `X info json` gives that pane, tab (`{"id","name","panes"}`) or workspace
 (`{"id","name","tabs"}`) alone; `X str FIELD get` leaves one of its fields:
@@ -142,8 +144,9 @@ to the session's journal where it happens, and a stream reads the journal from
 its own place. A reader that falls behind is told the rest as it reads.
 A stream starts from now, or with `from` from a cursor, `SEQ:RUN`, as
 `ls` and `ready` give it (`opts str CURSOR from events-of` for everything,
-`X str CURSOR from events-of` for X). A cursor of another server run, or
-past the journal's end, is refused (`bad_value`).
+`X str CURSOR from events-of` for X, which must still be there). A cursor
+of another server run, or past the journal's end, is refused
+(`bad_value`).
 The journal keeps the session's last 16,384 entries, for every stream
 alike: a pane that makes many in one round (a flood of bells) can make
 even a stream that reads at once, of another pane, miss some, which
@@ -163,7 +166,7 @@ even a stream that reads at once, of another pane, miss some, which
 | `notification` | `text`, `truncated` (`true`) if cut as a pane's `notification` is |
 | `title` | `title`, `truncated` (`true`) if cut as a pane's `title` is |
 | `resized` | `cols`, `rows` |
-| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them, or before its cursor was given; with `events-of`, some may be of other things |
+| `missed` | `count`: entries the journal let go (past what it keeps) before this stream was told them, or, from a cursor, entries after it let go before the stream began; with `events-of`, some may be of other things |
 | `stopped` | last: `reason`, the server stopped |
 
 ## Errors

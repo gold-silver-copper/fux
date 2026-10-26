@@ -777,9 +777,7 @@ mod tests {
     /// what the server draws for the client, its notice, and the screen
     /// its client has open.
     fn state(s: &mut Session, c: ClientId) -> Result<String, String> {
-        // Each session is a run of its own: the same journal is the same
-        // cursor but for its run.
-        let ls = output(s, "ls")?.replace(&s.run.to_string(), "RUN");
+        let ls = output(s, "ls")?;
         Ok(format!(
             "{ls}{}\n{}\n{:?}",
             mode(s, c),

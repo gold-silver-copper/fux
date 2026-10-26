@@ -12,7 +12,8 @@ that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
 be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
 pane before it, and `json` after it. Only `run`, `new-tab`,
-`new-workspace` and `attach` start from `opts`; of the first three, only
+`new-workspace`, `attach` and `events-of` (for everything) start from
+`opts`; of the first three, only
 `run` takes a program (as `split` does): the other two start a shell. Their tab is laid out on
 `COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
 smallest screen that sizes it, else its own size), never on the screen of
@@ -157,9 +158,10 @@ too). `A counts` gives a version's five counts as integers:
 - **A bell or notification:** its version's `BELLS`, `counts 2 at`, grows,
   as for a command's end.
 - **What changes anywhere,** as it happens: `fux events` streams a JSON
-  line for each (`fux help json`). To read the session, then follow it
-  without missing what changed in between, start the stream from the
-  cursor `ls json` gave with the listing (its `events`):
+  line for each event (`fux help json` lists them). To read the session,
+  then follow its events without missing one in between, start the stream
+  from the cursor `ls json` gave with the listing (its `events`); a
+  `missed` line says the journal let some go first: read `ls` again.
 
   ```sh
   C=$(fux ls json | jq -r .events)
