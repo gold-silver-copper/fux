@@ -155,7 +155,7 @@ enum Stage {
     /// Its first frame is to be a `Hello`. A client need not wait for the
     /// answer to send its `Attach`.
     Hello,
-    /// It said hello as `fux attach`: its `Attach` is next, and the kind
+    /// It said hello as `fux opts attach`: its `Attach` is next, and the kind
     /// of client it is.
     Attaching(ClientKind),
     /// Its client is attached: its input, resizes and detach come next.

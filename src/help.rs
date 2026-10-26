@@ -11,12 +11,11 @@ pub const AGENTS: &str = include_str!("../docs/agents.md");
 /// `guide` all of it, else the topic's section, headed `## TOPIC:`; `None`
 /// if it has none so named.
 fn guide(topic: &str) -> Option<String> {
+    let first = AGENTS
+        .split_once("\n## ")
+        .map_or(AGENTS, |(first, _)| first);
     match topic {
-        "agents" => {
-            return AGENTS
-                .split_once("\n## ")
-                .map(|(first, _)| first.to_owned());
-        }
+        "agents" => return Some(first.to_owned()),
         "guide" => return Some(AGENTS.to_owned()),
         _ => {}
     }
@@ -28,6 +27,20 @@ fn guide(topic: &str) -> Option<String> {
     Some(format!("##{}{section}", heading.trim_start_matches("\n##")))
 }
 
+/// What `explain` says of a name that is neither a word nor a topic: the
+/// topics, as the guide's headings name them.
+pub fn unknown(name: &str) -> String {
+    let topics = topics().join(" ");
+    format!("no word or topic {name:?}; the topics: agents {topics} guide")
+}
+
+/// The guide's topics, as its headings name them.
+fn topics() -> Vec<&'static str> {
+    (AGENTS.split("\n## ").skip(1))
+        .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
+        .collect()
+}
+
 /// What `json` gives, word by word (`str json explain`).
 pub const JSON: &str = include_str!("../docs/json.md");
 
@@ -37,6 +50,7 @@ pub fn overview() -> String {
         crate::config::Limit::DEFAULT.seconds(),
         crate::script::SHEBANG,
     );
+    let from_opts = crate::script::from_opts("and");
     let mut out = format!(
         "\
 usage: fux                     attach, starting a server if none runs
@@ -48,11 +62,12 @@ Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
-text send-keys`, `%2 all-history capture`); only run, new-tab and
-new-workspace start from opts (`opts str make program str test arg
-run`), laid out on a size given (`opts 80 24 size …`), else the
-caller's own screen or tab (`fux` run in a pane): run from outside fux,
-a size must be given, as fux makes none up. An action answers at once,
+text send-keys`, `%2 all-history capture`); only
+{from_opts} start from opts (`opts str make
+program str test arg run`). A new pane is laid out on a size given
+(`opts 80 24 size …`), else the caller's own screen or tab (`fux` run in
+a pane): run from outside fux, a size must be given, as fux makes none
+up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
 version differs from V, else answers `timeout` after {wait}s unless
@@ -320,18 +335,11 @@ mod tests {
         }
     }
 
-    /// The guide's topics, as `explain` takes them.
-    fn agents_topics() -> Vec<&'static str> {
-        (AGENTS.split("\n## ").skip(1))
-            .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
-            .collect()
-    }
-
     /// The guide's topics, as `explain` and the guide's first screen
     /// list them, are its headings, which `explain` reads; none is a word.
     #[test]
     fn the_guide_lists_its_topics_as_its_headings_are() {
-        let topics = agents_topics();
+        let topics = super::topics();
         assert!(topics.len() >= 5, "{topics:?}");
         let on = Word::Act(Act::Explain).row().about;
         let listed = format!("({})", topics.join(" "));
@@ -390,6 +398,10 @@ mod tests {
             let from_opts = row.effect.starts_with("opts ");
             assert_eq!(opts == Some(After::Opts), from_opts, "{act}");
         }
+        // Opts' own help names the words that start from them.
+        let from_opts = crate::script::from_opts("and");
+        assert!(Word::Act(Act::Opts).row().about.contains(&from_opts));
+        assert!(overview.contains(&from_opts));
         // Each option goes on a word.
         for opt in Opt::ALL {
             assert!(!opt.takers().is_empty(), "{opt}");

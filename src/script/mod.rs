@@ -21,7 +21,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, usage};
+pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
 /// prompt see.
@@ -1380,9 +1380,18 @@ mod tests {
         Ok(())
     }
 
-    /// Options or a request nothing acts on name the words that would.
+    /// Options or a request nothing acts on name the words that would, as
+    /// the kind's own description does.
     #[test]
     fn what_is_left_names_its_word() {
+        let opts = super::words::KINDS
+            .iter()
+            .find(|(name, ..)| *name == "opts");
+        let from_opts = super::from_opts("and");
+        assert!(
+            opts.is_some_and(|(_, said, _)| said.contains(&from_opts)),
+            "{from_opts}"
+        );
         for (code, end) in [
             ("%2 str hi paste", "send-keys"),
             ("opts str x in", "run, new-tab or attach"),

@@ -174,6 +174,16 @@ impl Opt {
     }
 }
 
+/// The words that start from opts, as the table says: `run, new-tab,
+/// new-workspace and attach`, `last` before the last.
+pub fn from_opts(last: &str) -> String {
+    let opts = |act: &&Act| act.takes().is_some_and(|t| t.after == After::Opts);
+    let names: Vec<&str> = (Act::ALL.iter().filter(opts))
+        .map(|act| Word::Act(*act).row().name)
+        .collect();
+    crate::words::listed(&names, last)
+}
+
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
@@ -182,7 +192,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
@@ -228,7 +238,7 @@ words! {
         Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab and new-workspace (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
@@ -266,7 +276,7 @@ words! {
         Changing Buffers "buffers" "-- text" "the paste buffers, newest 0" "fux buffers" [];
         Changing Buffer "buffer" "n -- text" "paste buffer n" "fux 0 buffer" [];
         Changing PasteBuffer "paste-buffer" "pane n -- answer" "paste buffer n into a pane; answers as send-keys does" "fux %3 0 paste-buffer" [];
-        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach)" "fux opts str work in attach" [Opts: In Size Watch];
+        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach); with a size, be a client of no terminal instead" "fux opts str work in attach" [Opts: In Size Watch];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
@@ -299,7 +309,7 @@ words! {
     }
     Opt {
         Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: a client of no terminal, this size, until signalled, which prints its id" "fux opts 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
@@ -792,11 +802,12 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         },
     };
     let Some(on) = built.on.take() else {
-        return Err(fail(
-            Raise::Type,
-            "takes a pane, not options: what opts gives is for run, new-tab and new-workspace; \
-             the rest go on the pane (`%2 all-history capture`, `%2 vertical split`)",
-        ));
+        let why = format!(
+            "takes a pane, not options: what opts gives is for {}; the rest go on the pane \
+             (`%2 all-history capture`, `%2 vertical split`)",
+            from_opts("and")
+        );
+        return Err(fail(Raise::Type, why));
     };
     unused(word, &built)?;
     Ok((on, built))
@@ -826,7 +837,10 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => Err(wrong("options (from opts): opts … run", &other)),
+        | Value::App(_)) => Err(wrong(
+            &format!("options (from opts), as {word} takes"),
+            &other,
+        )),
     }
 }
 
@@ -1497,9 +1511,8 @@ impl fuxth::Host for Host<'_> {
             Act::Help => self.show(&help::overview()),
             Act::Explain => {
                 let word = string(&next()?)?;
-                let text = help::explain(&word).ok_or_else(|| {
-                    fail(Raise::UnknownWord, format!("no word or topic {word:?}"))
-                })?;
+                let text = help::explain(&word)
+                    .ok_or_else(|| fail(Raise::UnknownWord, help::unknown(&word)))?;
                 self.show(&text)
             }
             Act::Check => {

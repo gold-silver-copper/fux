@@ -105,10 +105,10 @@ enough for most work and `fux help TOPIC` the rest
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet: they start from `opts`, empty options. Of the three, only
-`run` takes a program (`program`, then each `arg`; a shell's line is
-`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace`
-start a shell. Their tab is laid out on `COLS ROWS size`, else on the
+no pane yet, nor has `attach`: they start from `opts`, empty options. Of
+the first three, only `run` takes a program (`program`, then each `arg`; a
+shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
+`new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
 caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
@@ -597,7 +597,7 @@ Against mistakes, rather than against a program of yours that means harm:
   to type there too). Panes never move between servers. It keeps a mistake
   in one session from reaching the other, nothing more: both servers run as
   you, so neither is kept from your own processes and files.
-- `fux watch` watches without typing into anything.
+- `fux opts watch attach` watches without typing into anything.
 
 ## Development
 

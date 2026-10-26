@@ -584,7 +584,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
     let (dir, listener) = fake_server("stalled")?;
     let server = std::thread::spawn(move || -> Result<std::os::unix::net::UnixStream, String> {
-        // `fux attach` first connects only to see that a server answers: the
+        // `fux opts attach` first connects only to see that a server answers: the
         // client's connection is the one that says hello.
         let mut stream = loop {
             let (mut stream, _) = listener.accept().map_err(e)?;

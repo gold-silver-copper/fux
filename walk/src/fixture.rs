@@ -35,7 +35,7 @@ shift
 echo "act-done-$(( $1 + 1000 ))"
 "#;
 
-/// A real `fux attach` on a PTY, and a terminal of what it shows.
+/// A real `fux opts attach` on a PTY, and a terminal of what it shows.
 pub struct Client {
     pub id: String,
     master: Option<fuxix::pty::Master>,
