@@ -59,6 +59,10 @@ const CONN_READ: usize = 256 * 1024;
 /// ones cannot hold up the others: the rest wait in its decoder for its
 /// next turn (`Conn::frame_waits`).
 const CONN_FRAMES: usize = 256;
+/// Connections accepted per tick, so a storm of them cannot hold up the
+/// clients already served: the rest wait in the listener's backlog, which
+/// keeps it readable.
+const ACCEPTS: usize = 64;
 /// What a connection's buffers keep once they empty; beyond it, the memory
 /// a large frame or paint took is given back.
 const CONN_KEEP: usize = 64 * 1024;
@@ -1092,10 +1096,10 @@ impl Server {
         }
     }
 
-    /// Accepts the connections waiting on the server's socket.
+    /// Accepts the connections waiting on the server's socket, `ACCEPTS`
+    /// at most.
     fn accept(&mut self) {
-        // Accept until the backlog is empty, so one tick drains it.
-        loop {
+        for _ in 0..ACCEPTS {
             let Some(Listening { listener, .. }) = self.listening() else {
                 return;
             };
