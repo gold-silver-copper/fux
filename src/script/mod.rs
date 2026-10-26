@@ -504,6 +504,8 @@ fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
 }
 
 /// The standard library's and fux's library's words, as help says them.
+/// Libraries that fail to compile leave none, but no help asks then: every
+/// program, `help` too, fails first with why.
 pub fn docs() -> Rc<[fuxth::Doc]> {
     READY.with(|ready| {
         ready

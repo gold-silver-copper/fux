@@ -688,14 +688,22 @@ impl<A: Clone> Compiler<A> {
     /// Compiles `text`, a library named `source`, as `add` does, and gives
     /// each of its definitions' help, which the comment on the line just
     /// above its `define` says: `# EFFECT : ABOUT`. A definition without
-    /// it is refused, and the compiler is as it was.
+    /// it is refused, and the compiler is as it was. A library is whole:
+    /// it opens no block another source closes, nor closes one.
     pub fn library(&mut self, source: &str, text: &str) -> Result<Vec<Doc>, Error> {
+        if let Some(open) = self.open.last() {
+            return Err(unclosed(open));
+        }
         let spans = crate::token::spans(source, text)?;
         let tokens: Vec<Token> = spans.iter().map(|(token, _)| token.clone()).collect();
         let before = self.clone();
         self.add(&tokens)?;
-        let docs = (self.made.iter()).map(|&(from, to)| Doc::of(text, &spans, from, to));
-        let docs = docs.collect::<Result<Vec<Doc>, Error>>();
+        let docs = match self.open.last() {
+            Some(open) => Err(unclosed(open)),
+            None => (self.made.iter())
+                .map(|&(from, to)| Doc::of(text, &spans, from, to))
+                .collect::<Result<Vec<Doc>, Error>>(),
+        };
         if docs.is_err() {
             *self = before;
         }

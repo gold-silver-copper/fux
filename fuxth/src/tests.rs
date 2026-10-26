@@ -1318,6 +1318,14 @@ fn a_library_says_what_each_word_does() {
     // Refused, it is as it was.
     let after = token::source("t", "x").and_then(|t| compiler.add(&t));
     assert_eq!(after.map_err(|e| e.code), Err(Code::UnknownWord));
+    // A library is whole: a definition it leaves open, or one left open
+    // before it, is refused, not documented by another source.
+    let open = compiler.library("l", "# -- : open\ndefine open");
+    assert_eq!(open.map_err(|e| e.code), Err(Code::Unclosed));
+    let tokens = token::source("t", "define actual").unwrap_or_default();
+    assert_eq!(compiler.add(&tokens), Ok(()));
+    let closing = compiler.library("l", "# -- : fake\n1 2 end");
+    assert_eq!(closing.map_err(|e| e.code), Err(Code::Unclosed));
 }
 
 /// Words calling each other, two and three of them, deeply (calls in last
