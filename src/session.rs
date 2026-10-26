@@ -1921,10 +1921,12 @@ impl Session {
         let wait = match request {
             Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
             Request::Wait(wait) => wait,
-            Request::Events(target) => {
+            Request::Events(target, from) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
                 let journal = self.parts.journal();
-                let subscription = crate::events::Subscription::new(target, journal);
+                let subscription =
+                    crate::events::Subscription::new(target, journal, self.run, from)
+                        .map_err(|why| fail(Raise::BadValue, why))?;
                 return Ok(Begun::Events(Box::new(subscription)));
             }
         };
@@ -2257,6 +2259,9 @@ impl Session {
     /// `ls`: everything there is, or `target` and what is in it, as text
     /// with its JSON kept beside it; or one field of the target's JSON.
     fn ls(&mut self, target: Option<AnyRef>, get: Option<&str>) -> Result<Reply, Error> {
+        // Where a stream of events reads from, read with the listing: one
+        // from it misses nothing after unsaid.
+        let events = self.parts.journal().end(self.run);
         let (read, only) = match target {
             Some(target) => {
                 let target = self.there(target)?;
@@ -2266,13 +2271,17 @@ impl Session {
                 }
                 (read.text, Some(target))
             }
-            None => (self.ls_json(), None),
+            None => (self.ls_json(events), None),
         };
+        let mut text = self.ls_text(only);
+        if only.is_none() {
+            text.push_str(&format!("events {events}\n"));
+        }
         // A reading given as text keeps its JSON, made from the same read:
         // `json` converts what was read, never a later read.
         Ok(Reply {
             json: read,
-            ..self.ls_text(only).into()
+            ..text.into()
         })
     }
 
@@ -2971,8 +2980,8 @@ impl Session {
         })
     }
 
-    /// `ls json`: everything.
-    fn ls_json(&self) -> String {
+    /// `ls json`: everything, and `events`, where a stream reads from.
+    fn ls_json(&self, events: crate::events::Cursor) -> String {
         let now = Instant::now();
         let workspaces = (self.parts.workspaces().iter())
             .map(|ws| Json::Object(self.ws_json(ws, now)))
@@ -2998,6 +3007,7 @@ impl Session {
         let mut text = Json::Object(vec![
             ("workspaces", Json::Array(workspaces)),
             ("clients", Json::Array(clients)),
+            ("events", Json::str(events.to_string())),
         ])
         .render();
         text.push('\n');
@@ -3210,7 +3220,10 @@ pub(crate) mod testing {
             shell: crate::config::Shell::new("/bin/sh".to_owned(), Vec::new())?,
             ..config
         };
-        let run = crate::command::Run::now().ok_or("no clock")?;
+        // One run for every session of the tests: two that did the same
+        // list the same, their cursors too.
+        static RUN: std::sync::OnceLock<Option<crate::command::Run>> = std::sync::OnceLock::new();
+        let run = (*RUN.get_or_init(crate::command::Run::now)).ok_or("no clock")?;
         let mut session = Session::new(config, "/nonexistent/fux.sock".into(), false, run);
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
         session.start(size).map_err(|e| e.to_string())?;
@@ -5173,7 +5186,13 @@ mod tests {
     /// What a stream of events subscribed now is told of what `change`
     /// does to `s`.
     fn told(s: &mut Session, change: impl FnOnce(&mut Session)) -> String {
-        let mut stream = crate::events::Subscription::new(None, s.parts.journal());
+        let stream = crate::events::Subscription::new(None, s.parts.journal(), s.run, None);
+        // From now is never refused; if it were, the caller's comparison
+        // shows why.
+        let mut stream = match stream {
+            Ok(stream) => stream,
+            Err(why) => return why,
+        };
         change(s);
         stream
             .told(s.parts.journal(), usize::MAX, |t| s.holder(t))

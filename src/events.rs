@@ -7,7 +7,7 @@
 //! methods through a [`Teller`]); each subscriber reads the journal from
 //! its own place in it, after each round of what the server read and did.
 use crate::code::Code;
-use crate::command::AnyRef;
+use crate::command::{AnyRef, Run};
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
 use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
@@ -25,6 +25,36 @@ pub(crate) const KEPT: usize = 1 << 14;
 /// A number of the journal's: the order things happened in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Seq(u64);
+
+/// A place in one server run's journal: the number of the next entry it
+/// records, as `ls` and a stream's `ready` give it. Written
+/// `42:48211-1867a3f9c2b8e7d6`, `SEQ:RUN`, one word: a stream from it
+/// misses nothing that came after unsaid, and a server tells its own
+/// run's from another's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cursor {
+    pub seq: Seq,
+    pub run: Run,
+}
+
+impl std::fmt::Display for Cursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.seq.0, self.run)
+    }
+}
+
+/// `SEQ:RUN`, as a cursor is written: one spelling only.
+impl std::str::FromStr for Cursor {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Cursor, ()> {
+        let (seq, run) = text.split_once(':').ok_or(())?;
+        let cursor = Cursor {
+            seq: Seq(crate::id::number(seq).ok_or(())?),
+            run: run.parse()?,
+        };
+        (cursor.to_string() == text).then_some(cursor).ok_or(())
+    }
+}
 
 /// What happened in the session, in order, each entry numbered: the last
 /// [`KEPT`] entries.
@@ -51,9 +81,11 @@ impl Journal {
         Teller { at, journal: self }
     }
 
-    /// Where a reader starting now reads from: nothing recorded yet.
-    pub fn end(&self) -> Seq {
-        self.next
+    /// Where a reader starting now reads from, in server run `run`:
+    /// nothing recorded yet.
+    pub fn end(&self, run: Run) -> Cursor {
+        let seq = self.next;
+        Cursor { seq, run }
     }
 
     /// What came from `from` on: how many of those entries were let go,
@@ -266,12 +298,6 @@ impl Ending {
     }
 }
 
-/// A stream's first line, once it is armed: from here on, nothing is
-/// missed unsaid.
-pub fn ready() -> String {
-    line("ready", (None, None, None), Vec::new())
-}
-
 /// The line that says `count` entries of the journal were let go before
 /// the stream was told them: of its target or not, which is not known.
 fn missed(count: u64) -> String {
@@ -304,14 +330,40 @@ fn line(
 /// told of (all without one), and where in the journal it reads next.
 pub struct Subscription {
     target: Option<AnyRef>,
-    next: Seq,
+    next: Cursor,
 }
 
 impl Subscription {
-    /// One told of what happens from now on.
-    pub fn new(target: Option<AnyRef>, journal: &Journal) -> Self {
-        let next = journal.end();
-        Self { target, next }
+    /// One told of what happens in `journal`, of server run `run`, from
+    /// `from` on, else from now. Refused from a cursor of another run, or
+    /// past the journal's end, which this run never gave; one the journal
+    /// let go of is told as missed when read.
+    pub fn new(
+        target: Option<AnyRef>,
+        journal: &Journal,
+        run: Run,
+        from: Option<Cursor>,
+    ) -> Result<Self, String> {
+        let end = journal.end(run);
+        let next = from.unwrap_or(end);
+        if next.run != run {
+            return Err(format!(
+                "{next} is from another server run ({}), not this one ({run}): a server since stopped, or another socket's",
+                next.run
+            ));
+        }
+        if next.seq > end.seq {
+            let why = format!("{next} is past the journal's end ({end}): this run never gave it");
+            return Err(why);
+        }
+        Ok(Self { target, next })
+    }
+
+    /// Its first line, once it is armed: from here on, nothing is missed
+    /// unsaid; `from`, where in the journal it reads from.
+    pub fn ready(&self) -> String {
+        let from = ("from", Json::str(self.next.to_string()));
+        line("ready", (None, None, None), vec![from])
     }
 
     /// Whether it is told of `event`: where its target is or holds, or a
@@ -351,16 +403,16 @@ impl Subscription {
         if room == 0 {
             return (lines, None);
         }
-        let (lost, entries) = journal.from(self.next);
+        let (lost, entries) = journal.from(self.next.seq);
         if lost > 0 {
             lines.push_str(&missed(lost));
-            self.next = Seq(self.next.0.saturating_add(lost));
+            self.next.seq = Seq(self.next.seq.0.saturating_add(lost));
         }
         for (seq, event) in entries {
             if lines.len() >= room {
                 return (lines, None);
             }
-            self.next = Seq(seq.0.saturating_add(1));
+            self.next.seq = Seq(seq.0.saturating_add(1));
             if self.wants(event) {
                 lines.push_str(&event.line());
             }
@@ -379,6 +431,10 @@ mod tests {
     use crate::pane::Output;
     use crate::process::Ended;
 
+    fn run(text: &str) -> Result<Run, String> {
+        text.parse().map_err(|()| format!("{text} is no run"))
+    }
+
     /// A reader with no room left reads on from where it stopped; and one
     /// the journal let entries go past is told how many it missed, once.
     #[test]
@@ -387,7 +443,7 @@ mod tests {
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
         let bell = Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Told(Told::Bell));
         let mut journal = Journal::default();
-        let mut stream = Subscription::new(None, &journal);
+        let mut stream = Subscription::new(None, &journal, run("1-0")?, None)?;
         journal.push(bell.clone());
         journal.push(Event::Workspace(ws, Change::Closed));
         assert_eq!(
@@ -420,6 +476,47 @@ mod tests {
         );
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| Some(ws)).0, "");
+        Ok(())
+    }
+
+    /// A stream from a cursor is told everything after it, or what it
+    /// missed if the journal let that go; a cursor of another run, or past
+    /// the end, is refused; and a cursor has one spelling.
+    #[test]
+    fn a_stream_from_a_cursor_misses_nothing_after_it() -> Result<(), String> {
+        let ws: WsId = "+1".parse().map_err(|_| "+1")?;
+        let mut journal = Journal::default();
+        let ours = run("7-1f")?;
+        let cursor = journal.end(ours);
+        assert_eq!(cursor.to_string(), "0:7-1f");
+        assert_eq!("0:7-1f".parse(), Ok(cursor));
+        for bad in ["00:7-1f", "+0:7-1f", "0:7-1F", "0", "0:7-1f:1"] {
+            assert_eq!(bad.parse::<Cursor>(), Err(()), "{bad}");
+        }
+        journal.push(Event::Workspace(ws, Change::Renamed("x".into())));
+        let from = |text: &str| -> Result<_, String> {
+            let cursor = text.parse().map_err(|()| "a cursor")?;
+            Ok(Subscription::new(None, &journal, ours, Some(cursor)))
+        };
+        let mut stream = from("0:7-1f")??;
+        assert_eq!(
+            stream.told(&journal, usize::MAX, |_| Some(ws)).0,
+            concat!(r#"{"event":"renamed","workspace":"+1","name":"x"}"#, "\n")
+        );
+        let past = from("2:7-1f")?.err().unwrap_or_default();
+        assert!(past.contains("past the journal's end (1:7-1f)"), "{past}");
+        let theirs = from("0:7-20")?.err().unwrap_or_default();
+        assert!(theirs.contains("another server run"), "{theirs}");
+        // One the journal let go of is told as missed.
+        for _ in 0..KEPT {
+            journal.push(Event::Workspace(ws, Change::Closed));
+        }
+        let mut stream = Subscription::new(None, &journal, ours, Some(cursor))?;
+        let (lines, _) = stream.told(&journal, usize::MAX, |_| Some(ws));
+        assert!(
+            lines.starts_with(r#"{"event":"missed","count":1}"#),
+            "{lines}"
+        );
         Ok(())
     }
 
@@ -501,7 +598,8 @@ mod tests {
                 Ending::Gone | Ending::Stopped(_) => lines.push(ending.line()),
             }
         }
-        lines.extend([ready(), missed(1)]);
+        let ready = Subscription::new(None, &Journal::default(), run("1-0")?, None)?.ready();
+        lines.extend([ready, missed(1)]);
         // Each begins `{"event":"NAME"`.
         let names: std::collections::BTreeSet<&str> = (lines.iter())
             .filter_map(|line| line.split('"').nth(3))

@@ -106,7 +106,8 @@ keeps.
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet, nor has `attach`: they start from `opts`, empty options. Of
+no pane yet, nor has `attach`: they start from `opts`, empty options, as
+`events-of` does to stream everything. Of
 the first three, only `run` takes a program (`program`, then each `arg`; a
 shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
 `new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the

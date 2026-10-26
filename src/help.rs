@@ -174,6 +174,7 @@ fn word(name: &str) -> Option<String> {
             let on = match takes.after {
                 After::Opts => "opts",
                 After::Pane => "the pane",
+                After::Either => "the pane (or opts)",
             };
             out.push_str(&format!("\nIts options, after {on} and before {name}:\n"));
             for option in takes.options.iter().map(|o| Word::Opt(*o).row()) {

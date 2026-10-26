@@ -2568,9 +2568,10 @@ pub(crate) mod tests {
     /// status, though several end in one read; and a bell and a title
     /// with them, in order.
     #[test]
-    fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
+    fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Box<dyn std::error::Error>> {
         let mut pane = pane(3, 30)?;
-        let mut stream = crate::events::Subscription::new(None, &pane.journal);
+        let run = "1-0".parse().map_err(|()| "a run")?;
+        let mut stream = crate::events::Subscription::new(None, &pane.journal, run, None)?;
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
