@@ -2168,8 +2168,10 @@ impl Session {
                 }
                 let copying = self.copying(pane.id());
                 let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
+                // Its version, read with it.
                 Ok(Reply {
                     json: form,
+                    versions: vec![pane.version(self.run)],
                     ..text.into()
                 })
             }

@@ -621,7 +621,11 @@ fn answer_of(target: AnyRef) -> Then {
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer)) => answer.said.version(),
+        Value::App(Fux::Answer(answer)) => match answer.said {
+            Said::Action(version) => Some(version),
+            // A capture's is for `expect` and `changed` alone (`version`).
+            Said::Capture(_) | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
+        },
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
 }
@@ -1275,7 +1279,7 @@ impl fuxth::Host for Host<'_> {
                     history: built.history,
                     view: built.view,
                 };
-                later(ask(capture, Then::Answer(Said::Capture)))
+                later(ask(capture, Then::Capture))
             }
             Act::Ls => {
                 let ls = Command::Ls {
@@ -1467,11 +1471,7 @@ impl fuxth::Host for Host<'_> {
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             Act::CaptureClient => {
                 let c = client(&next()?)?;
-                later(on_client(
-                    c,
-                    ClientAction::Capture,
-                    Then::Answer(Said::Capture),
-                ))
+                later(on_client(c, ClientAction::Capture, Then::Capture))
             }
             // ------------------------------------------------------ server
             Act::Server => local(Local::Server(crate::socket::Choice::Name(

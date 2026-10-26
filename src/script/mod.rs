@@ -143,7 +143,10 @@ pub struct Answer {
 /// What an answer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Said {
-    Capture,
+    /// A capture: of a pane, with its pane's version as it was read, which
+    /// `expect` sends at and `changed` waits from; of a client's terminal,
+    /// none.
+    Capture(Option<Version>),
     Listing,
     /// An action's or wait's answer of one pane, which holds its
     /// version: a word that wants a pane takes it, and a wait waits from
@@ -161,7 +164,7 @@ impl Said {
     /// Its kind, as the vocabulary names it.
     fn name(self) -> &'static str {
         match self {
-            Said::Capture => "capture",
+            Said::Capture(_) => "capture",
             Said::Listing | Said::Status => "listing",
             Said::Action(_) | Said::Panes => "answer",
             Said::Json => "json",
@@ -171,7 +174,7 @@ impl Said {
     /// What it is, said where it is refused.
     fn kind(self) -> &'static str {
         match self {
-            Said::Capture => "a capture",
+            Said::Capture(_) => "a capture",
             Said::Listing => "a listing",
             Said::Action(_) => "an action's answer",
             Said::Panes => "an answer of a tab's or workspace's panes, or of a closed pane",
@@ -180,12 +183,12 @@ impl Said {
         }
     }
 
-    /// The version an action's answer holds: its pane's from before what
-    /// it did.
+    /// The version an action's answer holds, its pane's from before what
+    /// it did; or a pane's capture, its pane's as it was read.
     pub fn version(self) -> Option<crate::command::Version> {
         match self {
-            Said::Action(version) => Some(version),
-            Said::Capture | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
+            Said::Action(version) | Said::Capture(Some(version)) => Some(version),
+            Said::Capture(None) | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
         }
     }
 }
@@ -222,6 +225,8 @@ pub enum Then {
     Handles,
     /// Its text, as an answer `json` can show as JSON.
     Answer(Said),
+    /// A capture: its text, JSON and version.
+    Capture,
     /// Its text, as a string.
     Text,
     /// A field's value.
@@ -963,6 +968,7 @@ pub fn answered(reply: Reply, then: Then) -> Result<Vec<Value<Fux>>, Failed> {
             vec![Value::List(std::rc::Rc::new(list))]
         }
         Then::Answer(said) => vec![Answer::value(text, json, said)],
+        Then::Capture => vec![Answer::value(text, json, Said::Capture(version))],
         Then::Text => vec![Value::str(text)],
         Then::Value => vec![match reply.value {
             Some(Scalar::Int(n)) => Value::Int(n),
