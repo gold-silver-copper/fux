@@ -1118,7 +1118,7 @@ impl Session {
         area: Rect,
         axis: Axis,
         extent: Extent,
-    ) -> Result<String, Error> {
+    ) -> Result<(), Error> {
         let (_, tab) = self.locate(pane).ok_or(Error::NoPane(pane))?;
         let mut root = self.root(tab).cloned().ok_or(Error::NoPane(pane))?;
         let now = layout::place(&root, area)
@@ -1145,7 +1145,7 @@ impl Session {
             return Err(refused());
         }
         (self.parts.reshape(pane, |old| *old = root)).ok_or(Error::NoPane(pane))?;
-        Ok(format!("{pane} {}x{}\n", want.0, want.1))
+        Ok(())
     }
 
     fn ws_target(&self, explicit: Option<&WsRef>, here: Here) -> Result<WsId, Error> {
@@ -2239,13 +2239,13 @@ impl Session {
                     .map_err(|e| fail(Raise::Signal, format!("sending the signal: {e}")))?;
                 Ok(acted([version]))
             }
-            &Command::Kill { target } => self.kill(target, origin),
+            &Command::Kill { target } => self.kill(target).map(|()| Reply::default()),
             Command::Rename { target, name } => {
                 let target = self.there(*target)?;
                 self.rename(target, name.clone()).map(|()| Reply::default())
             }
             &Command::MovePane { target, ref to } => {
-                self.move_pane(target, to, here).map(Reply::from)
+                self.move_pane(target, to, here).map(|()| Reply::default())
             }
             &Command::SwapPane { target, with } => {
                 let source = self.pane(target)?.id();
@@ -2582,38 +2582,18 @@ impl Session {
         Ok(Made { ws, tab, pane: new }.reply(version))
     }
 
-    /// `kill`: from the command line it says what it closed, so a script or
-    /// an agent knows; a key's close shows on the screen anyway.
-    fn kill(&mut self, target: AnyRef, origin: &Origin) -> Result<Reply, Error> {
-        // What may go with it, said once gone: a tab's or a workspace's
-        // panes; and what holds it, if it was the last there: a pane's tab
-        // and that tab's workspace, a tab's workspace.
-        let mut may_go = vec![self.there(target)?];
-        let holders = match target {
-            AnyRef::Pane(pane) => (self.locate(pane)).map_or([None, None], |(w, t)| {
-                [Some(AnyRef::Tab(t)), Some(AnyRef::Workspace(w))]
-            }),
-            AnyRef::Tab(tab) => [self.tab_workspace(tab).ok().map(AnyRef::Workspace), None],
-            AnyRef::Workspace(_) => [None, None],
-        };
-        match target {
+    /// `kill`: a pane closed, or a tab's or workspace's every pane.
+    fn kill(&mut self, target: AnyRef) -> Result<(), Error> {
+        match self.there(target)? {
             AnyRef::Pane(pane) => self.close_pane(pane, None),
-            AnyRef::Tab(_) | AnyRef::Workspace(_) => {
-                let panes = self.panes_of(target).unwrap_or_default();
-                may_go.extend(panes.into_iter().map(AnyRef::Pane));
+            target @ (AnyRef::Tab(_) | AnyRef::Workspace(_)) => {
                 for tab in self.tabs_of(target).unwrap_or_default() {
                     self.remove_tab(tab);
                 }
                 self.after_close();
             }
         }
-        may_go.extend(holders.into_iter().flatten());
-        may_go.retain(|it| self.there(*it).is_err());
-        // A close from the command line prints `closed` and the ids gone.
-        Ok(match origin {
-            Origin::Cli(_) => format!("closed {}\n", joined(&may_go, " ")).into(),
-            Origin::Client(_) => Reply::default(),
-        })
+        Ok(())
     }
 
     /// `resize-pane`: a border of pane `pane` moved, or the pane made a
@@ -2645,7 +2625,7 @@ impl Session {
                 ))
             }
             PaneResize::To(axis, extent) => {
-                (self.resize_pane_to(pane, area, axis, extent)).map(Reply::from)
+                (self.resize_pane_to(pane, area, axis, extent)).map(|()| Reply::default())
             }
         }
     }
@@ -2746,7 +2726,7 @@ impl Session {
         found.ok_or(Error::NoNeighbor { from, direction })
     }
 
-    fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<String, Error> {
+    fn move_pane(&mut self, target: PaneId, to: &MoveTo, here: Here) -> Result<(), Error> {
         let pane = self.pane(target)?.id();
         // A tab made for it fits clients at its tab's size until one shows it.
         let (from_ws, from) = self.locate(pane).ok_or(Error::NoPane(pane))?;
@@ -2760,7 +2740,7 @@ impl Session {
                     .ok_or(Error::NoPane(pane))?;
                 self.room(from, &root, None)?;
                 self.parts.reshape(pane, |old| *old = root);
-                return Ok(String::new());
+                return Ok(());
             }
             &MoveTo::Tab(tab) => (self.tab_workspace(tab)?, Destination::Tab(tab)),
             MoveTo::Workspace(r) => {
@@ -2784,7 +2764,7 @@ impl Session {
             }
         };
         let tab = match &dest {
-            Destination::Tab(tab) if *tab == from => return Ok(String::new()),
+            Destination::Tab(tab) if *tab == from => return Ok(()),
             Destination::Tab(tab) => {
                 let mut root = self.root(*tab).ok_or(Error::NoTab(*tab))?.clone();
                 root.append(pane);
@@ -2799,7 +2779,7 @@ impl Session {
         // The moving client follows its pane.
         let pane = Some(pane);
         self.follow(here, ws, Some(Spot { tab, pane }));
-        Ok(format!("{tab}\n"))
+        Ok(())
     }
 
     /// Refused unless tab `tab` laid out as `root` shows every pane on each
@@ -6080,28 +6060,6 @@ mod tests {
         );
         let tab: TabId = "@2".parse().map_err(|_| "@2")?;
         assert_eq!(s.root(tab).map(|r| r.panes().len()), Some(2));
-        Ok(())
-    }
-
-    /// A kill from the command line names all it closed: a tab's
-    /// workspace, when it was the last tab, as a pane's.
-    #[test]
-    fn a_kill_names_the_workspace_its_last_tab_took() -> Result<(), Box<dyn std::error::Error>> {
-        let mut s = started(Config::default())?;
-        let cli = Origin::Cli(Caller::default());
-        let kill = |s: &mut Session, target| {
-            (s.execute(&Command::Kill { target }, &cli)).map(|reply| reply.text)
-        };
-        run(&mut s, "opts 80 24 size str two name new-workspace drop")?;
-        assert_eq!(
-            kill(&mut s, AnyRef::Tab("@2".parse()?))?,
-            "closed @2 %2 +2\n"
-        );
-        run(&mut s, "opts 80 24 size str three name new-workspace drop")?;
-        assert_eq!(
-            kill(&mut s, AnyRef::Pane(PaneId::of(3)))?,
-            "closed %3 @3 +3\n"
-        );
         Ok(())
     }
 
