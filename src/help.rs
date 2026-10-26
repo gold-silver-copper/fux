@@ -118,11 +118,12 @@ workspace; ref a name or a handle; text a string, number or boolean.
         ));
     }
     out.push_str("\nThe libraries (`fux help WORD` says each):");
-    let names = crate::script::docs()
-        .iter()
-        .map(|doc| doc.name.clone())
-        .collect::<Vec<_>>();
-    out.push_str(&wrapped(names.into_iter(), "\n  ", 79));
+    let docs = crate::script::docs();
+    out.push_str(&wrapped(
+        docs.iter().map(|doc| doc.name.clone()),
+        "\n  ",
+        79,
+    ));
     out.push_str(
         "\n\nThe server: `str NAME server` or `str PATH socket` first; else\n\
          FUX_SOCKET; else server.sock in $XDG_RUNTIME_DIR/fux, or with\n\

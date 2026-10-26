@@ -495,10 +495,15 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Its mistake is told without a word's usage, which would read `READY`
+/// as it is made.
 fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
-    let mut compiler = Compiler::new(vocabulary()?);
-    let mut docs = compiler.library("stdlib.fux", fuxth::STDLIB)?;
-    docs.extend(compiler.library("library.fux", LIBRARY)?);
+    let told = |error| told(error, false);
+    let mut compiler = Compiler::new(vocabulary().map_err(told)?);
+    let mut docs = compiler
+        .library("stdlib.fux", fuxth::STDLIB)
+        .map_err(told)?;
+    docs.extend(compiler.library("library.fux", LIBRARY).map_err(told)?);
     compiler.prepare();
     Ok((compiler, docs.into()))
 }
@@ -547,7 +552,9 @@ fn handles(tokens: &[Token]) -> Result<Vec<Token>, fuxth::Error> {
                 };
                 out.extend([at("str"), token.clone(), at(id.kind().name())]);
             }
-            (Some(_) | None, _) => out.push(token.clone()),
+            (Some(fuxth::Read::Name), None) | (Some(fuxth::Read::Text), _) | (None, None) => {
+                out.push(token.clone())
+            }
         }
         let reads = fuxth::Parsing::named(&token.text).and_then(fuxth::Parsing::reads);
         after = after.is_none().then_some(reads).flatten();
