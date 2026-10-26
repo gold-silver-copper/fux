@@ -137,7 +137,10 @@ impl InputQueue {
     /// full, and then everything until its terminal takes some. Only the
     /// pane queues, which counts what is refused (`Pane::push`).
     fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
-        self.push_with(|out| out.extend_from_slice(bytes.as_ref()))
+        let bytes = bytes.as_ref();
+        self.fits(bytes.len())?;
+        self.bytes.push(bytes);
+        Ok(())
     }
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
