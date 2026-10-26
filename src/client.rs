@@ -99,7 +99,7 @@ impl std::fmt::Display for Error {
             Error::Mismatch(mismatch) => mismatch.fmt(f),
             Error::Protocol(error) => error.fmt(f),
             Error::NotATerminal => {
-                f.write_str("fux attach needs a terminal on stdin and stdout, the same one")
+                f.write_str("attaching needs a terminal on stdin and stdout, the same one")
             }
             Error::NoSize => f.write_str(
                 "the terminal on stdin says no size (0 rows or columns), which fux would have to make up; \

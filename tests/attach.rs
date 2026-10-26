@@ -270,13 +270,17 @@ fn the_real_client_attaches_restores_its_terminal_and_reattaches() -> Outcome {
 #[test]
 fn attaching_inside_a_pane_is_refused_unless_unset() -> Outcome {
     let server = Server::start("")?;
-    for words in [&[][..], &["attach"], &["str", "main", "attach-to"]] {
+    for words in [
+        &[][..],
+        &["opts", "attach"],
+        &["opts", "str", "main", "in", "attach"],
+    ] {
         let out = server.fux_env(words, &[("FUX_PANE", "%1")])?;
         assert_eq!(out.status, 1);
         assert!(out.stderr.contains("unset FUX_PANE"), "{}", out.stderr);
     }
     // With FUX_PANE emptied it would attach, if it had a terminal.
-    let out = server.fux_env(&["attach"], &[("FUX_PANE", "")])?;
+    let out = server.fux_env(&["opts", "attach"], &[("FUX_PANE", "")])?;
     assert_eq!(out.status, 1);
     assert!(out.stderr.contains("needs a terminal"), "{}", out.stderr);
     Ok(())
@@ -296,7 +300,7 @@ fn attach_needs_stdin_and_stdout_on_one_terminal() -> Outcome {
             .map_err(e)
     };
     let out = std::process::Command::new(FUX)
-        .arg("attach")
+        .args(["opts", "attach"])
         .env("FUX_SOCKET", &server.socket)
         .env_remove("FUX_PANE")
         .stdin(stdio(&keys)?)
@@ -580,7 +584,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
     use fux::protocol::{Frame, Greeting, Hello, PROTOCOL, Role};
     let (dir, listener) = fake_server("stalled")?;
     let server = std::thread::spawn(move || -> Result<std::os::unix::net::UnixStream, String> {
-        // `fux attach` first connects only to see that a server answers: the
+        // `fux opts attach` first connects only to see that a server answers: the
         // client's connection is the one that says hello.
         let mut stream = loop {
             let (mut stream, _) = listener.accept().map_err(e)?;
@@ -597,7 +601,7 @@ fn a_signal_detaches_a_client_waiting_on_a_stalled_server() -> Outcome {
         Ok(stream)
     });
     let socket = dir.join("fux.sock");
-    let mut terminal = Terminal::start(10, 40, &[FUX, "attach"], |command| {
+    let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
         command.env("FUX_SOCKET", &socket);
     })?;
     terminal.wait_for("\x1b[?1049h")?;
@@ -662,7 +666,7 @@ fn a_signal_detached_client_writes_the_last_paint_before_leaving() -> Outcome {
         Ok(())
     });
     let socket = dir.join("fux.sock");
-    let mut terminal = Terminal::start(10, 40, &[FUX, "attach"], |command| {
+    let mut terminal = Terminal::start(10, 40, &[FUX, "opts", "attach"], |command| {
         command.env("FUX_SOCKET", &socket);
     })?;
     terminal.wait_for("READY")?;

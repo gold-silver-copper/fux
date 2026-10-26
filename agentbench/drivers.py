@@ -373,7 +373,7 @@ class Fux(Driver):
     commands done, ended, then the server's run); the one wait, `str V
     changed wait`, returns once that pane's version differs from V, its
     first word the version now. What "done" means is the driver's to
-    judge, as `fux help-agents` says: read the screen after each change,
+    judge, as `fux help agents` says: read the screen after each change,
     the version held always from before."""
     name = "fux"
 
@@ -537,7 +537,7 @@ class Fux(Driver):
         return [l for l in self.screen(pane).split("\n") if text in l][-1].strip()
 
     def run_command(self, pane, cmd, timeout=15):
-        """A shell command, waited for as `fux help-agents` says to without
+        """A shell command, waited for as `fux help agents` says to without
         marks: a text only its end shows, quoted so the typed line does not
         hold it; numbered, so an earlier command's does not count. Its
         output is what the history holds between its two markers; the end's

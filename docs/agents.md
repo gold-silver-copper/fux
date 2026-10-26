@@ -1,7 +1,7 @@
 # Driving programs with fux
 
-(`fux help-agents`: this screen, enough for most work. A topic at length:
-`fux help agents TOPIC`, below; `fux help` lists every word, `fux help WORD`
+(`fux help agents`: this screen, enough for most work. A topic at length:
+`fux help TOPIC`, below; `fux help` lists every word, `fux help WORD`
 explains one.)
 
 A fux command line is a fuxth program: words run left to right, each taking
@@ -11,9 +11,9 @@ a pane (`@2` a tab, `+1` a workspace). What is left is printed. The server is
 that Unix socket alone: inside a sandbox that denies `connect`, fux cannot
 be driven. **The word that acts
 comes last:** what it takes (keys, a wait's time, what to read) goes on the
-pane before it, and `json` after it. Only `run`, `new-tab` and
-`new-workspace` start from `opts`; of the three, only `run` takes a program
-(as `split` does): the other two start a shell. Their tab is laid out on
+pane before it, and `json` after it. Only `run`, `new-tab`,
+`new-workspace` and `attach` start from `opts`; of the first three, only
+`run` takes a program (as `split` does): the other two start a shell. Their tab is laid out on
 `COLS ROWS size`, else on the caller's tab when `fux` runs in a pane (the
 smallest screen that sizes it, else its own size), never on the screen of
 a client that does not show it: run from outside fux, a size must be given, as fux makes none up:
@@ -75,7 +75,7 @@ time (`%2:0.61.1.4.0:RUN timeout`). In a program, `str timeout try … catch
 … end` goes on after a failure instead (`programs`). Clean up with `fux str
 agent workspace kill`; stop what you start by its pid, never `pkill -f`.
 
-Topics (`fux help agents TOPIC`; `all` for the whole guide): `recipes`,
+Topics (`fux help TOPIC`; `guide` for the whole guide): `recipes`,
 `keys`, `read`, `shells`, `programs`, `servers`.
 
 ## recipes: Waiting for what you need
@@ -366,7 +366,7 @@ it), `str PATH read-file` and `str NAME getenv` (a variable not set fails
   LOG arg str -c arg str 'make test' arg run` (util-linux; on macOS and
   the BSDs, `str -q arg str -F arg str LOG arg str sh arg str -c arg str
   'make test' arg`). LOG holds the terminal's raw bytes (util-linux adds a
-  first and last line of its own). `dump` prints the
-  layout as a program that makes it again; `100 30 headless` is a client
-  with no terminal (`str c2 client … send-keys` types at it,
-  `capture-client` shows it): how to drive fux's own screens.
+  first and last line of its own). `dump` prints the layout as a program
+  that makes it again; `opts 100 30 size attach` is a client with no
+  terminal (`str c2 client … send-keys` types at it, `capture-client`
+  shows it): how to drive fux's own screens.

@@ -16,7 +16,7 @@ TOOLDESC = {
     "zellij": "zellij 0.45.1 (the agent's calls went through a proxy outside its sandbox, which streams output back)",
     "herdr": "herdr 0.9.1 (the agent's calls went through a proxy outside its sandbox, which streams output back)",
 }
-DOCS = {"fux": f"{CAPS}/fux-docs.txt (fux help-agents and fux help)",
+DOCS = {"fux": f"{CAPS}/fux-docs.txt (fux help agents and fux help)",
         "tmux": f"{CAPS}/tmux-man.txt (man tmux)",
         "zellij": f"{CAPS}/zellij-docs.txt (zellij --help, zellij action --help and each action's help)",
         "herdr": f"{CAPS}/herdr-docs.txt (herdr --help, herdr pane, herdr --skill)"}

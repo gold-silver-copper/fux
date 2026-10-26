@@ -17,11 +17,11 @@ str l str 'me str right focus' bind  str 'focus right' label  str Focus group
 str o str 'me str next focus' bind  str 'next pane' label  str Focus group
 str q str 'me str last focus' bind  str 'last pane' label  str Focus group
 
-str n str 'me next-tab' bind  str 'next tab' label  str Tabs group
-str b str 'me previous-tab' bind  str 'previous tab' label  str Tabs group
+str n str 'me str next step-tab' bind  str 'next tab' label  str Tabs group
+str b str 'me str previous step-tab' bind  str 'previous tab' label  str Tabs group
 str 't n' str 'opts new-tab drop' bind  str 'new tab' label  str Tabs group
-str 't h' str 'me previous-tab' bind  str 'previous tab' label  str Tabs group
-str 't l' str 'me next-tab' bind  str 'next tab' label  str Tabs group
+str 't h' str 'me str previous step-tab' bind  str 'previous tab' label  str Tabs group
+str 't l' str 'me str next step-tab' bind  str 'next tab' label  str Tabs group
 str 't g' str 'me choose-tab' bind  str 'choose a tab' label  str Tabs group
 str 't r' str 'me me focused tab rename-prompt' bind  str 'rename tab' label  str Tabs group
 str 't x' str 'me me focused tab confirm-close' bind  str 'close tab' label  str Tabs group
@@ -29,8 +29,8 @@ str 't m h' str 'me focused tab str previous reorder' bind  str 'move tab earlie
 str 't m l' str 'me focused tab str next reorder' bind  str 'move tab later' label  str Reorder group  repeat
 
 str 'w n' str 'opts new-workspace drop' bind  str 'new workspace' label  str Workspaces group
-str 'w h' str 'me previous-workspace' bind  str 'previous workspace' label  str Workspaces group
-str 'w l' str 'me next-workspace' bind  str 'next workspace' label  str Workspaces group
+str 'w h' str 'me str previous step-workspace' bind  str 'previous workspace' label  str Workspaces group
+str 'w l' str 'me str next step-workspace' bind  str 'next workspace' label  str Workspaces group
 str 'w g' str 'me choose-workspace' bind  str 'choose a workspace' label  str Workspaces group
 str 'w r' str 'me me focused workspace rename-prompt' bind  str 'rename workspace' label  str Workspaces group
 str 'w x' str 'me me focused workspace confirm-close' bind  str 'close workspace' label  str Workspaces group

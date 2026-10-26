@@ -360,8 +360,8 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
     // `help WORD` of no word says so, as help, and where, as any error.
     assert_eq!(
         said(&["help", "no-such-word"])?,
-        "fux: unknown_word: argument 3: explain: no word \"no-such-word\" (`fux help` \
-         lists every word)\n"
+        "fux: unknown_word: argument 3: explain: no word or topic \"no-such-word\"; the topics: \
+         agents recipes keys read shells programs servers guide (`fux help` lists every word)\n"
     );
     let named = said(&["1", "let", "+7"])?;
     assert!(

@@ -1,7 +1,7 @@
 # fux-walk: seeded walks over a real fux
 
 An excluded workspace with its own lockfile. It drives a real `fux` binary
-(a fresh server, real `fux attach` clients on PTYs, and the command line)
+(a fresh server, real `fux opts attach` clients on PTYs, and the command line)
 through seeded random steps, checks every invariant after every step,
 saves each walk as a trace, and minimizes a failing walk to the steps that
 matter.

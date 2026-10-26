@@ -34,7 +34,7 @@ CLAUDE = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 REAL = {name: shutil.which(name) for name in ("tmux", "zellij", "herdr", "sleep")}
 
 LEARN = {
-    "fux": "fux, a terminal multiplexer. Learn it with `fux help-agents` (start there), "
+    "fux": "fux, a terminal multiplexer. Learn it with `fux help agents` (start there), "
            "`fux help` and `fux str WORD explain`. A private fux server is already running for you: FUX_SOCKET points "
            "to it, and nothing in this environment reaches anyone else's fux session, so you may "
            "use any fux command, kill-server included.",

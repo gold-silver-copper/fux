@@ -85,8 +85,7 @@ impl Kind {
 
 wire! {
     /// Which way `reorder` moves a pane, tab or workspace among its siblings,
-    /// or `focus`, `next-tab` and `next-workspace` (or `previous-…`) step from
-    /// the current one.
+    /// or `focus`, `step-tab` and `step-workspace` step from the current one.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Sibling {
         Next,
@@ -781,9 +780,9 @@ wire! {
         /// A wait in a pane, or a tab's or workspace's every pane, each of
         /// which answers.
         Wait(wait: Wait),
-        /// What happens, a line each as it happens, until the client goes:
-        /// where the target is, or anywhere without one.
-        Events(target: Option<AnyRef>, json: bool),
+        /// What happens, a JSON line each as it happens, until the client
+        /// goes: where the target is, or anywhere without one.
+        Events(target: Option<AnyRef>),
     }
 }
 

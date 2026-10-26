@@ -1,4 +1,4 @@
-"""Waiting for a text in fux, as `fux help agents recipes` does: shared by
+"""Waiting for a text in fux, as `fux help recipes` does: shared by
 speed.py and mem.py."""
 import subprocess
 import time

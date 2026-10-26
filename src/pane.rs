@@ -611,7 +611,7 @@ impl Losses {
         let input = "its input queue was full, and takes nothing until its program reads";
         let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
         let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
-        let pictures = "`fux help-json` says why one may not be";
+        let pictures = "`fux help json` says why one may not be";
         let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
         let Losses {
             input: n,
@@ -987,7 +987,7 @@ pub enum Output {
 
 /// What is said of a pane where no shell command was ever marked.
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
-                            `fux help agents shells` says how to turn marks on";
+                            `fux help shells` says how to turn marks on";
 
 impl Pane {
     pub fn new(
@@ -2553,14 +2553,23 @@ pub(crate) mod tests {
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
         let mut pane = pane(3, 30)?;
-        let mut stream = crate::events::Subscription::new(None, false, &pane.journal);
+        let mut stream = crate::events::Subscription::new(None, &pane.journal);
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
         let (said, _) = stream.told(&pane.journal, usize::MAX, |_| None);
         assert_eq!(
             said,
-            "done %1 @1 +1 status=1\nbell %1 @1 +1\ndone %1 @1 +1 status=0\ntitle %1 @1 +1 title=t\n"
+            concat!(
+                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":1}"#,
+                "\n",
+                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#,
+                "\n",
+                r#"{"event":"done","pane":"%1","tab":"@1","workspace":"+1","status":0}"#,
+                "\n",
+                r#"{"event":"title","pane":"%1","tab":"@1","workspace":"+1","title":"t"}"#,
+                "\n"
+            )
         );
         Ok(())
     }

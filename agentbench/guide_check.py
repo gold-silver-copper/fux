@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks that the first screen of `fux help-agents` (docs/agents.md, its
+"""Checks that the first screen of `fux help agents` (docs/agents.md, its
 first 60 lines) names every fux word the benchmark's fux driver uses to do
 its 100 tasks: what an agent needs should be on that screen.
 

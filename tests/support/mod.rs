@@ -364,7 +364,7 @@ impl Server {
         Client::connect(self, (rows, cols), Some(workspace), false)
     }
 
-    /// A client that only watches (`watch`).
+    /// A client that only watches (`opts watch attach`).
     pub fn watch(&self, rows: u16, cols: u16) -> Result<Client, String> {
         Client::connect(self, (rows, cols), None, true)
     }
@@ -842,7 +842,7 @@ pub fn eventually(what: &str, mut test: impl FnMut() -> Result<bool, String>) ->
     }
 }
 
-/// The real `fux` attached (no words, or `attach-to`, `watch`), on a PTY of
+/// The real `fux` attached (no words, or `opts … attach`), on a PTY of
 /// its own, and a fux-vt screen of what it shows.
 pub struct Terminal {
     /// `None` once the terminal is closed.

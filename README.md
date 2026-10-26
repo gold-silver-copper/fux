@@ -18,12 +18,13 @@ fux                               # attach, starting a server if none runs
 
 ## Using it
 
-`fux` alone attaches this terminal, starting a server in the background if
-none answers; `fux str work attach-to` attaches to workspace `work`, and
-`fux watch` only watches (keys do nothing but `C-b d`, which detaches). A
-new server holds nothing: the first client to attach starts workspace
-`main`, with one tab and a shell, on its screen. `fux watch` starts
-nothing: with no server, or one holding nothing, it is refused. `C-b d`
+`fux` alone attaches this terminal (it runs `opts attach`), starting a
+server in the background if none answers; `fux opts str work in attach`
+attaches to workspace `work`, and `fux opts watch attach` only watches
+(keys do nothing but `C-b d`, which detaches). A new server holds
+nothing: the first client to attach starts workspace `main`, with one tab
+and a shell, on its screen. One that watches starts nothing: with no
+server, or one holding nothing, it is refused. `C-b d`
 detaches, and the shells keep running. Inside a fux pane, `fux` refuses to attach.
 
 The server runs until `fux kill-server` (refused while a person's terminal
@@ -96,18 +97,18 @@ fux %3 str q text send-keys                       # press q: its version from be
 `fux help` lists every word with what it takes and leaves (`x secs -- x`);
 `fux help WORD` (`fux str WORD explain`) says one at length, with
 its options and an example;
-`fux help-agents` is the recipe for scripts and agents, its first screen
-enough for most work and `fux help agents TOPIC` the rest
-([docs/agents.md](docs/agents.md)), and `fux help-json` what `json` gives
+`fux help agents` is the recipe for scripts and agents, its first screen
+enough for most work and `fux help TOPIC` the rest
+([docs/agents.md](docs/agents.md)), and `fux help json` what `json` gives
 ([docs/json.md](docs/json.md)).
 
 What a word that acts takes (**options**, a wait, keys, a mouse event) goes
 on the pane before it, in any order: the pane given them becomes a request,
 which the word at the end acts on. `run`, `new-tab` and `new-workspace` have
-no pane yet: they start from `opts`, empty options. Of the three, only
-`run` takes a program (`program`, then each `arg`; a shell's line is
-`str sh program str -c arg str LINE arg`); `new-tab` and `new-workspace`
-start a shell. Their tab is laid out on `COLS ROWS size`, else on the
+no pane yet, nor has `attach`: they start from `opts`, empty options. Of
+the first three, only `run` takes a program (`program`, then each `arg`; a
+shell's line is `str sh program str -c arg str LINE arg`); `new-tab` and
+`new-workspace` start a shell. Their tab is laid out on `COLS ROWS size`, else on the
 caller's own screen (a client's keys), else on the caller's tab (`fux`
 run in a pane): never on the screen of a client that does not show the
 caller's tab. Run from outside fux, a size must be given: fux makes none
@@ -205,7 +206,7 @@ prefix again sends it to the pane.
 | `a`, then a key | `me me focused rename-prompt` … | pane actions: `r` rename, `x` close, `k` terminate the running command, `s` swap, `t`/`w` move to a tab/workspace, `n`/`W` move to a new one, `m h`/`m l` reorder |
 | `c` | `me copy-mode` | copy and select |
 | `p` | `me focused 0 paste-buffer drop` | paste the newest copy |
-| `n` / `b` | `me next-tab` / `me previous-tab` | next / previous tab |
+| `n` / `b` | `me str next step-tab` / `me str previous step-tab` | next / previous tab |
 | `e` | `me command-prompt` | type any fuxth |
 | `d` | `me detach` | detach this terminal |
 | `r`, then `h` `j` `k` `l` | `me focused str left 1 move-border` … | move a border one cell |
@@ -294,7 +295,7 @@ sends: `C` where a command's output begins, `D;STATUS` where it ends, `A`
 where a prompt starts. With them, a pane's version counts the commands
 that end, `last_status` says how the last did, `last-output` reads its
 output alone, and copy mode's `[` and `]` jump between prompts; without
-them, each says there are none. `fux help agents shells` shows the lines
+them, each says there are none. `fux help shells` shows the lines
 that send them, for bash, zsh and fish, to put in your own startup files
 ([docs/agents.md](docs/agents.md#shells-shells-and-their-marks)).
 
@@ -337,9 +338,9 @@ VT220-class terminal.
 
 `json` on what a word left gives its JSON: `ls json`, `X info json`,
 `pane capture json`, `client capture-client json`, an action's or a
-wait's answer (`… wait json`), `status json`; `events-json` and
-`events-of-json` stream an object a line. These shapes are part of fux's
-interface; `fux help-json` lists every one ([docs/json.md](docs/json.md)).
+wait's answer (`… wait json`), `status json`; `events` and `X events-of`
+stream an object a line. These shapes are part of fux's interface; `fux
+help json` lists every one ([docs/json.md](docs/json.md)).
 
 ## Configuration
 
@@ -592,11 +593,11 @@ Against mistakes, rather than against a program of yours that means harm:
   ```
 
   An agent given only that socket reaches only what runs there; you watch
-  it by attaching to the socket (`FUX_SOCKET=… fux watch`, or `fux attach`
+  it by attaching to the socket (`FUX_SOCKET=… fux opts watch attach`, or `fux`
   to type there too). Panes never move between servers. It keeps a mistake
   in one session from reaching the other, nothing more: both servers run as
   you, so neither is kept from your own processes and files.
-- `fux watch` watches without typing into anything.
+- `fux opts watch attach` watches without typing into anything.
 
 ## Development
 

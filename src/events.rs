@@ -228,14 +228,13 @@ impl Event {
         }
     }
 
-    /// The line that tells it: JSON, or its name, where, and `key=value`
-    /// for the rest.
-    pub fn line(&self, json: bool) -> String {
+    /// The JSON line that tells it.
+    pub fn line(&self) -> String {
         let (name, fields) = match self {
             Event::Pane(_, what) => what.said(),
             Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
         };
-        line(name, self.ids(), fields, json)
+        line(name, self.ids(), fields)
     }
 }
 
@@ -250,12 +249,12 @@ pub enum Ending {
 
 impl Ending {
     /// Its line, the stream's last, which is of no pane.
-    pub fn line(&self, json: bool) -> String {
+    pub fn line(&self) -> String {
         let (name, fields) = match self {
             Self::Gone => ("gone", Vec::new()),
             Self::Stopped(reason) => ("stopped", vec![("reason", Json::str(reason.clone()))]),
         };
-        line(name, (None, None, None), fields, json)
+        line(name, (None, None, None), fields)
     }
 
     /// The stream's reply, as it ends.
@@ -269,76 +268,50 @@ impl Ending {
 
 /// A stream's first line, once it is armed: from here on, nothing is
 /// missed unsaid.
-pub fn ready(json: bool) -> String {
-    line("ready", (None, None, None), Vec::new(), json)
+pub fn ready() -> String {
+    line("ready", (None, None, None), Vec::new())
 }
 
 /// The line that says `count` entries of the journal were let go before
 /// the stream was told them: of its target or not, which is not known.
-fn missed(count: u64, json: bool) -> String {
+fn missed(count: u64) -> String {
     line(
         "missed",
         (None, None, None),
         vec![("count", Json::int(count))],
-        json,
     )
 }
 
-/// The line of an event named `name` at the pane, tab and workspace given
-/// (none for the stream's own): JSON, or its name, the ids and
-/// `key=value` for the rest of `fields`.
+/// The JSON line of an event named `name` at the pane, tab and workspace
+/// given (none for the stream's own), with the rest of its `fields`.
 fn line(
     name: &str,
     (pane, tab, ws): (Option<PaneId>, Option<TabId>, Option<WsId>),
     fields: Vec<(&'static str, Json<'static>)>,
-    json: bool,
 ) -> String {
     let at = [
         ("pane", pane.map(|p| p.to_string())),
         ("tab", tab.map(|t| t.to_string())),
         ("workspace", ws.map(|w| w.to_string())),
     ];
-    let at = at.into_iter().filter_map(|(k, v)| Some((k, v?)));
-    if json {
-        let mut all = vec![("event", Json::str(name))];
-        all.extend(at.map(|(k, v)| (k, Json::str(v))));
-        all.extend(fields);
-        return format!("{}\n", Json::Object(all).render());
-    }
-    let mut line = name.to_owned();
-    for (_, id) in at {
-        line.push(' ');
-        line.push_str(&id);
-    }
-    for (key, value) in fields {
-        let value = match value {
-            Json::String(text) => crate::words::quote(&text),
-            other @ (Json::Null
-            | Json::Bool(_)
-            | Json::Number(_)
-            | Json::Array(_)
-            | Json::Object(_)
-            | Json::Raw(_)) => other.render(),
-        };
-        line.push_str(&format!(" {key}={value}"));
-    }
-    line.push('\n');
-    line
+    let mut all = vec![("event", Json::str(name))];
+    all.extend(at.into_iter().filter_map(|(k, v)| Some((k, Json::str(v?)))));
+    all.extend(fields);
+    format!("{}\n", Json::Object(all).render())
 }
 
 /// A connection that streams events: which pane, tab or workspace it is
-/// told of (all without one), how, and where in the journal it reads next.
+/// told of (all without one), and where in the journal it reads next.
 pub struct Subscription {
     target: Option<AnyRef>,
-    pub json: bool,
     next: Seq,
 }
 
 impl Subscription {
     /// One told of what happens from now on.
-    pub fn new(target: Option<AnyRef>, json: bool, journal: &Journal) -> Self {
+    pub fn new(target: Option<AnyRef>, journal: &Journal) -> Self {
         let next = journal.end();
-        Self { target, json, next }
+        Self { target, next }
     }
 
     /// Whether it is told of `event`: where its target is or holds, or a
@@ -380,7 +353,7 @@ impl Subscription {
         }
         let (lost, entries) = journal.from(self.next);
         if lost > 0 {
-            lines.push_str(&missed(lost, self.json));
+            lines.push_str(&missed(lost));
             self.next = Seq(self.next.0.saturating_add(lost));
         }
         for (seq, event) in entries {
@@ -389,7 +362,7 @@ impl Subscription {
             }
             self.next = Seq(seq.0.saturating_add(1));
             if self.wants(event) {
-                lines.push_str(&event.line(self.json));
+                lines.push_str(&event.line());
             }
             if self.ends(event) {
                 return (lines, Some(Ending::Gone));
@@ -414,11 +387,20 @@ mod tests {
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
         let bell = Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Told(Told::Bell));
         let mut journal = Journal::default();
-        let mut stream = Subscription::new(None, false, &journal);
+        let mut stream = Subscription::new(None, &journal);
         journal.push(bell.clone());
         journal.push(Event::Workspace(ws, Change::Closed));
-        assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "bell %1 @1 +1\n");
-        assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "closed +1\n");
+        assert_eq!(
+            stream.told(&journal, 1, |_| Some(ws)).0,
+            concat!(
+                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#,
+                "\n"
+            )
+        );
+        assert_eq!(
+            stream.told(&journal, 1, |_| Some(ws)).0,
+            concat!(r#"{"event":"closed","workspace":"+1"}"#, "\n")
+        );
         for _ in 0..=KEPT {
             journal.push(bell.clone());
         }
@@ -429,7 +411,11 @@ mod tests {
         assert_eq!(stream.told(&journal, 0, |_| Some(ws)).0, "");
         let (lines, _) = stream.told(&journal, usize::MAX, |_| Some(ws));
         assert!(
-            lines.starts_with("missed count=2\nbell %1 @1 +1\n"),
+            lines.starts_with(concat!(
+                r#"{"event":"missed","count":2}"#,
+                "\n",
+                r#"{"event":"bell","pane":"%1","tab":"@1","workspace":"+1"}"#
+            )),
             "{lines}"
         );
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
@@ -506,21 +492,22 @@ mod tests {
                 )
                 | Event::Tab(_, Change::Created(_) | Change::Renamed(_) | Change::Closed)
                 | Event::Workspace(_, Change::Created(_) | Change::Renamed(_) | Change::Closed) => {
-                    lines.push(event.line(false))
+                    lines.push(event.line())
                 }
             }
         }
         for ending in [Ending::Gone, Ending::Stopped(String::new())] {
             match ending {
-                Ending::Gone | Ending::Stopped(_) => lines.push(ending.line(false)),
+                Ending::Gone | Ending::Stopped(_) => lines.push(ending.line()),
             }
         }
-        lines.extend([ready(false), missed(1, false)]);
+        lines.extend([ready(), missed(1)]);
+        // Each begins `{"event":"NAME"`.
         let names: std::collections::BTreeSet<&str> = (lines.iter())
-            .filter_map(|line| line.split_whitespace().next())
+            .filter_map(|line| line.split('"').nth(3))
             .collect();
         let docs = include_str!("../docs/json.md");
-        let table = (docs.split("## `events-json`").nth(1))
+        let table = (docs.split("## `events`").nth(1))
             .and_then(|rest| rest.split("\n## ").next())
             .and_then(|section| section.split("| --- | --- |").nth(1))
             .ok_or("docs/json.md has no events table")?;

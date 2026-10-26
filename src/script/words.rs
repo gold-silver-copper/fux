@@ -174,6 +174,16 @@ impl Opt {
     }
 }
 
+/// The words that start from opts, as the table says: `run, new-tab,
+/// new-workspace and attach`, `last` before the last.
+pub fn from_opts(last: &str) -> String {
+    let opts = |act: &&Act| act.takes().is_some_and(|t| t.after == After::Opts);
+    let names: Vec<&str> = (Act::ALL.iter().filter(opts))
+        .map(|act| Word::Act(*act).row().name)
+        .collect();
+    crate::words::listed(&names, last)
+}
+
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
@@ -182,7 +192,7 @@ pub const KINDS: [(&str, &str, Option<&str>); 11] = [
     ("client", "a client", None), ("size", "a size (from percent)", None),
     ("answer", "an action's answer", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
-    ("opts", "options (from opts, for run, new-tab and new-workspace; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
+    ("opts", "options (from opts, for run, new-tab, new-workspace and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
 ];
 
@@ -228,7 +238,7 @@ words! {
         Finding Client "client" "name -- client" "a client by its id, c2" "fux str c1 client str left focus" [];
         Finding Me "me" "-- client" "the client whose key or prompt runs this" "str z str 'me zoom' bind" [];
         Finding Focused "focused" "client -- pane" "the pane a client focuses" "fux str c1 client focused capture" [];
-        Starting Opts "opts" "-- opts" "empty options, for run, new-tab and new-workspace (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
+        Starting Opts "opts" "-- opts" "empty options, for run, new-tab, new-workspace and attach (the other words take them on the pane)" "fux opts 80 24 size str ./app program run" [];
         Starting Run "run" "opts -- answer" "start a program in a tab of its own, in workspace agent; its pane stays once it exits" "fux opts str web name 120 40 size str ./app program str --flag arg run" [Opts: Name Size Cwd Env Program Arg In];
         Starting Split "split" "subject -- answer" "split a pane: a shell, or the program given" "fux %3 vertical split" [Pane: Horizontal Vertical Shares Cwd Env Program Arg];
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
@@ -243,10 +253,8 @@ words! {
         Reading Info "info" "handle -- record" "a pane, tab or workspace, all of it" "fux %3 info json" [];
         Reading Get "get" "handle field -- value" "one field of a pane, tab or workspace: version, exited, last_status, idle_ms, cwd" "fux %3 str exited get" [];
         Reading Json "json" "value -- json" "value as JSON (an answer as its JSON); a failed wait stops the program before json runs" "fux ls json" [];
-        Reading Events "events" "--" "what happens, a line each, as it happens" "fux events" [];
-        Reading EventsJson "events-json" "--" "what happens, as JSON lines" "fux events-json" [];
-        Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace" "fux str agent workspace events-of" [];
-        Reading EventsOfJson "events-of-json" "handle --" "the same, as JSON lines" "fux str agent workspace events-of-json" [];
+        Reading Events "events" "--" "what happens, a JSON line each, as it happens" "fux events" [];
+        Reading EventsOf "events-of" "handle --" "what happens in a pane, tab or workspace, a JSON line each" "fux str agent workspace events-of" [];
         Reading Dump "dump" "-- text" "everything, as a program that makes it again (shells new, nothing typed into them)" "fux dump > all.fux; fux start && fux --file all.fux" [];
         Reading DumpOf "dump-of" "handle -- text" "a tab or workspace, as a program that makes it again (shells new, nothing typed into them)" "fux str work workspace dump-of > work.fux; fux --file work.fux" [];
         Changing Kill "kill" "handle --" "close a pane, tab or workspace, without asking" "fux %3 kill" [];
@@ -268,18 +276,13 @@ words! {
         Changing Buffers "buffers" "-- text" "the paste buffers, newest 0" "fux buffers" [];
         Changing Buffer "buffer" "n -- text" "paste buffer n" "fux 0 buffer" [];
         Changing PasteBuffer "paste-buffer" "pane n -- answer" "paste buffer n into a pane; answers as send-keys does" "fux %3 0 paste-buffer" [];
-        Clients Attach "attach" "--" "show the server in this terminal" "fux attach" [];
-        Clients AttachTo "attach-to" "workspace --" "the same, on a workspace" "fux str work attach-to" [];
-        Clients Watch "watch" "--" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux watch" [];
-        Clients Headless "headless" "cols rows --" "a client with no terminal, 1 to 4096 each, until signalled; prints its id" "fux 100 30 headless" [];
+        Clients Attach "attach" "opts --" "show the server in this terminal (bare fux is opts attach); with a size, be a client of no terminal instead" "fux opts str work in attach" [Opts: In Size Watch];
         Clients Focus "focus" "client way --" "left right up down next previous or last pane" "fux str c1 client str left focus" [];
         Clients FocusPane "focus-pane" "client pane --" "focus a pane" "fux str c1 client %3 focus-pane" [];
         Clients ShowTab "show-tab" "client tab --" "show a tab" "fux str c1 client @2 show-tab" [];
-        Clients NextTab "next-tab" "client --" "the next tab" "fux str c1 client next-tab" [];
-        Clients PreviousTab "previous-tab" "client --" "the previous tab" "fux str c1 client previous-tab" [];
+        Clients StepTab "step-tab" "client way --" "show the next or previous tab" "fux str c1 client str next step-tab" [];
         Clients ShowWorkspace "show-workspace" "client workspace --" "show a workspace" "fux str c1 client str work show-workspace" [];
-        Clients NextWorkspace "next-workspace" "client --" "the next workspace" "fux str c1 client next-workspace" [];
-        Clients PreviousWorkspace "previous-workspace" "client --" "the previous workspace" "fux str c1 client previous-workspace" [];
+        Clients StepWorkspace "step-workspace" "client way --" "show the next or previous workspace" "fux str c1 client str previous step-workspace" [];
         Clients Zoom "zoom" "client --" "zoom the focused pane, or restore" "fux str c1 client zoom" [];
         Clients Detach "detach" "client --" "detach a client" "fux str c1 client detach" [];
         Clients CaptureClient "capture-client" "client -- capture" "what a client's terminal shows" "fux str c1 client capture-client" [];
@@ -301,15 +304,12 @@ words! {
         Config ListKeys "list-keys" "--" "this client's keys, as config lines that make them" "fux list-keys" [];
         Config KeyNames "key-names" "--" "the names keys go by" "fux key-names" [];
         Help Help "help" "--" "the words, under their headings" "fux help" [];
-        Help HelpAgents "help-agents" "--" "how to drive programs from a script or an agent: the first screen, enough for most work" "fux help-agents" [];
-        Help HelpAgentsOn "help-agents-on" "word --" "one topic of that guide at length (recipes keys read shells programs servers), or all of it" "fux str recipes help-agents-on" [];
-        Help HelpJson "help-json" "--" "what json gives" "fux help-json" [];
-        Help Explain "explain" "word --" "one word at length" "fux str capture explain" [];
+        Help Explain "explain" "word --" "one word at length (json's says what json gives); or the guide to driving programs from a script or an agent: agents, its first screen, enough for most work; a topic of it (recipes keys read shells programs servers); or guide, all of it" "fux str capture explain" [];
         Help Check "check" "file --" "read a fuxth file without running it: its mistakes; a config.fux is run dry too" "fux str config.fux check" [];
     }
     Opt {
         Starting Name "name" "x name -- x" "the tab's or workspace's name" "fux opts str web name 80 24 size str ./app program run";
-        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up" "fux opts 80 24 size str ./app program run";
+        Starting Size "size" "x cols rows -- x" "what its tab is laid out on while no client shows it, 1 to 4096 each; needed from outside fux, else the caller's own screen or tab, as fux makes no size up; attach: be a client with no terminal, of this size, which prints its id and runs until signalled" "fux opts 80 24 size str ./app program run";
         Starting Cwd "cwd" "x dir -- x" "where it starts" "fux opts str /srv cwd 80 24 size str ./app program run";
         Starting Env "env" "x key var -- x" "a variable for it: text, or a pane, tab or workspace as its id (%3; an action's answer, its pane)" "fux opts str PORT 8080 env 80 24 size str ./app program run";
         Starting Program "program" "x path -- x" "the program to start, in place of a shell" "fux opts 80 24 size str ./app program run";
@@ -317,7 +317,8 @@ words! {
         Starting Horizontal "horizontal" "x -- x" "split side by side" "fux %3 horizontal split";
         Starting Vertical "vertical" "x -- x" "split stacked" "fux %3 vertical split";
         Starting Shares "shares" "x n n -- x" "split: how the pane and the new one divide the pane's room, A to B (default: halved)" "fux %3 horizontal 2 1 shares split";
-        Starting In "in" "x workspace -- x" "the workspace for run or new-tab (a name not there is made)" "fux opts str agent in 80 24 size new-tab";
+        Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
+        Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
         Waiting Changed "changed" "version -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
         Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else the server's wait-seconds" "fux %3 300 timeout wait";
@@ -352,7 +353,7 @@ words! {
     Keys {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
         Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused horizontal split drop' bind";
-        Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me next-tab' bind-root";
+        Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
         Config Label "label" "text --" "what the column says the last binding does" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
         Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused horizontal split drop' bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
@@ -504,6 +505,14 @@ fn within<T: TryFrom<i64>>(value: &Value<Fux>, range: RangeInclusive<i64>) -> Re
         };
         fail(Raise::Range, format!("{n} is out of range: {said}"))
     })
+}
+
+/// A way one place along: next or previous.
+fn sibling(value: &Value<Fux>) -> Result<Sibling, Failure> {
+    one_of(
+        value,
+        &[("next", Sibling::Next), ("previous", Sibling::Previous)],
+    )
 }
 
 /// One of a closed set, by its name; refused, naming each, if none.
@@ -684,6 +693,7 @@ fn modify(
         Opt::Vertical => built.axis = Some(Axis::Vertical),
         Opt::Shares => built.shares = Some((share(&next()?)?, share(&next()?)?)),
         Opt::KillFirst => built.kill = true,
+        Opt::Watch => built.watch = true,
         Opt::Wrapped => built.view.wrapped = true,
         Opt::Full => built.view.full = true,
         Opt::Styles => built.view.styles = true,
@@ -792,11 +802,12 @@ fn request(word: Act, value: Value<Fux>) -> Result<(On, Opts), Failure> {
         },
     };
     let Some(on) = built.on.take() else {
-        return Err(fail(
-            Raise::Type,
-            "takes a pane, not options: what opts gives is for run, new-tab and new-workspace; \
-             the rest go on the pane (`%2 all-history capture`, `%2 vertical split`)",
-        ));
+        let why = format!(
+            "takes a pane, not options: what opts gives is for {}; the rest go on the pane \
+             (`%2 all-history capture`, `%2 vertical split`)",
+            from_opts("and")
+        );
+        return Err(fail(Raise::Type, why));
     };
     unused(word, &built)?;
     Ok((on, built))
@@ -826,7 +837,10 @@ fn finished(word: Act, value: Value<Fux>) -> Result<Opts, Failure> {
         | Value::Bool(_)
         | Value::Str(_)
         | Value::List(_)
-        | Value::App(_)) => Err(wrong("options (from opts): opts … run", &other)),
+        | Value::App(_)) => Err(wrong(
+            &format!("options (from opts), as {word} takes"),
+            &other,
+        )),
     }
 }
 
@@ -999,20 +1013,6 @@ fn tell(request: impl Into<Request>) -> Result<Done<Ask>, Failure> {
 /// What this client does itself.
 fn local(local: Local) -> Result<Done<Ask>, Failure> {
     Ok(Done::Later(Ask::Local(local)))
-}
-
-/// This terminal attached, to `workspace` or the last, only watching if
-/// `read_only`; or a client of no terminal, of `size`.
-fn attach(
-    workspace: Option<WsRef>,
-    read_only: bool,
-    size: Option<fux_vt::Size>,
-) -> Result<Done<Ask>, Failure> {
-    local(Local::Attach {
-        workspace,
-        read_only,
-        size,
-    })
 }
 
 fn ask_as(client: ClientId, command: Command, then: Then) -> Ask {
@@ -1302,10 +1302,8 @@ impl fuxth::Host for Host<'_> {
                 | Value::List(_)
                 | Value::App(_)) => now(out, Value::str(json_of(&other).render())),
             },
-            Act::Events => tell(Request::Events(None, false)),
-            Act::EventsJson => tell(Request::Events(None, true)),
-            Act::EventsOf => tell(Request::Events(Some(target(&next()?)?), false)),
-            Act::EventsOfJson => tell(Request::Events(Some(target(&next()?)?), true)),
+            Act::Events => tell(Request::Events(None)),
+            Act::EventsOf => tell(Request::Events(Some(target(&next()?)?))),
             Act::Dump => later(ask(Command::DumpLayout { target: None }, Then::Text)),
             Act::DumpOf => {
                 let target = Some(target(&next()?)?);
@@ -1395,8 +1393,7 @@ impl fuxth::Host for Host<'_> {
             }
             Act::Reorder => {
                 let t = target(&next()?)?;
-                let siblings = [("next", Sibling::Next), ("previous", Sibling::Previous)];
-                let toward = one_of(&next()?, &siblings)?;
+                let toward = sibling(&next()?)?;
                 tell(Command::Reorder { target: t, toward })
             }
             Act::ClearHistory => tell(Command::ClearHistory {
@@ -1418,10 +1415,14 @@ impl fuxth::Host for Host<'_> {
                 ))
             }
             // ----------------------------------------------------- clients
-            Act::Attach => attach(None, false, None),
-            Act::AttachTo => attach(Some(workspace(&next()?)?), false, None),
-            Act::Watch => attach(None, true, None),
-            Act::Headless => attach(None, false, Some(laid_out(&next()?, &next()?)?.size())),
+            Act::Attach => {
+                let built = finished(act, next()?)?;
+                local(Local::Attach {
+                    workspace: built.place,
+                    read_only: built.watch,
+                    size: built.size.map(|screen| screen.size()),
+                })
+            }
             Act::Focus => {
                 let c = client(&next()?)?;
                 let ways = Direction::ALL.map(|way| (way.name(), PanePick::Toward(way)));
@@ -1451,10 +1452,8 @@ impl fuxth::Host for Host<'_> {
                 let w = workspace(&next()?)?;
                 order(c, ClientAction::SelectWorkspace(Pick::Id(w)))
             }
-            Act::NextTab => order(client(&next()?)?, step_tab(Sibling::Next)),
-            Act::PreviousTab => order(client(&next()?)?, step_tab(Sibling::Previous)),
-            Act::NextWorkspace => order(client(&next()?)?, step_workspace(Sibling::Next)),
-            Act::PreviousWorkspace => order(client(&next()?)?, step_workspace(Sibling::Previous)),
+            Act::StepTab => order(client(&next()?)?, step_tab(sibling(&next()?)?)),
+            Act::StepWorkspace => order(client(&next()?)?, step_workspace(sibling(&next()?)?)),
             Act::Zoom => order(client(&next()?)?, ClientAction::Zoom),
             Act::Detach => order(client(&next()?)?, ClientAction::Detach),
             Act::CaptureClient => {
@@ -1510,23 +1509,10 @@ impl fuxth::Host for Host<'_> {
             Act::KeyNames => self.show(&format!("{}\n", crate::keys::all_names().join(" "))),
             // -------------------------------------------------------- help
             Act::Help => self.show(&help::overview()),
-            Act::HelpAgents => self.show(help::agents_first()),
-            Act::HelpAgentsOn => {
-                let topic = string(&next()?)?;
-                let text = help::agents_topic(&topic).ok_or_else(|| {
-                    let topics = help::agents_topics().join(" ");
-                    fail(
-                        Raise::BadValue,
-                        format!("no topic {topic:?}: {topics}, or all"),
-                    )
-                })?;
-                self.show(&text)
-            }
-            Act::HelpJson => self.show(help::JSON),
             Act::Explain => {
                 let word = string(&next()?)?;
                 let text = help::explain(&word)
-                    .ok_or_else(|| fail(Raise::UnknownWord, format!("no word {word:?}")))?;
+                    .ok_or_else(|| fail(Raise::UnknownWord, help::unknown(&word)))?;
                 self.show(&text)
             }
             Act::Check => {

@@ -518,7 +518,7 @@ names others in this process):
    `src/transparency.rs`). A `Session` with one pane and one client a row
    taller, so the pane above the bar has the recording's size. Output is
    read into the pane as the server reads it, and the client's terminal
-   gets what `fux attach` writes first (`client::ENTER`), the server's
+   gets what `fux opts attach` writes first (`client::ENTER`), the server's
    queries, and every paint, made as `Server::paint` makes it.
 
 Then the pane's rectangle of the client's screen is compared with the

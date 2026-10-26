@@ -1,23 +1,23 @@
 //! fux's help, made from its words (`crate::script::Word`) and the bundled
 //! library's comments, so that it always says what this binary does; and
-//! the recipe for driving programs from a script or an agent
-//! (`help-agents`), which is `docs/agents.md`, built in.
+//! the guide to driving programs from a script or an agent
+//! (`str agents explain`), which is `docs/agents.md`, built in.
 use crate::script::{Act, After, LIBRARY, Word};
 
 /// `docs/agents.md`.
 pub const AGENTS: &str = include_str!("../docs/agents.md");
-/// The guide's first screen (`help-agents`): all before its first topic.
-pub fn agents_first() -> &'static str {
-    AGENTS
-        .split_once("\n## ")
-        .map_or(AGENTS, |(first, _)| first)
-}
 
-/// One topic of the guide (`help-agents-on`), its section headed `## TOPIC:`,
-/// or `all` of it; `None` if it has none so named.
-pub fn agents_topic(topic: &str) -> Option<String> {
-    if topic == "all" {
-        return Some(AGENTS.to_owned());
+/// Of the guide, `agents` its first screen (all before its first topic),
+/// `guide` all of it, else the topic's section, headed `## TOPIC:`; `None`
+/// if it has none so named.
+fn guide(topic: &str) -> Option<String> {
+    let first = AGENTS
+        .split_once("\n## ")
+        .map_or(AGENTS, |(first, _)| first);
+    match topic {
+        "agents" => return Some(first.to_owned()),
+        "guide" => return Some(AGENTS.to_owned()),
+        _ => {}
     }
     let heading = format!("\n## {topic}:");
     let (_, rest) = AGENTS.split_once(&heading)?;
@@ -27,14 +27,21 @@ pub fn agents_topic(topic: &str) -> Option<String> {
     Some(format!("##{}{section}", heading.trim_start_matches("\n##")))
 }
 
-/// The guide's topics, as `help-agents-on` takes them.
-pub fn agents_topics() -> Vec<&'static str> {
+/// What `explain` says of a name that is neither a word nor a topic: the
+/// topics, as the guide's headings name them.
+pub fn unknown(name: &str) -> String {
+    let topics = topics().join(" ");
+    format!("no word or topic {name:?}; the topics: agents {topics} guide")
+}
+
+/// The guide's topics, as its headings name them.
+fn topics() -> Vec<&'static str> {
     (AGENTS.split("\n## ").skip(1))
         .filter_map(|section| section.split_once(':').map(|(topic, _)| topic))
         .collect()
 }
 
-/// What `json` gives, word by word (`help-json`).
+/// What `json` gives, word by word (`str json explain`).
 pub const JSON: &str = include_str!("../docs/json.md");
 
 /// How fux runs, and every word under its heading.
@@ -43,6 +50,7 @@ pub fn overview() -> String {
         crate::config::Limit::DEFAULT.seconds(),
         crate::script::SHEBANG,
     );
+    let from_opts = crate::script::from_opts("and");
     let mut out = format!(
         "\
 usage: fux                     attach, starting a server if none runs
@@ -54,17 +62,18 @@ Words run left to right, each taking what the words before it left: a
 number is a value; %2, @2 and +1 are a pane, a tab and a workspace; `str
 WORD` pushes WORD as text. What is left is printed. What a word that acts
 takes (options, keys, what to read) goes on the pane before it (`%2 str y
-text send-keys`, `%2 all-history capture`); only run, new-tab and
-new-workspace start from opts (`opts str make program str test arg
-run`), laid out on a size given (`opts 80 24 size …`), else the
-caller's own screen or tab (`fux` run in a pane): run from outside fux,
-a size must be given, as fux makes none up. An action answers at once,
+text send-keys`, `%2 all-history capture`); only
+{from_opts} start from opts (`opts str make
+program str test arg run`). A new pane is laid out on a size given
+(`opts 80 24 size …`), else the caller's own screen or tab (`fux` run in
+a pane): run from outside fux, a size must be given, as fux makes none
+up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
 version differs from V, else answers `timeout` after {wait}s unless
 `SECS timeout` says (the server's wait-seconds). A failure prints
 `fux: CODE: MESSAGE` on stderr.
-Driving programs from a script or an agent: `fux help-agents`; one word:
+Driving programs from a script or an agent: `fux help agents`; one word:
 `fux help WORD`.
 ",
     );
@@ -170,8 +179,13 @@ pub fn library() -> Vec<(&'static str, &'static str, &'static str, String)> {
     words
 }
 
-/// One word at length: its stack effect, what it does, and an example.
+/// One word at length, or a topic of the guide.
 pub fn explain(name: &str) -> Option<String> {
+    guide(name).or_else(|| word(name))
+}
+
+/// One word at length: its stack effect, what it does, and an example.
+fn word(name: &str) -> Option<String> {
     if let Some(word) = Word::named(name) {
         let row = word.row();
         let mut out = format!("{}  ( {} )\n\n{}.\n", row.name, row.effect, row.about);
@@ -194,6 +208,8 @@ pub fn explain(name: &str) -> Option<String> {
         }
         if word == Word::Act(Act::Set) {
             out.push_str(&settings());
+        } else if word == Word::Act(Act::Json) {
+            out.push_str(&format!("\n{JSON}"));
         }
         return Some(out);
     }
@@ -313,21 +329,28 @@ mod tests {
             assert!(word.row().about.contains(&read), "{word:?}");
         }
         let sides = format!("1 to {} each", crate::view::MOST);
-        let sized = [Act::Resize, Act::ResizeClient, Act::Headless].map(Word::Act);
+        let sized = [Act::Resize, Act::ResizeClient].map(Word::Act);
         for word in sized.into_iter().chain([Word::Opt(Opt::Size)]) {
             assert!(word.row().about.contains(&sides), "{word:?}");
         }
     }
 
-    /// The guide's topics, as `help-agents-on` and the guide's first
-    /// screen list them, are its headings, which `help-agents-on` reads.
+    /// The guide's topics, as `explain` and the guide's first screen
+    /// list them, are its headings, which `explain` reads; none is a word.
     #[test]
     fn the_guide_lists_its_topics_as_its_headings_are() {
-        let topics = agents_topics();
+        let topics = super::topics();
         assert!(topics.len() >= 5, "{topics:?}");
-        let on = Word::Act(Act::HelpAgentsOn).row().about;
+        let on = Word::Act(Act::Explain).row().about;
         let listed = format!("({})", topics.join(" "));
         assert!(on.contains(&listed), "{listed}");
+        for topic in topics.iter().chain(&["agents", "guide"]) {
+            assert!(word(topic).is_none(), "{topic} is a word");
+            assert!(
+                explain(topic).is_some_and(|text| AGENTS.contains(&text)),
+                "{topic}"
+            );
+        }
         let quoted: Vec<_> = topics.iter().map(|t| format!("`{t}`")).collect();
         let listed = format!("whole guide): {}.", quoted.join(", "));
         let guide = AGENTS.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -375,6 +398,10 @@ mod tests {
             let from_opts = row.effect.starts_with("opts ");
             assert_eq!(opts == Some(After::Opts), from_opts, "{act}");
         }
+        // Opts' own help names the words that start from them.
+        let from_opts = crate::script::from_opts("and");
+        assert!(Word::Act(Act::Opts).row().about.contains(&from_opts));
+        assert!(overview.contains(&from_opts));
         // Each option goes on a word.
         for opt in Opt::ALL {
             assert!(!opt.takers().is_empty(), "{opt}");

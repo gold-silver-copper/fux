@@ -21,7 +21,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, usage};
+pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opts, usage};
 
 /// A config, by its name and text, whose definitions its bindings and
 /// prompt see.
@@ -107,6 +107,8 @@ pub struct Opts {
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
     pub kill: bool,
+    /// Attaching only to watch (`watch`).
+    pub watch: bool,
     /// How long a wait waits before it times out.
     pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,
@@ -1218,7 +1220,7 @@ fn a_file(mut error: fuxth::Error, args: &[String]) -> fuxth::Error {
 /// never a file, whatever it holds; else each is a word.
 fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
     let words = match args {
-        [] => token::arguments(&["attach"]),
+        [] => token::arguments(&["opts", "attach"]),
         // A program read whole, at most `SOURCE_MAX` of it.
         [dash] if dash == "-" => {
             let text = read_text("stdin", io::stdin())?;
@@ -1234,16 +1236,9 @@ fn program(args: &[String]) -> Result<(Vec<Token>, Given), Failed> {
                 "--file names the file: fux --file FILE ARGS…",
             ));
         }
-        // Help as other programs give it: `help agents TOPIC`, `help json`,
-        // `help WORD`, `--help`, `--version`.
-        [help, agents, topic] if help == "help" && agents == "agents" => {
-            token::arguments(&["str", topic, "help-agents-on"])
-        }
-        [help, topic] if help == "help" => match topic.as_str() {
-            "agents" => token::arguments(&["help-agents"]),
-            "json" => token::arguments(&["help-json"]),
-            word => token::arguments(&["str", word, "explain"]),
-        },
+        // Help as other programs give it: `help WORD` (or a topic of the
+        // guide), `--help`, `--version`.
+        [help, topic] if help == "help" => token::arguments(&["str", topic, "explain"]),
         [flag] if matches!(flag.as_str(), "--help" | "-h") => token::arguments(&["help"]),
         [flag] if matches!(flag.as_str(), "--version" | "-V") => token::arguments(&["version"]),
         [line] => token::source("command line", line)?,
@@ -1358,7 +1353,7 @@ mod tests {
         let mut again = super::Keymap::empty();
         run(
             "other",
-            "str C-a prefix str M-n str 'me next-tab' bind-root",
+            "str C-a prefix str M-n str 'me str next step-tab' bind-root",
             &mut again,
         )?;
         run("listed", &keymap.describe(), &mut again)?;
@@ -1385,12 +1380,21 @@ mod tests {
         Ok(())
     }
 
-    /// Options or a request nothing acts on name the words that would.
+    /// Options or a request nothing acts on name the words that would, as
+    /// the kind's own description does.
     #[test]
     fn what_is_left_names_its_word() {
+        let opts = super::words::KINDS
+            .iter()
+            .find(|(name, ..)| *name == "opts");
+        let from_opts = super::from_opts("and");
+        assert!(
+            opts.is_some_and(|(_, said, _)| said.contains(&from_opts)),
+            "{from_opts}"
+        );
         for (code, end) in [
             ("%2 str hi paste", "send-keys"),
-            ("opts str x in", "run or new-tab"),
+            ("opts str x in", "run, new-tab or attach"),
         ] {
             let tokens = super::program(&[code.to_owned()]).map(|(tokens, _)| tokens);
             let compiled = super::compile(&tokens.unwrap_or_default());

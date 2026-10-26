@@ -14,7 +14,7 @@
 //!    (`Session::output`, at most 16 KiB a read), the pane's replies are
 //!    taken as its program would read them, and the client is painted as
 //!    the server paints it (see [`Through::paint`]). The client's terminal
-//!    gets what `fux attach` writes to it ([`fux::client::ENTER`]), what the
+//!    gets what `fux opts attach` writes to it ([`fux::client::ENTER`]), what the
 //!    server sends it outside paints (its queries), and every paint.
 //!
 //! Then the pane's rectangle of the client's terminal is compared with the

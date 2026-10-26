@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cost to the agent, per run, from its call log and result (bench-161, part B/D).
 
-Per run: calls (all fux calls), help (help, help-agents, explain), actions (the
+Per run: calls (all fux calls), help (help, help agents, explain), actions (the
 rest), captures, waits (calls with wait-text, wait-gone, wait-exit or a bare
 wait), repeated waits (a wait for the same text on the same target asked more
 than once), restarts (respawn, or kill then run again of a named pane), sleeps,
@@ -30,7 +30,7 @@ def run_cost(d):
         r = json.load(open(os.path.join(d, ".result.json")))
     except (OSError, json.JSONDecodeError):
         pass
-    help_ = [c for c in calls if re.search(r"(^|\s)(help|help-agents|help-json)$|\bexplain$", c)]
+    help_ = [c for c in calls if re.search(r"(^|\s)(help(\s\S+)?|help-agents|help-json)$|\bexplain$", c)]
     actions = [c for c in calls if c not in help_]
     waits = [c for c in actions if re.search(r"\bwait-(text|gone|exit|bell)\b|\bwait$|\bwait json$", c)]
     texts = []
