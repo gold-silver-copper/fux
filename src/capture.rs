@@ -44,7 +44,7 @@ wire! {
             /// A glyph went into the last column: the next one goes on the
             /// next line, though the cursor shows on this one's last cell.
             wrap_pending: bool,
-            state: Json,
+            state: Vec<(String, Json)>,
         },
         Client(client: ClientId),
     }
@@ -82,7 +82,7 @@ impl crate::wire::Wire for Attributes {
         ]
         .iter()
         .for_each(|f| f.put(out));
-        (a.underline_style() as u16).put(out);
+        a.underline_style().number().put(out);
         a.blink().put(out);
     }
     fn get(r: &mut crate::wire::Reader<'_>) -> Result<Self, crate::wire::Error> {
@@ -190,14 +190,14 @@ pub fn pane(
         }
         wraps = !view.wrapped && row.continues();
     }
-    let mut state = state(pane, run, Instant::now(), copy_mode);
+    let mut state = state(pane, Instant::now(), copy_mode);
     // The history rows kept above the first row read: history it was not
     // asked for (rows a range leaves out are not counted).
     state.push(("above", above.map_or(Json::Null, Json::count)));
     let of = Of::Pane {
         version: pane.version(run),
         wrap_pending: cursor.is_some() && screen.pending_wrap(),
-        state: Json::object(state),
+        state: state.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
     };
     captured(of, screen.size().into(), cursor, lines, view)
 }
@@ -300,7 +300,7 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Captured {
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
-pub fn state(pane: &Pane, run: Run, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json)> {
+pub fn state(pane: &Pane, now: Instant, copy_mode: bool) -> Vec<(&'static str, Json)> {
     let screen = pane.screen();
     let cell = screen.graphics().cell();
     // What runs in the foreground: a job the shell started, else the
@@ -339,7 +339,6 @@ pub fn state(pane: &Pane, run: Run, now: Instant, copy_mode: bool) -> Vec<(&'sta
     let truncated = truncated.map(|(field, _)| Json::str(field)).collect();
     vec![
         ("title", Json::str(pane.title().as_str().to_owned())),
-        ("version", Json::str(pane.version(run).to_string())),
         ("program", program.map_or(Json::Null, Json::str)),
         // Its program closed its terminal and runs on: nothing reads keys
         // there (the terminal hung up; Linux says so).
@@ -454,13 +453,19 @@ fn captured(
             lines.pop();
         }
     }
+    // Its styles are kept only if its text or JSON shows them.
+    let styled = view.styles || view.marks;
     let cut = |run: &[(&str, Attributes)]| Cut {
         text: run.iter().map(|(text, _)| *text).collect(),
         cells: u32::try_from(run.len()).unwrap_or(u32::MAX),
-        style: run.first().map_or_else(Attributes::default, |(_, a)| *a),
+        style: (run.first().filter(|_| styled)).map_or_else(Attributes::default, |(_, a)| *a),
     };
     let lines = (lines.iter())
-        .map(|line| line.chunk_by(|(_, a), (_, b)| a == b).map(cut).collect())
+        .map(|line| {
+            line.chunk_by(|(_, a), (_, b)| !styled || a == b)
+                .map(cut)
+                .collect()
+        })
         .collect();
     Captured {
         of,
@@ -520,14 +525,8 @@ impl Captured {
             fields.push(("styles", Json::Array(self.lines.iter().map(runs).collect())));
         }
         let mut json = Json::object(fields);
-        if let (
-            Json::Object(all),
-            Of::Pane {
-                state: Json::Object(state),
-                ..
-            },
-        ) = (&mut json, &self.of)
-        {
+        if let (Json::Object(all), Of::Pane { version, state, .. }) = (&mut json, &self.of) {
+            all.push(("version".to_owned(), Json::str(version.to_string())));
             all.extend(state.iter().cloned());
         }
         json
@@ -708,6 +707,37 @@ mod tests {
         )
         .text();
         assert_eq!(text.lines().next(), Some("abc世"));
+        Ok(())
+    }
+
+    /// A capture goes on the wire and reads back the same, its styles
+    /// too; JSON nested past its bound is refused rather than read.
+    #[test]
+    fn a_capture_reads_back_as_written() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::json::Json;
+        use crate::wire::{Reader, encode};
+        let size = fux_vt::Size::new(3, 20)?;
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            size,
+            0,
+        )?);
+        pane.output(b"\x1b[1;4:3;5;38;2;1;2;3;48;5;9;58;5;2mstyled\x1b[m plain");
+        let view = CaptureView {
+            styles: true,
+            ..CaptureView::default()
+        };
+        let run = crate::command::Run::now().ok_or("a clock")?;
+        let body =
+            crate::protocol::Body::Capture(Box::new(super::pane(&pane, run, None, view, false)));
+        assert_eq!(
+            Reader::new(&encode(&body)).whole::<crate::protocol::Body>()?,
+            body
+        );
+        let deep = (0..40).fold(Json::Null, |inner, _| Json::Array(vec![inner]));
+        assert!(Reader::new(&encode(&deep)).whole::<Json>().is_err());
         Ok(())
     }
 

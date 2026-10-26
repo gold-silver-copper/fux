@@ -66,7 +66,7 @@ line, the deepest first; `print` prints a value at once.
 | `begin … FLAG until` | the body, until FLAG is true |
 | `list … end` | a list of the values its body leaves; the body starts with an empty stack (values from outside come in by name) |
 | `SEQ each … end` | the body once per element of a string or list, the element pushed; the body sees the whole stack |
-| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top. The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
+| `CODES try … catch … end` | the body, from an empty stack (values from outside come in by name), its values left. If it fails with one of CODES (a string written just before `try`: `str 'timeout closed' try`), what it began is undone (its calls, blocks and values) and the handler runs instead, on the stack as it was at `try` and the failure's message and code, both strings, the code on top; a failure of a code the application declares with `carries` may carry a value instead of the message (`Machine::raise_with`). The message is the failure's own, as its word or `fail` gave it (`Error::message`), with no place, word or host's telling added: only a failure that ends the program is said where, by its host (`Error::located`); one longer than a string may be fails with `too_long` instead, for a `try` further out, not cut. A failure of another code goes through untouched, as does one in the handler. A code no running word raises (a typo, `unknown_word`) is refused before the program runs, unless the application's words raise it as they run; one found compiling is never caught. Checked as `if … else … then`: the two ways join after `end` |
 
 | Word | Stack | |
 |---|---|---|
@@ -108,6 +108,7 @@ words.kind("ticket", "a ticket")?;               // a kind of the application's 
 words.name("n", "integer", "an integer")?;       // a name effects use, for kinds
 let ask = words.add("ask", "n -- ticket")?;       // takes an integer, gives a ticket
 words.raises(Code::Host("refused"))?;            // a failure of its words, for `try`
+words.carries(Code::Host("refused"), "ticket")?; // which a handler may get as a ticket
 let mut compiler = Compiler::new(words);
 compiler.add(&token::source("stdlib.fux", STDLIB)?)?;
 compiler.add(&token::source("script.fux", "3 ask")?)?;
@@ -117,6 +118,7 @@ loop {
         Outcome::Finished => break,
         Outcome::Suspended(request) => { /* do it, then */ machine.push(answer)?; }
         // or, if doing it failed: machine.raise(failure)?;
+        // or, carrying a value for a try's handler: machine.raise_with(failure, value)?;
         Outcome::Paused => { /* check for Ctrl-C */ }
     }
 }

@@ -533,12 +533,18 @@ fn laid_out(cols: &Value<Fux>, rows: &Value<Fux>) -> Result<crate::view::Screen,
     crate::view::Screen::new(rows, cols).map_err(|e| fail(Raise::Range, e))
 }
 
-/// The pane a value is: a pane, or an action's answer of one.
+/// The pane a value is: a pane, or an action's or wait's answer of one
+/// (a closed one's too, whose words then find no pane).
 fn as_pane(value: &Value<Fux>) -> Option<PaneId> {
     if let Value::App(Fux::Pane(p)) = value {
         return Some(*p);
     }
-    held(value).map(|version| version.pane)
+    if let Value::App(Fux::Answer(answer)) = value
+        && let super::Answer::Pane(answer) = &**answer
+    {
+        return Some(answer.pane());
+    }
+    None
 }
 
 fn pane(value: &Value<Fux>) -> Result<PaneId, Failure> {

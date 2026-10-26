@@ -221,6 +221,17 @@ impl Answer {
         }
     }
 
+    /// It says nothing printed: a capture of no lines, no pane's answers.
+    /// A capture of one blank line says that line, and a listing says at
+    /// least where events read from.
+    fn is_empty(&self) -> bool {
+        match self {
+            Answer::Capture(captured) => captured.lines.is_empty(),
+            Answer::Panes(answers) => answers.is_empty(),
+            Answer::Pane(_) | Answer::Listing { .. } | Answer::Json(_) | Answer::Status(_) => false,
+        }
+    }
+
     /// The version it holds: a pane's answer's, which a wait on it waits
     /// from; or a pane's capture's, its pane's as it was read, which
     /// `expect` sends at and `changed` waits from.
@@ -473,7 +484,7 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
         vocabulary.raises(code.into())?;
     }
     // A wait that failed answered too: its handler gets the answer.
-    for code in [Code::Timeout, Code::Closed] {
+    for code in CARRIED {
         vocabulary.carries(code.into(), "outcome")?;
     }
     Ok(vocabulary)
@@ -892,23 +903,7 @@ pub fn run_capped(
                     Ok(Reply {
                         end: End::Failed { code, message },
                         body,
-                    }) => {
-                        let failed = Failed::new(code, message);
-                        // A failure that answered too (a wait's): a `try`
-                        // that catches it gets its answer for its message,
-                        // and one none catches leaves it, printed before
-                        // why it failed.
-                        match answered(body).map(|mut answer| answer.pop()) {
-                            Ok(Some(answer)) => {
-                                pushed(machine, Ok(vec![answer.clone()]))?;
-                                let failure = fuxth::Failure::new(code.into(), failed.message);
-                                let raised = machine.raise_with(failure, answer);
-                                raised.map_err(|e| uncaught(machine, e))?;
-                            }
-                            Ok(None) => pushed(machine, Err(failed))?,
-                            Err(why) => pushed(machine, Err(why))?,
-                        }
-                    }
+                    }) => raised(machine, (code, message), body)?,
                     reply => pushed(machine, reply.and_then(|reply| answered(reply.body)))?,
                 }
             }
@@ -920,6 +915,34 @@ pub fn run_capped(
                 }
                 pushed(machine, values)?
             }
+        }
+    }
+}
+
+/// The codes whose failures answered too (a wait's), and carry that
+/// answer to a `try`'s handler.
+const CARRIED: [Code; 2] = [Code::Timeout, Code::Closed];
+
+/// Raises a failed reply's failure at the word. One of the `CARRIED`
+/// codes carries its answer, which a `try` that catches it gets for its
+/// message; uncaught, the answer is left, printed before why it failed.
+/// Any other fails alone: no other failure answers.
+fn raised(
+    machine: &mut Machine<Fux>,
+    (code, message): (Code, String),
+    body: Body,
+) -> Result<(), Failed> {
+    let answer = answered(body);
+    let Ok(Some(answer)) = answer.map(|mut a| a.pop().filter(|_| CARRIED.contains(&code))) else {
+        return pushed(machine, Err(Failed::new(code, message)));
+    };
+    match machine.raise_with(fuxth::Failure::new(code.into(), message), answer.clone()) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // A stack too full for it leaves it unprinted: its failure is
+            // still told.
+            drop(machine.push(answer));
+            Err(uncaught(machine, error))
         }
     }
 }
@@ -1239,7 +1262,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> Result<u8, Failed> {
         // An answer with nothing to say (an empty listing) prints no
         // blank line; options or a request, nothing.
         .filter(|value| {
-            !matches!(value, Value::App(Fux::Answer(a)) if a.text().is_empty())
+            !matches!(value, Value::App(Fux::Answer(a)) if a.is_empty())
                 && !matches!(value, Value::App(Fux::Opts(_)))
         })
         .try_for_each(|value| writeln!(host.out, "{}", value.text()))

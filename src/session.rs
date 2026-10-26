@@ -2870,13 +2870,9 @@ impl Session {
             ("rows", Json::Int(i64::from(p.size().rows()))),
             ("cols", Json::Int(i64::from(p.size().cols()))),
             ("pid", p.process().child().map_or(Json::Null, pid)),
+            ("version", Json::str(p.version(self.run).to_string())),
         ];
-        fields.extend(crate::capture::state(
-            p,
-            self.run,
-            now,
-            self.copying(p.id()),
-        ));
+        fields.extend(crate::capture::state(p, now, self.copying(p.id())));
         fields
     }
 
@@ -4993,6 +4989,29 @@ mod tests {
                 |e| e.starts_with("timeout: ") && e.contains("still at version %1:0.0.0.0.0:")
             ),
             "{again:?}"
+        );
+        Ok(())
+    }
+
+    /// A closed pane's answer is still its pane's: caught, a word that
+    /// wants a pane finds that pane gone, rather than refusing the kind.
+    #[test]
+    fn a_closed_panes_answer_names_its_pane() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let version = output(&mut s, "%1 vertical split")?;
+        run(&mut s, "%2 kill")?;
+        let caught = format!(
+            "str closed try str {} changed wait catch drop end",
+            version.trim()
+        );
+        assert_eq!(
+            output(&mut s, &format!("{caught} json"))?.trim(),
+            r#"{"pane":"%2","status":4}"#
+        );
+        let gone = output(&mut s, &format!("{caught} capture")).err();
+        assert!(
+            gone.as_ref().is_some_and(|e| e.starts_with("no_pane: ")),
+            "{gone:?}"
         );
         Ok(())
     }

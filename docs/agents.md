@@ -271,7 +271,8 @@ pane's width is joined whole), `0 4 rows`, `0 39 cols`, `full`, `marks`
 paints its whole background is marked whole), `styles`. Blanks at a
 line's end are trimmed, so a prompt's `>>> ` reads `>>>`; `full` keeps
 every cell. Then `json` for the screen and what is known of the pane:
-`cursor` is `[ROW,COL]`, `alt_screen` whether a program holds the
+`screen_cursor` is `[ROW,COL]` (`screen_rows` and `screen_cols` the
+screen's size), `alt_screen` whether a program holds the
 alternate screen, `history_lines` the history kept, `above` the history
 rows kept above the first row read, `idle_ms` since fux last read output
 from its program (or it started). Rows and columns count from 0.
