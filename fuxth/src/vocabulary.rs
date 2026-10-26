@@ -100,6 +100,9 @@ impl Vocabulary {
         let also = taken(&self.lookup(also, false)?.0);
         let kind = self.kinds.iter_mut().find(|(n, ..)| n == name);
         let kind = kind.ok_or_else(|| refused(format!("{name}: no such kind")))?;
+        if kind.3.union(also) == kind.3 {
+            return Err(refused(format!("{name}: taken as that already")));
+        }
         kind.3 = kind.3.union(also);
         Ok(())
     }

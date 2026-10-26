@@ -130,8 +130,8 @@ effect is read strictly, in the names of kinds (`integer`, `boolean`,
 `string`, `list`, `any`, the application's, and its names): a name before
 the `--` is what a place takes, after it what one gives, and a name on both
 sides passes the kind it was given through. `taken_as("pane", "answer")`,
-said before any effect, takes and gives a kind's values where an effect
-names another. Each name means one thing: a second kind or name of one
+said before any word, takes and gives a kind's values where a word's
+effect names another (a name of effects reads each kind as itself). Each name means one thing: a second kind or name of one
 spelling, a second word of a name (the core's and the parsing words'
 among them) or a code declared twice is refused (`contract`), so a host
 adds each once and keeps the id `add` gave. The checker follows those kinds,
@@ -162,7 +162,8 @@ and `about()`, a parsing word its `syntax()` and what it `reads()` of the
 token after it (`str` text, `define` and `let` a name). `Compiler::library`
 compiles a library as `add` does and gives each definition's [`Doc`]: the
 comment on the line just above its `define`, `# EFFECT : ABOUT`, and its
-code as written; a definition without that comment is refused. A list's values are
+code as written; a definition without that comment is refused, and so is
+a block open as the library begins or ends. A list's values are
 `List::items()`, read only, so its nesting and size limits hold.
 
 ## Tested

@@ -1265,6 +1265,15 @@ fn a_kind_given_is_held_to_the_word() {
         words.raises(Code::Host("refused")),
         words.taken_as("pane", "string"),
     ];
+    let mut kinds = Vocabulary::default();
+    let made = kinds
+        .kind("a", "an a")
+        .and_then(|()| kinds.taken_as("a", "string"));
+    assert_eq!(made.map_err(|e| e.message), Ok(()));
+    for again in [("a", "string"), ("a", "a")] {
+        let said = kinds.taken_as(again.0, again.1).map_err(|e| e.message);
+        assert_eq!(said, Err("a: taken as that already".to_owned()));
+    }
     let said: Vec<String> = again
         .into_iter()
         .filter_map(Result::err)
