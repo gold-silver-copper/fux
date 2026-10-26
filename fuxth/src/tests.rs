@@ -530,6 +530,60 @@ fn each_walks_any_string_in_time_to_its_length() -> Result<(), Error> {
     Ok(())
 }
 
+/// A character of a string is found from the mark before it: each part
+/// of a string grown from ASCII and non-ASCII pieces, as it grows and once
+/// a character is replaced, is what its characters give; and marking an
+/// ASCII string the first time it holds more is charged as a walk over it.
+#[test]
+fn a_strings_characters_are_found_from_its_marks() -> Result<(), Error> {
+    let copies = |s: &str, n| std::iter::repeat_n(s, n).collect::<String>();
+    // 192 characters, then pieces starting on a mark, of 4 and 3 bytes.
+    let pieces = [
+        copies("a", 70),
+        "é".into(),
+        copies("b", 121),
+        copies("𝄞", 64),
+        copies("日本", 40),
+    ];
+    let check = |text: &Text| {
+        let chars: Vec<char> = text.chars().collect();
+        for from in 0..=chars.len() {
+            for to in from..=chars.len().saturating_add(70) {
+                let part: String = chars
+                    .iter()
+                    .skip(from)
+                    .take(to.saturating_sub(from))
+                    .collect();
+                assert_eq!(text.part(from, to), part, "{from} {to}");
+            }
+        }
+    };
+    let mut grown = Text::new("");
+    for piece in &pieces {
+        grown.append(&Text::new(piece.as_str()));
+        check(&grown);
+    }
+    let mut put = Text::new(pieces.concat());
+    put.replace(100, &Text::new("ü"));
+    check(&put);
+    let steps = |text: &str| -> Result<u64, Error> {
+        let mut compiler = with_stdlib();
+        compiler.add(&token::source("t", text)?)?;
+        let mut machine = Machine::new(compiler.finish()?, Limits::default());
+        machine.run(&mut Toy { asked: Vec::new() }, u64::MAX)?;
+        Ok(machine.steps())
+    };
+    let (ascii, marked) = (
+        steps("str a 6400 copies str b push len")?,
+        steps("str a 6400 copies str é push len")?,
+    );
+    assert!(
+        marked.saturating_sub(ascii) >= 6400 / 64,
+        "{ascii} {marked}"
+    );
+    Ok(())
+}
+
 /// What the checker can't know it never refuses: a definition that leaves
 /// one value or two, called where two more are taken after; a loop at the
 /// top level that leaves values, then words that take them; a value that
