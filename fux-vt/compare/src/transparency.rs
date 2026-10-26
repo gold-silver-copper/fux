@@ -328,9 +328,9 @@ impl Through {
             self.session.output(self.pane, now);
             rest = later;
         }
-        self.session.parts.each_pane_mut(|pane| {
-            pane.input.drain_all();
-        });
+        self.session
+            .parts
+            .each_pane_mut(|pane| drop(pane.drain_input()));
     }
 
     /// Whether the pane holds a frame of synchronized output.

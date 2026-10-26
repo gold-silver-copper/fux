@@ -20,7 +20,7 @@ bench = false
 
 [dependencies]
 # The code under test: fux and its crates beside this one.
-fux = { path = ".." }
+fux = { path = "..", features = ["in-process"] }
 fux-vt = { path = "../fux-vt" }
 fuxix = { path = "../fuxix" }
 # The baseline it is run beside: the last release of each, as published.

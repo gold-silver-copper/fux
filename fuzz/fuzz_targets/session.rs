@@ -589,7 +589,7 @@ impl Run {
         let normal = view.is_some_and(|v| matches!(v.mode, Mode::Normal));
         let focus = self.s.focused(client).filter(|_| normal);
         self.s.parts.each_pane_mut(|pane| {
-            let (id, heard) = (pane.id(), pane.input.drain_all());
+            let (id, heard) = (pane.id(), pane.drain_input());
             let asked = pane.screen().mouse_protocol_mode() != fux_vt::MouseProtocolMode::None;
             assert!(
                 heard.is_empty() || (Some(id) == focus && asked),
@@ -599,14 +599,12 @@ impl Run {
     }
 
     fn drain_panes(&mut self) {
-        self.s
-            .parts
-            .each_pane_mut(|pane| drop(pane.input.drain_all()));
+        self.s.parts.each_pane_mut(|pane| drop(pane.drain_input()));
     }
 
     fn assert_no_pane_input(&mut self, key: fux::keys::KeyPress) {
         self.s.parts.each_pane_mut(|pane| {
-            let queued = pane.input.drain_all();
+            let queued = pane.drain_input();
             let id = pane.id();
             assert!(
                 queued.is_empty(),

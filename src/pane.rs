@@ -1,8 +1,8 @@
 //! A pane: its terminal emulator, its process, and the input waiting for it.
 use crate::after;
 use crate::bytes::ByteQueue;
-use crate::events::What;
-use crate::id::PaneId;
+use crate::events::{Journal, Teller, Told};
+use crate::id::{PaneId, TabId, WsId};
 use crate::outer::{Colours, Scheme};
 use crate::process::{Child, Ended, Pid};
 use fux_vt::{Event, Feature, Screen, Size};
@@ -64,33 +64,84 @@ impl std::error::Error for Error {}
 #[derive(Default)]
 pub struct InputQueue {
     bytes: ByteQueue,
-    /// Input was refused, and the program has not read since: everything
-    /// is refused, so none arrives with a hole before it.
-    refusing: bool,
-    lost: Lost,
+    /// Whether it refuses, and its run of input lost, which goes on only
+    /// while it refuses.
+    refusing: Refusing,
+    /// Its run of replies dropped (`Run`): over at a read that drops none
+    /// while it takes input, or as it stops refusing.
+    replies: Run,
 }
 
-/// Whether input was dropped, a piece the full queue refused or a reply
-/// past a read's bound, and whether that was told: told once for each run
-/// of drops, which ends as the program reads after the queue refused, or
-/// at a read that drops no reply while the queue takes input.
-#[derive(Clone, Copy, Default, PartialEq)]
-enum Lost {
+/// Whether the queue refuses: input was refused, and the program has not
+/// read since, so everything is refused and none arrives with a hole
+/// before it; with its run of input lost (`Run`), begun by input refused,
+/// not by a reply refused, and over as it stops refusing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Refusing {
     #[default]
-    None,
+    No,
+    Yes(Run),
+}
+
+/// A pane's runs of losses but input's and replies' (`InputQueue`), each
+/// over at a success of its kind: a copy made, a picture placed whole, a
+/// read that refused no memory.
+#[derive(Clone, Copy, Debug, Default)]
+struct LossRuns {
+    copies_cut: Run,
+    copies_not_text: Run,
+    pictures: Run,
+    memory: Run,
+}
+
+/// What a read of output did over its calls of the parser: whether it
+/// parsed any, dropped a reply, or was refused memory.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reading {
+    parsed: bool,
+    dropped: bool,
+    refused: bool,
+    /// A frame was read whole: the read ends where the next frame begins,
+    /// or where nothing is left, what follows the frame joining it.
+    framed: bool,
+}
+
+/// A run of one kind of drop: none going on; going on and not yet told;
+/// or told, so the rest of it is counted and not told again, as its
+/// notice said what goes on happening till it ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Run {
+    #[default]
+    Over,
     Untold,
     Told,
 }
 
+impl Run {
+    /// A drop of its kind: a run begins, if none goes on.
+    fn dropped(&mut self) {
+        if *self == Run::Over {
+            *self = Run::Untold;
+        }
+    }
+    /// Its drops are told: the rest of a run going on is not.
+    fn told(&mut self) {
+        if *self == Run::Untold {
+            *self = Run::Told;
+        }
+    }
+}
+
 impl InputQueue {
     /// Queues `bytes` as a piece, or refuses them whole if the queue is
-    /// full, and then everything until its terminal takes some.
-    pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+    /// full, and then everything until its terminal takes some. Only the
+    /// pane queues, which counts what is refused (`Pane::push`).
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
         self.push_with(|out| out.extend_from_slice(bytes.as_ref()))
     }
     /// Queues what `write` appends to its vector as a piece, in place, or
     /// takes it back and refuses it whole, as `push` does.
-    pub fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
+    fn push_with(&mut self, write: impl FnOnce(&mut Vec<u8>)) -> Result<(), Error> {
         let room = self.room();
         let len = self.bytes.push_with(|out| {
             let start = out.len();
@@ -110,7 +161,7 @@ impl InputQueue {
     /// Whether `len` bytes more fit now: if not, they are refused, and so
     /// is everything after them until its terminal takes some, as `push`
     /// refuses.
-    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
+    fn fits(&mut self, len: usize) -> Result<(), Error> {
         self.refuse(len, self.room())
     }
     /// Refuses a piece of `len` bytes past `room`, a drop, and input from
@@ -123,34 +174,17 @@ impl InputQueue {
         if len > INPUT_BYTES {
             return Err(Error::TooLong(len));
         }
-        self.refusing = true;
-        self.dropped();
-        Err(Error::InputFull)
-    }
-    /// A piece was dropped: told, if none was since the run began.
-    fn dropped(&mut self) {
-        if self.lost == Lost::None {
-            self.lost = Lost::Untold;
+        if self.refusing == Refusing::No {
+            self.refusing = Refusing::Yes(Run::Over);
         }
+        Err(Error::InputFull)
     }
     /// How many bytes more it takes now.
     pub fn room(&self) -> usize {
         match self.refusing {
-            true => 0,
-            false => INPUT_BYTES.saturating_sub(self.len()),
+            Refusing::Yes(_) => 0,
+            Refusing::No => INPUT_BYTES.saturating_sub(self.len()),
         }
-    }
-    /// Whether input was dropped and is yet to be told (`Lost`).
-    pub fn loses(&self) -> bool {
-        self.lost == Lost::Untold
-    }
-    /// Whether input was dropped and is yet to be told, which it then is.
-    pub fn tell_lost(&mut self) -> bool {
-        let untold = self.loses();
-        if untold {
-            self.lost = Lost::Told;
-        }
-        untold
     }
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
@@ -160,21 +194,23 @@ impl InputQueue {
         (!self.bytes.is_empty()).then(|| self.bytes.as_slice())
     }
     /// `n` bytes of the front were written: its terminal took them.
-    pub fn advance(&mut self, n: usize) {
-        if n > 0 && std::mem::take(&mut self.refusing) && self.lost == Lost::Told {
-            self.lost = Lost::None;
+    fn advance(&mut self, n: usize) {
+        if n > 0 && std::mem::take(&mut self.refusing) != Refusing::No {
+            self.replies = Run::Over;
         }
         self.bytes.take(n);
     }
     /// Lets everything queued go, as its program ends unread: how many
-    /// bytes, which its ender tells. A drop yet to be told stays to be.
-    pub fn discard(&mut self) -> usize {
+    /// bytes, which its ender tells. Its run of refusals ends with it.
+    fn discard(&mut self) -> usize {
         let queued = self.len();
         self.advance(queued);
+        (self.refusing, self.replies) = (Refusing::No, Run::Over);
         queued
     }
-    /// Everything queued, for tests and for a pane with no process.
-    pub fn drain_all(&mut self) -> Vec<u8> {
+    /// Everything queued, for tests and the harnesses.
+    #[cfg(any(test, feature = "in-process"))]
+    fn drain_all(&mut self) -> Vec<u8> {
         let out = self.bytes.as_slice().to_vec();
         self.advance(out.len());
         out
@@ -291,16 +327,16 @@ impl Title {
 }
 
 /// Replies (DSR, DA) and events the parser produces while reading output.
-struct Sink<'a> {
+struct Sink<'a, 't> {
     /// The replies to one read, queued together after it: at most
-    /// `REPLIES_MAX` bytes, `kept` of them; whether one was dropped past
+    /// `REPLIES_MAX` bytes, `kept` of them; how many were dropped past
     /// them.
     replies: Vec<u8>,
     kept: u64,
-    dropped: bool,
-    /// Where its bells, notifications, titles and commands' ends go, in
-    /// order, for the session's journal.
-    happened: &'a mut Vec<What>,
+    dropped: u64,
+    /// Where its bells, notifications, titles and commands' ends go: the
+    /// session's journal, in order.
+    tell: &'a mut Teller<'t>,
     title: &'a mut Title,
     /// Set by a bell (BEL).
     bell: &'a mut bool,
@@ -309,12 +345,14 @@ struct Sink<'a> {
     copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
+    /// Each sixel picture that ended, in order: placed whole or not.
+    pictures: Vec<bool>,
     /// The scheme a `CSI ? 996 n` among `replies` answered, last: its
     /// program was told it once they are queued (`Pane::scheme_told`).
     told: Option<Scheme>,
 }
 
-impl Sink<'_> {
+impl Sink<'_, '_> {
     /// Keeps `bytes` among the replies if they fit `REPLIES_MAX`, and
     /// whether they did; else one is dropped.
     fn keep(&mut self, bytes: &[u8]) -> bool {
@@ -324,10 +362,7 @@ impl Sink<'_> {
                 self.replies.extend_from_slice(bytes);
                 self.kept = self.kept.saturating_add(1);
             }
-            false => {
-                self.dropped = true;
-                self.alerts.replies_dropped = self.alerts.replies_dropped.saturating_add(1);
-            }
+            false => self.dropped = self.dropped.saturating_add(1),
         }
         fits
     }
@@ -335,11 +370,11 @@ impl Sink<'_> {
     /// The title changed: the journal is told.
     fn titled(&mut self) {
         let title = self.title.said().clone();
-        self.happened.push(What::Title(title));
+        self.tell.tell(Told::Title(title));
     }
 }
 
-impl fux_vt::Sink for Sink<'_> {
+impl fux_vt::Sink for Sink<'_, '_> {
     fn reply(&mut self, bytes: &[u8]) {
         self.keep(bytes);
     }
@@ -357,14 +392,14 @@ impl fux_vt::Sink for Sink<'_> {
                 }
             }
             Event::Bell => {
-                self.happened.push(What::Bell);
+                self.tell.tell(Told::Bell);
                 *self.bell = true;
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
             }
             Event::Notification(text) => {
                 self.alerts.rung = self.alerts.rung.saturating_add(1);
                 let text = Said::new(text);
-                self.happened.push(What::Notification(text.clone()));
+                self.tell.tell(Told::Notification(text.clone()));
                 self.alerts.last = Some(text);
             }
             Event::Clipboard { data, .. } => {
@@ -375,9 +410,12 @@ impl fux_vt::Sink for Sink<'_> {
                         .ok_or(Uncopied::NotText),
                 });
             }
-            Event::CommandEnded(status) => self.happened.push(What::Done(status)),
+            Event::CommandEnded(status) => self.tell.tell(Told::Done(status)),
             Event::IconName(_) => {}
         }
+    }
+    fn picture(&mut self, placed: bool) {
+        self.pictures.push(placed);
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
     /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
@@ -489,35 +527,140 @@ pub(crate) fn basename(program: &str) -> String {
 }
 
 /// What a program rang or announced since it started: bells, and desktop
-/// notifications (OSC 9, 777, 99) with the last one's text; and what of
-/// its output fux dropped or refused, counted for its JSON as clients
-/// showing it are told it (`Session::tell_refused`).
+/// notifications (OSC 9, 777, 99) with the last one's text.
 #[derive(Clone, Debug, Default)]
 pub struct Alerts {
     /// Bells and notifications together, as a pane's version counts them.
     pub rung: u64,
     pub last: Option<Said<NOTIFICATION_MAX>>,
-    /// Replies to its queries dropped, and in-band resize reports: past a
-    /// read's `REPLIES_MAX`, or for a full input queue.
-    pub replies_dropped: u64,
-    /// Its copies (OSC 52) that copied nothing, for each `Uncopied`.
-    pub copies_cut: u64,
-    pub copies_not_text: u64,
 }
 
-impl Alerts {
-    /// Its program's copy copied nothing, for `why`.
-    pub fn uncopied(&mut self, why: Uncopied) {
-        let n = match why {
-            Uncopied::Cut => &mut self.copies_cut,
-            Uncopied::NotText => &mut self.copies_not_text,
-        };
-        *n = n.saturating_add(1);
+/// What fux let go of a pane's program's, of each kind, counted: since
+/// its program started (`Pane::lost`, in its JSON), and since a client
+/// showing it was told (`Pane::untold`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Losses {
+    /// Pieces of input (keys, a paste, `send-keys`) its full queue
+    /// refused.
+    pub input: u64,
+    /// Replies to its queries, and in-band resize reports, dropped: past
+    /// a read's `REPLIES_MAX`, or for a full queue. A colour-scheme report
+    /// sent unasked (mode 2031) and refused is sent again (`Pane::offer`),
+    /// not lost.
+    pub replies: u64,
+    /// Its copies (OSC 52) that copied nothing, by why (`Uncopied`).
+    pub copies_cut: u64,
+    pub copies_not_text: u64,
+    /// Sixel pictures it drew not kept whole
+    /// (`fux_vt::Sink::picture`).
+    pub pictures: u64,
+    /// Times reading its output, or a resize, was refused memory
+    /// (`fux_vt::Parser::refused`): each lost only what it was for.
+    pub memory: u64,
+}
+
+impl Losses {
+    /// These and `more`.
+    fn add(&mut self, more: Losses) {
+        // Every kind named: one more does not compile till it is added.
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = more;
+        let add = |a: &mut u64, b| *a = a.saturating_add(b);
+        add(&mut self.input, input);
+        add(&mut self.replies, replies);
+        add(&mut self.copies_cut, copies_cut);
+        add(&mut self.copies_not_text, copies_not_text);
+        add(&mut self.pictures, pictures);
+        add(&mut self.memory, memory);
+    }
+
+    /// As a pane's JSON says them: `{"input":0,"replies":1,…}`.
+    pub fn json(self) -> crate::json::Json<'static> {
+        use crate::json::Json;
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = self;
+        Json::Object(vec![
+            ("input", Json::int(input)),
+            ("replies", Json::int(replies)),
+            ("copies_cut", Json::int(copies_cut)),
+            ("copies_not_text", Json::int(copies_not_text)),
+            ("pictures", Json::int(pictures)),
+            ("memory", Json::int(memory)),
+        ])
+    }
+
+    /// What a notice says of them, of pane `id`: for each kind it lost
+    /// any of, what, how many, and why (`%1: input dropped (2): …`).
+    pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
+        let replies = format!(
+            "one read of its output asked for more than {REPLIES_MAX} bytes of them, or its \
+             input queue was full"
+        );
+        let input = "its input queue was full, and takes nothing until its program reads";
+        let (cut, not_text) = (Uncopied::Cut, Uncopied::NotText);
+        let (cut, not_text) = (format!("each {cut}"), format!("each {not_text}"));
+        let pictures = "`fux help-json` says why one may not be";
+        let (copies, memory) = ("copies (OSC 52) not made", "each lost only what it was for");
+        let Losses {
+            input: n,
+            replies: r,
+            copies_cut: c,
+            copies_not_text: t,
+            pictures: p,
+            memory: m,
+        } = self;
+        // Each kind: how many, what, why, and what ends its run, till which
+        // more are counted, not told (`Run`).
+        let each: [(u64, &str, &str, &str); 6] = [
+            (n, "input dropped", input, "its program reads"),
+            (
+                r,
+                "replies to its program dropped",
+                &replies,
+                "a read of its output drops none",
+            ),
+            (c, copies, &cut, "a copy is made"),
+            (t, copies, &not_text, "a copy is made"),
+            (
+                p,
+                "sixel pictures not kept whole",
+                pictures,
+                "one is placed whole",
+            ),
+            (
+                m,
+                "memory refused",
+                memory,
+                "a read of its output refuses none",
+            ),
+        ];
+        (each.into_iter())
+            .filter(|(n, ..)| *n > 0)
+            .map(|(n, what, why, till)| {
+                let more = format!("; more till {till} are counted in its `lost`");
+                format!(
+                    "{id}: {what} ({n}): {why}{}",
+                    if runs { more.as_str() } else { "" }
+                )
+            })
+            .collect()
     }
 }
 
 /// Why a program's copy (OSC 52) copied nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug)]
 pub enum Uncopied {
     /// It was longer than fux-vt keeps of a string.
     Cut,
@@ -538,13 +681,11 @@ impl std::fmt::Display for Uncopied {
     }
 }
 
-/// A pane not in the session: made, or closed. One in it is a
-/// `Pane<workspace::Placed>`, which the session's parts alone make, so no
-/// other pane can be put in its stead (`*pane = other`), losing what it
-/// said.
-pub struct Loose;
-
-pub struct Pane<S = crate::workspace::Placed> {
+/// A pane: made, in the session, or closed. What it does that events tell
+/// is journaled as it does it: each method that does any takes the
+/// journal at its place (`Teller`), through a `PaneMut`: on the
+/// session's journal, only the session's parts give one.
+pub struct Pane {
     /// Given as it is made, and never changed: its events' place.
     id: PaneId,
     /// Changed by `rename` and `respawned`, which say so.
@@ -557,7 +698,7 @@ pub struct Pane<S = crate::workspace::Placed> {
     parser: fux_vt::Parser,
     /// Its program ends by `exit`, which says so.
     process: Process,
-    pub input: InputQueue,
+    input: InputQueue,
     pub runs: Runs,
     /// The output of a frame the program is drawing in synchronized output,
     /// from BSU on, since when (its timeout's start), and where the parser
@@ -593,14 +734,8 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// session takes them after every read, so they are fewer than the
     /// bytes it read.
     pub copied: Vec<Result<String, Uncopied>>,
-    /// Its program's copies that copied nothing, counted by why, kept until
-    /// a client showing it is told them (`Session::tell_refused`).
-    pub uncopied: std::collections::BTreeMap<Uncopied, usize>,
     /// When its program last wrote, or started.
     pub wrote_at: Instant,
-    /// What happened in it that events tell, in order, since the session
-    /// last took it into its journal (`workspace::PaneMut`).
-    said: Vec<What>,
     /// The mouse button `send-mouse press` holds down until its release: a
     /// `move` meanwhile is a drag.
     pub mouse_held: Option<fux_vt::keys::mouse::MouseButton>,
@@ -611,8 +746,178 @@ pub struct Pane<S = crate::workspace::Placed> {
     /// `respawned`.
     pub respawns: u64,
     pub alerts: Alerts,
-    /// Whether it is in the session.
-    placed: S,
+    /// What fux let go of its program's since it started.
+    lost: Losses,
+    /// What it let go of and has not told a client showing it, its
+    /// programs' before a respawn too: kept till one is.
+    untold: Losses,
+    /// The size its screen was last refused, if its last resize was.
+    refused_size: Option<Size>,
+    /// Its runs of copies, pictures and memory lost (`Run`): its runs of
+    /// input and replies are its queue's.
+    loss_runs: LossRuns,
+    /// What the read of output under way did so far (`Pane::read_done`).
+    reading: Reading,
+}
+
+/// A pane to change, with a journal at its place: what its methods do
+/// that events tell is journaled as they do it, at its own id. It reads
+/// as a `Pane` and changes it only by its own methods, one for each thing
+/// the session changes: it gives no `&mut Pane`, so its pane is never put
+/// in another's place behind its teller, nor wrapped on another journal.
+/// A pane of the session's is had only from the session's parts, which
+/// alone hold the session's journal (`Parts::pane_mut`); one made on
+/// another journal (a bench's, a pane not yet placed) tells only that.
+pub struct PaneMut<'a> {
+    pane: &'a mut Pane,
+    tell: Teller<'a>,
+}
+
+impl<'a> PaneMut<'a> {
+    /// `pane`, in tab `at`, telling `journal`.
+    pub fn new(pane: &'a mut Pane, at: (WsId, TabId), journal: &'a mut Journal) -> Self {
+        let tell = journal.teller((at, pane.id));
+        Self { pane, tell }
+    }
+    pub fn output(&mut self, bytes: &[u8]) {
+        self.pane.output(bytes, &mut self.tell);
+        self.pane.read_done();
+    }
+    pub fn read_unread(&mut self) {
+        self.pane.read_unread(&mut self.tell);
+        self.pane.read_done();
+    }
+    pub fn release_frame(&mut self) {
+        self.pane.release_frame(&mut self.tell);
+        self.pane.read_done();
+    }
+    pub fn resize(&mut self, size: Size) {
+        self.pane.resize(size, &mut self.tell);
+    }
+    pub fn respawned(&mut self, fresh: Pane, process: Process) -> (Process, Left) {
+        self.pane.respawned(fresh, process, &mut self.tell)
+    }
+    pub fn rename(&mut self, name: String) {
+        self.pane.rename(name, &mut self.tell);
+    }
+    pub fn exit(&mut self, ended: Ended) -> (End, Process) {
+        self.pane.exit(ended, &mut self.tell)
+    }
+    pub fn ended(&mut self, ended: Ended) -> End {
+        self.pane.ended(ended, &mut self.tell)
+    }
+
+    // What the session changes that events do not tell: each change by
+    // name, no whole pane, so none is put in its place or wrapped anew.
+    pub fn write_input(&mut self) -> bool {
+        self.pane.write_input()
+    }
+    pub fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+        self.pane.push(bytes)
+    }
+    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+        self.pane.push_with(write)
+    }
+    pub fn fits(&mut self, len: usize) -> Result<(), Error> {
+        self.pane.fits(len)
+    }
+    /// Its program is sent `held`'s mouse report, `report`; the button
+    /// `send-mouse press` holds is `held` once it is queued.
+    pub fn push_mouse(
+        &mut self,
+        report: Vec<u8>,
+        held: Option<fux_vt::keys::mouse::MouseButton>,
+    ) -> Result<(), Error> {
+        self.pane.push(report)?;
+        self.pane.mouse_held = held;
+        Ok(())
+    }
+    /// Its program is told the scheme is `scheme`, if the queue takes the
+    /// report; one refused is sent again (`Session::tell_schemes`).
+    pub fn offer_scheme(&mut self, scheme: Scheme) {
+        if self.pane.offer(scheme.report()) {
+            self.pane.scheme_told = Some(scheme);
+        }
+    }
+    #[must_use]
+    pub fn host(
+        &mut self,
+        colours: Colours,
+        palette: crate::outer::Palette,
+        graphics: fux_vt::Graphics,
+    ) -> bool {
+        self.pane.host(colours, palette, graphics)
+    }
+    pub fn keeps_size(&mut self) {
+        self.pane.keeps_size();
+    }
+    #[must_use]
+    pub fn take_untold(&mut self) -> Losses {
+        self.pane.take_untold()
+    }
+    /// What the session takes after each read: whether its program rang
+    /// the bell, and its copies, in order.
+    /// Refused copies are counted here, unless the `clipboard` setting
+    /// is false, which copies nothing and so refuses none.
+    pub fn take_read(&mut self, clipboard: bool) -> (bool, Vec<String>) {
+        let mut copies = Vec::new();
+        for copy in std::mem::take(&mut self.pane.copied)
+            .into_iter()
+            .filter(|_| clipboard)
+        {
+            match copy {
+                // A copy made ends the runs of copies refused.
+                Ok(text) => {
+                    let runs = &mut self.pane.loss_runs;
+                    (runs.copies_cut, runs.copies_not_text) = (Run::Over, Run::Over);
+                    copies.push(text);
+                }
+                Err(why) => self.pane.uncopied(why),
+            }
+        }
+        (std::mem::take(&mut self.pane.bell), copies)
+    }
+    /// Its program ended so, told once what it wrote is read.
+    pub fn exiting(&mut self, ended: Ended) {
+        self.pane.exiting = Some(ended);
+    }
+    /// Its program left more on its terminal than is read.
+    pub fn left_cut(&mut self) {
+        self.pane.left.output = Output::Cut;
+    }
+    pub fn clear_history(&mut self) {
+        self.pane.clear_history();
+    }
+    pub fn set_history_bytes(&mut self, bytes: usize) {
+        self.pane.set_history_bytes(bytes);
+    }
+    pub fn stop_reading(&mut self) {
+        self.pane.stop_reading();
+    }
+    /// `n` bytes of its input were written to its terminal, as
+    /// `write_input` writes them: for fux-diff's queue.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn wrote_input(&mut self, n: usize) {
+        self.pane.input.advance(n);
+    }
+    /// Gives it `process`, as a test's pane runs a child of the test's.
+    #[cfg(test)]
+    pub(crate) fn set_process(&mut self, process: Process) -> Process {
+        self.pane.set_process(process)
+    }
+    /// Everything queued for its program, as if written: for tests and the
+    /// harnesses.
+    #[cfg(any(test, feature = "in-process"))]
+    pub fn drain_input(&mut self) -> Vec<u8> {
+        self.pane.input.drain_all()
+    }
+}
+
+impl std::ops::Deref for PaneMut<'_> {
+    type Target = Pane;
+    fn deref(&self) -> &Pane {
+        self.pane
+    }
 }
 
 /// What a program left as it ended, or was respawned over: said with its
@@ -628,6 +933,49 @@ pub struct Left {
     pub input: usize,
 }
 
+impl Left {
+    /// What an event says of it: `truncated` (`true`) if it left more on
+    /// its terminal than is read (`Output::Cut`), and `input_unread`, the
+    /// bytes of input queued for it not yet written to its terminal, if
+    /// any.
+    pub fn fields(self) -> impl Iterator<Item = (&'static str, crate::json::Json<'static>)> {
+        use crate::json::Json;
+        let cut = match self.output {
+            Output::Read => None,
+            Output::Cut => Some(("truncated", Json::Bool(true))),
+        };
+        let input = (self.input > 0).then(|| ("input_unread", Json::int(self.input)));
+        cut.into_iter().chain(input)
+    }
+
+    /// What a notice says of it, after the end's own words, of a program
+    /// `who`: nothing, if it left neither.
+    pub fn told(self, who: &str) -> String {
+        let mib = crate::session::LEFT_MIB;
+        let mut told = match self.output {
+            Output::Read => String::new(),
+            Output::Cut => {
+                format!("; {who} left more than {mib} MiB on its terminal: the rest was not read")
+            }
+        };
+        if self.input > 0 {
+            told.push_str(&format!(
+                "; {} bytes of input queued for it were never written to it",
+                self.input
+            ));
+        }
+        told
+    }
+}
+
+/// How a program ended, and what it left: made once, as it ends
+/// (`Pane::ended`), and journaled and told from that one value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct End {
+    pub ended: Ended,
+    pub left: Left,
+}
+
 /// What a program left on its terminal as it ended: read whole, or cut at
 /// the most that is read (`Session::read_left`), the rest not read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -641,7 +989,7 @@ pub enum Output {
 pub const UNMARKED: &str = "no shell command was marked here (OSC 133 C and D): \
                             `fux help agents shells` says how to turn marks on";
 
-impl Pane<Loose> {
+impl Pane {
     pub fn new(
         id: PaneId,
         name: String,
@@ -667,37 +1015,17 @@ impl Pane<Loose> {
             scheme_told: None,
             bell: false,
             copied: Vec::new(),
-            uncopied: std::collections::BTreeMap::new(),
             wrote_at: Instant::now(),
-            said: Vec::new(),
             respawns: 0,
             left: Left::default(),
             mouse_held: None,
             alerts: Alerts::default(),
-            placed: Loose,
+            lost: Losses::default(),
+            untold: Losses::default(),
+            refused_size: None,
+            loss_runs: LossRuns::default(),
+            reading: Reading::default(),
         })
-    }
-}
-
-impl<S> Pane<S> {
-    /// The same pane, `placed` so: in the session (`workspace::Placed`),
-    /// or out of it.
-    pub(crate) fn placed<T>(self, placed: T) -> Pane<T> {
-        // Every field but `placed` moved over: one left out does not
-        // compile.
-        macro_rules! moved {
-            ($($field:ident),*) => {{
-                let Pane { $($field,)* placed: _ } = self;
-                Pane { $($field,)* placed }
-            }};
-        }
-        #[rustfmt::skip]
-        let pane = moved!(
-            id, name, title, parser, process, input, runs, frame, unread, frame_left, exiting,
-            colours, scheme_told, bell, copied, uncopied, wrote_at, said, mouse_held, respawns,
-            left, alerts
-        );
-        pane
     }
 
     /// Reads program output into the screen, its replies queued as input.
@@ -712,8 +1040,8 @@ impl<S> Pane<S> {
     /// frame is read anyway once [`FRAME_TIMEOUT`] passes
     /// ([`Pane::release_frame`]) or it grows past [`FRAME_LIMIT`]; after
     /// that the program's output is read as it comes until its next BSU.
-    pub fn output(&mut self, bytes: &[u8]) {
-        self.output_at(bytes, Instant::now())
+    fn output(&mut self, bytes: &[u8], tell: &mut Teller<'_>) {
+        self.output_at(bytes, Instant::now(), tell)
     }
 
     /// [`Pane::output`] at `now`.
@@ -721,13 +1049,13 @@ impl<S> Pane<S> {
     /// Each call of the parser does at most a stated amount of work; at it,
     /// the rest of the output waits, unread, for the pane's next turn
     /// ([`Pane::read_unread`]).
-    pub fn output_at(&mut self, bytes: &[u8], now: Instant) {
+    fn output_at(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         self.wrote_at = now;
         if self.has_unread() {
             self.unread.0.extend_from_slice(bytes);
             return;
         }
-        self.read(bytes, now);
+        self.read(bytes, now, tell);
     }
 
     /// Whether output waits to be read on the pane's next turn
@@ -760,12 +1088,12 @@ impl<S> Pane<S> {
     /// Reads the output waiting since a call of the parser did all the work
     /// one may, until the next call does: the rest of a frame first, as
     /// the frame was read.
-    pub fn read_unread(&mut self) {
+    fn read_unread(&mut self, tell: &mut Teller<'_>) {
         let unread = std::mem::take(&mut self.unread.0);
         // Only the work of a sequence read already: a call of no bytes does
         // it, and stops again if that spends its budget.
         if unread.is_empty() {
-            if self.parse(&[], false).is_some() {
+            if self.parse(&[], false, tell).is_some() {
                 self.wait_unread(Vec::new());
             }
             return;
@@ -773,12 +1101,14 @@ impl<S> Pane<S> {
         let frame_left = std::mem::take(&mut self.frame_left);
         let at = frame_left.min(unread.len());
         let (frame, after) = unread.split_at_checked(at).unwrap_or((&unread, &[]));
-        if let Some((taken, _)) = self.parse(frame, false) {
+        if let Some((taken, _)) = self.parse(frame, false, tell) {
             self.frame_left = frame.len().saturating_sub(taken);
             self.wait_unread(unread.get(taken..).unwrap_or_default().to_vec());
             return;
         }
-        self.read(after, Instant::now());
+        // The rest of a frame read: the read ends at the next frame.
+        self.reading.framed |= at > 0;
+        self.read(after, Instant::now(), tell);
     }
 
     /// `left` waits to be read on the pane's next turn, from now.
@@ -788,7 +1118,7 @@ impl<S> Pane<S> {
 
     /// Reads `bytes` as [`Pane::output_at`] does at `now`, with no output
     /// waiting.
-    fn read(&mut self, bytes: &[u8], now: Instant) {
+    fn read(&mut self, bytes: &[u8], now: Instant, tell: &mut Teller<'_>) {
         let mut rest = bytes;
         loop {
             if let Some((held, _, scan)) = &mut self.frame {
@@ -796,7 +1126,7 @@ impl<S> Pane<S> {
                 held.extend_from_slice(rest);
                 let Some(end) = scan.end(held) else {
                     if held.len() > FRAME_LIMIT {
-                        self.release_frame();
+                        self.release_frame(tell);
                     }
                     return;
                 };
@@ -805,16 +1135,23 @@ impl<S> Pane<S> {
                 frame.truncate(end);
                 // The frame ends in what came now: the rest is after it.
                 rest = rest.get(end.saturating_sub(read)..).unwrap_or_default();
-                if let Some((taken, _)) = self.parse(&frame, false) {
+                if let Some((taken, _)) = self.parse(&frame, false, tell) {
                     let left = frame.get(taken..).unwrap_or_default();
                     self.frame_left = left.len();
                     self.wait_unread([left, rest].concat());
                     return;
                 }
+                // A frame read whole: the read ends at the next frame.
+                self.reading.framed = true;
             } else {
-                match self.parse(rest, true) {
+                match self.parse(rest, true, tell) {
                     None => return,
                     Some((end, fux_vt::Stop::Begun)) => {
+                        // A frame begun after one read whole ends that read,
+                        // with what came between them.
+                        if self.reading.framed {
+                            self.judge_read();
+                        }
                         self.frame = Some((Vec::new(), now, self.parser.frame_scan()));
                         rest = rest.get(end..).unwrap_or_default();
                     }
@@ -835,14 +1172,19 @@ impl<S> Pane<S> {
     }
 
     /// Reads the held frame now, ended or not.
-    pub fn release_frame(&mut self) {
-        if let Some((held, ..)) = self.frame.take()
-            && let Some((taken, _)) = self.parse(&held, false)
-        {
+    fn release_frame(&mut self, tell: &mut Teller<'_>) {
+        let Some((held, ..)) = self.frame.take() else {
+            return;
+        };
+        match self.parse(&held, false, tell) {
             // No output waits while a frame is held: it is the first.
-            let left = held.get(taken..).unwrap_or_default().to_vec();
-            self.frame_left = left.len();
-            self.wait_unread(left);
+            Some((taken, _)) => {
+                let left = held.get(taken..).unwrap_or_default().to_vec();
+                self.frame_left = left.len();
+                self.wait_unread(left);
+            }
+            // A frame read whole: the read ends at the next frame.
+            None => self.reading.framed = true,
         }
     }
 
@@ -850,15 +1192,22 @@ impl<S> Pane<S> {
     /// and where a call of the parser did all the work one may
     /// (`Stop::Budget`). Returns how many bytes were read if it stopped,
     /// and why (`Stop::Begun` or `Stop::Budget`). What they did (a bell, a
-    /// title, a command's end) is journaled after. Never inlined: the
-    /// parser's loop compiles tighter on its own.
+    /// title, a command's end) is journaled as it is read. Never inlined:
+    /// the parser's loop compiles tighter on its own.
     #[inline(never)]
-    fn parse(&mut self, bytes: &[u8], until_frame: bool) -> Option<(usize, fux_vt::Stop)> {
+    fn parse(
+        &mut self,
+        bytes: &[u8],
+        until_frame: bool,
+        tell: &mut Teller<'_>,
+    ) -> Option<(usize, fux_vt::Stop)> {
+        let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
             kept: 0,
-            dropped: false,
-            happened: &mut self.said,
+            dropped: 0,
+            pictures: Vec::new(),
+            tell,
             title: &mut self.title,
             bell: &mut self.bell,
             alerts: &mut self.alerts,
@@ -883,27 +1232,43 @@ impl<S> Pane<S> {
                 break;
             }
         }
-        // Queued as `push` queues; a full queue drops them, which is told
-        // (`Lost`), as replies past the read's bound are.
+        // Queued as `push` queues; a full queue drops them, as replies past
+        // the read's bound are.
         let full = !sink.replies.is_empty() && self.input.push(&sink.replies).is_err();
-        if full {
-            let alerts = &mut sink.alerts;
-            alerts.replies_dropped = alerts.replies_dropped.saturating_add(sink.kept);
-        }
+        let replies = match full {
+            true => sink.dropped.saturating_add(sink.kept),
+            false => sink.dropped,
+        };
         if let Some(scheme) = sink.told.filter(|_| !full) {
             self.scheme_told = Some(scheme);
         }
-        if sink.dropped {
-            self.input.dropped();
-        } else if !full && !self.input.refusing && self.input.lost == Lost::Told {
-            self.input.lost = Lost::None;
+        let pictures = sink.pictures;
+        self.reading.parsed |= !bytes.is_empty();
+        self.reading.dropped |= replies > 0;
+        self.lose_replies(replies);
+        // Each picture as it ended, in order: one placed whole ends a run
+        // of pictures lost.
+        for placed in pictures {
+            match placed {
+                true => self.loss_runs.pictures = Run::Over,
+                false => self.lose(Losses {
+                    pictures: 1,
+                    ..Losses::default()
+                }),
+            }
         }
+        let memory = self.parser.refused().saturating_sub(refused);
+        self.reading.refused |= memory > 0;
+        self.lose(Losses {
+            memory,
+            ..Losses::default()
+        });
         begun
     }
 
     /// Writes the waiting input, as far as the program's terminal takes it;
     /// whether it took any, which makes room in the queue.
-    pub fn write_input(&mut self) -> bool {
+    fn write_input(&mut self) -> bool {
         let Process::Reading(child) = &self.process else {
             return false;
         };
@@ -924,25 +1289,43 @@ impl<S> Pane<S> {
 
     /// Resizes the screen and the PTY. A held frame is read first: it was
     /// drawn for the old size.
-    pub fn resize(&mut self, size: Size) {
+    fn resize(&mut self, size: Size, tell: &mut Teller<'_>) {
         if self.size() == size {
             return;
         }
-        self.release_frame();
-        if self.parser.resize(size).is_ok() {
-            self.said.push(What::Resized(size));
-            self.size_terminal();
-            // In-band resize: the report follows the PTY's new size, never
-            // precedes it (references/modern/mode_2048_in_band_resize.md).
-            // A program that does not read its input loses it, told
-            // (`Lost`); one that takes none is sent none.
-            let takes = crate::session::refuses_input(self).is_none();
-            if let Some(report) = self.parser.resize_report().filter(|_| takes)
-                && self.input.push(report).is_err()
-            {
-                let dropped = &mut self.alerts.replies_dropped;
-                *dropped = dropped.saturating_add(1);
-            }
+        self.release_frame(tell);
+        // The frame read now ends its read, before the resize's own losses.
+        self.read_done();
+        let refused = self.parser.refused();
+        let resized = self.parser.resize(size);
+        // A size refused is asked again as the session settles: counted
+        // once, till another size is asked.
+        let memory = self.parser.refused().saturating_sub(refused);
+        if memory == 0 {
+            self.loss_runs.memory = Run::Over;
+        }
+        let again = resized.is_err() && self.refused_size == Some(size);
+        self.refused_size = resized.is_err().then_some(size);
+        if !again {
+            self.lose(Losses {
+                memory,
+                ..Losses::default()
+            });
+        }
+        if resized.is_err() {
+            return;
+        }
+        tell.tell(Told::Resized(size));
+        self.size_terminal();
+        // In-band resize: the report follows the PTY's new size, never
+        // precedes it (references/modern/mode_2048_in_band_resize.md). A
+        // program that does not read its input loses it, counted; one
+        // that takes none is sent none.
+        let takes = crate::session::refuses_input(self).is_none();
+        if let Some(report) = self.parser.resize_report().filter(|_| takes)
+            && self.input.push(report).is_err()
+        {
+            self.lose_replies(1);
         }
     }
 
@@ -954,18 +1337,174 @@ impl<S> Pane<S> {
         self.parser.screen()
     }
 
-    /// The sixel pictures its program drew that were not kept whole, for
-    /// each cause `fux_vt::Parser::pictures_refused` names: among them,
-    /// those drawn while its host drew no sixel.
-    pub fn pictures_refused(&self) -> u64 {
-        self.parser.pictures_refused()
+    /// It is asked the size it has: a size refused before, asked again,
+    /// is a new refusal, counted.
+    fn keeps_size(&mut self) {
+        self.refused_size = None;
+    }
+
+    /// Its input queue, to read.
+    pub fn input(&self) -> &InputQueue {
+        &self.input
+    }
+
+    /// What fux let go of its program's since it started.
+    pub fn lost(&self) -> Losses {
+        self.lost
+    }
+
+    /// fux let `losses` of its program's go: counted, and to be told but
+    /// for those of a kind whose run is already told (`Run`).
+    fn lose(&mut self, mut losses: Losses) {
+        self.lost.add(losses);
+        // Every kind alike: a loss begins a run of its kind, if none goes
+        // on, and one in a run already told is counted, not told again.
+        let gate = |n: &mut u64, run: &mut Run| {
+            if *n > 0 {
+                run.dropped();
+            }
+            if *run == Run::Told {
+                *n = 0;
+            }
+        };
+        let Losses {
+            input,
+            replies,
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = &mut losses;
+        // Input is refused only while the queue refuses, its run with it.
+        if let Refusing::Yes(run) = &mut self.input.refusing {
+            gate(input, run);
+        }
+        gate(replies, &mut self.input.replies);
+        let runs = &mut self.loss_runs;
+        gate(copies_cut, &mut runs.copies_cut);
+        gate(copies_not_text, &mut runs.copies_not_text);
+        gate(pictures, &mut runs.pictures);
+        gate(memory, &mut runs.memory);
+        self.untold.add(losses);
+    }
+
+    /// Its program's copy (OSC 52) copied nothing, for `why`.
+    fn uncopied(&mut self, why: Uncopied) {
+        let (copies_cut, copies_not_text) = match why {
+            Uncopied::Cut => (1, 0),
+            Uncopied::NotText => (0, 1),
+        };
+        let losses = Losses {
+            copies_cut,
+            copies_not_text,
+            ..Losses::default()
+        };
+        self.lose(losses);
+    }
+
+    /// A call that reads its output is done: once nothing is held back or
+    /// left, the read is whole, over however many calls of the parser and
+    /// turns it took (a frame begun, a budget spent), and only then does
+    /// what it lost end runs. A frame read whole ends a read where the
+    /// next frame begins, so frames drawn back to back are read one by
+    /// one, what follows each joining it. One that read output and
+    /// dropped no reply while the queue takes input ends a run of
+    /// replies; one that refused no memory, a run of refusals.
+    fn read_done(&mut self) {
+        // Output held back (a frame) or left (a budget spent) is still
+        // being read: what this read did so far is kept for its end.
+        if self.frame.is_none() && !self.has_unread() {
+            self.judge_read();
+        }
+    }
+
+    /// A read ends here, its record judged: at a frame read whole, or once
+    /// nothing is held back or left.
+    fn judge_read(&mut self) {
+        let read = std::mem::take(&mut self.reading);
+        if read.parsed && !read.dropped && self.input.refusing == Refusing::No {
+            self.input.replies = Run::Over;
+        }
+        if read.parsed && !read.refused {
+            self.loss_runs.memory = Run::Over;
+        }
+    }
+
+    /// `n` replies were dropped, in a run of them.
+    fn lose_replies(&mut self, n: u64) {
+        self.lose(Losses {
+            replies: n,
+            ..Losses::default()
+        });
+    }
+
+    /// Whether it let go of anything not yet told.
+    pub fn loses(&self) -> bool {
+        self.untold != Losses::default()
+    }
+
+    /// What it let go of and has not told, which it then has: the rest of
+    /// each run of drops going on is not told (`Run`).
+    fn take_untold(&mut self) -> Losses {
+        if let Refusing::Yes(run) = &mut self.input.refusing {
+            run.told();
+        }
+        self.input.replies.told();
+        // Every run named: one more does not compile till it is told.
+        let LossRuns {
+            copies_cut,
+            copies_not_text,
+            pictures,
+            memory,
+        } = &mut self.loss_runs;
+        for run in [copies_cut, copies_not_text, pictures, memory] {
+            run.told();
+        }
+        std::mem::take(&mut self.untold)
+    }
+
+    /// Queues `bytes` of input for its program, as `InputQueue::push`
+    /// does; a piece refused is lost.
+    fn push(&mut self, bytes: impl AsRef<[u8]>) -> Result<(), Error> {
+        let pushed = self.input.push(bytes);
+        self.refused(pushed)
     }
 
     /// Queues for its program what `write` makes for its screen, as
-    /// `InputQueue::push_with` does.
-    pub fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
+    /// `InputQueue::push_with` does; a piece refused is lost.
+    fn push_with(&mut self, write: impl FnOnce(&Screen, &mut Vec<u8>)) -> Result<(), Error> {
         let screen = self.parser.screen();
-        self.input.push_with(|out| write(screen, out))
+        let pushed = self.input.push_with(|out| write(screen, out));
+        self.refused(pushed)
+    }
+
+    /// Whether `len` bytes of input fit now, as `InputQueue::fits` says;
+    /// a piece refused is lost.
+    fn fits(&mut self, len: usize) -> Result<(), Error> {
+        let fits = self.input.fits(len);
+        self.refused(fits)
+    }
+
+    /// `pushed`, a piece of input queued or refused: one the full queue
+    /// refused is lost.
+    fn refused(&mut self, pushed: Result<(), Error>) -> Result<(), Error> {
+        if let Err(Error::InputFull) = pushed {
+            self.lose(Losses {
+                input: 1,
+                ..Losses::default()
+            });
+        }
+        pushed
+    }
+
+    /// Queues `report`, which fux sends its program again till it is
+    /// queued (its colour scheme, `Session::tell_schemes`): whether it
+    /// was. One refused is late, not lost.
+    fn offer(&mut self, report: impl AsRef<[u8]>) -> bool {
+        // One that does not fit waits, leaving the queue to take input: it
+        // is sent again, so no hole is left before what comes after it.
+        let report = report.as_ref();
+        report.len() <= self.input.room() && self.input.push(report).is_ok()
     }
 
     /// Its program's queries are answered with `colours` and `palette`
@@ -1001,11 +1540,11 @@ impl<S> Pane<S> {
         let _ = fuxix::terminal::set_window_size(&child.master, size.nonzero().into(), pixels);
     }
 
-    pub fn clear_history(&mut self) {
+    fn clear_history(&mut self) {
         self.parser.clear_history();
     }
 
-    pub fn set_history_bytes(&mut self, bytes: usize) {
+    fn set_history_bytes(&mut self, bytes: usize) {
         self.parser.set_history_bytes(bytes);
     }
 
@@ -1045,7 +1584,12 @@ impl<S> Pane<S> {
     /// size, before the program started) runs it, on a screen as new, its
     /// history kept; the process that was there, to end, and what it left
     /// as it was respawned over: none, said, once it ended.
-    pub fn respawned(&mut self, fresh: Pane<Loose>, process: Process) -> (Process, Left) {
+    fn respawned(
+        &mut self,
+        fresh: Pane,
+        process: Process,
+        tell: &mut Teller<'_>,
+    ) -> (Process, Left) {
         // Named after its program, unless renamed.
         let name = match (&self.runs, &fresh.runs) {
             (Runs::Program(old), Runs::Program(new)) if named(&old.argv) == self.name => {
@@ -1055,18 +1599,16 @@ impl<S> Pane<S> {
         };
         // A new program, its own pane, its counts afresh but `respawns`. Kept
         // are its id and name, what the session has yet to take from the
-        // old one (what it said, a bell, a copy, one refused, input dropped;
-        // its input it let go, `InputQueue::discard`), and its colours.
+        // old one (a bell, a copy, what it lost untold; its input it let go,
+        // `InputQueue::discard`), and its colours.
         let Pane {
             id: _,
             name: _,
-            said: _,
             bell: _,
             copied: _,
-            uncopied: _,
+            untold: _,
             colours: _,
             respawns: _,
-            placed: Loose,
             title,
             parser,
             process: _,
@@ -1081,6 +1623,10 @@ impl<S> Pane<S> {
             mouse_held,
             left,
             alerts,
+            lost,
+            refused_size,
+            loss_runs,
+            reading,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1093,9 +1639,10 @@ impl<S> Pane<S> {
         (self.title, self.parser, self.runs) = (title, parser, runs);
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
-        (self.mouse_held, self.left, self.alerts) = (mouse_held, left, alerts);
-        self.said.push(What::Respawned(over));
-        self.rename(name);
+        (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
+        (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
+        tell.tell(Told::Respawned(over));
+        self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
         self.respawns = self.respawns.saturating_add(1);
         (std::mem::replace(&mut self.process, process), over)
@@ -1110,9 +1657,9 @@ impl<S> Pane<S> {
     }
 
     /// Names it `name`: said, if it is another.
-    pub fn rename(&mut self, name: String) {
+    fn rename(&mut self, name: String, tell: &mut Teller<'_>) {
         if name != self.name {
-            self.said.push(What::Renamed(name.clone()));
+            tell.tell(Told::Renamed(name.clone()));
             self.name = name;
         }
     }
@@ -1121,8 +1668,8 @@ impl<S> Pane<S> {
         &self.process
     }
 
-    /// A pane made with no program runs `child`: a pane not yet in the
-    /// session, which alone is had by value.
+    /// A pane made with no program runs `child`: one not yet in the
+    /// session.
     pub fn running(mut self, child: Child) -> Self {
         self.process = Process::Reading(child);
         self
@@ -1130,32 +1677,36 @@ impl<S> Pane<S> {
 
     /// The program's terminal hung up: it is read no more, and waits to be
     /// reaped.
-    pub fn stop_reading(&mut self) {
+    fn stop_reading(&mut self) {
         self.process = match std::mem::replace(&mut self.process, Process::Absent) {
             Process::Reading(child) | Process::HungUp(child) => Process::HungUp(child),
             other @ (Process::Absent | Process::Exited(_)) => other,
         };
     }
 
-    /// Its program ended so: said, no exit waiting to be told after, and
-    /// the process that was there, to be reaped.
-    pub fn exit(&mut self, ended: Ended) -> Process {
-        self.ended(ended);
+    /// Its program ended so: said, no exit waiting to be told after; its
+    /// end, and the process that was there, to be reaped.
+    fn exit(&mut self, ended: Ended, tell: &mut Teller<'_>) -> (End, Process) {
+        let end = self.ended(ended, tell);
         self.exiting = None;
-        std::mem::replace(&mut self.process, Process::Exited(ended))
+        (
+            end,
+            std::mem::replace(&mut self.process, Process::Exited(ended)),
+        )
     }
 
-    /// Its program ended so, the input queued for it let go: said, as a
-    /// shell's is before its pane closes.
-    pub fn ended(&mut self, ended: Ended) {
+    /// Its program ended so, the input queued for it let go: its end,
+    /// said, as a shell's is before its pane closes.
+    fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
         self.left.input = self.input.discard();
-        self.said.push(What::Exited(ended, self.left));
-    }
-
-    /// What happened in it that events tell, since last taken, oldest
-    /// first: for the session's journal, which alone gives the leave.
-    pub(crate) fn said(&mut self, _: crate::workspace::Journaling) -> Vec<What> {
-        std::mem::take(&mut self.said)
+        // Its runs end with it, as its input's do.
+        self.loss_runs = LossRuns::default();
+        let end = End {
+            ended,
+            left: self.left,
+        };
+        tell.tell(Told::Exited(end));
+        end
     }
 
     /// Its process, as it is closed.
@@ -1220,7 +1771,7 @@ pub(crate) mod tests {
         let refusal = queue.fits(INPUT_BYTES + 1);
         assert!(matches!(refusal, Err(Error::TooLong(_))), "{refusal:?}");
         assert!(queue.push(vec![0; INPUT_BYTES + 1]).is_err());
-        assert!(queue.room() == INPUT_BYTES && !queue.loses());
+        assert_eq!(queue.room(), INPUT_BYTES);
         assert!(queue.push(vec![b'k']).is_ok());
     }
 
@@ -1324,7 +1875,7 @@ pub(crate) mod tests {
     }
 
     /// The first row's text, blanks as spaces, trimmed.
-    fn first_row<S>(pane: &Pane<S>) -> String {
+    fn first_row(pane: &Pane) -> String {
         let cols = pane.screen().size().cols();
         (0..cols)
             .filter_map(|x| pane.screen().cell(0, x))
@@ -1365,14 +1916,57 @@ pub(crate) mod tests {
         output(n.saturating_mul(2))
     }
 
-    fn pane(rows: u16, cols: u16) -> Result<Pane<Loose>, Error> {
-        Pane::new(
-            PaneId::of(1),
-            "sh".into(),
-            Runs::Shell,
-            size(rows, cols),
-            1 << 10,
-        )
+    fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
+        let size = size(rows, cols);
+        Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 1 << 10).map(Lone::new)
+    }
+
+    /// A pane alone, for tests of it: what it tells goes in a journal of
+    /// its own, at a place of its own.
+    pub(crate) struct Lone {
+        pub pane: Pane,
+        pub journal: Journal,
+    }
+
+    impl std::ops::Deref for Lone {
+        type Target = Pane;
+        fn deref(&self) -> &Pane {
+            &self.pane
+        }
+    }
+
+    impl std::ops::DerefMut for Lone {
+        fn deref_mut(&mut self) -> &mut Pane {
+            &mut self.pane
+        }
+    }
+
+    impl Lone {
+        pub(crate) fn new(pane: Pane) -> Self {
+            let journal = Journal::default();
+            Self { pane, journal }
+        }
+        pub(crate) fn placed(&mut self) -> PaneMut<'_> {
+            let at = (WsId::of(1), TabId::of(1));
+            PaneMut::new(&mut self.pane, at, &mut self.journal)
+        }
+        pub(crate) fn output(&mut self, bytes: &[u8]) {
+            self.placed().output(bytes);
+        }
+        pub(crate) fn output_at(&mut self, bytes: &[u8], now: Instant) {
+            let mut placed = self.placed();
+            placed.pane.output_at(bytes, now, &mut placed.tell);
+            placed.pane.read_done();
+        }
+        pub(crate) fn read_unread(&mut self) {
+            self.placed().read_unread();
+        }
+        pub(crate) fn release_frame(&mut self) {
+            self.placed().release_frame();
+        }
+        pub(crate) fn resize(&mut self, size: Size) {
+            self.placed().resize(size);
+        }
     }
 
     /// A call of the parser that does all the work one may stops the read
@@ -1450,7 +2044,8 @@ pub(crate) mod tests {
     /// through one till it ends; what came after it is read after.
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size(50, 200), 0)?;
+        let size = size(50, 200);
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");
@@ -1597,21 +2192,240 @@ pub(crate) mod tests {
         Ok(())
     }
 
-    /// A piece the full queue refuses is told dropped, once for the run of
-    /// refusals, which ends as the program reads; and again after.
+    /// Pieces the full queue refuses are counted, and told with how many
+    /// once for the run of refusals, which ends as the program reads; and
+    /// again after.
     #[test]
-    fn a_refused_piece_is_told_once_a_run() {
-        let mut input = InputQueue::default();
-        assert!(input.push(vec![0; INPUT_BYTES]).is_ok());
-        assert!(!input.tell_lost());
-        assert!(input.push(b"\x1b[I").is_err());
-        assert!(input.push(b"x").is_err());
-        assert!(input.tell_lost());
-        assert!(input.fits(1).is_err());
-        assert!(!input.tell_lost(), "the same run");
-        input.advance(1);
-        assert!(input.push(vec![0; 2]).is_err());
-        assert!(input.tell_lost(), "a run after the program read");
+    fn a_refused_piece_is_told_once_a_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.push(vec![0; INPUT_BYTES])?;
+        assert_eq!(pane.take_untold(), Losses::default());
+        assert!(pane.push(b"\x1b[I").is_err());
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold().input, 2);
+        assert!(pane.fits(1).is_err());
+        assert!(!pane.loses(), "the same run");
+        pane.input.advance(1);
+        assert!(pane.push(vec![0; 2]).is_err());
+        assert_eq!(pane.take_untold().input, 1, "a run after the program read");
+        assert_eq!(pane.lost().input, 4, "every piece counted");
+        Ok(())
+    }
+
+    /// A run of drops of one kind told keeps no other kind, and no later
+    /// run, from being told: not one that ended before it was told.
+    #[test]
+    fn each_run_of_drops_is_told_once() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0);
+        let room = pane.input.room();
+        pane.push(vec![0; room])?;
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold().input, 1, "another kind");
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        pane.input.drain_all();
+        pane.output(&queries);
+        pane.input.drain_all();
+        pane.output(b"\x1b[6n");
+        assert!(pane.take_untold().replies > 0, "told after its run ended");
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0, "a later run");
+        Ok(())
+    }
+
+    /// A turn that reads no output, only finishing work left, ends no run
+    /// of replies dropped: the next read's drops are in the same run.
+    #[test]
+    fn a_turn_reading_nothing_ends_no_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        pane.output(&queries);
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.read_unread();
+        pane.output(&queries);
+        assert!(!pane.loses(), "the same run");
+        Ok(())
+    }
+
+    /// A read is judged whole, over every call of the parser it takes: a
+    /// frame's BSU, read alone first, ends no run, so frames that each
+    /// drop replies are one run, told once.
+    #[test]
+    fn frames_dropping_replies_are_one_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied();
+        let frame: Vec<u8> = (b"\x1b[?2026h".iter().copied())
+            .chain(queries)
+            .chain(b"\x1b[?2026l".iter().copied())
+            .collect();
+        pane.output(&frame);
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.output(&frame);
+        assert!(!pane.loses(), "the same run");
+        // A frame past a parser call's budget, read over turns, is one read.
+        // Its drops come first, in a call the budget stops, and a clean
+        // call ends it.
+        let mut long = b"\x1b[?2026h".to_vec();
+        long.extend(std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX).flatten());
+        long.extend(spends_the_budget(3, 20));
+        long.extend_from_slice(b"\x1b[?2026l");
+        for _ in 0..2 {
+            pane.input.drain_all();
+            pane.output(&long);
+            while pane.has_unread() {
+                pane.read_unread();
+            }
+        }
+        assert!(!pane.loses(), "still the same run");
+        Ok(())
+    }
+
+    /// A frame read whole ends a read, though the next frame begins in
+    /// the same output: a clean frame between two that drop replies ends
+    /// the run, and the second is told.
+    #[test]
+    fn a_clean_frame_between_ends_the_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied()
+            .collect();
+        let (bsu, esu) = (&b"\x1b[?2026h"[..], &b"\x1b[?2026l"[..]);
+        pane.output(&[bsu, &queries, esu, bsu].concat());
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.output(&[&b"hello"[..], esu, bsu].concat());
+        pane.output(&[&queries[..], esu, bsu].concat());
+        assert!(
+            pane.take_untold().replies > 0,
+            "a run after the clean frame"
+        );
+        // What follows a frame joins its read: frames that each drop
+        // replies and end with a little output after them are one run.
+        pane.output(&[&b"x"[..], esu].concat());
+        pane.input.drain_all();
+        let tailed = [bsu, &queries, esu, b"\x1b[?25h"].concat();
+        pane.output(&tailed);
+        let told = pane.take_untold().replies;
+        pane.input.drain_all();
+        pane.output(&tailed);
+        assert!(told > 0 && !pane.loses(), "one run, told once");
+        Ok(())
+    }
+
+    /// A reply the full queue refuses starts a run of replies, not of
+    /// input: the input refused after it is told. Both runs go on while
+    /// the queue refuses, reads with no query and resize reports alike.
+    #[test]
+    fn a_reply_refused_starts_no_run_of_input() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.output(b"\x1b[?2048h");
+        let room = pane.input.room();
+        pane.push(vec![0; room.saturating_sub(3)])?;
+        pane.output(b"\x1b[6n");
+        assert_eq!(pane.take_untold().replies, 1);
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold().input, 1, "input after a reply");
+        pane.output(b"no query");
+        pane.output(b"\x1b[6n");
+        pane.resize(size(4, 20));
+        pane.resize(size(5, 20));
+        assert!(pane.push(b"x").is_err());
+        assert_eq!(pane.take_untold(), Losses::default(), "the same runs");
+        assert_eq!((pane.lost().replies, pane.lost().input), (4, 2));
+        Ok(())
+    }
+
+    /// Every kind of loss is told once a run, which a success of its kind
+    /// ends: pictures lost, by a picture placed whole; copies refused, by a
+    /// copy made.
+    #[test]
+    fn pictures_and_copies_lost_are_told_once_a_run() -> Result<(), Box<dyn std::error::Error>> {
+        let mut pane = pane(3, 20)?;
+        let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
+        let cell = fux_vt::CellSize::new(10, 20).ok_or("a cell")?;
+        pane.output(picture);
+        assert_eq!(pane.take_untold().pictures, 1, "none draws sixel");
+        pane.output(picture);
+        assert!(!pane.loses(), "the same run");
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Sixel(cell),
+        );
+        pane.output(picture);
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Cell(cell),
+        );
+        pane.output(picture);
+        assert_eq!(pane.take_untold().pictures, 1, "a run after one placed");
+        assert_eq!(pane.lost().pictures, 3);
+        // In one read, in order: a picture cut (wider than a picture may
+        // be) in the run told, then one placed whole, which ends it; then
+        // one placed and one cut, which begins a run.
+        let cut = b"\x1bP9q#1;2;100;0;0!4097~\x1b\\";
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Sixel(cell),
+        );
+        pane.output(&[&cut[..], picture].concat());
+        assert!(!pane.loses(), "the cut one is in the run told");
+        pane.output(&[&picture[..], cut].concat());
+        assert_eq!(pane.take_untold().pictures, 1, "a run after one placed");
+        let bad = b"\x1b]52;c;***\x07";
+        let copy = |pane: &mut Lone, bytes: &[u8]| {
+            pane.output(bytes);
+            pane.placed().take_read(true).1.len()
+        };
+        copy(&mut pane, bad);
+        assert_eq!(pane.take_untold().copies_not_text, 1);
+        copy(&mut pane, bad);
+        assert!(!pane.loses(), "the same run");
+        assert_eq!(copy(&mut pane, b"\x1b]52;c;Zm9v\x07"), 1);
+        copy(&mut pane, bad);
+        assert_eq!(pane.take_untold().copies_not_text, 1, "a run after a copy");
+        Ok(())
+    }
+
+    /// A resize report the full queue refuses starts a run of replies:
+    /// the next one in it is counted, not told again.
+    #[test]
+    fn resize_reports_refused_are_told_once_a_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        pane.output(b"\x1b[?2048h");
+        let room = pane.input.room();
+        pane.push(vec![0; room])?;
+        pane.resize(size(4, 20));
+        assert_eq!(pane.take_untold().replies, 1);
+        pane.resize(size(5, 20));
+        assert!(!pane.loses(), "the same run");
+        assert_eq!(pane.lost().replies, 2);
+        // The program reads a little: the run is over, and the next
+        // report the queue has no room for is told.
+        pane.input.advance(1);
+        pane.resize(size(6, 20));
+        assert_eq!(
+            pane.take_untold().replies,
+            1,
+            "a run after the program read"
+        );
+        Ok(())
     }
 
     /// Replies past what one read queues are dropped, and that is told:
@@ -1621,20 +2435,23 @@ pub(crate) mod tests {
     fn replies_past_a_reads_bound_are_told_dropped() -> Result<(), Error> {
         let mut pane = pane(3, 20)?;
         pane.output(b"\x1b[6n");
-        assert!(!pane.input.tell_lost());
+        assert!(!pane.loses());
         let queries: Vec<u8> = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
             .flatten()
             .copied()
             .collect();
         pane.output(&queries);
-        assert!(pane.input.tell_lost());
+        // Each reply is `CSI 1 ; 1 R`, six bytes: the rest past the bound.
+        let dropped = (REPLIES_MAX - REPLIES_MAX / 6) as u64;
+        assert_eq!(pane.take_untold().replies, dropped);
         pane.input.drain_all();
         pane.output(&queries);
-        assert!(!pane.input.tell_lost(), "the same run of drops");
+        assert!(!pane.loses(), "the same run of drops");
+        assert_eq!(pane.lost().replies, 2 * dropped);
         pane.input.drain_all();
         pane.output(b"\x1b[6n");
         pane.output(&queries);
-        assert!(pane.input.tell_lost(), "a drop after none");
+        assert_eq!(pane.take_untold().replies, dropped, "a drop after none");
         Ok(())
     }
 
@@ -1736,18 +2553,14 @@ pub(crate) mod tests {
     #[test]
     fn commands_ended_in_one_read_are_journaled_each() -> Result<(), Error> {
         let mut pane = pane(3, 30)?;
+        let mut stream = crate::events::Subscription::new(None, false, &pane.journal);
         pane.output(
             b"\x1b]133;C\x07x\x1b]133;D;1\x07\x07\x1b]133;C\x07\x1b]133;D;0\x07\x1b]2;t\x07",
         );
-        let said: Vec<String> = pane.said.iter().map(|what| format!("{what:?}")).collect();
+        let (said, _) = stream.told(&pane.journal, usize::MAX, |_| None);
         assert_eq!(
             said,
-            [
-                "Done(Some(1))",
-                "Bell",
-                "Done(Some(0))",
-                "Title(Said { text: \"t\", cut: false })"
-            ]
+            "done %1 @1 +1 status=1\nbell %1 @1 +1\ndone %1 @1 +1 status=0\ntitle %1 @1 +1 title=t\n"
         );
         Ok(())
     }

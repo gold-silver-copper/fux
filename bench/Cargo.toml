@@ -17,7 +17,7 @@ bench = false
 [dependencies]
 # The code under test, by path: the working tree's, or REF's in the
 # worktree `--against` builds this crate in.
-fux = { path = ".." }
+fux = { path = "..", features = ["in-process"] }
 fux-vt = { path = "../fux-vt" }
 fuxix = { path = "../fuxix" }
 fuxth = { path = "../fuxth" }

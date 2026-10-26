@@ -3,15 +3,14 @@
 //! session's workspaces, tabs and panes, and what each pane's program does
 //! that events tell (a bell, a notification, a title, a shell command's
 //! end, a resize, a respawn, an exit), is written in one journal where it
-//! happens, in the order it happens (`workspace::Parts`); each subscriber
-//! reads the journal from its own place in it, after each round of what
-//! the server read and did.
+//! happens, in the order it happens (`workspace::Parts`, and a pane's own
+//! methods through a [`Teller`]); each subscriber reads the journal from
+//! its own place in it, after each round of what the server read and did.
 use crate::code::Code;
 use crate::command::AnyRef;
 use crate::id::{PaneId, TabId, WsId};
 use crate::json::Json;
-use crate::pane::{Left, NOTIFICATION_MAX, Output, Said, TITLE_MAX};
-use crate::process::Ended;
+use crate::pane::{End, Left, NOTIFICATION_MAX, Said, TITLE_MAX};
 use crate::protocol::Reply;
 use std::collections::VecDeque;
 
@@ -37,14 +36,19 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Records that `what` happened at `place`, numbered after the last.
-    pub(crate) fn push(&mut self, place: Place, what: What) {
+    /// Records `event`, numbered after the last.
+    pub(crate) fn push(&mut self, event: Event) {
         if self.entries.len() >= KEPT {
             self.entries.pop_front();
         }
-        self.entries.push_back((self.next, Event { place, what }));
+        self.entries.push_back((self.next, event));
         // 2^64 entries are never reached: the number never stands still.
         self.next = Seq(self.next.0.saturating_add(1));
+    }
+
+    /// Where pane `at` tells what happens in it: here, as it happens.
+    pub(crate) fn teller(&mut self, at: PaneAt) -> Teller<'_> {
+        Teller { at, journal: self }
     }
 
     /// Where a reader starting now reads from: nothing recorded yet.
@@ -64,55 +68,62 @@ impl Journal {
     }
 }
 
-/// Where a thing happened, for `events-of` to choose by: a pane in its tab
-/// and workspace, a tab in its workspace, or a workspace.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Place {
-    Pane((WsId, TabId), PaneId),
-    Tab(WsId, TabId),
-    Workspace(WsId),
+/// A pane's place: its workspace and tab, and the pane.
+pub type PaneAt = ((WsId, TabId), PaneId);
+
+/// The journal at a pane's place: what a pane's methods that change what
+/// events tell write to, at once, through a `pane::PaneMut`, which makes
+/// it from the pane's own id. Only the session's parts, which hold the
+/// session's journal, give one on it.
+pub struct Teller<'a> {
+    at: PaneAt,
+    journal: &'a mut Journal,
 }
 
-impl Place {
-    /// Its pane, if it is one, its tab, if it is one or in one, and its
-    /// workspace.
-    fn ids(self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
-        match self {
-            Place::Pane((ws, tab), pane) => (Some(pane), Some(tab), Some(ws)),
-            Place::Tab(ws, tab) => (None, Some(tab), Some(ws)),
-            Place::Workspace(ws) => (None, None, Some(ws)),
-        }
-    }
-
-    /// What it is the place of.
-    fn thing(self) -> AnyRef {
-        match self {
-            Place::Pane(_, pane) => AnyRef::Pane(pane),
-            Place::Tab(_, tab) => AnyRef::Tab(tab),
-            Place::Workspace(ws) => AnyRef::Workspace(ws),
-        }
+impl Teller<'_> {
+    /// The pane tells `what`.
+    pub(crate) fn tell(&mut self, what: Told) {
+        self.journal
+            .push(Event::Pane(self.at, PaneEvent::Told(what)));
     }
 }
 
-/// One thing that happened in the session, and where.
+/// One thing that happened in the session, where: what can happen to a
+/// pane, at a pane, and what can happen to a tab or a workspace, at one.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Event {
-    place: Place,
-    what: What,
+pub enum Event {
+    Pane(PaneAt, PaneEvent),
+    Tab((WsId, TabId), Change),
+    Workspace(WsId, Change),
 }
 
-/// What happened: to a pane, tab or workspace, or (from `Moved` on) to a
-/// pane. The type does not tie it to its `Place`: `Parts`, which records
-/// every event, gives the pane-only ones a pane's place.
+/// What happens to a tab or a workspace.
 #[derive(Clone, Debug, PartialEq)]
-pub enum What {
-    /// Made; a tab or workspace with its name.
-    Created(Option<String>),
+pub enum Change {
+    /// Made, with its name.
+    Created(String),
     /// Named otherwise: its new name.
     Renamed(String),
     Closed,
+}
+
+/// What happens to a pane, and in it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneEvent {
+    Created,
+    Closed,
     /// To another tab, from this workspace and tab.
     Moved((WsId, TabId)),
+    /// What the pane itself tells: these alone a `Teller` takes; its
+    /// place and lifetime are the session's parts' to journal.
+    Told(Told),
+}
+
+/// What a pane tells of itself and its program (`Teller::tell`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Told {
+    /// Named otherwise: its new name.
+    Renamed(String),
     /// Its program started again (`respawn`), over one that ran: what
     /// that one left.
     Respawned(Left),
@@ -122,14 +133,50 @@ pub enum What {
     /// A shell command ended, with its status if it is known.
     Done(Option<i32>),
     Resized(fux_vt::Size),
-    /// Its program ended: with a status or by a signal, and what it left.
-    Exited(Ended, Left),
+    /// Its program ended.
+    Exited(End),
 }
 
-impl What {
+/// An event's fields after its name and place.
+type Fields = Vec<(&'static str, Json<'static>)>;
+
+/// A name, as the field `name`.
+fn named(name: &str) -> Fields {
+    vec![("name", Json::str(name.to_owned()))]
+}
+
+impl Change {
     /// Its name, and what else it says.
-    fn said(&self) -> (&'static str, Vec<(&'static str, Json<'static>)>) {
-        let text = |key, text: &String| vec![(key, Json::str(text.clone()))];
+    fn said(&self) -> (&'static str, Fields) {
+        match self {
+            Change::Created(name) => ("created", named(name)),
+            Change::Renamed(name) => ("renamed", named(name)),
+            Change::Closed => ("closed", Vec::new()),
+        }
+    }
+}
+
+impl PaneEvent {
+    /// Its name, and what else it says.
+    fn said(&self) -> (&'static str, Fields) {
+        match self {
+            PaneEvent::Created => ("created", Vec::new()),
+            PaneEvent::Closed => ("closed", Vec::new()),
+            PaneEvent::Moved((ws, tab)) => (
+                "moved",
+                vec![
+                    ("from_tab", Json::str(tab.to_string())),
+                    ("from_workspace", Json::str(ws.to_string())),
+                ],
+            ),
+            PaneEvent::Told(told) => told.said(),
+        }
+    }
+}
+
+impl Told {
+    /// Its name, and what else it says.
+    fn said(&self) -> (&'static str, Fields) {
         // A program's text, and `truncated` if it sent more.
         let said = |key, text: &str, cut: bool| {
             let cut = cut.then_some(("truncated", Json::Bool(true)));
@@ -139,64 +186,56 @@ impl What {
                 .collect()
         };
         match self {
-            What::Created(name) => (
-                "created",
-                name.iter().flat_map(|n| text("name", n)).collect(),
-            ),
-            What::Renamed(name) => ("renamed", text("name", name)),
-            What::Closed => ("closed", Vec::new()),
-            What::Moved((ws, tab)) => (
-                "moved",
-                vec![
-                    ("from_tab", Json::str(tab.to_string())),
-                    ("from_workspace", Json::str(ws.to_string())),
-                ],
-            ),
-            What::Respawned(left) => ("respawned", left_said(*left).collect()),
-            What::Bell => ("bell", Vec::new()),
-            What::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
-            What::Title(title) => ("title", said("title", title.as_str(), title.cut())),
-            What::Done(status) => (
+            Told::Renamed(name) => ("renamed", named(name)),
+            Told::Respawned(left) => ("respawned", left.fields().collect()),
+            Told::Bell => ("bell", Vec::new()),
+            Told::Notification(n) => ("notification", said("text", n.as_str(), n.cut())),
+            Told::Title(title) => ("title", said("title", title.as_str(), title.cut())),
+            Told::Done(status) => (
                 "done",
                 vec![("status", status.map_or(Json::Null, Json::int))],
             ),
-            What::Resized(size) => {
+            Told::Resized(size) => {
                 let cols = ("cols", Json::int(size.cols()));
                 ("resized", vec![cols, ("rows", Json::int(size.rows()))])
             }
-            What::Exited(ended, left) => {
-                let ended = match ended {
-                    Ended::Exited(code) => ("status", Json::int(*code)),
-                    Ended::Signalled(signal) => ("signal", Json::int(*signal)),
-                    Ended::Lost => ("status", Json::Null),
-                };
-                (
-                    "exited",
-                    [ended].into_iter().chain(left_said(*left)).collect(),
-                )
+            Told::Exited(End { ended, left }) => {
+                let ended = std::iter::once(ended.field());
+                ("exited", ended.chain(left.fields()).collect())
             }
         }
     }
 }
 
-/// `truncated` (`true`) if a program left more on its terminal as it ended
-/// than is read (`Output::Cut`), and `input_unread`, the bytes of input
-/// queued for it not yet written to its terminal, if any.
-fn left_said(left: Left) -> impl Iterator<Item = (&'static str, Json<'static>)> {
-    let cut = match left.output {
-        Output::Read => None,
-        Output::Cut => Some(("truncated", Json::Bool(true))),
-    };
-    let input = (left.input > 0).then(|| ("input_unread", Json::int(left.input)));
-    cut.into_iter().chain(input)
-}
-
 impl Event {
+    /// Its pane, if it is a pane's, its tab, if it is of one or in one,
+    /// and its workspace.
+    fn ids(&self) -> (Option<PaneId>, Option<TabId>, Option<WsId>) {
+        match self {
+            Event::Pane(((ws, tab), pane), _) => (Some(*pane), Some(*tab), Some(*ws)),
+            Event::Tab((ws, tab), _) => (None, Some(*tab), Some(*ws)),
+            Event::Workspace(ws, _) => (None, None, Some(*ws)),
+        }
+    }
+
+    /// What it closed, if it is a close.
+    fn closed(&self) -> Option<AnyRef> {
+        match self {
+            Event::Pane((_, pane), PaneEvent::Closed) => Some(AnyRef::Pane(*pane)),
+            Event::Tab((_, tab), Change::Closed) => Some(AnyRef::Tab(*tab)),
+            Event::Workspace(ws, Change::Closed) => Some(AnyRef::Workspace(*ws)),
+            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) => None,
+        }
+    }
+
     /// The line that tells it: JSON, or its name, where, and `key=value`
     /// for the rest.
     pub fn line(&self, json: bool) -> String {
-        let (name, fields) = self.what.said();
-        line(name, self.place.ids(), fields, json)
+        let (name, fields) = match self {
+            Event::Pane(_, what) => what.said(),
+            Event::Tab(_, change) | Event::Workspace(_, change) => change.said(),
+        };
+        line(name, self.ids(), fields, json)
     }
 }
 
@@ -305,11 +344,10 @@ impl Subscription {
     /// Whether it is told of `event`: where its target is or holds, or a
     /// pane's move from there.
     fn wants(&self, event: &Event) -> bool {
-        let (pane, tab, ws) = event.place.ids();
-        let from = if let What::Moved(from) = event.what {
-            Some(from)
-        } else {
-            None
+        let (pane, tab, ws) = event.ids();
+        let from = match event {
+            Event::Pane(_, PaneEvent::Moved(from)) => Some(*from),
+            Event::Pane(..) | Event::Tab(..) | Event::Workspace(..) => None,
         };
         self.target.is_none_or(|target| match target {
             AnyRef::Pane(p) => pane == Some(p),
@@ -321,7 +359,7 @@ impl Subscription {
     /// Whether `event` ends what it can be told of its target: the target
     /// closed.
     fn ends(&self, event: &Event) -> bool {
-        event.what == What::Closed && self.target == Some(event.place.thing())
+        self.target.is_some() && event.closed() == self.target
     }
 
     /// The lines it is told of what the journal holds that it has not
@@ -365,28 +403,35 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pane::Output;
+    use crate::process::Ended;
 
     /// A reader with no room left reads on from where it stopped; and one
     /// the journal let entries go past is told how many it missed, once.
     #[test]
     fn a_reader_reads_on_and_is_told_what_it_missed() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
+        let tab: TabId = "@1".parse().map_err(|_| "@1")?;
+        let bell = Event::Pane(((ws, tab), PaneId::of(1)), PaneEvent::Told(Told::Bell));
         let mut journal = Journal::default();
         let mut stream = Subscription::new(None, false, &journal);
-        journal.push(Place::Workspace(ws), What::Bell);
-        journal.push(Place::Workspace(ws), What::Closed);
-        assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "bell +1\n");
+        journal.push(bell.clone());
+        journal.push(Event::Workspace(ws, Change::Closed));
+        assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "bell %1 @1 +1\n");
         assert_eq!(stream.told(&journal, 1, |_| Some(ws)).0, "closed +1\n");
         for _ in 0..=KEPT {
-            journal.push(Place::Workspace(ws), What::Bell);
+            journal.push(bell.clone());
         }
         // A reader with no room is told nothing, and what it missed adds
         // up, told once when it has room.
         assert_eq!(stream.told(&journal, 0, |_| Some(ws)).0, "");
-        journal.push(Place::Workspace(ws), What::Bell);
+        journal.push(bell);
         assert_eq!(stream.told(&journal, 0, |_| Some(ws)).0, "");
         let (lines, _) = stream.told(&journal, usize::MAX, |_| Some(ws));
-        assert!(lines.starts_with("missed count=2\nbell +1\n"), "{lines}");
+        assert!(
+            lines.starts_with("missed count=2\nbell %1 @1 +1\n"),
+            "{lines}"
+        );
         assert_eq!(lines.lines().count(), KEPT.saturating_add(1));
         assert_eq!(stream.told(&journal, usize::MAX, |_| Some(ws)).0, "");
         Ok(())
@@ -400,47 +445,69 @@ mod tests {
     fn every_event_is_in_the_docs() -> Result<(), String> {
         let ws: WsId = "+1".parse().map_err(|_| "+1")?;
         let tab: TabId = "@1".parse().map_err(|_| "@1")?;
-        let place = Place::Pane((ws, tab), PaneId::of(1));
+        let at = ((ws, tab), PaneId::of(1));
         let size = fux_vt::Size::new(24, 80).map_err(|e| e.to_string())?;
-        let what = [
-            What::Created(None),
-            What::Renamed(String::new()),
-            What::Closed,
-            What::Moved((ws, tab)),
-            What::Respawned(Left {
-                output: Output::Cut,
-                input: 2,
-            }),
-            What::Bell,
-            What::Notification(Said::default()),
-            What::Title(Said::default()),
-            What::Done(None),
-            What::Resized(size),
-            What::Exited(Ended::Exited(0), Left::default()),
-            What::Exited(
-                Ended::Signalled(9),
-                Left {
-                    output: Output::Cut,
-                    input: 2,
-                },
+        let cut = Left {
+            output: Output::Cut,
+            input: 2,
+        };
+        let events = [
+            Event::Pane(at, PaneEvent::Created),
+            Event::Pane(at, PaneEvent::Told(Told::Renamed(String::new()))),
+            Event::Pane(at, PaneEvent::Closed),
+            Event::Pane(at, PaneEvent::Moved((ws, tab))),
+            Event::Pane(at, PaneEvent::Told(Told::Respawned(cut))),
+            Event::Pane(at, PaneEvent::Told(Told::Bell)),
+            Event::Pane(at, PaneEvent::Told(Told::Notification(Said::default()))),
+            Event::Pane(at, PaneEvent::Told(Told::Title(Said::default()))),
+            Event::Pane(at, PaneEvent::Told(Told::Done(None))),
+            Event::Pane(at, PaneEvent::Told(Told::Resized(size))),
+            Event::Pane(
+                at,
+                PaneEvent::Told(Told::Exited(End {
+                    ended: Ended::Exited(0),
+                    left: Left::default(),
+                })),
             ),
+            Event::Pane(
+                at,
+                PaneEvent::Told(Told::Exited(End {
+                    ended: Ended::Signalled(9),
+                    left: cut,
+                })),
+            ),
+            Event::Tab((ws, tab), Change::Created(String::new())),
+            Event::Tab((ws, tab), Change::Renamed(String::new())),
+            Event::Tab((ws, tab), Change::Closed),
+            Event::Workspace(ws, Change::Created(String::new())),
+            Event::Workspace(ws, Change::Renamed(String::new())),
+            Event::Workspace(ws, Change::Closed),
         ];
         let mut lines = Vec::new();
-        for what in what {
+        for event in events {
             // A new kind of event does not compile here until it has an
             // arm; whoever adds the arm adds its value to the list above.
-            match what {
-                What::Created(_)
-                | What::Renamed(_)
-                | What::Closed
-                | What::Moved(..)
-                | What::Respawned(_)
-                | What::Bell
-                | What::Notification(_)
-                | What::Title(_)
-                | What::Done(_)
-                | What::Resized(_)
-                | What::Exited(..) => lines.push(Event { place, what }.line(false)),
+            match event {
+                Event::Pane(
+                    _,
+                    PaneEvent::Created
+                    | PaneEvent::Closed
+                    | PaneEvent::Moved(..)
+                    | PaneEvent::Told(
+                        Told::Renamed(_)
+                        | Told::Respawned(_)
+                        | Told::Bell
+                        | Told::Notification(_)
+                        | Told::Title(_)
+                        | Told::Done(_)
+                        | Told::Resized(_)
+                        | Told::Exited(_),
+                    ),
+                )
+                | Event::Tab(_, Change::Created(_) | Change::Renamed(_) | Change::Closed)
+                | Event::Workspace(_, Change::Created(_) | Change::Renamed(_) | Change::Closed) => {
+                    lines.push(event.line(false))
+                }
             }
         }
         for ending in [Ending::Gone, Ending::Stopped(String::new())] {

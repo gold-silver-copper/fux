@@ -7,13 +7,13 @@
 //!
 //! [`Parts`] holds them with the journal of what happened to them: what
 //! events tell is changed only here, by methods that journal the change
-//! as they make it, and a pane is changed only through a [`PaneMut`], which
-//! journals what it says happened in it as the borrow ends.
+//! as they make it, and by a pane's own, which a [`PaneMut`] gives the
+//! journal at the pane's place.
 use crate::command::Sibling;
-use crate::events::{Journal, Place, What};
+use crate::events::{Change, Event, Journal, PaneEvent};
 use crate::id::{ClientId, PaneId, TabId, WsId};
 use crate::layout::{self, Axis, NoPane, Rect, Removed, Side, Tree};
-use crate::pane::{Loose, Pane};
+use crate::pane::{Pane, PaneMut};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A workspace and its tabs, of which it always has one or more: each is
@@ -288,17 +288,6 @@ pub struct Parts {
     journal: Journal,
 }
 
-/// A pane of the session's, to change: what it says happened in it
-/// (`Pane::said`) goes in the journal, at its place, as the borrow ends.
-/// No whole pane can be put in its place (`*pane = other`), losing what
-/// the old one said: a pane in the session is `Placed`, which only this
-/// module makes, and no other is had by value.
-pub struct PaneMut<'a>(&'a mut Pane, Place, &'a mut Journal);
-
-/// What a pane in the session is (`Pane<Placed>`): made here alone, as
-/// it is put in.
-pub struct Placed(());
-
 /// A split planned (`Parts::plan_split`): the layout tab `tab` had, and
 /// the one it takes, holding the new pane too.
 pub struct Split {
@@ -326,32 +315,6 @@ pub enum Destination {
     NewWorkspace((WsId, String), (TabId, String, Fit)),
 }
 
-/// Leave to take what a pane said (`Pane::said`), which only this module
-/// gives, as it puts what it takes in the journal: code elsewhere cannot
-/// take it and drop it.
-pub struct Journaling(());
-
-impl std::ops::Deref for PaneMut<'_> {
-    type Target = Pane;
-    fn deref(&self) -> &Pane {
-        self.0
-    }
-}
-
-impl std::ops::DerefMut for PaneMut<'_> {
-    fn deref_mut(&mut self) -> &mut Pane {
-        self.0
-    }
-}
-
-impl Drop for PaneMut<'_> {
-    fn drop(&mut self) {
-        for what in self.0.said(Journaling(())) {
-            self.2.push(self.1, what);
-        }
-    }
-}
-
 /// Tab `id` of `workspaces`, and its workspace's id.
 fn tab_mut(workspaces: &mut [Workspace], id: TabId) -> Option<(WsId, &mut Tab)> {
     let mut tabs = (workspaces.iter_mut()).flat_map(|w| w.tabs.iter_mut().map(|t| (w.id, t)));
@@ -370,10 +333,16 @@ fn swap_sibling<T>(items: &mut [T], is: impl Fn(&T) -> bool, toward: Sibling) ->
     Some(pair.map(<[T]>::reverse).is_some())
 }
 
-/// Names `old` `new`, journaled at `place` if it is another name.
-fn rename(journal: &mut Journal, place: Place, old: &mut String, new: String) {
+/// Names `old` `new`, journaled as `renamed` makes it if it is another
+/// name.
+fn rename(
+    journal: &mut Journal,
+    renamed: impl FnOnce(Change) -> Event,
+    old: &mut String,
+    new: String,
+) {
     if *old != new {
-        journal.push(place, What::Renamed(new.clone()));
+        journal.push(renamed(Change::Renamed(new.clone())));
         *old = new;
     }
 }
@@ -477,13 +446,17 @@ impl Parts {
 
     /// Pane `id`, to change.
     pub fn pane_mut(&mut self, id: PaneId) -> Option<PaneMut<'_>> {
-        let place = Place::Pane(self.locate(id)?, id);
-        Some(PaneMut(self.panes.get_mut(&id)?, place, &mut self.journal))
+        let at = self.locate(id)?;
+        Some(PaneMut::new(
+            self.panes.get_mut(&id)?,
+            at,
+            &mut self.journal,
+        ))
     }
 
     /// Changes each pane with `change`, tab by tab: each at the place it
     /// is found, not looked for again.
-    pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut Pane)) {
+    pub fn each_pane_mut(&mut self, mut change: impl FnMut(&mut PaneMut<'_>)) {
         let Parts {
             workspaces,
             panes,
@@ -493,8 +466,7 @@ impl Parts {
             for tab in &ws.tabs {
                 for id in tab.root.panes() {
                     if let Some(pane) = panes.get_mut(&id) {
-                        let place = Place::Pane((ws.id, tab.id), id);
-                        change(&mut PaneMut(pane, place, journal));
+                        change(&mut PaneMut::new(pane, (ws.id, tab.id), journal));
                     }
                 }
             }
@@ -509,7 +481,7 @@ impl Parts {
         ws: (WsId, String),
         first: (TabId, String, Fit),
         clients: impl Iterator<Item = ClientId>,
-        pane: Pane<Loose>,
+        pane: Pane,
     ) {
         let at = (ws.0, first.0);
         self.push_workspace(ws, first, clients, pane.id());
@@ -525,9 +497,9 @@ impl Parts {
         pane: PaneId,
     ) {
         self.journal
-            .push(Place::Workspace(id), What::Created(Some(name.clone())));
+            .push(Event::Workspace(id, Change::Created(name.clone())));
         self.journal
-            .push(Place::Tab(id, tab), What::Created(Some(tab_name.clone())));
+            .push(Event::Tab((id, tab), Change::Created(tab_name.clone())));
         let first = Tab::new(tab, tab_name, fit, clients, pane);
         let shown = first.seats.keys().map(|c| (*c, tab)).collect();
         self.workspaces.push(Workspace {
@@ -548,8 +520,8 @@ impl Parts {
         (ws, id): (WsId, TabId),
         name: Option<String>,
         fit: Fit,
-        pane: Pane<Loose>,
-    ) -> Result<(), Pane<Loose>> {
+        pane: Pane,
+    ) -> Result<(), Pane> {
         if self.push_tab((ws, id), name, fit, pane.id()).is_none() {
             return Err(pane);
         }
@@ -574,15 +546,15 @@ impl Parts {
         let tab = Tab::new(id, name.clone(), fit, clients.into_iter().flatten(), pane);
         workspace.tabs.push(tab);
         self.journal
-            .push(Place::Tab(ws, id), What::Created(Some(name)));
+            .push(Event::Tab((ws, id), Change::Created(name)));
         Some(())
     }
 
     /// `pane`, new, is in tab `at` of its workspace.
-    fn placed(&mut self, at: (WsId, TabId), pane: Pane<Loose>) {
-        self.journal
-            .push(Place::Pane(at, pane.id()), What::Created(None));
-        self.panes.insert(pane.id(), pane.placed(Placed(())));
+    fn placed(&mut self, at: (WsId, TabId), pane: Pane) {
+        let id = pane.id();
+        self.journal.push(Event::Pane((at, id), PaneEvent::Created));
+        self.panes.insert(id, pane);
     }
 
     /// The layout `target`'s tab takes split for pane `new` beside it,
@@ -608,7 +580,7 @@ impl Parts {
     /// given back if it is not the one planned for, or the tab's layout
     /// changed since.
     #[expect(clippy::result_large_err, reason = "a pane given back")]
-    pub(crate) fn split(&mut self, pane: Pane<Loose>, split: Split) -> Result<(), Pane<Loose>> {
+    pub(crate) fn split(&mut self, pane: Pane, split: Split) -> Result<(), Pane> {
         let Split { tab, was, root } = split;
         let planned = root.contains(pane.id()) && !was.contains(pane.id());
         let Some((ws, t)) =
@@ -623,7 +595,7 @@ impl Parts {
 
     /// Takes pane `id` out of its tab: given back, closed. A tab its going
     /// empties closes too, as does a workspace left with no tabs.
-    pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane<Loose>> {
+    pub(crate) fn close_pane(&mut self, id: PaneId) -> Option<Pane> {
         let at = self.locate(id)?;
         let (_, tab) = tab_mut(&mut self.workspaces, at.1)?;
         let emptied = match tab.root.remove(id) {
@@ -634,30 +606,29 @@ impl Parts {
             Removed::Emptied => true,
             Removed::Absent => return None,
         };
-        self.journal.push(Place::Pane(at, id), What::Closed);
+        self.journal.push(Event::Pane((at, id), PaneEvent::Closed));
         if emptied {
             self.drop_tab(at.1);
         }
-        self.panes.remove(&id).map(|pane| pane.placed(Loose))
+        self.panes.remove(&id)
     }
 
     /// Removes tab `tab` and gives back the panes in it, closed. A
     /// workspace it leaves with none goes too, its viewers shown the first
     /// workspace left.
-    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane<Loose>> {
+    pub(crate) fn remove_tab(&mut self, tab: TabId) -> Vec<Pane> {
         let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) else {
             return Vec::new();
         };
         let panes = t.root.panes();
         for &pane in &panes {
             self.journal
-                .push(Place::Pane((ws, tab), pane), What::Closed);
+                .push(Event::Pane(((ws, tab), pane), PaneEvent::Closed));
         }
         self.drop_tab(tab);
-        let gone = panes
-            .into_iter()
-            .filter_map(|pane| self.panes.remove(&pane));
-        gone.map(|pane| pane.placed(Loose)).collect()
+        (panes.into_iter())
+            .filter_map(|pane| self.panes.remove(&pane))
+            .collect()
     }
 
     /// Takes tab `tab` out of its workspace, and the workspace if it is
@@ -670,18 +641,18 @@ impl Parts {
         ws.remove_tab(tab);
         let id = ws.id;
         let viewers = ws.tabs.is_empty().then(|| std::mem::take(&mut ws.viewers));
-        self.journal.push(Place::Tab(id, tab), What::Closed);
+        self.journal.push(Event::Tab((id, tab), Change::Closed));
         if let Some(viewers) = viewers {
             self.workspaces.retain(|w| w.id != id);
             if let Some(first) = self.workspaces.first_mut() {
                 first.viewers.extend(viewers);
             }
-            self.journal.push(Place::Workspace(id), What::Closed);
+            self.journal.push(Event::Workspace(id, Change::Closed));
         }
     }
 
     /// Closes everything: the panes given back, to end.
-    pub(crate) fn close_all(&mut self) -> Vec<Pane<Loose>> {
+    pub(crate) fn close_all(&mut self) -> Vec<Pane> {
         let tabs: Vec<TabId> = (self.workspaces.iter())
             .flat_map(|w| w.tabs.iter().map(|t| t.id))
             .collect();
@@ -693,7 +664,8 @@ impl Parts {
     /// Names workspace `id` `name`, if there is one.
     pub(crate) fn rename_workspace(&mut self, id: WsId, name: String) -> Option<()> {
         let ws = self.workspaces.iter_mut().find(|w| w.id == id)?;
-        rename(&mut self.journal, Place::Workspace(id), &mut ws.name, name);
+        let renamed = |change| Event::Workspace(id, change);
+        rename(&mut self.journal, renamed, &mut ws.name, name);
         Some(())
     }
 
@@ -720,7 +692,8 @@ impl Parts {
         tab_mut(&mut self.workspaces, id)?.1.given = true;
         for (tab, name) in names {
             if let Some((ws, t)) = tab_mut(&mut self.workspaces, tab) {
-                rename(&mut self.journal, Place::Tab(ws, tab), &mut t.name, name);
+                let renamed = |change| Event::Tab((ws, tab), change);
+                rename(&mut self.journal, renamed, &mut t.name, name);
             }
         }
         Some(())
@@ -739,8 +712,8 @@ impl Parts {
             tab.edit(|root| root.swap(a, b));
         }
         if was_a != was_b {
-            self.journal.push(Place::Pane(was_b, a), What::Moved(was_a));
-            self.journal.push(Place::Pane(was_a, b), What::Moved(was_b));
+            (self.journal).push(Event::Pane((was_b, a), PaneEvent::Moved(was_a)));
+            (self.journal).push(Event::Pane((was_a, b), PaneEvent::Moved(was_b)));
         }
     }
 
@@ -776,7 +749,7 @@ impl Parts {
                 at
             }
         };
-        self.journal.push(Place::Pane(at, pane), What::Moved(was));
+        (self.journal).push(Event::Pane((at, pane), PaneEvent::Moved(was)));
         match (rest, tab_mut(&mut self.workspaces, was.1)) {
             (Some(rest), Some((_, from))) => from.edit(|root| *root = rest),
             (None, _) | (_, None) => self.drop_tab(was.1),

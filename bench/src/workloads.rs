@@ -771,6 +771,13 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
             painted: 0,
         });
     }
+    // What it tells goes in a journal of its own, as in a session.
+    let mut journal = fux::events::Journal::default();
+    let at = (
+        "+1".parse().map_err(|_| "+1")?,
+        "@1".parse().map_err(|_| "@1")?,
+    );
+    let mut pane = fux::pane::PaneMut::new(&mut pane, at, &mut journal);
     for load in loads {
         pane.resize(fux_vt::Size::new(load.rows, load.cols).map_err(|e| e.to_string())?);
         for piece in given(&load.bytes) {
@@ -837,7 +844,7 @@ fn keystroke(recordings: &[Recording], baseline: bool, keys: usize) -> Result<Do
         let typed = s
             .parts
             .pane_mut(pane)
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default();
         black_box(&typed);
         let glyph = char::from(key).encode_utf8(&mut echo);

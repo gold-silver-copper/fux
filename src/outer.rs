@@ -24,10 +24,10 @@
 //! what it is shown on.
 use crate::decode::Reply;
 use crate::id::{ClientId, PaneId, TabId};
+use crate::pane::PaneMut;
 use crate::protocol::ToAttached;
 use crate::session::{Outgoing, Session};
 use crate::view::{ClientKind, View};
-use crate::workspace::PaneMut;
 pub use fux_vt::Rgb;
 pub use fux_vt::keys::colour::{Colours, Scheme};
 use fux_vt::{Graphics, ModeStatus};
@@ -311,14 +311,12 @@ impl Session {
 
     /// Pane `id`'s program is told the scheme is `scheme`, if it takes
     /// input (`refuses_input`) and its queue takes the report; one refused
-    /// is told lost (`InputQueue`), and sent again once there is room
-    /// (`tell_schemes`).
+    /// is sent again once there is room (`tell_schemes`).
     fn tell_scheme(&mut self, id: PaneId, scheme: Scheme) {
         if let Some(mut pane) = self.parts.pane_mut(id)
             && crate::session::refuses_input(&pane).is_none()
-            && pane.input.push(scheme.report()).is_ok()
         {
-            pane.scheme_told = Some(scheme);
+            pane.offer_scheme(scheme);
         }
     }
 
@@ -484,7 +482,7 @@ mod tests {
     /// What pane `pane`'s program was answered, taken.
     fn answered(s: &mut Session, pane: u32) -> String {
         let bytes = (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default();
         String::from_utf8_lossy(&bytes).into_owned()
     }
@@ -671,7 +669,6 @@ mod tests {
             crate::process::spawn(&argv, std::path::Path::new("/"), (&[], &[]), (size, None))?;
         let mut pane = s.parts.pane_mut(id).ok_or("the pane")?;
         let _ = pane.set_process(crate::pane::Process::Reading(child));
-        drop(pane);
         let rows_cols = s
             .parts
             .panes()
@@ -733,14 +730,14 @@ mod tests {
     }
 
     /// A picture drawn while its pane's host draws no sixel is not kept,
-    /// and counted (`pictures_refused`).
+    /// and counted (`Losses::pictures`).
     #[test]
     fn a_picture_its_host_does_not_draw_is_counted() -> Outcome {
         let (mut s, c) = session()?;
         let picture = b"\x1bP9q#1;2;100;0;0!20~\x1b\\";
         let refused = |s: &mut Session| {
             s.output(PaneId::of(1), picture);
-            (s.parts.panes().get(&PaneId::of(1))).map(crate::pane::Pane::pictures_refused)
+            (s.parts.panes().get(&PaneId::of(1))).map(|p| p.lost().pictures)
         };
         s.input(c, b"\x1b[6;20;10t\x1b[?62;4;22c");
         assert_eq!(refused(&mut s), Some(0));
@@ -792,7 +789,7 @@ mod tests {
     }
 
     /// A scheme report a full input queue refuses is not taken as told: it
-    /// is sent once the program reads, and the loss in between is told.
+    /// is sent once the program reads, late, and nothing is lost.
     #[test]
     fn a_scheme_report_refused_is_sent_once_the_queue_takes_it() -> Outcome {
         let (mut s, c) = session()?;
@@ -801,14 +798,10 @@ mod tests {
         assert_eq!(answered(&mut s, 1), "\x1b[?997;1n");
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        p.input.push(full).map_err(|e| e.to_string())?;
-        drop(p);
+        p.push(full).map_err(|e| e.to_string())?;
         s.input(c, b"\x1b[?997;2n");
         let notice = (s.views.get_mut(&c)).and_then(|v| v.notice.take());
-        assert!(
-            notice.is_some_and(|n| n.text.contains("%1")),
-            "the loss is told"
-        );
+        assert!(notice.is_none(), "nothing is lost: {notice:?}");
         assert_eq!(answered(&mut s, 1).len(), crate::pane::INPUT_BYTES);
         s.settle();
         assert_eq!(answered(&mut s, 1), "\x1b[?997;2n");

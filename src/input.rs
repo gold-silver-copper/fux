@@ -29,9 +29,9 @@ impl Session {
             }
             shown |= self.act(client, act);
         }
-        // Input a pane dropped is told, once a run (`InputQueue`). Keys a
-        // pane's program reads show when its output does: nothing to paint
-        // or settle until then.
+        // What a pane lost is told (`tell_lost`), each kind once a run.
+        // Keys a pane's program reads show when its output does: nothing
+        // to paint or settle until then.
         shown |= self.tell_lost();
         // Another client typing hosts the tab's panes, which the settle
         // tells them, painting the tab again where that changed what they
@@ -145,7 +145,13 @@ impl Session {
     ) -> bool {
         let why = match self.live_pane_mut(pane).map(|mut p| p.push_with(write)) {
             Ok(Ok(())) => return false,
-            Ok(Err(crate::pane::Error::InputFull)) => crate::session::lost(pane),
+            Ok(Err(crate::pane::Error::InputFull)) => {
+                let input = crate::pane::Losses {
+                    input: 1,
+                    ..Default::default()
+                };
+                input.told(pane, false).join("; ")
+            }
             Ok(Err(refused)) => refused.to_string(),
             Err(refused) => refused.to_string(),
         };
@@ -294,7 +300,7 @@ mod tests {
     /// The input waiting for a pane, taken.
     fn queued(s: &mut Session, pane: u32) -> Vec<u8> {
         (s.parts.pane_mut(PaneId::of(pane)))
-            .map(|mut p| p.input.drain_all())
+            .map(|mut p| p.drain_input())
             .unwrap_or_default()
     }
 
@@ -902,14 +908,13 @@ mod tests {
         s.output(PaneId::of(1), b"\x1b[?1000h\x1b[?1006h\x1b[?1004h");
         let full = vec![0; crate::pane::INPUT_BYTES];
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        p.input.push(full).map_err(|e| e.to_string())?;
-        drop(p);
+        p.push(full).map_err(|e| e.to_string())?;
         let notice = |s: &mut Session| {
             let view = s.views.get_mut(&c);
             view.and_then(|v| v.notice.take()).map(|n| n.text)
         };
         s.input(c, b"\x1b[<0;3;2M");
-        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: input dropped (1)")));
         let typed = [
             b"x".as_slice(),
             b"y",
@@ -921,7 +926,7 @@ mod tests {
             s.input(c, typed);
             let told = notice(&mut s);
             assert!(
-                told.is_some_and(|n| n.contains("input to %1 was dropped")),
+                told.is_some_and(|n| n.contains("%1: input dropped (1)")),
                 "{typed:?}"
             );
         }
@@ -938,16 +943,15 @@ mod tests {
             .collect();
         s.output(PaneId::of(1), &queries);
         let mut p = s.parts.pane_mut(PaneId::of(1)).ok_or("no %1")?;
-        let room = p.input.room();
-        p.input.push(vec![0; room]).map_err(|e| e.to_string())?;
-        drop(p);
+        let room = p.input().room();
+        p.push(vec![0; room]).map_err(|e| e.to_string())?;
         let notice = |s: &mut Session| {
             let view = s.views.get_mut(&c);
             view.and_then(|v| v.notice.take()).map(|n| n.text)
         };
-        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: replies to its program dropped")));
         s.input(c, b"x");
-        assert!(notice(&mut s).is_some_and(|n| n.contains("input to %1 was dropped")));
+        assert!(notice(&mut s).is_some_and(|n| n.contains("%1: input dropped (1)")));
         Ok(())
     }
 

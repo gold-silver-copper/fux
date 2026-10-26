@@ -18,8 +18,8 @@ type Read = (String, String);
 /// A pane's screen, and `history` rows before it, as `view` asks, and its
 /// JSON (which `json` gives, read once with the text); with `copy_mode`,
 /// that says a client is in copy mode on it (`state`).
-pub fn pane<S>(
-    pane: &Pane<S>,
+pub fn pane(
+    pane: &Pane,
     run: Run,
     history: Option<usize>,
     view: CaptureView,
@@ -219,8 +219,8 @@ pub fn client(client: ClientId, grid: &crate::render::Grid) -> Read {
 /// that say how it takes input; whether a client is in copy mode on it,
 /// and the cell its program is told, by its tab's host
 /// (`Session::host_panes`).
-pub fn state<S>(
-    pane: &Pane<S>,
+pub fn state(
+    pane: &Pane,
     run: Run,
     now: Instant,
     copy_mode: bool,
@@ -287,15 +287,7 @@ pub fn state<S>(
         ),
         ("bracketed_paste", Json::Bool(bracketed_paste)),
         ("pictures", pictures),
-        ("pictures_refused", Json::int(pane.pictures_refused())),
-        ("replies_dropped", Json::int(pane.alerts.replies_dropped)),
-        (
-            "copies_refused",
-            Json::Object(vec![
-                ("cut", Json::int(pane.alerts.copies_cut)),
-                ("not_text", Json::int(pane.alerts.copies_not_text)),
-            ]),
-        ),
+        ("lost", pane.lost().json()),
         (
             "cell",
             cell.map_or(Json::Null, |cell| {
@@ -497,6 +489,7 @@ fn described(a: Attributes) -> Vec<(&'static str, Json<'static>)> {
 mod tests {
     use crate::command::CaptureView;
     use crate::id::PaneId;
+    use crate::pane::tests::Lone;
     use crate::pane::{Pane, Runs};
 
     /// A soft-wrapped row's last cell is the spacer a wide glyph left, no
@@ -509,7 +502,7 @@ mod tests {
         let join = CaptureView::default();
         let captured = |output: &str| -> Result<String, Box<dyn std::error::Error>> {
             let size = fux_vt::Size::new(3, 5)?;
-            let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+            let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
             pane.output(output.as_bytes());
             Ok(super::pane(
                 &pane,
@@ -537,7 +530,7 @@ mod tests {
     #[test]
     fn rows_inside_a_wrapped_line_take_it_whole() -> Result<(), Box<dyn std::error::Error>> {
         let size = fux_vt::Size::new(6, 5)?;
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
         pane.output(b"top\r\nabcdefghijklm\r\nend");
         let run = crate::command::Run::now().ok_or("a clock")?;
         let capture = |rows, wrapped| {
@@ -565,7 +558,7 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 5)?;
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
         // 世 at col 4 does not fit and wraps on, leaving the spacer there.
         pane.output("abcd\x1b[5G世".as_bytes());
         let text = super::pane(
@@ -590,7 +583,7 @@ mod tests {
             ..CaptureView::default()
         };
         let size = fux_vt::Size::new(3, 20)?;
-        let mut pane = Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?;
+        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
         pane.output(b"$ \x1b]133;C\x07hello\x1b]133;D;0\x07PROMPT> ");
         let text = super::pane(
             &pane,
