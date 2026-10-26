@@ -1125,7 +1125,10 @@ impl Session {
             Here::Client(_, place) => self.dir_of(near.unwrap_or(place.pane)),
         };
         let base = known.map_or_else(home, Ok)?;
-        Ok(dir.map_or_else(|| base.clone(), |dir| base.join(dir)))
+        Ok(match dir {
+            Some(dir) => base.join(dir),
+            None => base,
+        })
     }
 
     /// The name a workspace gets when none is given: `workspace-N` after
@@ -3008,12 +3011,17 @@ fn found(found: AnyRef) -> Reply {
     }
 }
 
-/// `$HOME`: where a pane starts when nothing says where. Taken as it is
-/// set: one no program can start in fails the start with the system's
-/// error; unset, nothing starts.
+/// `$HOME`: where a pane starts when nothing says where. Unset, or not an
+/// absolute path (empty, or one only the server's own directory would
+/// place), nothing starts; one no program can start in fails the start
+/// with the system's error.
 fn home() -> Result<PathBuf, Error> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    home.ok_or_else(|| fail(Code::Start, "$HOME is not set, and no directory was given"))
+    let why = match std::env::var_os("HOME").map(PathBuf::from) {
+        Some(home) if home.is_absolute() => return Ok(home),
+        Some(home) => format!("$HOME is {home:?}, not an absolute path"),
+        None => "$HOME is not set, and nothing else says where to start".to_owned(),
+    };
+    Err(fail(Code::Start, why))
 }
 
 /// The most read of what a program left on its terminal as it ends, in

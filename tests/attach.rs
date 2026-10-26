@@ -922,8 +922,9 @@ fn a_server_a_client_started_outlives_the_clients_terminal() -> Outcome {
 }
 
 /// A first shell started where nothing says where starts in `$HOME`, or
-/// not at all: unset, the attach fails naming it; set to no directory, it
-/// fails with the system's error. Neither starts in `/`.
+/// not at all: unset or not an absolute path, the attach fails naming it;
+/// set to no directory, it fails with the system's error. None starts in
+/// `/`, the server's own directory.
 #[test]
 fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
     let dir = fuxix::file::scratch()
@@ -935,12 +936,17 @@ fn a_first_shell_with_no_usable_home_is_refused() -> Outcome {
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(e)?;
     let nowhere = dir.join("no-such-home");
     let cases = [
+        (None, "$HOME is not set".to_owned()),
         (
-            None,
-            "$HOME is not set, and no directory was given".to_owned(),
+            Some(std::path::Path::new("")),
+            r#"$HOME is "", not"#.to_owned(),
         ),
         (
-            Some(&nowhere),
+            Some(std::path::Path::new("tmp")),
+            r#"$HOME is "tmp", not"#.to_owned(),
+        ),
+        (
+            Some(nowhere.as_path()),
             format!("in {nowhere:?}: No such file or directory (os error 2)"),
         ),
     ];
