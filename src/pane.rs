@@ -333,6 +333,8 @@ struct Sink<'a, 't> {
     copied: &'a mut Vec<Result<String, Uncopied>>,
     /// What colour queries are answered with (`outer`).
     colours: &'a Colours,
+    /// Each sixel picture that ended, in order: placed whole or not.
+    pictures: Vec<bool>,
     /// The scheme a `CSI ? 996 n` among `replies` answered, last: its
     /// program was told it once they are queued (`Pane::scheme_told`).
     told: Option<Scheme>,
@@ -399,6 +401,9 @@ impl fux_vt::Sink for Sink<'_, '_> {
             Event::CommandEnded(status) => self.tell.tell(Told::Done(status)),
             Event::IconName(_) => {}
         }
+    }
+    fn picture(&mut self, placed: bool) {
+        self.pictures.push(placed);
     }
     /// xterm's title stack (ctlseqs, window manipulation): `CSI 22 ; Ps t`
     /// pushes the title, `CSI 23 ; Ps t` pops it, for Ps 0 (icon and
@@ -1141,12 +1146,12 @@ impl Pane {
         until_frame: bool,
         tell: &mut Teller<'_>,
     ) -> Option<(usize, fux_vt::Stop)> {
-        let refused = (self.parser.refused(), self.parser.pictures_refused());
-        let placed = self.parser.pictures_placed();
+        let refused = self.parser.refused();
         let mut sink = Sink {
             replies: Vec::new(),
             kept: 0,
             dropped: 0,
+            pictures: Vec::new(),
             tell,
             title: &mut self.title,
             bell: &mut self.bell,
@@ -1182,24 +1187,31 @@ impl Pane {
         if let Some(scheme) = sink.told.filter(|_| !full) {
             self.scheme_told = Some(scheme);
         }
+        let pictures = sink.pictures;
         // A run of dropped replies ends at a read that drops none while
         // the queue takes input.
         if replies == 0 && self.input.refusing == Refusing::No {
             self.input.replies = Run::Over;
         }
         self.lose_replies(replies);
-        // A picture placed whole ends a run of pictures lost; a read
-        // refused no memory, a run of refusals.
-        let memory = self.parser.refused().saturating_sub(refused.0);
-        if self.parser.pictures_placed() != placed {
-            self.loss_runs.pictures = Run::Over;
+        // Each picture as it ended, in order: one placed whole ends a run
+        // of pictures lost. A read of output that refused no memory ends a
+        // run of refusals.
+        for placed in pictures {
+            match placed {
+                true => self.loss_runs.pictures = Run::Over,
+                false => self.lose(Losses {
+                    pictures: 1,
+                    ..Losses::default()
+                }),
+            }
         }
+        let memory = self.parser.refused().saturating_sub(refused);
         if memory == 0 && !bytes.is_empty() {
             self.loss_runs.memory = Run::Over;
         }
         self.lose(Losses {
             memory,
-            pictures: self.parser.pictures_refused().saturating_sub(refused.1),
             ..Losses::default()
         });
         begun
@@ -1291,8 +1303,7 @@ impl Pane {
     }
 
     /// fux let `losses` of its program's go: counted, and to be told but
-    /// for input and replies dropped in a run of them already told
-    /// (`Run`).
+    /// for those of a kind whose run is already told (`Run`).
     fn lose(&mut self, mut losses: Losses) {
         self.lost.add(losses);
         // Every kind alike: a loss begins a run of its kind, if none goes
@@ -2190,6 +2201,19 @@ pub(crate) mod tests {
         pane.output(picture);
         assert_eq!(pane.take_untold().pictures, 1, "a run after one placed");
         assert_eq!(pane.lost().pictures, 3);
+        // In one read, in order: a picture cut (wider than a picture may
+        // be) in the run told, then one placed whole, which ends it; then
+        // one placed and one cut, which begins a run.
+        let cut = b"\x1bP9q#1;2;100;0;0!4097~\x1b\\";
+        let _ = pane.host(
+            Colours::default(),
+            Default::default(),
+            fux_vt::Graphics::Sixel(cell),
+        );
+        pane.output(&[&cut[..], picture].concat());
+        assert!(!pane.loses(), "the cut one is in the run told");
+        pane.output(&[&picture[..], cut].concat());
+        assert_eq!(pane.take_untold().pictures, 1, "a run after one placed");
         let bad = b"\x1b]52;c;***\x07";
         let copy = |pane: &mut Lone, bytes: &[u8]| {
             pane.output(bytes);
