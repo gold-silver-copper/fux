@@ -119,8 +119,8 @@ Conventions for every row:
   and whole (`WHOLE`: all of it, given again from each stop), as
   `tests/bounds/probe.rs` `CHUNKS` lists. A call of n bytes is held to
   the ceiling (`Work::ceiling`, 4.4) × max(1, ⌈n ÷ 4096⌉). Rows with
-  megabytes of setup feed at no less than
-  16 B or 4 KiB, as each probe says.
+  megabytes of setup feed at no less than 16 B or 4 KiB, as each probe
+  says.
 - Sizes: 1× is the smallest input that reaches the limit; 10× and 100×
   repeat it. `bNN_1x` and `bNN_10x` run in CI; `bNN_100x` is ignored and
   run at release under a 2 GiB memory cap.

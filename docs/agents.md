@@ -202,7 +202,7 @@ too). `A counts` gives a version's five counts as integers:
   that exited or that closed its terminal (where the system says so:
   Linux) are refused (`not_running`), and keys past what the pane's input
   queue holds (about 1 MiB its program has not read) are refused whole
-  (`input_full`).
+  (`input_full`; more than the queue ever holds, `too_long`).
 
   ```fux
   %2 str Escape key send-keys
