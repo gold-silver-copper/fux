@@ -981,24 +981,23 @@ impl Session {
     /// still at that version as they are queued, else none, failing
     /// `stale`. That is all it promises: not what its program does next.
     fn send_keys(&mut self, to: command::To, inputs: &[Input]) -> Result<Reply, Error> {
+        // Stale before it is judged live: a program's end is a change.
         if let command::To::Seen(seen) = to {
             self.counts_since(seen)?;
+            let now = self.pane(seen.pane)?.version(self.run);
+            if now != seen {
+                let why = format!("{} changed since {seen}: it is at {now}", seen.pane);
+                return Err(fail(Raise::Stale, why));
+            }
         }
         // Every pane must take them, or none is sent them: each one's are
         // made and fit first.
         let (run, mut each) = (self.run, Vec::new());
         for id in self.panes_of(to.target())? {
             let mut pane = self.live_pane_mut(id)?;
-            let version = pane.version(run);
-            if let command::To::Seen(seen) = to
-                && seen != version
-            {
-                let why = format!("{} changed since {seen}: it is at {version}", seen.pane);
-                return Err(fail(Raise::Stale, why));
-            }
             let bytes = bytes(&pane, inputs);
             pane.fits(bytes.len())?;
-            each.push((version, bytes));
+            each.push((pane.version(run), bytes));
         }
         for (version, bytes) in &each {
             self.pane_mut(version.pane)?.push(bytes)?;
@@ -4352,6 +4351,16 @@ mod tests {
             "{stale}"
         );
         assert_eq!(queued(&mut s), Some(Vec::new()), "nothing sent");
+        // A program's end is a change too: stale, not `not_running`.
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let seen = s
+            .pane(PaneId::of(2))
+            .map_err(|e| e.to_string())?
+            .version(s.run);
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(0));
+        let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let ended = ended.err().unwrap_or_default();
+        assert!(ended.starts_with("stale: "), "{ended}");
         Ok(())
     }
 
