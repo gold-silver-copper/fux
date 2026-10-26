@@ -892,15 +892,14 @@ fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
-    if !bundled(error.place.as_ref()) {
-        return telling(error);
-    }
-    let Some(step) = machine
-        .calls()
-        .into_iter()
-        .rev()
-        .find(|t| !bundled(Some(&t.place)))
-    else {
+    let step = bundled(error.place.as_ref()).then(|| {
+        machine
+            .calls()
+            .into_iter()
+            .rev()
+            .find(|t| !bundled(Some(&t.place)))
+    });
+    let Some(step) = step.flatten() else {
         return telling(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
