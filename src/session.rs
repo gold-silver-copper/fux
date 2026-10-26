@@ -13,7 +13,7 @@ use crate::keys::Direction;
 use crate::layout::{self, Axis, NoPane, Placement, Rect, Shares, Tree};
 use crate::pane::{self, Pane, PaneMut, Process, Runs, basename};
 use crate::process::{self, Child, Ended};
-use crate::protocol::{Attach, Reply, ScreenKind, ToAttached};
+use crate::protocol::{Attach, End, Reply, ScreenKind, ToAttached};
 use crate::view::{self, ClientKind, Mode, View};
 use crate::wait::Waiting;
 use crate::workspace::{Destination, Fit, Parts, Seat, Split, Tab, Workspace};
@@ -64,7 +64,8 @@ pub enum Timer {
     Frame(PaneId),
     /// A pane's output, waiting since the parser did all the work one call
     /// may, is read on (`Pane::read_unread`): due at once, after the
-    /// server's other work of this turn.
+    /// server's other work of this turn. A respawn under way in the pane
+    /// takes its turn too (`Session::after_turn`).
     Unread(PaneId),
 }
 
@@ -377,6 +378,19 @@ pub enum Begun {
     Events(Box<crate::events::Subscription>),
 }
 
+/// A respawn under way: the pane made for the program started, and the
+/// program, which take the place of the pane's own once all its old
+/// program left is read, in turns as any pane's output is
+/// (`Session::after_turn`). The new program's output waits on its
+/// terminal till then. If the pane closes first, the respawn is abandoned
+/// (`Session::end_pane`), and said to be.
+struct Replacement {
+    fresh: Pane,
+    process: Process,
+    /// When it began: its turns are due from then.
+    since: Instant,
+}
+
 /// How long a closing pane's processes have to exit after the hangup.
 pub const GRACE: Duration = Duration::from_millis(100);
 
@@ -400,6 +414,8 @@ pub struct Session {
     pub outbox: Vec<Outgoing>,
     /// Closed panes' programs: a pane respawned twice in its grace has two.
     pub dying: Vec<Dying>,
+    /// Each respawn under way, by its pane: one at a time in a pane.
+    respawning: BTreeMap<PaneId, Replacement>,
     /// Where `size_panes` gathers the rectangles each pane is shown in, and
     /// lays out each view to find them; reused by every settle.
     shown_sizes: Vec<(PaneId, (u16, u16))>,
@@ -520,6 +536,7 @@ impl Session {
             run,
             outbox: Vec::new(),
             dying: Vec::new(),
+            respawning: BTreeMap::new(),
             shown_sizes: Vec::new(),
             placed: Placement::default(),
             sized: Vec::new(),
@@ -691,6 +708,11 @@ impl Session {
     /// Starts the program pane `id` ran again in it: its words, or `argv`
     /// if given, where it ran, with what it was given and `env` set; first
     /// hanging up the one there with `kill`, else refused while it runs.
+    /// What the old program left is read before the new one takes its
+    /// place, its exit told if one waits on that, in as many turns as that
+    /// takes: till then the respawn is under way (`Replacement`), and
+    /// another refused. Its answer, the version the pane starts at, waits
+    /// for it (`Waiting::Respawn`).
     fn respawn(
         &mut self,
         id: PaneId,
@@ -698,22 +720,19 @@ impl Session {
         env: &[(String, String)],
         argv: &[String],
         starting: &Starting,
-    ) -> Result<(), Error> {
-        let pane = self.pane(id)?;
-        if let Runs::DefaultShell = pane.runs {
-            let message = format!("{id} runs a shell; respawn restarts what run or split started");
-            return Err(fail(Raise::NotRun, message));
-        }
-        // An exit waiting on what its program left is told, all of it
-        // read, before `respawned`.
-        if pane.exiting.is_some() {
-            self.drain(id);
-        }
+    ) -> Result<Reply, Error> {
         let pane = self.pane(id)?;
         let Runs::Explicit(launch) = &pane.runs else {
-            return Err(Error::NoPane(id));
+            let message = format!("{id} runs a shell; respawn restarts what run or split started");
+            return Err(fail(Raise::NotRun, message));
         };
-        if pane.process().child().is_some() && !kill {
+        if self.respawning.contains_key(&id) {
+            let message =
+                format!("{id} is respawning already: what its program left is still being read");
+            return Err(fail(Raise::StillRunning, message));
+        }
+        // One whose exit waits on what it left has ended.
+        if pane.process().child().is_some() && pane.exiting.is_none() && !kill {
             let message = format!("the program in {id} still runs; `kill-first` ends it first");
             return Err(fail(Raise::StillRunning, message));
         }
@@ -728,6 +747,7 @@ impl Session {
         // The program it starts is told its host's cell.
         let graphics = self.graphics(id);
         let size = (pane.size(), graphics.cell());
+        let respawns = pane.respawns.saturating_add(1);
         // All that can refuse it is done before its program starts, which
         // nothing can then leave running.
         let runs = Runs::Explicit(launch.clone());
@@ -744,14 +764,47 @@ impl Session {
         // What one that runs left is read once another started: a start
         // refused leaves it running, nothing of it cut.
         if kill {
-            self.drain(id);
+            self.read_left(id);
         }
+        let mut started = fresh.version(self.run);
+        started.counts.respawns = respawns;
         let process = child.map_or(Process::Absent, Process::Reading);
-        let Some(mut pane) = self.parts.pane_mut(id) else {
-            self.end(process, true);
-            return Err(Error::NoPane(id));
+        let since = Instant::now();
+        let new = Replacement {
+            fresh,
+            process,
+            since,
         };
-        let (old, left) = pane.respawned(fresh, process);
+        self.respawning.insert(id, new);
+        self.after_turn(id);
+        Ok(acted([started]))
+    }
+
+    /// What ends a turn of pane `id`'s reads: once nothing read waits, a
+    /// program that exited with output unread exits, and a respawn under
+    /// way takes its place, a frame its old program holds read first.
+    fn after_turn(&mut self, id: PaneId) {
+        let respawning = self.respawning.contains_key(&id);
+        if respawning && self.pane(id).is_ok_and(|p| p.frame_deadline().is_some()) {
+            self.read_with(id, |p| p.release_frame());
+        }
+        let Some(pane) = self.parts.panes().get(&id).filter(|p| !p.has_unread()) else {
+            return;
+        };
+        if let Some(ended) = pane.exiting {
+            self.exited(id, ended);
+        }
+        let Some(new) = self.respawning.remove(&id) else {
+            return;
+        };
+        let Some(mut pane) = self.parts.pane_mut(id) else {
+            self.end(new.process, true);
+            return;
+        };
+        let (old, left) = pane.respawned(new.fresh, new.process);
+        // An exit that came while it was no pane's program is told now: the
+        // server looks for exits as they are signalled (`Server::reap`).
+        let exited = pane.process().child().and_then(|c| c.leader.exited());
         self.end(old, true);
         let left = left.told("the program it ran");
         if !left.is_empty() {
@@ -760,26 +813,12 @@ impl Session {
                 self.notify_to(client, told.clone(), true);
             }
         }
-        self.touch();
-        Ok(())
-    }
-
-    /// Reads all that pane `id`'s program left: what waits on its
-    /// terminal, a frame held, the output waiting its turns; then tells
-    /// its exit, if one waits on that.
-    fn drain(&mut self, id: PaneId) {
-        self.read_left(id);
-        // Each turn reads some of it, and nothing adds more.
-        let waits = |p: &Pane| p.has_unread() || p.frame_deadline().is_some();
-        while self.pane(id).is_ok_and(waits) {
-            self.read_with(id, |p| {
-                p.release_frame();
-                p.read_unread();
-            });
-        }
-        if let Some(ended) = self.pane(id).ok().and_then(|p| p.exiting) {
+        if let Some(ended) = exited {
             self.exited(id, ended);
         }
+        // Sized as its pane is now, which may have changed while it waited.
+        self.touch();
+        self.settle();
     }
 
     /// The process group `fux signal` signals in a pane: the terminal's
@@ -1670,6 +1709,14 @@ impl Session {
         }
     }
 
+    /// Every program started and not yet reaped: the panes', those
+    /// started for respawns under way, and the dying.
+    pub fn children(&self) -> impl Iterator<Item = &Child> {
+        let panes = (self.parts.panes().values()).filter_map(|p| p.process().child());
+        let replacements = self.respawning.values().filter_map(|r| r.process.child());
+        (panes.chain(replacements)).chain(self.dying.iter().map(|d| &d.child))
+    }
+
     /// Removes a pane and its process. A tab its closing empties closes too,
     /// as does a workspace left with no tabs.
     pub fn close_pane(&mut self, id: PaneId, why: Option<String>) {
@@ -1684,15 +1731,32 @@ impl Session {
                     self.notify_to(*client, format!("{id} {} {why}", pane.label()), false);
                 }
             }
-            self.end(pane.into_process(), closed);
+            self.end_pane(pane, closed, &viewers);
         }
         self.after_close();
     }
 
     /// Removes a tab and whatever panes are in it (`Parts::remove_tab`).
     fn remove_tab(&mut self, tab: TabId) {
+        let viewers = self.viewers(Some(tab));
         for gone in self.parts.remove_tab(tab) {
-            self.end(gone.into_process(), true);
+            self.end_pane(gone, true, &viewers);
+        }
+    }
+
+    /// Ends the program of `pane`, closed (by fux if `closed`), and the one
+    /// a respawn under way there started, telling `viewers` the respawn
+    /// was abandoned.
+    fn end_pane(&mut self, pane: Pane, closed: bool, viewers: &[ClientId]) {
+        let id = pane.id();
+        self.end(pane.into_process(), closed);
+        let Some(abandoned) = self.respawning.remove(&id) else {
+            return;
+        };
+        self.end(abandoned.process, true);
+        let told = format!("{id} closed while respawning: the program started for it was ended");
+        for client in viewers {
+            self.notify_to(*client, told.clone(), true);
         }
     }
 
@@ -1764,8 +1828,8 @@ impl Session {
     }
 
     /// Reads what pane `id`'s program left on its terminal as it ends, or
-    /// is respawned over (`unread`); what is past `LEFT_MAX` is not, which
-    /// the pane keeps (`Pane::left`) to say with its end.
+    /// is respawned over (`unread`), up to `LEFT_MAX`; what is past it is
+    /// not, which the pane keeps (`Pane::left`) to say with its end.
     fn read_left(&mut self, id: PaneId) {
         let Some((left, cut)) = self.pane(id).ok().map(|p| unread(p.process())) else {
             return;
@@ -1791,7 +1855,8 @@ impl Session {
             let frame = pane
                 .frame_deadline()
                 .map(|at| (at, Timer::Frame(pane.id())));
-            let unread = pane.unread_due().map(|at| (at, Timer::Unread(pane.id())));
+            let respawn = self.respawning.get(&pane.id()).map(|r| r.since);
+            let unread = (pane.unread_due().or(respawn)).map(|at| (at, Timer::Unread(pane.id())));
             frame.into_iter().chain(unread)
         })
     }
@@ -1802,12 +1867,7 @@ impl Session {
             Timer::Frame(id) => self.read_with(id, |p| p.release_frame()),
             Timer::Unread(id) => {
                 self.read_with(id, |p| p.read_unread());
-                // A program that exited with output unread exits now, if
-                // the last of it is read.
-                let pane = self.parts.panes().get(&id).filter(|p| !p.has_unread());
-                if let Some(ended) = pane.and_then(|p| p.exiting) {
-                    self.exited(id, ended);
-                }
+                self.after_turn(id);
             }
         }
     }
@@ -1901,7 +1961,7 @@ impl Session {
     /// Everything the server shuts down: every pane is hung up.
     pub fn shutdown(&mut self) {
         for pane in self.parts.close_all() {
-            self.end(pane.into_process(), true);
+            self.end_pane(pane, true, &[]);
         }
     }
 
@@ -1919,7 +1979,21 @@ impl Session {
     fn begin_request(&mut self, request: Request, origin: &Origin) -> Result<Begun, Error> {
         let now = Instant::now();
         let wait = match request {
-            Request::Do(command) => return Ok(Begun::Done(self.run_command(&command, origin))),
+            Request::Do(command) => {
+                let reply = self.run_command(&command, origin);
+                // A respawn is answered once its pane is at the version it
+                // answers: at once, unless what the old program left is
+                // still being read.
+                let waiting = match (&command, &reply.end, reply.versions.as_slice()) {
+                    (Command::Respawn { .. }, End::Done, [started]) => Waiting::Respawn {
+                        pane: started.pane,
+                        respawns: started.counts.respawns,
+                        reply: reply.clone(),
+                    },
+                    _ => return Ok(Begun::Done(reply)),
+                };
+                return Ok(self.answered(waiting, now));
+            }
             Request::Wait(wait) => wait,
             Request::Events(target, from) => {
                 let target = target.map(|t| self.there(t)).transpose()?;
@@ -1941,12 +2015,15 @@ impl Session {
             return Err(fail(Raise::NoPane, "it holds no pane to wait on"));
         }
         let limit = wait.timeout.unwrap_or(self.config.wait).duration();
-        let waiting = Waiting::new(watches, self.run, now, limit);
-        // Its answer, if it has one already; else the wait.
-        Ok(match waiting.answer(self, now) {
+        Ok(self.answered(Waiting::new(watches, self.run, now, limit), now))
+    }
+
+    /// `waiting`'s answer, if it has one already at `now`; else the wait.
+    fn answered(&self, waiting: Waiting, now: Instant) -> Begun {
+        match waiting.answer(self, now) {
             Some(outcome) => Begun::Done(outcome),
             None => Begun::Waiting(Box::new(waiting)),
-        })
+        }
     }
 
     /// The counts a wait from `since` waits to differ from: its own, if it
@@ -2071,10 +2148,7 @@ impl Session {
                 kill,
                 ref env,
                 ref argv,
-            } => {
-                self.respawn(target, kill, env.as_slice(), argv, &starting)?;
-                Ok(acted([self.pane(target)?.version(self.run)]))
-            }
+            } => self.respawn(target, kill, env.as_slice(), argv, &starting),
             Command::Notify { target, text } => {
                 let to: Vec<ClientId> = match target {
                     None => self.views.keys().copied().collect(),
@@ -3185,7 +3259,8 @@ impl crate::script::Asks for InProcess<'_> {
             // falls due before it.
             Begun::Waiting(waiting) => loop {
                 let soonest = session.timers().min_by_key(|(at, _)| *at);
-                let now = soonest.map_or(waiting.due(), |(at, _)| at.min(waiting.due()));
+                let due = soonest.map(|(at, _)| at).into_iter().chain(waiting.due());
+                let now = due.min().unwrap_or_else(Instant::now);
                 if let Some(answer) = waiting.answer(session, now) {
                     break answer;
                 }
@@ -3884,6 +3959,101 @@ mod tests {
                 .ok_or(lines.clone())
         };
         assert!(at("title")? < at("respawned")?, "{lines}");
+        Ok(())
+    }
+
+    /// A respawn of `id`, ending what runs there first.
+    fn respawn_of(id: PaneId) -> Request {
+        Request::Do(Command::Respawn {
+            target: id,
+            kill: true,
+            env: command::Env::default(),
+            argv: Vec::new(),
+        })
+    }
+
+    /// A respawn over output the parser has yet to read reads it in the
+    /// turns any pane's output is read in, its answer waiting till then,
+    /// another respawn refused: the old program's bell is told before
+    /// `respawned`, and the answer is a version the pane has.
+    #[test]
+    fn a_respawn_reads_what_was_left_in_turns() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let (id, origin) = (PaneId::of(2), Origin::Cli(Caller::default()));
+        let mut stream = crate::events::Subscription::new(None, false, s.parts.journal());
+        let spends = crate::pane::tests::spends_the_budget(24, 80);
+        let mut left: Vec<u8> = std::iter::repeat_n(spends, 4).flatten().collect();
+        left.push(0x07);
+        s.output(id, &left);
+        let Begun::Waiting(waiting) = s.begin(respawn_of(id), &origin) else {
+            return Err("answered before what was left was read".into());
+        };
+        let Begun::Done(again) = s.begin(respawn_of(id), &origin) else {
+            return Err("a second respawn under way".into());
+        };
+        assert_eq!(
+            again.end.code(),
+            Some(Code::StillRunning),
+            "{:?}",
+            again.end
+        );
+        let mut turns = 0;
+        let answer = loop {
+            if let Some(answer) = waiting.answer(&s, Instant::now()) {
+                break answer;
+            }
+            assert!(s.timers().any(|t| t.1 == Timer::Unread(id)));
+            s.fire(Timer::Unread(id));
+            turns += 1;
+        };
+        assert!(turns > 1, "read in {turns} turns");
+        assert_eq!(answer.end, End::Done);
+        let pane = s.pane(id).map_err(|e| e.to_string())?;
+        assert_eq!(answer.versions, [pane.version(s.run)]);
+        let lines = stream
+            .told(s.parts.journal(), usize::MAX, |t| s.holder(t))
+            .0;
+        let at = |what: &str| lines.find(&format!("{what} %2")).ok_or(lines.clone());
+        assert!(at("bell")? < at("respawned")?, "{lines}");
+        Ok(())
+    }
+
+    /// A pane closed while respawning abandons the respawn: the program
+    /// started for it is ended, its answer says the pane closed, and the
+    /// clients that showed it are told.
+    #[test]
+    fn a_pane_closed_while_respawning_abandons_it() -> Result<(), String> {
+        let (mut s, c) = attached(24, 80)?;
+        run(&mut s, "opts 80 23 size str /bin/cat program run")?;
+        run(
+            &mut s,
+            &format!("str {c} client str +2 workspace show-workspace"),
+        )?;
+        let id = PaneId::of(2);
+        s.output(id, &crate::pane::tests::spends_the_budget(23, 80));
+        // Programs are started, as a server starts them.
+        s.launch = Some("/nonexistent/fux.sock".into());
+        let begun = s.begin(respawn_of(id), &Origin::Cli(Caller::default()));
+        s.launch = None;
+        let Begun::Waiting(waiting) = begun else {
+            return Err("answered before what was left was read".into());
+        };
+        assert_eq!(s.children().count(), 1, "the program started for it");
+        run(&mut s, "%2 kill")?;
+        let answer = waiting.answer(&s, Instant::now()).ok_or("no answer")?;
+        assert_eq!(answer.end.code(), Some(Code::Closed), "{:?}", answer.end);
+        let said = (s.views.get(&c))
+            .and_then(|v| v.notice.clone())
+            .map(|n| n.text);
+        let said = said.unwrap_or_default();
+        assert!(said.starts_with("%2 closed while respawning"), "{said}");
+        assert_eq!(s.dying.len(), 1, "the program started for it, ended");
+        for dying in std::mem::take(&mut s.dying) {
+            if let Some(pid) = dying.kill() {
+                process::reaped(pid);
+            }
+        }
         Ok(())
     }
 
@@ -4789,11 +4959,12 @@ mod tests {
         let Begun::Waiting(waiting) = s.begin(wait, &Origin::Cli(Caller::default())) else {
             return Err("a wait mid-frame answered at once".into());
         };
+        let due = waiting.due().ok_or("a wait with no time")?;
         while s.pane(PaneId::of(1))?.mid_frame() {
-            assert!(waiting.answer(&s, waiting.due()).is_none());
+            assert!(waiting.answer(&s, due).is_none());
             s.fire(Timer::Unread(PaneId::of(1)));
         }
-        let answer = waiting.answer(&s, waiting.due()).ok_or("no answer")?;
+        let answer = waiting.answer(&s, due).ok_or("no answer")?;
         assert!(answer.text.ends_with(" screen\n"), "{}", answer.text);
         Ok(())
     }

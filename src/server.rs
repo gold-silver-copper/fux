@@ -164,8 +164,8 @@ enum Stage {
     /// (`Conn::reads`): a client that never reads its answers is read no
     /// more, and holds no more memory than one answer.
     Command,
-    /// Its request waits for its pane (`wait`): it is answered once the
-    /// wait has an answer. It is read only to notice the client go.
+    /// Its request waits for its pane (`wait`, or a respawn under way): it
+    /// is answered once the wait has an answer. It is read only to notice the client go.
     Waiting(Box<Waiting>),
     /// Its request streams events (`events`) until the client goes, or the
     /// server stops. It is read only to notice the client go.
@@ -722,7 +722,7 @@ impl Server {
             let Stage::Waiting(waiting) = &conn.stage else {
                 return None;
             };
-            Some((waiting.due(), Wake::Look))
+            Some((waiting.due()?, Wake::Look))
         });
         session
             .chain(grace)
@@ -1452,8 +1452,7 @@ impl Server {
     fn reap(&mut self) {
         self.reap_killed();
         let session = &self.session;
-        let panes = (session.parts.panes().values()).filter_map(|p| p.process().child());
-        let leaders: Vec<Pid> = (panes.chain(session.dying.iter().map(|d| &d.child)))
+        let leaders: Vec<Pid> = (session.children())
             .map(|child| child.leader.pid())
             .chain(self.killed.iter().copied())
             .collect();

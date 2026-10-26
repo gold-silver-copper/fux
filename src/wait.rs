@@ -9,7 +9,8 @@
 //! caller's to judge (`docs/agents.md`'s recipes).
 //!
 //! The server asks each wait again after every round (`Waiting::answer`),
-//! and when its time is up (`Waiting::due`).
+//! and when its time is up (`Waiting::due`); so too a respawn under way,
+//! answered once it is done.
 use crate::after;
 use crate::code::Code;
 use crate::command::{AnyRef, Counts, Run, Version};
@@ -21,9 +22,62 @@ use crate::protocol::{End, Reply};
 use crate::session::Session;
 use std::time::{Duration, Instant};
 
+/// A request waiting for its answer.
+pub enum Waiting {
+    /// A wait (`wait`, or an action given wait words).
+    Change(Watch),
+    /// A respawn whose pane's old program left output still read, in
+    /// turns, before the new one takes over (`Session::respawn`): answered
+    /// `reply` once its pane has been respawned `respawns` times, a failure
+    /// if the pane closes first. Nothing else ends it: a respawn under way
+    /// is the pane's, done whether or not the one who asked stays.
+    Respawn {
+        pane: PaneId,
+        respawns: u64,
+        reply: Reply,
+    },
+}
+
+impl Waiting {
+    /// A wait from `now`, timing out after `limit`, until a pane's counts
+    /// differ from those `watches` gives it.
+    pub fn new(watches: Vec<(PaneId, Counts)>, run: Run, now: Instant, limit: Duration) -> Waiting {
+        Waiting::Change(Watch {
+            watches,
+            run,
+            deadline: after(now, limit),
+            limit,
+        })
+    }
+
+    /// When to ask it again at the latest, if ever before a round changes
+    /// what it waits for: when a wait's time is up.
+    pub fn due(&self) -> Option<Instant> {
+        match self {
+            Waiting::Change(watch) => Some(watch.deadline),
+            Waiting::Respawn { .. } => None,
+        }
+    }
+
+    /// Its answer, if it has one at `now`.
+    pub fn answer(&self, session: &Session, now: Instant) -> Option<Reply> {
+        match self {
+            Waiting::Change(watch) => watch.answer(session, now),
+            Waiting::Respawn {
+                pane: id,
+                respawns,
+                reply,
+            } => match session.parts.panes().get(id) {
+                None => told(*id, None, Counts::default(), session.run),
+                Some(pane) => (pane.respawns >= *respawns).then(|| reply.clone()),
+            },
+        }
+    }
+}
+
 /// A wait under way: each pane it watches, and the counts it waits for
 /// that pane's to differ from, in the server run `run`.
-pub struct Waiting {
+pub struct Watch {
     watches: Vec<(PaneId, Counts)>,
     run: Run,
     deadline: Instant,
@@ -32,23 +86,7 @@ pub struct Waiting {
     limit: Duration,
 }
 
-impl Waiting {
-    /// A wait from `now`, timing out after `limit`, until a pane's counts
-    /// differ from those `watches` gives it.
-    pub fn new(watches: Vec<(PaneId, Counts)>, run: Run, now: Instant, limit: Duration) -> Waiting {
-        Waiting {
-            watches,
-            run,
-            deadline: after(now, limit),
-            limit,
-        }
-    }
-
-    /// When to ask it again at the latest: when its time is up.
-    pub fn due(&self) -> Instant {
-        self.deadline
-    }
-
+impl Watch {
     /// Its answer, if it has one at `now`: a line for each pane that
     /// changed, exited or closed, the first failing status naming the
     /// whole; at its limit, each pane as it stands. A pane part way
