@@ -789,17 +789,13 @@ fn cells(c: char) -> u16 {
     fux_vt::char_width(c).map_or(0, |w| u16::try_from(w).unwrap_or(u16::MAX))
 }
 
-/// The grapheme clusters of fux's own text as a pane shows them, each
-/// with its columns (`fux_vt::clusters`), those of none (controls, marks
-/// alone) left out, so that fux lays its text out as a pane would.
+/// The cells fux's own text takes, as a pane prints it from a row's
+/// start (`fux_vt::clusters`): each one's text and columns, 1 or 2.
 fn clusters(text: &str) -> impl Iterator<Item = (&str, u16)> {
-    fux_vt::clusters(text).filter_map(|(cluster, width)| {
-        let width = u16::try_from(width).ok().filter(|w| *w > 0)?;
-        Some((cluster, width))
-    })
+    fux_vt::clusters(text).map(|(cell, width)| (cell, u16::try_from(width).unwrap_or(2)))
 }
 
-/// Display width of a string, as a pane shows it (`fux_vt::str_width`).
+/// Display width of a string, as a pane prints it (`fux_vt::str_width`).
 pub fn width(text: &str) -> u16 {
     u16::try_from(fux_vt::str_width(text))
         .unwrap_or(u16::MAX)
