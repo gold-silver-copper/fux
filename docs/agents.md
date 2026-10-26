@@ -236,6 +236,8 @@ every cell. Then `json` for the screen and what is known of the pane:
 alternate screen, `history_lines` the history kept, `above` the history
 rows kept above the first row read, `idle_ms` since fux last read output
 from its program (or it started). Rows and columns count from 0.
+Every pane of a tab or workspace, in layout order: `str agent workspace
+panes each capture print end`; `tabs` gives its tabs the same way.
 
 ## shells: Shells and their marks
 
