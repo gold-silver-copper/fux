@@ -18,6 +18,7 @@ use crate::protocol::{Asked, Context, End, Reply, Scalar};
 use crate::socket::{Choice, SocketPath};
 use fuxth::{AppValue, Code as Lang, Compiler, Limits, Machine, Outcome, Token, Value, token};
 use std::io::{self, Read, Write};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -29,7 +30,7 @@ pub use words::{Act, After, Group, Keys, Opt, Row, Screen, Takes, Word, from_opt
 pub type Config = std::sync::Arc<(String, String)>;
 
 /// The bundled words, written in fuxth.
-pub const LIBRARY: &str = include_str!("library.fux");
+const LIBRARY: &str = include_str!("library.fux");
 
 /// The first line of a fuxth script, which runs it as `fux --file`.
 pub const SHEBANG: &str = "#!/usr/bin/env -S fux --file";
@@ -455,7 +456,8 @@ pub(crate) fn compiled(
     tokens: &[Token],
 ) -> Result<Machine<Fux>, fuxth::Error> {
     let broken = |f: Failed| fuxth::Error::new(Lang::Contract, f.message, None);
-    let mut compiler = READY.with(Clone::clone).map_err(broken)?;
+    let ready = READY.with(|ready| ready.as_ref().map(|(c, _)| c.clone()).map_err(Clone::clone));
+    let mut compiler = ready.map_err(broken)?;
     if let Some(config) = config {
         compiler = configured_compiler(config, compiler)?;
     }
@@ -486,19 +488,28 @@ fn configured_compiler(
 
 thread_local! {
     /// The standard library and fux's, compiled and checked once a thread,
-    /// for every program after.
-    static READY: Result<Compiler<Fux>, Failed> = libraries();
+    /// for every program after; and their words' help.
+    static READY: Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> = libraries();
     /// The last config's, as `configured_compiler` made it.
     static CONFIGURED: std::cell::RefCell<Option<(Config, Compiler<Fux>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-fn libraries() -> Result<Compiler<Fux>, Failed> {
+fn libraries() -> Result<(Compiler<Fux>, Rc<[fuxth::Doc]>), Failed> {
     let mut compiler = Compiler::new(vocabulary()?);
-    compiler.add(&token::source("stdlib.fux", fuxth::STDLIB)?)?;
-    compiler.add(&token::source("library.fux", LIBRARY)?)?;
+    let mut docs = compiler.library("stdlib.fux", fuxth::STDLIB)?;
+    docs.extend(compiler.library("library.fux", LIBRARY)?);
     compiler.prepare();
-    Ok(compiler)
+    Ok((compiler, docs.into()))
+}
+
+/// The standard library's and fux's library's words, as help says them.
+pub fn docs() -> Rc<[fuxth::Doc]> {
+    READY.with(|ready| {
+        ready
+            .as_ref()
+            .map_or_else(|_| Rc::from([]), |(_, docs)| Rc::clone(docs))
+    })
 }
 
 /// A bare id is the handle it names: `%3` is `str %3 pane`, `@2` is

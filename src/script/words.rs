@@ -377,11 +377,8 @@ fn fail(code: Raise, message: impl Into<String>) -> Failure {
 /// How a word of fux's is used, for a mistake in using it: what goes
 /// before it, what it leaves, and an example.
 pub fn usage(word: &str) -> Option<String> {
-    let library = || {
-        (help::library().into_iter())
-            .find(|(name, ..)| *name == word)
-            .map(|(_, effect, ..)| effect)
-    };
+    let docs = super::docs();
+    let library = || Some(&*docs.iter().find(|doc| doc.name == word)?.effect);
     let core = || fuxth::Builtin::named(word).map(fuxth::Builtin::effect);
     // Fux's, the prelude's or library's, or the core's; else the
     // language's own syntax, said as it is written.

@@ -2,6 +2,7 @@
 //! split as a shell splits a line, quotes and all; command-line arguments
 //! arrive split already, and stay one token each.
 use crate::error::{Code, Error};
+use std::ops::Range;
 use std::rc::Rc;
 
 /// Where a token came from: a line of a file, or an argument.
@@ -46,40 +47,53 @@ pub fn arguments<S: AsRef<str>>(args: &[S]) -> Vec<Token> {
 /// `#` at a token's start a comment to the end of its line. A quote may
 /// span lines; one left open is an error at the line it opened on.
 pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
+    Ok(spans(source, text)?
+        .into_iter()
+        .map(|(token, _)| token)
+        .collect())
+}
+
+/// `source`'s tokens, each with the bytes of `text` it is written in:
+/// between two tokens is only whitespace and comments.
+pub(crate) fn spans(source: &str, text: &str) -> Result<Vec<(Token, Range<usize>)>, Error> {
     let source: Rc<str> = Rc::from(source);
     let place = |line: u32| Place::Line {
         source: Rc::clone(&source),
         line,
     };
-    let token = |(text, at): (String, u32)| Token {
-        text: Rc::from(text),
-        place: place(at),
+    let token = |(text, at, from): (String, u32, usize), to: usize| {
+        let place = place(at);
+        let text = Rc::from(text);
+        (Token { text, place }, from..to)
     };
     let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
+    let mut chars = text.char_indices().peekable();
     let mut line = 1u32;
-    // The token being read, and the line it began on; `None` between tokens.
-    let mut word: Option<(String, u32)> = None;
+    // The token being read, the line it began on and where; `None` between
+    // tokens.
+    let mut word: Option<(String, u32, usize)> = None;
     let next_line = |line: u32| line.saturating_add(1);
-    while let Some(c) = chars.next() {
+    while let Some((at, c)) = chars.next() {
         match c {
             '\n' | ' ' | '\t' | '\r' => {
-                tokens.extend(word.take().map(token));
+                tokens.extend(word.take().map(|w| token(w, at)));
                 if c == '\n' {
                     line = next_line(line);
                 }
             }
-            '#' if word.is_none() => while chars.next_if(|c| *c != '\n').is_some() {},
+            '#' if word.is_none() => while chars.next_if(|(_, c)| *c != '\n').is_some() {},
             quote @ ('\'' | '"') => {
-                let (text, _) = word.get_or_insert_with(|| (String::new(), line));
+                let (text, ..) = word.get_or_insert_with(|| (String::new(), line, at));
                 let opened = line;
                 loop {
                     match chars.next() {
-                        Some(c) if c == quote => break,
-                        Some('\\') if quote == '"' && matches!(chars.peek(), Some('"' | '\\')) => {
-                            text.extend(chars.next());
+                        Some((_, c)) if c == quote => break,
+                        Some((_, '\\'))
+                            if quote == '"' && matches!(chars.peek(), Some((_, '"' | '\\'))) =>
+                        {
+                            text.extend(chars.next().map(|(_, c)| c));
                         }
-                        Some(c) => {
+                        Some((_, c)) => {
                             if c == '\n' {
                                 line = next_line(line);
                             }
@@ -91,21 +105,21 @@ pub fn source(source: &str, text: &str) -> Result<Vec<Token>, Error> {
             }
             // A backslash and newline join lines, as in a shell: neither is
             // part of a word, nor starts one.
-            '\\' if chars.peek() == Some(&'\n') => {
+            '\\' if matches!(chars.peek(), Some((_, '\n'))) => {
                 chars.next();
                 line = next_line(line);
             }
             '\\' => {
-                let (text, _) = word.get_or_insert_with(|| (String::new(), line));
-                text.push(chars.next().unwrap_or('\\'));
+                let (text, ..) = word.get_or_insert_with(|| (String::new(), line, at));
+                text.push(chars.next().map_or('\\', |(_, c)| c));
             }
             c => {
-                let (text, _) = word.get_or_insert_with(|| (String::new(), line));
+                let (text, ..) = word.get_or_insert_with(|| (String::new(), line, at));
                 text.push(c);
             }
         }
     }
-    tokens.extend(word.map(token));
+    tokens.extend(word.map(|w| token(w, text.len())));
     Ok(tokens)
 }
 

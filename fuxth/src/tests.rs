@@ -1286,6 +1286,40 @@ fn a_kind_given_is_held_to_the_word() {
     );
 }
 
+/// A library says what each of its words does on the line just above it,
+/// which is its help, with its code as written; a word saying nothing
+/// there is refused.
+#[test]
+fn a_library_says_what_each_word_does() {
+    let mut compiler = Compiler::<Ticket>::new(vocabulary());
+    let docs = compiler.library("stdlib.fux", STDLIB).unwrap_or_default();
+    let defined = STDLIB.lines().filter(|l| l.starts_with("define ")).count();
+    assert_eq!(docs.len(), defined);
+    let doc = |name: &str| docs.iter().find(|d| d.name == name).cloned();
+    let dup = doc("dup").map(|d| (d.effect, d.about, d.code));
+    let dup = dup.unwrap_or_default();
+    assert_eq!(
+        dup,
+        (
+            "a -- a a".into(),
+            "a copy of the top".into(),
+            "define dup 0 pick end".into()
+        )
+    );
+    let library = "# n -- m : doubled\ndefine double\n  dup add\nend\n";
+    let docs = compiler.library("l", library).unwrap_or_default();
+    let code: Vec<&str> = docs.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(code, ["define double\n  dup add\nend"]);
+    // A comment after a token is that line's, not the definition's below.
+    let silent = compiler.library("l", "# -- : one\n1 # -- : said\ndefine x end");
+    assert_eq!(silent.map_err(|e| e.to_string()).map(drop), Err(
+        "contract: l:3: define: a library's definition says what it does on the line just above it: # EFFECT : ABOUT".to_owned()
+    ));
+    // Refused, it is as it was.
+    let after = token::source("t", "x").and_then(|t| compiler.add(&t));
+    assert_eq!(after.map_err(|e| e.code), Err(Code::UnknownWord));
+}
+
 /// Words calling each other, two and three of them, deeply (calls in last
 /// place, through the group, keep one frame), and a recursive descent
 /// parser; the checker sums each up quickly.

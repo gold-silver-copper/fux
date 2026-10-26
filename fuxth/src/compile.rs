@@ -15,6 +15,7 @@ use crate::token::Token;
 use crate::value::Value;
 pub use crate::vocabulary::Vocabulary;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::rc::Rc;
 
 /// Expands `Variant "name", ...` to the enum `Parsing` of those variants,
@@ -253,10 +254,11 @@ enum Entry {
     Global(usize),
 }
 
-/// A block open as compiling goes: where its jumps are, to patch.
+/// A block open as compiling goes: where its jumps are, to patch; and a
+/// definition's `define`, its place in the source's tokens (`from`).
 #[derive(Clone)]
 enum Open {
-    Define { at: Token },
+    Define { at: Token, from: usize },
     If { jump: usize, at: Token },
     Else { jump: usize, at: Token },
     Begin { start: usize, at: Token },
@@ -301,6 +303,9 @@ pub struct Compiler<A> {
     forward: Vec<(Token, Option<usize>, usize)>,
     /// The names the source being added defines: none may twice.
     defined: HashSet<Rc<str>>,
+    /// Where each definition of the source being added is in its tokens:
+    /// its `define`'s place and its `end`'s.
+    made: Vec<(usize, usize)>,
     /// The names the source being added gave a meaning, with what each
     /// meant before.
     replaced: Vec<(Rc<str>, Option<Entry>)>,
@@ -331,6 +336,7 @@ impl<A: Clone> Compiler<A> {
             known: crate::check::Known::default(),
             forward: Vec::new(),
             defined: HashSet::new(),
+            made: Vec::new(),
             replaced: Vec::new(),
             closed: HashSet::new(),
         }
@@ -352,6 +358,7 @@ impl<A: Clone> Compiler<A> {
         let (words, main, globals) = (self.words.len(), self.main.len(), self.globals);
         let (open, current) = (self.open.clone(), self.current.clone());
         self.defined.clear();
+        self.made.clear();
         let added = self
             .source(tokens)
             .and_then(|()| match self.forward.first() {
@@ -382,10 +389,14 @@ impl<A: Clone> Compiler<A> {
         self.replaced.push((Rc::clone(name), was));
     }
 
-    fn source(&mut self, tokens: &[Token]) -> Result<(), Error> {
+    fn source(&mut self, all: &[Token]) -> Result<(), Error> {
         // A literal is part of the step after it in the same source alone.
         self.literal = false;
-        let mut tokens = tokens.iter();
+        let mut tokens = all.iter();
+        // The place in `all` of the token `rest` gave last.
+        let last = |rest: &std::slice::Iter<Token>| {
+            (all.len().saturating_sub(rest.as_slice().len())).saturating_sub(1)
+        };
         while let Some(token) = tokens.next() {
             let text = &*token.text;
             let literal = std::mem::take(&mut self.literal);
@@ -400,6 +411,7 @@ impl<A: Clone> Compiler<A> {
                         let why = "define goes at the top level, outside any definition or block";
                         return Err(Error::new(Code::NotTopLevel, why, Some(token)));
                     }
+                    let from = last(&tokens);
                     let name = tokens.next().ok_or_else(|| missing(token, "a name"))?;
                     self.check_name(name, false)?;
                     // Visible from here on, its own body included, and to
@@ -418,10 +430,14 @@ impl<A: Clone> Compiler<A> {
                         code: Steps::new(),
                         locals: HashMap::new(),
                     });
-                    self.open.push(Open::Define { at: token.clone() });
+                    self.open.push(Open::Define {
+                        at: token.clone(),
+                        from,
+                    });
                 }
                 Some(Parsing::End) => match self.open.pop() {
-                    Some(Open::Define { .. }) => {
+                    Some(Open::Define { from, .. }) => {
+                        self.made.push((from, last(&tokens)));
                         let at = self.words.len();
                         for (_, word, _) in self.forward.iter_mut().filter(|f| f.1.is_none()) {
                             *word = Some(at);
@@ -669,6 +685,23 @@ impl<A: Clone> Compiler<A> {
         Error::new(Code::UnknownWord, message, Some(token))
     }
 
+    /// Compiles `text`, a library named `source`, as `add` does, and gives
+    /// each of its definitions' help, which the comment on the line just
+    /// above its `define` says: `# EFFECT : ABOUT`. A definition without
+    /// it is refused, and the compiler is as it was.
+    pub fn library(&mut self, source: &str, text: &str) -> Result<Vec<Doc>, Error> {
+        let spans = crate::token::spans(source, text)?;
+        let tokens: Vec<Token> = spans.iter().map(|(token, _)| token.clone()).collect();
+        let before = self.clone();
+        self.add(&tokens)?;
+        let docs = (self.made.iter()).map(|&(from, to)| Doc::of(text, &spans, from, to));
+        let docs = docs.collect::<Result<Vec<Doc>, Error>>();
+        if docs.is_err() {
+            *self = before;
+        }
+        docs
+    }
+
     /// Checks the definitions compiled so far, once, so that clones of
     /// this compiler don't check them again: call it after a library.
     pub fn prepare(&mut self) {
@@ -757,6 +790,54 @@ impl<A: Clone> Compiler<A> {
     }
 }
 
+/// A library's definition, as help says it: its name, its stack effect
+/// and what it does, from the comment just above it, and its code as
+/// written, from `define` to `end`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Doc {
+    pub name: String,
+    pub effect: String,
+    pub about: String,
+    pub code: String,
+}
+
+impl Doc {
+    /// The help of the definition written in `text` from token `from` of
+    /// `spans` (its `define`) to token `to` (its `end`).
+    fn of(
+        text: &str,
+        spans: &[(Token, Range<usize>)],
+        from: usize,
+        to: usize,
+    ) -> Result<Doc, Error> {
+        let span = |i: usize| spans.get(i).map(|(_, span)| span.clone());
+        let start = span(from).map_or(0, |s| s.start);
+        let after = from.checked_sub(1).and_then(span).map_or(0, |s| s.end);
+        // Between tokens is only whitespace and comments: a comment there
+        // whole on the line above `define`'s, not after a token on it.
+        let mut lines = text.get(after..start).unwrap_or_default().rsplit('\n');
+        let above = lines.nth(1).filter(|_| from == 0 || lines.next().is_some());
+        let said = above.and_then(|line| line.trim().strip_prefix('#'));
+        let said = said.and_then(|said| said.trim().split_once(" : "));
+        let name = spans
+            .get(from.saturating_add(1))
+            .map(|(token, _)| &*token.text);
+        let define = spans.get(from).map(|(token, _)| token);
+        let Some(((effect, about), name)) = said.zip(name) else {
+            let why = "a library's definition says what it does on the line just above it: \
+                       # EFFECT : ABOUT";
+            return Err(Error::new(Code::Contract, why, define));
+        };
+        let code = span(to).and_then(|end| text.get(start..end.end));
+        Ok(Doc {
+            name: name.to_owned(),
+            effect: effect.trim().to_owned(),
+            about: about.trim().to_owned(),
+            code: code.unwrap_or_default().to_owned(),
+        })
+    }
+}
+
 fn missing(token: &Token, what: &str) -> Error {
     Error::new(
         Code::MissingToken,
@@ -767,7 +848,7 @@ fn missing(token: &Token, what: &str) -> Error {
 
 fn opened(open: &Open) -> (&Token, &'static str) {
     match open {
-        Open::Define { at } => (at, "define … end"),
+        Open::Define { at, .. } => (at, "define … end"),
         Open::If { at, .. } => (at, "if … then"),
         Open::Else { at, .. } => (at, "else … then"),
         Open::Begin { at, .. } => (at, "begin … until"),
