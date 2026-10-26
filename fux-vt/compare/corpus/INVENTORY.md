@@ -1,6 +1,6 @@
 # What the corpus's programs send
 
-Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, DECRQSS, the palette and fux's identity), with what fux itself answers.
+Made by `fux-vt-compare inventory` from the recordings in this directory (see the harness README, "The corpus"). Each sequence is normalized: numbers that only place the cursor or pick a colour are `n`, a mode or an SGR attribute is a row of its own, and an XTGETTCAP request shows the capabilities it asks for. "Count" counts every time it was sent, in all the recordings. "fux-vt" is what a fux pane's parser does with it, as fux sets it up (`fux::pane::OPTIONS`), with what fux itself answers.
 
 Recordings:
 
@@ -145,28 +145,15 @@ Recordings:
 | --- | --- | ---: | --- | --- |
 | `OSC 7` | current directory | 25 | fish, fish-complete, fish-history, fish-small, mc, mc-small | not implemented: dropped (Parser::dispatch_osc) |
 | `CSI ? 7727 h` | application escape key (mintty) | 15 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `DCS + q (Ms)` | XTGETTCAP | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | not implemented: a query, consumed unanswered |
 | `OSC 133 ; B` | semantic prompt | 13 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `OSC 133 ; C` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `OSC 133 ; D` | semantic prompt | 12 | fish, fish-complete, fish-history, fish-small | not implemented: consumed: only A and L are kept (Parser::dispatch_osc) |
 | `CSI 0 % m` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: reported as unhandled |
-| `DCS + q (#2)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (#4)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (%i)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (*7)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (Co)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (k1)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (kd)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (kl)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (kr)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
-| `DCS + q (ku)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: a query, consumed unanswered |
 | `DCS z` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | not implemented: consumed, dropped |
 | `CSI 14 t` | XTWINOPS: window size in pixels? | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | not implemented: reported as unhandled |
 | `CSI 16 t` | XTWINOPS: cell size in pixels? | 7 | claude, claude-ghostty, claude-main, claude-resize, claude-small, zellij, zellij-small | not implemented: reported as unhandled |
 | `APC G` | kitty graphics | 5 | claude, claude-ghostty, claude-main, claude-resize, claude-small | not implemented: consumed, dropped |
 | `CSI ? 7727 l` | reset: application escape key (mintty) | 5 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim | not implemented: a mode fux-vt does not keep, consumed quietly |
-| `DCS + q (indn)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | not implemented: a query, consumed unanswered |
-| `DCS + q (query-os-name)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | not implemented: a query, consumed unanswered |
 | `ESC k` |  | 2 | ranger | not implemented: reported as unhandled |
 | `CSI ? 1034 h` |  | 1 | top | not implemented: a mode fux-vt does not keep, consumed quietly |
 | `OSC 9;4` | progress | 1 | nvim-netrw | not implemented: dropped (Parser::dispatch_osc) |
@@ -286,6 +273,7 @@ Recordings:
 | `CSI ? 69 $ p` | DECRQM: left and right margins? | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | answers (first with `\e[?69;2$y`) |
 | `CSI n l` |  | 15 | htop, htop-small, htop-tree, mc, mc-small, ncdu, nnn, nnn-detail, ranger, tig, tig-blame, tig-tree, top | implemented |
 | `DCS $ q m` | DECRQSS | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: answered (Feature::SettingReports) |
+| `DCS + q (Ms)` | XTGETTCAP | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: answered as invalid: fux-vt knows no capability names |
 | `SGR 4:3` |  | 15 | nvim-diagnostics, nvim-diff, nvim-help, nvim-insert, nvim-netrw, nvim-resize, nvim-scroll, nvim-search, nvim-small, nvim-split, nvim-tabs, nvim-terminal, nvim-unicode, nvim-visual, nvim-wide | implemented: the style kept; painted to terminals that draw it |
 | `CSI > 0 q` | XTVERSION | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split, fish, fish-complete, fish-history, fish-small | answers (first with `\eP>\|fux VERSION\e\\`) |
 | `CSI ? 1016 l` | reset: mouse: SGR pixel encoding | 14 | claude, claude-ghostty, claude-main, claude-resize, claude-small, lazygit, lazygit-small, lazygit-stage | implemented |
@@ -305,6 +293,16 @@ Recordings:
 | `CSI ? 1015 h` | mouse: urxvt encoding | 8 | btop, btop-small, helix, helix-picker, helix-resize, helix-select, helix-small, helix-unicode | implemented |
 | `CSI ? 12 $ p` |  | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | answers (first with `\e[?12;2$y`) |
 | `DCS $ q  q` | DECRQSS | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered (Feature::SettingReports) |
+| `DCS + q (#2)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (#4)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (%i)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (*7)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (Co)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (k1)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (kd)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (kl)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (kr)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (ku)` | XTGETTCAP | 8 | vim, vim-diff, vim-help, vim-insert, vim-resize, vim-small, vim-terminal, vim-unicode | implemented: answered as invalid: fux-vt knows no capability names |
 | `CSI ? 996 n` | colour-scheme query | 7 | tmux, tmux-copy, tmux-resize, tmux-small, tmux-vim, zellij, zellij-small | implemented: reported as unhandled; fux answers with its client terminal's scheme (src/outer.rs) |
 | `CSI n;n s` | DECSLRM, left and right margins (SCOSC without DECLRMM) | 6 | nvim-split, nvim-wide | implemented |
 | `CSI > 0 c` |  | 5 | emacs-dired, emacs-mx, emacs-resize, emacs-scroll, emacs-split | answers (first with `\e[>1;VERSION;0c`) |
@@ -313,6 +311,8 @@ Recordings:
 | `CSI M` |  | 5 | nvim-insert, nvim-scroll, top | implemented |
 | `CSI n P` | DCH | 5 | bash-history, emacs-scroll, top | implemented |
 | `CSI n L` | IL | 4 | emacs-mx, nvim-scroll, vim | implemented |
+| `DCS + q (indn)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | implemented: answered as invalid: fux-vt knows no capability names |
+| `DCS + q (query-os-name)` | XTGETTCAP | 4 | fish, fish-complete, fish-history, fish-small | implemented: answered as invalid: fux-vt knows no capability names |
 | `CSI = 1 u` |  | 3 | lazygit, lazygit-small, lazygit-stage | implemented: tracked; fux encodes keys as it asks (fux-vt/src/keys/encode.rs) |
 | `CSI ? 1000 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1000;2$y`) |
 | `CSI ? 1006 $ p` |  | 3 | lazygit, lazygit-small, lazygit-stage | answers (first with `\e[?1006;2$y`) |

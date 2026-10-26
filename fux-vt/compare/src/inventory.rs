@@ -666,12 +666,14 @@ fn string(kind: u8, body: &[u8]) -> (String, Does) {
         b'^' => "PM".to_owned(),
         _ => "SOS".to_owned(),
     };
-    let does = if kind == b'P' && matches!(key.as_str(), "DCS $ q m" | "DCS $ q r" | "DCS $ q  q") {
+    // The settings `Screen::setting_report` answers.
+    let answered = ["m", " q", "r", "s", "\"q", "\"p", "*x"];
+    let does = if kind == b'P' && key.strip_prefix("DCS $ q ").is_some_and(|s| answered.contains(&s)) {
         Does::Implemented("answered (Feature::SettingReports)")
     } else if kind == b'P' && key.starts_with("DCS $ q") {
         Does::Implemented("answered as invalid, as xterm answers it")
     } else if kind == b'P' && key.starts_with("DCS + q") {
-        Does::Ignored("a query, consumed unanswered")
+        Does::Implemented("answered as invalid: fux-vt knows no capability names")
     } else {
         Does::Ignored("consumed, dropped")
     };
@@ -865,9 +867,7 @@ fn render(names: &[String]) -> Result<String, String> {
          SGR attribute is a row of its own, and an XTGETTCAP request shows the \
          capabilities it asks for. \"Count\" counts every time it was sent, in all the \
          recordings. \"fux-vt\" is what a fux pane's parser does with it, as fux sets \
-         it up (`fux::pane::OPTIONS`: events, DECRQM, in-band resize, the size query, \
-         colour-scheme reports, the kitty keyboard protocol, hyperlinks, prompt marks, \
-         DECRQSS, the palette and fux's identity), with what fux itself answers.\n"
+         it up (`fux::pane::OPTIONS`), with what fux itself answers.\n"
     );
     let _ = writeln!(out, "Recordings:\n");
     for r in &recordings {
