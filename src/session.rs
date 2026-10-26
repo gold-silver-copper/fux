@@ -2260,7 +2260,7 @@ impl Session {
     /// with its JSON kept beside it; or one field of the target's JSON.
     fn ls(&mut self, target: Option<AnyRef>, get: Option<&str>) -> Result<Reply, Error> {
         // Where a stream of events reads from, read with the listing: one
-        // from it misses nothing after.
+        // from it misses nothing after unsaid.
         let events = self.parts.journal().end(self.run);
         let (read, only) = match target {
             Some(target) => {

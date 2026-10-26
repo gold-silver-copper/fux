@@ -177,7 +177,7 @@ impl Opt {
 }
 
 /// The words that start from opts, as the table says: `run, new-tab,
-/// new-workspace, attach and events-of`, `last` before the last.
+/// new-workspace, events-of and attach`, `last` before the last.
 pub fn from_opts(last: &str) -> String {
     let opts = |act: &&Act| (act.takes()).is_some_and(|t| t.after != After::Pane);
     let names: Vec<&str> = (Act::ALL.iter().filter(opts))
@@ -408,7 +408,11 @@ pub fn usage(word: &str) -> Option<String> {
         Some(Word::Opt(opt)) => opt.takers(),
         Some(Word::Act(_) | Word::Screen(_) | Word::Keys(_)) | None => Vec::new(),
     };
-    let has = |after| (takers.iter()).any(|act| act.takes().is_some_and(|t| t.after == after));
+    // A word whose options go on either counts for both.
+    let has = |after| {
+        let on = |t: &Takes| t.after == after || t.after == After::Either;
+        (takers.iter()).any(|act| act.takes().is_some_and(on))
+    };
     let (on, left) = match (has(After::Pane), has(After::Opts)) {
         (true, false) => ("PANE", "a request"),
         (false, true) => ("OPTS", "opts"),

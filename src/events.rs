@@ -29,8 +29,8 @@ pub struct Seq(u64);
 /// A place in one server run's journal: the number of the next entry it
 /// records, as `ls` and a stream's `ready` give it. Written
 /// `42:48211-1867a3f9c2b8e7d6`, `SEQ:RUN`, one word: a stream from it
-/// misses nothing that came after, and a server tells its own run's from
-/// another's.
+/// misses nothing that came after unsaid, and a server tells its own
+/// run's from another's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cursor {
     pub seq: Seq,
