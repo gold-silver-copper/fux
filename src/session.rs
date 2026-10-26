@@ -1867,7 +1867,7 @@ impl Session {
         let Some(mut pane) = pane.filter(|p| p.loses() && !viewers.is_empty()) else {
             return false;
         };
-        let told = pane.take_untold().told(id).join("; ");
+        let told = pane.take_untold().told(id, true).join("; ");
         for client in viewers {
             self.notify_to(*client, told.clone(), true);
         }

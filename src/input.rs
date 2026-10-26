@@ -150,7 +150,7 @@ impl Session {
                     input: 1,
                     ..Default::default()
                 };
-                input.told(pane).join("; ")
+                input.told(pane, false).join("; ")
             }
             Ok(Err(refused)) => refused.to_string(),
             Err(refused) => refused.to_string(),

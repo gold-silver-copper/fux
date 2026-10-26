@@ -94,6 +94,15 @@ struct LossRuns {
     memory: Run,
 }
 
+/// What a read of output did over its calls of the parser: whether it
+/// parsed any, dropped a reply, or was refused memory.
+#[derive(Clone, Copy, Debug, Default)]
+struct Reading {
+    parsed: bool,
+    dropped: bool,
+    refused: bool,
+}
+
 /// A run of one kind of drop: none going on; going on and not yet told;
 /// or told, so the rest of it is counted and not told again, as its
 /// notice said what goes on happening till it ends.
@@ -591,7 +600,7 @@ impl Losses {
 
     /// What a notice says of them, of pane `id`: for each kind it lost
     /// any of, what, how many, and why (`%1: input dropped (2): …`).
-    pub fn told(self, id: PaneId) -> Vec<String> {
+    pub fn told(self, id: PaneId, runs: bool) -> Vec<String> {
         let replies = format!(
             "one read of its output asked for more than {REPLIES_MAX} bytes of them, or its \
              input queue was full"
@@ -617,7 +626,7 @@ impl Losses {
                 r,
                 "replies to its program dropped",
                 &replies,
-                "a read drops none",
+                "a read of its output drops none",
             ),
             (c, copies, &cut, "a copy is made"),
             (t, copies, &not_text, "a copy is made"),
@@ -627,12 +636,21 @@ impl Losses {
                 pictures,
                 "one is placed whole",
             ),
-            (m, "memory refused", memory, "a read refuses none"),
+            (
+                m,
+                "memory refused",
+                memory,
+                "a read of its output refuses none",
+            ),
         ];
         (each.into_iter())
             .filter(|(n, ..)| *n > 0)
             .map(|(n, what, why, till)| {
-                format!("{id}: {what} ({n}): {why}; more till {till} are counted in its `lost`")
+                let more = format!("; more till {till} are counted in its `lost`");
+                format!(
+                    "{id}: {what} ({n}): {why}{}",
+                    if runs { more.as_str() } else { "" }
+                )
             })
             .collect()
     }
@@ -735,6 +753,8 @@ pub struct Pane {
     /// Its runs of copies, pictures and memory lost (`Run`): its runs of
     /// input and replies are its queue's.
     loss_runs: LossRuns,
+    /// What the read of output under way did so far (`Pane::read_done`).
+    reading: Reading,
 }
 
 /// A pane to change, with a journal at its place: what its methods do
@@ -758,12 +778,15 @@ impl<'a> PaneMut<'a> {
     }
     pub fn output(&mut self, bytes: &[u8]) {
         self.pane.output(bytes, &mut self.tell);
+        self.pane.read_done();
     }
     pub fn read_unread(&mut self) {
         self.pane.read_unread(&mut self.tell);
+        self.pane.read_done();
     }
     pub fn release_frame(&mut self) {
         self.pane.release_frame(&mut self.tell);
+        self.pane.read_done();
     }
     pub fn resize(&mut self, size: Size) {
         self.pane.resize(size, &mut self.tell);
@@ -998,6 +1021,7 @@ impl Pane {
             untold: Losses::default(),
             refused_size: None,
             loss_runs: LossRuns::default(),
+            reading: Reading::default(),
         })
     }
 
@@ -1202,16 +1226,11 @@ impl Pane {
             self.scheme_told = Some(scheme);
         }
         let pictures = sink.pictures;
-        // A run of dropped replies ends at a read of output that drops
-        // none while the queue takes input: a turn that only finishes work
-        // left reads none.
-        if replies == 0 && self.input.refusing == Refusing::No && !bytes.is_empty() {
-            self.input.replies = Run::Over;
-        }
+        self.reading.parsed |= !bytes.is_empty();
+        self.reading.dropped |= replies > 0;
         self.lose_replies(replies);
         // Each picture as it ended, in order: one placed whole ends a run
-        // of pictures lost. A read of output that refused no memory ends a
-        // run of refusals.
+        // of pictures lost.
         for placed in pictures {
             match placed {
                 true => self.loss_runs.pictures = Run::Over,
@@ -1222,9 +1241,7 @@ impl Pane {
             }
         }
         let memory = self.parser.refused().saturating_sub(refused);
-        if memory == 0 && !bytes.is_empty() {
-            self.loss_runs.memory = Run::Over;
-        }
+        self.reading.refused |= memory > 0;
         self.lose(Losses {
             memory,
             ..Losses::default()
@@ -1364,6 +1381,22 @@ impl Pane {
             ..Losses::default()
         };
         self.lose(losses);
+    }
+
+    /// A read of its output is done, over however many calls of the
+    /// parser (a frame begun, a budget spent): what it lost ends runs only
+    /// now. One that read output, held none back, and dropped no reply
+    /// while the queue takes input ends a run of replies; one that refused
+    /// no memory, a run of refusals.
+    fn read_done(&mut self) {
+        let read = std::mem::take(&mut self.reading);
+        let whole = read.parsed && self.frame.is_none() && !self.has_unread();
+        if whole && !read.dropped && self.input.refusing == Refusing::No {
+            self.input.replies = Run::Over;
+        }
+        if whole && !read.refused {
+            self.loss_runs.memory = Run::Over;
+        }
     }
 
     /// `n` replies were dropped, in a run of them.
@@ -1558,6 +1591,7 @@ impl Pane {
             lost,
             refused_size,
             loss_runs,
+            reading,
         } = fresh;
         // The new program starts with nothing queued. One that ended said
         // what it left with its exit; one that runs leaves its input now,
@@ -1571,7 +1605,7 @@ impl Pane {
         (self.frame, self.unread, self.frame_left) = (frame, unread, frame_left);
         (self.exiting, self.scheme_told, self.wrote_at) = (exiting, scheme_told, wrote_at);
         (self.mouse_held, self.left, self.alerts, self.lost) = (mouse_held, left, alerts, lost);
-        (self.refused_size, self.loss_runs) = (refused_size, loss_runs);
+        (self.refused_size, self.loss_runs, self.reading) = (refused_size, loss_runs, reading);
         tell.tell(Told::Respawned(over));
         self.rename(name, tell);
         // 2^64 respawns are never reached: the count never stands still.
@@ -1630,6 +1664,8 @@ impl Pane {
     /// said, as a shell's is before its pane closes.
     fn ended(&mut self, ended: Ended, tell: &mut Teller<'_>) -> End {
         self.left.input = self.input.discard();
+        // Its runs end with it, as its input's do.
+        self.loss_runs = LossRuns::default();
         let end = End {
             ended,
             left: self.left,
@@ -2181,6 +2217,27 @@ pub(crate) mod tests {
         pane.input.drain_all();
         pane.read_unread();
         pane.output(&queries);
+        assert!(!pane.loses(), "the same run");
+        Ok(())
+    }
+
+    /// A read is judged whole, over every call of the parser it takes: a
+    /// frame's BSU, read alone first, ends no run, so frames that each
+    /// drop replies are one run, told once.
+    #[test]
+    fn frames_dropping_replies_are_one_run() -> Result<(), Error> {
+        let mut pane = pane(3, 20)?;
+        let queries = std::iter::repeat_n(&b"\x1b[6n"[..], REPLIES_MAX)
+            .flatten()
+            .copied();
+        let frame: Vec<u8> = (b"\x1b[?2026h".iter().copied())
+            .chain(queries)
+            .chain(b"\x1b[?2026l".iter().copied())
+            .collect();
+        pane.output(&frame);
+        assert!(pane.take_untold().replies > 0);
+        pane.input.drain_all();
+        pane.output(&frame);
         assert!(!pane.loses(), "the same run");
         Ok(())
     }
