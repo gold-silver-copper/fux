@@ -6,7 +6,7 @@ use super::{Ask, Bound, Fux, Host, Local, On, Opts, Said, Shell, Then};
 use crate::code::{Code, Raise};
 use crate::command::{
     AnyRef, Button, ClientAction, Command, Extent, Input, Kind, Members, Mouse, MoveTo, PanePick,
-    PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, Usage, Wait,
+    PaneResize, Percent, Pick, Request, Resized, Sibling, Since, Source, SwapWith, To, Usage, Wait,
     Wheel, WsRef,
 };
 use crate::help;
@@ -216,6 +216,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("json", "json string", "JSON"),
+    ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
     ("width", "integer size", "cells, or a percent"),
     ("height", "integer size", "cells, or a percent"),
@@ -247,7 +248,7 @@ words! {
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env Program Arg];
         Waiting Wait "wait" "place -- answer" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- answer" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes];
+        Input SendKeys "send-keys" "target -- answer" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "subject -- capture" "the screen, as the words on the pane say" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
@@ -322,8 +323,9 @@ words! {
         Starting In "in" "x workspace -- x" "the workspace for run, new-tab (each makes a name not there) or attach" "fux opts str agent in 80 24 size new-tab";
         Starting Watch "watch" "x -- x" "attach without typing: keys do nothing but the prefix, then d, which detaches" "fux opts watch attach";
         Starting KillFirst "kill-first" "x -- x" "respawn: end the program first if it still runs" "fux %3 kill-first respawn";
-        Waiting Changed "changed" "version -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
+        Waiting Changed "changed" "seen -- request" "a wait from this version (%2:0.57.0.3.0:RUN, as an action, a wait or `str version get` gives it; or an answer or capture, its version) of the pane it names, not from now" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait";
         Waiting Timeout "timeout" "x secs -- x" "how long a wait waits for a change before it answers timeout, else the server's wait-seconds" "fux %3 300 timeout wait";
+        Input Expect "expect" "seen -- request" "keys for the pane this version names, which send-keys sends only if the pane is still at it as they are queued, else sends none and fails stale; a version as changed takes it: a capture's is its pane's as it was read" "fux %3 capture let seen seen string str '[y/N]' contains if seen expect str y text send-keys drop then";
         Input Text "text" "x text -- x" "text, typed" "fux %3 str 'ls -l' text str Enter key send-keys";
         Input Key "key" "x key -- x" "a key by its name: Enter, C-c, Up, F5" "fux %3 str C-c key send-keys";
         Input Paste "paste" "x text -- x" "text as a paste, bracketed if the program turned that on (an end mark, ESC [201~, in it then dropped); else as it is" "fux %3 str 'a long prompt' paste str Enter key send-keys";
@@ -621,9 +623,37 @@ fn answer_of(target: AnyRef) -> Then {
 /// between is missed.
 fn held(value: &Value<Fux>) -> Option<crate::command::Version> {
     match value {
-        Value::App(Fux::Answer(answer)) => answer.said.version(),
+        Value::App(Fux::Answer(answer)) => match answer.said {
+            Said::Action(version) => Some(version),
+            // A capture's is for `expect` and `changed` alone (`version`).
+            Said::Capture(_) | Said::Listing | Said::Panes | Said::Json | Said::Status => None,
+        },
         Value::Int(_) | Value::Bool(_) | Value::Str(_) | Value::List(_) | Value::App(_) => None,
     }
+}
+
+/// Why a request `expect` made is refused by all but `send-keys`, which
+/// alone checks it.
+const EXPECTED: &str = "takes no request expect made: only send-keys checks a version";
+
+/// The version `value` holds (`Said::version`), or is as text.
+fn version(value: &Value<Fux>) -> Result<crate::command::Version, Failure> {
+    let wanted = "a version: an action's or wait's answer, a pane's capture, or its text";
+    let text = match value {
+        Value::App(Fux::Answer(answer)) => {
+            return answer.said.version().ok_or_else(|| wrong(wanted, value));
+        }
+        Value::Str(text) => text,
+        other @ (Value::Int(_) | Value::Bool(_) | Value::List(_) | Value::App(_)) => {
+            return Err(wrong(wanted, other));
+        }
+    };
+    text.parse().map_err(|()| {
+        let why = format!(
+            "{text:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
+        );
+        fail(Raise::BadValue, why)
+    })
 }
 
 /// The options or request `value` is: options stay options; what else it
@@ -662,29 +692,21 @@ const MICE: [(&str, Mouse); 8] = [
 
 /// The options or request a word of a request's (an option, a wait, keys,
 /// a mouse event) makes of what it goes on, `next` giving the values it
-/// takes: `changed` makes a request, on its version's pane.
+/// takes: `changed` and `expect` make a request, on its version's pane.
 fn modify(
     opt: Opt,
     next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
 ) -> Result<Box<Opts>, Failure> {
-    // `changed` makes a request; every other option goes on one, or on
-    // options.
-    let mut built = match opt == Opt::Changed {
+    // `changed` and `expect` make a request; every other option goes on
+    // one, or on options.
+    let mut built = match matches!(opt, Opt::Changed | Opt::Expect) {
         true => Box::default(),
         false => modifying(next()?)?,
     };
     built.given.push(opt);
     match opt {
-        Opt::Changed => {
-            let text = string(&next()?)?;
-            let Ok(version) = text.parse() else {
-                let why = format!(
-                    "{text:?} is no version: PANE:RESPAWNS.SCREEN.BELLS.DONE.ENDED:RUN, as an action answers it"
-                );
-                return Err(fail(Raise::BadValue, why));
-            };
-            built.on = Some(On::Version(version));
-        }
+        Opt::Changed => built.on = Some(On::Version(version(&next()?)?)),
+        Opt::Expect => built.on = Some(On::Seen(version(&next()?)?)),
         Opt::Name => built.name = Some(string(&next()?)?),
         Opt::Cwd => built.cwd = Some(string(&next()?)?.into()),
         Opt::In => built.place = Some(workspace(&next()?)?),
@@ -820,6 +842,8 @@ fn request_pane(word: Act, value: Value<Fux>) -> Result<(PaneId, Opts), Failure>
     match request(word, value)? {
         (On::Target(AnyRef::Pane(p)), built) => Ok((p, built)),
         (On::Version(version), built) => Ok((version.pane, built)),
+        // Refused, not acted on unchecked (`unused` refuses it first today).
+        (On::Seen(_), _) => Err(fail(Raise::Type, EXPECTED)),
         (On::Target(AnyRef::Tab(_) | AnyRef::Workspace(_)) | On::Client(_), _) => Err(fail(
             Raise::Type,
             "takes a pane (from pane, run or split), or a request on one",
@@ -1193,6 +1217,7 @@ impl fuxth::Host for Host<'_> {
                 // On a tab or workspace, in each of its panes.
                 let (since, then) = match on {
                     On::Version(version) => (Since::Version(version), Then::Outcome),
+                    On::Seen(_) => return Err(fail(Raise::Type, EXPECTED)),
                     On::Target(target) => (Since::Now(target), answer_of(target)),
                     On::Client(_) => {
                         let why = "takes a pane, tab or workspace, not a client";
@@ -1215,9 +1240,10 @@ impl fuxth::Host for Host<'_> {
                     ));
                 }
                 fits(&built.inputs)?;
-                let target = match on {
-                    On::Target(target) => target,
-                    On::Version(version) => AnyRef::Pane(version.pane),
+                let to = match on {
+                    On::Target(target) => To::Now(target),
+                    On::Version(version) => To::Now(AnyRef::Pane(version.pane)),
+                    On::Seen(version) => To::Seen(version),
                     On::Client(c) => {
                         // Typed at its terminal: whatever pane they reach is
                         // the client's to choose, so there is none to wait on
@@ -1239,10 +1265,10 @@ impl fuxth::Host for Host<'_> {
                     }
                 };
                 let keys = Command::SendKeys {
-                    target,
+                    to,
                     inputs: built.inputs,
                 };
-                later(ask(keys, answer_of(target)))
+                later(ask(keys, answer_of(to.target())))
             }
             Act::SendMouse => {
                 let (p, built) = request_pane(act, next()?)?;
@@ -1275,7 +1301,7 @@ impl fuxth::Host for Host<'_> {
                     history: built.history,
                     view: built.view,
                 };
-                later(ask(capture, Then::Answer(Said::Capture)))
+                later(ask(capture, Then::Capture))
             }
             Act::Ls => {
                 let ls = Command::Ls {
@@ -1470,7 +1496,7 @@ impl fuxth::Host for Host<'_> {
                 later(on_client(
                     c,
                     ClientAction::Capture,
-                    Then::Answer(Said::Capture),
+                    Then::Answer(Said::Capture(None)),
                 ))
             }
             // ------------------------------------------------------ server

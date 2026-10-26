@@ -976,13 +976,24 @@ impl Session {
         })
     }
 
-    /// Sends `inputs` to the programs of `target`'s panes, each encoded as
-    /// its program asked for keys (`bytes`).
-    fn send_keys(&mut self, target: AnyRef, inputs: &[Input]) -> Result<Reply, Error> {
+    /// Sends `inputs` to the programs of the panes `to` names, each encoded
+    /// as its program asked for keys (`bytes`): to one seen, only if it is
+    /// still at that version as they are queued, else none, failing
+    /// `stale`. That is all it promises: not what its program does next.
+    fn send_keys(&mut self, to: command::To, inputs: &[Input]) -> Result<Reply, Error> {
+        // Stale before it is judged live: a program's end is a change.
+        if let command::To::Seen(seen) = to {
+            self.counts_since(seen)?;
+            let now = self.pane(seen.pane)?.version(self.run);
+            if now != seen {
+                let why = format!("{} changed since {seen}: it is at {now}", seen.pane);
+                return Err(fail(Raise::Stale, why));
+            }
+        }
         // Every pane must take them, or none is sent them: each one's are
         // made and fit first.
         let (run, mut each) = (self.run, Vec::new());
-        for id in self.panes_of(target)? {
+        for id in self.panes_of(to.target())? {
             let mut pane = self.live_pane_mut(id)?;
             let bytes = bytes(&pane, inputs);
             pane.fits(bytes.len())?;
@@ -2153,7 +2164,7 @@ impl Session {
                 self.pane_mut(target)?.clear_history();
                 Ok(Reply::default())
             }
-            &Command::SendKeys { target, ref inputs } => self.send_keys(target, inputs),
+            &Command::SendKeys { to, ref inputs } => self.send_keys(to, inputs),
             &Command::CapturePane {
                 target,
                 history,
@@ -2168,8 +2179,10 @@ impl Session {
                 }
                 let copying = self.copying(pane.id());
                 let (text, form) = crate::capture::pane(pane, self.run, history, view, copying);
+                // Its version, read with it.
                 Ok(Reply {
                     json: form,
+                    versions: vec![pane.version(self.run)],
                     ..text.into()
                 })
             }
@@ -2223,7 +2236,7 @@ impl Session {
             &Command::PasteBuffer { index, target } => {
                 let text = self.buffers.get(index).cloned();
                 let paste = Input::Paste(text.ok_or(Error::NoBuffer(index))?);
-                self.send_keys(AnyRef::Pane(target), &[paste])
+                self.send_keys(command::To::Now(AnyRef::Pane(target)), &[paste])
             }
             &Command::Client { client, ref action } => self.client(client, action, here),
         }
@@ -4322,6 +4335,41 @@ mod tests {
             run(&mut s, "%1 str x text send-keys").is_err(),
             "a key after a refusal"
         );
+        Ok(())
+    }
+
+    /// Keys sent at a version seen go only while their pane is still at
+    /// it: a capture holds its pane's version as it was read; once the
+    /// pane read more, none is sent, refused `stale`.
+    #[test]
+    fn keys_at_a_version_go_only_while_the_pane_is_at_it() -> Result<(), String> {
+        let mut s = started(Config::default())?;
+        let queued =
+            |s: &mut Session| (s.parts.pane_mut(PaneId::of(1))).map(|mut p| p.drain_input());
+        run(&mut s, "%1 capture expect str x text send-keys")?;
+        assert_eq!(queued(&mut s), Some(b"x".to_vec()));
+        let seen = s
+            .pane(PaneId::of(1))
+            .map_err(|e| e.to_string())?
+            .version(s.run);
+        s.output(PaneId::of(1), b"E");
+        let stale = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let stale = stale.err().unwrap_or_default();
+        assert!(
+            stale.starts_with("stale: ") && stale.contains("%1 changed since"),
+            "{stale}"
+        );
+        assert_eq!(queued(&mut s), Some(Vec::new()), "nothing sent");
+        // A program's end is a change too: stale, not `not_running`.
+        run(&mut s, "opts 80 24 size str /bin/cat program run")?;
+        let seen = s
+            .pane(PaneId::of(2))
+            .map_err(|e| e.to_string())?
+            .version(s.run);
+        s.exited(PaneId::of(2), crate::process::Ended::Exited(0));
+        let ended = output(&mut s, &format!("str {seen} expect str x text send-keys"));
+        let ended = ended.err().unwrap_or_default();
+        assert!(ended.starts_with("stale: "), "{ended}");
         Ok(())
     }
 

@@ -381,8 +381,8 @@ wire! {
 wire! {
     /// The server's answer to a request: how it ended; what it says as text,
     /// and as JSON where it has a JSON form; the panes, tabs or workspaces it
-    /// made or found; the version of each pane an action or wait answers; a
-    /// field's value.
+    /// made or found; the version of each pane an action or wait answers,
+    /// or of the pane a capture read, read with it; a field's value.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Reply {
         pub end: End,
