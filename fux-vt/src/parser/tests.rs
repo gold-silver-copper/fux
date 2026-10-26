@@ -893,7 +893,7 @@ fn the_string_scans_find_what_a_byte_at_a_time_finds() {
 /// A scroll of many rows inside a region spends what it does: the region's
 /// slots turned once, not once a row, and the rows brought in. At
 /// 4,095 rows of one column, 100 IL 4095s are 8,190 cells and 8,190 slots
-/// each, about 11 M units in all, under the budget's 25 M, so the call
+/// each, about 11 M units in all, under the budget's 16 M, so the call
 /// takes them without a stop; charged a slot a row a row, each was 16.8 M
 /// slots, and the first stopped it.
 #[test]

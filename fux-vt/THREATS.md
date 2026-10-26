@@ -14,7 +14,8 @@ rows, C = 200 columns) and H = 8 MiB of history.
 ### 1.1 What a program in a pane controls
 
 - Every byte it writes, in any order, amount and chunking. fux feeds
-  pieces of at most 4 KiB; a library host may pass a whole file at once.
+  what it read whole (16 KiB a read; a held frame or an exited program's
+  last output, more); a library host may pass a whole file at once.
 - Through those bytes, all the state they reach: modes, margins, the
   pending wrap, wide glyphs, protection, both screens, styles,
   hyperlinks, prompt marks, OSC payloads, DECRQSS requests, sixel data,
@@ -34,16 +35,19 @@ fux-vt's own limits: rows and columns are `u16`, and rows × columns ≤
 cells, whatever its byte budget.
 
 fux's promise, within which every bound and the per-call ceiling hold:
-a pane is at most 4,095 rows × 4,096 columns (a tab laid out by `resize`
-at most 500 × 500); history is at most 1 GiB (8 MiB by default); pieces
-are at most 4 KiB, and a held frame at most 2 MiB (`FRAME_LIMIT`); every
-`Feature` is on but `RectangleChecksums` (without `Pictures`, `DCS q` is
-an ignored DCS).
+a pane is at most 4,096 rows × 4,096 columns (`view::MOST`: a client's
+screen less its bar, or a tab given its size by `size` or `resize`);
+history is at most 1 GiB (8 MiB by default); a piece is what fux read
+(`Pane::unread`): one read of at most 16 KiB, an exited program's last
+1 MiB, or a held frame of at most 2 MiB (`FRAME_LIMIT`), the ceiling
+U × ⌈n ÷ 4096⌉ for n bytes; the `Feature`s are `fux::pane::OPTIONS`',
+every one but `ExtendedReplies` and `RectangleChecksums` (without
+`Pictures`, `DCS q` is an ignored DCS).
 
 The host also sets the picture budget (`Parser::set_picture_bytes`,
 96 MiB by default, B01; set lower, large pictures clip), its cell size
-(`set_host_graphics`, raised to at least 2×6 pixels so that a picture's
-placement stays within the ceiling, B05), the paste limit
+(`set_host_graphics`; `CellSize` refuses one under 2×6 pixels, so that
+a picture's placement stays within the ceiling, B05), the paste limit
 (`with_paste_limit`; `usize::MAX` removes it) and the `Feature`s, which
 set the OSC limit (B20).
 
@@ -213,7 +217,7 @@ a map's growth ≤ 2.64 MiB; DECCRA's copy ≈ 1.02 MiB; sixel growth is
 inside P. A resize or RIS (host calls) builds a new history and screens
 beside the old: + 12.10 MiB.
 
-### 3.4 Outside the parser
+### 3.3 Outside the parser
 
 - fux, per pane and client: ≤ P of evicted pictures in its last paint.
 - fux, per pane: its frame buffer (≤ 2 MiB + 16 KiB), and output read
@@ -224,7 +228,7 @@ beside the old: + 12.10 MiB.
 - The key decoder: 258 B held (+ 2 × 258 while a read is cut), a paste's
   65,541 B and its `String` (≤ 196,608 B), and `out` until drained.
 
-### 3.5 How the bounds tests measure it
+### 3.4 How the bounds tests measure it
 
 - `tests/bounds.rs` (`required-features = ["checks"]`) makes
   `fux-vt-peak`'s `ThreadPeak` its `#[global_allocator]`. It counts the
