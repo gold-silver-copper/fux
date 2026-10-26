@@ -62,7 +62,8 @@ a size must be given, as fux makes none up. An action answers at once,
 with its pane's version from before it acted, one word
 (`%2:0.57.0.3.0:RUN`); `str V changed wait` waits in V's pane until its
 version differs from V, else answers `timeout` after {wait}s unless
-`SECS timeout` says (the server's wait-seconds). A failure prints `fux: CODE: MESSAGE` on stderr.
+`SECS timeout` says (the server's wait-seconds). A failure prints
+`fux: CODE: MESSAGE` on stderr.
 Driving programs from a script or an agent: `fux help-agents`; one word:
 `fux help WORD`.
 ",

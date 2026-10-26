@@ -192,9 +192,9 @@ every encoder beside libghostty-vt's, with its recorded verdicts.
 ## Deliberate boundary
 
 - Programs cannot operate the window: resizing, moving or iconifying it,
-  132 columns and the title stack are refused in every mode (`CSI Ps t`
-  other than `CSI 14 t`, `CSI 16 t` and `CSI 18 t` is unhandled, left to
-  the host, as fux keeps a title stack; DECCOLM is ignored).
+  and 132 columns are refused in every mode, and the title stack is the
+  host's: `CSI Ps t` other than `CSI 14 t`, `CSI 16 t` and `CSI 18 t` is
+  unhandled (fux keeps a title stack); DECCOLM is ignored.
 - By default, output causes no title, bell or clipboard side effects, and
   no OSC payload is kept. OSC 52 is only ever an event, which the host
   acts on (fux copies it) or drops.

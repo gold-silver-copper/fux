@@ -107,7 +107,7 @@ pub struct Opts {
     pub shares: Option<(std::num::NonZeroU32, std::num::NonZeroU32)>,
     pub place: Option<WsRef>,
     pub kill: bool,
-    /// How long a wait waits at most.
+    /// How long a wait waits before it times out.
     pub timeout: Option<crate::config::Limit>,
     pub view: crate::command::CaptureView,
     pub history: Option<usize>,
