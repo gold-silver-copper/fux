@@ -131,11 +131,12 @@ effect is read strictly, in the names of kinds (`integer`, `boolean`,
 the `--` is what a place takes, after it what one gives, and a name on both
 sides passes the kind it was given through. `taken_as("pane", "answer")`,
 said before any word, takes and gives a kind's values where a word's
-effect names another (a name of effects reads each kind as itself). Each name means one thing: a second kind or name of one
-spelling, a second word of a name (the core's and the parsing words'
-among them) or a code declared twice is refused (`contract`), so a host
-adds each once and keeps the id `add` gave. The checker follows those kinds,
-as it does the core's, and refuses only what surely fails.
+effect names another (a name of effects reads each kind as itself).
+Each name means one thing: a second kind or name of one spelling, a
+second word of a name (the core's and the parsing words' among them) or
+a code declared twice is refused (`contract`), so a host adds each once
+and keeps the id `add` gave. The checker follows those kinds, as it does
+the core's, and refuses only what surely fails.
 
 The host implements [`Host`]: `call(word, args, out)` gets the word's values
 (an iterator, the deepest first) and pushes its results, and answers

@@ -94,7 +94,7 @@ impl Vocabulary {
     pub fn taken_as(&mut self, name: &str, also: &str) -> Result<(), Error> {
         if !self.words.is_empty() {
             return Err(refused(format!(
-                "{name}: taken as more after an effect named it"
+                "{name}: taken as more after a word was added"
             )));
         }
         let also = taken(&self.lookup(also, false)?.0);

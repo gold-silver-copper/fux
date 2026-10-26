@@ -1290,7 +1290,7 @@ fn a_kind_given_is_held_to_the_word() {
             "drop: a word of the core",
             "if: a word of the language",
             "refused: declared already",
-            "pane: taken as more after an effect named it",
+            "pane: taken as more after a word was added",
         ]
     );
 }

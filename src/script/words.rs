@@ -1840,7 +1840,8 @@ mod tests {
             "str nope horizontal split",
             "str nope info",
         ] {
-            assert!(compiles(wrong).is_err(), "{wrong}");
+            let refused = compiles(wrong).err().unwrap_or_default();
+            assert!(refused.starts_with("type: "), "{wrong}: {refused}");
         }
     }
 
