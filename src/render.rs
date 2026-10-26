@@ -963,21 +963,21 @@ pub fn compose_held(
             title,
             before,
             after,
-            ..
+            hints,
         }) => {
             // The panel's border takes a cell each side.
             let room = view.cols.saturating_sub(2);
             let lines: [Line<'_>; 3] = [
                 (title.as_str().into(), PANEL.with_bold(true)),
                 (prompt_line(before, after, room).into(), PANEL),
-                ("Enter accepts · Esc cancels".into(), PANEL.with_dim(true)),
+                (hinted(hints).into(), PANEL.with_dim(true)),
             ];
             surface(grid, view, &lines);
         }
-        Mode::Panel(Panel::Confirm { question, .. }) => {
+        Mode::Panel(Panel::Confirm { question, hints }) => {
             let lines: [Line<'_>; 2] = [
                 (question.as_str().into(), PANEL.with_bold(true)),
-                ("y confirms · n or Esc cancels".into(), PANEL),
+                (hinted(hints).into(), PANEL),
             ];
             surface(grid, view, &lines);
         }
@@ -1272,7 +1272,7 @@ fn bar(
             }
         };
         x = grid.text(y, x, &text, badge, left_limit);
-        for &(key, label) in &copy.hints {
+        for crate::act::Hint { keys: key, label } in copy.hints {
             let hint = format!("  {key} {label}");
             if x.saturating_add(width(&hint)) > left_limit {
                 break;
@@ -1388,6 +1388,14 @@ fn surface(grid: &mut Grid, view: &View, lines: &[Line<'_>]) {
     }
 }
 
+/// A panel's hints, as its last line says them: `Enter choose · q Escape cancel`.
+fn hinted(hints: &[crate::act::Hint]) -> String {
+    let hints: Vec<String> = (hints.iter())
+        .map(|h| format!("{} {}", h.keys, h.label))
+        .collect();
+    hints.join(" · ")
+}
+
 /// A chooser: the entries that fit, the selected one highlighted.
 fn list_panel(grid: &mut Grid, view: &View, list: &List) {
     let mut lines: Vec<Line<'_>> = vec![(list.title.as_str().into(), PANEL.with_bold(true))];
@@ -1399,8 +1407,7 @@ fn list_panel(grid: &mut Grid, view: &View, list: &List) {
         (format!("{marker} {item}").into(), attrs)
     });
     windowed(&mut lines, entries, list.selected, capacity);
-    let help = "Enter selects · r renames · x closes · Esc";
-    lines.push((help.into(), PANEL.with_dim(true)));
+    lines.push((hinted(&list.hints).into(), PANEL.with_dim(true)));
     surface(grid, view, &lines);
 }
 
@@ -2168,8 +2175,8 @@ mod tests {
             .collect()
     }
 
-    /// Copy mode's bar replaces the tabs with what it is doing and the keys
-    /// that act now; a narrow bar drops the least important.
+    /// Copy mode's bar replaces the tabs with what it is doing and its keys'
+    /// hints; a narrow bar drops the last.
     #[test]
     fn copy_mode_replaces_the_tabs_with_its_keys() -> Result<(), Box<dyn std::error::Error>> {
         let (mut s, c) = crate::session::testing::attached(10, 120)?;
@@ -2182,28 +2189,30 @@ mod tests {
         s.input(c, b"\x02c");
         let copying = bar(&s);
         assert!(
-            copying.starts_with(" COPY   v s x select  q quit  f r search  hjkl move  w b words"),
+            copying.starts_with(
+                " COPY   v s x select  y copy  o other end  q Escape quit  f r search"
+            ),
             "{copying}"
         );
-        assert!(!copying.contains("main") && !copying.contains("y copy"));
+        assert!(!copying.contains("main"));
         // Where the cursor is, on the right: its line of all the rows.
         assert!(copying.ends_with("1/9"), "{copying}");
         s.input(c, b"v");
         let selecting = bar(&s);
         assert!(
-            selecting.starts_with(" COPY select   y copy  q quit  o other end  v clear"),
+            selecting.starts_with(" COPY select   v s x select  y copy"),
             "{selecting}"
         );
         // Letters in either case: S selects lines; C-v is no key's.
         s.input(c, b"S\x16");
         let lines = bar(&s);
         assert!(
-            lines.starts_with(" COPY lines   y copy  q quit  o other end  s clear"),
+            lines.starts_with(" COPY lines   v s x select  y copy"),
             "{lines}"
         );
         s.input(c, b"fab");
         assert!(
-            bar(&s).starts_with(" /ab▏   Enter search  Esc cancel"),
+            bar(&s).starts_with(" /ab▏   Enter accept  Escape cancel"),
             "{}",
             bar(&s)
         );
@@ -2211,8 +2220,8 @@ mod tests {
         s.escape(c);
         s.resize(c, 10, 36)?;
         let narrow = bar(&s);
-        assert!(narrow.contains("y copy  q quit"), "{narrow}");
-        assert!(!narrow.contains("other end"), "{narrow}");
+        assert!(narrow.contains("v s x select"), "{narrow}");
+        assert!(!narrow.contains("quit"), "{narrow}");
         Ok(())
     }
 

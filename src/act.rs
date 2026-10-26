@@ -50,15 +50,15 @@ wire! {
         Repeat(bar: String),
         /// A chooser.
         List(list: List),
-        /// A line being typed: the command prompt, a rename (of `about`).
+        /// A line being typed.
         Prompt {
             title: String,
             before: String,
             after: String,
-            about: Option<AnyRef>,
+            hints: Vec<Hint>,
         },
-        /// A question answered y or n, about closing `about`.
-        Confirm { question: String, about: AnyRef },
+        /// A question answered yes or no.
+        Confirm { question: String, hints: Vec<Hint> },
     }
 }
 
@@ -100,6 +100,16 @@ wire! {
         pub selected: usize,
         /// What it was opened for: if it goes, the server closes the list.
         pub about: Option<AnyRef>,
+        pub hints: Vec<Hint>,
+    }
+}
+
+wire! {
+    /// Keys and what they do, as a screen's hints show them: `v s x select`.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Hint {
+        pub keys: String,
+        pub label: String,
     }
 }
 
@@ -107,8 +117,12 @@ wire! {
     /// What moves, selects and copies in copy mode.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum CopyAct {
-        /// Copy mode starts, on the focused pane.
-        Enter,
+        /// Copy mode starts, on the focused pane, with the hints its bar
+        /// shows of the client's keys, and those of its search line.
+        Enter {
+            hints: Vec<Hint>,
+            typing: Vec<Hint>,
+        },
         Leave,
         Left,
         Right,
@@ -155,6 +169,14 @@ wire! {
     pub enum Seek {
         Forward,
         Backward,
+    }
+}
+
+impl CopyAct {
+    /// Whether it ends copy mode: leaving and copying do, on the client as
+    /// on the server.
+    pub fn ends(&self) -> bool {
+        matches!(self, CopyAct::Leave | CopyAct::Yank)
     }
 }
 

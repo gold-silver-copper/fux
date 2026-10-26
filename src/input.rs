@@ -373,6 +373,67 @@ mod tests {
         Ok(())
     }
 
+    /// A screen's keys are the config's, as the bindings are: one rebound
+    /// acts, and its hint says so; Escape always leaves, and is never bound.
+    #[test]
+    fn a_screens_keys_are_the_configs() -> Outcome {
+        let (mut s, c) = session()?;
+        let config = "str copy str q unbind-in  str copy str g str leave bind-in  str done label";
+        output_as(&mut s, Some(c), config)?;
+        for (bad, said) in [
+            ("str copy str Escape str top bind-in", "cannot be bound"),
+            (
+                "str copy str g str nowhere bind-in",
+                "\"nowhere\" is not left, right",
+            ),
+        ] {
+            let refused = output_as(&mut s, Some(c), bad).err().unwrap_or_default();
+            assert!(refused.contains(said), "{refused}");
+        }
+        s.input(c, b"\x02c");
+        let hints = match s.views.get(&c).map(|v| &v.mode) {
+            Some(Mode::Copy(copy)) => copy.hints.iter().map(|h| h.keys.clone()).collect(),
+            _ => Vec::new(),
+        };
+        assert!(hints.contains(&"g Escape".to_owned()), "{hints:?}");
+        s.input(c, b"q");
+        assert_eq!(mode(&s, c), "copy");
+        s.input(c, b"g");
+        assert_eq!(mode(&s, c), "normal");
+        s.input(c, b"\x02c");
+        escape(&mut s, c);
+        assert_eq!(mode(&s, c), "normal");
+        Ok(())
+    }
+
+    /// A question's or a prompt's action is checked as it opens: one with
+    /// a mistake, or past `ACTION_MAX`, opens nothing.
+    #[test]
+    fn an_action_is_checked_as_its_screen_opens() -> Outcome {
+        let (mut s, c) = session()?;
+        let long: String =
+            std::iter::repeat_n("1 drop ", crate::screens::ACTION_MAX / 7 + 1).collect();
+        for (code, said) in [("nosuch", "in the action"), (long.as_str(), "is past")] {
+            let open = format!("me str sure? str '{code}' confirm");
+            let refused = output_as(&mut s, Some(c), &open).err().unwrap_or_default();
+            assert!(refused.contains(said), "{refused}");
+            assert_eq!(mode(&s, c), "normal");
+        }
+        // A prompt's start is a line as typing makes one: no line end.
+        let open = "me str t list str a 10 char str b end glue str drop prompt";
+        let refused = output_as(&mut s, Some(c), open).err().unwrap_or_default();
+        assert!(refused.contains("bad_value"), "{refused}");
+        assert_eq!(mode(&s, c), "normal");
+        output_as(
+            &mut s,
+            Some(c),
+            "me str sure? str '%1 str yes rename' confirm",
+        )?;
+        s.input(c, b"y");
+        assert!(output(&mut s, "ls")?.contains("%1 yes"));
+        Ok(())
+    }
+
     /// On a screen too short for a list's lines, the selected entry stays
     /// in view: the lines around it give way first.
     #[test]
@@ -431,7 +492,7 @@ mod tests {
         assert_eq!(list.selected, 30);
         let title = list.title.clone();
         let text = screen_text(&s, c)?;
-        for shown in [title.as_str(), "▲", "▼", "Enter selects"] {
+        for shown in [title.as_str(), "▲", "▼", "Enter select"] {
             assert!(text.contains(shown), "{shown:?} in\n{text}");
         }
         Ok(())
@@ -823,11 +884,11 @@ mod tests {
             // A confirmation's program is what `y` runs.
             let codes: Vec<String> = match screen(&s, c) {
                 Screen::List(list) => list.items.into_iter().map(|i| i.code).collect(),
-                mut confirm @ Screen::Confirm { .. } => {
+                mut confirm @ Screen::Confirm(_) => {
                     (confirm.key(&s.test_keymap, crate::keymap::key("y")?.into(), false))
                         .into_iter()
                         .filter_map(|e| match e {
-                            crate::screens::Effect::Run(code) => Some(code),
+                            crate::screens::Effect::Run(job) => Some(job.code),
                             crate::screens::Effect::Send(_) => None,
                         })
                         .collect()

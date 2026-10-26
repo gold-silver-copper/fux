@@ -223,8 +223,7 @@ pub const NAMES: &[(&str, &str, &str)] = &[
     ("where", "tab workspace string", "a tab, a workspace, new-tab or new-workspace"),
     ("workspace", "workspace string", "a workspace, or its name"),
 ];
-pub const STRINGS: &str =
-    "name dir key path line id file field setting socket way action code keys word hex version";
+pub const STRINGS: &str = "name dir key path line id file field setting socket way action code keys word hex version screen";
 pub const INTEGERS: &str = "cols rows secs n row col lines from to cells";
 
 // Every word of fux's, by family; in help, under its heading.
@@ -349,8 +348,8 @@ words! {
         Clients ChooseTabFor "choose-tab-for" "client pane --" "a list of tabs to move the pane to" "fux str c1 client %3 choose-tab-for";
         Clients ChooseWorkspaceFor "choose-workspace-for" "client pane --" "a list of workspaces to move the pane to" "fux str c1 client %3 choose-workspace-for";
         Clients ChoosePane "choose-pane" "client pane --" "a list of panes to swap the pane with" "fux str c1 client %3 choose-pane";
-        Clients RenamePrompt "rename-prompt" "client handle --" "a prompt for its new name" "fux str c1 client @2 rename-prompt";
-        Clients ConfirmClose "confirm-close" "client handle --" "close it, once confirmed" "fux str c1 client %3 confirm-close";
+        Clients Prompt "prompt" "client name text code --" "a line to type, titled name and starting as text: its submit key (Enter) runs code, the line on its stack" "fux str c1 client str 'rename tab' str logs str '@2 swap rename' prompt";
+        Clients Confirm "confirm" "client text code --" "a question: its yes key (y) runs code" "fux str c1 client str 'close %3?' str '%3 kill' confirm";
         Clients CopyMode "copy-mode" "client --" "copy and select in the focused pane" "fux str c1 client copy-mode";
         Clients CommandPrompt "command-prompt" "client --" "a prompt for fuxth" "fux str c1 client command-prompt";
     }
@@ -358,12 +357,14 @@ words! {
         Config Prefix "prefix" "key --" "this client's prefix (config)" "str C-a prefix";
         Config Bind "bind" "keys code --" "keys after the prefix run fuxth (config)" "str 'g v' str 'me focused horizontal split drop' bind";
         Config BindRoot "bind-root" "key code --" "a key without the prefix runs fuxth (config)" "str M-n str 'me str next step-tab' bind-root";
-        Config Label "label" "text --" "what the column says the last binding does" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
+        Config Label "label" "text --" "what the column says the last binding does, or a screen's hints the last key bound in it (keys of one label shown together)" "str 'g v' str 'me focused horizontal split drop' bind str 'split right' label";
         Config Group "group" "name --" "the column's heading for the last binding" "str 'g v' str 'me focused horizontal split drop' bind str panes group";
         Config Repeat "repeat" "--" "the last binding's layer repeats until Esc" "str H str 'me focused str left 2 move-border' bind repeat";
         Config Unbind "unbind" "keys --" "keys after the prefix run nothing" "str 'g v' unbind";
         Config UnbindRoot "unbind-root" "key --" "a key without the prefix runs nothing" "str M-n unbind-root";
-        Config UnbindAll "unbind-all" "--" "no bindings at all" "unbind-all";
+        Config BindIn "bind-in" "screen key action --" "in one of fux's own screens (copy list line confirm), a key does one of its actions, as the default keys bind each" "str copy str g str top bind-in str top label";
+        Config UnbindIn "unbind-in" "screen key --" "in that screen, the key does what it would unbound: in a line, a character types itself; a named key with modifiers does what it does alone" "str copy str g unbind-in";
+        Config UnbindAll "unbind-all" "--" "no bindings at all, nor keys in fux's screens (Escape still leaves them)" "unbind-all";
     }
 }
 
@@ -1574,6 +1575,25 @@ impl fuxth::Host for Host<'_> {
     }
 }
 
+/// `job` compiled as its keys or screen will run it, with the config's
+/// definitions: its mistake said as `what`'s, of `code`.
+fn checked(
+    keymap: &crate::keymap::Keymap,
+    job: &crate::screens::Job,
+    code: Raise,
+    what: &str,
+) -> Result<(), Failure> {
+    let mistake = |e: fuxth::Error| {
+        let mut failed = fail(code, format!("{}, in {what}", e.message));
+        failed.word = e.word;
+        failed
+    };
+    let tokens = job.tokens().map_err(mistake)?;
+    super::compiled(keymap.config.as_ref(), &tokens)
+        .map(drop)
+        .map_err(mistake)
+}
+
 /// The binding just made, `bound`, which `label` and `group` change.
 fn just_made<'k>(
     keymap: &'k mut crate::keymap::Keymap,
@@ -1585,6 +1605,7 @@ fn just_made<'k>(
             .find(|(k, _)| k == key)
             .map(|(_, b)| b),
         Bound::Prefix(keys) => keymap.binding_mut(keys),
+        Bound::In(..) => return Err(refused("a screen's key has a label only")),
     };
     binding.ok_or_else(|| refused("the binding just made is gone"))
 }
@@ -1604,21 +1625,71 @@ impl Host<'_> {
         next: &mut dyn FnMut() -> Result<Value<Fux>, Failure>,
     ) -> Result<Done<Ask>, Failure> {
         let c = client(&next()?)?;
+        let here = self.context.client == Some(c);
         let open = match screen {
             Screen::ChooseTab => Open::ChooseTab(None),
             Screen::ChooseWorkspace => Open::ChooseWorkspace(None),
             Screen::CopyMode => Open::Copy,
-            Screen::CommandPrompt => Open::Prompt,
+            Screen::CommandPrompt => Open::Prompt(crate::screens::Prompt {
+                title: ":".to_owned(),
+                line: crate::view::Line::new(String::new()),
+                action: None,
+            }),
             Screen::ChooseTabFor => Open::ChooseTab(Some(pane(&next()?)?)),
             Screen::ChooseWorkspaceFor => Open::ChooseWorkspace(Some(pane(&next()?)?)),
             Screen::ChoosePane => Open::ChoosePane(pane(&next()?)?),
-            Screen::RenamePrompt => Open::Rename(target(&next()?)?),
-            Screen::ConfirmClose => Open::Confirm(target(&next()?)?),
+            Screen::Prompt => {
+                let title = text(&next()?)?;
+                // Its start typed, so the line holds no more, nor any other,
+                // than one typed: text alone, refused whole if it is not.
+                let start = text(&next()?)?;
+                let mut line = crate::view::Line::new(String::new());
+                let typed = match start.contains(char::is_control) {
+                    true => Err("a line holds text alone, no control characters".to_owned()),
+                    false => line.edit(&crate::act::Edit::Insert(start)),
+                };
+                typed.map_err(|why| fail(Raise::BadValue, why))?;
+                let action = Some(self.action(&next()?, true, here)?);
+                Open::Prompt(crate::screens::Prompt {
+                    title,
+                    line,
+                    action,
+                })
+            }
+            Screen::Confirm => {
+                let question = text(&next()?)?;
+                let action = self.action(&next()?, false, here)?;
+                Open::Confirm(crate::screens::Confirm { question, action })
+            }
         };
-        match self.context.client == Some(c) {
+        match here {
             true => local(Local::Open(open)),
             false => order(c, ClientAction::Run(open.code())),
         }
+    }
+
+    /// The fuxth a prompt (`given`: the line typed on its stack) or a
+    /// question runs: within `ACTION_MAX`, as the client holds it, outside
+    /// any frame; and compiled now if it opens `here`, in the client's own
+    /// program (one relayed is checked by the client it opens on, with its
+    /// own config, as it runs the word again).
+    fn action(&self, value: &Value<Fux>, given: bool, here: bool) -> Result<String, Failure> {
+        let code = string(value)?;
+        let (len, most) = (code.len(), crate::screens::ACTION_MAX);
+        if len > most {
+            return Err(fail(
+                Raise::TooLong,
+                format!("an action of {len} bytes is past {most}"),
+            ));
+        }
+        let job = crate::screens::Job {
+            code,
+            given: given.then(String::new),
+        };
+        if let Some(keymap) = self.keymap.as_deref().filter(|_| here) {
+            checked(keymap, &job, Raise::BadValue, "the action")?;
+        }
+        Ok(job.code)
     }
 
     /// A config's word: it changes the client's keymap.
@@ -1642,17 +1713,10 @@ impl Host<'_> {
             Keys::Bind | Keys::BindRoot => {
                 let keys_text = string(&next()?)?;
                 let code = string(&next()?)?;
-                // Checked now, rather than each time its keys are typed:
-                // with the config's definitions, its mistake said as the
-                // binding's.
-                let mistake = |e: fuxth::Error| {
-                    let mut failed =
-                        refused(format!("{}, in the binding for {keys_text}", e.message));
-                    failed.word = e.word;
-                    failed
-                };
-                let tokens = fuxth::token::source("binding", &code).map_err(mistake)?;
-                super::compiled(keymap.config.as_ref(), &tokens).map_err(mistake)?;
+                // Checked now, rather than each time its keys are typed.
+                let job = code.as_str().into();
+                let what = format!("the binding for {keys_text}");
+                checked(keymap, &job, Raise::BadBinding, &what)?;
                 let binding = crate::keymap::Binding::new(code, keys == Keys::BindRoot);
                 let pressed = crate::keymap::keys(&keys_text).map_err(refused)?;
                 match (keys == Keys::BindRoot, pressed.as_slice()) {
@@ -1675,10 +1739,25 @@ impl Host<'_> {
                 let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
                 keymap.unbind_root(key).map_err(refused)?;
             }
+            Keys::BindIn | Keys::UnbindIn => {
+                let modal = one_of(&next()?, crate::keymap::Modal::ALL)?;
+                let key = crate::keymap::key(&string(&next()?)?).map_err(refused)?;
+                let table = keymap.modes.table(modal);
+                match keys == Keys::BindIn {
+                    true => table.bind(key, &string(&next()?)?).map_err(refused)?,
+                    false => table.unbind(key).map_err(refused)?,
+                }
+                self.last_bound = Some(Bound::In(modal, key.folded()));
+            }
             Keys::UnbindAll => keymap.unbind_all(),
             Keys::Label => {
-                let binding = just_made(keymap, self.last_bound.as_ref())?;
-                binding.label = text(&next()?)?;
+                let label = text(&next()?)?;
+                if let Some(Bound::In(modal, key)) = self.last_bound {
+                    let gone = || refused("the key just bound is gone".to_owned());
+                    *keymap.modes.table(modal).label(key).ok_or_else(gone)? = Some(label);
+                    return Ok(Done::Now);
+                }
+                just_made(keymap, self.last_bound.as_ref())?.label = label;
             }
             Keys::Group => {
                 let binding = just_made(keymap, self.last_bound.as_ref())?;

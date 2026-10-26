@@ -193,7 +193,8 @@ copy mode's cursor in the history only it holds.
 
 The prefix alone opens the **command column**, listing every binding, and
 those without the prefix last: arrows, PageUp/PageDown and Home/End move,
-Enter runs the selected one, a bound key runs its own, Esc closes. A key you
+Enter runs the selected one, a bound key runs its own, Esc closes; its moves
+by keys that are not letters are the choosers' (`str list … bind-in`). A key you
 bind is yours there, even one the column moves with; Esc always closes. The
 prefix again sends it to the pane.
 
@@ -238,6 +239,16 @@ the same way.
   (`me focused vertical str htop program split`), and shows what it
   printed, or its failure, in the bar. It and the rename prompts edit with
   the arrows, Home, End, Backspace and Delete.
+- **Prompts and questions of your own:** `prompt` opens a line whose Enter
+  runs your fuxth with the line on its stack, a string, and `confirm` a
+  question whose `y` runs it (`me str 'close it?' str '%3 kill' confirm`).
+  The rename prompts and close questions are library words made of them.
+- **These screens' keys are a config too**, as the bindings are: `bind-in`
+  gives a key of copy mode, a chooser, a line being typed or a question
+  one of that screen's actions, and `label` names it in the screen's hints
+  (`str copy str g str top bind-in str top label`); `unbind-in` takes one
+  away. keys.fux binds every action; a name that is none is refused with
+  the list. Escape always leaves a screen, and is never bound.
 - **A key's program** runs as your client, one at a time. While one that may
   open a screen runs (it has `copy-mode`, a chooser or another such word), the
   keys you type wait for it, and go to the screen it opens. The prefix, then
@@ -253,8 +264,8 @@ the lowest number.
 pane holds still while output continues; other terminals see it live. If
 the history drops the rows copy mode holds, copy mode ends and says why.
 
-Keys are letters, in either case, and the brackets; the arrows,
-PageUp/PageDown, Home, End, Enter and Esc also work.
+Its keys, as keys.fux binds them: letters, in either case, and the
+brackets; the arrows, PageUp/PageDown, Home, End, Enter and Esc also work.
 
 | Keys | Do |
 | --- | --- |
@@ -359,7 +370,7 @@ str C-a prefix
 str shell list str /bin/zsh str -l end set       # a program, then its arguments, a string each
 str clipboard false set
 
-unbind-all                                        # optional: start from no bindings
+unbind-all                                        # optional: no keys at all, the screens' too
 define split-right me focused horizontal split drop end   # a word of the config's
 str v str split-right bind
 str 't n' str 'opts new-tab drop' bind            # t is a layer: C-b t n
@@ -396,7 +407,8 @@ both. Esc after the prefix always closes the column. `label`, `group` and
 their keys were first bound, `Other` last (a key bound again keeps its place).
 
 The default keys are a config like yours, run before it, so anything one
-binding does, yours may: rebind a key, `unbind` it, or start from none.
+binding does, yours may: rebind a key, `unbind` it, or start from none
+(`unbind-all`, which takes the screens' keys too; Escape still leaves them).
 `fux list-keys` prints your keys as config lines that make them, from
 `unbind-all` on; not your definitions, which a binding may call, so add
 them to your config rather than replace it: `fux list-keys >>

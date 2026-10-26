@@ -1514,8 +1514,8 @@ impl Session {
     }
 
     /// Ends what a view shows if what it is about is gone: copy mode whose
-    /// pane closed or is no longer focused, a client's screen about a pane,
-    /// tab or workspace that closed. Which kind it ended, if it did, which
+    /// pane closed or is no longer focused, a chooser about a pane, tab or
+    /// workspace that closed. Which kind it ended, if it did, which
     /// its client is told (`ToAttached::Ended`), the mode being the client's.
     fn repair(&self, view: &mut View) -> Option<ScreenKind> {
         use crate::act::{List, Panel};
@@ -1531,15 +1531,9 @@ impl Session {
                 ScreenKind::Copy,
                 "copy mode ended: its pane is no longer focused".to_owned(),
             ),
-            Mode::Panel(
-                Panel::List(List {
-                    about: Some(about), ..
-                })
-                | Panel::Prompt {
-                    about: Some(about), ..
-                }
-                | Panel::Confirm { about, .. },
-            ) if self.there(*about).is_err() => {
+            Mode::Panel(Panel::List(List {
+                about: Some(about), ..
+            })) if self.there(*about).is_err() => {
                 (ScreenKind::Panel, format!("closed: {} is gone", about))
             }
             Mode::Normal | Mode::Panel(_) | Mode::Copy(_) => return None,
@@ -3243,7 +3237,16 @@ pub(crate) mod testing {
         client: Option<ClientId>,
         code: &str,
     ) -> Result<String, String> {
-        let (out, ended) = run_as(session, client, code);
+        output_job(session, client, &code.to_owned().into())
+    }
+
+    /// The same of a job: its code, given the line typed for it.
+    fn output_job(
+        session: &mut Session,
+        client: Option<ClientId>,
+        job: &crate::screens::Job,
+    ) -> Result<String, String> {
+        let (out, ended) = run_as(session, client, job);
         let ended = ended.map_err(|e| e.to_string())?;
         let mut text = String::from_utf8_lossy(&out).into_owned();
         for value in &ended {
@@ -3256,13 +3259,13 @@ pub(crate) mod testing {
     fn run_as(
         session: &mut Session,
         client: Option<ClientId>,
-        code: &str,
+        job: &crate::screens::Job,
     ) -> (
         Vec<u8>,
         Result<Vec<fuxth::Value<crate::script::Fux>>, crate::script::Failed>,
     ) {
         let mut out = Vec::new();
-        let tokens = match fuxth::token::source("test", code) {
+        let tokens = match job.tokens() {
             Ok(tokens) => tokens,
             Err(e) => return (out, Err(crate::script::Failed::from(e))),
         };
@@ -3301,7 +3304,9 @@ pub(crate) mod testing {
         let mut kept = Vec::new();
         for outgoing in outbox {
             match outgoing {
-                super::Outgoing::To(client, ToAttached::Run(code)) => session.run_as(client, &code),
+                super::Outgoing::To(client, ToAttached::Run(code)) => {
+                    session.run_as(client, &code.into());
+                }
                 super::Outgoing::To(client, ToAttached::Ended(kind)) => {
                     if let Some(keys) = session.test_keys.get_mut(&client) {
                         keys.screen.ended(kind);
@@ -3428,7 +3433,7 @@ pub(crate) mod testing {
             if let crate::screens::Screen::Copy(_) = keys.screen {
                 acts.push(crate::act::Act::Copy(crate::act::CopyAct::Leave));
             }
-            acts.extend(screen.opened());
+            acts.extend(screen.opened(&self.test_keymap.modes));
             keys.screen = screen;
             self.acts(client, acts);
             deliver(self);
@@ -3436,8 +3441,8 @@ pub(crate) mod testing {
 
         /// Runs fuxth as client `client`: a failure, or what it says, in its
         /// notice, as its client shows them.
-        pub(crate) fn run_as(&mut self, client: ClientId, code: &str) {
-            match output_as(self, Some(client), code) {
+        pub(crate) fn run_as(&mut self, client: ClientId, job: &crate::screens::Job) {
+            match output_job(self, Some(client), job) {
                 Err(error) => self.notify_to(client, error, true),
                 Ok(said) if !said.trim().is_empty() => {
                     self.notify_to(client, said.trim().replace('\n', "  "), false);
@@ -3450,7 +3455,7 @@ pub(crate) mod testing {
             for effect in effects {
                 match effect {
                     crate::screens::Effect::Send(act) => self.acts(client, vec![act]),
-                    crate::screens::Effect::Run(code) => self.run_as(client, &code),
+                    crate::screens::Effect::Run(job) => self.run_as(client, &job),
                 }
                 deliver(self);
             }
@@ -4990,7 +4995,7 @@ mod tests {
             .map(|n| n.text);
         assert_eq!(
             notice.as_deref(),
-            Some("nothing_there: test:1: choose-pane: only one pane")
+            Some("nothing_there: key:1: choose-pane: only one pane")
         );
         run(&mut s, "str c1 client choose-tab")?;
         assert!(matches!(

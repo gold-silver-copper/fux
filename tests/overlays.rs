@@ -105,19 +105,15 @@ fn closing_asks_first_and_acts_on_what_it_asked_about() -> Outcome {
     server.ok(&["str", "c1", "client", "str", "%1", "pane", "focus-pane"])?;
     client.keys("y")?;
     pumped(&mut client, "%2 closed", || Ok(panes(&server)? == ["%1"]))?;
-    // A confirmation whose item disappears closes, saying so.
+    // A question about a pane that goes stays; its y, run, says so and
+    // closes nothing else.
     server.ok(&["str", "%1", "pane", "horizontal", "split"])?;
     server.ok(&["str", "c1", "client", "str", "%3", "pane", "focus-pane"])?;
     client.keys(&format!("{PREFIX}x"))?;
     client.wait_for("close pane %3")?;
     server.ok(&["str", "%3", "pane", "kill"])?;
-    bar_has(&mut client, "%3 is gone")?;
     client.keys("y")?;
-    // Something that shows, typed after the y: once it shows, the y has
-    // been handled.
-    client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
-    client.keys("\x1b")?;
+    bar_has(&mut client, "no pane %3")?;
     assert_eq!(panes(&server)?, ["%1"], "a late y closes nothing");
     Ok(())
 }
@@ -195,7 +191,7 @@ fn choosers_select_rename_and_close() -> Outcome {
     })?;
     // x closes it, after asking.
     client.keys(&format!("{PREFIX}tg"))?;
-    client.wait_for("Enter selects")?;
+    client.wait_for("Enter select")?;
     client.keys(&format!("{DOWN}{DOWN}x"))?;
     client.wait_for("close tab @3 renamed?")?;
     client.keys("y")?;
@@ -238,24 +234,24 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     let mut client = server.attach(20, 100)?;
     client.wait_for("$")?;
     client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
+    client.wait_for("Enter accept")?;
     client.keys("me focused vertical str echo program str 'from the prompt' arg split\r")?;
     client.wait("typed into the new pane", |t| {
         t.lines().any(|l| l == "from the prompt")
     })?;
     client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
+    client.wait_for("Enter accept")?;
     client.keys("str %1 pane str left rename\r")?;
     pumped(&mut client, "renamed", || {
         Ok(server.ok(&["ls"])?.contains("%1 left"))
     })?;
     client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
+    client.wait_for("Enter accept")?;
     client.keys("nope\r")?;
     bar_has(&mut client, "nope: no such word")?;
     // Editing: typing, moving and deleting before Enter.
     client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
+    client.wait_for("Enter accept")?;
     client.keys(
         "opts str edited nameX\x7f new-tab\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[D\x1b[H\x1b[F\r",
     )?;
@@ -265,7 +261,7 @@ fn the_prompt_runs_commands_and_shows_their_output_or_error() -> Outcome {
     // A paste of more lines than one is refused whole, and said; one line
     // goes into the prompt, its line end left out, never run by itself.
     client.keys(&format!("{PREFIX}e"))?;
-    client.wait_for("Enter accepts")?;
+    client.wait_for("Enter accept")?;
     client.keys("\x1b[200~str %1 pane str pasted rename\nkill-server\x1b[201~")?;
     client.wait_for("nothing was typed")?;
     client.keys("\x1b[200~str %1 pane str pasted rename\n\x1b[201~")?;

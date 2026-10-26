@@ -4,7 +4,7 @@
 //! anchored to fux-vt row IDs, so new output does not move them, while other
 //! clients see the pane live. The mode ends if the pane closes or its history
 //! drops the rows it holds.
-use crate::act::{CopyAct, Seek};
+use crate::act::{CopyAct, Hint, Seek};
 use crate::id::{ClientId, PaneId};
 use crate::session::{self, Error, Session};
 use crate::view::{Mode, Notice};
@@ -38,6 +38,10 @@ pub struct Copy {
     /// A search the client is typing, for the bar: its direction and its
     /// text before and after the cursor.
     pub typing: Option<(Seek, String, String)>,
+    /// The hints its bar shows of the client's keys, and those of the
+    /// search line.
+    pub hints: Vec<Hint>,
+    pub line_hints: Vec<Hint>,
     /// The screen as it was when the rows copy mode holds were last found
     /// still there; forgotten when a key moves it.
     pub held_at: Option<fux_vt::Mark>,
@@ -133,46 +137,19 @@ impl Copy {
             };
             return Bar {
                 badge: Badge::Typing(prompt, before, after),
-                hints: vec![("Enter", "search"), ("Esc", "cancel")],
+                hints: &self.line_hints,
                 position,
             };
         }
-        let (badge, hints) = match self.selection {
-            // `y` only acts on a selection, so it shows with one.
-            Some((kind, _)) => {
-                let (badge, clear) = match kind {
-                    Select::Char => ("COPY select", "v"),
-                    Select::Line => ("COPY lines", "s"),
-                    Select::Block => ("COPY block", "x"),
-                };
-                let hints = vec![
-                    ("y", "copy"),
-                    ("q", "quit"),
-                    ("o", "other end"),
-                    (clear, "clear"),
-                    ("hjkl", "extend"),
-                ];
-                (badge, hints)
-            }
-            None => {
-                let mut hints = vec![("v s x", "select"), ("q", "quit"), ("f r", "search")];
-                if self.search.is_some() {
-                    hints.push(("n p", "next"));
-                }
-                hints.extend([
-                    ("hjkl", "move"),
-                    ("w b", "words"),
-                    ("u d", "half page"),
-                    ("t z", "top bottom"),
-                    ("a e", "line"),
-                    ("[ ]", "prompts"),
-                ]);
-                ("COPY", hints)
-            }
+        let badge = match self.selection.map(|(kind, _)| kind) {
+            Some(Select::Char) => "COPY select",
+            Some(Select::Line) => "COPY lines",
+            Some(Select::Block) => "COPY block",
+            None => "COPY",
         };
         Bar {
             badge: Badge::Label(badge),
-            hints,
+            hints: &self.hints,
             position,
         }
     }
@@ -194,7 +171,7 @@ pub enum Badge<'a> {
 /// is.
 pub struct Bar<'a> {
     pub badge: Badge<'a>,
-    pub hints: Vec<(&'static str, &'static str)>,
+    pub hints: &'a [Hint],
     /// The cursor's line, counted from 1, of all the rows retained.
     pub position: String,
 }
@@ -478,11 +455,11 @@ pub fn text(
 
 /// Starts copy mode for client `client`, on its focused pane; if it cannot
 /// (no pane), says why, and tells the client, whose mode it is.
-fn start(session: &mut Session, client: ClientId) {
+fn start(session: &mut Session, client: ClientId, hints: Vec<Hint>, typing: Vec<Hint>) {
     let Some(place) = session.place(client) else {
         return;
     };
-    let entered = enter(session, place);
+    let entered = enter(session, place, hints, typing);
     let Some(view) = session.views.get_mut(&client) else {
         return;
     };
@@ -503,8 +480,14 @@ fn start(session: &mut Session, client: ClientId) {
     }
 }
 
-/// Copy mode on the client's focused pane, its cursor where the pane's is.
-fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
+/// Copy mode on the client's focused pane, its cursor where the pane's is,
+/// its bar's hints `hints` and its search line's `line_hints`.
+fn enter(
+    session: &Session,
+    place: session::Place,
+    hints: Vec<Hint>,
+    line_hints: Vec<Hint>,
+) -> Result<Copy, Error> {
     let pane = place.pane;
     let screen = session.parts.panes().get(&pane);
     let screen = screen.ok_or(Error::NoPane(pane))?.screen();
@@ -520,6 +503,8 @@ fn enter(session: &Session, place: session::Place) -> Result<Copy, Error> {
         selection: None,
         search: None,
         typing: None,
+        hints,
+        line_hints,
         held_at: None,
     })
 }
@@ -538,10 +523,10 @@ fn clean(text: &str) -> Option<String> {
     (text.len() <= SEARCH_MAX).then_some(text)
 }
 
-/// An action in copy mode, its keys the client's (`keymap::copy_act`).
+/// An action in copy mode, its keys the client's (`keymap::Modes::copy`).
 pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
-    if act == CopyAct::Enter {
-        return start(session, client);
+    if let CopyAct::Enter { hints, typing } = act {
+        return start(session, client, hints, typing);
     }
     let Some(view) = session.views.get(&client) else {
         return;
@@ -584,7 +569,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
     };
     let mut target: Option<Place<'_>> = None;
     match act {
-        CopyAct::Enter => return,
+        CopyAct::Enter { .. } => return,
         // The search line the client types, shown; the search it asks for.
         CopyAct::Typing(line) => {
             copy.typing = line.and_then(|(seek, before, after)| {
@@ -644,7 +629,7 @@ pub fn act(session: &mut Session, client: ClientId, act: CopyAct) {
                     let search = Search { seek, ..search };
                     jump(copy, screen, height, at, &search, &mut view.notice);
                 }
-                None => view.notify("no search yet: f or r starts one", true),
+                None => view.notify("no search yet", true),
             }
             return;
         }
@@ -800,35 +785,20 @@ mod tests {
         (row.index(), col)
     }
 
-    /// The client's copy-mode keys say which end copy mode; each ends it on
-    /// the server just when the client says it does. The keys tried are
-    /// listed by hand (the letters, the brackets, the named keys
-    /// `copy_act` reads, unmodified): a key given an arm there later (Tab,
-    /// an F-key, a modified letter) is checked only once it joins the list.
+    /// Each action a copy-mode key may have ends copy mode on the server
+    /// just when `CopyAct::ends` says, as the client takes it to.
     #[test]
     fn a_copy_key_ends_copy_mode_where_the_client_says() -> Result<(), String> {
-        use fux_vt::keys::{Key, KeyPress, Modifiers};
-        let mut keys: Vec<Key> = ('a'..='z').chain(['[', ']']).map(Key::Char).collect();
-        keys.extend([
-            Key::Escape,
-            Key::End,
-            Key::Home,
-            Key::PageUp,
-            Key::PageDown,
-            Key::Enter,
-        ]);
-        keys.extend(fux_vt::keys::Direction::ALL.map(Key::Arrow));
-        let acts = keys
-            .into_iter()
-            .filter_map(|k| crate::keymap::copy_act(KeyPress::new(k, Modifiers::NONE)));
-        for (copy_act, ends) in acts {
+        use crate::keymap::Named;
+        for (_, copy_act) in CopyAct::NAMES {
             let (mut s, c) = crate::session::testing::attached(6, 30)?;
             s.output(PaneId::of(1), b"one\r\ntwo");
-            act(&mut s, c, CopyAct::Enter);
+            let (hints, typing) = (Vec::new(), Vec::new());
+            act(&mut s, c, CopyAct::Enter { hints, typing });
             act(&mut s, c, copy_act.clone());
             let view = s.views.get(&c).ok_or("no view")?;
             let copying = matches!(view.mode, Mode::Copy(_));
-            assert_eq!(!copying, ends, "{copy_act:?}");
+            assert_eq!(!copying, copy_act.ends(), "{copy_act:?}");
         }
         Ok(())
     }

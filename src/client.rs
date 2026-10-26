@@ -12,7 +12,7 @@ use crate::protocol::{
     Asked, Attach, AttachedFrame, Context, Decoder, Frame, Greeting, Hello, MAX_FRAME, Mismatch,
     PROTOCOL, Reply, Role, ToAttached, ToCommand,
 };
-use crate::screens::{Effect, Screen};
+use crate::screens::{Effect, Job, Screen};
 use crate::script;
 use crate::socket::{self, SocketPath};
 use fuxix::Errno;
@@ -509,6 +509,8 @@ pub struct Attaching {
 struct Ran {
     notice: Option<(String, bool)>,
     opened: Option<Screen>,
+    /// It changed the keys of fux's screens.
+    rebound: bool,
 }
 
 /// The longest a program's notice may be: what it prints past this fails
@@ -581,7 +583,7 @@ pub struct Keyboard {
     screen: Screen,
     read_only: bool,
     decoder: crate::decode::Decoder,
-    jobs: std::sync::mpsc::Sender<String>,
+    jobs: std::sync::mpsc::Sender<Job>,
     /// One `Ran` for each program sent: as many as `running` holds.
     told: std::sync::mpsc::Receiver<Ran>,
     wake: io::PipeReader,
@@ -605,7 +607,7 @@ impl Keyboard {
         keymap: Keymap,
         read_only: bool,
     ) -> Result<Keyboard, Error> {
-        let (jobs, todo) = std::sync::mpsc::channel::<String>();
+        let (jobs, todo) = std::sync::mpsc::channel::<Job>();
         let (tell, told) = std::sync::mpsc::channel::<Ran>();
         let (wake, poke) = io::pipe()?;
         fuxix::io::set_nonblocking(&wake, true).map_err(io::Error::from)?;
@@ -620,8 +622,8 @@ impl Keyboard {
             .spawn(move || {
                 let chosen = socket::Choice::Path(path);
                 let mut server = script::Server::stoppable(chosen, stops.clone());
-                for code in todo {
-                    let ran = run_job(&mut server, me, &shared, &code, &stops);
+                for job in todo {
+                    let ran = run_job(&mut server, me, &shared, &job, &stops);
                     if tell.send(ran).is_err() {
                         break;
                     }
@@ -749,7 +751,7 @@ impl Keyboard {
         let mut acts = Vec::new();
         match frame {
             ToAttached::Ended(kind) => self.screen.ended(kind),
-            ToAttached::Run(code) => self.run(code, &mut acts),
+            ToAttached::Run(code) => self.run(code.into(), &mut acts),
             ToAttached::Keys(typed) => return self.inputs(typed.into_iter().flat_map(decoded)),
             // The attachment's own: `attached` reads them.
             ToAttached::Welcome(..) | ToAttached::Paint(_) | ToAttached::Exit(_) => {}
@@ -765,7 +767,23 @@ impl Keyboard {
         let mut acts = Vec::new();
         while let Ok(ran) = self.told.try_recv() {
             self.running.pop_front();
-            if let Some((text, error)) = ran.notice {
+            let mut notice = ran.notice;
+            // The screen showing hints at keys that changed: it closes,
+            // rather than say what its keys no longer do, and says so with
+            // what the program said.
+            if ran.opened.is_none() && ran.rebound && self.screen.kind().is_some() {
+                acts.push(match matches!(self.screen, Screen::Copy(_)) {
+                    true => Act::Copy(crate::act::CopyAct::Leave),
+                    false => Act::Hide,
+                });
+                self.screen = Screen::default();
+                let closed = "the keys of fux's screens changed: the one open closed";
+                notice = Some(match notice {
+                    Some((text, error)) => (format!("{text}  ({closed})"), error),
+                    None => (closed.to_owned(), false),
+                });
+            }
+            if let Some((text, error)) = notice {
                 acts.push(Act::Notice { text, error });
             }
             if let Some(screen) = ran.opened {
@@ -784,10 +802,22 @@ impl Keyboard {
             acts.push(Act::Notice { text, error: true });
             return;
         }
+        let (opened, largest) = {
+            let keys = lock(&self.keymap);
+            (screen.opened(&keys.modes), screen.largest(&keys.modes))
+        };
+        // Sent the server in one frame, and again at each edit of its line,
+        // with the hints of the keys as they are now: one that could grow
+        // past a frame was never to show.
+        if largest.is_some_and(|act| AttachedFrame::Act(Box::new(act)).encode().is_err()) {
+            let text =
+                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
+            return acts.push(Act::Notice { text, error: true });
+        }
         if let Screen::Copy(_) = self.screen {
             acts.push(Act::Copy(crate::act::CopyAct::Leave));
         }
-        acts.extend(screen.opened());
+        acts.extend(opened);
         self.screen = screen;
     }
 
@@ -796,27 +826,27 @@ impl Keyboard {
         for effect in effects {
             match effect {
                 Effect::Send(act) => acts.push(act),
-                Effect::Run(code) => self.run(code, acts),
+                Effect::Run(job) => self.run(job, acts),
             }
         }
     }
 
-    /// Sends `code` to the worker, unless as many programs, or as much
+    /// Sends `job` to the worker, unless as many programs, or as much
     /// code, as it may hold wait for it.
-    fn run(&mut self, code: String, acts: &mut Vec<Act>) {
+    fn run(&mut self, job: Job, acts: &mut Vec<Act>) {
         // A stop stops the programs queued with the one it was typed for.
         if self.running.is_empty() {
             self.stop.reset();
         }
         let (waiting, bytes) = (self.running.len(), self.running.iter().sum::<usize>());
-        if waiting >= JOBS || bytes.saturating_add(code.len()) > JOB_BYTES {
+        let len = (job.code.len()).saturating_add(job.given.as_ref().map_or(0, String::len));
+        if waiting >= JOBS || bytes.saturating_add(len) > JOB_BYTES {
             let text = format!(
                 "a program was not run: {waiting} already wait to run ({bytes} bytes of code)"
             );
             return acts.push(Act::Notice { text, error: true });
         }
-        let len = code.len();
-        if self.jobs.send(code).is_ok() {
+        if self.jobs.send(job).is_ok() {
             self.running.push_back(len);
         }
     }
@@ -851,7 +881,7 @@ fn run_job(
     server: &mut script::Server,
     me: crate::id::ClientId,
     keymap: &Mutex<Keymap>,
-    code: &str,
+    job: &Job,
     stop: &script::Stop,
 ) -> Ran {
     let mut changed = lock(keymap).clone();
@@ -865,7 +895,7 @@ fn run_job(
         opened: None,
     };
     let result = (|| {
-        let tokens = fuxth::token::source("key", code)?;
+        let tokens = job.tokens()?;
         let mut machine = script::compiled(config.as_ref(), &tokens)?;
         let mut host = script::Host::new(context, Some(&mut changed), &mut out);
         script::run_capped(
@@ -876,8 +906,11 @@ fn run_job(
             Some(stop),
         )
     })();
+    let mut rebound = false;
     if result.is_ok() {
-        *lock(keymap) = changed;
+        let mut keys = lock(keymap);
+        rebound = keys.modes != changed.modes;
+        *keys = changed;
     }
     let notice = match result {
         // Stopped as asked (the prefix, then Esc): no failure of its own.
@@ -892,21 +925,10 @@ fn run_job(
             true,
         ),
     });
-    // Opened, a screen is sent the server in one frame: one larger was
-    // never to show.
-    let fits = |screen: &Screen| {
-        (screen.opened()).is_none_or(|act| AttachedFrame::Act(Box::new(act)).encode().is_ok())
-    };
-    match asks.opened {
-        Some(screen) if !fits(&screen) => {
-            let text =
-                format!("a screen past {MAX_FRAME} bytes, too large to show, was not opened");
-            Ran {
-                notice: Some((text, true)),
-                opened: None,
-            }
-        }
-        opened => Ran { notice, opened },
+    Ran {
+        notice,
+        opened: asks.opened,
+        rebound,
     }
 }
 
@@ -1437,6 +1459,52 @@ mod tests {
             (keymap.prefix.to_string(), root),
             ("C-a".into(), vec!["F5".into()])
         );
+        Ok(())
+    }
+
+    /// A program that changes the screens' keys while one is open closes
+    /// it, so its hints never name keys that do otherwise; one that changes
+    /// none leaves it open.
+    #[test]
+    fn a_screen_closes_when_its_keys_change() -> Result<(), Box<dyn std::error::Error>> {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        keyboard.screen = Screen::Copy(None);
+        keyboard.frame(ToAttached::Run("str F5 str ls bind-root".into()));
+        assert_eq!(all_ran(&mut keyboard)?, []);
+        assert_eq!(keyboard.screen, Screen::Copy(None));
+        keyboard.frame(ToAttached::Run("str copy str g str top bind-in".into()));
+        let acts = all_ran(&mut keyboard)?;
+        assert!(
+            matches!(
+                acts.as_slice(),
+                [Act::Copy(crate::act::CopyAct::Leave), Act::Notice { .. }]
+            ),
+            "{acts:?}"
+        );
+        assert_eq!(keyboard.screen, Screen::default());
+        Ok(())
+    }
+
+    /// A screen opens only if it fits a frame at its largest with the keys
+    /// as they are when it opens; else it says so and opens nothing.
+    #[test]
+    fn a_screen_too_large_to_show_is_refused_as_it_opens() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let socket = socket::checked("/nowhere/fux/s.sock", "test")?;
+        let mut keyboard = Keyboard::new(&socket, "c1".parse()?, Keymap::empty(), false)?;
+        let prompt = crate::screens::Prompt {
+            title: std::iter::repeat_n('t', MAX_FRAME - 2048).collect(),
+            line: crate::view::Line::new(String::new()),
+            action: None,
+        };
+        let mut acts = Vec::new();
+        keyboard.open(Screen::Prompt(prompt), &mut acts);
+        assert!(
+            matches!(acts.as_slice(), [Act::Notice { error: true, .. }]),
+            "{acts:?}"
+        );
+        assert_eq!(keyboard.screen, Screen::default());
         Ok(())
     }
 
