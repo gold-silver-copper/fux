@@ -323,6 +323,15 @@ fn mistakes_name_what_the_program_wrote() -> Outcome {
         inside.ends_with("(use: PANE TEXT type, which leaves answer)\n"),
         "{inside}"
     );
+    // Caught, it is only why: no place, no bundled step, no usage.
+    let caught = server.ok(&[
+        "str", "type", "try", "list", "1", "end", "0", "at", "str", "x", "type", "catch", "drop",
+        "end",
+    ])?;
+    assert_eq!(
+        caught,
+        "takes a pane, tab, workspace or client, or options, not an integer\n"
+    );
     // Refused before `run` starts anything.
     let before = said(&[
         "opts", "80", "24", "size", "str", "sh", "program", "run", "str", "a", "1", "add",

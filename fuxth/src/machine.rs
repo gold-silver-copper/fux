@@ -188,13 +188,7 @@ pub struct Machine<A> {
     /// The step taken last: how many frames there were, its code, and its
     /// place in it.
     last: Option<(usize, Option<usize>, usize)>,
-    tell: Tell<A>,
 }
-
-/// How a host tells a failure: where it is placed and what it says, the
-/// same for one that ends a run and one a `try` catches, whose message is
-/// what [`Error::located`] says of it ([`Machine::telling`]).
-pub type Tell<A> = fn(&Machine<A>, Error) -> Error;
 
 impl<A: AppValue> Machine<A> {
     pub fn new(program: Program<A>, limits: Limits) -> Self {
@@ -220,14 +214,7 @@ impl<A: AppValue> Machine<A> {
             steps: 0,
             built: 0,
             last: None,
-            tell: |_, error| error,
         }
-    }
-
-    /// The machine, its failures told by `tell` before a `try` catches
-    /// them or the run ends with them; as they are, without.
-    pub fn telling(self, tell: Tell<A>) -> Self {
-        Self { tell, ..self }
     }
 
     /// The stack, deepest first.
@@ -262,12 +249,12 @@ impl<A: AppValue> Machine<A> {
         error
     }
 
-    /// `error`, told, caught by the innermost `try` that names its code:
-    /// what the body began undone (its calls, `let` frames, blocks and
-    /// values), where and why it failed (`located`) and its code pushed,
-    /// the handler next. Else `error`, told.
-    fn recover(&mut self, error: Error) -> Result<(), Error> {
-        let mut error = (self.tell)(self, error);
+    /// `error` caught by the innermost `try` that names its code: what the
+    /// body began undone (its calls, `let` frames, blocks and values), its
+    /// message and code pushed, the handler next. Else the error no `try`
+    /// caught, the machine left where that error happened, for its host to
+    /// say where.
+    fn recover(&mut self, mut error: Error) -> Result<(), Error> {
         loop {
             let catches = |(_, body): &(usize, Body)| matches!(body, Body::Try { codes, .. } if codes.contains(&error.code));
             let Some(caught) = self.marks.iter().rposition(catches) else {
@@ -293,16 +280,14 @@ impl<A: AppValue> Machine<A> {
             self.stack.truncate(depth);
             self.iters.truncate(iters);
             self.jump(handler);
-            let (located, code) = (error.located(), Value::str(error.code.name()));
-            // A message, said where, longer than a string may be, or a
-            // stack full to its limit, fails again, for a `try` further
-            // out to catch.
-            let pushed = (self.fits(located.chars().count()))
-                .and_then(|()| self.push(Value::str(located)))
-                .and_then(|()| self.push(code));
+            // A message longer than a string may be, or a stack full to
+            // its limit, fails again, for a `try` further out to catch.
+            let pushed = (self.fits(error.message.chars().count()))
+                .and_then(|()| self.push(Value::str(&*error.message)))
+                .and_then(|()| self.push(Value::str(error.code.name())));
             match pushed {
                 Ok(()) => return Ok(()),
-                Err(again) => error = (self.tell)(self, again),
+                Err(again) => error = again,
             }
         }
     }
@@ -382,7 +367,7 @@ impl<A: AppValue> Machine<A> {
         budget: u64,
     ) -> Result<Outcome<H::Request>, Error> {
         if let Some(given) = self.pending.take() {
-            self.given(given).map_err(|e| (self.tell)(self, e))?;
+            self.given(given)?;
         }
         let until = self.steps.saturating_add(budget);
         loop {

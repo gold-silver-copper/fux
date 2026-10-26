@@ -339,13 +339,13 @@ impl std::fmt::Display for Failed {
 impl From<fuxth::Error> for Failed {
     /// A mistake compiling, told as fux tells it.
     fn from(error: fuxth::Error) -> Failed {
-        placed(telling(error))
+        telling(error)
     }
 }
 
 /// `error` as fux tells it, with how its word is used where it was given
 /// too few values, the wrong kind, or one out of its range.
-fn telling(error: fuxth::Error) -> fuxth::Error {
+fn telling(error: fuxth::Error) -> Failed {
     let usage = match error.code {
         Lang::StackUnderflow | Lang::Type | Lang::Range => true,
         Lang::OpenQuote
@@ -370,15 +370,11 @@ fn telling(error: fuxth::Error) -> fuxth::Error {
     told(error, usage)
 }
 
-/// A told error as a failure: its code, and where and why it happened.
-fn placed(error: fuxth::Error) -> Failed {
-    Failed::new(Code::from(error.code), error.located())
-}
-
 /// `error` as fux tells it, with how its word is used if `usage`, and
-/// for options or a request left over, the words that would take them.
-/// What `check` read says where its mistake is: it is placed nowhere.
-fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
+/// for options or a request left over, the words that would take them: a
+/// failure of its code, saying where and why it happened. What `check`
+/// read says where its mistake is: it is placed nowhere.
+fn told(mut error: fuxth::Error, usage: bool) -> Failed {
     let left = words::KINDS
         .iter()
         .any(|(.., why)| *why == Some(&*error.message));
@@ -395,7 +391,7 @@ fn told(mut error: fuxth::Error, usage: bool) -> fuxth::Error {
     if Code::from(error.code) == Code::Check {
         (error.place, error.word) = (None, None);
     }
-    error
+    Failed::new(Code::from(error.code), error.located())
 }
 
 /// The vocabulary fuxth compiles fux's programs with: fux's kinds, the
@@ -448,7 +444,7 @@ pub(crate) fn compiled(
         compiler = configured_compiler(config, compiler)?;
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()).telling(tell))
+    Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
 /// The libraries and `config`'s definitions, compiled and checked once a
@@ -816,7 +812,7 @@ pub fn run_capped(
         let slice = steps.map_or(SLICE, |steps| {
             SLICE.min(steps.saturating_sub(machine.steps()).saturating_add(1))
         });
-        match machine.run(host, slice).map_err(placed)? {
+        match machine.run(host, slice).map_err(|e| uncaught(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
@@ -872,7 +868,7 @@ fn pushed(
 ) -> Result<(), Failed> {
     let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
         let failure = fuxth::Failure::new(code, message);
-        machine.raise(failure).map_err(placed)
+        machine.raise(failure).map_err(|e| uncaught(machine, e))
     };
     let values = match values {
         Ok(values) => values,
@@ -887,25 +883,23 @@ fn pushed(
     Ok(())
 }
 
-/// A failure as fux tells it, whether a `try` catches it or it ends the
-/// program (`Machine::telling`): one inside a word of the prelude's or
-/// library's is placed at the program's step that called it, with the
-/// bundled word's own step in the message, and how the program's word is
-/// used.
-fn tell(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
+/// A failure no `try` caught, as fux tells it, from `machine` where it
+/// failed: one inside a word of the prelude's or library's is placed at
+/// the program's step that called it, with the bundled word's own step in
+/// the message, and how the program's word is used.
+fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
-    if !bundled(error.place.as_ref()) {
-        return telling(error);
-    }
-    let Some(step) = machine
-        .calls()
-        .into_iter()
-        .rev()
-        .find(|t| !bundled(Some(&t.place)))
-    else {
+    let step = bundled(error.place.as_ref()).then(|| {
+        machine
+            .calls()
+            .into_iter()
+            .rev()
+            .find(|t| !bundled(Some(&t.place)))
+    });
+    let Some(step) = step.flatten() else {
         return telling(error);
     };
     let inner = error.word.as_deref().unwrap_or_default();
