@@ -499,12 +499,13 @@ impl Process {
 /// What a pane runs, which says what its program's exit does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runs {
-    /// The shell: its exit closes the pane.
-    Shell,
-    /// A program `fux run` started in place of a shell: its exit leaves the
-    /// pane, with its last screen and its status (`Process::Exited`); how it
-    /// was started, which `fux respawn` starts again.
-    Program(Launch),
+    /// The `shell` setting's shell, fux's default: its exit closes the pane.
+    DefaultShell,
+    /// A program `fux run` was given, in place of the shell: its exit
+    /// leaves the pane, with its last screen and its status
+    /// (`Process::Exited`); how it was started, which `fux respawn` starts
+    /// again.
+    Explicit(Launch),
 }
 
 /// How a program was started: its words, where, and the variables set for
@@ -1595,7 +1596,7 @@ impl Pane {
     ) -> (Process, Left) {
         // Named after its program, unless renamed.
         let name = match (&self.runs, &fresh.runs) {
-            (Runs::Program(old), Runs::Program(new)) if named(&old.argv) == self.name => {
+            (Runs::Explicit(old), Runs::Explicit(new)) if named(&old.argv) == self.name => {
                 named(&new.argv)
             }
             _ => self.name.clone(),
@@ -1921,7 +1922,14 @@ pub(crate) mod tests {
 
     fn pane(rows: u16, cols: u16) -> Result<Lone, Error> {
         let size = size(rows, cols);
-        Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 1 << 10).map(Lone::new)
+        Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            size,
+            1 << 10,
+        )
+        .map(Lone::new)
     }
 
     /// A pane alone, for tests of it: what it tells goes in a journal of
@@ -2048,7 +2056,13 @@ pub(crate) mod tests {
     #[test]
     fn a_frame_past_a_budget_is_read_on_whole() -> Result<(), Error> {
         let size = size(50, 200);
-        let mut pane = Lone::new(Pane::new(PaneId::of(1), "sh".into(), Runs::Shell, size, 0)?);
+        let mut pane = Lone::new(Pane::new(
+            PaneId::of(1),
+            "sh".into(),
+            Runs::DefaultShell,
+            size,
+            0,
+        )?);
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend(spends_the_budget(50, 200));
         frame.extend_from_slice(b"\x1b[2J\x1b[HDONE\x1b[?2026lZ");

@@ -757,7 +757,7 @@ fn pane(loads: &[Load], baseline: bool) -> Result<Done, String> {
     let mut pane = fux::pane::Pane::new(
         "%1".parse::<fux::id::PaneId>().map_err(|e| e.to_string())?,
         "bench".into(),
-        fux::pane::Runs::Shell,
+        fux::pane::Runs::DefaultShell,
         fux_vt::Size::new(first.rows, first.cols).map_err(|e| e.to_string())?,
         HISTORY,
     )
