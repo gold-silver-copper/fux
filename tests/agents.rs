@@ -316,10 +316,16 @@ fn shell_marks_count_commands_and_give_their_output() -> Outcome {
             "fish" => &["", "# nothing"],
             _ => &["", "# nothing", ")"],
         };
-        for &nothing in lines {
+        let last = |pane: &str| server.ok(&["str", pane, "pane", "last-output", "capture"]);
+        for (n, &nothing) in lines.iter().enumerate() {
             let before = done(&server.version(pane)?);
             server.ok(&typed(pane, nothing))?;
-            line_done(&server, pane, "echo two")?;
+            // Counted once the echo's own output is the last a command left:
+            // the line before it, read first, has ended what it ends by then.
+            // (The echo's wait alone may end at the end that line makes.)
+            line_done(&server, pane, &format!("echo two {n}"))?;
+            let echoed = format!("two {n}\n");
+            eventually("the echo's end", || Ok(last(pane)? == echoed))?;
             let after = done(&server.version(pane)?);
             if after != before.map(|d| d.saturating_add(1)) {
                 ended.push(nothing);
