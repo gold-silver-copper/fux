@@ -1369,7 +1369,8 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let said = format!("str fail try str {reason} fail catch drop end");
     assert_eq!(run(&said)?, strs(&[&reason]));
     // A handler with no room for its message and code fails again, for a
-    // try further out.
+    // try further out: the body's `1` leaves room for the message, not
+    // the code.
     let full = "0 998 range each end str stack_overflow try 1 str fail try str a fail catch drop drop end catch nip end";
     let left = run(full)?;
     assert_eq!(left.len(), 999);

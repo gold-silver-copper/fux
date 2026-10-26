@@ -5082,8 +5082,8 @@ mod tests {
         }
         let upper = failed(&mut s, "3 upper");
         assert!(upper.contains("(use: S upper"), "{upper}");
-        // Caught, it is only why: neither where, nor which word, nor how
-        // it is used.
+        // Caught, it is the failing word's own message (here `each`'s,
+        // inside `upper`): no place, word or usage added.
         let caught = output(&mut s, "str type try 3 upper catch drop end");
         assert_eq!(
             caught.as_deref(),
