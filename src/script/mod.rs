@@ -448,7 +448,7 @@ pub(crate) fn compiled(
         compiler = configured_compiler(config, compiler)?;
     }
     compiler.add(&handles(tokens)?)?;
-    Ok(Machine::new(compiler.finish()?, Limits::default()).telling(tell))
+    Ok(Machine::new(compiler.finish()?, Limits::default()))
 }
 
 /// The libraries and `config`'s definitions, compiled and checked once a
@@ -816,7 +816,7 @@ pub fn run_capped(
         let slice = steps.map_or(SLICE, |steps| {
             SLICE.min(steps.saturating_sub(machine.steps()).saturating_add(1))
         });
-        match machine.run(host, slice).map_err(placed)? {
+        match machine.run(host, slice).map_err(|e| uncaught(machine, e))? {
             Outcome::Finished => return Ok(machine.stack().to_vec()),
             Outcome::Paused => {}
             Outcome::Suspended(Ask::Server {
@@ -872,7 +872,7 @@ fn pushed(
 ) -> Result<(), Failed> {
     let raise = |machine: &mut Machine<Fux>, code: fuxth::Code, message: String| {
         let failure = fuxth::Failure::new(code, message);
-        machine.raise(failure).map_err(placed)
+        machine.raise(failure).map_err(|e| uncaught(machine, e))
     };
     let values = match values {
         Ok(values) => values,
@@ -887,18 +887,17 @@ fn pushed(
     Ok(())
 }
 
-/// A failure as fux tells it, whether a `try` catches it or it ends the
-/// program (`Machine::telling`): one inside a word of the prelude's or
-/// library's is placed at the program's step that called it, with the
-/// bundled word's own step in the message, and how the program's word is
-/// used.
-fn tell(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
+/// A failure no `try` caught, as fux tells it, from `machine` where it
+/// failed: one inside a word of the prelude's or library's is placed at
+/// the program's step that called it, with the bundled word's own step in
+/// the message, and how the program's word is used.
+fn uncaught(machine: &Machine<Fux>, mut error: fuxth::Error) -> Failed {
     let bundled = |place: Option<&fuxth::Place>| {
         matches!(place, Some(fuxth::Place::Line { source, .. })
             if matches!(&**source, "stdlib.fux" | "library.fux"))
     };
     if !bundled(error.place.as_ref()) {
-        return telling(error);
+        return placed(telling(error));
     }
     let Some(step) = machine
         .calls()
@@ -906,13 +905,13 @@ fn tell(machine: &Machine<Fux>, mut error: fuxth::Error) -> fuxth::Error {
         .rev()
         .find(|t| !bundled(Some(&t.place)))
     else {
-        return telling(error);
+        return placed(telling(error));
     };
     let inner = error.word.as_deref().unwrap_or_default();
     error.message = format!("inside {}, {inner}: {}", step.text, error.message);
     error.place = Some(step.place);
     error.word = Some(step.text);
-    told(error, true)
+    placed(told(error, true))
 }
 
 /// A reply, or its failure: why, from its message, else from what it said.

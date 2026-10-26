@@ -47,7 +47,7 @@ mod vocabulary;
 
 pub use compile::{Compiler, Parsing, Program, Vocabulary, distance};
 pub use error::{Code, Error, Failure};
-pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome, Tell};
+pub use machine::{Args, BUILT, Builtin, Done, Host, LONGEST, Limits, Machine, Outcome};
 pub use token::{Place, Token};
 pub use value::{AppValue, List, NESTING, TOTAL, Text, Value};
 

@@ -1351,27 +1351,23 @@ fn strs(values: &[&str]) -> Vec<Value<Ticket>> {
 }
 
 /// A `try` catches the failures it names, from a word, the core, or the
-/// host when it answers: the stack as it was at `try`, the message and code
-/// on it. Through, the body's values stay.
+/// host when it answers: the stack as it was at `try`, the plain message
+/// and code on it. Through, the body's values stay.
 #[test]
 fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     let caught = run("1 str fail try 2 str no fail catch end")?;
-    assert_eq!(
-        caught,
-        [ints(&[1]), strs(&["t:1: fail: no", "fail"])].concat()
-    );
-    // Its message says where, as the same failure not caught does.
+    assert_eq!(caught, [ints(&[1]), strs(&["no", "fail"])].concat());
+    // Only the same failure not caught is said where.
     let uncaught = run("1 str no fail").err().map(|e| e.located());
     assert_eq!(uncaught.as_deref(), Some("t:1: fail: no"));
     // A reason a try keeps is a string: one longer than a string may be
     // fails as too long, which `fail` does not name.
     let long = run("str fail try 0 300000 range fail catch end").err();
     assert_eq!(long.map(|e| e.code), Some(Code::TooLong));
-    // So does a reason that fits whose message, said where, does not: for
-    // a try further out, not cut.
+    // A reason as long as a string may be is kept whole.
     let reason: String = std::iter::repeat_n('x', crate::LONGEST).collect();
-    let said = format!("str too_long try str fail try str {reason} fail catch end catch nip end");
-    assert_eq!(run(&said)?, strs(&["too_long"]));
+    let said = format!("str fail try str {reason} fail catch drop end");
+    assert_eq!(run(&said)?, strs(&[&reason]));
     // A try's codes are written in its own source, not the one before.
     let mut compiler = Compiler::<Ticket>::new(Vocabulary::default());
     compiler.add(&token::source("one", "str fail")?)?;
@@ -1385,7 +1381,7 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     );
     assert_eq!(
         run("str 'fail negative' try -1 ask catch end 5")?,
-        [strs(&["t:1: ask: -1 is below 0", "negative"]), ints(&[5])].concat(),
+        [strs(&["-1 is below 0", "negative"]), ints(&[5])].concat(),
         "a suspended word's failure, answered"
     );
     assert_eq!(
@@ -1413,7 +1409,7 @@ fn a_try_catches_the_failures_it_names() -> Result<(), Error> {
     assert_eq!(run(nested)?, strs(&["div_by_zero"]));
     let again =
         "str fail try str fail try str a fail catch drop drop str b fail end catch drop end";
-    assert_eq!(run(again)?, strs(&["t:1: fail: b"]));
+    assert_eq!(run(again)?, strs(&["b"]));
     assert_eq!(
         code(run("str fail try 1 catch end str c fail")),
         Some("fail")
@@ -1430,9 +1426,9 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     assert_eq!(
         run(&format!("{deep} 50 safe 7 3 safe"))?,
         [
-            strs(&["t:1: fail: bottom"]),
+            strs(&["bottom"]),
             ints(&[7]),
-            strs(&["t:1: fail: bottom"])
+            strs(&["bottom"])
         ]
         .concat(),
         "the body's call is not in its definition's last place"
@@ -1441,7 +1437,7 @@ fn a_caught_failure_undoes_what_the_body_began() -> Result<(), Error> {
     assert_eq!(run(recursion)?, strs(&["call_depth"]));
     let blocks = "list 1 str fail try 2 list 3 4 end each dup 4 eq if str four fail then end
         catch drop end 5 end list 6 7 end each end";
-    let list = List::new([ints(&[1]), strs(&["t:1: fail: four"]), ints(&[5])].concat());
+    let list = List::new([ints(&[1]), strs(&["four"]), ints(&[5])].concat());
     let list = list.map(|l| Value::List(std::rc::Rc::new(l)));
     assert_eq!(run(blocks)?, [Vec::from_iter(list), ints(&[6, 7])].concat());
     let names = "1 let x str fail try 2 let x x fail catch drop drop end x";
