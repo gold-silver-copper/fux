@@ -101,8 +101,9 @@ pub trait Reads: Sized {
 }
 
 settings! {
-    /// The program a new pane runs, then its arguments: a list of strings,
-    /// each one word whatever it holds, as `list str /bin/zsh str -l end`.
+    /// The program a pane given none runs (not `run`'s, which takes its
+    /// own), then its arguments: a list of strings, each one word whatever
+    /// it holds, as `list str /bin/zsh str -l end`.
     shell Shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
     /// The bytes of history each pane keeps: how far copy mode scrolls and
