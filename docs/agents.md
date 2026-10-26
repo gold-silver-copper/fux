@@ -346,7 +346,8 @@ with no place, word or usage added, or a failed wait's answer, and code
 on it); a failure it does
 not name goes on, its status kept. An action leaves its answer: printed,
 it is the lines above; given to a word that wants a pane, it is its pane (an action's or wait's on a tab or workspace
-is none, however many panes it has: name the tab again, `@1 wait`), and to
+is of another kind, `answers`, which no such word takes, however many panes
+it has: name the tab again, `@1 wait`), and to
 `wait`, the version it holds too (`T str y text send-keys wait` waits from
 before the keys; a name keeps that version, so `T wait` later waits from
 when `T` was made, and `T str version get changed wait` from now);

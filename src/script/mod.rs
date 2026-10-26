@@ -168,7 +168,7 @@ impl Answer {
     fn name(&self) -> &'static str {
         match self {
             Answer::Pane(_) => "answer",
-            Answer::Panes(_) => "answer",
+            Answer::Panes(_) => "answers",
             Answer::Capture(_) => "capture",
             Answer::Listing { .. } | Answer::Status(_) => "listing",
             Answer::Json(_) => "json",
@@ -474,7 +474,7 @@ pub fn vocabulary() -> Result<fuxth::Vocabulary, fuxth::Error> {
     }
     // A wait that failed answered too: its handler gets the answer.
     for code in [Code::Timeout, Code::Closed] {
-        vocabulary.carries(code.into(), "answer")?;
+        vocabulary.carries(code.into(), "outcome")?;
     }
     Ok(vocabulary)
 }

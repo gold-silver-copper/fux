@@ -189,10 +189,11 @@ pub fn from_opts(last: &str) -> String {
 /// fux's kinds of value, each as its values' `name` says it, as an error
 /// says it, and, for one that must be used, what one left over is told.
 #[rustfmt::skip]
-pub const KINDS: [(&str, &str, Option<&str>); 11] = [
+pub const KINDS: [(&str, &str, Option<&str>); 12] = [
     ("pane", "a pane", None), ("tab", "a tab", None), ("workspace", "a workspace", None),
     ("client", "a client", None), ("size", "a size (from percent)", None),
-    ("answer", "an action's answer", None), ("capture", "a capture", None),
+    ("answer", "an action's answer", None),
+    ("answers", "an answer of a tab's or workspace's panes", None), ("capture", "a capture", None),
     ("listing", "a listing", None), ("json", "a JSON value", None),
     ("opts", "options (from opts, for run, new-tab, new-workspace, events-of and attach; a pane's words take theirs on the pane: `%2 all-history capture`)", Some("nothing takes these options")),
     ("request", "a request (a pane given options, keys or a wait)", Some("nothing acts on this request")),
@@ -208,18 +209,21 @@ pub const TAKEN_AS: [(&str, &str); 2] = [("pane", "answer"), ("workspace", "stri
 /// of an integer.
 #[rustfmt::skip]
 pub const NAMES: &[(&str, &str, &str)] = &[
+    ("outcome", "answer answers", "an action's or wait's answer: a pane's, or a tab's or workspace's panes'"),
     ("x", "opts request pane>request tab>request workspace>request client>request answer>request",
         "the pane it goes on, under its own values (or a tab, workspace, client, a request on one, or opts)"),
-    ("target", "pane tab workspace client answer request", "a pane, tab, workspace or client, or a request on one"),
+    ("target", "pane>answer tab>answers workspace>answers client>answers answer request>outcome",
+        "a pane, tab, workspace or client, or a request on one"),
     ("subject", "pane answer request", "a pane, or a request on one"),
-    ("place", "pane tab workspace answer request", "a pane, tab or workspace, or a request on one"),
+    ("place", "pane>answer tab>answers workspace>answers answer request>outcome",
+        "a pane, tab or workspace, or a request on one"),
     ("handle", "pane tab workspace answer", "a pane, tab or workspace"),
     ("watched", "opts pane tab workspace answer request", "a pane, tab or workspace, a request on one, or opts (everything)"),
     ("ref", "string pane tab workspace answer", "a name, or a pane, tab or workspace"),
     ("text", "string integer boolean", "a string, a number or a boolean"),
     ("new", "integer boolean list", "a setting's value: a number, true or false, or a list (fux help set)"),
     ("var", "string integer boolean pane tab workspace answer", "a string, a number, a boolean, or a pane, tab or workspace"),
-    ("value", "integer boolean string list pane tab workspace client size answer capture listing json",
+    ("value", "integer boolean string list pane tab workspace client size answer answers capture listing json",
         "a value (options and requests are none: what acts on them gives one)"),
     ("seen", "string answer capture", "a version: an action's or wait's answer, a pane's capture, or its text"),
     ("record", "listing", "a listing"),
@@ -250,8 +254,8 @@ words! {
         Starting NewTab "new-tab" "opts -- answer" "a tab with a shell" "fux opts str logs name 80 24 size str agent in new-tab" [Opts: Name Size Cwd Env In];
         Starting NewWorkspace "new-workspace" "opts -- answer" "a workspace with a tab and a shell" "fux opts str work name 80 24 size new-workspace" [Opts: Name Size Cwd Env];
         Starting Respawn "respawn" "subject -- answer" "start again in its pane the program it was given (run, split), or the one given now" "fux %3 kill-first respawn" [Pane: KillFirst Env Program Arg];
-        Waiting Wait "wait" "place -- answer" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
-        Input SendKeys "send-keys" "target -- answer" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
+        Waiting Wait "wait" "place -- place" "wait until the pane's version differs from the one changed gives, else an action's answer's (%2 str y text send-keys wait), else now's, or the pane closes; a tab or workspace: any of the panes there as it begins" "A=$(fux %3 str y text send-keys); fux str \"$A\" changed 60 timeout wait" [Pane: Changed Timeout];
+        Input SendKeys "send-keys" "target -- target" "send the keys on it to a pane, every pane of a tab, or a client as typed at its terminal; 900 KiB at most in all" "fux %3 str 'ls -l' text str Enter key send-keys" [Pane: Text Key Paste Bytes Expect];
         Input SendMouse "send-mouse" "subject -- answer" "send the mouse event on it" "fux %3 str click 2 10 mouse send-mouse" [Pane: Mouse];
         Input Signal "signal" "subject name -- answer" "TERM KILL INT HUP QUIT USR1 USR2 STOP CONT TSTP WINCH ILL ABRT FPE SEGV PIPE ALRM BUS TRAP SYS XCPU XFSZ VTALRM PROF TTIN TTOU URG CHLD, to the pane's foreground" "fux %3 str TERM signal" [];
         Reading Capture "capture" "subject -- capture" "the screen, as the words on the pane say" "fux %3 100 history capture" [Pane: History AllHistory Wrapped Full Styles Marks MainScreen AltScreen LastOutput Rows Cols];
@@ -1845,6 +1849,19 @@ mod tests {
             let refused = compiles(wrong).err().unwrap_or_default();
             assert!(refused.starts_with("type: "), "{wrong}: {refused}");
         }
+    }
+
+    /// A tab's answer is a kind of its own, which a word that wants a
+    /// pane refuses before anything runs; a pane's answer is its pane.
+    #[test]
+    fn a_tabs_answer_is_no_pane() {
+        let checked = |code: &str| {
+            let tokens = fuxth::token::source("t", code).unwrap_or_default();
+            super::super::compile(&tokens).map(drop)
+        };
+        assert!(checked("@1 wait capture").is_err());
+        assert!(checked("+1 wait str y text send-keys").is_err());
+        assert_eq!(checked("%1 str x text send-keys wait capture"), Ok(()));
     }
 
     /// A tab's or workspace's answer is an array, however many panes
