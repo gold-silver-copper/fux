@@ -168,7 +168,8 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 /// Has `command`'s program, once spawned, lead a new session, holding no
 /// descriptor but its stdin, stdout and stderr: what this process holds
 /// without close-on-exec, inherited from a shell that leaks descriptors or
-/// opened by a thread racing the spawn, goes no further. With `terminal`,
+/// opened by a thread racing the spawn, goes no further (on macOS, all
+/// but one opened in the window `io::cloexec_from` states). With `terminal`,
 /// its stdin, a terminal, becomes the session's controlling terminal. The
 /// spawn clears the signal mask, and `exec` restores the dispositions Rust
 /// and signal handlers changed, so the program starts as it would from a
@@ -176,7 +177,7 @@ pub fn thread_cpu_time() -> Result<std::time::Duration> {
 pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     use std::os::unix::process::CommandExt;
     // Listed now: between fork and exec nothing may allocate.
-    let listed = crate::io::open_end();
+    let listed = crate::io::Listed::now();
     let lead = move || -> std::io::Result<()> {
         crate::io::cloexec_from(3, listed)?;
         // A new session, this process its leader, whose ID is its pid.
@@ -192,8 +193,9 @@ pub fn lead_session(command: &mut std::process::Command, terminal: bool) {
     };
     // SAFETY: `lead` runs between fork and exec, where only
     // async-signal-safe calls may be made, and makes only those:
-    // close_range, or fcntl; setsid; ioctl. It allocates nothing, takes
-    // no lock, and its errors are numbers.
+    // close_range, or open, getdents64, fcntl and close (macOS: getdtablesize and fcntl);
+    // setsid; ioctl. It allocates nothing, takes no lock, and its errors
+    // are numbers.
     unsafe { command.pre_exec(lead) };
 }
 

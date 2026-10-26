@@ -82,11 +82,12 @@ pub fn duplicate_inheritable(fd: impl AsFd) -> Result<OwnedFd> {
 /// ones another thread opened before it could set it. Nothing is closed,
 /// so no owner's descriptor stops being valid; each closes when this
 /// process runs another program. It allocates nothing and takes no lock,
-/// so it may run between `fork` and `exec`. `listed` ([`open_end`], taken
-/// before the fork) bounds the fallback where the kernel has no
-/// close_range; there, with `None` listed, it fails (`ENOENT`, as
-/// `/dev/fd` is not there) rather than walk up to the limit.
-pub fn cloexec_from(first: i32, listed: Option<i32>) -> Result<()> {
+/// so it may run between `fork` and `exec`, with `listed` taken before
+/// the fork. Linux's close_range, else one at a time ([`cloexec_each`]),
+/// which on macOS leaves one window: a descriptor another thread opens
+/// between the listing and the fork, past where it then lowers the soft
+/// limit.
+pub fn cloexec_from(first: i32, listed: Listed) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         let start: libc::c_uint = crate::errno::fit(first)?;
@@ -108,31 +109,101 @@ pub fn cloexec_from(first: i32, listed: Option<i32>) -> Result<()> {
     cloexec_each(first, listed)
 }
 
-/// One past the highest descriptor this process holds open, as `/dev/fd`
-/// lists them; `None` where they can't be listed. It allocates, so it is
-/// for before `fork`.
-pub fn open_end() -> Option<i32> {
-    let listed = std::fs::read_dir("/dev/fd").ok()?;
-    let fds = listed.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<i32>().ok());
-    fds.max()?.checked_add(1)
+/// What [`cloexec_from`] must learn before `fork`, as learning it
+/// allocates: on macOS, one past the highest descriptor this process holds
+/// open, as `/dev/fd` lists them (`None` where they can't be listed).
+/// Elsewhere the child lists them itself, so nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Listed {
+    #[cfg(target_os = "macos")]
+    end: Option<i32>,
 }
 
-/// `cloexec_from` one descriptor at a time: on macOS, on Android, and on
-/// Linux older than 5.11 or where close_range is denied. From `first` to
-/// the first free number past `listed`, the listed end ([`open_end`],
-/// whatever the soft `RLIMIT_NOFILE`, as one above it may be open): one
-/// opened since the listing took the lowest number free, so those past
-/// the end lie next to it. (Not if another thread, between the listing
-/// and the fork, opened two without close-on-exec and closed the first:
-/// Rust's std opens none so.) Its cost follows the descriptors open. With
-/// nothing listed it would follow the limit, which may be 2^30: it fails
-/// instead, as /dev/fd is not there (ENOENT).
-fn cloexec_each(first: i32, listed: Option<i32>) -> Result<()> {
-    let listed = listed.ok_or(crate::Errno::from_raw(libc::ENOENT))?;
-    for fd in first..=libc::c_int::MAX {
+impl Listed {
+    pub fn now() -> Listed {
+        Listed {
+            #[cfg(target_os = "macos")]
+            end: (std::fs::read_dir("/dev/fd").ok()).and_then(|listed| {
+                let fds = listed.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok());
+                fds.max()?.checked_add(1)
+            }),
+        }
+    }
+}
+
+/// `cloexec_from` one descriptor at a time, as the kernel lists them
+/// (`/proc/self/fd`), read with no allocation: on Android, and on Linux
+/// older than 5.11 or where close_range is denied. What it lists is what
+/// is open as it reads, at any number. It fails where `/proc` is not
+/// mounted, or with no number free for the listing (EMFILE).
+#[cfg(not(target_os = "macos"))]
+fn cloexec_each(first: i32, _: Listed) -> Result<()> {
+    /// Entries as getdents64 writes them: each 8-byte aligned, as the
+    /// kernel's own buffers are, whose fields it writes whole.
+    #[repr(align(8))]
+    struct Entries([u8; 1024]);
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    // SAFETY: the path is a NUL-ended literal; open touches nothing else.
+    let dir = check(unsafe { libc::open(c"/proc/self/fd".as_ptr(), flags) })?;
+    // SAFETY: `dir` was just opened, and nothing else owns it.
+    let dir = unsafe { OwnedFd::from_raw_fd(dir) };
+    let mut buffer = Entries([0; 1024]);
+    let room: libc::c_uint = crate::errno::fit(buffer.0.len())?;
+    loop {
+        // SAFETY: getdents64 writes at most `room` bytes, the buffer's
+        // length, into it.
+        let read = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                dir.as_raw_fd(),
+                buffer.0.as_mut_ptr(),
+                room,
+            )
+        };
+        let read = usize::try_from(read).map_err(|_| crate::Errno::last())?;
+        let mut entries = buffer.0.get(..read).unwrap_or_default();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // Each: its inode (8 bytes), offset (8), length (2) and type (1),
+        // then its name, ended by a NUL: a number, or `.` and `..`.
+        while let Some(&[low, high]) = entries.get(16..18) {
+            let length = usize::from(u16::from_ne_bytes([low, high]));
+            let (entry, rest) = (entries.split_at_checked(length))
+                .filter(|_| length > 19)
+                .ok_or(crate::Errno::INVAL)?;
+            let name = entry.get(19..).unwrap_or_default().iter();
+            let fd = (name.take_while(|b| **b != 0)).try_fold(0i32, |fd, b| {
+                let digit = b.checked_sub(b'0').filter(|d| *d < 10)?;
+                fd.checked_mul(10)?.checked_add(i32::from(digit))
+            });
+            match fd.filter(|fd| *fd >= first).map(cloexec_raw) {
+                Some(Err(errno)) if errno.raw() != libc::EBADF => return Err(errno),
+                Some(Ok(()) | Err(_)) | None => {}
+            }
+            entries = rest;
+        }
+    }
+}
+
+/// `cloexec_from` one descriptor at a time on macOS, which has neither
+/// close_range nor a list a child can read without allocating: every
+/// number below the listed end or the descriptor table's size, whichever
+/// is larger. One opened since the listing is below the table's size, the
+/// soft `RLIMIT_NOFILE`, which no new descriptor may reach; one opened
+/// before the limit fell, as one a parent passes past `ulimit -Sn`, was
+/// listed. Not one another thread, between the listing and the fork, both
+/// opens past where the limit then falls to: nothing a child may call
+/// lists it. Its cost follows the limit. With nothing listed it fails
+/// (ENOENT, as `/dev/fd` is not there) rather than miss one.
+#[cfg(target_os = "macos")]
+fn cloexec_each(first: i32, listed: Listed) -> Result<()> {
+    let listed = listed.end.ok_or(crate::Errno::from_raw(libc::ENOENT))?;
+    // SAFETY: getdtablesize takes nothing and touches no memory.
+    let table = unsafe { libc::getdtablesize() };
+    for fd in first..listed.max(table) {
         match cloexec_raw(fd) {
             Err(errno) if errno.raw() != libc::EBADF => return Err(errno),
-            Err(_) if fd >= listed => return Ok(()),
             Ok(()) | Err(_) => {}
         }
     }
@@ -179,16 +250,19 @@ mod tests {
         assert!(is_cloexec(&file), "std opens close-on-exec");
         let copy = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&copy));
-        cloexec_from(copy.as_raw_fd(), open_end()).map_err(|e| e.to_string())?;
+        cloexec_from(copy.as_raw_fd(), Listed::now()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&copy));
         // And one at a time, as where the kernel has no close_range.
         let listed = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
         assert!(!is_cloexec(&listed));
-        cloexec_each(listed.as_raw_fd(), open_end()).map_err(|e| e.to_string())?;
+        cloexec_each(listed.as_raw_fd(), Listed::now()).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&listed));
-        // With nothing listed, it fails rather than walk to the limit.
-        let none = cloexec_each(listed.as_raw_fd(), None);
-        assert_eq!(none, Err(Errno::from_raw(libc::ENOENT)));
+        // With nothing listed, macOS fails rather than miss one.
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            cloexec_each(listed.as_raw_fd(), Listed { end: None }),
+            Err(Errno::from_raw(libc::ENOENT))
+        );
         // Nothing was closed: both still read.
         let mut buffer = [0u8; 1];
         assert_eq!(read(&copy, &mut buffer), Ok(0));
@@ -196,15 +270,22 @@ mod tests {
         Ok(())
     }
 
-    /// One at a time, the walk is bounded by the listing, not by the soft
-    /// limit: a descriptor at or above it (open before the limit fell, as
-    /// one a parent passes past `ulimit -Sn`) is marked too. In a child,
-    /// whose limit it lowers, making only async-signal-safe calls.
+    /// One at a time, a descriptor at or above the soft limit (open before
+    /// the limit fell, as one a parent passes past `ulimit -Sn`) is marked
+    /// too. In a child, whose limit it lowers, making only
+    /// async-signal-safe calls, one number freed below the limit, as Linux's
+    /// listing takes one.
     #[test]
     fn one_at_a_time_marks_past_the_soft_limit() -> std::result::Result<(), String> {
         let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
-        let high = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
-        let fd = high.as_raw_fd();
+        let free = duplicate_inheritable(&file).map_err(|e| e.to_string())?;
+        // SAFETY: F_DUPFD takes a number and touches no memory; the copy is
+        // the lowest number free from it, without close-on-exec.
+        let fd =
+            check(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, free.as_raw_fd() + 64) })
+                .map_err(|e| e.to_string())?;
+        // SAFETY: `fd` was just opened, and nothing else owns it.
+        let high = unsafe { OwnedFd::from_raw_fd(fd) };
         let mut low = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
@@ -213,14 +294,20 @@ mod tests {
         check(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut low) })
             .map_err(|e| e.to_string())?;
         low.rlim_cur = libc::rlim_t::try_from(fd).map_err(|e| e.to_string())?;
+        let listed = Listed::now();
         // SAFETY: fork takes nothing; the child makes only async-signal-safe
         // calls and ends with _exit.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
+            // A number free below the limit, held till now so no other
+            // thread took it: Linux's listing opens one.
+            // SAFETY: close takes a number, and `free` is the child's copy,
+            // closed once, never used again as the child ends with _exit.
+            unsafe { libc::close(free.as_raw_fd()) };
             // SAFETY: setrlimit reads one rlimit, and `low` is one; a lower
             // soft limit is always allowed.
             let lowered = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const low) };
-            let marked = lowered == 0 && cloexec_each(fd, fd.checked_add(1)).is_ok();
+            let marked = lowered == 0 && cloexec_each(fd, listed).is_ok();
             let code = i32::from(!(marked && is_cloexec(&high)));
             // SAFETY: _exit ends the child at once, running nothing of the
             // parent's.
@@ -238,12 +325,10 @@ mod tests {
         Ok(())
     }
 
-    /// One at a time, the walk goes to the listed end, past any number
-    /// free below it, then on through the run of descriptors opened next
-    /// to it, and ends at the first free number past that: not at the soft
-    /// limit, which may be 2^30.
+    /// One at a time, every descriptor is marked: one opened after the
+    /// listing, past a free number, too.
     #[test]
-    fn one_at_a_time_ends_past_the_listed_descriptors() -> std::result::Result<(), String> {
+    fn one_at_a_time_marks_those_opened_since_the_listing() -> std::result::Result<(), String> {
         let file = std::fs::File::open("/dev/null").map_err(|e| e.to_string())?;
         let at = |n: i32| -> std::result::Result<OwnedFd, String> {
             // SAFETY: F_DUPFD takes a number and touches no memory; the copy
@@ -263,15 +348,12 @@ mod tests {
             .map_err(|e| e.to_string())?;
         let low = at(i32::try_from(limit.rlim_cur / 2).unwrap_or(700).min(700))?;
         let below = at(low.as_raw_fd() + 5)?;
-        let end = below.as_raw_fd() + 1;
-        let next = at(end)?;
+        let listed = Listed::now();
+        let next = at(below.as_raw_fd() + 1)?;
         let far = at(next.as_raw_fd() + 10)?;
-        cloexec_each(low.as_raw_fd(), Some(end)).map_err(|e| e.to_string())?;
+        cloexec_each(low.as_raw_fd(), listed).map_err(|e| e.to_string())?;
         assert!(is_cloexec(&low) && is_cloexec(&below) && is_cloexec(&next));
-        assert!(
-            !is_cloexec(&far),
-            "the walk went past the first free number"
-        );
+        assert!(is_cloexec(&far), "one past a free number was left");
         Ok(())
     }
 }
