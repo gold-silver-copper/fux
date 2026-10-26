@@ -646,8 +646,8 @@ fn osc(body: &[u8]) -> (String, Does) {
     (key, does)
 }
 
-/// The row a DCS, APC, PM or SOS string gives: all are consumed and
-/// dropped.
+/// The row a DCS, APC, PM or SOS string gives: DECRQSS and XTGETTCAP
+/// are answered, the rest consumed and dropped.
 fn string(kind: u8, body: &[u8]) -> (String, Does) {
     let key = match kind {
         b'P' => {

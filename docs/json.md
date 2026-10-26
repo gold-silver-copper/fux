@@ -115,9 +115,9 @@ from (its program's end too):
 `changed` lists `screen`, `bell` and `done` (a count of the version that
 grew), or `respawned` (the program started again: its counts but
 `RESPAWNS` start afresh). `exited` is the program's status if it ended
-since (`null` if
-that status was lost), `signal` the signal that killed it; a wait from a version that already holds its end
-waits for something else.
+since (`null` if that status was lost), `signal` the signal that killed
+it; a wait from a version that already holds its end waits for
+something else.
 
 A wait that fails (124 nothing changed, 4 its pane closed) has no JSON: it
 ends the program with that status and says why on stderr, one line, `fux:

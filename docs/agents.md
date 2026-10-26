@@ -89,7 +89,8 @@ which fux already holds, keeps the answer past that time until the frame
 is read, and then answers its change: a wait never says unchanged of a
 pane that changed. A loop of waits ends when its check holds; to bound the
 whole of it, run it under the shell's `timeout 600 fux --file FILE` (124
-too). `A counts` gives a version's five counts as integers: `A counts 3 at` is its `DONE`.
+too). `A counts` gives a version's five counts as integers:
+`A counts 3 at` is its `DONE`.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
   `quiet` waits until nothing changes for N seconds (from a pane, an

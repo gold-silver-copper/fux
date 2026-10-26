@@ -145,7 +145,7 @@ const KEPT: [&str; 8] = [
 
 /// The most paste buffers kept.
 pub const MAX_BUFFERS: usize = 1000;
-/// The longest a wait waits: a day.
+/// The longest limit a wait may be given: a day.
 pub const MAX_WAIT: usize = 86_400;
 
 /// How long a wait waits before it times out: up to `MAX_WAIT` seconds, so its
