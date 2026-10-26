@@ -62,8 +62,8 @@ fux str agent workspace kill                   # at the end: everything run star
 A wait answers its pane's version now and what changed:
 `%2:0.61.1.4.0:RUN screen bell done`, with `exited 3`, `killed by
 SIGTERM` (`killed by signal 64` for one POSIX does not name) or `ended, its
-status lost` if its program ended since, `respawned` once started again (its
-`RESPAWNS` grows, its other counts start afresh). Its first word is the version to wait from next.
+status lost` if its program ended since, `respawned` once started again
+(its `RESPAWNS` grows, its other counts start afresh). Its first word is the version to wait from next.
 A wait from a version that already holds the end waits for something else,
 as any wait does; one from a version of a pane since closed answers
 `%2 closed`. On a tab or workspace a wait waits on the panes there as it
@@ -83,11 +83,11 @@ Each is a fuxth program: a file `fux --file FILE` runs, or `fux - <<'EOF'` in a
 script. `A wait` waits from the version answer A holds, so a change between
 two steps is never missed, and leaves the next answer; `A 600 timeout wait`
 fails with 124 (`timeout`) if nothing changed in 600 s. A pane part way
-through a frame (synchronized output) whose bytes fux already holds keeps the
-answer past that time until the frame is whole, and then answers its
-change: a wait never says unchanged of a pane that changed. A loop of waits ends
-when its check holds; to bound the whole of it, run it under the shell's
-`timeout 600 fux --file FILE` (124 too). `A counts` gives a version's five counts
+through a frame (synchronized output) whose bytes fux already holds keeps
+the answer past that time until the frame is whole, and then answers its
+change: a wait never says unchanged of a pane that changed. A loop of
+waits ends when its check holds; to bound the whole of it, run it under
+the shell's `timeout 600 fux --file FILE` (124 too). `A counts` gives a version's five counts
 as integers: `A counts 3 at` is its `DONE`.
 
 - **Quiet for N seconds** (an agent's TUI done, or asking you something):
@@ -213,8 +213,8 @@ as integers: `A counts 3 at` is its `DONE`.
   2×COL. A program's own "row 22" is usually counted from 1.
 - **Stop:** `%2 str TERM signal` (`INT`, `KILL`, …) signals what runs in
   its terminal's foreground; `%2 kill` closes the pane; `%2 respawn` starts
-  the program `run` started again once it ended (`kill-first` ends it
-  first; a shell's pane is refused, `not_run`).
+  the pane's program again once it ended (`kill-first` ends it first; a
+  shell's pane is refused, `not_run`).
 
 ## read: Reading the screen
 

@@ -101,8 +101,8 @@ pub trait Reads: Sized {
 }
 
 settings! {
-    /// The program a pane given none runs (not `run`'s, which takes its
-    /// own), then its arguments: a list of strings, each one word whatever
+    /// The program a pane given none runs (not one `run` or `split` gives
+    /// its own), then its arguments: a list of strings, each one word whatever
     /// it holds, as `list str /bin/zsh str -l end`.
     shell Shell "shell": Shell = default_shell()
         => "the server's `$SHELL`, else your login shell, else `/bin/sh`";
@@ -148,7 +148,7 @@ pub const MAX_BUFFERS: usize = 1000;
 /// The longest a wait waits: a day.
 pub const MAX_WAIT: usize = 86_400;
 
-/// How long a wait waits at most: up to `MAX_WAIT` seconds, so its
+/// How long a wait waits before it times out: up to `MAX_WAIT` seconds, so its
 /// deadline is a time there is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limit(u32);

@@ -32,9 +32,10 @@ SIGINT, SIGHUP, or until its last pane closes. It then hangs up every pane, tell
 terminal why, and removes its socket.
 
 A pane runs your shell (the `shell` setting: `fux help set`), or the program
-`run` gave it. A pane closes when its program exits, showing its viewers
-the exit status; a tab closes
-with its last pane, a workspace with its last tab.
+it was given (`run`, `split`). A shell's pane closes when its shell exits,
+showing its viewers the exit status; a program's pane stays, its exit told,
+until `kill` closes it or `respawn` starts it again. A tab closes with its
+last pane, a workspace with its last tab.
 A pane's lines re-wrap when its width changes, history included.
 
 The bottom row is the bar: the workspace and its tabs on the left; on the
@@ -607,7 +608,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-The tests start real servers and shells: they need `/bin/sh`, `bash` and
+The tests start real servers and shells: they need `/bin/sh`, `/bin/bash` and
 `python3`, use `dash` if it is on `PATH`, and with `FUX_TEST_SHELLS=1`
 also zsh and fish. Tools outside the workspace, each
 with a README:
