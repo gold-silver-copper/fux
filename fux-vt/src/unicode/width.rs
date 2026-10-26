@@ -137,8 +137,8 @@ pub fn clusters(text: &str) -> impl Iterator<Item = (&str, usize)> {
     })
 }
 
-/// The columns `text` takes on a screen: its cells' ([`clusters`]),
-/// summed.
+/// The columns printable `text` takes on a screen, from a row's start:
+/// its cells', as [`clusters`] counts them, summed.
 pub fn str_width(text: &str) -> usize {
     // ASCII is a column a character, but for its controls.
     if text.is_ascii() {
