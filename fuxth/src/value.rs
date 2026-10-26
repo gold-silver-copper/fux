@@ -94,9 +94,9 @@ pub enum Value<A> {
 const STRIDE: usize = 64;
 
 /// A string's text, with how many characters it has and, unless they are
-/// all ASCII (then a character starts at its own index), its marks: where
-/// every `STRIDE`th character starts, so a character is found from the
-/// mark before it.
+/// all ASCII (then character `i` starts at byte `i`), its marks: where
+/// characters `STRIDE`, 2 × `STRIDE`, … start, so a character is found
+/// from the mark before it, or the start.
 #[derive(Clone, Debug)]
 pub struct Text {
     text: String,
@@ -131,13 +131,13 @@ impl Text {
 
     /// `other` added at the end.
     pub fn append(&mut self, other: &Text) {
-        let (bytes, chars) = (self.text.len(), self.chars);
+        let (bytes, chars, ascii) = (self.text.len(), self.chars, self.is_ascii());
         self.text.push_str(&other.text);
         self.chars = chars.saturating_add(other.chars);
-        if self.chars == self.text.len() {
+        if self.is_ascii() {
             return;
         }
-        if self.marks.is_empty() {
+        if ascii {
             // All ASCII until now: marked from the start.
             self.marks = marks(&self.text, 0, 0).collect();
         } else {
@@ -162,21 +162,28 @@ impl Text {
         self.chars
     }
 
+    fn is_ascii(&self) -> bool {
+        self.chars == self.text.len()
+    }
+
     /// The characters from `from` up to before `to`.
     pub fn part(&self, from: usize, to: usize) -> &str {
         let (start, end) = (self.byte(from), self.byte(to));
         self.text.get(start..end).unwrap_or_default()
     }
 
-    /// The byte where character `i` starts, found from the mark before it;
-    /// the end, for no such character.
+    /// The byte where character `i` starts; the end, for no such character.
     fn byte(&self, i: usize) -> usize {
         let len = self.text.len();
-        if self.marks.is_empty() {
+        if self.is_ascii() {
             return i.min(len);
         }
-        let Some(&mark) = self.marks.get(i / STRIDE) else {
-            return len;
+        let mark = match (i / STRIDE).checked_sub(1) {
+            None => 0,
+            Some(k) => match self.marks.get(k) {
+                Some(&mark) => mark,
+                None => return len,
+            },
         };
         let rest = self.text.get(mark..).unwrap_or_default();
         let found = rest.char_indices().nth(i % STRIDE);
@@ -188,7 +195,7 @@ impl Text {
 /// and its first byte byte `byte`, of a string.
 fn marks(text: &str, first: usize, byte: usize) -> impl Iterator<Item = usize> {
     (text.char_indices().zip(first..))
-        .filter(|(_, i)| i % STRIDE == 0)
+        .filter(|(_, i)| *i != 0 && i % STRIDE == 0)
         .map(move |((at, _), _)| byte.saturating_add(at))
 }
 
